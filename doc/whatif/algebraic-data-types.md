@@ -77,64 +77,82 @@ polymorphic variants (Garrigue 1998): two variants are distinguishable when thei
 key sets differ. A closed `[ok: a]` type (no `...` rest) contains exactly one
 field; a value that has both `ok` and `err` keys does not satisfy either variant.
 
-### Syntax: `[union ...]`
+### Syntax: Multi-Entry `[type ...]`
 
-A new `[union ...]` special form, parallel to `[fn ...]`, `[type ...]`, and
-`[match ...]`. Variants are positional entries — closed record type expressions
-for payload variants, bare words for tag-only variants.
+Union type aliases use the existing `[type ...]` form extended to accept multiple
+positional entries — consistent with the annotation rule that positional entries
+are union members. No new keyword, no new special form.
 
 ```tinct
-# Payload variants — each entry is a closed record type
-Result: [union [ok: a] [err: Str]]
-Shape:  [union [circle: [radius: Number]] [rect: [w: Number  h: Number]]]
+# Payload variants — positional record type expressions
+Result: [type [ok: a] [err: Str]]
+Shape:  [type [circle: [radius: Number]] [rect: [w: Number  h: Number]]]
 
-# Tag-only variants — bare words expand to StringLiteral types
-Status:  [union ok err pending]
-Color:   [union red green blue]
+# Tag-only variants — quoted string literal types
+Status: [type "ok" "err" "pending"]
+Color:  [type "red" "green" "blue"]
 
-# Mixed — some variants carry payloads, some are tags
-Event: [union
-    [click:  [x: Int  y: Int]]
-    [key:    [code: Str]]
-    resize]
+# Mixed — payload and tag variants
+Event: [type
+    [click: [x: Int  y: Int]]
+    [key:   [code: Str]]
+    "resize"]
 
-# Recursive variants — Phase 4, requires parameterized type aliases
-Tree: [union Leaf [node: a  left: [Tree a]  right: [Tree a]]]
+# Single-entry alias (current behavior, unchanged)
+Name: [type Str]
 ```
 
-`[union ...]` is used as a value in dict entries, exactly like `[fn ...]`:
+`[type ...]` with multiple positional entries expands to `Type::Union(vec![T1, T2, ...])`.
+Single-entry `[type T]` is unchanged — it remains a simple alias. String literals in
+type position produce `Type::StringLiteral(s)` — a small extension to
+`resolve_type_expr` (one new match arm for `Expr::Str`).
+
+Used as a value in dict entries, exactly like `[fn ...]`:
 
 ```tinct
 [
-  Result: [union [ok: a] [err: Str]]
+  Result: [type [ok: a] [err: Str]]
 
   parse: [fn@Result [input@Str]
     [try [parse-int input]]]
 
   handle: [fn [res@Result]
     [match res
-      [ok:  v]   v
-      [err: msg] [error msg]]]
+      [ok:  v]:    v
+      [err: msg]:  [error msg]]]
 ]
 ```
 
 ### Tag-Only Variants
 
-A bare word entry like `ok`, `err`, or `red` in `[union ...]` becomes a
-`StringLiteral("ok")` type. The runtime value is simply the string `"ok"`. This
-requires no new value representation — bare-word literals already have type
-`StringLiteral(s)` in the type checker. Construction is trivial: `status: ok`.
-Pattern matching uses existing literal patterns: `[match status  ok ...  err ...]`.
+Tag-only variants are quoted string literal types. The runtime value is simply
+the string `"ok"`. No new value representation — `StringLiteral(s)` already
+exists in the type checker. Construction: `status: "ok"`. Pattern matching uses
+existing literal patterns.
 
-This choice — string literals as tag-only variants — follows tinct's dicts-are-fundamental
-principle. An enum like `Status: [union ok err pending]` is a union of three string
-literal types. The value `"ok"` inhabits the `ok` variant; `"err"` inhabits the
-`err` variant. No new syntax or runtime representation is required.
+```tinct
+Status: [type "ok" "err" "pending"]
+
+# Construction
+current-status: "ok"
+
+# Pattern matching on tag variants
+[match current-status
+    "ok":      [handle-ok]
+    "err":     [handle-err]
+    "pending": [handle-pending]
+    _:         [error "unknown status"]]
+```
+
+This follows tinct's dicts-are-fundamental principle — a tag-only enum is a
+union of string literal types. No new syntax or runtime representation is required.
+Quoted strings are used (not bare words) because bare words in type position are
+type variable names or type references, not string literals.
 
 ### Closed Variants in Declarations, Open in Patterns
 
-Variants specified in `[union ...]` are **closed record types by default**. A
-declaration `Result: [union [ok: a] [err: Str]]` means:
+Variants in `[type T1 T2 ...]` declarations are **closed record types by default**. A
+declaration `Result: [type [ok: a] [err: Str]]` means:
 
 - The `ok` variant has *exactly* the field `ok` — no additional fields.
 - The `err` variant has *exactly* the field `err` — no additional fields.
@@ -154,7 +172,7 @@ Open variants are supported explicitly with `...`:
 
 ```tinct
 # Open payload variant — accepts extra fields beyond the declared ones
-FlexResult: [union [ok: a ...]  [err: Str ...]]
+FlexResult: [type [ok: a ...]  [err: Str ...]]
 ```
 
 ### Construction
@@ -178,7 +196,7 @@ Named constructor functions can be defined by the user when desired:
 
 ```tinct
 [
-  Result: [union [ok: a] [err: Str]]
+  Result: [type [ok: a] [err: Str]]
   Ok:     [fn [v] [ok: v]]
   Err:    [fn [msg] [err: msg]]
 ]
@@ -186,11 +204,14 @@ Named constructor functions can be defined by the user when desired:
 
 ### Type-Level Representation
 
-`[union [ok: a] [err: Str]]` compiles to `Type::Union(vec![Record(...), Record(...)])`.
+`[type [ok: a] [err: Str]]` compiles to `Type::Union(vec![Record(...), Record(...)])`.
 This requires `Type::Union(Vec<Type>)` from `doc/whatif/union-types.md` Phase 2 as
-a prerequisite. The union type is registered as a type alias in the environment.
-At usage sites, `res@Result` instantiates the alias — `a` becomes a fresh type
-variable, yielding `Type::Union(vec![Record({ok: TypeVar("_t0")}), Record({err: Str})])`.
+a prerequisite. The union type is stored as a **`TypeScheme`** — not a bare `Type` —
+so that the type variable `a` is properly generalized per call site. At usage sites,
+`res@Result` instantiates the alias: `a` becomes a fresh type variable, yielding
+`Type::Union(vec![Record({ok: TypeVar("_t0")}), Record({err: Str})])`. Storing a bare
+`Type::Union` with a free `a` would cause two call sites to share the same type
+variable and accidentally unify against each other — scheme wrapping is required.
 
 Variants in a union are checked via `is_subtype`: `is_subtype(Record({ok: Int, tail: Empty}), Union(...))` succeeds if the record is a subtype of any variant
 (`[UNION-INJ-L]`, `[UNION-INJ-R]` from `doc/whatif/union-types.md` §Subtyping Rules).
@@ -202,8 +223,8 @@ typing (Tobin-Hochstadt & Felleisen 2010). When matching:
 
 ```tinct
 [match res
-    [ok:  v]   ...   # res narrowed to [ok: a], v has type a
-    [err: msg] ...]  # res narrowed to [err: Str], msg has type Str
+    [ok:  v]:    ...   # res narrowed to [ok: a], v has type a
+    [err: msg]:  ...]  # res narrowed to [err: Str], msg has type Str
 ```
 
 The type checker: (1) synthesises the scrutinee's type (`Result a`), (2) expands
@@ -220,13 +241,13 @@ patterns) but requires an extra access step for payloads:
 ```tinct
 # Phase 2 — type patterns work but must access payload separately
 [match res
-    Dict   [if [has? res "ok"] res.ok [error res.err]]
-    Str    [error res]]
+    Dict:  [if [has? res "ok"] res.ok [error res.err]]
+    Str:   [error res]]
 
 # Phase 3 — dict destructuring is the right form
 [match res
-    [ok: v]    v
-    [err: msg] [error msg]]
+    [ok: v]:    v
+    [err: msg]: [error msg]]
 ```
 
 ### Interaction with Row Polymorphism
@@ -271,20 +292,21 @@ cost, not appropriate for a configuration language).
 
 ## What Would Change
 
-### Grammar (`src/grammar.pest`)
+### Type Checker (`src/typecheck.rs`) — `[type ...]` Extension
 
-**Current:** Keywords `call`, `fn`, `type`, `match` are in the denylist.
-No `union` keyword or `[union ...]` parsing rule.
+**Current:** `[type TypeExpr]` accepts exactly one positional type expression.
+String literals (`Expr::Str`) in type-expression position are not handled.
 
-**Proposed:** Add `union` to the keyword denylist. Recognise `[union ...]` in
-type expression position (after `@`, in `[type ...]` forms) as a union type
-constructor. Each positional entry is a type expression: a record type `[...]`,
-a bare word (tag-only), or a named type reference. No separator between variants —
-whitespace-delimited positional entries, consistent with all other `[keyword ...]`
-special forms.
+**Proposed:**
+1. Extend `resolve_type_dict` (or the `[type ...]` handler in `infer_dict`): when
+   the `[type ...]` body contains multiple positional entries, resolve each as a
+   type expression and wrap in `Type::Union(vec![...])`.
+2. Add `Expr::Str(s) => Ok(Type::StringLiteral(s.clone()))` to `resolve_type_expr`
+   so string literals work as type expressions in type position.
 
-**Impact:** Minor. Grammar extension in type expression position. The denylist
-gains one entry (`union`). No changes to value expression parsing.
+**Impact:** Minor — two small additions to the type checker. No parser changes.
+No new keywords. No new AST variants. Backward compatible: single-entry
+`[type T]` is unchanged.
 
 ### AST (`src/ast.rs`)
 

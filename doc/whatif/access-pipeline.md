@@ -1,6 +1,6 @@
 # What If: Unified Access and Generator Pipeline for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-05
 
 What would it take to replace tinct's bracket-access syntax with a unified `|` pipeline operator and generator-native data transformation?
 
@@ -74,52 +74,83 @@ Bracket access (`$a["key"]`, `$a[0]`, `$a[$key]`) and range access (`$a[0..5]`) 
 
 ### Component 2: The `|` Pipe Operator
 
-`|` is tinct's new infix operator — a second infix alongside `.`, but one that *subsumes* bracket access and `->`:
+`|` is tinct's second infix operator alongside `.`. It is eliminated entirely in the desugar pass — `lhs | rhs` is rewritten to a function call before evaluation. No runtime dispatch occurs.
+
+**Desugar rules:**
 
 ```
-x | f
+lhs | [f args...]  →  [f args... lhs]   # append lhs as final positional argument
+lhs | name         →  [name lhs]         # bare word: apply name as function to lhs
+lhs | other        →  [other lhs]        # any other expression: call it with lhs
 ```
 
-**Semantics — type dispatch on LHS:**
-
-| LHS type | RHS type | Result |
-|----------|----------|--------|
-| `Value::Seq` | any Fn `a → b` | Seq: flatMap f over each element |
-| `Value::Seq` | any Fn `a → Seq b` | Seq: flatMap, flatten one level |
-| any `a` | Fn `a → b` | `b`: apply f to x |
-| any `a` | String | field lookup: `x.RHS` |
-| any `a` | Int | field lookup: `x[Key::Int(RHS)]` |
-
-The last two rows — String and Int dispatch — let `|` replace dynamic bracket access:
+`|` is left-associative, so chains desugar left-to-right:
 
 ```tinct
-$data | "name"       # same as $data.name — static string key
-$data | 0            # same as $data[0] — integer key
-$data | $key         # dynamic: $key evaluates to String or Int at runtime
+users | each | [map fn] | collect
+→ [collect [map fn [each users]]]
 ```
 
-The Seq-aware rows give generator power: when the LHS is a Seq, `|` flatMaps the RHS over each element. This is the jq model — single values are implicit 1-element generators, so the single-value case falls out naturally as a degenerate flatMap.
+**The N-1 rule.** Arity checking enforces the constraint automatically. `[map fn]` standalone is an arity error — `map` needs two arguments. `users | [map fn]` desugars to `[map fn users]` — a valid two-argument call. Only the RHS of `|` gets the extra argument added.
+
+`[f: [map fn]]` — storing `[map fn]` as a dict entry value — is an arity error because it is evaluated standalone, not in pipe context.
+
+**Partial application is deferred.** First-class partial values are a separate feature. For now, `[map fn]` is only valid as the RHS of `|`.
+
+**Dynamic field access: `get`.** `|` does not dispatch on String or Int RHS values — those are type errors. Dynamic key lookup uses the `get` stdlib function (curried, data-last):
+
+```tinct
+dict | [get "name"]      # static string key — point-free
+dict | [get $key]        # dynamic computed key
+dict | [get 0]           # integer index
+dict | [fn [u] u.name]   # or explicit lambda — programmer's choice
+```
+
+`get : Key → Record → Any` returns a function `Record → Any` when given one argument, composing naturally with `|`.
+
+**Call-head position and `$`.** A bare word is in *call-head position* only as the first token of a `[...]` bracket form. Everywhere else — including the RHS of `|` — bare words are variable references, and `$` is unnecessary:
+
+| Context | Bare word | `$`-prefixed |
+|---------|-----------|--------------|
+| First token of `[...]` | call-head (function to call) | VarRef (forced reference) |
+| Anywhere else | VarRef | VarRef (redundant `$`) |
+
+```tinct
+users | each | [map fn] | collect   # bare words after | are VarRefs — no $ needed
+[f [$x | g]]                         # $ needed: x in call-head position of inner [...]
+```
+
+**Precedence:** `.` > call > `|`. `|` terminates call argument accumulation inside `[...]`:
+
+```tinct
+[f x | g]       # = ([f x]) | g  ← common case: pipe binds looser than call args
+[f [$x | g]]    # = call f with (x piped through g) — explicit grouping
+a.b | c.d       # dot chains are atomic RHS: Pipe(DotAccess(a,b), DotAccess(c,d))
+```
 
 **Chaining is left-associative:**
 
 ```tinct
-$users | [each] | [where active?] | [fn [u] u.name] | [collect]
-# parses as: (((($users | [each]) | [where active?]) | [fn [u] u.name]) | [collect])
+users | each | [filter active?] | [map _.name] | collect
+# desugars to: [collect [map _.name [filter active? [each users]]]]
 ```
 
-**`|` inside dict entries** parses correctly without ambiguity. The iterative parser handles `|` as an infix operator within an expression; entry boundaries are detected by the `:` lookahead rule (unchanged):
+**`|` inside dict entries** parses correctly. The `:` lookahead for entry boundaries is unaffected:
 
 ```tinct
-[key: $a | f   other: x]     # key gets ($a | f), other gets x
+[key: a | f   other: x]     # key gets (a | f), other gets x
 ```
 
-**`$_` desugaring.** When `$_` appears as the LHS of `|`, it triggers lambda wrapping — same rule as the existing `$_.field` desugaring. `is_direct_underscore` is extended to cover `Expr::Pipe { lhs: VarRef("_"), .. }`:
+**`$_` desugaring.** `$_` on the LHS of `|` (or a DIRECT chain from `$_` as LHS) triggers lambda wrapping — the whole pipe becomes `[fn [_] $_ | f]`. `is_direct_underscore` is extended to cover `Pipe { lhs, .. }` by recursing into lhs. `$_` in RHS call arguments wraps that specific argument as in any other call; it does not wrap the whole pipe. Useful RHS patterns:
 
-```tinct
-[map $_ | "name" users]   # desugars: [map [fn [__0] __0 | "name"] users]
-```
+- Bare word: `... | each`, `... | collect`
+- Field shorthand: `... | _.name` (desugars to `[fn [__0] __0.name]`)
+- Explicit lambda: `... | [fn [u] u.name]`
+- Partial call: `... | [map _.name]`, `... | [get "name"]`
 
-**Relation to `->`.** The existing `->` threading function (`[-> data f1 f2 f3]`) remains in the stdlib for cases where the stage list is itself a runtime value. For inline pipelines, `|` is preferred. The stdlib and documentation migrate to `|` idiom over time.
+**No implicit Seq distribution.** `|` applies its RHS to the LHS value as a whole — there is no automatic element-wise distribution over Seqs. `users | [length]` gives the length of the Seq. Use `each` to iterate explicitly.
+
+**Relation to `->`.** `->` (stdlib threading) remains for cases where the stage list is a runtime value. The two differ for Seq values: `->` applies each stage to the whole Seq; `|` with `each` distributes per element.
 
 ### Component 3: Generator Primitives
 
@@ -127,14 +158,14 @@ These stdlib functions produce Seqs from Dicts (the "explode" operations) and ga
 
 | Function | Type | Description |
 |----------|------|-------------|
-| `[each dict]` | `Dict a → Seq a` | Values in insertion order |
-| `[each-key dict]` | `Dict a → Seq Key` | Keys in insertion order |
-| `[each-kv dict]` | `Dict a → Seq [key: Key value: a]` | Key-value pair dicts |
-| `[where pred seq]` | `Seq a → Seq a` | Keep elements matching predicate |
-| `[collect seq]` | `Seq a → Dict a` | Materialize to auto-indexed dict (`[0: v1 1: v2 ...]`) |
-| `[collect-kv seq]` | `Seq [key: Key value: a] → Dict a` | Reconstruct dict from `each-kv` pairs |
+| `each` | `Dict a → Seq a` | Values in insertion order; bare word in pipeline: `dict | each` |
+| `each-key` | `Dict a → Seq Key` | Keys in insertion order |
+| `each-kv` | `Dict a → Seq [key: Key value: a]` | Key-value pair dicts |
+| `collect` | `Seq a → Dict a` | Auto-indexed dict `[0: v1 1: v2 ...]`; bare word: `seq | collect` |
+| `collect-kv` | `Seq [key: Key value: a] → Dict a` | Reconstruct keyed dict from `each-kv` pairs |
+| `get` | `Key → Record → Any` | Field accessor, curried: `[get "name"]`, `[get $key]`, `[get 0]` |
 
-**Note on `empty`.** jq's `empty` (produce zero values for filtering) is intentionally excluded. In tinct, `[]` (empty dict) is the Seq terminator — there is no distinct "zero-value generator" value. Filtering is done with `[where pred]` instead, which is cleaner for the common case and avoids type ambiguity.
+**Note on `empty`.** jq's `empty` (produce zero values for filtering) is intentionally excluded. In tinct, `[]` (empty dict) is the Seq terminator — there is no distinct "zero-value generator" value. Filtering is done with `[filter pred]` instead, which is cleaner for the common case and avoids type ambiguity.
 
 **Range and slice.** `[range 0 5]` already exists in stdlib and returns a `Seq` of integers 0–4. `[slice data 2 5]` already exists in stdlib for positional Dict slicing. Both names are correct and require no changes. The removed `$a[0..2]` syntax is replaced by `$a | [range 0 2]` for numeric range generation or `[slice a 0 2]` for positional Dict slicing.
 
@@ -151,29 +182,30 @@ These are stdlib functions, not new syntax.
 
 ```tinct
 # Extract all active user names
-$users | [each] | [where [fn [u] u.active]] | [fn [u] u.name] | [collect]
+users | each | [filter [fn [u] u.active]] | [map _.name] | collect
 # → [0: "Alice" 1: "Carol"]
 
 # Numeric range pipeline
-[range 0 5] | [fn [n] [* n n]] | [collect]
+[range 0 5] | [map [fn [n] [* n n]]] | collect
 # → [0: 0 1: 1 2: 4 3: 9 4: 16]
 
 # Dynamic field access
-[fn [data key] data | $key]
+[fn [data key] data | [get key]]
 # Replaces: [fn [data key] data[$key]]
 
 # Integer index access
-$list | 0      # first element
-$list.0        # same, via extended dot
+list.0        # via extended dot
+list | [get 0]  # via get — equivalent for literal keys
 
-# Stored selector (first-class Fn)
-[sel: [fn [d] d | "users" | [each] | [fn [u] u.name]]
- result: [sel $data]]
+# Point-free field extraction in a pipeline
+users | each | [get "name"] | collect
+# or with explicit lambda:
+users | each | [fn [u] u.name] | collect
 ```
 
 ### `%` Pipeline
 
-Document-to-document `%` pipeline passes the whole output value. If a document produces a `Seq`, the next document receives the Seq as `%` and can iterate it with `% | [each] | ...`. No implicit generator expansion at the `%` boundary — the user opts in explicitly.
+Document-to-document `%` pipeline passes the whole output value. If a document produces a `Seq`, the next document receives the Seq as `%` and can iterate it with `% | each | ...`. No implicit generator expansion at the `%` boundary — the user opts in explicitly.
 
 ## What Would Change
 
@@ -197,76 +229,80 @@ Document-to-document `%` pipeline passes the whole output value. If a document p
 
 **Current:** `Expr::BracketAccess { expr, key }`, `Expr::RangeAccess { expr, start, end }`.
 
-**Proposed:** Remove both. Add `Expr::Pipe { lhs, rhs }`. Extend `DotAccess` field representation to distinguish `DotKey::Ident(String)` vs `DotKey::Int(i64)`, or keep `field: String` and resolve at eval time.
+**Proposed:** Remove both. Add `Expr::Pipe { lhs, rhs }`. Extend `DotAccess` field representation with a `DotKey` enum: `DotKey::Ident(String)` for string keys, `DotKey::Int(i64)` for integer keys.
 
 **Impact:** Moderate — all AST visitors, the formatter, type checker, and evaluator touch `BracketAccess`/`RangeAccess` and must be updated.
+
+### Desugar Pass (`src/desugar.rs`)
+
+**Current:** No pipe operator exists; the desugar pass handles `$_` lambda wrapping.
+
+**Proposed:** Add desugar rules for `Expr::Pipe { lhs, rhs }`:
+- `Pipe(lhs, Call(f, args))` → `Call(f, args ++ [lhs])`
+- `Pipe(lhs, VarRef(name))` → `Call(VarRef(name), [lhs])`
+- `Pipe(lhs, other)` → `Call(other, [lhs])`
+
+Extend `is_direct_underscore` to cover `Pipe { lhs, .. }` by recursing into lhs — so `$_ | f | g` correctly wraps the outermost pipe. `$_` in RHS call arguments wraps that argument as usual.
+
+`Expr::Pipe` nodes are fully eliminated before evaluation — the evaluator and type checker see only the desugared `Call` nodes.
+
+**Impact:** Minor addition to the desugar pass. No new continuations, no runtime dispatch.
 
 ### Evaluator (`src/eval_materialize.rs`, `src/eval_access.rs`)
 
 **Current:** `Cont::BracketForceTarget` continuation, `eval_range_access()`, `key_in_range()`.
 
-**Proposed:** Remove those. Add `Cont::PipeForce` that:
-1. Materializes the LHS
-2. If `Value::Seq`: constructs a lazy flatMap over tail, returns `Seq(head | rhs, tail | rhs)`
-3. If `Value::String(s)`: performs `DotAccess` with key `s`
-4. If `Value::Int(n)`: performs integer key lookup
-5. If `Value::Function`/`Value::Builtin`: applies to LHS
-6. Otherwise: type error
+**Proposed:** Remove those. Extend `DotAccessForce` to handle `Key::Int` lookup when the field is an integer literal (from `DotKey::Int(n)` in the AST).
 
-Extend `DotAccessForce` to handle `Key::Int` lookup (try `Key::Int(n)` when field parses as integer).
-
-**Impact:** Moderate for Pipe addition; minor for DotAccess integer extension; major removal of bracket/range paths.
+**Impact:** Removal of bracket/range paths; minor extension of DotAccess for integer keys. No new continuations needed — `Pipe` is desugared before eval.
 
 ### Type Checker (`src/typecheck.rs`)
 
 **Current:** `check_dot_access()`, `check_bracket_access()`, `check_range_access()`.
 
-**Proposed:** Remove `check_bracket_access()` and `check_range_access()`. Add `check_pipe()` with dual-dispatch:
-- LHS type `Seq a`, RHS type `a → b` → result `Seq b`
-- LHS type `Seq a`, RHS type `a → Seq b` → result `Seq b` (flatMap)
-- LHS type `a`, RHS type `a → b` → result `b`
-- LHS is String/Int literal → treat as field access (same as `check_dot_access`)
+**Proposed:** Remove `check_bracket_access()` and `check_range_access()`. No `check_pipe()` is needed — `Expr::Pipe` is eliminated in the desugar pass before type checking. The type checker sees only `Call` nodes, which are handled by the existing `check_call()`. Extend `check_dot_access()` to handle integer-key dot access (`DotKey::Int(n)`).
 
-**Impact:** Moderate. Dual-dispatch typing already exists for `map`/`filter` — `check_pipe` follows that pattern.
+**Impact:** Minor — removal of two check functions, minor extension of dot access checking.
 
 ### Standard Library (`stdlib/prelude.llt`)
 
-**Current:** `->` threading function. No `each`, `each-key`, `each-kv`, `where`, `collect-kv`.
+**Current:** `->` threading function. No `each`, `each-key`, `each-kv`, `collect-kv`, or `builtin-get`.
 
-**Proposed:** Add `each`, `each-key`, `each-kv`, `where`, `collect-kv` as builtins (Rust-native, since they operate on `Value::Seq` internals). Migrate `->` documentation to note `|` as the preferred idiom. Phase 3 adds `select` and `path`.
+**Proposed:** Add `each`, `each-key`, `each-kv` as Rust builtins — required because `Value::Seq` construction is not expressible in tinct. Add `builtin-get : Key → Dict → Any` as a thin Rust primitive. Redefine `get` in prelude.llt to wrap it: `get: [fn [k xs] [builtin-get k xs]]` — `get` stays tinct-native following the same pattern as `fold: [fn [f init xs] [builtin-reduce f init xs]]`. Add `collect-kv` as a tinct stdlib function using `reduce` + `merge`. `->` documentation notes `|` as the preferred idiom for inline pipelines. Phase 3 adds `select` and `path`. `where` is omitted — use existing `filter` instead.
 
-**Impact:** Minor additions to builtins.rs; no removal of existing stdlib functions.
+**Impact:** Three Rust builtins (`each`, `each-key`, `each-kv`) and one Rust primitive (`builtin-get`); `get` and `collect-kv` stay in prelude.llt.
 
 ### CLI (`src/main.rs`)
 
 **Current:** Top-level value is always a single Dict or scalar; emits one JSON object.
 
-**Proposed:** If the top-level materialized value is `Value::Seq`, emit one JSON line per element (newline-delimited JSON, NDJSON). This matches jq's default output for generators. Single-value programs are unaffected.
+**Proposed:** If the top-level value is `Value::Seq` and `emitted = true` (from the `emit` builtin, `doc/whatif/templating.md`), force each element of the Seq to completion — this drives any `emit` calls inside the generator, discarding the element values. If the top-level is a Seq and `emitted = false`, return an error: "top-level Seq — use `| collect` for JSON array output or `emit` for text output". Single-value and Dict programs are unaffected.
 
 **Impact:** Minor. Add Seq branch in the eval/output path.
 
 ## Phased Adoption
 
-### Phase 1: Dot Extension + `|` Reverse-Apply
+### Phase 1: Dot Extension + `|` Desugar
 
-Extend dot access to integer keys. Add `|` as an infix operator with type dispatch (String/Int → field access, Fn → apply) but *without* Seq-aware flatMap semantics yet. Add `[where pred]` to stdlib.
+Extend dot access to integer keys (`DotKey` enum). Add `|` as a desugar-pass infix operator. Add `get` builtin. Add `each`, `each-key`, `each-kv`, `collect-kv` builtins.
 
 What this enables:
-- `$list.0` for integer index access (replaces `$list[0]` for the common literal case)
-- `$data | $key` for dynamic computed field access (replaces `$data[$key]`)
-- Readable left-to-right pipelines: `$data | "users" | [each] | [collect]`
-- `[where pred seq]` for inline filtering without `filter` + prefix nesting
+- `list.0` for integer index access (replaces `list[0]` for literal keys)
+- `dict | [get $key]` for dynamic computed field access (replaces `dict[$key]`)
+- `dict | [get "name"]` as point-free field accessor (or explicit `[fn [u] u.name]`)
+- Left-to-right pipelines: `users | each | [filter active?] | [map _.name] | collect`
 
 This phase is additive — bracket access still works. Migration can happen gradually.
 
-### Phase 2: Remove Brackets + Generator Dispatch
+### Phase 2: Remove Brackets
 
-Remove `BracketAccess`, `RangeAccess`, and `..` from lexer/parser/AST/eval/typecheck. Add Seq-aware flatMap dispatch to `|`. Add `each`, `each-key`, `each-kv`, `collect-kv` builtins. Add NDJSON multi-output to CLI.
+Remove `BracketAccess`, `RangeAccess`, and `..` from lexer/parser/AST/desugar/typecheck/eval. Remove `Token::BracketAccess` and `Token::Range`. Remove the whitespace-sensitive `[` detection. Add `|` to lexer denylists. Add Seq-at-top-level error to CLI.
 
 What this enables:
-- Full generator pipeline: `$users | [each] | [where active?] | [fn [u] u.name] | [collect]`
+- Full generator pipeline: `users | each | [filter active?] | [map _.name] | collect`
 - Grammar simplification: whitespace-sensitive `[` detection removed entirely
-- Any existing `$a[key]` usage must migrate to `$a | $key` or `$a.key`
+- Streaming text output: `users | each | [fn [u] [emit [str u.name "\n"]]]`
+- Any existing `dict[$key]` usage must migrate to `dict | [get $key]` or `dict.field`
 
 This phase is **breaking** for bracket and range access. All corpus tests and examples need updating.
 
@@ -293,7 +329,6 @@ What this enables:
 
 ## References
 
-- jq manual (Tainaka et al., ongoing). "jq manual." *jq project.* — generator model, pipe flatMap semantics, `select`/`empty` primitives
-- Bird, R. and Wadler, P. (1988). *Introduction to Functional Programming.* Prentice Hall. — flatMap as monadic bind for lists; relationship between single-value and list cases
-- Meijer, E., Fokkinga, M., and Paterson, R. (1991). "Functional programming with bananas, lenses, envelopes and barbed wire." *FPCA '91.* — lens/access algebra foundations
-- Nix manual (NixOS contributors). "Nix expression language." *nixos.org.* — `lib.pipe` (threading), integer attribute access (`list.0`)
+- jq manual (Tainaka et al., ongoing). "jq manual." *jq project.* — precedent for `select`/`path` projection primitives and `.[]` as an explicit explode step (tinct's `each`). Note: jq's implicit generator semantics (auto-flatMap via `|`) were considered and rejected; tinct's `|` is desugar-only with no Seq distribution.
+- Meijer, E., Fokkinga, M., and Paterson, R. (1991). "Functional programming with bananas, lenses, envelopes and barbed wire." *FPCA '91.* — lens/access algebra foundations; structural motivation for composable field accessors.
+- Nix manual (NixOS contributors). "Nix expression language." *nixos.org.* — `lib.pipe` (threading function, analogous to `->` and `|`), integer attribute access (`list.0` — adopted for tinct's `DotKey::Int`).

@@ -519,7 +519,13 @@ fn setup_seccomp() -> Result<(), String> {
 /// Requires either `CAP_SYS_ADMIN` or `PR_SET_NO_NEW_PRIVS` (the latter is set
 /// automatically by the landlock crate). Gracefully degrades on kernels < 5.13.
 #[cfg(target_os = "linux")]
-fn setup_landlock(allowed_paths: &[PathBuf]) -> Result<(), String> {
+/// Set up Landlock filesystem sandbox.
+///
+/// `allowed_paths` — directories accessible for `$include` (and `--allow-path`).
+/// `extra_readable` — additional directories that must be readable for the process to
+///   function (e.g., the directories containing the main input files). These are NOT
+///   added to the LLT-level allowlist; they only let the OS read the primary files.
+fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Result<(), String> {
     use landlock::{AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI};
 
     // V3 corresponds to Linux 5.19+. The crate gracefully degrades to a lower ABI
@@ -533,9 +539,13 @@ fn setup_landlock(allowed_paths: &[PathBuf]) -> Result<(), String> {
         .create()
         .map_err(|e| format!("landlock: failed to create ruleset: {e}"))?;
 
-    // Add one PathBeneath rule for each allowed path.
+    // Add one PathBeneath rule for each allowed path (from --allow-path).
     // PathBeneath grants read access to the path and everything underneath it.
-    for path in allowed_paths {
+    for path in allowed_paths.iter().chain(extra_readable.iter()) {
+        // Skip paths that don't exist (e.g., non-existent extra_readable dirs).
+        if !path.exists() {
+            continue;
+        }
         let fd = PathFd::new(path).map_err(|e| {
             format!(
                 "landlock: cannot open allowed path \"{}\": {e}",
@@ -641,8 +651,10 @@ fn run_eval(
         let _ = max_fds;
     }
 
-    // Check for piped stdin JSON (only when first file is not stdin itself)
-    let stdin_input = if file_paths[0] != "-" {
+    // Check for piped stdin JSON (only when first file is not stdin itself).
+    // Returns raw serde_json::Value; conversion to LLT happens after the first
+    // EvalContext is created so ThunkIds are allocated in the shared arena.
+    let stdin_json = if file_paths[0] != "-" {
         read_stdin_json()?
     } else {
         None
@@ -669,9 +681,27 @@ fn run_eval(
     // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
     // Must be called after path canonicalization so the allowed paths are stable.
     // Only activated when --allow-path is given and --no-landlock is not set.
+    //
+    // Also grant read access to the directories containing the main input files so
+    // they can be read before evaluation starts. These extra-readable dirs are NOT
+    // added to the LLT-level allowlist (canonical_allowed_paths) — the allowlist only
+    // restricts $include resolution, not the primary files.
     #[cfg(target_os = "linux")]
     if !no_landlock && !canonical_allowed_paths.is_empty() {
-        setup_landlock(&canonical_allowed_paths)?;
+        // Collect the canonical parent directories of each input file.
+        let extra_readable: Vec<PathBuf> = file_paths
+            .iter()
+            .filter(|p| p.as_str() != "-")
+            .filter_map(|p| {
+                let path = std::path::Path::new(p.as_str());
+                let dir = match path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    Some(d) => d.to_path_buf(),
+                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                };
+                dir.canonicalize().ok()
+            })
+            .collect();
+        setup_landlock(&canonical_allowed_paths, &extra_readable)?;
     }
     // On non-Linux platforms, --no-landlock is accepted for CLI compatibility
     // but has no effect (Landlock is a Linux-only API).
@@ -849,11 +879,19 @@ fn run_eval(
         None // unrestricted
     };
 
-    // Multi-file pipeline: process each file in sequence, passing output as input to the next
-    let mut pipeline_input = stdin_input;
+    // Multi-file pipeline: process each file in sequence, passing output as input to the next.
+    //
+    // ARENA SHARING INVARIANT: All files in the pipeline must share the same ThunkArena so
+    // that ThunkIds allocated by earlier files remain valid when later files reference them
+    // via the `%` pipeline variable. We establish one base EvalContext for the first file,
+    // then use `with_base_dir_and_path` for subsequent files — this creates a new config
+    // (different base_dir) while sharing the same arena, state, and stdlib_env.
+    let mut pipeline_input: Option<Rc<Thunk>> = None;
 
     let mut thunk = None;
     let mut last_source = String::new();
+    let mut last_eval_ctx: Option<Rc<EvalContext>> = None;
+    let mut base_eval_ctx: Option<Rc<EvalContext>> = None;
 
     for file_path in file_paths {
         // Read the LLT source
@@ -874,7 +912,7 @@ fn run_eval(
         let _ = tinct::typecheck::typecheck_file(&ast.node);
 
         // Determine base directory for $include resolution
-        let base_dir_path = if file_path == "-" {
+        let file_base_dir_path = if file_path == "-" {
             std::env::current_dir()
                 .map_err(|e| format!("cannot determine working directory: {e}"))?
         } else {
@@ -892,19 +930,34 @@ fn run_eval(
 
         // Open base_dir as a cap-std Dir
         let base_dir =
-            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+            cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory: {e}"))?;
 
-        // Create evaluation context (includes base_dir, stdlib_env, include_guard, include_cache)
-        // Note: Each file gets its own context so base_dir is correct for $include resolution
-        let eval_ctx = EvalContext::new_with_all_options(
-            base_dir,
-            Rc::clone(&env),
-            no_fs,
-            require_integrity,
-            canonical_allowed_paths.clone(),
-            env_allowed.clone(),
-        );
+        // Create or derive the evaluation context.
+        // First file: create the base context (owns the ThunkArena).
+        // Subsequent files: derive from the base context via with_base_dir_and_path so all
+        // files share the same arena — ThunkIds from earlier files remain valid in later ones.
+        let eval_ctx = if let Some(ref base) = base_eval_ctx {
+            base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()))
+        } else {
+            let ctx = EvalContext::new_with_full_options(
+                base_dir,
+                Some(file_base_dir_path.clone()),
+                Rc::clone(&env),
+                no_fs,
+                require_integrity,
+                canonical_allowed_paths.clone(),
+                env_allowed.clone(),
+            );
+            // Convert stdin JSON using this context so ThunkIds go into the shared arena.
+            if let Some(ref json) = stdin_json {
+                let thunk_val =
+                    json_to_value(json, 0, Span::origin(), &ctx).map_err(|e| format!("{e}"))?;
+                pipeline_input = Some(thunk_val);
+            }
+            base_eval_ctx = Some(Rc::clone(&ctx));
+            ctx
+        };
 
         // Evaluate file with pipeline input
         let file_result =
@@ -918,41 +971,22 @@ fn run_eval(
                     error_str
                 })?;
 
-        // Pass the result as lazy thunk to next file (matching --- boundary semantics)
+        // Pass the result as lazy thunk to next file (matching --- boundary semantics).
+        // Because all files share the same ThunkArena, the ThunkIds in file_result are
+        // valid in the next file's eval context.
         pipeline_input = Some(file_result.clone());
 
-        // Keep track of the last file's result and source for final output
+        // Keep track of the last file's result, source, and context for final output.
+        // IMPORTANT: The ThunkIds in the result's Value::Dict map are indices into the
+        // shared ThunkArena. We MUST use an eval_ctx backed by the same arena for
+        // value_to_json; since all file contexts share the arena, any of them works.
         thunk = Some(file_result);
         last_source = source;
+        last_eval_ctx = Some(eval_ctx);
     }
 
     let thunk = thunk.ok_or_else(|| "internal error: no files processed".to_string())?;
-
-    // Use the last eval context for final output (we need to get it again since it was created in the loop)
-    // For simplicity, recreate it here
-    let file_path = &file_paths[file_paths.len() - 1];
-    let base_dir_path = if file_path == "-" {
-        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
-    } else {
-        let p = std::path::Path::new(file_path);
-        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
-            Some(dir) => dir
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve directory for \"{file_path}\": {e}"))?,
-            None => std::env::current_dir()
-                .map_err(|e| format!("cannot determine working directory: {e}"))?,
-        }
-    };
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let eval_ctx = EvalContext::new_with_all_options(
-        base_dir,
-        Rc::clone(&env),
-        no_fs,
-        require_integrity,
-        canonical_allowed_paths,
-        env_allowed,
-    );
+    let eval_ctx = last_eval_ctx.ok_or_else(|| "internal error: no eval context".to_string())?;
 
     // Materialize the final result
     let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| {
@@ -1134,7 +1168,10 @@ fn read_source(file_path: &str) -> Result<String, String> {
 
 /// If stdin is not a terminal (i.e., data is piped), read it as JSON and convert
 /// to an LLT Value for injection as `%` in the first document.
-fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
+/// Read and parse stdin JSON. Returns the raw JSON value (not yet converted to LLT).
+/// The caller must convert it using `json_to_value` with the evaluation context so
+/// ThunkIds are allocated in the correct arena.
+fn read_stdin_json() -> Result<Option<serde_json::Value>, String> {
     if io::stdin().is_terminal() {
         return Ok(None);
     }
@@ -1159,14 +1196,7 @@ fn read_stdin_json() -> Result<Option<Rc<Thunk>>, String> {
     let json: serde_json::Value =
         serde_json::from_str(&buf).map_err(|e| format!("error parsing stdin JSON: {e}"))?;
 
-    // Create a minimal evaluation context for JSON conversion
-    // (json_to_value needs ctx to allocate thunks in the arena)
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| format!("error opening base directory: {e}"))?;
-    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
-    let ctx = EvalContext::new(base_dir, env, true); // no_fs=true since we're just converting JSON
-    let val = json_to_value(&json, 0, Span::origin(), &ctx).map_err(|e| format!("{e}"))?;
-    Ok(Some(val))
+    Ok(Some(json))
 }
 
 /// Process a Markdown file in literate mode.
@@ -1312,6 +1342,16 @@ fn run_literate_weave(
 
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
 
+    // Create one base EvalContext that owns the shared ThunkArena.
+    // All blocks derive from this context via with_base_dir_and_path so that
+    // ThunkIds allocated by block N remain valid when block N+1 references them
+    // via the % pipeline variable. This matches the arena-sharing pattern used by
+    // the multi-file pipeline in run_eval.
+    let base_dir_initial =
+        cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open base directory: {e}"))?;
+    let base_eval_ctx = EvalContext::new(base_dir_initial, Rc::clone(&env), false);
+
     // Evaluate each block in turn, passing the previous result as pipeline input.
     // Collect (block_index -> JSON result) for annotation.
     let mut pipeline_input: Option<Rc<Thunk>> = None;
@@ -1324,11 +1364,12 @@ fn run_literate_weave(
         tinct::resolve::resolve_file(&ast.node);
         let _ = tinct::typecheck::typecheck_file(&ast.node);
 
+        // Derive per-block context from the base context (shares the ThunkArena).
         let base_dir =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory: {e}"))?;
 
-        let eval_ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
+        let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
 
         let thunk = eval_file_with_input(
             &ast.node,

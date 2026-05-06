@@ -213,7 +213,10 @@ impl<'a> Formatter<'a> {
             Expr::DotAccess { expr, field } => {
                 self.format_expr(expr, false);
                 self.output.push('.');
-                self.output.push_str(field);
+                match field {
+                    crate::ast::DotKey::Ident(s) => self.output.push_str(s),
+                    crate::ast::DotKey::Int(n) => self.output.push_str(&n.to_string()),
+                }
             }
             Expr::BracketAccess { expr, key } => {
                 self.format_expr(expr, false);
@@ -232,6 +235,11 @@ impl<'a> Formatter<'a> {
                     self.format_expr(e, true);
                 }
                 self.output.push(']');
+            }
+            Expr::Pipe { lhs, rhs } => {
+                self.format_expr(lhs, false);
+                self.output.push_str(" | ");
+                self.format_expr(rhs, false);
             }
             Expr::Dict(entries) => self.format_dict(entries),
             Expr::Call {
@@ -390,7 +398,13 @@ impl<'a> Formatter<'a> {
                     .map_or(false, |&b| b == b'$');
                 name.len() + if is_escaped { 1 } else { 0 }
             }
-            Expr::DotAccess { expr, field } => self.measure_expr_width(expr) + 1 + field.len(),
+            Expr::DotAccess { expr, field } => {
+                let field_len = match field {
+                    crate::ast::DotKey::Ident(s) => s.len(),
+                    crate::ast::DotKey::Int(n) => n.to_string().len(),
+                };
+                self.measure_expr_width(expr) + 1 + field_len
+            }
             Expr::BracketAccess { expr, key } => {
                 self.measure_expr_width(expr) + 1 + self.measure_expr_width(key) + 1
             }
@@ -403,6 +417,9 @@ impl<'a> Formatter<'a> {
                     w += self.measure_expr_width(e);
                 }
                 w
+            }
+            Expr::Pipe { lhs, rhs } => {
+                self.measure_expr_width(lhs) + 3 + self.measure_expr_width(rhs) // lhs | rhs
             }
             Expr::Dict(entries) => self.measure_dict_width(entries),
             Expr::Call {

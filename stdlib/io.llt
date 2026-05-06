@@ -1,30 +1,31 @@
 # I/O utilities — depends on io-phase1 builtins
 # Requires: open, slurp, lines, emit, str (all Rust builtins)
-
+[
 # Read an entire file as a string.
 # cap: DirCap, path: String
-read-file: [fn [cap path]
+read-file: [fn@String [cap@DirCap path@String]
   [slurp [open cap path "r"]]]
 
 # Read a file as a lazy sequence of lines.
 # cap: DirCap, path: String
-read-lines: [fn [cap path]
+read-lines: [fn@Any [cap@DirCap path@String]
   [lines [open cap path "r"]]]
 
 # Print a string followed by a newline to stdout.
-println: [fn [s]
+println: [fn@Any [s@String]
   [emit [str s "\n"]]]
 
 # Print any value as a string followed by a newline to stdout.
-println-val: [fn [v]
+println-val: [fn@Any [v@Any]
   [emit [str v "\n"]]]
 
 # Write a string to a file (creates or truncates).
 # cap: DirCap, path: String, content: String
-write-file: [fn [cap path content]
+write-file: [fn@Any [cap@DirCap path@String content@String]
   [write cap path content]]
 
 # Atomically write a string to a file (write-to-temp + rename).
 # cap: DirCap, path: String, content: String
-write-file-atomic: [fn [cap path content]
+write-file-atomic: [fn@Any [cap@DirCap path@String content@String]
   [write-atomic cap path content]]
+]

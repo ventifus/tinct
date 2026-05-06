@@ -865,30 +865,28 @@ mod tests {
 
     #[test]
     fn test_seq_type_name() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )),
-            tail: Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
+            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                test_span(1, 1, 1, 1),
-            )),
+                span,
+            ))),
         };
         assert_eq!(seq.type_name(), "Seq");
     }
 
     #[test]
     fn test_seq_debug() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(
-                Value::Int(1),
-                test_span(1, 1, 1, 1),
-            )),
-            tail: Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                test_span(1, 1, 1, 1),
-            )),
+                span,
+            ))),
         };
         let debug_str = format!("{:?}", seq);
         assert_eq!(debug_str, "Seq(...)");
@@ -896,15 +894,14 @@ mod tests {
 
     #[test]
     fn test_seq_display() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(
-                Value::Int(1),
-                test_span(1, 1, 1, 1),
-            )),
-            tail: Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                test_span(1, 1, 1, 1),
-            )),
+                span,
+            ))),
         };
         let display_str = format!("{}", seq);
         assert_eq!(display_str, "Seq(...)");
@@ -912,15 +909,14 @@ mod tests {
 
     #[test]
     fn test_seq_not_equal_to_itself() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )),
-            tail: Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
+            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                test_span(1, 1, 1, 1),
-            )),
+                span,
+            ))),
         };
         assert_ne!(seq.clone(), seq);
     }
@@ -1062,15 +1058,16 @@ mod tests {
 
     #[test]
     fn test_value_display_dict_with_entries() {
-        let mut map = IndexMap::new();
+        let ctx = test_ctx();
+        let mut map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         map.insert(
             Key::Int(0),
-            Rc::new(Thunk::new_materialized(Value::Int(2), span)),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let dict = Value::Dict(map);
         assert_eq!(format!("{dict}"), "[x: <thunk> 0: <thunk>]");
@@ -1139,15 +1136,16 @@ mod tests {
 
     #[test]
     fn test_value_debug_dict() {
-        let mut map = IndexMap::new();
+        let ctx = test_ctx();
+        let mut map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         map.insert(
             Key::Int(0),
-            Rc::new(Thunk::new_materialized(Value::Int(2), span)),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let dict = Value::Dict(map);
         let debug_str = format!("{dict:?}");
@@ -1390,22 +1388,20 @@ mod tests {
 
     #[test]
     fn test_proxy_type_name() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let proxy = Value::Proxy {
-            handler: Rc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )),
+            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         assert_eq!(proxy.type_name(), "Proxy");
     }
 
     #[test]
     fn test_proxy_debug() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let proxy = Value::Proxy {
-            handler: Rc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )),
+            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         let debug_str = format!("{:?}", proxy);
         assert_eq!(debug_str, "Proxy");
@@ -1413,11 +1409,10 @@ mod tests {
 
     #[test]
     fn test_proxy_display() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let proxy = Value::Proxy {
-            handler: Rc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )),
+            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         let display_str = format!("{}", proxy);
         assert_eq!(display_str, "<proxy>");
@@ -1425,11 +1420,10 @@ mod tests {
 
     #[test]
     fn test_value_partial_eq_proxy_always_false() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 1);
         let p = Value::Proxy {
-            handler: Rc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )),
+            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         assert_ne!(p.clone(), p);
     }

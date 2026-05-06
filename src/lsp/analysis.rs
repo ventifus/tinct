@@ -193,6 +193,9 @@ fn hover_at_expr(
 
         Expr::Rest(name) => Some(format!("Rest marker: {}", name.as_deref().unwrap_or("..."))),
 
+        Expr::Pipe { lhs, rhs } => hover_at_expr(&lhs.node, lhs.span, offset, type_map, source)
+            .or_else(|| hover_at_expr(&rhs.node, rhs.span, offset, type_map, source)),
+
         Expr::Error(span) => Some(format!(
             "Parse error at {}:{}",
             span.start.line, span.start.column

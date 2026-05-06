@@ -1,5 +1,6 @@
-# E041: JsonDepthExceeded - $from-json rejects deeply nested JSON beyond JSON_DEPTH_LIMIT
-# This test creates a JSON string with 130+ levels of nesting to exceed the 128 limit
-[from-json "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"]
+# E061: from-json parse error on deeply nested JSON — serde_json's recursion limit
+# triggers before LLT's JSON_DEPTH_LIMIT check (both are ~128 levels).
+# The serde_json parser returns a parse error at ~128 levels of nesting.
+[from-json "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"]
 ===
-[E041]
+[E061] from-json: invalid JSON

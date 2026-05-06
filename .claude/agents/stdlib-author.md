@@ -43,11 +43,11 @@ Read `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key 
 **I/O**: `$from-json`, `$include`
 **Sequences**: `$seq`, `$head`, `$tail`, `$collect`, `$seq?`, `$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`, `$take`, `$drop`, `$map`, `$filter`, `$reduce`, `$join`, `$concat`
 
-Note: `$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`, `$concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). Total: 51 Rust-native builtins (not 45 — count was updated when rest, cons, reverse, and sort migrated from LLT to Rust).
+Note: `$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`, `$concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). For the authoritative Rust builtin count, consult `src/builtins.rs:standard_builtins()`.
 
 ## Stdlib Function Categories
 
-The prelude currently provides ~51 LLT-implemented functions:
+The prelude provides LLT-implemented functions (count grows with each sprint; consult `stdlib/prelude.llt` directly for the current list):
 - **Logic**: `not`, `and`, `or`, `any?`, `all?`
 - **Comparison**: `>`, `<=`, `>=` (derived from `<` and `not`)
 - **Arithmetic**: `quot`, `mod`
@@ -201,11 +201,11 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - **`until` hits depth limit at ~230 iterations** — recursive LLT function; use `$iterate`+`$take`+`$collect` for larger convergence loops.
 - **`has?` materializes the value** — `[call $try [fn [] $xs[$k]]]` forces `$xs[$k]` to check existence; expensive for large nested values. A future `$has?` Rust primitive would check `contains_key()` without forcing.
 - **`->` threading requires explicit lambdas** — `[call $filter $pred $_]` or `[fn [d] [call $filter $pred $d]]` syntax is needed; partial application idiom `[call $filter $pred]` does NOT work (exact arity enforced).
-- **Test file extension is `.llt-eval`** — not `.txt`; all stdlib tests in `tests/corpus/eval/stdlib/` use this extension.
+- **Test file extension**: eval tests use `.llt-eval` (in `tests/corpus/eval/`); parser tests use `.txt` (in `tests/corpus/valid/` and `tests/corpus/invalid/`). Stdlib tests are under `tests/corpus/eval/stdlib/` and use `.llt-eval`.
 - **`$deep-eq` does NOT exist** — doc/11-stdlib.md:106 falsely claims it does. Use `$=` (shallow) or implement deep comparison manually.
 - **`sort`/`sort-by` crash on Seq input** — missing Seq guard (tracked TODO.md:576). Always collect Seqs before sorting.
 - **`zip-seq`/`zip-dict` are internal** — don't call them directly; use `zip`. They should be renamed to `zip-seq-impl`/`zip-dict-impl` but haven't been yet (TODO.md:562).
-- **Corpus test count**: ~136 tests for ~102 total functions (51 Rust + 51 LLT) as of 2026-05-02.
+- **Corpus test count**: consult `tests/corpus/eval/stdlib/` directly — counts grow with each sprint and hardcoded numbers go stale quickly.
 
 ## Mempalace
 

@@ -1,7 +1,8 @@
-# What If: Width-Specific Numeric Types for tinct
+# What If: Constrained Numeric Types for tinct
 
-What would it take to add range-constrained numeric types with
-automatic internal representation sizing to tinct?
+What would it take to add predicate-constrained numeric types —
+validated ranges, exact decimal arithmetic, and arbitrary-precision
+integers — to tinct?
 
 ## Current State
 
@@ -19,12 +20,12 @@ Cross-type comparison allowed with precision loss warning for integers
 
 ### What's Missing
 
-1. **No range constraints.** No way to express "integer between 0 and
-   255" or "port number 1-65535" as a type.
+1. **No value constraints.** No way to express "integer between 0 and
+   255" or "port number 1-65535" as a type. `Int` accepts any i64.
 
-2. **No representation optimization.** All integers use 64 bits
-   regardless of value range. A port number (0-65535) uses the same
-   storage as a nanosecond timestamp.
+2. **No named width types.** No `Int8`, `UInt16`, `Int32`, etc. for use
+   cases that require specific widths (binary protocols, FFI, serialization).
+   All integers are `i64` with no way to declare a narrower intent.
 
 3. **No arbitrary precision.** No `BigInt` for integers exceeding i64
    range (±9.2 × 10^18).
@@ -32,76 +33,102 @@ Cross-type comparison allowed with precision loss warning for integers
 4. **No decimal.** No `Decimal` type for exact decimal arithmetic
    (financial calculations, currency).
 
-## What Range-Constrained Numerics Would Provide
+## What Constrained Numerics Would Provide
 
-1. **Declarative constraints.** Users express what they mean:
-   `@[min: 0  max: 65535]` says "this is a port number." The runtime
-   validates and optimizes.
+1. **General value constraints via `is:`.** The `is:` annotation key
+   accepts any `Fn@Bool [Any]` predicate — ranges, divisibility, sign
+   checks, or domain-specific invariants:
+   ```tinct
+   port@[type: Int  is: [between 0 65535]]
+   score@[type: Float  is: [between 0.0 100.0]]
+   even@[type: Int  is: [= 0 [mod _ 2]]]
+   ```
 
-2. **Automatic representation.** The runtime chooses the smallest
-   internal representation that covers the declared range:
-   - `@[min: 0  max: 255]` → `u8` internally
-   - `@[min: -32768  max: 32767]` → `i16` internally
-   - `@[min: 0  max: 65535]` → `u16` internally
-   - No range constraint → `i64` (current default)
-   - Range exceeding i64 → `BigInt` automatically
+2. **Named width types.** `Int8`, `UInt8`, `Int16`, `UInt16`, `Int32`,
+   `UInt32`, `Int64`, `UInt64` as stdlib type aliases — each is `Int`
+   constrained by an appropriate `is:` predicate. Storage is still
+   `i64` internally; the alias documents intent and validates range.
 
 3. **Decimal arithmetic.** Exact base-10 arithmetic for financial
    data, prices, and measurements where IEEE 754 precision loss is
    unacceptable.
 
-4. **Documentation.** Range annotations serve as documentation — a
-   function parameter annotated `@[min: 1  max: 100]` tells the reader
-   exactly what values are valid.
+4. **BigInt.** Arbitrary-precision integers for values exceeding i64
+   range — cryptographic keys, factorials, combinatorics.
 
 ## Design
 
 Keep the user-facing type system simple — `Int`, `Float`, `Number` —
-but add range annotations via the `@` system that both validate and
-drive internal representation. Users declare intent; the runtime
-optimizes.
+and express all constraints via the `is:` annotation key (see
+`doc/05-type-annotations.md`). The runtime validates `is:` predicates
+at TypeAssert boundaries. Storage is always `i64`/`f64` unless `BigInt`
+or `Decimal` is explicitly used.
 
 ### Syntax
 
-Range constraints use the existing `@` annotation system, connecting
-to structural contracts (`doc/whatif/structural-contracts.md`):
+Constraints use `is:` with predicate functions. The `between` stdlib
+function returns a 1-arg predicate — the idiomatic way to express
+numeric ranges:
 
 ```tinct
-Port:       [type Int@[min: 0  max: 65535]]
-Byte:       [type Int@[min: 0  max: 255]]
-Percentage: [type Float@[min: 0.0  max: 100.0]]
-BigCounter: [type Int@[min: 0]]   # no upper bound -> BigInt
-Price:      [type Decimal@[precision: 2]]
+# Constraint via is: predicate
+Port:       [type Int@[is: [between 0 65535]]]
+Percentage: [type Float@[is: [between 0.0 100.0]]]
+Positive:   [type Int@[is: [> _ 0]]]
+Even:       [type Int@[is: [= 0 [mod _ 2]]]]
+Price:      [type Decimal@[is: [>= _ 0.0]]]
+
+# Named width types from stdlib (type aliases with is: predicates)
+UInt8:  [type Int@[is: [between 0 255]]]
+Int8:   [type Int@[is: [between -128 127]]]
+UInt16: [type Int@[is: [between 0 65535]]]
+Int16:  [type Int@[is: [between -32768 32767]]]
+UInt32: [type Int@[is: [between 0 4294967295]]]
+Int32:  [type Int@[is: [between -2147483648 2147483647]]]
+UInt64: [type Int@[is: [>= _ 0]]]
+Int64:  [type Int]   # alias for Int — documents explicit 64-bit intent
 ```
 
-No new type constructors are needed. `Int`, `Float`, and `Number`
-remain the user-facing types. Range annotations refine them.
+`between` is defined in stdlib as a predicate factory:
+
+```tinct
+between: [fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
+```
 
 ### Semantics
 
-**Range validation.** At TypeAssert boundaries (`@` annotations),
-the runtime checks that a value falls within the declared range.
-Out-of-range values produce a type error:
+**Constraint validation.** At TypeAssert boundaries, the runtime calls
+the `is:` predicate with the value. `false` produces a type error:
 
 ```tinct
-port: [@Port 70000]  # Error: 70000 exceeds max 65535 for Port
+port: [@Port 70000]  # Error: 70000 fails is: predicate for Port
 ```
 
-**Arithmetic semantics.** Range annotations do not change arithmetic
-behavior. `[+ port 1]` works regardless of internal representation.
-The result of arithmetic on range-constrained values is an
-unconstrained `Int` (or `Float`) — the range applies to the
+**Arithmetic semantics.** Constraints do not change arithmetic
+behavior. The result of arithmetic on constrained values is an
+unconstrained `Int` or `Float` — the constraint applies to the
 annotated binding, not to derived values:
 
 ```tinct
-Port: [type Int@[min: 0  max: 65535]]
+Port: [type Int@[is: [between 0 65535]]]
 port: [@Port 8080]
-next: [+ port 1]  # next is Int, not Port — no range constraint
+next: [+ port 1]  # next is Int, not Port — no constraint propagation
 ```
 
-This avoids the complexity of range arithmetic (computing the output
-range of `Port + Port` as `0..131070`). Range inference is an
-optimization for a future phase, not a semantic requirement.
+Constraint propagation through arithmetic would require refinement
+type inference (a separate future concern). Runtime validation at
+boundaries is the right default for a config language.
+
+**Explicit storage sizes.** `Int` is always `i64` internally.
+Named width types (`UInt8`, `Int32`, etc.) validate range via `is:`
+but use the same `i64` storage. For use cases requiring compact binary
+storage (FFI, network protocols, binary serialization), an explicit
+`repr:` annotation key is reserved for future use:
+
+```tinct
+# Future: repr: as an explicit storage hint (not yet specified)
+port@[type: Int  is: [between 0 65535]  repr: u16]
+```
 
 **Promotion rules.** Existing promotion rules extend naturally:
 
@@ -116,53 +143,6 @@ optimization for a future phase, not a semantic requirement.
 `Float + Decimal` is an error because implicit conversion between
 IEEE 754 and exact decimal loses the precision guarantee that
 `Decimal` provides.
-
-### Internal Representation
-
-The runtime inspects range annotations and selects the smallest
-internal representation:
-
-| Range | Internal representation |
-|-------|----------------------|
-| `min: 0, max: 255` | `u8` |
-| `min: -128, max: 127` | `i8` |
-| `min: 0, max: 65535` | `u16` |
-| `min: -32768, max: 32767` | `i16` |
-| `min: -2^31, max: 2^31-1` | `i32` |
-| `min: -2^63, max: 2^63-1` | `i64` (current default) |
-| Any range exceeding i64 | `BigInt` |
-| No range specified | `i64` |
-| `type: Decimal` | `d128` |
-
-```rust
-// Internal representation (hidden from user)
-pub enum NumericRepr {
-    I8(i8),
-    I16(i16),
-    I32(i32),
-    I64(i64),      // current default
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    Big(BigInt),
-    F32(f32),
-    F64(f64),      // current default
-    Dec(d128),
-}
-
-// User-facing Value stays clean
-pub enum Value {
-    Int(NumericRepr),    // was: Int(i64)
-    Float(NumericRepr),  // was: Float(f64)
-    Decimal(NumericRepr), // new
-    // ...
-}
-```
-
-The representation is transparent to the user — all arithmetic
-dispatches through `NumericRepr` internally but behaves as `Int`,
-`Float`, or `Decimal` at the user level.
 
 ### Interaction with Type Inference
 
@@ -216,111 +196,118 @@ On serialization:
 
 ### Rationale
 
-1. **Users declare intent, runtime optimizes.** `@[min: 0  max: 65535]`
-   says "this is a port number." The user doesn't need to know about
-   i16 vs u16 vs i32. The runtime picks the smallest representation
-   that covers the range.
+1. **`is:` is more general than `min:`/`max:`.** Any predicate works —
+   range, divisibility, sign, string-encoded format, domain invariant.
+   Named contracts (`PortRange: [between 0 65535]`) are reusable across
+   annotations, match arms, and structural contracts. `min:`/`max:`
+   would only cover numeric range, and only by having the runtime
+   interpret two specific annotation keys specially.
 
-2. **BigInt falls out naturally.** A range with no upper bound
-   (`@[min: 0]`) or a range exceeding i64 automatically uses `BigInt`.
-   No separate BigInt type needed — it's just an Int with a large
-   range.
+2. **Named width types without runtime machinery.** `UInt8`, `Int32`,
+   etc. are type aliases whose `is:` predicates document intent and
+   validate range. No `NumericRepr` union, no dispatch complexity, no
+   changes to arithmetic builtins. Phase 1 is purely stdlib.
 
-3. **Decimal is orthogonal.** `Decimal` is a separate concern from
-   integer sizing — it's about exact base-10 arithmetic, not range.
-   Both can coexist: `[type Decimal @[min: 0  max: 999.99  precision: 2]]`
-   constrains range AND uses exact decimal representation.
+3. **Decimal is orthogonal.** `Decimal` is about exact base-10
+   arithmetic, not range. Both can coexist:
+   `[type Decimal@[is: [between 0.0 999.99]]]` constrains range AND
+   uses exact decimal representation.
 
-4. **Transparent arithmetic.** Users never interact with `NumericRepr`
-   directly. `[+ port 1]` works whether `port` is internally `u16`
-   or `i64`. Promotion handles cross-size arithmetic.
+4. **BigInt is explicit.** Arbitrary-precision integers require a
+   distinct `Value::BigInt` variant — they can't be a silent
+   optimization of regular `Int`. Making BigInt explicit keeps the
+   runtime simpler and the programmer aware of the cost.
 
-5. **Aligns with structural contracts.** Range annotations use the
-   same `@` system as structural contracts
-   (`doc/whatif/structural-contracts.md`). The `validate` builtin
-   can check range constraints alongside structural shape.
+5. **Storage hints deferred.** `repr:` for compact binary storage is
+   a future annotation key for FFI/binary-encoding use cases. It is
+   a storage optimization, not a semantic constraint, and can be
+   added without changing the validation model.
 
 ## What Would Change
 
-### Value Representation (`src/value.rs`)
+### Phase 1: Stdlib Only (`stdlib/numeric.llt`)
 
-**Current:** `Value::Int(i64)` and `Value::Float(f64)` — fixed-width
-numeric variants.
+**No Rust changes for Phase 1.** The `between`, `non-negative`,
+`positive` predicate factories and the named width type aliases are
+pure tinct definitions. They use `is:` — which is already a valid
+annotation property key — and `type` aliases. The TypeAssert runtime
+already calls `is:` predicates at boundaries.
 
-**Proposed:** `Value::Int(NumericRepr)` and `Value::Float(NumericRepr)`
-where `NumericRepr` is a tagged union of width-specific
-representations. New `Value::Decimal(NumericRepr)` variant.
+**Impact:** New stdlib file only.
 
-**Impact:** Major. Every pattern match on `Value::Int` or
-`Value::Float` must handle `NumericRepr` dispatch. The `Value` enum
-grows in size (from 8 bytes per numeric to a tagged union). This
-affects every builtin that handles numbers.
+### Phase 2: Value Representation (`src/value.rs`)
 
-### Builtins (`src/builtins.rs`)
+**Current:** `Value::Int(i64)` and `Value::Float(f64)`.
 
-**Current:** Arithmetic builtins (`+`, `-`, `*`, `/`) match on
-`Value::Int(i64)` and `Value::Float(f64)` directly.
+**Proposed:** New `Value::Decimal(d128)` variant for exact decimal.
+`Value::Int` and `Value::Float` are unchanged — no `NumericRepr`
+union needed.
 
-**Proposed:** Arithmetic dispatch through `NumericRepr`, handling
-promotion between widths. A promotion table determines the output
-representation for each operand pair.
+**Impact:** Moderate. New `Value` variant; every exhaustive match on
+`Value` gains a `Decimal` arm. Arithmetic builtins gain `Int × Decimal`
+promotion. Serialization gains Decimal → JSON handling.
 
-**Impact:** Moderate. The arithmetic logic itself is unchanged —
-addition is still addition. The dispatch layer adds indirection but
-no new semantics. This can be implemented as a `NumericRepr::promote`
-method that both operands call before the operation.
+### Phase 3: BigInt (`src/value.rs`, `src/builtins.rs`)
+
+**Current:** `Value::Int(i64)` overflows silently or wraps.
+
+**Proposed:** New `Value::BigInt(BigInt)` variant. Promotion: when
+arithmetic on `Int` would overflow, promote to `BigInt`. Or explicit
+`[big-int n]` builtin.
+
+**Impact:** Moderate. New `Value` variant; arithmetic builtins gain
+overflow detection + promotion. Dependencies: `num-bigint` crate.
 
 ### Type Checker (`src/typecheck.rs`)
 
-**Current:** `Int`, `Float`, and `Number` are atomic types.
-Unification is straightforward.
+**Phase 1:** No changes — `is:` predicates are already handled as
+runtime contracts, not type-level constraints. `Port` (defined as
+`Int@[is: ...]`) has type `Int`. Unification treats them as `Int`.
 
-**Proposed:** `Decimal` becomes a new atomic type. Range annotations
-are parsed but not represented in the type — they remain runtime
-contracts. The type checker treats `Port` as `Int` for inference
-purposes.
+**Phase 2:** `Decimal` becomes a new atomic type. One new arm in
+`resolve_type_name`. No change to unification or generalization.
 
-**Impact:** Minor. One new base type (`Decimal`). No change to
-unification or generalization.
+**Phase 3:** `BigInt` is a new atomic type, subtype of `Number`.
 
-### Parser (`src/parser.rs`, `src/grammar.pest`)
+### Parser (`src/parser.rs`)
 
-**Current:** Numeric literals parse as `Int` or `Float` based on
-decimal point presence.
+**Phase 1:** No changes.
 
-**Proposed:** (1) Parse `Decimal` literals (syntax TBD — possibly
-`9.99d` suffix or explicit `[decimal 9.99]`). (2) Parse
-`@[min: N  max: M]` annotations on type definitions.
+**Phase 2:** Decimal literals — explicit `[decimal 9.99]` builtin
+call avoids new syntax. No parser changes.
 
-**Impact:** Minor. Range annotations already use existing `@` syntax.
-Decimal literal syntax is a small parser addition.
-
-### Serialization
-
-**Current:** `Int` serializes as JSON integer, `Float` as JSON number.
-
-**Proposed:** `BigInt` serializes as JSON number (may exceed
-recipient's parsing range). `Decimal` serializes as JSON number or
-string. `NumericRepr` dispatch ensures correct serialization
-regardless of internal width.
-
-**Impact:** Minor. Serialization is a thin layer over the internal
-representation.
+**Phase 3:** No parser changes — `[big-int n]` is a builtin call.
 
 ## Phased Adoption
 
-### Phase 1: Range Annotations (Validation Only)
+### Phase 1: `is:` Numeric Constraints + Width Type Aliases
 
-Add `@[min: N  max: M]` as a contract on `Int` and `Float`:
+Add `between` and related predicate factories to stdlib. Add named
+width type aliases (`UInt8`, `Int16`, `UInt32`, etc.) as type
+definitions using `is:` predicates. No Rust changes — purely stdlib.
 
 ```tinct
-Port: [type Int@[min: 0  max: 65535]]
-port: [@Port config.port]  # validates at runtime
+# stdlib/numeric.llt (new)
+between:      [fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
+non-negative: [fn [v] [>= v 0]]
+positive:     [fn [v] [> v 0]]
+
+UInt8:  [type Int@[is: [between 0 255]]]
+Int8:   [type Int@[is: [between -128 127]]]
+UInt16: [type Int@[is: [between 0 65535]]]
+Int16:  [type Int@[is: [between -32768 32767]]]
+UInt32: [type Int@[is: [between 0 4294967295]]]
+Int32:  [type Int@[is: [between -2147483648 2147483647]]]
+UInt64: [type Int@[is: non-negative]]
+Int64:  [type Int]
 ```
 
-No internal representation change — still `i64`/`f64` under the hood.
-Range validation happens at TypeAssert boundaries via the `@`
-annotation system.
+Usage:
+```tinct
+Port:  [type Int@[is: [between 0 65535]]]
+port:  [@Port config.port]   # validates at runtime — error if out of range
+score: [@UInt8 95]           # validated 0-255
+```
 
 ### Phase 2: Decimal Type
 
@@ -336,62 +323,60 @@ total: [+ price [decimal 1.00]]  # exact: 10.99
 - Decimal + Decimal → Decimal (no cross-type promotion with Float)
 - Decimal + Int → Decimal (Int promotes to Decimal)
 
-### Phase 3: Automatic Representation Sizing
+### Phase 3: BigInt
 
-The runtime inspects range annotations and selects internal
-representation:
-
-- `@[min: 0  max: 255]` → store as `u8` internally
-- No range → `i64` (backwards compatible)
-- Range exceeding i64 → `BigInt`
-
-This is a performance optimization — semantics are unchanged from
-Phase 1. Programs that worked before continue to work identically.
-
-### Phase 4: BigInt
-
-For ranges exceeding i64 (or with no upper bound), the runtime
-automatically uses `BigInt`:
+`BigInt` for integers that must exceed i64 range (cryptographic keys,
+exact factorial, arbitrary-precision arithmetic):
 
 ```tinct
-BigId: [type Int@[min: 0]]  # no upper bound -> BigInt
+BigId: [type Int@[is: non-negative]]   # any non-negative — BigInt variant
 factorial: [fn [n]
     [if [= n 0]
-        1
+        [big-int 1]
         [* n [factorial [- n 1]]]]]
 ```
 
-BigInt arithmetic is exact — no overflow, no precision loss.
+Requires a new `Value::BigInt` variant and promotion rules. `Int`
+promotes to `BigInt` when an operation would overflow i64. Arithmetic
+is exact — no overflow, no precision loss.
+
+### Phase 4: Explicit Storage Hints (Future)
+
+For binary serialization, FFI, and memory-mapped structures where
+the exact bit width matters: `repr:` annotation key specifying `u8`,
+`i32`, `u64`, etc. This is a STORAGE hint only — validation is still
+via `is:`. Both can coexist:
+
+```tinct
+port@[is: [between 0 65535]  repr: u16]   # validate AND pack as u16
+```
+
+Not yet specified in detail — adopt when a concrete binary-encoding
+use case requires compact storage.
 
 ### Prerequisites
 
-- **Phase 1:** `@` annotation system mature enough for runtime
-  validation (connects to `doc/whatif/structural-contracts.md`).
+- **Phase 1:** `is:` annotation key specified and the match macro or
+  TypeAssert boundary enforcement treats it as a runtime predicate.
+  Purely stdlib — no Rust changes.
 - **Phase 2:** Independent of Phase 1. Can be implemented in parallel.
-- **Phase 3:** Phase 1 complete (range annotations define the sizing
-  policy).
-- **Phase 4:** Phase 3 complete (BigInt is the "unlimited range" case
-  of automatic sizing).
+- **Phase 3:** Phase 2 complete or BigInt independently motivated.
+- **Phase 4:** Phase 3 complete; a concrete binary-encoding use case.
 
 ### Trigger
 
-Phase 1 (range annotations): adopt when:
-- Structural contracts (`doc/whatif/structural-contracts.md`) are
-  implemented — range constraints are a natural extension
-- Users need to validate numeric ranges in config data
+**Phase 1:** When users need to validate numeric ranges in config data,
+or when `UInt8`/`Int32` etc. are needed for protocol/format documentation.
+No Rust work — just stdlib additions.
 
-Phase 2 (Decimal): adopt when:
-- A use case requires exact decimal arithmetic (financial data,
-  currency, pricing)
-- Float dict keys are needed (`doc/whatif/float-dict-keys.md`)
+**Phase 2:** When a use case requires exact decimal arithmetic (financial
+data, currency, pricing). Or when `doc/whatif/float-dict-keys.md` is adopted.
 
-Phase 3 (representation sizing): adopt when:
-- Memory efficiency matters (large datasets with known-range values)
-- Binary serialization or FFI requires specific integer widths
+**Phase 3:** When arithmetic overflowing i64 is a real problem in user
+code (cryptographic, mathematical, or financial computations).
 
-Phase 4 (BigInt): adopt when:
-- Cryptographic, scientific, or mathematical use cases exceed i64
-- Factorial, Fibonacci, or combinatorial computations are needed
+**Phase 4:** When binary serialization or FFI requires compact storage
+with specific integer widths.
 
 ## References
 

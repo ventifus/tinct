@@ -1,0 +1,5 @@
+# each-kv: convert dict to Seq of [key: K, value: V] pairs
+# collect first element to verify structure
+[head [each-kv [x: 99  y: 100]]]
+===
+Dict({"key": String("x"), "value": Int(99)})

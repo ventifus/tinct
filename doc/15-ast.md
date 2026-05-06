@@ -188,9 +188,11 @@ enum Annotation {
 | `Bool(true)` | `true` | Boolean literal |
 | `Str("hello")` | `"hello"` | String literal (quoted) |
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by Phase 1 resolution pass |
-| `DotAccess` | `a.b` | Key access: `b` on `a` |
+| `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
+| `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
 | `BracketAccess` | `a[0]` | Key access: `0` on `a` |
 | `RangeAccess` | `a[2..5]` | Key-range slice |
+| `Pipe { lhs, rhs }` | `a \| f` | Pipe (desugar-only); eliminated before evaluation — see §Pipe Desugaring below |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
 | `Fn` | `[fn [x] body]` | Function definition |
@@ -302,13 +304,30 @@ Dot notation and bracket notation desugar to nested access nodes:
 
 | Surface syntax | AST |
 |---------------|-----|
-| `data.name` | `DotAccess(VarRef { name: "data", .. }, "name")` |
+| `data.name` | `DotAccess { field: DotKey::Ident("name"), .. }` |
+| `data.0` | `DotAccess { field: DotKey::Int(0), .. }` — integer key; looks up `Key::Int(0)` at eval time |
 | `data[5]` | `BracketAccess(VarRef { name: "data", .. }, Int(5))` |
 | `data[key]` | `BracketAccess(VarRef { name: "data", .. }, VarRef { name: "key", .. })` |
 | `data[2..5]` | `RangeAccess(VarRef { name: "data", .. }, Some(Int(2)), Some(Int(5)))` |
 | `data[2..]` | `RangeAccess(VarRef { name: "data", .. }, Some(Int(2)), None)` |
 | `data[..3]` | `RangeAccess(VarRef { name: "data", .. }, None, Some(Int(3)))` |
-| `a.b[0].c` | `DotAccess(BracketAccess(DotAccess(VarRef { name: "a", .. }, "b"), Int(0)), "c")` |
+| `a.b.0.c` | `DotAccess(DotAccess(DotAccess(VarRef("a"), Ident("b")), Int(0)), Ident("c"))` |
+
+### Pipe Desugaring
+
+`|` is a desugar-only infix operator. The parser emits `Expr::Pipe { lhs, rhs }` and the desugar pass (`src/desugar.rs`) immediately rewrites it to `Expr::Call` before the resolution and evaluation passes run. The evaluator never sees `Expr::Pipe`; the `Expr::Pipe` arm in `src/resolve.rs` is an `unreachable!` guard.
+
+Three desugar rules, applied in priority order:
+
+| Surface syntax | Desugar rule | Call form |
+|---------------|-------------|-----------|
+| `$_ \| f` | WRAP-PIPE: `lhs` is `$_` (implicit arg) | `[fn [_] [f _]]` — wraps the pipeline in a lambda |
+| `a \| [f ...]` | CALL-EXTEND: `rhs` is an explicit `Call` | `[f ... a]` — prepends `lhs` as first arg |
+| `a \| f` | CALL-WRAP: `rhs` is anything else (VarRef, DotAccess, …) | `[f a]` — wraps `lhs` as the single arg |
+
+Left-associativity: `a | f | g` parses as `(a | f) | g`, which desugars to `[g [f a]]`.
+
+**Note:** Pipe is eliminated in the desugar pass before type checking and variable resolution run. Any tooling pass that may see `Expr::Pipe` must either run before desugar or handle it explicitly as unreachable.
 
 ### Auto-Indexing
 

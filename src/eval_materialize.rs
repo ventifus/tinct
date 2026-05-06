@@ -204,7 +204,7 @@ pub(crate) struct BuiltinForceArgData {
 
 /// Payload for Cont::DotAccessForce. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct DotAccessForceData {
-    pub(crate) field: String,
+    pub(crate) field: crate::ast::DotKey,
     /// Span of the entire dot-access expression (e.g. `dict.field`).
     pub(crate) access_span: Span,
     /// Definition-site span of the target expression (the dict being accessed).
@@ -1344,6 +1344,15 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 ctx,
                 depth,
             } = *data;
+
+            // Convert DotKey to string for error messages and Proxy dispatch.
+            // NOTE: this string is NOT used for Dict lookup when field is DotKey::Int —
+            // integer dot access uses Key::Int(n) directly (auto-indexed dicts store Key::Int).
+            let field_str = match &field {
+                crate::ast::DotKey::Ident(s) => s.clone(),
+                crate::ast::DotKey::Int(n) => n.to_string(),
+            };
+
             // Result is the materialized target value
             match result {
                 Ok(target_val) => {
@@ -1353,14 +1362,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             match flatten_overlay(
                                 &l,
                                 &r,
-                                &format!(".{field}"),
+                                &format!(".{field_str}"),
                                 &ctx,
                                 depth,
                                 access_span,
                             ) {
                                 Ok(map) => Value::Dict(map),
                                 Err(mut e) => {
-                                    e.push_frame(format!("accessing .{field}"), access_span);
+                                    e.push_frame(format!("accessing .{field_str}"), access_span);
                                     return Action::Continue(Err(e));
                                 }
                             }
@@ -1369,8 +1378,16 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     };
                     match target_val {
                         Value::Dict(map) => {
-                            // Use StrKey wrapper to avoid allocating Key::String
-                            match map.get(&crate::value::StrKey(&field)) {
+                            // For DotKey::Int, look up Key::Int(n) directly —
+                            // auto-indexed dicts store Key::Int, not Key::String.
+                            // For DotKey::Ident, use StrKey wrapper to avoid allocation.
+                            let thunk_id_opt = match &field {
+                                crate::ast::DotKey::Int(n) => map.get(&crate::value::Key::Int(*n)),
+                                crate::ast::DotKey::Ident(_) => {
+                                    map.get(&crate::value::StrKey(&field_str))
+                                }
+                            };
+                            match thunk_id_opt {
                                 Some(thunk_id) => {
                                     // Field found - need to materialize it
                                     // TODO: thread outer mat_span through DotAccessForceData to preserve
@@ -1389,12 +1406,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     let available_keys: Vec<String> =
                                         map.keys().map(|k| k.to_string()).collect();
                                     let mut err = EvalError::key_not_found(
-                                        &field,
+                                        &field_str,
                                         available_keys,
                                         target_def_span,
                                     )
                                     .with_materialization_span(access_span);
-                                    err.push_frame(format!("accessing .{field}"), access_span);
+                                    err.push_frame(format!("accessing .{field_str}"), access_span);
                                     Action::Continue(Err(err.into()))
                                 }
                             }
@@ -1404,7 +1421,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             let handler_thunk = ctx.get_thunk(handler);
                             match invoke_proxy_handler(
                                 &handler_thunk,
-                                Value::String(field.clone()),
+                                Value::String(field_str.clone()),
                                 &ctx,
                                 &access_span,
                                 depth,
@@ -1418,7 +1435,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     }
                                 }
                                 Err(mut e) => {
-                                    e.push_frame(format!("accessing .{field}"), access_span);
+                                    e.push_frame(format!("accessing .{field_str}"), access_span);
                                     Action::Continue(Err(e))
                                 }
                             }
@@ -1432,14 +1449,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 target_def_span,
                             )
                             .with_materialization_span(access_span);
-                            err.push_frame(format!("accessing .{field}"), access_span);
+                            err.push_frame(format!("accessing .{field_str}"), access_span);
                             Action::Continue(Err(err.into()))
                         }
                     }
                 }
                 Err(mut e) => {
                     // Target materialization failed
-                    e.push_frame(format!("accessing .{field}"), access_span);
+                    e.push_frame(format!("accessing .{field_str}"), access_span);
                     Action::Continue(Err(e))
                 }
             }
@@ -1929,6 +1946,9 @@ pub(crate) fn eval_step(
             expr.span,
         )
         .into())),
+        Expr::Pipe { .. } => {
+            unreachable!("Pipe should be desugared before evaluation")
+        }
     }
 }
 
@@ -2578,8 +2598,9 @@ mod tests {
             span,
         ));
 
-        let mut dict_map = IndexMap::new();
-        dict_map.insert(Key::String("field".into()), error_thunk);
+        let error_id = ctx.alloc_thunk(error_thunk);
+        let mut dict_map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
+        dict_map.insert(Key::String("field".into()), error_id);
         let dict_value = Value::Dict(dict_map);
         let dict_thunk = Rc::new(Thunk::new_materialized(dict_value, span));
 
@@ -2589,7 +2610,7 @@ mod tests {
         // Create a dot access expression: my_dict.field
         let access_expr = Rc::new(sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("my_dict".into()))),
-            field: "field".to_string(),
+            field: crate::ast::DotKey::Ident("field".to_string()),
         }));
 
         let access_thunk = Rc::new(Thunk::new_unevaluated(

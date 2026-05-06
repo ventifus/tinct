@@ -1,0 +1,4 @@
+# each: convert dict to Seq of values in insertion order, then collect
+[collect [each [a: 10  b: 20  c: 30]]]
+===
+Dict({0: Int(10), 1: Int(20), 2: Int(30)})

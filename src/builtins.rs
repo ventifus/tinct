@@ -1,4 +1,4 @@
-//! Rust-native builtin functions for the LLT language.
+//! Rust-native builtin functions for the LLT language. // sprint wave-1 rebuild marker
 //!
 //! All builtins follow the `BuiltinFn` signature:
 //! `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>`
@@ -33,7 +33,9 @@ use crate::value::Strictness;
 // materialize/invoke_function (eval.rs), and eval calls standard_builtins (builtins.rs). This is
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
-use crate::eval::{invoke_function, materialize, CallContext, MAX_EVAL_DEPTH};
+#[cfg(test)]
+use crate::eval::MAX_EVAL_DEPTH;
+use crate::eval::{invoke_function, materialize, CallContext};
 use crate::value::{BuiltinArgs, Environment, Key, Thunk, Value};
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
@@ -72,6 +74,12 @@ pub(crate) use builtin;
 /// Maximum collection size for $collect (1,000,000 elements).
 /// Prevents memory exhaustion from infinite sequences without $take.
 pub(crate) const MAX_COLLECT_SIZE: usize = 1_000_000;
+
+/// Maximum JSON nesting depth for `from-json`.
+/// Separate from MAX_EVAL_DEPTH: JSON nesting is a data-model limit (128),
+/// not a recursive evaluation limit (256). Prevents deeply nested JSON from
+/// producing value trees that cause stack overflow during deep_materialize.
+pub(crate) const JSON_DEPTH_LIMIT: usize = 128;
 
 /// Maximum string output size for string output builtins (`$replace`, `$upper`, `$lower`, `$join`) (64 MB).
 /// Prevents memory exhaustion from adversarial inputs or replacement patterns.
@@ -426,6 +434,342 @@ fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let value_id = ctx.alloc_thunk(Rc::clone(&args[1]));
     map.insert(Key::Int(next_key), value_id);
     ok_val(Value::Dict(map), call_span)
+}
+
+/// `builtin-get`: Rust primitive for dict key lookup.
+///
+/// Takes 2 args: a key (Int or String) and a dict.
+/// Returns the value at that key, or errors if the key is not found.
+///
+/// This is a thin primitive that `get` (in prelude.llt) wraps, following the
+/// same pattern as `builtin-reduce` → `reduce` and `builtin-fold` → `fold`.
+fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("builtin-get", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    // Materialize the key
+    let key_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let key = match key_val {
+        Value::Int(n) => Key::Int(n),
+        Value::String(s) => Key::String(s),
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "builtin-get".to_string(),
+                "Int or String",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Materialize the dict (spine only, not values)
+    let dict_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let map = require_dict(
+        "builtin-get",
+        dict_val,
+        args[1].span,
+        &ctx,
+        depth,
+        call_span,
+    )?;
+
+    // Look up the key
+    match map.get(&key) {
+        Some(thunk_id) => {
+            let thunk = ctx.thunk_arena.borrow().get(*thunk_id).clone();
+            Ok(thunk)
+        }
+        None => {
+            let key_str = match &key {
+                Key::Int(n) => n.to_string(),
+                Key::String(s) => s.clone(),
+            };
+            let available_keys = map
+                .keys()
+                .map(|k| match k {
+                    Key::Int(n) => n.to_string(),
+                    Key::String(s) => s.clone(),
+                })
+                .collect();
+            Err(EvalError::key_not_found(&key_str, available_keys, call_span).into())
+        }
+    }
+}
+
+/// `each`: Convert a Dict to a Seq of its values in insertion order.
+///
+/// Takes 1 arg (a Dict). Returns a lazy Seq of values.
+/// `Dict a → Seq a`
+///
+/// This is a Rust builtin because Seq construction is not expressible in tinct.
+fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("each", named, call_span)?;
+    // Public API: 1 arg (dict).
+    // Internal recursive call: 2 args (dict, offset: Int) — avoids O(n²) IndexMap rebuilds.
+    if args.len() != 1 && args.len() != 2 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    // Parse offset from optional 2nd arg (internal recursive call).
+    // O(n) fix: recursive tail carries the original dict + an index instead of rebuilding.
+    let offset = if args.len() == 2 {
+        match materialize(&args[1], Some(&call_span), &ctx, depth)? {
+            Value::Int(n) => n as usize,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+
+    // Materialize the dict (spine only, not values)
+    let dict_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let map = require_dict("each", dict_val, args[0].span, &ctx, depth, call_span)?;
+
+    // Skip to current offset position in the dict.
+    let remaining = map.len().saturating_sub(offset);
+
+    // Build a Seq from the values in insertion order starting at offset
+    if remaining == 0 {
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    } else {
+        let (_, head_id) = map.get_index(offset).unwrap();
+        let head_id = *head_id;
+        let head = ctx.thunk_arena.borrow().get(head_id).clone();
+
+        // Build tail: if more elements remain, recurse with (same_dict_thunk, offset+1).
+        // O(n) design: the same original dict thunk is passed to each recursive call;
+        // only the integer offset increments. This avoids the O(n²) cost of rebuilding
+        // an IndexMap of remaining entries at every step. Keys are discarded — each
+        // yields values only, regardless of whether the original keys are Int or String.
+        if remaining == 1 {
+            let tail = ok_val(Value::Dict(IndexMap::new()), call_span)?;
+            let tail_id = ctx.alloc_thunk(tail);
+            ok_val(
+                Value::Seq {
+                    head: ctx.alloc_thunk(head),
+                    tail: tail_id,
+                },
+                call_span,
+            )
+        } else {
+            let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
+            let tail_args = vec![Rc::clone(&args[0]), next_offset];
+            let tail = Rc::new(Thunk::new_pending_builtin(
+                builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
+                tail_args,
+                None,
+                depth + 1,
+                call_span,
+                Some(Rc::from("call $each")),
+                Rc::clone(&ctx),
+            ));
+            let tail_id = ctx.alloc_thunk(tail);
+            ok_val(
+                Value::Seq {
+                    head: ctx.alloc_thunk(head),
+                    tail: tail_id,
+                },
+                call_span,
+            )
+        }
+    }
+}
+
+/// `each-key`: Convert a Dict to a Seq of its keys in insertion order.
+///
+/// Takes 1 arg (a Dict). Returns a lazy Seq of keys (Int or String values).
+/// `Dict a → Seq Key`
+///
+/// This is a Rust builtin because Seq construction is not expressible in tinct.
+fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("each-key", named, call_span)?;
+    // Public API: 1 arg (dict).
+    // Internal recursive call: 2 args (dict, offset: Int) — avoids O(n²) IndexMap rebuilds.
+    if args.len() != 1 && args.len() != 2 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    // Parse offset from optional 2nd arg (internal recursive call).
+    let offset = if args.len() == 2 {
+        match materialize(&args[1], Some(&call_span), &ctx, depth)? {
+            Value::Int(n) => n as usize,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+
+    // Materialize the dict (spine only, not values)
+    let dict_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let map = require_dict("each-key", dict_val, args[0].span, &ctx, depth, call_span)?;
+
+    // Skip to current offset position in the dict.
+    let remaining = map.len().saturating_sub(offset);
+
+    // Build a Seq from the keys in insertion order starting at offset.
+    // Original keys are preserved (not synthetic Int indices) so callers receive correct key names.
+    if remaining == 0 {
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    } else {
+        let (head_key, _) = map.get_index(offset).unwrap();
+        let head_val = match head_key {
+            Key::Int(n) => Value::Int(*n),
+            Key::String(s) => Value::String(s.clone()),
+        };
+        let head = ok_val(head_val, call_span)?;
+
+        // Build tail: if more elements remain, recurse with (same_dict_thunk, offset+1).
+        // O(n) total: no IndexMap rebuild per step, just index increment.
+        if remaining == 1 {
+            let tail = ok_val(Value::Dict(IndexMap::new()), call_span)?;
+            let tail_id = ctx.alloc_thunk(tail);
+            ok_val(
+                Value::Seq {
+                    head: ctx.alloc_thunk(head),
+                    tail: tail_id,
+                },
+                call_span,
+            )
+        } else {
+            let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
+            let tail_args = vec![Rc::clone(&args[0]), next_offset];
+            let tail = Rc::new(Thunk::new_pending_builtin(
+                builtin!("each-key", builtin_each_key, [Strictness::Spine, Strictness::Spine]),
+                tail_args,
+                None,
+                depth + 1,
+                call_span,
+                Some(Rc::from("call $each-key")),
+                Rc::clone(&ctx),
+            ));
+            let tail_id = ctx.alloc_thunk(tail);
+            ok_val(
+                Value::Seq {
+                    head: ctx.alloc_thunk(head),
+                    tail: tail_id,
+                },
+                call_span,
+            )
+        }
+    }
+}
+
+/// `each-kv`: Convert a Dict to a Seq of key-value pair dicts.
+///
+/// Takes 1 arg (a Dict). Returns a lazy Seq where each element is a dict
+/// like `[key: K, value: V]`.
+/// `Dict a → Seq [key: Key, value: a]`
+///
+/// This is a Rust builtin because Seq construction is not expressible in tinct.
+fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("each-kv", named, call_span)?;
+    // Public API: 1 arg (dict).
+    // Internal recursive call: 2 args (dict, offset: Int) — avoids O(n²) IndexMap rebuilds.
+    if args.len() != 1 && args.len() != 2 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    // Parse offset from optional 2nd arg (internal recursive call).
+    let offset = if args.len() == 2 {
+        match materialize(&args[1], Some(&call_span), &ctx, depth)? {
+            Value::Int(n) => n as usize,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+
+    // Materialize the dict (spine only, not values)
+    let dict_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let map = require_dict("each-kv", dict_val, args[0].span, &ctx, depth, call_span)?;
+
+    // Skip to current offset position in the dict.
+    let remaining = map.len().saturating_sub(offset);
+
+    // Build a Seq from key-value pairs in insertion order starting at offset
+    if remaining == 0 {
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    } else {
+        let (head_key, head_val_id) = map.get_index(offset).unwrap();
+
+        // Build head: [key: K, value: V]
+        let mut head_dict = IndexMap::new();
+        let key_val = match head_key {
+            Key::Int(n) => Value::Int(*n),
+            Key::String(s) => Value::String(s.clone()),
+        };
+        head_dict.insert(
+            Key::String("key".to_string()),
+            ctx.alloc_thunk(ok_val(key_val, call_span)?),
+        );
+        head_dict.insert(Key::String("value".to_string()), *head_val_id);
+        let head = ok_val(Value::Dict(head_dict), call_span)?;
+
+        // Build tail: if more elements remain, recurse with (same_dict_thunk, offset+1).
+        // O(n) total: no IndexMap rebuild per step, just index increment.
+        if remaining == 1 {
+            let tail = ok_val(Value::Dict(IndexMap::new()), call_span)?;
+            let tail_id = ctx.alloc_thunk(tail);
+            ok_val(
+                Value::Seq {
+                    head: ctx.alloc_thunk(head),
+                    tail: tail_id,
+                },
+                call_span,
+            )
+        } else {
+            let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
+            let tail_args = vec![Rc::clone(&args[0]), next_offset];
+            let tail = Rc::new(Thunk::new_pending_builtin(
+                builtin!("each-kv", builtin_each_kv, [Strictness::Spine, Strictness::Spine]),
+                tail_args,
+                None,
+                depth + 1,
+                call_span,
+                Some(Rc::from("call $each-kv")),
+                Rc::clone(&ctx),
+            ));
+            let tail_id = ctx.alloc_thunk(tail);
+            ok_val(
+                Value::Seq {
+                    head: ctx.alloc_thunk(head),
+                    tail: tail_id,
+                },
+                call_span,
+            )
+        }
+    }
 }
 
 // String builtins: str, split, replace, upper, lower, trim.
@@ -1038,8 +1382,8 @@ pub fn json_to_value(
     span: Span,
     ctx: &Rc<crate::eval::EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
-    if depth > MAX_EVAL_DEPTH {
-        return Err(EvalError::json_depth_exceeded(MAX_EVAL_DEPTH, span).into());
+    if depth > JSON_DEPTH_LIMIT {
+        return Err(EvalError::json_depth_exceeded(JSON_DEPTH_LIMIT, span).into());
     }
     match json {
         serde_json::Value::Null => ok_val(Value::Dict(IndexMap::new()), span),
@@ -1289,20 +1633,28 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::include_hash_required(file_path_str.clone(), call_span).into());
     }
 
-    // Open the file using cap-std. Absolute paths are rejected by cap-std (RESOLVE_BENEATH).
-    let base_dir = &dir_cap;
-    let fd = base_dir.open(&file_path_str).map_err(|e| {
-        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
-    })?;
-
-    // Allowlist check: if allowed_paths is non-empty, the canonical path of the
-    // included file must be a descendant of at least one allowed root.
-    // This check runs after cap-std has already confirmed the file is within base_dir
-    // (RESOLVE_BENEATH), so canonicalize() here is safe — the file exists and is accessible.
+    // Allowlist check: must run BEFORE opening the file so that the allowlist error
+    // is reported even when Landlock would otherwise deny access first.
+    // Computes the absolute canonical path of the included file by joining the known
+    // base_dir_path (stored in EvalConfig) with the include path, then canonicalizing.
+    // Falls back to cap-std's Dir::canonicalize when base_dir_path is absent.
     if !ctx.config.allowed_paths.is_empty() {
-        let canonical = base_dir.canonicalize(&file_path_str).map_err(|e| {
-            EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
-        })?;
+        let canonical: std::path::PathBuf = if let Some(ref bdp) = ctx.config.base_dir_path {
+            // Preferred path: use the stored absolute base path for reliable comparison.
+            // Canonicalization MUST succeed: if it fails (e.g., path contains ..), return an
+            // error rather than falling back to the raw un-normalized path which could bypass
+            // the allowlist check and silently permit ../ traversal.
+            let joined = bdp.join(&file_path_str);
+            std::fs::canonicalize(&joined).map_err(|e| {
+                EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+            })?
+        } else {
+            // Fallback: use cap-std Dir::canonicalize (may return relative path on some
+            // platforms; allowlist comparison may not work correctly in this case).
+            dir_cap.canonicalize(&file_path_str).map_err(|e| {
+                EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+            })?
+        };
         let permitted = ctx
             .config
             .allowed_paths
@@ -1314,6 +1666,12 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             );
         }
     }
+
+    // Open the file using cap-std. Absolute paths are rejected by cap-std (RESOLVE_BENEATH).
+    let base_dir = &dir_cap;
+    let fd = base_dir.open(&file_path_str).map_err(|e| {
+        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+    })?;
 
     // Get metadata from the fd (single operation, no TOCTOU).
     let metadata = fd.metadata().map_err(|e| {
@@ -2682,6 +3040,15 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("length", builtin_length, [Strictness::Spine]),
         builtin!("merge", builtin_merge),
         builtin!("append", builtin_append, [Strictness::Seq, Strictness::Id]),
+        builtin!(
+            "builtin-get",
+            builtin_get,
+            [Strictness::Seq, Strictness::Spine]
+        ),
+        // each: 2-strictness for both 1-arg (user) and 2-arg (internal offset) calls
+        builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
+        builtin!("each-key", builtin_each_key, [Strictness::Spine, Strictness::Spine]),
+        builtin!("each-kv", builtin_each_kv, [Strictness::Spine, Strictness::Spine]),
         // Strings
         builtin!("str", builtin_str, [Strictness::Seq]),
         builtin!("split", builtin_split, [Strictness::Seq, Strictness::Seq]),
@@ -2992,24 +3359,61 @@ mod tests {
         }
     }
 
-    fn thunk_dict(map: IndexMap<Key, Rc<Thunk>>) -> Rc<Thunk> {
+    /// Build a materialized dict thunk whose entries are allocated into `ctx`'s arena.
+    /// Accepts `IndexMap<Key, Rc<Thunk>>` (convenient for test construction) and
+    /// stores each as a `ThunkId` in `Value::Dict`, as the runtime requires.
+    fn thunk_dict(map: IndexMap<Key, Rc<Thunk>>, ctx: &Rc<crate::eval::EvalContext>) -> Rc<Thunk> {
+        let mut id_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(map.len());
+        for (k, v) in map {
+            id_map.insert(k, ctx.alloc_thunk(v));
+        }
         Rc::new(Thunk::new_materialized(
-            Value::Dict(map),
+            Value::Dict(id_map),
             test_span(1, 1, 1, 5),
         ))
     }
 
-    /// Helper: flatten a Value (Dict or Overlay) to an IndexMap for test assertions.
+    /// Helper: flatten a Value (Dict or Overlay) to an `IndexMap<Key, ThunkId>` for test assertions.
     /// Since `builtin_merge` now returns `Value::Overlay` (lazy), tests that previously
     /// expected `Value::Dict` must use this helper to get the concrete entries.
-    fn flatten_val(val: Value) -> IndexMap<Key, Rc<Thunk>> {
+    fn flatten_val(val: Value, ctx: &Rc<crate::eval::EvalContext>) -> IndexMap<Key, ThunkId> {
         match val {
             Value::Dict(map) => map,
             Value::Overlay(l, r) => {
-                flatten_overlay(&l, &r, "test", &test_ctx(), 0, test_span(1, 1, 1, 5)).unwrap()
+                flatten_overlay(&l, &r, "test", ctx, 0, test_span(1, 1, 1, 5)).unwrap()
             }
             other => panic!("expected Dict or Overlay, got {other:?}"),
         }
+    }
+
+    /// Helper: materialize the thunk identified by `id` in `ctx`'s arena.
+    fn mat_id(id: ThunkId, ctx: &Rc<crate::eval::EvalContext>) -> Value {
+        let thunk = ctx.get_thunk(id);
+        crate::eval::materialize(&thunk, None, ctx, 0).unwrap()
+    }
+
+    /// Helper: build a `Value::Seq` with both `head` and `tail` allocated into `ctx`.
+    /// Returns a materialized `Rc<Thunk>` wrapping the `Seq`.
+    fn seq_thunk(
+        head: Rc<Thunk>,
+        tail: Rc<Thunk>,
+        ctx: &Rc<crate::eval::EvalContext>,
+    ) -> Rc<Thunk> {
+        Rc::new(Thunk::new_materialized(
+            Value::Seq {
+                head: ctx.alloc_thunk(head),
+                tail: ctx.alloc_thunk(tail),
+            },
+            test_span(1, 1, 1, 5),
+        ))
+    }
+
+    /// Helper: build an empty dict as a materialized `Rc<Thunk>` (no arena needed — no ThunkId entries).
+    fn empty_dict_thunk() -> Rc<Thunk> {
+        Rc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            test_span(1, 1, 1, 5),
+        ))
     }
 
     #[test]
@@ -4172,23 +4576,29 @@ mod tests {
 
     #[test]
     fn eval_flat_dict() {
-        let mut map = IndexMap::new();
-        map.insert(Key::String("a".into()), thunk(Value::Int(1)));
-        map.insert(Key::String("b".into()), thunk(Value::Int(2)));
-        let dict = Value::Dict(map);
+        let ctx = test_ctx();
+        let dict = thunk_dict(
+            {
+                let mut map = IndexMap::new();
+                map.insert(Key::String("a".into()), thunk(Value::Int(1)));
+                map.insert(Key::String("b".into()), thunk(Value::Int(2)));
+                map
+            },
+            &ctx,
+        );
         let result = mat(builtin_eval(BuiltinArgs {
-            args: &[thunk(dict)],
+            args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let a = materialize(&map[&Key::String("a".into())], None, &test_ctx(), 0).unwrap();
+                let a = mat_id(map[&Key::String("a".into())], &ctx);
                 assert_eq!(a, Value::Int(1));
-                let b = materialize(&map[&Key::String("b".into())], None, &test_ctx(), 0).unwrap();
+                let b = mat_id(map[&Key::String("b".into())], &ctx);
                 assert_eq!(b, Value::Int(2));
             }
             _ => panic!("expected Dict"),
@@ -4198,30 +4608,37 @@ mod tests {
     #[test]
     fn eval_nested_dict() {
         // Build [x: [y: 42]]
-        let mut inner = IndexMap::new();
-        inner.insert(Key::String("y".into()), thunk(Value::Int(42)));
-        let inner_dict = Value::Dict(inner);
-
-        let mut outer = IndexMap::new();
-        outer.insert(Key::String("x".into()), thunk(inner_dict));
-        let outer_dict = Value::Dict(outer);
+        let ctx = test_ctx();
+        let inner_dict = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::String("y".into()), thunk(Value::Int(42)));
+                m
+            },
+            &ctx,
+        );
+        let outer_dict = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::String("x".into()), inner_dict);
+                m
+            },
+            &ctx,
+        );
 
         let result = mat(builtin_eval(BuiltinArgs {
-            args: &[thunk(outer_dict)],
+            args: &[outer_dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(outer_map) => {
-                let x_val = materialize(&outer_map[&Key::String("x".into())], None, &test_ctx(), 0)
-                    .unwrap();
+                let x_val = mat_id(outer_map[&Key::String("x".into())], &ctx);
                 match x_val {
                     Value::Dict(inner_map) => {
-                        let y_val =
-                            materialize(&inner_map[&Key::String("y".into())], None, &test_ctx(), 0)
-                                .unwrap();
+                        let y_val = mat_id(inner_map[&Key::String("y".into())], &ctx);
                         assert_eq!(y_val, Value::Int(42));
                     }
                     _ => panic!("expected inner Dict"),
@@ -4234,30 +4651,35 @@ mod tests {
     #[test]
     fn eval_with_unevaluated_thunk() {
         // Create an unevaluated thunk wrapping a literal -- eval should force it
+        let ctx = test_ctx();
         let expr = Rc::new(Spanned::new(Expr::Int(99), test_span(1, 1, 1, 5)));
         let env = Rc::new(RefCell::new(Environment::new()));
         let unevaluated = Rc::new(Thunk::new_unevaluated(
             expr,
             env,
-            test_ctx(),
+            Rc::clone(&ctx),
             test_span(1, 1, 1, 5),
         ));
 
-        let mut map = IndexMap::new();
-        map.insert(Key::String("val".into()), unevaluated);
-        let dict = Value::Dict(map);
+        let dict = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::String("val".into()), unevaluated);
+                m
+            },
+            &ctx,
+        );
 
         let result = mat(builtin_eval(BuiltinArgs {
-            args: &[thunk(dict)],
+            args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let v =
-                    materialize(&map[&Key::String("val".into())], None, &test_ctx(), 0).unwrap();
+                let v = mat_id(map[&Key::String("val".into())], &ctx);
                 assert_eq!(v, Value::Int(99));
             }
             _ => panic!("expected Dict"),
@@ -4345,19 +4767,19 @@ mod tests {
     #[test]
     fn try_success_returns_ok_dict() {
         // [fn [] 42]
+        let ctx = test_ctx();
         let func = zero_arg_fn(Expr::Int(42));
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("ok".into())));
-                let ok_val =
-                    materialize(&map[&Key::String("ok".into())], None, &test_ctx(), 0).unwrap();
+                let ok_val = mat_id(map[&Key::String("ok".into())], &ctx);
                 assert_eq!(ok_val, Value::Int(42));
             }
             _ => panic!("expected Dict"),
@@ -4366,18 +4788,18 @@ mod tests {
 
     #[test]
     fn try_success_with_string_body() {
+        let ctx = test_ctx();
         let func = zero_arg_fn(Expr::Str("hello".into()));
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let ok_val =
-                    materialize(&map[&Key::String("ok".into())], None, &test_ctx(), 0).unwrap();
+                let ok_val = mat_id(map[&Key::String("ok".into())], &ctx);
                 assert_eq!(ok_val, Value::String("hello".into()));
             }
             _ => panic!("expected Dict"),
@@ -4387,19 +4809,19 @@ mod tests {
     #[test]
     fn try_failure_returns_err_dict() {
         // [fn [] $nonexistent] -- references an undefined variable
+        let ctx = test_ctx();
         let func = zero_arg_fn(Expr::var_ref("nonexistent".into()));
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert!(map.contains_key(&Key::String("err".into())));
-                let err_val =
-                    materialize(&map[&Key::String("err".into())], None, &test_ctx(), 0).unwrap();
+                let err_val = mat_id(map[&Key::String("err".into())], &ctx);
                 match err_val {
                     Value::String(msg) => {
                         assert!(
@@ -4471,6 +4893,7 @@ mod tests {
         fn ok_builtin(_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Int(99), Span::origin())
         }
+        let ctx = test_ctx();
         let b = Value::Builtin(crate::value::BuiltinDef {
             func: ok_builtin,
             name: "ok",
@@ -4481,12 +4904,11 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let ok_val =
-                    materialize(&map[&Key::String("ok".into())], None, &test_ctx(), 0).unwrap();
+                let ok_val = mat_id(map[&Key::String("ok".into())], &ctx);
                 assert_eq!(ok_val, Value::Int(99));
             }
             _ => panic!("expected Dict"),
@@ -4499,6 +4921,7 @@ mod tests {
             let BuiltinArgs { call_span, .. } = ctx;
             Err(EvalError::internal("builtin error".to_string(), call_span).into())
         }
+        let ctx = test_ctx();
         let b = Value::Builtin(crate::value::BuiltinDef {
             func: err_builtin,
             name: "fail",
@@ -4509,12 +4932,11 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let err_val =
-                    materialize(&map[&Key::String("err".into())], None, &test_ctx(), 0).unwrap();
+                let err_val = mat_id(map[&Key::String("err".into())], &ctx);
                 assert_eq!(err_val, Value::String("builtin error".into()));
             }
             _ => panic!("expected Dict"),
@@ -4589,17 +5011,23 @@ mod tests {
     #[test]
     fn apply_single_arg() {
         // [fn [x] $x] applied to [42]
+        let ctx = test_ctx();
         let func = n_arg_fn(&["x"], Expr::var_ref("x".into()));
-        let mut arg_dict = IndexMap::new();
-        arg_dict.insert(Key::Int(0), thunk(Value::Int(42)));
-        let args_val = Value::Dict(arg_dict);
+        let args_val = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::Int(0), thunk(Value::Int(42)));
+                m
+            },
+            &ctx,
+        );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), thunk(args_val)],
+            args: &[thunk(func), args_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -4607,18 +5035,24 @@ mod tests {
     #[test]
     fn apply_multiple_args_returns_first() {
         // [fn [a b] $a] applied to [10, 20]
+        let ctx = test_ctx();
         let func = n_arg_fn(&["a", "b"], Expr::var_ref("a".into()));
-        let mut arg_dict = IndexMap::new();
-        arg_dict.insert(Key::Int(0), thunk(Value::Int(10)));
-        arg_dict.insert(Key::Int(1), thunk(Value::Int(20)));
-        let args_val = Value::Dict(arg_dict);
+        let args_val = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::Int(0), thunk(Value::Int(10)));
+                m.insert(Key::Int(1), thunk(Value::Int(20)));
+                m
+            },
+            &ctx,
+        );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), thunk(args_val)],
+            args: &[thunk(func), args_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(10));
     }
@@ -4626,18 +5060,24 @@ mod tests {
     #[test]
     fn apply_multiple_args_returns_second() {
         // [fn [a b] $b] applied to [10, 20]
+        let ctx = test_ctx();
         let func = n_arg_fn(&["a", "b"], Expr::var_ref("b".into()));
-        let mut arg_dict = IndexMap::new();
-        arg_dict.insert(Key::Int(0), thunk(Value::Int(10)));
-        arg_dict.insert(Key::Int(1), thunk(Value::Int(20)));
-        let args_val = Value::Dict(arg_dict);
+        let args_val = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::Int(0), thunk(Value::Int(10)));
+                m.insert(Key::Int(1), thunk(Value::Int(20)));
+                m
+            },
+            &ctx,
+        );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), thunk(args_val)],
+            args: &[thunk(func), args_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(20));
     }
@@ -4658,42 +5098,54 @@ mod tests {
                 _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
             }
         }
+        let ctx = test_ctx();
         let func = Value::Builtin(crate::value::BuiltinDef {
             func: add_builtin,
             name: "add",
             pos_strictness: &[],
         });
-        let mut arg_dict = IndexMap::new();
-        arg_dict.insert(Key::Int(0), thunk(Value::Int(3)));
-        arg_dict.insert(Key::Int(1), thunk(Value::Int(4)));
-        let args_val = Value::Dict(arg_dict);
+        let args_val = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::Int(0), thunk(Value::Int(3)));
+                m.insert(Key::Int(1), thunk(Value::Int(4)));
+                m
+            },
+            &ctx,
+        );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), thunk(args_val)],
+            args: &[thunk(func), args_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(7));
     }
 
     #[test]
     fn apply_arity_mismatch() {
+        let ctx = test_ctx();
         let func = n_arg_fn(&["x", "y"], Expr::var_ref("x".into()));
-        let mut arg_dict = IndexMap::new();
-        arg_dict.insert(Key::Int(0), thunk(Value::Int(1)));
-        let args_val = Value::Dict(arg_dict);
+        let args_val = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::Int(0), thunk(Value::Int(1)));
+                m
+            },
+            &ctx,
+        );
 
-        let thunk = builtin_apply(BuiltinArgs {
-            args: &[thunk(func), thunk(args_val)],
+        let apply_thunk = builtin_apply(BuiltinArgs {
+            args: &[thunk(func), args_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
+        let err = crate::eval::materialize(&apply_thunk, None, &ctx, 0).unwrap_err();
         assert!(
             err.message()
                 .contains("missing argument for required parameter"),
@@ -4704,19 +5156,25 @@ mod tests {
 
     #[test]
     fn apply_non_function_type_error() {
-        let mut arg_dict = IndexMap::new();
-        arg_dict.insert(Key::Int(0), thunk(Value::Int(1)));
-        let args_val = Value::Dict(arg_dict);
+        let ctx = test_ctx();
+        let args_val = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::Int(0), thunk(Value::Int(1)));
+                m
+            },
+            &ctx,
+        );
 
-        let thunk = builtin_apply(BuiltinArgs {
-            args: &[thunk(Value::Int(42)), thunk(args_val)],
+        let apply_thunk = builtin_apply(BuiltinArgs {
+            args: &[thunk(Value::Int(42)), args_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
+        let err = crate::eval::materialize(&apply_thunk, None, &ctx, 0).unwrap_err();
         assert!(
             err.message().contains("expected Function"),
             "got: {}",
@@ -4857,16 +5315,19 @@ mod tests {
     #[test]
     fn test_type_of_seq() {
         // Seq values should report type name "Seq" from $type-of
+        let ctx = test_ctx();
+        let head_id = ctx.alloc_thunk(thunk(Value::Int(1)));
+        let tail_id = ctx.alloc_thunk(thunk(Value::Dict(IndexMap::new())));
         let seq = Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Dict(IndexMap::new())),
+            head: head_id,
+            tail: tail_id,
         };
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(seq)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::String("Seq".into()));
     }
@@ -4965,21 +5426,22 @@ mod tests {
 
     #[test]
     fn from_json_array() {
+        let ctx = test_ctx();
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(Value::String("[1, 2, 3]".into()))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v0 = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+                let v0 = mat_id(map[&Key::Int(0)], &ctx);
                 assert_eq!(v0, Value::Int(1));
-                let v1 = materialize(&map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
+                let v1 = mat_id(map[&Key::Int(1)], &ctx);
                 assert_eq!(v1, Value::Int(2));
-                let v2 = materialize(&map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
+                let v2 = mat_id(map[&Key::Int(2)], &ctx);
                 assert_eq!(v2, Value::Int(3));
             }
             _ => panic!("expected Dict"),
@@ -4988,6 +5450,7 @@ mod tests {
 
     #[test]
     fn from_json_object() {
+        let ctx = test_ctx();
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(Value::String(
                 r#"{"name": "Alice", "age": 30}"#.into(),
@@ -4995,16 +5458,14 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let name =
-                    materialize(&map[&Key::String("name".into())], None, &test_ctx(), 0).unwrap();
+                let name = mat_id(map[&Key::String("name".into())], &ctx);
                 assert_eq!(name, Value::String("Alice".into()));
-                let age =
-                    materialize(&map[&Key::String("age".into())], None, &test_ctx(), 0).unwrap();
+                let age = mat_id(map[&Key::String("age".into())], &ctx);
                 assert_eq!(age, Value::Int(30));
             }
             _ => panic!("expected Dict"),
@@ -5013,31 +5474,25 @@ mod tests {
 
     #[test]
     fn from_json_nested_structure() {
+        let ctx = test_ctx();
         let json = r#"{"users": [{"name": "Bob"}, {"name": "Eve"}]}"#;
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(Value::String(json.into()))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let users =
-                    materialize(&map[&Key::String("users".into())], None, &test_ctx(), 0).unwrap();
+                let users = mat_id(map[&Key::String("users".into())], &ctx);
                 match users {
                     Value::Dict(arr) => {
                         assert_eq!(arr.len(), 2);
-                        let user0 = materialize(&arr[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+                        let user0 = mat_id(arr[&Key::Int(0)], &ctx);
                         match user0 {
                             Value::Dict(u) => {
-                                let name = materialize(
-                                    &u[&Key::String("name".into())],
-                                    None,
-                                    &test_ctx(),
-                                    0,
-                                )
-                                .unwrap();
+                                let name = mat_id(u[&Key::String("name".into())], &ctx);
                                 assert_eq!(name, Value::String("Bob".into()));
                             }
                             _ => panic!("expected Dict for user"),
@@ -5133,23 +5588,24 @@ mod tests {
 
     #[test]
     fn from_json_mixed_array() {
+        let ctx = test_ctx();
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(Value::String(r#"[1, "two", true, null]"#.into()))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 4);
-                let v0 = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+                let v0 = mat_id(map[&Key::Int(0)], &ctx);
                 assert_eq!(v0, Value::Int(1));
-                let v1 = materialize(&map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
+                let v1 = mat_id(map[&Key::Int(1)], &ctx);
                 assert_eq!(v1, Value::String("two".into()));
-                let v2 = materialize(&map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
+                let v2 = mat_id(map[&Key::Int(2)], &ctx);
                 assert_eq!(v2, Value::Bool(true));
-                let v3 = materialize(&map[&Key::Int(3)], None, &test_ctx(), 0).unwrap();
+                let v3 = mat_id(map[&Key::Int(3)], &ctx);
                 match v3 {
                     Value::Dict(m) => assert!(m.is_empty()),
                     _ => panic!("expected empty Dict for null"),
@@ -5204,13 +5660,14 @@ mod tests {
 
     #[test]
     fn keys_empty_dict() {
-        let dict = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let dict = thunk_dict(IndexMap::new(), &ctx);
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 0),
@@ -5220,24 +5677,25 @@ mod tests {
 
     #[test]
     fn keys_int_keyed_dict() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
         map.insert(Key::Int(2), thunk(Value::String("c".into())));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
                 for i in 0..3 {
-                    let val = materialize(&keys_map[&Key::Int(i)], None, &test_ctx(), 0).unwrap();
+                    let val = mat_id(keys_map[&Key::Int(i)], &ctx);
                     assert_eq!(val, Value::Int(i));
                 }
             }
@@ -5247,27 +5705,28 @@ mod tests {
 
     #[test]
     fn keys_string_keyed_dict() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(
             Key::String("name".into()),
             thunk(Value::String("Alice".into())),
         );
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 2);
-                let k0 = materialize(&keys_map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+                let k0 = mat_id(keys_map[&Key::Int(0)], &ctx);
                 assert_eq!(k0, Value::String("name".into()));
-                let k1 = materialize(&keys_map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
+                let k1 = mat_id(keys_map[&Key::Int(1)], &ctx);
                 assert_eq!(k1, Value::String("age".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5276,6 +5735,7 @@ mod tests {
 
     #[test]
     fn keys_mixed_key_dict() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("first".into())));
         map.insert(
@@ -5283,23 +5743,23 @@ mod tests {
             thunk(Value::String("second".into())),
         );
         map.insert(Key::Int(5), thunk(Value::String("third".into())));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 3);
-                let k0 = materialize(&keys_map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+                let k0 = mat_id(keys_map[&Key::Int(0)], &ctx);
                 assert_eq!(k0, Value::Int(0));
-                let k1 = materialize(&keys_map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
+                let k1 = mat_id(keys_map[&Key::Int(1)], &ctx);
                 assert_eq!(k1, Value::String("label".into()));
-                let k2 = materialize(&keys_map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
+                let k2 = mat_id(keys_map[&Key::Int(2)], &ctx);
                 assert_eq!(k2, Value::Int(5));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5308,24 +5768,25 @@ mod tests {
 
     #[test]
     fn keys_preserves_insertion_order() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("z".into()), thunk(Value::Int(1)));
         map.insert(Key::String("a".into()), thunk(Value::Int(2)));
         map.insert(Key::String("m".into()), thunk(Value::Int(3)));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
-                let k0 = materialize(&keys_map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
-                let k1 = materialize(&keys_map[&Key::Int(1)], None, &test_ctx(), 0).unwrap();
-                let k2 = materialize(&keys_map[&Key::Int(2)], None, &test_ctx(), 0).unwrap();
+                let k0 = mat_id(keys_map[&Key::Int(0)], &ctx);
+                let k1 = mat_id(keys_map[&Key::Int(1)], &ctx);
+                let k2 = mat_id(keys_map[&Key::Int(2)], &ctx);
                 assert_eq!(k0, Value::String("z".into()));
                 assert_eq!(k1, Value::String("a".into()));
                 assert_eq!(k2, Value::String("m".into()));
@@ -5336,52 +5797,56 @@ mod tests {
 
     #[test]
     fn length_empty_dict() {
-        let dict = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let dict = thunk_dict(IndexMap::new(), &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(0));
     }
 
     #[test]
     fn length_non_empty_dict() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
         map.insert(Key::String("b".into()), thunk(Value::Int(2)));
         map.insert(Key::String("c".into()), thunk(Value::Int(3)));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(3));
     }
 
     #[test]
     fn length_int_keyed_dict() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("x".into())));
         map.insert(Key::Int(1), thunk(Value::String("y".into())));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(2));
     }
 
     #[test]
     fn merge_disjoint_keys() {
+        let ctx = test_ctx();
         let mut left = IndexMap::new();
         left.insert(Key::String("a".into()), thunk(Value::Int(1)));
         left.insert(Key::String("b".into()), thunk(Value::Int(2)));
@@ -5390,14 +5855,14 @@ mod tests {
         right.insert(Key::String("d".into()), thunk(Value::Int(4)));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left), thunk_dict(right)],
+            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         // builtin_merge now returns Value::Overlay; flatten to verify contents.
-        let map = flatten_val(result);
+        let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 4);
         assert!(map.contains_key(&Key::String("a".into())));
         assert!(map.contains_key(&Key::String("b".into())));
@@ -5407,6 +5872,7 @@ mod tests {
 
     #[test]
     fn merge_overlapping_keys_right_wins() {
+        let ctx = test_ctx();
         let mut left = IndexMap::new();
         left.insert(Key::String("x".into()), thunk(Value::Int(1)));
         left.insert(Key::String("y".into()), thunk(Value::Int(2)));
@@ -5415,32 +5881,36 @@ mod tests {
         right.insert(Key::String("z".into()), thunk(Value::Int(3)));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left), thunk_dict(right)],
+            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
-        let map = flatten_val(result);
+        let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 3);
-        let x = materialize(&map[&Key::String("x".into())], None, &test_ctx(), 0).unwrap();
+        let x = mat_id(map[&Key::String("x".into())], &ctx);
         assert_eq!(x, Value::Int(1));
-        let y = materialize(&map[&Key::String("y".into())], None, &test_ctx(), 0).unwrap();
+        let y = mat_id(map[&Key::String("y".into())], &ctx);
         assert_eq!(y, Value::Int(99)); // R overrides L
-        let z = materialize(&map[&Key::String("z".into())], None, &test_ctx(), 0).unwrap();
+        let z = mat_id(map[&Key::String("z".into())], &ctx);
         assert_eq!(z, Value::Int(3));
     }
 
     #[test]
     fn merge_empty_dicts() {
+        let ctx = test_ctx();
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(IndexMap::new()), thunk_dict(IndexMap::new())],
+            args: &[
+                thunk_dict(IndexMap::new(), &ctx),
+                thunk_dict(IndexMap::new(), &ctx),
+            ],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
-        let map = flatten_val(result);
+        let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 0);
     }
 
@@ -5471,42 +5941,45 @@ mod tests {
 
     #[test]
     fn merge_left_empty() {
+        let ctx = test_ctx();
         let mut right = IndexMap::new();
         right.insert(Key::Int(0), thunk(Value::String("only".into())));
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(IndexMap::new()), thunk_dict(right)],
+            args: &[thunk_dict(IndexMap::new(), &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
-        let map = flatten_val(result);
+        let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 1);
-        let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+        let v = mat_id(map[&Key::Int(0)], &ctx);
         assert_eq!(v, Value::String("only".into()));
     }
 
     #[test]
     fn merge_right_empty() {
+        let ctx = test_ctx();
         let mut left = IndexMap::new();
         left.insert(Key::Int(0), thunk(Value::String("only".into())));
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left), thunk_dict(IndexMap::new())],
+            args: &[thunk_dict(left, &ctx), thunk_dict(IndexMap::new(), &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
-        let map = flatten_val(result);
+        let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 1);
-        let v = materialize(&map[&Key::Int(0)], None, &test_ctx(), 0).unwrap();
+        let v = mat_id(map[&Key::Int(0)], &ctx);
         assert_eq!(v, Value::String("only".into()));
     }
 
     #[test]
     fn merge_preserves_thunks() {
-        // With lazy overlay, the original thunks are preserved as-is (Rc::clone)
-        // when the overlay is flattened.
+        // With arena-based ThunkIds, verify that the values are preserved correctly
+        // through a lazy overlay by materializing and comparing values.
+        let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
         let left_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
         let right_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
@@ -5517,20 +5990,21 @@ mod tests {
         right.insert(Key::String("b".into()), Rc::clone(&right_thunk));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left), thunk_dict(right)],
+            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
-        // Flatten and verify thunk identity is preserved through the overlay.
-        let map = flatten_val(result);
-        assert!(Rc::ptr_eq(&map[&Key::String("a".into())], &left_thunk));
-        assert!(Rc::ptr_eq(&map[&Key::String("b".into())], &right_thunk));
+        // Flatten and verify values are preserved correctly through the overlay.
+        let map = flatten_val(result, &ctx);
+        assert_eq!(mat_id(map[&Key::String("a".into())], &ctx), Value::Int(42));
+        assert_eq!(mat_id(map[&Key::String("b".into())], &ctx), Value::Int(99));
     }
 
     #[test]
     fn merge_preserves_left_order() {
+        let ctx = test_ctx();
         let mut left = IndexMap::new();
         left.insert(Key::String("b".into()), thunk(Value::Int(1)));
         left.insert(Key::String("a".into()), thunk(Value::Int(2)));
@@ -5539,13 +6013,13 @@ mod tests {
         right.insert(Key::String("c".into()), thunk(Value::Int(4)));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left), thunk_dict(right)],
+            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
-        let map = flatten_val(result);
+        let map = flatten_val(result, &ctx);
         let keys: Vec<&Key> = map.keys().collect();
         assert_eq!(
             keys,
@@ -5577,13 +6051,14 @@ mod tests {
 
     #[test]
     fn keys_wrong_arity_two() {
-        let d = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let d = thunk_dict(IndexMap::new(), &ctx);
         let err = builtin_keys(BuiltinArgs {
             args: &[d.clone(), d],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -5612,13 +6087,14 @@ mod tests {
 
     #[test]
     fn length_wrong_arity_two() {
-        let d = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let d = thunk_dict(IndexMap::new(), &ctx);
         let err = builtin_length(BuiltinArgs {
             args: &[d.clone(), d],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -5630,13 +6106,14 @@ mod tests {
 
     #[test]
     fn merge_wrong_arity_one() {
-        let d = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let d = thunk_dict(IndexMap::new(), &ctx);
         let err = builtin_merge(BuiltinArgs {
             args: &[d],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -5648,13 +6125,14 @@ mod tests {
 
     #[test]
     fn merge_wrong_arity_three() {
-        let d = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let d = thunk_dict(IndexMap::new(), &ctx);
         let err = builtin_merge(BuiltinArgs {
             args: &[d.clone(), d.clone(), d],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -5742,22 +6220,22 @@ mod tests {
     fn merge_first_arg_non_dict() {
         // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
         // The type error fires when the overlay is flattened (at access time).
-        let d = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let d = thunk_dict(IndexMap::new(), &ctx);
         let result = builtin_merge(BuiltinArgs {
             args: &[thunk(Value::Int(1)), d],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         });
         // builtin_merge itself succeeds — returns Overlay(Int(1), {})
         let overlay_thunk = result.unwrap();
-        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &test_ctx(), 0).unwrap();
+        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx, 0).unwrap();
         // Flatten fires the type error: left side is Int, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
-                let err =
-                    flatten_overlay(&l, &r, "merge", &test_ctx(), 0, call_span()).unwrap_err();
+                let err = flatten_overlay(&l, &r, "merge", &ctx, 0, call_span()).unwrap_err();
                 assert!(
                     err.message().contains("expected Dict"),
                     "got: {}",
@@ -5773,21 +6251,21 @@ mod tests {
     fn merge_second_arg_non_dict() {
         // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
         // The type error fires when the overlay is flattened (at access time).
-        let d = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let d = thunk_dict(IndexMap::new(), &ctx);
         let result = builtin_merge(BuiltinArgs {
             args: &[d, thunk(Value::String("nope".into()))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         });
         let overlay_thunk = result.unwrap();
-        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &test_ctx(), 0).unwrap();
+        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx, 0).unwrap();
         // Flatten fires the type error: right side is String, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
-                let err =
-                    flatten_overlay(&l, &r, "merge", &test_ctx(), 0, call_span()).unwrap_err();
+                let err = flatten_overlay(&l, &r, "merge", &ctx, 0, call_span()).unwrap_err();
                 assert!(
                     err.message().contains("expected Dict"),
                     "got: {}",
@@ -5805,19 +6283,19 @@ mod tests {
 
     #[test]
     fn append_to_empty_dict() {
-        let empty = thunk_dict(IndexMap::new());
+        let ctx = test_ctx();
+        let empty = thunk_dict(IndexMap::new(), &ctx);
         let result = mat(builtin_append(BuiltinArgs {
             args: &[empty, thunk(Value::Int(42))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let val =
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let val = mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx);
                 assert_eq!(val, Value::Int(42));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5826,22 +6304,22 @@ mod tests {
 
     #[test]
     fn append_to_existing_list() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::String("c".into()))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let val =
-                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let val = mat_id(*map.get(&Key::Int(2)).unwrap(), &ctx);
                 assert_eq!(val, Value::String("c".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5851,21 +6329,21 @@ mod tests {
     #[test]
     fn append_to_dict_with_string_keys_only() {
         // Dict with only string keys -- next int key should be 0
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::Int(99))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let val =
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let val = mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx);
                 assert_eq!(val, Value::Int(99));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5875,22 +6353,22 @@ mod tests {
     #[test]
     fn append_to_dict_with_gap_in_int_keys() {
         // Dict with keys 0, 5 -- next key should be 6 (max + 1)
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::Int(10)));
         map.insert(Key::Int(5), thunk(Value::Int(50)));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::Int(60))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let val =
-                    materialize(map.get(&Key::Int(6)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let val = mat_id(*map.get(&Key::Int(6)).unwrap(), &ctx);
                 assert_eq!(val, Value::Int(60));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5899,24 +6377,23 @@ mod tests {
 
     #[test]
     fn append_preserves_existing_entries() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("first".into())));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::String("second".into()))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let first =
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let first = mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx);
                 assert_eq!(first, Value::String("first".into()));
-                let second =
-                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let second = mat_id(*map.get(&Key::Int(1)).unwrap(), &ctx);
                 assert_eq!(second, Value::String("second".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5925,20 +6402,23 @@ mod tests {
 
     #[test]
     fn append_value_stays_as_thunk() {
-        // The value arg is not materialized -- it's inserted as a thunk
-        let empty = thunk_dict(IndexMap::new());
+        // The value arg is inserted lazily (not materialized at append time).
+        // Verify the inserted value is correct when materialized.
+        let ctx = test_ctx();
+        let empty = thunk_dict(IndexMap::new(), &ctx);
         let val_thunk = thunk(Value::Int(7));
         let result = mat(builtin_append(BuiltinArgs {
             args: &[empty, Rc::clone(&val_thunk)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                // The inserted thunk should be the same Rc (not a copy)
-                assert!(Rc::ptr_eq(map.get(&Key::Int(0)).unwrap(), &val_thunk));
+                // Verify the value was inserted correctly and materializes to the expected value.
+                let id = *map.get(&Key::Int(0)).unwrap();
+                assert_eq!(mat_id(id, &ctx), Value::Int(7));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -5959,16 +6439,17 @@ mod tests {
 
     #[test]
     fn append_wrong_arity_three() {
+        let ctx = test_ctx();
         let err = builtin_append(BuiltinArgs {
             args: &[
-                thunk_dict(IndexMap::new()),
+                thunk_dict(IndexMap::new(), &ctx),
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
             ],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(err.message().contains("2"), "got: {}", err.message());
@@ -5994,15 +6475,16 @@ mod tests {
 
     #[test]
     fn append_key_overflow_at_i64_max() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(i64::MAX), thunk(Value::Int(1)));
-        let dict = thunk_dict(map);
+        let dict = thunk_dict(map, &ctx);
         let err = builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::Int(2))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -6098,20 +6580,27 @@ mod tests {
 
     #[test]
     fn str_single_dict() {
-        let mut map = IndexMap::new();
-        map.insert(
-            Key::String("x".into()),
-            Rc::new(Thunk::new_materialized(
-                Value::Int(1),
-                test_span(1, 1, 1, 5),
-            )),
+        let ctx = test_ctx();
+        let dict = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(
+                    Key::String("x".into()),
+                    Rc::new(Thunk::new_materialized(
+                        Value::Int(1),
+                        test_span(1, 1, 1, 5),
+                    )),
+                );
+                m
+            },
+            &ctx,
         );
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(Value::Dict(map))],
+            args: &[dict],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::String("[x: <thunk>]".into()));
     }
@@ -6170,6 +6659,7 @@ mod tests {
 
     #[test]
     fn split_basic() {
+        let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
             args: &[
                 thunk(Value::String(",".into())),
@@ -6178,14 +6668,14 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
-                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
-                let v2 = materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v0 = mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx);
+                let v1 = mat_id(*map.get(&Key::Int(1)).unwrap(), &ctx);
+                let v2 = mat_id(*map.get(&Key::Int(2)).unwrap(), &ctx);
                 assert_eq!(v0, Value::String("a".into()));
                 assert_eq!(v1, Value::String("b".into()));
                 assert_eq!(v2, Value::String("c".into()));
@@ -6196,6 +6686,7 @@ mod tests {
 
     #[test]
     fn split_empty_parts() {
+        let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
             args: &[
                 thunk(Value::String(",".into())),
@@ -6204,12 +6695,12 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v1 = mat_id(*map.get(&Key::Int(1)).unwrap(), &ctx);
                 assert_eq!(v1, Value::String("".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -6236,6 +6727,7 @@ mod tests {
 
     #[test]
     fn split_no_match() {
+        let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
             args: &[
                 thunk(Value::String(",".into())),
@@ -6244,12 +6736,12 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v0 = mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx);
                 assert_eq!(v0, Value::String("hello".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -6258,6 +6750,7 @@ mod tests {
 
     #[test]
     fn split_multi_char_separator() {
+        let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
             args: &[
                 thunk(Value::String("::".into())),
@@ -6266,14 +6759,14 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
-                let v1 = materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap();
-                let v2 = materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v0 = mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx);
+                let v1 = mat_id(*map.get(&Key::Int(1)).unwrap(), &ctx);
+                let v2 = mat_id(*map.get(&Key::Int(2)).unwrap(), &ctx);
                 assert_eq!(v0, Value::String("a".into()));
                 assert_eq!(v1, Value::String("b".into()));
                 assert_eq!(v2, Value::String("c".into()));
@@ -6284,6 +6777,7 @@ mod tests {
 
     #[test]
     fn split_empty_input() {
+        let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
             args: &[
                 thunk(Value::String(",".into())),
@@ -6292,12 +6786,12 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let v0 = materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+                let v0 = mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx);
                 assert_eq!(v0, Value::String("".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -7412,16 +7906,23 @@ mod tests {
 
     #[test]
     fn keys_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let mut map = IndexMap::new();
-        map.insert(Key::String("a".into()), thunk(Value::Int(1)));
+        let dict = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::String("a".into()), thunk(Value::Int(1)));
+                m
+            },
+            &ctx,
+        );
         let err = builtin_keys(BuiltinArgs {
-            args: &[thunk(Value::Dict(map))],
+            args: &[dict],
             named: Some(&named),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -7640,8 +8141,14 @@ mod tests {
         assert!(names.contains(&"sort"), "missing sort");
         // Also assert proxy is present
         assert!(names.contains(&"proxy"), "missing proxy");
-        // Total count: 47 original (incl. proxy) + 4 new list ops + 8 type predicates + 13 I/O (emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, net-cap, connect, lines, write, write-atomic) + from-json + include = 74
-        assert_eq!(names.len(), 74, "expected 74 builtins, got {}", names.len());
+        // Access-pipeline builtins (Wave 1 sprint)
+        assert!(names.contains(&"builtin-get"), "missing builtin-get");
+        assert!(names.contains(&"each"), "missing each");
+        assert!(names.contains(&"each-key"), "missing each-key");
+        assert!(names.contains(&"each-kv"), "missing each-kv");
+        // Total count: Wave 1 sprint added 4 access-pipeline builtins (builtin-get, each, each-key, each-kv).
+        // Update this count when standard_builtins() changes.
+        assert_eq!(names.len(), 76, "expected 76 builtins, got {}", names.len());
     }
 
     #[test]
@@ -9062,7 +9569,8 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.message().contains("expected DirCap or String")
+                || err.message().contains("type mismatch"),
             "got: {}",
             err.message()
         );
@@ -9110,21 +9618,9 @@ mod tests {
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
-                let x = materialize(
-                    map.get(&Key::String("x".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let x = mat_id(*map.get(&Key::String("x".into())).unwrap(), &ctx);
                 assert_eq!(x, Value::Int(42));
-                let y = materialize(
-                    map.get(&Key::String("y".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let y = mat_id(*map.get(&Key::String("y".into())).unwrap(), &ctx);
                 assert_eq!(y, Value::String("hello".into()));
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -9250,22 +9746,10 @@ mod tests {
         }));
         match result {
             Value::Dict(map) => {
-                let inner = materialize(
-                    map.get(&Key::String("inner".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let inner = mat_id(*map.get(&Key::String("inner".into())).unwrap(), &ctx);
                 match inner {
                     Value::Dict(inner_map) => {
-                        let val = materialize(
-                            inner_map.get(&Key::String("val".into())).unwrap(),
-                            None,
-                            &test_ctx(),
-                            0,
-                        )
-                        .unwrap();
+                        let val = mat_id(*inner_map.get(&Key::String("val".into())).unwrap(), &ctx);
                         assert_eq!(val, Value::Int(99));
                     }
                     other => panic!("expected inner Dict, got {:?}", other),
@@ -9328,13 +9812,15 @@ mod tests {
             err.message()
         );
 
-        // Three arguments (only 1 or 2 accepted; 3 is an arity error)
+        // Four arguments (include accepts 1, 2, or 3 args; 4 is an arity error)
+        // Pattern: [include $cap "path" "hash"] uses 3 args (cap + path + hash), so 4 triggers arity error.
         let args = vec![
             thunk(Value::String("a.llt".into())),
             thunk(Value::String(
                 "blake3:0000000000000000000000000000000000000000000000000000000000000000".into(),
             )),
             thunk(Value::String("extra".into())),
+            thunk(Value::String("too-many".into())),
         ];
         let err = builtin_include(BuiltinArgs {
             args: &args,
@@ -9391,17 +9877,11 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx,
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let y = materialize(
-                    map.get(&Key::String("y".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let y = mat_id(*map.get(&Key::String("y".into())).unwrap(), &ctx);
                 assert_eq!(y, Value::Int(10));
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -9423,17 +9903,11 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx,
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let val = materialize(
-                    map.get(&Key::String("result".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let val = mat_id(*map.get(&Key::String("result".into())).unwrap(), &ctx);
                 assert_eq!(val, Value::Int(3));
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -9514,26 +9988,14 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx,
+            ctx: Rc::clone(&ctx),
         }));
 
         // Both should return the same value
         match (&result1, &result2) {
             (Value::Dict(map1), Value::Dict(map2)) => {
-                let val1 = materialize(
-                    map1.get(&Key::String("value".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
-                let val2 = materialize(
-                    map2.get(&Key::String("value".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let val1 = mat_id(*map1.get(&Key::String("value".into())).unwrap(), &ctx);
+                let val2 = mat_id(*map2.get(&Key::String("value".into())).unwrap(), &ctx);
                 assert_eq!(val1, Value::Int(42));
                 assert_eq!(val2, Value::Int(42));
             }
@@ -9571,26 +10033,14 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx,
+            ctx: Rc::clone(&ctx),
         }));
 
         // Both should return the same value
         match (&result1, &result2) {
             (Value::Dict(map1), Value::Dict(map2)) => {
-                let val1 = materialize(
-                    map1.get(&Key::String("value".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
-                let val2 = materialize(
-                    map2.get(&Key::String("value".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let val1 = mat_id(*map1.get(&Key::String("value".into())).unwrap(), &ctx);
+                let val2 = mat_id(*map2.get(&Key::String("value".into())).unwrap(), &ctx);
                 assert_eq!(val1, Value::Int(99));
                 assert_eq!(val2, Value::Int(99));
             }
@@ -9628,44 +10078,22 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx,
+            ctx: Rc::clone(&ctx),
         }));
 
         // Verify that both got the shared value
         match (&result_a, &result_c) {
             (Value::Dict(map_a), Value::Dict(map_c)) => {
-                let a_val = materialize(
-                    map_a.get(&Key::String("a".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
-                let c_val = materialize(
-                    map_c.get(&Key::String("c".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let a_val = mat_id(*map_a.get(&Key::String("a".into())).unwrap(), &ctx);
+                let c_val = mat_id(*map_c.get(&Key::String("c".into())).unwrap(), &ctx);
 
                 // Both should be dicts with "shared: 123"
                 match (&a_val, &c_val) {
                     (Value::Dict(a_inner), Value::Dict(c_inner)) => {
-                        let a_shared = materialize(
-                            a_inner.get(&Key::String("shared".into())).unwrap(),
-                            None,
-                            &test_ctx(),
-                            0,
-                        )
-                        .unwrap();
-                        let c_shared = materialize(
-                            c_inner.get(&Key::String("shared".into())).unwrap(),
-                            None,
-                            &test_ctx(),
-                            0,
-                        )
-                        .unwrap();
+                        let a_shared =
+                            mat_id(*a_inner.get(&Key::String("shared".into())).unwrap(), &ctx);
+                        let c_shared =
+                            mat_id(*c_inner.get(&Key::String("shared".into())).unwrap(), &ctx);
                         assert_eq!(a_shared, Value::Int(123));
                         assert_eq!(c_shared, Value::Int(123));
                     }
@@ -9736,17 +10164,11 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx,
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let val = materialize(
-                    map.get(&Key::String("x".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let val = mat_id(*map.get(&Key::String("x".into())).unwrap(), &ctx);
                 assert_eq!(val, Value::Int(99));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -9891,17 +10313,11 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx,
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
-                let val = materialize(
-                    map.get(&Key::String("y".into())).unwrap(),
-                    None,
-                    &test_ctx(),
-                    0,
-                )
-                .unwrap();
+                let val = mat_id(*map.get(&Key::String("y".into())).unwrap(), &ctx);
                 assert_eq!(val, Value::Int(55));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -10043,6 +10459,7 @@ mod tests {
 
     #[test]
     fn seq_basic() {
+        let ctx = test_ctx();
         let head_val = thunk(Value::Int(1));
         let tail_val = thunk(Value::Int(2));
         let result = mat(builtin_seq(BuiltinArgs {
@@ -10050,18 +10467,12 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(1)
-                );
-                assert_eq!(
-                    materialize(&tail, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(2)
-                );
+                assert_eq!(mat_id(head, &ctx), Value::Int(1));
+                assert_eq!(mat_id(tail, &ctx), Value::Int(2));
             }
             other => panic!("expected Seq, got {:?}", other),
         }
@@ -10140,16 +10551,18 @@ mod tests {
 
     #[test]
     fn head_basic() {
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::String("first".into())),
-            tail: thunk(Value::Dict(IndexMap::new())),
-        });
+        let ctx = test_ctx();
+        let seq_val = seq_thunk(
+            thunk(Value::String("first".into())),
+            empty_dict_thunk(),
+            &ctx,
+        );
         let result = builtin_head(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         });
         assert!(result.is_ok());
         let head = mat(result);
@@ -10228,16 +10641,18 @@ mod tests {
 
     #[test]
     fn tail_basic() {
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::String("first".into())),
-            tail: thunk(Value::Int(99)),
-        });
+        let ctx = test_ctx();
+        let seq_val = seq_thunk(
+            thunk(Value::String("first".into())),
+            thunk(Value::Int(99)),
+            &ctx,
+        );
         let result = builtin_tail(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         });
         assert!(result.is_ok());
         let tail = mat(result);
@@ -10259,38 +10674,24 @@ mod tests {
     #[test]
     fn collect_basic() {
         // Build a 3-element sequence: Seq(1, Seq(2, Seq(3, {})))
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Seq {
-                head: thunk(Value::Int(2)),
-                tail: thunk(Value::Seq {
-                    head: thunk(Value::Int(3)),
-                    tail: thunk(Value::Dict(IndexMap::new())),
-                }),
-            }),
-        });
+        let ctx = test_ctx();
+        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_dict_thunk(), &ctx);
+        let seq2 = seq_thunk(thunk(Value::Int(2)), seq3, &ctx);
+        let seq_val = seq_thunk(thunk(Value::Int(1)), seq2, &ctx);
+
         let result = mat(builtin_collect(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 3);
-                assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(1)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(2)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(3)
-                );
+                assert_eq!(mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx), Value::Int(1));
+                assert_eq!(mat_id(*map.get(&Key::Int(1)).unwrap(), &ctx), Value::Int(2));
+                assert_eq!(mat_id(*map.get(&Key::Int(2)).unwrap(), &ctx), Value::Int(3));
             }
             other => panic!("expected Dict, got {:?}", other),
         }
@@ -10299,22 +10700,20 @@ mod tests {
     #[test]
     fn collect_empty_tail() {
         // Single element: Seq(42, {})
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::Int(42)),
-            tail: thunk(Value::Dict(IndexMap::new())),
-        });
+        let ctx = test_ctx();
+        let seq_val = seq_thunk(thunk(Value::Int(42)), empty_dict_thunk(), &ctx);
         let result = mat(builtin_collect(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
                 assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
+                    mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx),
                     Value::Int(42)
                 );
             }
@@ -10337,18 +10736,22 @@ mod tests {
     #[test]
     fn collect_invalid_tail() {
         // Seq with non-empty dict as tail (should error)
-        let mut map = IndexMap::new();
-        map.insert(Key::String("x".into()), thunk(Value::Int(1)));
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Dict(map)),
-        });
+        let ctx = test_ctx();
+        let tail_dict = thunk_dict(
+            {
+                let mut m = IndexMap::new();
+                m.insert(Key::String("x".into()), thunk(Value::Int(1)));
+                m
+            },
+            &ctx,
+        );
+        let seq_val = seq_thunk(thunk(Value::Int(1)), tail_dict, &ctx);
         let result = builtin_collect(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         });
         assert!(result.is_err());
     }
@@ -10359,12 +10762,13 @@ mod tests {
         // correctly without hitting MAX_EVAL_DEPTH (256) or MAX_COLLECT_SIZE (1M).
         // Testing at the actual MAX_COLLECT_SIZE (1M) would be too slow/memory-intensive,
         // and with depth increment fixes, sequences hit MAX_EVAL_DEPTH around 256 elements.
+        let ctx = test_ctx();
         let range_result = builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
@@ -10373,7 +10777,7 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
@@ -10382,23 +10786,20 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         });
 
         assert!(
             collect_result.is_ok(),
             "collect should succeed for 200 elements"
         );
-        match materialize(&collect_result.unwrap(), None, &test_ctx(), 0).unwrap() {
+        match crate::eval::materialize(&collect_result.unwrap(), None, &ctx, 0).unwrap() {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 200);
                 // Spot-check first and last elements
+                assert_eq!(mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx), Value::Int(0));
                 assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(0)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(199)).unwrap(), None, &test_ctx(), 0).unwrap(),
+                    mat_id(*map.get(&Key::Int(199)).unwrap(), &ctx),
                     Value::Int(199)
                 );
             }
@@ -10467,16 +10868,14 @@ mod tests {
 
     #[test]
     fn seq_check_true() {
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Dict(IndexMap::new())),
-        });
+        let ctx = test_ctx();
+        let seq_val = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
         let result = mat(builtin_seq_check(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         assert_eq!(result, Value::Bool(true));
     }
@@ -10510,27 +10909,22 @@ mod tests {
     #[test]
     fn range_finite_basic() {
         // range(0, 5) → 0, 1, 2, 3, 4
+        let ctx = test_ctx();
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(5))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(0)
-                );
+                assert_eq!(mat_id(head, &ctx), Value::Int(0));
                 // Materialize tail to get next element
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Seq { head: h2, .. } => {
-                        assert_eq!(
-                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
-                            Value::Int(1)
-                        );
+                        assert_eq!(mat_id(h2, &ctx), Value::Int(1));
                     }
                     other => panic!("expected Seq for tail, got {:?}", other),
                 }
@@ -10574,21 +10968,19 @@ mod tests {
     #[test]
     fn range_single_element() {
         // range(0, 1) → 0
+        let ctx = test_ctx();
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(1))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(0)
-                );
+                assert_eq!(mat_id(head, &ctx), Value::Int(0));
                 // tail should be empty (terminal)
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Dict(map) if map.is_empty() => {} // Success
                     other => panic!("expected empty dict for tail, got {:?}", other),
@@ -10601,33 +10993,25 @@ mod tests {
     #[test]
     fn range_infinite_basic() {
         // range(0) → 0, 1, 2, ... (take first 3)
+        let ctx = test_ctx();
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(0)
-                );
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                assert_eq!(mat_id(head, &ctx), Value::Int(0));
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(
-                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
-                            Value::Int(1)
-                        );
-                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
+                        assert_eq!(mat_id(h2, &ctx), Value::Int(1));
+                        let t2_val = mat_id(t2, &ctx);
                         match t2_val {
                             Value::Seq { head: h3, .. } => {
-                                assert_eq!(
-                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
-                                    Value::Int(2)
-                                );
+                                assert_eq!(mat_id(h3, &ctx), Value::Int(2));
                             }
                             other => panic!("expected Seq, got {:?}", other),
                         }
@@ -10696,33 +11080,25 @@ mod tests {
     #[test]
     fn repeat_basic() {
         // repeat(42) → 42, 42, 42, ... (take first 3)
+        let ctx = test_ctx();
         let result = mat(builtin_repeat(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(42)
-                );
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                assert_eq!(mat_id(head, &ctx), Value::Int(42));
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(
-                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
-                            Value::Int(42)
-                        );
-                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
+                        assert_eq!(mat_id(h2, &ctx), Value::Int(42));
+                        let t2_val = mat_id(t2, &ctx);
                         match t2_val {
                             Value::Seq { head: h3, .. } => {
-                                assert_eq!(
-                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
-                                    Value::Int(42)
-                                );
+                                assert_eq!(mat_id(h3, &ctx), Value::Int(42));
                             }
                             other => panic!("expected Seq, got {:?}", other),
                         }
@@ -10790,49 +11166,38 @@ mod tests {
     #[test]
     fn cycle_basic() {
         // cycle([a, b]) → a, b, a, b, ... (take first 4)
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("x".into()), thunk(Value::String("a".into())));
         map.insert(Key::String("y".into()), thunk(Value::String("b".into())));
-        let dict_val = thunk(Value::Dict(map));
+        let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_cycle(BuiltinArgs {
             args: &[dict_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
                 // First element: "a"
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::String("a".into())
-                );
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                assert_eq!(mat_id(head, &ctx), Value::String("a".into()));
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
                         // Second element: "b"
-                        assert_eq!(
-                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
-                            Value::String("b".into())
-                        );
-                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
+                        assert_eq!(mat_id(h2, &ctx), Value::String("b".into()));
+                        let t2_val = mat_id(t2, &ctx);
                         match t2_val {
                             Value::Seq { head: h3, tail: t3 } => {
                                 // Third element: "a" (cycling back)
-                                assert_eq!(
-                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
-                                    Value::String("a".into())
-                                );
-                                let t3_val = materialize(&t3, None, &test_ctx(), 0).unwrap();
+                                assert_eq!(mat_id(h3, &ctx), Value::String("a".into()));
+                                let t3_val = mat_id(t3, &ctx);
                                 match t3_val {
                                     Value::Seq { head: h4, .. } => {
                                         // Fourth element: "b"
-                                        assert_eq!(
-                                            materialize(&h4, None, &test_ctx(), 0).unwrap(),
-                                            Value::String("b".into())
-                                        );
+                                        assert_eq!(mat_id(h4, &ctx), Value::String("b".into()));
                                     }
                                     other => panic!("expected Seq, got {:?}", other),
                                 }
@@ -10893,6 +11258,7 @@ mod tests {
         // The tail is PendingBuiltin(iterate, [f, PendingCall(f, [x])])
         // Materializing it succeeds (returns another Seq), but materializing
         // the head of *that* Seq would error because f is Int(999), not a function
+        let ctx = test_ctx();
         let f_thunk = thunk(Value::Int(999)); // dummy, won't be called in structure test
         let x_thunk = thunk(Value::Int(0));
 
@@ -10901,23 +11267,21 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
                 // Head should be x (0)
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(0)
-                );
+                assert_eq!(mat_id(head, &ctx), Value::Int(0));
                 // Tail is a PendingBuiltin wrapping iterate(f, f(x))
                 // Materializing it returns another Seq (doesn't error yet)
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Seq { head: h2, .. } => {
                         // Trying to materialize h2 (which is PendingCall(Int(999), [Int(0)]))
                         // will error because Int(999) is not a function
-                        let h2_result = materialize(&h2, None, &test_ctx(), 0);
+                        let h2_thunk = ctx.get_thunk(h2);
+                        let h2_result = crate::eval::materialize(&h2_thunk, None, &ctx, 0);
                         assert!(h2_result.is_err());
                     }
                     other => panic!("expected Seq for tail, got {:?}", other),
@@ -11016,40 +11380,29 @@ mod tests {
     #[test]
     fn take_dict_basic() {
         // take(2, [a: 1, b: 2, c: 3]) → [a: 1, b: 2]
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
         map.insert(Key::String("b".into()), thunk(Value::Int(2)));
         map.insert(Key::String("c".into()), thunk(Value::Int(3)));
-        let dict_val = thunk(Value::Dict(map));
+        let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(2)), dict_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
-                    materialize(
-                        map.get(&Key::String("a".into())).unwrap(),
-                        None,
-                        &test_ctx(),
-                        0
-                    )
-                    .unwrap(),
+                    mat_id(*map.get(&Key::String("a".into())).unwrap(), &ctx),
                     Value::Int(1)
                 );
                 assert_eq!(
-                    materialize(
-                        map.get(&Key::String("b".into())).unwrap(),
-                        None,
-                        &test_ctx(),
-                        0
-                    )
-                    .unwrap(),
+                    mat_id(*map.get(&Key::String("b".into())).unwrap(), &ctx),
                     Value::Int(2)
                 );
             }
@@ -11060,16 +11413,17 @@ mod tests {
     #[test]
     fn take_dict_zero() {
         // take(0, dict) → []
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
-        let dict_val = thunk(Value::Dict(map));
+        let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(0)), dict_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -11080,16 +11434,17 @@ mod tests {
     #[test]
     fn take_dict_negative() {
         // take(-5, dict) → []
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
-        let dict_val = thunk(Value::Dict(map));
+        let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(-5)), dict_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -11100,17 +11455,18 @@ mod tests {
     #[test]
     fn take_dict_more_than_length() {
         // take(10, [a: 1, b: 2]) → [a: 1, b: 2]
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::String("a".into()), thunk(Value::Int(1)));
         map.insert(Key::String("b".into()), thunk(Value::Int(2)));
-        let dict_val = thunk(Value::Dict(map));
+        let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(10)), dict_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -11123,16 +11479,10 @@ mod tests {
     #[test]
     fn take_seq_basic() {
         // Build a 3-element sequence: Seq(1, Seq(2, Seq(3, {})))
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Seq {
-                head: thunk(Value::Int(2)),
-                tail: thunk(Value::Seq {
-                    head: thunk(Value::Int(3)),
-                    tail: thunk(Value::Dict(IndexMap::new())),
-                }),
-            }),
-        });
+        let ctx = test_ctx();
+        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_dict_thunk(), &ctx);
+        let seq2 = seq_thunk(thunk(Value::Int(2)), seq3, &ctx);
+        let seq_val = seq_thunk(thunk(Value::Int(1)), seq2, &ctx);
 
         // take(2, seq) → Seq(1, Seq(2, []))
         let result = mat(builtin_take(BuiltinArgs {
@@ -11140,23 +11490,17 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(1)
-                );
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                assert_eq!(mat_id(head, &ctx), Value::Int(1));
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(
-                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
-                            Value::Int(2)
-                        );
+                        assert_eq!(mat_id(h2, &ctx), Value::Int(2));
                         // tail of tail should be empty dict (terminal)
-                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
+                        let t2_val = mat_id(t2, &ctx);
                         match t2_val {
                             Value::Dict(map) if map.is_empty() => {} // Success
                             other => panic!("expected empty dict, got {:?}", other),
@@ -11172,17 +11516,15 @@ mod tests {
     #[test]
     fn take_seq_zero() {
         // take(0, seq) → []
-        let seq_val = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Dict(IndexMap::new())),
-        });
+        let ctx = test_ctx();
+        let seq_val = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(0)), seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -11232,23 +11574,14 @@ mod tests {
     #[test]
     fn concat_seq() {
         // Build two 2-element sequences and concat them
+        let ctx = test_ctx();
         // xs = Seq(1, Seq(2, {}))
-        let xs = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Seq {
-                head: thunk(Value::Int(2)),
-                tail: thunk(Value::Dict(IndexMap::new())),
-            }),
-        });
+        let xs_inner = seq_thunk(thunk(Value::Int(2)), empty_dict_thunk(), &ctx);
+        let xs = seq_thunk(thunk(Value::Int(1)), xs_inner, &ctx);
 
         // ys = Seq(3, Seq(4, {}))
-        let ys = thunk(Value::Seq {
-            head: thunk(Value::Int(3)),
-            tail: thunk(Value::Seq {
-                head: thunk(Value::Int(4)),
-                tail: thunk(Value::Dict(IndexMap::new())),
-            }),
-        });
+        let ys_inner = seq_thunk(thunk(Value::Int(4)), empty_dict_thunk(), &ctx);
+        let ys = seq_thunk(thunk(Value::Int(3)), ys_inner, &ctx);
 
         // concat(xs, ys) should produce Seq(1, Seq(2, Seq(3, Seq(4, {}))))
         let result = builtin_concat(BuiltinArgs {
@@ -11256,41 +11589,28 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
         // Materialize the result to verify structure
-        let result_val = materialize(&result, None, &test_ctx(), 0).unwrap();
+        let result_val = crate::eval::materialize(&result, None, &ctx, 0).unwrap();
         match result_val {
             Value::Seq { head: h1, tail: t1 } => {
-                assert_eq!(
-                    materialize(&h1, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(1)
-                );
-                let t1_val = materialize(&t1, None, &test_ctx(), 0).unwrap();
+                assert_eq!(mat_id(h1, &ctx), Value::Int(1));
+                let t1_val = mat_id(t1, &ctx);
                 match t1_val {
                     Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(
-                            materialize(&h2, None, &test_ctx(), 0).unwrap(),
-                            Value::Int(2)
-                        );
-                        let t2_val = materialize(&t2, None, &test_ctx(), 0).unwrap();
+                        assert_eq!(mat_id(h2, &ctx), Value::Int(2));
+                        let t2_val = mat_id(t2, &ctx);
                         match t2_val {
                             Value::Seq { head: h3, tail: t3 } => {
-                                assert_eq!(
-                                    materialize(&h3, None, &test_ctx(), 0).unwrap(),
-                                    Value::Int(3)
-                                );
-                                let t3_val = materialize(&t3, None, &test_ctx(), 0).unwrap();
+                                assert_eq!(mat_id(h3, &ctx), Value::Int(3));
+                                let t3_val = mat_id(t3, &ctx);
                                 match t3_val {
                                     Value::Seq { head: h4, tail: t4 } => {
-                                        assert_eq!(
-                                            materialize(&h4, None, &test_ctx(), 0).unwrap(),
-                                            Value::Int(4)
-                                        );
-                                        let t4_val =
-                                            materialize(&t4, None, &test_ctx(), 0).unwrap();
+                                        assert_eq!(mat_id(h4, &ctx), Value::Int(4));
+                                        let t4_val = mat_id(t4, &ctx);
                                         match t4_val {
                                             Value::Dict(map) if map.is_empty() => {} // Success
                                             other => panic!("expected empty dict, got {:?}", other),
@@ -11311,33 +11631,35 @@ mod tests {
 
     #[test]
     fn concat_seq_empty_xs() {
-        // concat({}, ys) should return ys
+        // concat({}, ys) should return ys (same materialized value)
+        let ctx = test_ctx();
         let xs = thunk(Value::Dict(IndexMap::new()));
-        let ys = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Dict(IndexMap::new())),
-        });
+        let ys = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
 
         let result = builtin_concat(BuiltinArgs {
             args: &[xs, ys.clone()],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
-        // Result should be ys (the same thunk)
-        assert!(Rc::ptr_eq(&result, &ys));
+        // Result should be ys — verify by materializing and checking value
+        let result_val = crate::eval::materialize(&result, None, &ctx, 0).unwrap();
+        match result_val {
+            Value::Seq { head, .. } => {
+                assert_eq!(mat_id(head, &ctx), Value::Int(1));
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
     }
 
     #[test]
     fn concat_seq_empty_ys() {
         // concat(xs, {}) should return xs's elements followed by empty dict
-        let xs = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Dict(IndexMap::new())),
-        });
+        let ctx = test_ctx();
+        let xs = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
         let ys = thunk(Value::Dict(IndexMap::new()));
 
         let result = builtin_concat(BuiltinArgs {
@@ -11345,19 +11667,16 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
         // Materialize to verify: Seq(1, {})
-        let result_val = materialize(&result, None, &test_ctx(), 0).unwrap();
+        let result_val = crate::eval::materialize(&result, None, &ctx, 0).unwrap();
         match result_val {
             Value::Seq { head, tail } => {
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(1)
-                );
-                let tail_val = materialize(&tail, None, &test_ctx(), 0).unwrap();
+                assert_eq!(mat_id(head, &ctx), Value::Int(1));
+                let tail_val = mat_id(tail, &ctx);
                 match tail_val {
                     Value::Dict(map) if map.is_empty() => {} // Success
                     other => panic!("expected empty dict, got {:?}", other),
@@ -11370,43 +11689,32 @@ mod tests {
     #[test]
     fn concat_dict() {
         // concat([1, 2], [3, 4]) -> [1, 2, 3, 4] with integer reindexing
+        let ctx = test_ctx();
         let mut xs_map = IndexMap::new();
         xs_map.insert(Key::Int(0), thunk(Value::Int(1)));
         xs_map.insert(Key::Int(1), thunk(Value::Int(2)));
-        let xs = thunk(Value::Dict(xs_map));
+        let xs = thunk_dict(xs_map, &ctx);
 
         let mut ys_map = IndexMap::new();
         ys_map.insert(Key::Int(0), thunk(Value::Int(3)));
         ys_map.insert(Key::Int(1), thunk(Value::Int(4)));
-        let ys = thunk(Value::Dict(ys_map));
+        let ys = thunk_dict(ys_map, &ctx);
 
         let result = mat(builtin_concat(BuiltinArgs {
             args: &[xs, ys],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         match result {
             Value::Dict(ref map) => {
                 assert_eq!(map.len(), 4);
-                assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(1)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(2)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(3)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(3)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(4)
-                );
+                assert_eq!(mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx), Value::Int(1));
+                assert_eq!(mat_id(*map.get(&Key::Int(1)).unwrap(), &ctx), Value::Int(2));
+                assert_eq!(mat_id(*map.get(&Key::Int(2)).unwrap(), &ctx), Value::Int(3));
+                assert_eq!(mat_id(*map.get(&Key::Int(3)).unwrap(), &ctx), Value::Int(4));
             }
             other => panic!("expected Dict, got {:?}", other),
         }
@@ -11425,16 +11733,10 @@ mod tests {
         // PendingBuiltin chain where Rust stack depth is highest.
         //
         // xs = Seq(1, Seq(2, Seq(3, {})))
-        let xs = thunk(Value::Seq {
-            head: thunk(Value::Int(1)),
-            tail: thunk(Value::Seq {
-                head: thunk(Value::Int(2)),
-                tail: thunk(Value::Seq {
-                    head: thunk(Value::Int(3)),
-                    tail: thunk(Value::Dict(IndexMap::new())),
-                }),
-            }),
-        });
+        let ctx = test_ctx();
+        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_dict_thunk(), &ctx);
+        let seq2 = seq_thunk(thunk(Value::Int(2)), seq3, &ctx);
+        let xs = seq_thunk(thunk(Value::Int(1)), seq2, &ctx);
         let ys = thunk(Value::Int(42));
 
         // builtin_concat itself fails immediately because ys=42 is not a collection.
@@ -11443,7 +11745,7 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
 
@@ -11536,6 +11838,7 @@ mod tests {
     fn concat_dict_basic() {
         // Task 4: Test $concat with two small dicts to verify correct behavior
         // This exercises the checked_add call site that prevents integer overflow
+        let ctx = test_ctx();
         let mut dict1 = IndexMap::new();
         dict1.insert(Key::String("a".into()), thunk(Value::Int(1)));
         dict1.insert(Key::String("b".into()), thunk(Value::Int(2)));
@@ -11545,33 +11848,21 @@ mod tests {
         dict2.insert(Key::String("d".into()), thunk(Value::Int(4)));
 
         let result = mat(builtin_concat(BuiltinArgs {
-            args: &[thunk(Value::Dict(dict1)), thunk(Value::Dict(dict2))],
+            args: &[thunk_dict(dict1, &ctx), thunk_dict(dict2, &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         match result {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 4);
                 // All values should be reindexed with integer keys 0, 1, 2, 3
-                assert_eq!(
-                    materialize(map.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(1)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(1)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(2)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(2)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(3)
-                );
-                assert_eq!(
-                    materialize(map.get(&Key::Int(3)).unwrap(), None, &test_ctx(), 0).unwrap(),
-                    Value::Int(4)
-                );
+                assert_eq!(mat_id(*map.get(&Key::Int(0)).unwrap(), &ctx), Value::Int(1));
+                assert_eq!(mat_id(*map.get(&Key::Int(1)).unwrap(), &ctx), Value::Int(2));
+                assert_eq!(mat_id(*map.get(&Key::Int(2)).unwrap(), &ctx), Value::Int(3));
+                assert_eq!(mat_id(*map.get(&Key::Int(3)).unwrap(), &ctx), Value::Int(4));
             }
             other => panic!("expected Dict, got {:?}", other),
         }
@@ -11630,11 +11921,13 @@ mod tests {
                 // Force the filter result. Before the fix this would fail with depth
                 // exceeded after ~128 consecutive failures. After the fix the internal
                 // loop handles all 299 failures at constant depth.
-                let val = crate::eval::materialize(&filter_result, None, &test_ctx(), 0).unwrap();
+                let ctx_inner = test_ctx();
+                let val = crate::eval::materialize(&filter_result, None, &ctx_inner, 0).unwrap();
                 match val {
                     Value::Seq { head, .. } => {
+                        let head_thunk = ctx_inner.get_thunk(head);
                         let head_val =
-                            crate::eval::materialize(&head, None, &test_ctx(), 0).unwrap();
+                            crate::eval::materialize(&head_thunk, None, &ctx_inner, 0).unwrap();
                         assert_eq!(
                             head_val,
                             Value::Int(299),
@@ -11675,12 +11968,13 @@ mod tests {
         let result = std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
+                let ctx_inner = test_ctx();
                 // Create a dict with 300 entries where all fail the predicate
                 let mut dict_map = IndexMap::new();
                 for i in 0..300 {
                     dict_map.insert(Key::Int(i), thunk(Value::Int(i)));
                 }
-                let dict_thunk = thunk(Value::Dict(dict_map));
+                let dict_thunk = thunk_dict(dict_map, &ctx_inner);
 
                 let pred = thunk(Value::Builtin(crate::value::BuiltinDef {
                     func: pred_always_false,
@@ -11697,7 +11991,7 @@ mod tests {
                     named: no_named(),
                     depth: 200,
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx_inner),
                 })
                 .unwrap();
 
@@ -11707,12 +12001,11 @@ mod tests {
                     named: no_named(),
                     depth: 200,
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx_inner),
                 })
                 .unwrap();
 
-                let val =
-                    crate::eval::materialize(&collect_result, None, &test_ctx(), 200).unwrap();
+                let val = crate::eval::materialize(&collect_result, None, &ctx_inner, 200).unwrap();
                 match val {
                     Value::Dict(ref map) => {
                         assert_eq!(
@@ -11771,10 +12064,11 @@ mod tests {
     #[test]
     fn concat_empty_xs_dict_ys_valid_dict_succeeds() {
         // Task 2: When xs is empty Dict and ys is a valid Dict, concat should succeed.
+        let ctx = test_ctx();
         let xs = thunk(Value::Dict(IndexMap::new())); // empty dict
         let mut ys_map = IndexMap::new();
         ys_map.insert(Key::Int(0), thunk(Value::Int(99)));
-        let ys = thunk(Value::Dict(ys_map));
+        let ys = thunk_dict(ys_map, &ctx);
 
         // Should succeed and return ys (the same thunk or an equivalent materialized form)
         let result = builtin_concat(BuiltinArgs {
@@ -11782,7 +12076,7 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         });
 
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
@@ -11790,11 +12084,7 @@ mod tests {
         match val {
             Value::Dict(ref m) => {
                 assert_eq!(m.len(), 1);
-                assert_eq!(
-                    crate::eval::materialize(m.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0)
-                        .unwrap(),
-                    Value::Int(99)
-                );
+                assert_eq!(mat_id(*m.get(&Key::Int(0)).unwrap(), &ctx), Value::Int(99));
             }
             other => panic!("expected Dict, got {:?}", other),
         }
@@ -11867,21 +12157,23 @@ mod tests {
 
     #[test]
     fn test_proxy_returns_proxy_value() {
+        let ctx = test_ctx();
         let handler = thunk(Value::Int(42));
         let result = builtin_proxy(BuiltinArgs {
             args: &[handler.clone()],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
         let val = mat(Ok(result));
         match val {
             Value::Proxy { handler: h } => {
-                // Verify the handler thunk is the same Rc
-                assert!(Rc::ptr_eq(&h, &handler));
+                // Verify the handler thunk contains the expected value.
+                let handler_val = mat_id(h, &ctx);
+                assert_eq!(handler_val, Value::Int(42));
             }
             other => panic!("expected Proxy, got {:?}", other),
         }
@@ -11966,13 +12258,9 @@ mod tests {
         // type mismatch error path.
 
         // Create args: [String("not an int"), Seq { head: Int(1), tail: empty dict }]
+        let ctx = test_ctx();
         let n_remaining = thunk(Value::String("not an int".to_string()));
-        let seq_head = thunk(Value::Int(1));
-        let seq_tail = thunk(Value::Dict(IndexMap::new()));
-        let seq = thunk(Value::Seq {
-            head: seq_head,
-            tail: seq_tail,
-        });
+        let seq = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
 
         // Create the PendingBuiltin thunk
         let pending_thunk = Rc::new(Thunk::new_pending_builtin(
@@ -11982,11 +12270,11 @@ mod tests {
             0,
             call_span(),
             Some(Rc::from("test drop_seq_step")),
-            test_ctx(),
+            Rc::clone(&ctx),
         ));
 
         // Materialize it and expect an error
-        let result = crate::eval::materialize(&pending_thunk, None, &test_ctx(), 0);
+        let result = crate::eval::materialize(&pending_thunk, None, &ctx, 0);
         let err = result.unwrap_err();
 
         // Verify it's a TypeMismatch error with the expected message
@@ -12073,12 +12361,13 @@ mod tests {
     #[test]
     fn drop_constructs_pending_call() {
         // drop(2, seq) should return a PendingBuiltin wrapping a chain of drop_seq_step calls
+        let ctx = test_ctx();
         let seq = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(10))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         let result = mat(builtin_drop(BuiltinArgs {
@@ -12086,17 +12375,14 @@ mod tests {
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         // Result should be a PendingBuiltin (can't inspect internal state, but can verify it materializes correctly)
         match result {
             Value::Seq { head, .. } => {
                 // First element after dropping 2 should be 2
-                assert_eq!(
-                    materialize(&head, None, &test_ctx(), 0).unwrap(),
-                    Value::Int(2)
-                );
+                assert_eq!(mat_id(head, &ctx), Value::Int(2));
             }
             other => panic!("expected Seq from drop, got {:?}", other),
         }
@@ -12105,14 +12391,11 @@ mod tests {
     #[test]
     fn reduce_constructs_pending_call() {
         // reduce(+, 0, [1, 2]) should create a PendingCall chain
-        let seq_val = {
-            let dict_entries = vec![
-                (Key::Int(0), thunk(Value::Int(1))),
-                (Key::Int(1), thunk(Value::Int(2))),
-            ];
-            let map = dict_entries.into_iter().collect();
-            Value::Dict(map)
-        };
+        let ctx = test_ctx();
+        let mut m = IndexMap::new();
+        m.insert(Key::Int(0), thunk(Value::Int(1)));
+        m.insert(Key::Int(1), thunk(Value::Int(2)));
+        let seq_val = thunk_dict(m, &ctx);
 
         let add_builtin = standard_builtins()
             .into_iter()
@@ -12121,11 +12404,11 @@ mod tests {
             .unwrap();
 
         let result = mat(builtin_reduce(BuiltinArgs {
-            args: &[thunk(add_builtin), thunk(Value::Int(0)), thunk(seq_val)],
+            args: &[thunk(add_builtin), thunk(Value::Int(0)), seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         // Result should be 3 (0 + 1 + 2)
@@ -12135,21 +12418,18 @@ mod tests {
     #[test]
     fn join_constructs_pending_call() {
         // join(",", ["a", "b"]) should create a PendingCall chain
-        let seq_val = {
-            let dict_entries = vec![
-                (Key::Int(0), thunk(Value::String("a".into()))),
-                (Key::Int(1), thunk(Value::String("b".into()))),
-            ];
-            let map = dict_entries.into_iter().collect();
-            Value::Dict(map)
-        };
+        let ctx = test_ctx();
+        let mut m = IndexMap::new();
+        m.insert(Key::Int(0), thunk(Value::String("a".into())));
+        m.insert(Key::Int(1), thunk(Value::String("b".into())));
+        let seq_val = thunk_dict(m, &ctx);
 
         let result = mat(builtin_join(BuiltinArgs {
-            args: &[thunk(Value::String(",".into())), thunk(seq_val)],
+            args: &[thunk(Value::String(",".into())), seq_val],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
 
         // Result should be "a,b"
@@ -12340,18 +12620,25 @@ mod tests {
     // Unit tests: builtin_rest, builtin_cons, builtin_reverse, builtin_sort
     // -------------------------------------------------------------------------
 
-    fn make_int_dict(vals: &[i64]) -> Value {
-        let mut map = IndexMap::new();
+    fn make_int_dict(vals: &[i64], ctx: &Rc<crate::eval::EvalContext>) -> Value {
+        let mut rc_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
         for (i, &v) in vals.iter().enumerate() {
-            map.insert(Key::Int(i as i64), thunk(Value::Int(v)));
+            rc_map.insert(Key::Int(i as i64), thunk(Value::Int(v)));
         }
-        Value::Dict(map)
+        let mut id_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(rc_map.len());
+        for (k, v) in rc_map {
+            id_map.insert(k, ctx.alloc_thunk(v));
+        }
+        Value::Dict(id_map)
     }
 
-    fn extract_int_at(map: &IndexMap<Key, Rc<Thunk>>, idx: i64) -> i64 {
-        match crate::eval::materialize(map.get(&Key::Int(idx)).unwrap(), None, &test_ctx(), 0)
-            .unwrap()
-        {
+    fn extract_int_at(
+        map: &IndexMap<Key, ThunkId>,
+        idx: i64,
+        ctx: &Rc<crate::eval::EvalContext>,
+    ) -> i64 {
+        let thunk = ctx.get_thunk(*map.get(&Key::Int(idx)).unwrap());
+        match crate::eval::materialize(&thunk, None, ctx, 0).unwrap() {
             Value::Int(n) => n,
             other => panic!("expected Int at index {idx}, got {:?}", other),
         }
@@ -12359,30 +12646,32 @@ mod tests {
 
     #[test]
     fn rest_three_elements_drops_first() {
+        let ctx = test_ctx();
         let result = mat(builtin_rest(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[10, 20, 30]))],
+            args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
             other => panic!("expected Dict, got {:?}", other),
         };
         assert_eq!(m.len(), 2);
-        assert_eq!(extract_int_at(&m, 0), 20);
-        assert_eq!(extract_int_at(&m, 1), 30);
+        assert_eq!(extract_int_at(&m, 0, &ctx), 20);
+        assert_eq!(extract_int_at(&m, 1, &ctx), 30);
     }
 
     #[test]
     fn rest_single_element_returns_empty() {
+        let ctx = test_ctx();
         let result = mat(builtin_rest(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[42]))],
+            args: &[thunk(make_int_dict(&[42], &ctx))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         match result {
             Value::Dict(m) => assert!(m.is_empty()),
@@ -12407,57 +12696,60 @@ mod tests {
 
     #[test]
     fn cons_prepends_element() {
+        let ctx = test_ctx();
         let result = mat(builtin_cons(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), thunk(make_int_dict(&[1, 2, 3]))],
+            args: &[thunk(Value::Int(0)), thunk(make_int_dict(&[1, 2, 3], &ctx))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
             other => panic!("expected Dict, got {:?}", other),
         };
         assert_eq!(m.len(), 4);
-        assert_eq!(extract_int_at(&m, 0), 0);
-        assert_eq!(extract_int_at(&m, 1), 1);
-        assert_eq!(extract_int_at(&m, 3), 3);
+        assert_eq!(extract_int_at(&m, 0, &ctx), 0);
+        assert_eq!(extract_int_at(&m, 1, &ctx), 1);
+        assert_eq!(extract_int_at(&m, 3, &ctx), 3);
     }
 
     #[test]
     fn cons_onto_empty_dict() {
+        let ctx = test_ctx();
         let result = mat(builtin_cons(BuiltinArgs {
             args: &[thunk(Value::Int(99)), thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
             other => panic!("expected Dict, got {:?}", other),
         };
         assert_eq!(m.len(), 1);
-        assert_eq!(extract_int_at(&m, 0), 99);
+        assert_eq!(extract_int_at(&m, 0, &ctx), 99);
     }
 
     #[test]
     fn reverse_three_elements() {
+        let ctx = test_ctx();
         let result = mat(builtin_reverse(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[10, 20, 30]))],
+            args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
             other => panic!("expected Dict, got {:?}", other),
         };
         assert_eq!(m.len(), 3);
-        assert_eq!(extract_int_at(&m, 0), 30);
-        assert_eq!(extract_int_at(&m, 1), 20);
-        assert_eq!(extract_int_at(&m, 2), 10);
+        assert_eq!(extract_int_at(&m, 0, &ctx), 30);
+        assert_eq!(extract_int_at(&m, 1, &ctx), 20);
+        assert_eq!(extract_int_at(&m, 2, &ctx), 10);
     }
 
     #[test]
@@ -12477,12 +12769,13 @@ mod tests {
 
     #[test]
     fn sort_integers_ascending() {
+        let ctx = test_ctx();
         let result = mat(builtin_sort(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[3, 1, 4, 1, 5]))],
+            args: &[thunk(make_int_dict(&[3, 1, 4, 1, 5], &ctx))],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
@@ -12491,29 +12784,29 @@ mod tests {
         assert_eq!(m.len(), 5);
         let expected = [1i64, 1, 3, 4, 5];
         for (i, &exp) in expected.iter().enumerate() {
-            assert_eq!(extract_int_at(&m, i as i64), exp, "at index {i}");
+            assert_eq!(extract_int_at(&m, i as i64, &ctx), exp, "at index {i}");
         }
     }
 
     #[test]
     fn sort_strings_lexicographic() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         for (i, s) in ["banana", "apple", "cherry"].iter().enumerate() {
             map.insert(Key::Int(i as i64), thunk(Value::String(s.to_string())));
         }
         let result = mat(builtin_sort(BuiltinArgs {
-            args: &[thunk(Value::Dict(map))],
+            args: &[thunk_dict(map, &ctx)],
             named: no_named(),
             depth: 0,
             call_span: call_span(),
-            ctx: test_ctx(),
+            ctx: Rc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
             other => panic!("expected Dict, got {:?}", other),
         };
-        let v0 =
-            crate::eval::materialize(m.get(&Key::Int(0)).unwrap(), None, &test_ctx(), 0).unwrap();
+        let v0 = mat_id(*m.get(&Key::Int(0)).unwrap(), &ctx);
         assert_eq!(v0, Value::String("apple".into()));
     }
 

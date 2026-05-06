@@ -1,7 +1,7 @@
 # E030: DuplicateKey at eval time — a varref key resolves to the same string as a literal key.
 # The parser allows this because $k and "x" look syntactically distinct;
 # the duplicate is only detected when $k is evaluated to "x" at runtime.
-[k: x
- result: [k: 1  "x": 2]]
+[k: "x"
+ result: [$k: 1  "x": 2]]
 ===
 [E030] duplicate key: x

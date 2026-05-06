@@ -47,7 +47,7 @@ Any (top and bottom — gradual)
 - **Nullable value types.** `Int | Null` instead of collapsing to `Any`
 - **Tagged union / result types.** `[ok: a] | [err: String]` with static checking
 - **More precise `if` return types.** Annotated unions on user-defined functions
-- **Foundation for `[union ...]` ADTs.** `Type::Union` is the prerequisite for
+- **Foundation for multi-entry `[type ...]` ADTs.** `Type::Union` is the prerequisite for
   `doc/whatif/algebraic-data-types.md` Phase 2
 
 ### Full Algebraic Subtyping (Phase 3 — endpoint)
@@ -76,16 +76,45 @@ explicit type annotations and builtin signatures, but `unify` never produces the
 
 #### Syntax
 
+Union types use **positional entries in `@[…]` annotations**. No infix operator.
+This avoids collision with the `|` pipe operator (access-pipeline) and extends
+the existing annotation model naturally: positional entries are type-union members,
+named entries are metadata.
+
 ```tinct
-# In type annotations
-[fn [x : Int | Str] ...]
+# Positional entries in @[...] are collected and unioned
+x@[Int Str]                          # type: Int | Str
+x@[String Null]                      # type: String | Null
+x@[String Null default: ""]         # type: String | Null, with default metadata
 
-# In builtin signatures (internal)
-map : (a → b) → (Dict a | Seq a) → (Dict b | Seq b)
+# In function parameters
+[fn [x@[Int Str]] ...]               # x accepts Int or Str
+[fn@[String Null] [name@String] ...] # returns String or Null
 
-# Named type aliases
-Result: [type [ok: a] | [err: String]]
+# In type aliases
+Result: [type [ok: a] [err: String]] # union of two record types
+
+# Shorthand still works for single types — unchanged
+x@String                             # equivalent to x@[type: String]
 ```
+
+**Desugar rule.** Positional entries in an annotation dict are moved to the
+`type:` key as a list, preserving the existing annotation resolution path:
+
+```
+x@[T1 T2 ...named...]  →  x@[type: [T1 T2]  ...named...]
+x@[T]                  →  x@[type: T]         (single positional unwraps)
+x@T                    →  x@[type: T]         (existing shorthand, unchanged)
+```
+
+The type resolver then handles `type: [T1 T2]` as `Union(T1, T2)`. This is
+backward-compatible: `x@[type: Number  default: 30]` has no positional entries
+and is unchanged.
+
+**Param lists are unaffected.** `[Fn@Number [String Bool]]` means a two-param
+function (String, Bool → Number) — the inner `[String Bool]` is in param-list
+context, not annotation context, so it is not treated as a union. To express
+a one-param function taking a union type: `[Fn@Number [@[String Bool]]]`.
 
 #### Internal Representation
 
@@ -97,7 +126,7 @@ enum Type {
 ```
 
 Unions are maintained in canonical form: flattened, sorted by stable type ordering,
-and deduplicated. `Int | Str` and `Str | Int` are the same `Type` value.
+and deduplicated. `x@[Int Str]` and `x@[Str Int]` resolve to the same `Type` value.
 
 #### Subtyping Rules
 
@@ -109,9 +138,15 @@ Three new rules extend `is_subtype`:
 [UNION-ELIM]   If A <: C and B <: C, then A | B <: C
 ```
 
-Standard covariant union rules from Pierce (2002), Chapter 15. Decidable,
-preserve transitivity. `unify(Int, Str)` still fails — unions only appear in
-annotations, not from inference.
+Standard covariant union rules from Pierce (2002, Chapter 15, §15.7).
+Decidable, preserve transitivity and reflexivity. The join operation
+(`A | B`) is the least upper bound when these rules are the only source
+of unions. `unify(Int, Str)` still fails — unions only appear in
+annotations, not from inference. Because `unify` never produces unions,
+annotation-only unions do not interfere with Robinson's (1965) most general
+unifier guarantee: the substitution produced by `unify` remains a valid
+MGU for the non-union fragment, and union types appear only in checking
+positions where `is_subtype` mediates.
 
 #### Interaction with `Any`
 
@@ -189,10 +224,10 @@ problem; Simple-sub's concrete bounds help.
 |-----------|---------|--------|--------|
 | `src/types.rs` | No union variant | Add `Union(Vec<Type>)` + `normalize_union()` | Moderate — propagates through `is_subtype`, `apply_substitution`, `collect_type_vars`, `display` |
 | `src/types.rs` `is_subtype` | No union rules | Add `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` | Minor — three new match arms |
-| `src/typecheck.rs` | No union annotations | Parse union annotations; checking mode via new `is_subtype` rules | Minor |
-| `src/parser.rs` | No `\|` in type position | Add `\|` as type-level operator (looser than `→`) | Minor |
+| `src/typecheck.rs` `resolve_annotation` | No union annotations | Collect positional entries from `Annotation::PropertyDict` into `type:` value as a list; resolve `type: [T1 T2]` as `Union(normalize(T1), normalize(T2))` | Minor |
 | `src/eval.rs` | — | No changes; unions erased at runtime | None |
 | `src/builtins.rs` | Dual-dispatch typed `Any → Any` | Update signatures to use `Union` types | Minor |
+| `doc/05-type-annotations.md` | Only `type:` key + shorthand documented | Add generalized annotation model: positional entries = union members, named entries = metadata; update property table; add union examples | Minor |
 
 ### For Full Algebraic Subtyping (Phase 3)
 
@@ -229,7 +264,7 @@ signatures — `unify` never produces them.
 
 This enables: `Int | Null` for nullable values, `[ok: a] | [err: String]` for
 result types, explicit union annotations on user-defined functions, and is the
-prerequisite for `[union ...]` ADT declarations (see `doc/whatif/algebraic-data-types.md`).
+prerequisite for multi-entry `[type ...]` ADT declarations (see `doc/whatif/algebraic-data-types.md`).
 
 ### Phase 3: Full Algebraic Subtyping (Simple-sub)
 

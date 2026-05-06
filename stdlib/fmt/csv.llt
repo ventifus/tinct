@@ -20,7 +20,7 @@ csv-row: [fn [row ks i acc]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-row row ks [+ i 1]
-      [str acc [if [> i 0] "," ""] [csv-quote [str [get-or row ks[i] ""]]]]]]
+      [str acc [if [> i 0] "," ""] [csv-quote [str [get-or row ks[i] ""]]]]]]]
 
 # Internal: format all data rows
 csv-rows: [fn [rows ks i acc]

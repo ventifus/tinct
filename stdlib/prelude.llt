@@ -18,11 +18,11 @@
 #     builtin-if  builtin-filter  builtin-map  builtin-reduce  builtin-take  builtin-drop
 #
 #   Non-shadowed Rust builtins (commonly used, partial list — see src/builtins.rs):
-#     Dict:        keys  length  merge  append
+#     Dict:        keys  length  merge  append  builtin-get
 #     String:      str  split
 #     Numeric:     floor
 #     Runtime:     error  try  type-of
-#     Sequences:   seq  head  tail  collect  concat
+#     Sequences:   seq  head  tail  collect  concat  each  each-key  each-kv
 #     List ops:    rest  cons  reverse  sort
 #     Predicates:  int?  float?  num?  str?  bool?  null?  dict?  fn?  seq?
 #
@@ -288,8 +288,9 @@ cond-check: [fn [pairs i condition result]
 # ============================================================================
 
 # Get value by key from a dict.
-# assert: [get [a: 1  b: 2] "b"] => 2
-get: [fn [xs k] xs[k]]
+# Signature: Key → Dict → Any (curried for pipeline composition)
+# assert: [get "b" [a: 1  b: 2]] => 2
+get: [fn [k xs] [builtin-get k xs]]
 
 # Check if a key exists in a dict. Uses try around bracket access.
 # assert: [has? [x: 1] "x"] => true
@@ -406,12 +407,12 @@ nth: [fn [xs n]
     [nth-impl xs [keys xs] n [length xs]]]
 
 nth-impl: [fn [xs ks n len]
-    [get xs [get ks [builtin-if [builtin-lt n 0] [builtin-add len n] n]]]]
+    [get [get [builtin-if [builtin-lt n 0] [builtin-add len n] n] ks] xs]]
 
 # Get the last element by insertion-order position.
 # assert: [last [10 20 30]] => 30
 last: [fn [xs]
-    [get xs [get [keys xs] [builtin-sub [length xs] 1]]]]
+    [get [get [builtin-sub [length xs] 1] [keys xs]] xs]]
 
 # rest: Rust-native builtin. Dict: O(n) drop-first-and-reindex. Seq: O(1) tail (delegates to tail).
 # See src/builtins.rs for implementation.
@@ -933,5 +934,11 @@ map: [fn [f xs] [builtin-map f xs]]
 reduce: [fn [f init xs] [builtin-reduce f init xs]]
 take: [fn [n xs] [builtin-take n xs]]
 drop: [fn [n xs] [builtin-drop n xs]]
+
+# Reconstruct a Dict from a Seq of key-value pair dicts.
+# Takes a Seq of [key: K, value: V] dicts (as produced by each-kv).
+# Returns a Dict with those key-value mappings.
+# assert: [collect-kv [[key: "a" value: 1] [key: "b" value: 2]]] => [a: 1 b: 2]
+collect-kv: [fn [xs] [builtin-reduce [fn [acc kv] [merge acc [make-entry kv.key kv.value]]] [] xs]]
 
 ]

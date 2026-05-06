@@ -3,6 +3,6 @@
 # are NOT forced at map construction time, they ARE forced when the key is accessed.
 [map [fn [x] [error "lazy-error"]] [a: 1 b: 2]]
 ---
-%[a]
+%["a"]
 ===
 [E080] lazy-error

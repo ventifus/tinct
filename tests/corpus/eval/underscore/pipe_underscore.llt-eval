@@ -1,0 +1,7 @@
+# $_ | f at document level desugars via WRAP-PIPE to [fn [_] [f $_]]
+# The resulting function is available via % in the next document
+$_ | keys
+---
+[call % [a: 1  b: 2  c: 3]]
+===
+Dict({0: String("a"), 1: String("b"), 2: String("c")})

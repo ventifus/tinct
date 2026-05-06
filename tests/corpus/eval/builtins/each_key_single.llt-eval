@@ -1,0 +1,4 @@
+# each-key: single entry dict produces one-element Seq
+[collect [each-key [x: 42]]]
+===
+Dict({0: String("x")})

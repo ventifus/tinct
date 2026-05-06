@@ -5,6 +5,22 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
+/// Key type for dot access — either a string field name or an integer index.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DotKey {
+    Ident(String),
+    Int(i64),
+}
+
+impl std::fmt::Display for DotKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DotKey::Ident(s) => write!(f, "{}", s),
+            DotKey::Int(n) => write!(f, "{}", n),
+        }
+    }
+}
+
 /// Byte offset + line/column position in source text
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
@@ -104,10 +120,10 @@ pub enum Expr {
         /// The write-once invariant is enforced in resolve.rs.
         resolved: RefCell<Option<Option<(u32, u32)>>>,
     },
-    /// Dot access on an expression, e.g. `$a.b`
+    /// Dot access on an expression, e.g. `$a.b` or `$a.0`
     DotAccess {
         expr: Box<Spanned<Expr>>,
-        field: String,
+        field: DotKey,
     },
     /// Bracket key access, e.g. `$a[0]` or `$a[$key]`
     BracketAccess {
@@ -119,6 +135,11 @@ pub enum Expr {
         expr: Box<Spanned<Expr>>,
         start: Option<Box<Spanned<Expr>>>,
         end: Option<Box<Spanned<Expr>>>,
+    },
+    /// Pipe operator, e.g. `$a | f` (desugared before evaluation)
+    Pipe {
+        lhs: Box<Spanned<Expr>>,
+        rhs: Box<Spanned<Expr>>,
     },
 
     /// Dict/list literal with keyed and/or auto-indexed entries
@@ -265,7 +286,10 @@ impl fmt::Display for Expr {
             // Plain identifiers and (indistinguishable) EscapedRefs both display without `$` —
             // Display is used for error messages, not source roundtripping.
             Expr::VarRef { name, .. } => write!(f, "{name}"),
-            Expr::DotAccess { expr, field } => write!(f, "{}.{field}", expr.node),
+            Expr::DotAccess { expr, field } => match field {
+                DotKey::Ident(s) => write!(f, "{}.{s}", expr.node),
+                DotKey::Int(n) => write!(f, "{}.{n}", expr.node),
+            },
             Expr::BracketAccess { expr, key } => write!(f, "{}[{}]", expr.node, key.node),
             Expr::RangeAccess { expr, start, end } => {
                 write!(f, "{}[", expr.node)?;
@@ -278,6 +302,7 @@ impl fmt::Display for Expr {
                 }
                 write!(f, "]")
             }
+            Expr::Pipe { lhs, rhs } => write!(f, "{} | {}", lhs.node, rhs.node),
             Expr::Dict(entries) => {
                 write!(f, "[")?;
                 for (i, entry) in entries.iter().enumerate() {

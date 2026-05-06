@@ -1,8 +1,5 @@
 # Forward reference to undefined named section should fail
-# First doc references %later which hasn't been defined yet
+# The document references %later which is never defined in this file
 %later.x
----
---- %later
-[x: 1]
 ===
 [E002] undefined variable: %later

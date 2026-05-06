@@ -1,0 +1,5 @@
+# Chained integer dot access: .0.name on auto-indexed list of dicts
+# The outer list uses Key::Int(0), Key::Int(1); inner dicts use Key::String.
+[[name: "Alice"] [name: "Bob"]].0.name
+===
+String("Alice")

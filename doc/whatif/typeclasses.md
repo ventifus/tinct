@@ -299,7 +299,11 @@ Knock-on effects of constrained row variables:
 
 **Precedent:** PureScript handles row-level constraints via qualified row
 variables (building on Gaster & Jones 1996). It is the most mature
-implementation of type classes + row polymorphism.
+implementation of type classes + row polymorphism. Jones (1995, §8.3)
+provides the formal framework for propagating qualified constraints
+through row-polymorphic inference — constraint entailment must be
+decidable for the row fragment, which Gaster & Jones prove for their
+*lacks* predicate system.
 
 ## What Would Change
 

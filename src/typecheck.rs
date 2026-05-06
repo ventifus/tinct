@@ -176,6 +176,12 @@ fn reset_expr(expr: &Spanned<Expr>) {
             reset_expr(inner);
         }
 
+        // Pipe: recurse into both sides
+        Expr::Pipe { lhs, rhs } => {
+            reset_expr(lhs);
+            reset_expr(rhs);
+        }
+
         // Annotated: annotations don't contain TypeAssert nodes, so nothing to reset
         Expr::Annotated { .. } => {}
     }
@@ -631,6 +637,10 @@ fn infer_expr(
             start,
             end,
         } => check_range_access(target, start, end, env, expr.span, state, type_map),
+
+        Expr::Pipe { .. } => {
+            unreachable!("Pipe should be desugared before type checking")
+        }
 
         Expr::Call {
             func,
@@ -1245,12 +1255,19 @@ fn entry_key_name(
 
 fn check_dot_access(
     target: &Spanned<Expr>,
-    field: &str,
+    field: &crate::ast::DotKey,
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
+    // Convert DotKey to string for field lookup
+    let field_str = match field {
+        crate::ast::DotKey::Ident(s) => s.as_str(),
+        crate::ast::DotKey::Int(n) => {
+            return check_dot_access_int(target, *n, env, span, state, type_map)
+        }
+    };
     let target_ty = infer_expr(target, env, state, type_map)?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
@@ -1259,11 +1276,11 @@ fn check_dot_access(
         Type::Record(Row {
             ref fields,
             ref tail,
-        }) => match fields.get(field) {
+        }) => match fields.get(field_str) {
             Some(ty) => Ok(ty.clone()),
             None => match tail {
-                // Open record (RowVar tail) and field not found: bind ρ → Row({field: β}, RowVar(ρ_fresh))
-                // This records the constraint "ρ must contain field with type β".
+                // Open record (RowVar tail) and field not found: bind ρ → Row({field_str: β}, RowVar(ρ_fresh))
+                // This records the constraint "ρ must contain field_str with type β".
                 RowTail::RowVar(rho, rho_level_creation) => {
                     // Get the current level from state.levels (the source of truth after level lowering).
                     // The level in RowTail is the creation-time level; state.levels is the current (possibly lowered) level.
@@ -1287,9 +1304,9 @@ fn check_dot_access(
                     // Create fresh row var ρ_fresh for the remaining tail
                     let (rho_fresh_name, rho_fresh_level) = state.fresh_row_var_name();
 
-                    // Build the row to bind: Row({ field: β }, RowVar(ρ_fresh))
+                    // Build the row to bind: Row({ field_str: β }, RowVar(ρ_fresh))
                     let mut new_fields = HashMap::new();
-                    new_fields.insert(field.to_string(), beta.clone());
+                    new_fields.insert(field_str.to_string(), beta.clone());
                     let binding = Row {
                         fields: new_fields,
                         tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
@@ -1333,7 +1350,9 @@ fn check_dot_access(
                     Ok(beta)
                 }
                 // Closed record (Empty tail) and field not found: error
-                RowTail::Empty => Err(vec![TypeError::field_not_found(field, &target_ty, span)]),
+                RowTail::Empty => Err(vec![TypeError::field_not_found(
+                    field_str, &target_ty, span,
+                )]),
             },
         },
         // Unknown type (TypeVar α): generate constraint α = Record({field: β}, RowVar(ρ))
@@ -1345,7 +1364,7 @@ fn check_dot_access(
 
             // Build the record type to unify α with
             let mut fields = HashMap::new();
-            fields.insert(field.to_string(), beta.clone());
+            fields.insert(field_str.to_string(), beta.clone());
             let record_ty = Type::Record(Row {
                 fields,
                 tail: RowTail::RowVar(rho_name, rho_level),
@@ -1359,6 +1378,96 @@ fn check_dot_access(
             state.subst = subst;
             result.map_err(|e| vec![e])?;
 
+            Ok(beta)
+        }
+        Type::Any => Ok(Type::Any),
+        Type::Proxy => Ok(Type::Any),
+        _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
+    }
+}
+
+/// Type check integer dot access: `$data.0`
+///
+/// This is identical to `check_bracket_access` with a static integer key.
+fn check_dot_access_int(
+    target: &Spanned<Expr>,
+    index: i64,
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    let target_ty = infer_expr(target, env, state, type_map)?;
+    let target_ty = state.subst.apply(&target_ty);
+
+    let field_name = index.to_string();
+
+    match &target_ty {
+        Type::Record(Row {
+            ref fields,
+            ref tail,
+        }) => {
+            if let Some(ty) = fields.get(field_name.as_str()) {
+                return Ok(ty.clone());
+            }
+            // Field not found — dispatch on tail (mirrors check_dot_access).
+            match tail {
+                RowTail::RowVar(rho, rho_level_creation) => {
+                    let rho_level = state.levels.get(rho).copied().unwrap_or(0);
+                    debug_assert!(
+                        rho_level <= *rho_level_creation,
+                        "RowVar current level ({}) should be ≤ creation level ({})",
+                        rho_level,
+                        rho_level_creation
+                    );
+
+                    let beta = state.fresh_type_var();
+                    let (rho_fresh_name, rho_fresh_level) = state.fresh_row_var_name();
+
+                    let mut new_fields = HashMap::new();
+                    new_fields.insert(field_name.clone(), beta.clone());
+                    let binding = Row {
+                        fields: new_fields,
+                        tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
+                    };
+
+                    if row_var_occurs_pub(rho, &binding, &state.subst) {
+                        debug_assert!(false, "unreachable: fresh row var cannot occur in binding");
+                        return Err(vec![TypeError::new(
+                            format!("infinite row type: {rho} occurs in its own binding"),
+                            span,
+                        )]);
+                    }
+
+                    lower_row_var_levels_pub(&binding, rho_level, state);
+                    state.subst.row_map.insert(rho.clone(), binding);
+                    state.subst.check_size(span).map_err(|e| vec![e])?;
+
+                    Ok(beta)
+                }
+                RowTail::Empty => Err(vec![TypeError::field_not_found(
+                    &field_name,
+                    &target_ty,
+                    span,
+                )]),
+            }
+        }
+        Type::TypeVar(ref alpha, alpha_level) => {
+            let beta = state.fresh_type_var();
+            let (rho_name, rho_level) = state.fresh_row_var_name();
+
+            let mut fields = HashMap::new();
+            fields.insert(field_name, beta.clone());
+            let record_ty = Type::Record(Row {
+                fields,
+                tail: RowTail::RowVar(rho_name, rho_level),
+            });
+
+            let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
+            let mut subst = std::mem::take(&mut state.subst);
+            let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
+            state.subst = subst;
+            result.map_err(|e| vec![e])?;
             Ok(beta)
         }
         Type::Any => Ok(Type::Any),

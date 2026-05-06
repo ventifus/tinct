@@ -1,0 +1,4 @@
+# builtin-get: missing key produces E001 key-not-found error
+[builtin-get "z" [a: 10  b: 20]]
+===
+[E001] key not found: z
