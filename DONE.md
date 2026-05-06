@@ -4001,3 +4001,9 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] definition_at and hover_at search direct includes after prelude lookup
 - [x] Prelude type seeding fixed: with_prelude_types() uses actual TypeSchemes instead of Type::Any
 - [x] Unit tests for collect_include_paths, resolve_include_url, include graph
+
+### lsp-doc-annotations: doc: Annotation Hover
+
+- [x] DocMap type + extraction from @[doc: "..."] annotations in typecheck.rs
+- [x] hover_at appends doc string as second paragraph in hover tooltip
+- [x] 4 unit tests: hover_shows_doc, hover_no_doc, hover_doc_and_default, hover_param_with_doc

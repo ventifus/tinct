@@ -86,17 +86,6 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 - [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
 - [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)
 
-### lsp-doc-annotations: `doc:` Annotation Hover
-
-**Depends on:** `lsp-include-prelude`
-
-Wire up `doc:` annotation metadata to LSP hover. When a param or function is annotated with `doc: "..."`, the hover tooltip shows the doc string below the type signature. The type checker already ignores `doc:` — this sprint extracts it separately and threads it through to the LSP layer. See `doc/05-type-annotations.md` §`@` Property Annotations.
-
-- [ ] `pub type DocMap = HashMap<String, String>`: `name → doc string`; extract from `Annotation::PropertyDict` entries where key is `"doc"` and value is `Expr::Str`; build alongside `TypeMap` in `typecheck_file_with_types`; return as `(TypeMap, DocMap)` tuple (`src/typecheck.rs`)
-- [ ] Add `doc_map: DocMap` field to `DocumentState`; populate from `typecheck_file_with_types` result; initialize to empty `HashMap` on type-check failure (`src/lsp/document.rs`)
-- [ ] Extend `hover_at`: after formatting the type string, look up name in `doc_map`; if present, append `"\n\n"` + doc string to the hover markdown so VS Code renders it as a second paragraph (`src/lsp/analysis.rs`)
-- [ ] Unit tests: `test_hover_shows_doc` (`[fn [x@[type: String doc: "the name"]] $x]`, hover on `$x` → hover contains `"the name"`); `test_hover_no_doc` (param without `doc:` → hover contains type only, no extra newline); `test_hover_doc_and_default` (`x@[type: Number default: 0 doc: "count"]` → hover shows both type and doc) (`src/lsp/analysis.rs`)
-
 ## CLI: Inline Expressions and JSON Streaming
 
 ### eval-cli: Inline Expressions, Input/Output Formatters
