@@ -12840,4 +12840,214 @@ mod tests {
             other => panic!("expected Dict, got {:?}", other),
         }
     }
+
+    // ========== each/each-key/each-kv/builtin-get tests ==========
+
+    #[test]
+    fn each_empty_dict() {
+        let result = mat(builtin_each(BuiltinArgs {
+            args: &[thunk(Value::Dict(IndexMap::new()))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        // each on empty dict returns empty dict (used as Seq terminator)
+        match result {
+            Value::Dict(m) => assert!(m.is_empty()),
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn each_multi_entry() {
+        let ctx = test_ctx();
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), thunk(Value::Int(10)));
+        map.insert(Key::String("b".into()), thunk(Value::Int(20)));
+        map.insert(Key::String("c".into()), thunk(Value::Int(30)));
+        let result = mat(builtin_each(BuiltinArgs {
+            args: &[thunk_dict(map, &ctx)],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: Rc::clone(&ctx),
+        }));
+        // each returns a Seq — materialize head
+        match result {
+            Value::Seq { head, tail } => {
+                let head_val = mat_id(head, &ctx);
+                assert_eq!(head_val, Value::Int(10));
+                // Verify tail is also a Seq (not fully unwinding it here)
+                let tail_thunk = ctx.get_thunk(tail);
+                let tail_val = crate::eval::materialize(&tail_thunk, None, &ctx, 0).unwrap();
+                assert!(matches!(tail_val, Value::Seq { .. }));
+            }
+            other => panic!("expected Seq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn each_type_error_int() {
+        let ctx = test_ctx();
+        let result = builtin_each(BuiltinArgs {
+            args: &[thunk(Value::Int(42))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch, got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn each_type_error_string() {
+        let ctx = test_ctx();
+        let result = builtin_each(BuiltinArgs {
+            args: &[thunk(Value::String("hello".into()))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch, got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn each_type_error_bool() {
+        let ctx = test_ctx();
+        let result = builtin_each(BuiltinArgs {
+            args: &[thunk(Value::Bool(true))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch, got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn each_key_empty_dict() {
+        let result = mat(builtin_each_key(BuiltinArgs {
+            args: &[thunk(Value::Dict(IndexMap::new()))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        match result {
+            Value::Dict(m) => assert!(m.is_empty()),
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn each_key_type_error_string() {
+        let ctx = test_ctx();
+        let result = builtin_each_key(BuiltinArgs {
+            args: &[thunk(Value::String("hello".into()))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch, got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn each_kv_empty_dict() {
+        let result = mat(builtin_each_kv(BuiltinArgs {
+            args: &[thunk(Value::Dict(IndexMap::new()))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }));
+        match result {
+            Value::Dict(m) => assert!(m.is_empty()),
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn each_kv_type_error_bool() {
+        let ctx = test_ctx();
+        let result = builtin_each_kv(BuiltinArgs {
+            args: &[thunk(Value::Bool(false))],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx,
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch, got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn builtin_get_int_key_auto_indexed_dict() {
+        let ctx = test_ctx();
+        let mut map = IndexMap::new();
+        map.insert(Key::Int(0), thunk(Value::String("first".into())));
+        map.insert(Key::Int(1), thunk(Value::String("second".into())));
+        map.insert(Key::Int(2), thunk(Value::String("third".into())));
+        let result = mat(builtin_get(BuiltinArgs {
+            args: &[thunk(Value::Int(1)), thunk_dict(map, &ctx)],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: Rc::clone(&ctx),
+        }));
+        assert_eq!(result, Value::String("second".into()));
+    }
+
+    #[test]
+    fn builtin_get_key_not_found_error() {
+        let ctx = test_ctx();
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), thunk(Value::Int(10)));
+        map.insert(Key::String("b".into()), thunk(Value::Int(20)));
+        let result = builtin_get(BuiltinArgs {
+            args: &[thunk(Value::String("z".into())), thunk_dict(map, &ctx)],
+            named: no_named(),
+            depth: 0,
+            call_span: call_span(),
+            ctx: Rc::clone(&ctx),
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::KeyNotFound { .. }),
+            "expected KeyNotFound, got {:?}",
+            err.kind
+        );
+    }
 }

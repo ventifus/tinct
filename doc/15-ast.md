@@ -150,7 +150,7 @@ struct Entry {
 
 /// A named argument in a call expression
 struct NamedArg {
-    name: String,  // The name field is always the bare identifier without $ prefix even when source uses $key: syntax.
+    name: String,  // Always a bare identifier. `$key: val` syntax is rejected in call forms (only dict entries accept $-prefixed keys; see §Named Argument Key Normalization below).
     value: Spanned<Expr>,
 }
 ```
@@ -183,7 +183,7 @@ enum Annotation {
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by Phase 1 resolution pass |
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
-| `Pipe { lhs, rhs }` | `a \| f` | Pipe (desugar-only); eliminated before evaluation — see §Pipe Desugaring below |
+| `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the post-parse AST and eliminated by the desugar pass (`src/desugar.rs`) before type checking and evaluation. The evaluator and type checker never see `Expr::Pipe`.** See §Pipe Desugaring below for the three desugar rules (WRAP-PIPE, CALL-EXTEND, CALL-WRAP). |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
 | `Fn` | `[fn [x] body]` | Function definition |
@@ -287,7 +287,7 @@ When no `type:` key is present, the bracket is interpreted as a type expression 
 
 ## Desugaring Rules
 
-Sections below describe transformations applied by the parser when building the AST.
+**Pre-typecheck/eval transformations:** All desugaring rules in this section are applied before type checking and evaluation. The desugar pass (`src/desugar.rs`) runs immediately after parsing, producing a transformed AST that the type checker and evaluator consume. The type checker and evaluator never see the original sugared forms (e.g., `Expr::Pipe` is always desugared to `Expr::Call` before type checking begins).
 
 ### Access Chains
 

@@ -1,0 +1,10 @@
+# Deeply chained access with get builtin calls
+[
+  data: [
+    0: [name: "first"]
+    1: [name: "second"]
+  ]
+  result: [get "name" [get 1 data]]
+]
+===
+Dict({"data": Dict({0: Dict({"name": ...}), 1: Dict({"name": ...})}), "result": String("second")})

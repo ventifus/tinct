@@ -137,16 +137,16 @@ These proposals have accepted designs but explicit gating conditions not yet met
 
 | Proposal | Gating Condition |
 |----------|-----------------|
-| [Gradual Typing](gradual-typing.md) | whatif not yet accepted; `Any`-as-top-and-bottom causing a real false positive, or union types forcing the split. Note: `Type::Any` split (`Unknown`+`Top`) is a standalone sprint independent of this whatif. |
-| [Type Classes](typeclasses.md) | Phase 1 (`deep-eq`/`shallow-eq` builtins) ships now; Phase 2 (constrained type vars) after `Type::Any` split |
-| [Union Types and Algebraic Subtyping](union-types.md) Phase 2 | Nullable types or tagged union patterns becoming common in user code |
-| [Union Types and Algebraic Subtyping](union-types.md) Phase 3 | Annotation-only unions proving insufficient; `if` return types need inferred unions |
-| [Algebraic Data Types](algebraic-data-types.md) Phase 2 | `union-types.md` Phase 2 implemented (`Type::Union` exists) |
-| [Nominal Variants](nominal-variants.md) | Structural ADTs Phase 2 complete; two constructors with identical payload shapes needed |
-| [Narrowing](narrowing.md) | `typeassert-structural-b` + let-generalization + bidirectional typing all complete |
+| [Gradual Typing](gradual-typing.md) | whatif not yet accepted; required before union types or type classes (`Any`-as-top-and-bottom is incompatible with both). `Type::Any` split (`Unknown`+`Top`) is a standalone sprint independent of this whatif. |
+| [Type Classes](typeclasses.md) | Phase 1 (`deep-eq`/`shallow-eq` builtins) ships now; Phase 2 (constrained type vars) after let-generalization + builtin-type-signatures |
+| [Union Types and Algebraic Subtyping](union-types.md) Phase 2 | Annotation-only unions: adopt after Phase 1 (type classes). Nullable types, tagged unions, and `try` result types all require this. |
+| [Union Types and Algebraic Subtyping](union-types.md) Phase 3 | Inferred unions: adopt after annotation-only unions are established |
+| [Algebraic Data Types](algebraic-data-types.md) Phase 2 | Adopt immediately after `union-types.md` Phase 2 lands |
+| [Nominal Variants](nominal-variants.md) | Phase 1 after ADTs Phase 1; Phase 2 after pattern matching Phase 2 |
+| [Narrowing](narrowing.md) | Scheduled after pattern matching (A3); redundant `[@Type expr]` assertions already common |
 | [Custom Call Aliases](call-aliases.md) | Macro system adoption |
-| [Parameterized Type Aliases](parameterized-type-aliases.md) | Name collision becomes a real type error, or recursive ADTs needed (Phase 4) |
-| [Pattern Matching](pattern-matching.md) Phase 2+ | Phase 1 gate met (type-predicates complete); Phase 2+ gated on let-binding and union types |
+| [Parameterized Type Aliases](parameterized-type-aliases.md) | Variable name collision is a known problem; arity-checked type constructors are a prerequisite for type classes |
+| [Pattern Matching](pattern-matching.md) Phase 2+ | Phase 1 gate met (type-predicates complete); Phase 2 after Phase 1; Phase 3 after Phase 2 |
 | [String Interning](string-interning.md) | Profiling confirms `String` allocation/comparison is top-5 hotspot on real workloads |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
 | [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |

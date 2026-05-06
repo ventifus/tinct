@@ -1,0 +1,6 @@
+# Test that rest entry (...) in type annotations marks open record types.
+# Rest entries indicate that additional fields are permitted (row polymorphism).
+# This allows values with extra fields to pass type assertions.
+[@["a": Int  ...] ["a": 1  "b": "extra"]]
+===
+[@["a": Int  ...] ["a": 1  "b": "extra"]]

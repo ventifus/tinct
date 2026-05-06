@@ -107,10 +107,10 @@ This matters for three reasons:
 
 ## Design
 
-`[match]` is implemented as `[defmacro match]` (see `doc/whatif/macro-rewrite.md`)
-with parse-stage macro support for context-sensitive key identity (see
-`doc/whatif/parse-stage-macros.md`). Arms use dict syntax — the pattern spec
-is the key, the body is the value:
+`[match]` is implemented as a first-class `Expr::Match` AST node — a
+parser special form with dedicated type checker and evaluator support.
+Arms use dict syntax — the pattern spec is the key, the body is the
+value:
 
 ```tinct
 [match expr
@@ -119,11 +119,11 @@ is the key, the body is the value:
     _:            default]
 ```
 
-**Context-sensitive key identity:** Inside `[match]`, the full annotated
-expression is the key identity — `n@Int` and `n@String` are distinct keys even
-though both have base name `n`. This is declared via `[syntax-class match-arms-dict
-key-identity: full-annotated-expr]` in `stdlib/syntax.llt`. Regular dicts
-are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
+**Context-sensitive key identity:** Inside `[match]`, the parser enters a dedicated
+match-arm parsing mode where the full annotated expression is the key identity —
+`n@Int` and `n@String` are distinct keys even though both have base name `n`. This
+is implemented in the parser directly (not via a syntax class in stdlib). Regular
+dicts are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
 
 **Pattern syntax** (the key position of each arm):
 
@@ -199,9 +199,9 @@ predicates use `and` composition: `[is: [and [> _ 5] [< _ 10]]]`. Named
 contracts work directly: `n@[is: PortRange]` where `PortRange: [fn [v] ...]`.
 
 The pattern language is amenable to exhaustiveness analysis as the type
-system matures. The key advantage over a special form: no new `Expr::Match`
-AST variant — `[match]` is a macro, so the evaluator, type checker,
-formatter, and resolver need zero changes.
+system matures. As a first-class `Expr::Match` AST node, the type checker
+can narrow types per-arm, check exhaustiveness against inferred union
+types, and compute precise result types.
 
 ### Keyword Choice: `match` vs `case`
 
@@ -259,27 +259,39 @@ dict patterns, only matched keys are forced. This is documented in
 doc/08-evaluation.md Builtin Materialization Behavior as the standard pattern for
 builtins that need to inspect value structure.
 
-### Why a Macro (Not a Special Form)
+### Why a Special Form (Not a Macro)
 
-`[match]` is implemented via `[defmacro match]` rather than as an `Expr::Match`
-special form. This is the right call for three reasons:
+`[match]` is implemented as an `Expr::Match` parser special form rather
+than via `[defmacro match]`. This was decided after evaluating both
+approaches against the type system requirements:
 
-1. **Zero AST surface area.** `Expr::Match` would propagate through every
-   exhaustive match on `Expr` in the codebase — evaluator, type checker,
-   formatter, resolver, desugar, ast_dict.rs. As a macro, none of those
-   files need changes. `[match]` expands to nested `if`/`type-of` chains
-   that the existing evaluator already handles.
+1. **Type checker integration.** As a first-class AST node, the type
+   checker's `infer_match()` can narrow the scrutinee type per-arm,
+   check exhaustiveness against inferred union types, and compute a
+   precise union result type `τ₁ | τ₂ | τ₃` — none of which are
+   possible when match desugars to `if` chains before the type checker
+   runs. See Tobin-Hochstadt & Felleisen (2010) for the theoretical
+   basis of per-arm narrowing.
 
-2. **Dict arm syntax is natural tinct.** Using dict key-value syntax for
-   arms — pattern as key, body as value — means arms are plain tinct data.
-   The parse-stage macro (`[declare-syntax match]`) handles the key identity
-   override so `n@Int` and `n@String` coexist. No bespoke pattern-parsing
-   mode needed in the main parser.
+2. **No fragile coupling.** A macro must produce `if`/`int?` chains
+   that the narrowing extractor (`extract_narrowings()`) pattern-matches
+   against. Two independently maintained components must agree on AST
+   shapes with no enforced contract. With `Expr::Match`, the type checker
+   handles patterns directly — no reverse-engineering.
 
-3. **Not match-as-function.** Nickel's match-as-function interacts poorly
+3. **Exhaustiveness with inferred types.** The type checker has access to
+   inferred scrutinee types, enabling automatic coverage checking without
+   requiring explicit `[@Type ...]` annotations. A macro runs before the
+   type checker and can only check coverage against declared type aliases.
+
+4. **Not match-as-function.** Nickel's match-as-function interacts poorly
    with tinct's `_` desugaring — both introduce implicit parameters. The
    `[match scrutinee ...]` form with an explicit scrutinee avoids this
    conflict and is clearer to read.
+
+The trade-off is AST surface area: `Expr::Match` adds one arm to every
+exhaustive match on `Expr` in the codebase (~20 sites). This is a
+one-time cost that pays for itself through type checker clarity.
 
 ## What Would Change
 
@@ -287,34 +299,32 @@ special form. This is the right call for three reasons:
 
 **Current:** Keywords `call`, `fn`, `type` are recognized as special forms.
 
-**Proposed:** Add `match` to the keyword denylist so `match:` cannot appear as a dict key in non-match contexts. No new parsing mode — the arm dict is parsed normally; the parse-stage macro handles key identity.
+**Proposed:** Add `match` to the keyword list alongside `call`, `fn`,
+`type`. The parser enters a pattern-parsing mode for match arms:
+bare names as bindings, capitalized words as type tags, literals as
+literal patterns. Arms are parsed as pattern-body pairs.
 
-**Impact:** Minor — one keyword added to the denylist.
+**Impact:** Moderate — new keyword, new parsing mode for arm patterns.
 
 ### AST (`src/ast.rs`)
 
-**No changes.** `[match]` is a macro — it desugars to `if`/`type-of` chains using existing `Expr` variants. No `Expr::Match`, no `Pattern` enum, no `MatchArm` struct. Every existing exhaustive match on `Expr` is unaffected.
+**New variants.** `Expr::Match` with `MatchArm` and `Pattern` types.
+`Pattern` covers type tags, literals, wildcards, variable bindings,
+dict/seq destructuring, or-patterns, and guards. Every exhaustive match
+on `Expr` gains one arm (~20 sites).
 
-### `stdlib/syntax.llt`
+### Evaluator (`src/eval.rs`)
 
-**Proposed:** Declare the match arms dict syntax class with full-annotated-expression key identity:
+**Proposed:** `eval_match()` materializes the scrutinee, tries arms
+top-to-bottom. Each arm's pattern is matched against the scrutinee value.
+First matching arm's body is evaluated. No match → runtime error.
 
-```tinct
-[declare-syntax match
-  [scrutinee: expr  arms: match-arms-dict]]
+### Type Checker (`src/typecheck.rs`)
 
-[syntax-class match-arms-dict
-  key-identity: full-annotated-expr
-  values: expr]
-```
-
-This is the parse-stage change that allows `n@Int` and `n@String` to coexist as distinct arm keys. See `doc/whatif/parse-stage-macros.md`.
-
-**Impact:** New stdlib file entry — no Rust changes.
-
-### `stdlib/macros.llt`
-
-**Proposed:** `[defmacro match]` receives the arm dict (with full-annotated keys) and expands to nested `if` chains. Pattern dispatch on the key node type:
+**Proposed:** `infer_match()` infers the scrutinee type, narrows it
+per-arm based on the pattern, infers each arm body under the narrowed
+environment, and joins arm result types. If the scrutinee is a union
+type, calls the coverage algorithm. Pattern types:
 
 - `VarRef("_")` → wildcard: always matches
 - `VarRef("n")` (lowercase) → variable binding: always matches, bind `n`
@@ -325,25 +335,25 @@ This is the parse-stage change that allows `n@Int` and `n@String` to coexist as 
 - `Annotated("n", PropertyDict([is: pred]))` → guard: call `pred` with bound value
 - `Pipe(p1, p2)` → or-pattern: try both sub-patterns
 
-**Impact:** New macro in stdlib/macros.llt — no Rust changes.
+**Impact:** New `infer_match()` function in `src/typecheck.rs`.
 
 ### Lazy Evaluation
 
-The expanded `if`/`type-of` chains follow existing materialization
-conventions. Dict pattern matching forces only matched keys — implemented
-by the macro expansion's use of `has?` and dot access. Seq pattern matching
-uses `head` and `tail` builtins, which force the head and leave the tail
-as a thunk. Only the matching arm's body evaluates. No new forcing semantics.
+The evaluator materializes the scrutinee then tries arms top-to-bottom.
+Dict pattern matching forces only matched keys — implemented via `has?`
+and dot access internally. Seq pattern matching uses `head` and `tail`,
+which force the head and leave the tail as a thunk. Only the matching
+arm's body evaluates. No new forcing semantics.
 
-### Type Checker
+### Type Checker — Narrowing
 
-Initially, `[match]` is typed as `Any` (same as any `if` chain where arm
-types differ). As the type system matures, two distinct narrowing mechanisms apply:
+`infer_match()` narrows the scrutinee type per-arm directly:
 
-**Type-predicate arms narrow statically.** `n@Int:` expands to `[if [int? scrutinee] ...]`.
-When occurrence typing (`doc/whatif/narrowing.md`) lands, the type checker recognises
-`int?` as a type guard and narrows `n` to `Int` inside the true branch. Similarly
-`n@Str:` narrows to `Str`, dict patterns `[ok: v]:` narrow to `[ok: ...]`, etc.
+**Type-predicate arms narrow statically.** `n@Int:` narrows `n` to `Int`
+in the arm body. Similarly `n@Str:` narrows to `Str`, dict patterns
+`[ok: v]:` narrow to `[ok: ...]`, etc. The type checker applies the
+narrowing constraint from the pattern directly — no desugaring to
+`if`/`int?` chains required.
 
 **`is:` predicate arms do NOT narrow the type.** `n@[is: [> _ 0]]:` proves a runtime
 condition (`n > 0`) but the type checker cannot derive a static type from an arbitrary
@@ -407,10 +417,10 @@ No destructuring yet — patterns are flat. This is the minimal useful
 `match` that replaces `type-of` + `=` chains.
 
 **Implementation:**
-- Parser: `match` keyword added to denylist; arm dict parsed normally
-- `stdlib/syntax.llt`: `[declare-syntax match ...]` with full-annotated key identity
-- `stdlib/macros.llt`: `[defmacro match]` Phase 1 — type + literal + wildcard + variable binding arms
-- Type checker: expanded `if` chain types as `Any` initially
+- Parser: `match` keyword in denylist; dedicated match-arm parsing mode
+- `Expr::Match` AST node with `MatchArm` and `Pattern` types
+- Evaluator: `eval_match()` — evaluate scrutinee, test arms sequentially, bind pattern variables
+- Type checker: `infer_match()` — infer scrutinee type, narrow per arm, unify result types
 
 ### Phase 3: Dict and Seq Destructuring
 
@@ -473,28 +483,26 @@ Add:
 
 ### Phase 5: Exhaustiveness Checking
 
-Exhaustiveness is checked **at macro expansion time** when the scrutinee is
-wrapped in a TypeAssert — the Dhall model for union elimination. No new
-`Expr::Match` AST variant is needed.
+Exhaustiveness is checked **in the type checker** when `infer_match()`
+determines that the scrutinee's type is a `Type::Union`. The type checker
+has access to both declared types (via TypeAssert) and inferred types
+(from prior unification or narrowing).
 
 ```tinct
-# Without TypeAssert — no exhaustiveness check (runtime MatchError if no arm matches)
-[match res
+# Inferred type — exhaustiveness checked automatically
+result: [try risky]    # inferred: [ok: a] | [err: Str]
+[match result
     [ok: v]:    v
-    [err: msg]: [error msg]]
+    [err: msg]: [error msg]]    # ✓ all variants covered
 
-# With TypeAssert — exhaustiveness verified at expansion time
+# Explicit TypeAssert — same behavior
 [match [@Result res]
-    [ok: v]:    v
-    [err: msg]: [error msg]]    # ✓ all variants of Result covered
-
-[match [@Result res]
-    [ok: v]:    v]              # ✗ expansion-time error: [err: Str] not covered
+    [ok: v]:    v]              # ✗ type error: [err: Str] not covered
 ```
 
-When `[defmacro match]` sees `[@Type scrutinee]`, it looks up `Type` in the
-type alias registry, extracts the `Type::Union` variant set, and performs
-Maranget-style coverage analysis on the arm keys:
+The type checker's `infer_match()` extracts the variant set from the
+scrutinee's union type and performs Maranget-style coverage analysis on
+the arm patterns:
 
 - Type-tag arms (`n@Int:`) cover the `Int` variant
 - Dict pattern arms (`[ok: v]:`) cover the `[ok: a]` structural variant
@@ -503,12 +511,12 @@ Maranget-style coverage analysis on the arm keys:
 - `is:` predicate arms are **opaque** — they do not contribute to coverage
   (the guard is a runtime condition, not a type constraint)
 
-Without a TypeAssert scrutinee, exhaustiveness is opt-out: the match
-compiles and runs correctly, but a runtime `MatchError` fires if no arm
-matches. This mirrors Nickel's behavior (runtime MatchError) and is honest:
-coverage can only be statically verified when the union type is declared.
+Without a union-typed scrutinee, no coverage analysis is performed —
+the match is dynamically correct but statically unverified. A runtime
+`MatchError` fires if no arm matches. This is honest: coverage can only
+be statically verified when the scrutinee type is known to be a union.
 
-- **Unreachable arms:** an arm after a wildcard `_:` is flagged at expansion time.
+- **Unreachable arms:** an arm after a wildcard `_:` is flagged as a type warning.
 - **`is:` arms and coverage:** `n@[type: Int  is: [> _ 0]]:` covers the `Int`
   variant for coverage purposes (the type constraint `@Int` is structural; the
   `is:` predicate is an additional runtime filter that does not affect which
@@ -660,26 +668,23 @@ pattern parsing are needed when bracket access is removed.
 ### Prerequisites
 
 - **Phase 1:** None — type predicates are standalone builtins
-- **Phase 2:** Macros Phase 2 (`[defmacro]`) + Parse-stage macros Phase 1 (syntax classes with full-annotated key identity, `doc/whatif/parse-stage-macros.md`). `match` added to keyword denylist.
-- **Phase 3:** Phase 2 complete. Seq type stable (`Value::Seq` in evaluator). Integer-key dict patterns and path-key integer segments: wait for `access-pipeline` (adds integer dot access to the evaluator). Path-key pattern desugaring (string paths): can land with Phase 3 — pure parser-level transformation.
+- **Phase 2:** `match` added to keyword denylist. `Expr::Match` parser special form with dedicated match-arm parsing mode (context-sensitive key identity handled directly in the parser). Type predicates (Phase 1) complete.
+- **Phase 3:** Phase 2 complete. Let binding (A1) for multi-expression arm bodies. Seq type stable (`Value::Seq` in evaluator). Integer-key dict patterns and path-key integer segments: wait for `access-pipeline` (adds integer dot access to the evaluator). Path-key pattern desugaring (string paths): can land with Phase 3 — pure parser-level transformation.
 - **Phase 4:** Phase 3 complete.
-- **Phase 5:** Type system maturity — union types or type classes for exhaustiveness analysis.
+- **Phase 5:** Union types (B1) + ADTs (C1) + Pattern matching Phase 3 for exhaustiveness analysis.
 
 ### Trigger
 
 Phase 1 (type predicates): adopt immediately — these are independently
 useful, trivial to implement, and have no grammar impact.
 
-Phase 2 (basic match): adopt when:
-- A second dual-dispatch builtin needs a tinct-level wrapper
-- User code patterns show repeated `type-of` + `=` chains
-- The `_` desugaring is complete and stable (confirming the
-  special-form pattern)
+Phase 2 (basic match): adopt after Phase 1. Dual-dispatch builtins
+already need tinct-level wrappers, and `type-of` + `=` chains are
+already a common pattern.
 
-Phase 3 (destructuring): adopt when:
-- Self-hosting of dual-dispatch builtins begins
-- `try` result handling becomes a common pattern in user code
-- Record/dict destructuring is the #1 user ergonomics request
+Phase 3 (destructuring): adopt after Phase 2. Self-hosting
+dual-dispatch builtins and `try` result handling both require
+destructuring — it is the critical enabler.
 
 ## References
 

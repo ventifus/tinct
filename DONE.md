@@ -3946,3 +3946,35 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] Added "Dict" (open record + fresh RowVar) and "Fn" (variadic + Any return) arms to resolve_type_name — all annotations now operative
 - [x] All 1701 tests pass — no inference regressions
 - [x] doc/11-stdlib.md §Prelude Type Signatures reference section added (lines 994-1155); find-deep included; stale row updated
+
+### type-annotation-fixes: Fix @Fn Unification and Cross-Kind Collision Detection
+
+- [x] Change `resolve_type_name("Fn")` to return `Type::Any` — previous `Function{params:[],ret:Any,variadic:true}` encoding could not unify with any concrete function type, producing false type errors for ~50 prelude functions annotated with `@Fn` (`src/typecheck.rs`)
+- [x] Verify cross-kind collision detection complete — same name used as both type var and row var in one annotation scope errors correctly; added `test_ann_cross_kind_row_then_type_errors` for symmetric coverage (`src/typecheck.rs`)
+- [x] Fix comment syntax errors in `src/types.rs` generalize() — single `/` comments already resolved in prior sprint (no changes needed)
+- [x] Document bare `@Fn` vs `Fn@T` distinction in `doc/06-type-inference.md:298` and `@Dict` fresh-row-var-per-site behavior in `doc/05-type-annotations.md`
+- [x] Fix `doc/02-syntax.md` EBNF `named_arg_key` — removed `escaped_ref |`; added note that `$key: val` works in dicts but not in call named args
+- [x] Remove stale bracket access examples from `doc/02-syntax.md` — tombstone entries added to disambiguation table
+- [x] Update `doc/11-stdlib.md` stale builtin count: 59 → 76 Rust-native builtins; wrapper count corrected 13 → 12 (collect-kv is a pure LLT function, no builtin-collect-kv alias)
+- [x] Update `doc/10-errors.md` Part 8 implementation correspondence table: replaced stale line numbers with function-name anchors
+- [x] Clarify `Expr::Pipe` lifecycle in `doc/15-ast.md`: present in post-parse AST, eliminated by desugar before type-check/eval
+- [x] All 1702 tests pass — no inference regressions
+
+### test-coverage-gaps: Missing Corpus and Unit Tests
+
+- [x] Add interpolated string corpus tests — `tests/corpus/valid/literals/interpolated_strings.llt-eval`, `tests/corpus/eval/builtins/interpolated_string_eval.llt-eval`, `interpolated_string_escaped.llt-eval`, `interpolated_string_multi_var.llt-eval`
+- [x] Add row polymorphism corpus tests — `tests/corpus/eval/type_system/row_anonymous.llt-eval`, `row_named.llt-eval`, `row_function_sig.llt-eval`, `row_field_constraints.llt-eval`
+- [x] Add deeply chained access corpus tests — `tests/corpus/eval/access/deeply_chained_mixed.llt-eval`, `deeply_chained_integer_keys.llt-eval`, `deeply_chained_with_get.llt-eval`
+- [x] Add pipeline section metadata corpus tests — `tests/corpus/eval/pipeline/type_annotated_output.llt-eval`, `section_expects.llt-eval`, `section_with_expects.llt-eval`, `section_annotation.llt-eval`
+- [x] Add annotation bracket restriction invalid tests — `tests/corpus/invalid/syntax_errors/annotation_special_form_call.llt-eval`, `annotation_special_form_fn.llt-eval`, `annotation_type_assert.llt-eval`
+- [x] Add rest entry positions corpus test — `tests/corpus/valid/edge_cases/rest_entry_positions.llt-eval`
+- [x] Add Unicode identifier corpus tests and unsupported escape rejection tests — `tests/corpus/valid/literals/unicode_identifiers.llt-eval`, `tests/corpus/invalid/syntax_errors/unsupported_escape.llt-eval`
+- [x] Add MAX_PARSE_DEPTH boundary tests — `parse_depth_256_succeeds.llt-eval`, `parse_depth_257_exceeds.llt-eval`
+- [x] Add CRLF formatter roundtrip unit test — `test_crlf_roundtrip` in `src/formatter.rs`
+- [x] Add builtin limit enforcement corpus tests for MAX_COLLECT_SIZE — `tests/corpus/eval/errors/collect_infinite_seq.llt-eval` (triggers E043)
+- [x] Add unit tests for `builtin_each`, `builtin_each_key`, `builtin_each_kv`, `builtin_get` — `src/builtins.rs` test module (lines 12844–13053)
+- [x] Add error corpus tests for `each`/`each-key`/`each-kv` on non-Dict values — `each_type_error.llt-eval`, `each_key_type_error.llt-eval`, `each_kv_type_error.llt-eval`
+- [x] Add pipe operator precedence and associativity corpus tests — `pipe_basic.llt-eval`, `pipe_left_assoc.llt-eval`, `pipe_precedence_dot.llt-eval`, `pipe_with_call.llt-eval`, `pipe_in_dict_value.llt-eval`
+- [x] Add JSON formatter error corpus tests — `tests/corpus/eval/errors/fmt_json_seq_error.llt-eval`, `fmt_json_function_error.llt-eval` (also unit tests in `src/lib.rs`)
+- [x] Add pipe + each integration corpus tests — `tests/corpus/eval/cross_feature/pipe_each_collect.llt-eval`, `pipe_each_key_map.llt-eval`, `pipe_each_kv_filter.llt-eval`
+- [x] 1714 tests pass — 35 new laziness tests, 12 pipeline tests, 15+ error tests, PendingCall lifecycle tests, JSON formatter unit tests

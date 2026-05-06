@@ -1158,6 +1158,26 @@ mod tests {
         );
     }
 
+    /// Test that CRLF line endings are handled correctly during format round-trip.
+    /// The formatter should parse CRLF input and produce normalized output.
+    #[test]
+    fn test_crlf_roundtrip() {
+        // Input with CRLF line endings
+        let input = "[x: 1\r\ny: 2\r\n]";
+        let formatted = format_source(input).unwrap();
+        // Formatter normalizes CRLF to LF — output must not contain CR bytes
+        assert!(
+            !formatted.contains("\r\n"),
+            "formatter must normalize CRLF to LF"
+        );
+        // Formatter should successfully parse and produce valid output
+        assert!(formatted.contains("x: 1"));
+        assert!(formatted.contains("y: 2"));
+        // Re-parsing the formatted output should succeed
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(formatted, reformatted, "CRLF formatting must be idempotent");
+    }
+
     // --- Named section header round-trip tests ---
 
     #[test]

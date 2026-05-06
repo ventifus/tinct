@@ -14,8 +14,8 @@ and groups work into independently shippable phases.
 | 3 | Quasiquoting | `quasiquoting.md` |
 | 4 | Desugaring as Macros | `macros.md` |
 
-Three additional proposals are gated on this cluster completing and form
-Phase D:
+Three additional proposals follow this cluster and form Phase D — they
+depend on defmacro shipping but are not conditionally gated:
 
 | — | Macro-Rewrite | `macro-rewrite.md` |
 | — | Parse-Stage Macros | `parse-stage-macros.md` |
@@ -158,7 +158,7 @@ ast-dict-core (M1) ── dict-to-ast (M4a) ──┐
                                             ├── defmacro (M4b) ── macro-hygiene (M5a) ── macro-integration (M5b)
 quote (M2b) ───────────────────────────────┘
 
-PHASE D (gated on defmacro shipping)
+PHASE D (follows defmacro)
 
 defmacro (M4b) ── macro-rewrite (D1) ── parse-stage-macros (D2)
               ── call-aliases (D3)
@@ -391,15 +391,13 @@ named parameters.
 - **Depends on:** M5a (hygiene, for the `_` macro to be safe), M3c (unquote,
   for ergonomic macro body), M3b (formatter-full, for configurable modes).
 
-### Phase D: Advanced (gated on defmacro shipping)
+### Phase D: Advanced (follows defmacro)
 
-Sprint slugs and gate conditions:
-
-| Sprint | Slug | Est. Tasks | Gate | Depends On |
-|--------|------|-----------|------|------------|
-| Macro-Rewrite | `macro-rewrite` | 12+ | macros Ph5 stable in production | M5b; typing-cluster A1/A2/C1 shipped as Rust first |
-| Parse-Stage Macros | `parse-stage-macros` | 8 | `[defmacro match]` (D1) complete | D1 |
-| Custom Call Aliases | `call-aliases` | 4 | Macro system adopted, demand demonstrated | M4b |
+| Sprint | Slug | Est. Tasks | Depends On |
+|--------|------|-----------|------------|
+| Macro-Rewrite | `macro-rewrite` | 8 | M5b; typing-cluster A1 shipped as Rust first. Match (A2/A3) excluded — `Expr::Match` special form |
+| Parse-Stage Macros | `parse-stage-macros` | 8 | D1 (match uses dedicated parser mode — no longer depends on match) |
+| Custom Call Aliases | `call-aliases` | 4 | M4b |
 
 ---
 
@@ -795,7 +793,7 @@ M5b: macro-integration         ← after M5a + M3c (+ M3b for formatter config)
 
 ── typing-cluster continues ──
 
-D1–D3 as gated by adoption feedback
+D1–D3 follow M5b
 ```
 
 The key insight: **M1 through M4a can all land before the typing cluster starts**.
@@ -814,7 +812,7 @@ the integration sprint that interleaves naturally with typing-cluster mid-run.
 | **M3** (source info + richer quoting) | `ast_to_dict` with source/comments; full tinct formatter; `[unquote]`/`[unquote-splice]` | Full `tinct fmt` in tinct; ergonomic template-like macro bodies |
 | **M4** (expansion engine) | `dict_to_ast`; `eval-ast`; `[defmacro]`; `gensym` | User-defined syntactic transformations |
 | **M5** (hygiene + integration) | Scope sets; dual-span errors; `_` ported to tinct macro; formatter config flags | Safe cross-include macros; configurable `tinct fmt --width` |
-| **D** (advanced, gated) | macro-rewrite; parse-stage macros; call-aliases | Self-hosted desugaring; richer macro forms |
+| **D** (advanced, follows defmacro) | macro-rewrite; parse-stage macros; call-aliases | Self-hosted desugaring; richer macro forms |
 
 Each phase is independently shippable. Phases M1–M2 deliver immediate value
 (compact formatter, AST inspection) with no metaprogramming exposure. M3–M4

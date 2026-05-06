@@ -123,10 +123,9 @@ boundaries is the right default for a config language.
 Named width types (`UInt8`, `Int32`, etc.) validate range via `is:`
 but use the same `i64` storage. For use cases requiring compact binary
 storage (FFI, network protocols, binary serialization), an explicit
-`repr:` annotation key is reserved for future use:
+`repr:` annotation key provides explicit storage hints (Phase 4):
 
 ```tinct
-# Future: repr: as an explicit storage hint (not yet specified)
 port@[type: Int  is: [between 0 65535]  repr: u16]
 ```
 
@@ -218,8 +217,8 @@ On serialization:
    optimization of regular `Int`. Making BigInt explicit keeps the
    runtime simpler and the programmer aware of the cost.
 
-5. **Storage hints deferred.** `repr:` for compact binary storage is
-   a future annotation key for FFI/binary-encoding use cases. It is
+5. **Storage hints (Phase 4).** `repr:` for compact binary storage is
+   a Phase 4 annotation key for FFI/binary-encoding use cases. It is
    a storage optimization, not a semantic constraint, and can be
    added without changing the validation model.
 
@@ -351,8 +350,8 @@ via `is:`. Both can coexist:
 port@[is: [between 0 65535]  repr: u16]   # validate AND pack as u16
 ```
 
-Not yet specified in detail — adopt when a concrete binary-encoding
-use case requires compact storage.
+Specified in detail when binary-encoding use cases drive the design.
+Phase 4 gates on Phase 3.
 
 ### Prerequisites
 
@@ -365,18 +364,17 @@ use case requires compact storage.
 
 ### Trigger
 
-**Phase 1:** When users need to validate numeric ranges in config data,
-or when `UInt8`/`Int32` etc. are needed for protocol/format documentation.
-No Rust work — just stdlib additions.
+**Phase 1:** Numeric range validation and width type aliases are
+stdlib-only — no Rust changes required. Adopt immediately.
 
-**Phase 2:** When a use case requires exact decimal arithmetic (financial
-data, currency, pricing). Or when `doc/whatif/float-dict-keys.md` is adopted.
+**Phase 2:** Exact decimal arithmetic is required for financial data,
+currency, and pricing. Adopt after Phase 1.
 
-**Phase 3:** When arithmetic overflowing i64 is a real problem in user
-code (cryptographic, mathematical, or financial computations).
+**Phase 3:** BigInt prevents silent i64 overflow in cryptographic,
+mathematical, and financial computations. Adopt after Phase 2.
 
-**Phase 4:** When binary serialization or FFI requires compact storage
-with specific integer widths.
+**Phase 4:** Compact storage for binary serialization and FFI. Adopt
+after Phase 3.
 
 ## References
 

@@ -48,21 +48,21 @@ See doc/whatif/io.md.
 
 ### test-coverage-gaps: Missing Corpus and Unit Tests
 
-- [ ] Add interpolated string corpus tests: `tests/corpus/valid/literals/interpolated_strings.llt-eval` (basic i"Hello $name", i"$$escaped", variable boundaries) and `tests/corpus/eval/builtins/interpolated_string_eval.llt-eval` (desugaring to `str` calls) [Critical — test-crafter]
-- [ ] Add row polymorphism corpus tests: anonymous rest (`...`), named rest (`...r`), rest in function signatures, rest with field constraints in `tests/corpus/eval/type_system/row_*.llt-eval` [Critical — test-crafter]
-- [ ] Add deeply chained access corpus tests: 5+ level chains mixing dot access (identifier and integer keys) and `get` builtin calls, and mid-chain error cases (`tests/corpus/eval/access/deeply_chained_mixed.llt-eval`) [Critical — test-crafter]
-- [ ] Add pipeline section metadata corpus tests for `--- %name@Type` (output type annotation) and `--- expects: Type` (input contract) in `tests/corpus/eval/pipeline/` [Critical — test-crafter]
-- [ ] Add annotation bracket restriction invalid tests: `x@[call f]`, `x@[fn [a] a]`, `x@[@Type e]` must all be parse errors (`tests/corpus/invalid/syntax_errors/annotation_special_form.llt-eval`) [Critical — test-crafter]
-- [ ] Add static constraint corpus test: verify rest entry position `[a ... b]` is valid syntax (`tests/corpus/valid/edge_cases/rest_entry_positions.llt-eval`) [Major — test-crafter]
-- [ ] Add Unicode identifier corpus tests (`tests/corpus/valid/literals/unicode_identifiers.llt-eval`) and escape sequence rejection tests for `\x41`, `A` (`tests/corpus/invalid/syntax_errors/unsupported_escape.llt-eval`) [Major — test-crafter]
-- [ ] Add MAX_PARSE_DEPTH boundary tests: 256-nested-bracket file (valid) and 257 (error) in `tests/corpus/` [Major — test-crafter]
-- [ ] Add CRLF formatter roundtrip unit test in `src/formatter.rs`: parse CRLF input, format, assert line endings preserved [Major — test-crafter]
-- [ ] Add builtin limit enforcement tests for MAX_COLLECT_SIZE and MAX_STRING_SIZE in `tests/corpus/eval/errors/` [Minor — test-crafter]
-- [ ] Add unit test module in `src/builtins.rs` for `builtin_each`, `builtin_each_key`, `builtin_each_kv`, `builtin_get` covering empty dict, multi-entry, offset-based recursion, and type errors [Critical — test-crafter]
-- [ ] Add error corpus tests for `each`, `each-key`, `each-kv` called on non-Dict values in `tests/corpus/eval/errors/` [Critical — test-crafter]
-- [ ] Add pipe operator precedence and associativity corpus tests: `x | f.g`, `[f x | g]`, `[a: x | f]`, `a | b | c` left-associativity in `tests/corpus/eval/access/` [Major — test-crafter]
-- [ ] Add JSON formatter error corpus tests: Seq serialization error, Function/Builtin error in `tests/corpus/eval/errors/` [Major — test-crafter]
-- [ ] Add pipe + each integration corpus tests: `dict | each | collect`, `d | each-key | map str`, three-stage `each-kv | filter | collect-kv` in `tests/corpus/eval/cross_feature/` [Major — test-crafter]
+- [x] Add interpolated string corpus tests: `tests/corpus/valid/literals/interpolated_strings.llt-eval` (basic i"Hello $name", i"$$escaped", variable boundaries) and `tests/corpus/eval/builtins/interpolated_string_eval.llt-eval` (desugaring to `str` calls) [Critical — test-crafter]
+- [x] Add row polymorphism corpus tests: anonymous rest (`...`), named rest (`...r`), rest in function signatures, rest with field constraints in `tests/corpus/eval/type_system/row_*.llt-eval` [Critical — test-crafter]
+- [x] Add deeply chained access corpus tests: 5+ level chains mixing dot access (identifier and integer keys) and `get` builtin calls, and mid-chain error cases (`tests/corpus/eval/access/deeply_chained_mixed.llt-eval`) [Critical — test-crafter]
+- [x] Add pipeline section metadata corpus tests for `--- %name@Type` (output type annotation) and `--- expects: Type` (input contract) in `tests/corpus/eval/pipeline/` [Critical — test-crafter]
+- [x] Add annotation bracket restriction invalid tests: `x@[call f]`, `x@[fn [a] a]`, `x@[@Type e]` must all be parse errors (`tests/corpus/invalid/syntax_errors/annotation_special_form.llt-eval`) [Critical — test-crafter]
+- [x] Add static constraint corpus test: verify rest entry position `[a ... b]` is valid syntax (`tests/corpus/valid/edge_cases/rest_entry_positions.llt-eval`) [Major — test-crafter]
+- [x] Add Unicode identifier corpus tests (`tests/corpus/valid/literals/unicode_identifiers.llt-eval`) and escape sequence rejection tests for `\x41`, `A` (`tests/corpus/invalid/syntax_errors/unsupported_escape.llt-eval`) [Major — test-crafter]
+- [x] Add MAX_PARSE_DEPTH boundary tests: 256-nested-bracket file (valid) and 257 (error) in `tests/corpus/` [Major — test-crafter]
+- [x] Add CRLF formatter roundtrip unit test in `src/formatter.rs`: parse CRLF input, format, assert line endings preserved [Major — test-crafter]
+- [x] Add builtin limit enforcement tests for MAX_COLLECT_SIZE and MAX_STRING_SIZE in `tests/corpus/eval/errors/` [Minor — test-crafter]
+- [x] Add unit test module in `src/builtins.rs` for `builtin_each`, `builtin_each_key`, `builtin_each_kv`, `builtin_get` covering empty dict, multi-entry, offset-based recursion, and type errors [Critical — test-crafter]
+- [x] Add error corpus tests for `each`, `each-key`, `each-kv` called on non-Dict values in `tests/corpus/eval/errors/` [Critical — test-crafter]
+- [x] Add pipe operator precedence and associativity corpus tests: `x | f.g`, `[f x | g]`, `[a: x | f]`, `a | b | c` left-associativity in `tests/corpus/eval/access/` [Major — test-crafter]
+- [x] Add JSON formatter error corpus tests: Seq serialization error, Function/Builtin error in `tests/corpus/eval/errors/` [Major — test-crafter]
+- [x] Add pipe + each integration corpus tests: `dict | each | collect`, `d | each-key | map str`, three-stage `each-kv | filter | collect-kv` in `tests/corpus/eval/cross_feature/` [Major — test-crafter]
 
 ## Error Diagnostics: Source Snippets
 

@@ -1,0 +1,7 @@
+# Pipeline section with output type annotation
+--- %config@[host: String  port: Number]
+[host: "localhost"  port: 8080]
+---
+%config.host
+===
+String("localhost")

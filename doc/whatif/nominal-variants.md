@@ -105,9 +105,10 @@ success: [ok: 42]     # plain dict, structural Ok variant
 status:  "pending"    # string value, structural unit variant
 ```
 
-**Nominal variants** are constructed by calling the registered constructor function.
-Each constructor name (`Some`, `None`, `Ok`, `Err`, `Left`, `Right`, etc.) is
-registered as a builtin function when its `[type ...]` type is declared:
+**Nominal variants** are constructed via constructor values registered in the
+environment when a `[type ...]` declaration is evaluated. Unit constructors are
+bound directly to `Value::Variant` values; payload constructors are bound to
+closures that wrap their argument:
 
 ```tinct
 wrapped:  [Some 42]       # → Variant { tag: "Some", payload: 42 }
@@ -266,10 +267,11 @@ constructor patterns. In value expression position, uppercase bare words that na
 registered constructors evaluate to unit variant values (similar to how `true` and
 `false` evaluate to booleans).
 
-**Impact:** Moderate. New parsing rules required in three positions: union
-declaration, match arm pattern, value expression. Uppercase bare word disambiguation
-requires symbol table lookup during parsing — the parser must know which uppercase
-names are constructors. This is the same mechanism used for `true`/`false`/`null`.
+**Impact:** Low–Moderate. New parsing rules in two positions: union declaration
+(uppercase entries are nominal constructors) and match arm pattern (`[Uppercase binding]`
+is a constructor pattern). In value expression position, no parser change is needed —
+constructor names are regular variable references (`Expr::VarRef`) that resolve to
+constructor values in the environment at eval time.
 
 ### AST (`src/ast.rs`)
 
@@ -277,11 +279,12 @@ names are constructors. This is the same mechanism used for `true`/`false`/`null
 constructor pattern variant.
 
 **Proposed:** Add `Pattern::Constructor { tag: String, binding: Option<Box<Spanned<Pattern>>> }`
-for nominal patterns. Add `Expr::Constructor { tag: String, payload: Option<Box<Spanned<Expr>>> }`
-for unit constructor values in expression position (unit variants as literals, parallel
-to `Expr::Bool`).
+for nominal patterns. No new `Expr` variant is needed — constructor names in
+expression position are regular `Expr::VarRef` nodes that resolve to constructor
+values (unit variants or constructor closures) in the environment. This is the
+standard ML/Haskell approach: constructors are values, not special syntax.
 
-**Impact:** Minor. Two new AST variants in well-isolated positions.
+**Impact:** Minor. One new AST variant (`Pattern::Constructor`), well-isolated.
 
 ### Value Representation (`src/value.rs`)
 
@@ -324,14 +327,22 @@ Exhaustiveness (Phase 2) checks that nominal constructor arms cover all construc
 
 **Current:** No constructor application or nominal variant dispatch.
 
-**Proposed:** Constructor calls `[Some 42]` are handled as builtin-style
-calls: the evaluator looks up `Some` in the environment, finds a constructor entry,
-and creates `Value::Variant { tag: "Some", payload: Some(thunk) }`. `[match]` arm
-evaluation: for `Pattern::Constructor`, materialize the scrutinee, check if it is
-`Value::Variant { tag }` with the matching tag, bind the payload thunk to the
-pattern variable.
+**Proposed:** When a `[type ...]` declaration with nominal entries is evaluated,
+register constructor values in the environment:
+- Unit constructors (`None`, `Red`): bind to `Value::Variant { tag, payload: None }`
+- Payload constructors (`Some`, `Ok`): bind to a closure
+  `fn(x) → Value::Variant { tag, payload: Some(x) }`
 
-**Impact:** Moderate. Constructor application is a new evaluation path; constructor
+Constructor calls like `[Some 42]` are regular function application — the
+evaluator looks up `Some` via `Expr::VarRef`, finds the constructor closure,
+and applies it. No special evaluation path is needed.
+
+`[match]` arm evaluation: for `Pattern::Constructor`, materialize the scrutinee,
+check if it is `Value::Variant { tag }` with the matching tag, bind the payload
+thunk to the pattern variable.
+
+**Impact:** Low–Moderate. Constructor registration at `[type]` declaration time
+is new. Constructor application reuses existing function call machinery. Constructor
 pattern matching is a new case in the pattern evaluator.
 
 ## Phased Adoption
@@ -346,7 +357,7 @@ enum-like values:
 Color:    [type Red Green Blue]
 selected: Red                       # Value::Variant { tag: "Red", payload: None }
 name:     [tag-of selected]         # → "Red"
-is-red:   [= [tag-of selected] Red] # → true
+is-red:   [= [tag-of selected] "Red"] # → true
 ```
 
 This is independently useful without pattern matching: `tag-of` enables dispatch
@@ -406,18 +417,18 @@ exhaustiveness checking straightforward.
 
 ### Trigger
 
-**Phase 1** (unit constructors): adopt when:
-- Structural tag-only variants (`Status: [type "ok" "err" "pending"]`) cause confusion
-  because string values can accidentally satisfy them
-- Any declared "enum" needs to be provably confined to declared values
+**Phase 1** (unit constructors): adopt after `algebraic-data-types.md`
+Phase 1. String-based tag variants are inherently fragile — any
+misspelled string silently satisfies them. Nominal constructors close
+this gap.
 
-**Phase 2** (payload constructors): adopt when:
-- Two constructor shapes would be identical under structural discrimination
-- `map Ok items` / `map Some items` patterns are needed in stdlib or user code
-- tinct programs use pattern matching heavily enough that mandatory elimination is valued
+**Phase 2** (payload constructors): adopt after Phase 1 and
+`pattern-matching.md` Phase 2. First-class constructors
+(`[map Ok items]`) and mandatory elimination are the primary motivations.
 
-**Phase 3** (exhaustiveness): adopt together with `algebraic-data-types.md` Phase 3 —
-they share the same type-checker infrastructure and should ship together.
+**Phase 3** (exhaustiveness): adopt together with
+`algebraic-data-types.md` Phase 3 — they share the same type-checker
+infrastructure and ship together.
 
 ## References
 

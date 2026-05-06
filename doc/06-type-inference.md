@@ -295,6 +295,8 @@ resolve(ann) = τ
 
 When name = "Fn": interpret as function type constructor.
 
+**`@Fn` vs `Fn@T` parameter annotation behavior:** Bare `@Fn` in a parameter annotation position (e.g., `f@Fn`) resolves to `Type::Any` via `resolve_type_name` — any value is accepted at type-check time and at any `[@Fn expr]` TypeAssert site. No callability check is performed by TypeAssert; `Type::Any` matches all values unconditionally, including non-callables. Callability is enforced only when the parameter is actually invoked as a function, which raises a `NotAFunction` error at the call site. `Fn@ReturnType` in a function return annotation position resolves to `Type::Function` with the specified return type via `resolve_fn_type`, which recursively resolves the return annotation and parameter types. This distinction arises from the annotation resolution dispatch: `@Fn` alone has no type parameters, so it cannot construct a `Type::Function` (which requires both params and ret); `Fn@ReturnType [ParamTypes]` has the necessary structure for full function type resolution.
+
 **Seq types:** `Seq(τ)` exists in the type grammar and is handled by unification and subtyping. Sequence constructors (`$seq`, `$range`, etc.) infer as `Seq(τ)` — see [Type System Extensions](07-type-extensions.md) §Precision.
 
 ## Unification: unify(τ₁, τ₂, S) → S'

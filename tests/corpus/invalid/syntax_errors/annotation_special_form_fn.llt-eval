@@ -1,0 +1,4 @@
+# Annotation bracket restriction - fn special form in annotation
+x@[fn [a] a]
+===
+property dict annotation must be a dict expression

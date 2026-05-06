@@ -533,8 +533,10 @@ call_args = { (named_arg | value)* }
 
 named_arg = { named_arg_key ~ ":" ~ value }
 
-named_arg_key = @{ escaped_ref | identifier }
+named_arg_key = identifier
 ```
+
+**Note:** Named argument keys accept only bare `identifier` in call forms — the parser does NOT accept `$key: val` syntax in call argument lists. `$key: val` is valid in dict entries (where `$` signals computed key lookup) but not in named call arguments (which bind by parameter name, not value). Named arguments represent parameter name bindings; use bare identifiers only.
 
 Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See doc/04-functions.md for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
@@ -854,7 +856,7 @@ ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "." | "|"
 call_args = (named_arg | value)*
 
 named_arg     = named_arg_key ~ ":" ~ value
-named_arg_key = "$" ~ esc_ident | identifier
+named_arg_key = identifier
 
 // === Type Assertions ===
 
@@ -966,10 +968,10 @@ ident_char_body = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$" 
 | `[$f]` | Single-element sequence `[ref(f)]` | Escaped ref in head |
 | `a.b` | Access chain | No whitespace before `.`, identifier enables access |
 | `a .b` | Dot access (same as `a.b`) | Dot is whitespace-insensitive |
-| `a[0]` | Bracket access | No whitespace before `[`, identifier enables access |
-| `a [0]` | Implied call `a()`, then data `[0]` | Whitespace before `[` → two separate expressions |
+| `a[0]` | Two separate expressions (tombstone: bracket access removed) | Bare identifier `a`, then dict `[0: 0]` — use `[get 0 a]` instead |
+| `a [0]` | Two separate expressions | Bare identifier `a`, then dict `[0: 0]` |
 | `$a.b` | Access chain | No whitespace before `.` |
-| `$a [0]` | Escaped ref then nested expr | Whitespace before `[` |
+| `$a [0]` | Two separate expressions | Escaped ref `$a`, then dict `[0: 0]` |
 | `x@Number` | Param with annotation | `@` in param context |
 | `fn@String` | fn with return annotation | `@` after `fn` keyword |
 | `Fn@Number` | Annotated value | `@` in value context |

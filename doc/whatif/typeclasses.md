@@ -37,7 +37,7 @@ Builtins).
    Comparable) requires ad-hoc runtime dispatch rather than type-level
    declaration.
 4. **Precise dual-dispatch typing.** `map` over Dict vs Seq cannot be
-   expressed without either union types or a `Functor` class.
+   expressed without either union types or a `Mappable` class.
 
 ## What Type Classes Would Provide
 
@@ -46,24 +46,25 @@ Builtins).
 Instead of `= : Any → Any → Bool`, type classes enable:
 
 ```
-= : Eq a => a → a → Bool
-< : Ord a => a → a → Bool
-+ : Num a => a → a → a
-map : Functor f => (a → b) → f a → f b
+= : Equatable a => a → a → Bool
+< : Comparable a => a → a → Bool
++ : Numeric a => a → a → a
+map : Mappable f => (a → b) → f a → f b
 ```
 
 This rejects `[= [fn [] 1] [fn [] 2]]` at type-check time (Function
-has no Eq instance) while accepting `[= 1 2]` (Int has Eq).
+has no Equatable instance) while accepting `[= 1 2]` (Int has Equatable).
 
 ### Required Classes for tinct
 
 | Class | Methods | Instances |
 |-------|---------|-----------|
-| `Eq` | `=` | Int, Float, Str, Bool, Null |
-| `Ord` | `<`, `>`, `<=`, `>=` | Int, Float, Str |
-| `Num` | `+`, `-`, `*`, `/`, `%`, `neg` | Int, Float |
-| `Show` | `str` | All types |
-| `Functor` | `map` | Dict, Seq |
+| `Equatable` | `=` | Int, Float, Str, Bool, Null |
+| `Comparable` | `<`, `>`, `<=`, `>=` | Int, Float, Str |
+| `Numeric` | `+`, `-`, `*`, `/`, `%`, `neg` | Int, Float |
+| `Showable` | `str` | All types |
+| `Appendable` | `concat`, `++` | Str, Seq, Dict |
+| `Mappable` | `map` | Dict, Seq |
 | `Foldable` | `reduce`, `length` | Dict, Seq |
 | `Filterable` | `filter` | Dict, Seq |
 
@@ -71,25 +72,25 @@ has no Eq instance) while accepting `[= 1 2]` (Int has Eq).
 
 Type classes carry laws that instances must satisfy:
 
-**Eq:**
+**Equatable:**
 - Reflexivity: `[= x x]` → true (except NaN)
 - Symmetry: `[= x y]` = `[= y x]`
 - Transitivity: if `[= x y]` and `[= y z]` then `[= x z]`
 
-**Ord:**
+**Comparable:**
 - Antisymmetry, transitivity, totality
-- Consistent with Eq: `[= x y]` iff `[<= x y]` and `[>= x y]`
+- Consistent with Equatable: `[= x y]` iff `[<= x y]` and `[>= x y]`
 
-**Num:**
+**Numeric:**
 - Additive identity: `[+ x 0]` = `x`
 - Additive inverse: `[+ x [neg x]]` = 0
 - Commutativity: `[+ x y]` = `[+ y x]`
 
-**NaN exception:** Float's Eq instance violates reflexivity (`NaN != NaN`).
+**NaN exception:** Float's Equatable instance violates reflexivity (`NaN != NaN`).
 This is universal across languages (IEEE 754) and should be documented as
 an exception to the law.
 
-## Eq for Records
+## Equatable for Records
 
 ### Current Behavior
 
@@ -142,23 +143,24 @@ This approach sidesteps the P1 breaking change entirely. `=` remains fast,
 predictable, and primitive-only. Users who need structural comparison opt in
 explicitly with `deep-eq` or `shallow-eq`.
 
-When typeclasses are adopted, `deep-eq` becomes the `Eq` method with
+When typeclasses are adopted, `deep-eq` becomes the `Equatable` method with
 structural derivation. `=` stays as the primitive equality operator.
 
 ## Default Derivation Strategy
 
-When typeclasses are adopted, `Eq` for records uses **structural derivation
-with key-set semantics**:
+When typeclasses are adopted, `Equatable` for records uses **structural
+derivation with key-set semantics**:
 
 Two records are equal iff:
 1. They have the same set of keys (regardless of insertion order)
-2. All corresponding values are equal (recursive `Eq` check)
+2. All corresponding values are equal (recursive `Equatable` check)
 
-This requires `Eq` on all field types. A record containing a `Function`
-value cannot derive `Eq` (functions have no meaningful equality).
+This requires `Equatable` on all field types. A record containing a
+`Function` value cannot derive `Equatable` (functions have no meaningful
+equality).
 
 For sequences: two sequences are equal iff they have the same length and
-all corresponding elements are equal (recursive `Eq` check). Infinite
+all corresponding elements are equal (recursive `Equatable` check). Infinite
 sequences are compared lazily — if they diverge at position n, `deep-eq`
 returns `false` at position n. Two identical infinite sequences would
 diverge (non-termination), which is correct: equality on infinite
@@ -176,19 +178,23 @@ declarations. This follows Elm's approach — pragmatic, avoids the
 complexity of dictionary passing, and covers tinct's immediate needs:
 
 ```
-comparable : types that support =, <  (Int, Float, Str)
-number     : types that support +, - (Int, Float)
-appendable : types that support ++    (Str, Seq, Dict)
-mappable   : types that support map   (Dict, Seq)
+Equatable  : types that support =, !=     (Int, Float, Str, Bool, Null)
+Comparable : types that support <, >, <=  (Int, Float, Str)
+Numeric    : types that support +, -, *   (Int, Float)
+Appendable : types that support ++        (Str, Seq, Dict)
+Showable   : types that support str       (All types)
+Mappable   : types that support map       (Dict, Seq)
+Foldable   : types that support fold      (Dict, Seq)
+Filterable : types that support filter    (Dict, Seq)
 ```
 
 This replaces `Any` typing on overloaded builtins with constrained
 signatures:
 
 ```
-= : comparable → comparable → Bool   (was: Any → Any → Bool)
-+ : number → number → number         (was: Any → Any → Any)
-map : (a → b) → mappable a → mappable b  (was: Any)
+= : Equatable a => a → a → Bool          (was: Any → Any → Bool)
++ : Numeric a => a → a → a               (was: Any → Any → Any)
+map : Mappable f => (a → b) → f a → f b  (was: Any)
 ```
 
 #### Type Representation
@@ -205,22 +211,22 @@ struct TypeScheme {
     pub body: Type,
 }
 
-// Display: "Eq a => Fn(a, a → Bool)" or "Num a, Functor f => ..."
+// Display: "Equatable a => Fn(a, a → Bool)" or "Numeric a, Mappable f => ..."
 ```
 
 #### Inference Semantics
 
 Constrained type variables generate constraints during inference. When a
-variable `a` is used with `=`, the constraint `Eq a` is recorded. During
-let-generalization, constraints on generalized variables become part of the
-type scheme. During instantiation, constraints are checked against the
-fixed instance sets:
+variable `a` is used with `=`, the constraint `Equatable a` is recorded.
+During let-generalization, constraints on generalized variables become part
+of the type scheme. During instantiation, constraints are checked against
+the fixed instance sets:
 
 ```
-G |- = => Eq a => Fn(a, a -> Bool)    [instantiate with fresh a]
+G |- = => Equatable a => Fn(a, a -> Bool)    [instantiate with fresh a]
 G |- 1 => IntLiteral(1)
 unify(a, IntLiteral(1))  ->  a = IntLiteral(1)
-check: Eq IntLiteral(1)?  ->  yes (Int has Eq, IntLiteral <: Int)
+check: Equatable IntLiteral(1)?  ->  yes (Int has Equatable, IntLiteral <: Int)
 ```
 
 No class declarations, no dictionary passing, no instance resolution
@@ -234,7 +240,7 @@ this is forward-compatible by design. Phase 2 adds:
 
 - **Class declarations** with method signatures
 - **Instance declarations** (initially only for built-in types)
-- **Superclass hierarchy** (Ord implies Eq)
+- **Superclass hierarchy** (Comparable implies Equatable)
 - **Dictionary passing at runtime** — each class instance is compiled to a
   record of method implementations, passed as an implicit parameter
 
@@ -250,20 +256,20 @@ method's default implementation references another method in the same class.
 
 #### Higher-Kinded Types
 
-`Functor` requires higher-kinded types: `Functor f` quantifies over a type
+`Mappable` requires higher-kinded types: `Mappable f` quantifies over a type
 constructor `f`, not a type. This is a significant extension to tinct's type
 system. Jones (1993) introduces constructor classes for exactly this purpose.
-tinct could defer higher-kinded types by keeping `Functor` as a built-in
-constraint (Phase 1) and only introducing constructor classes when user
-extensibility demands it.
+Phase 1 keeps `Mappable` as a built-in constraint. Phase 2 introduces
+constructor classes (Jones 1993) for user extensibility — the phased
+approach is deliberate.
 
-### Interaction with Row Polymorphism
+### Interaction with Row Polymorphism (Phase 3 / D1 scope)
 
 Type class constraints on records require **constrained row variables**.
-`Eq [name: a ...r]` means: `Eq a` and all fields in row-rest `r` must
-also satisfy `Eq`. This requires a new constraint kind — `EqRow(r)` or
-more generally `ClassRow(class, row_var)` — expressing "all fields in this
-row satisfy the given class."
+`Equatable [name: a ...r]` means: `Equatable a` and all fields in row-rest
+`r` must also satisfy `Equatable`. This requires a new constraint kind —
+`EquatableRow(r)` or more generally `ClassRow(class, row_var)` — expressing
+"all fields in this row satisfy the given class."
 
 Knock-on effects of constrained row variables:
 
@@ -272,28 +278,28 @@ Knock-on effects of constrained row variables:
    let-generalization alongside type constraints.
 
 2. **Row unification must check constraints.** When binding
-   `r -> [age: Int, active: Bool]`, the unifier must verify `Eq Int`
-   and `Eq Bool` if `r` carries an `EqRow` constraint. This adds a
+   `r -> [age: Int, active: Bool]`, the unifier must verify `Equatable Int`
+   and `Equatable Bool` if `r` carries an `EquatableRow` constraint. This adds a
    constraint-checking step to Remy-style four-case row unification.
 
-3. **Open records and constraints.** `Eq [name: Str ...]` (open record
-   with unknown fields) can only satisfy `Eq` if the open tail carries
-   an `EqRow` constraint. Without constrained row variables, open records
-   can never satisfy `Eq`.
+3. **Open records and constraints.** `Equatable [name: Str ...]` (open
+   record with unknown fields) can only satisfy `Equatable` if the open
+   tail carries an `EquatableRow` constraint. Without constrained row
+   variables, open records can never satisfy `Equatable`.
 
-4. **`Any` interaction.** Is `Eq Any` always satisfied? If yes, it's a
+4. **`Any` interaction.** Is `Equatable Any` always satisfied? If yes, it's a
    blanket bypass that defeats static checking. If no, gradual typing
    breaks — code using `Any` can't use equality. This tension between
    gradual typing and constrained polymorphism needs resolution. See
    `doc/whatif/gradual-typing.md` for the broader `Any` question.
 
 5. **Error provenance.** "field `callback` of type `Function` does not
-   implement `Eq`" — errors must trace from the `deep-eq` call through
+   implement `Equatable`" — errors must trace from the `deep-eq` call through
    the record type to the specific field. Requires constraint provenance
    tracking in the solver.
 
 6. **Higher-order propagation.** Functions like `filter` taking predicates
-   that use `deep-eq` gain `Eq` constraints that propagate through the
+   that use `deep-eq` gain `Equatable` constraints that propagate through the
    call chain. Every higher-order function touching equality becomes
    constrained.
 
@@ -314,7 +320,7 @@ constraint tracking. Overloaded builtins are typed as `Any`.
 
 **Proposed:** `TypeScheme` gains a `constraints: Vec<Constraint>` field.
 Constraints are pairs of (class name, type variable name). Display format:
-`Eq a => Fn(a, a -> Bool)`.
+`Equatable a => Fn(a, a -> Bool)`.
 
 **Impact:** Moderate. The `TypeScheme` struct grows one field. Display
 formatting changes. No impact on `Type` enum itself.
@@ -338,7 +344,7 @@ generates constraints that must be solved.
 signatures (or concrete types for non-overloaded builtins).
 
 **Proposed:** Overloaded builtins gain constrained type schemes:
-`$= : Eq a => a -> a -> Bool`, `$+ : Num a => a -> a -> a`, etc. Non-
+`$= : Equatable a => a -> a -> Bool`, `$+ : Numeric a => a -> a -> a`, etc. Non-
 overloaded builtins are unchanged.
 
 **Impact:** Major. All overloaded builtins need constrained type schemes.
@@ -383,7 +389,7 @@ reporting. The constraint propagation through row variables is well-studied
 locations.
 
 **Proposed:** Constraint violation errors: "type `Function` does not satisfy
-constraint `Eq`" with provenance showing how the constraint arose (e.g.,
+constraint `Equatable`" with provenance showing how the constraint arose (e.g.,
 "required because `deep-eq` was called on a record containing a Function
 field"). Requires constraint provenance tracking.
 
@@ -416,32 +422,31 @@ type-level protocol validation.
 
 - Phase 1 (`deep-eq`, `shallow-eq`): no prerequisites
 - Phase 2 (constrained type variables):
+  - Gradual typing Phase 2 / `Any` split (B2) — constraints interact with
+    `Unknown` semantics
   - `let-generalization` complete (constraints propagate through type schemes)
   - `builtin-type-signatures` complete (constrained builtins need signatures)
 - Phase 3 (full type classes):
   - Phase 2 complete
-  - Higher-kinded types for `Functor` (Jones 1993)
+  - Parameterized type aliases Phase 2 (B3) — provides higher-kinded type
+    variables for `Mappable f` (Jones 1993)
 
 ### Trigger
 
-Phase 1 should begin when:
-- Users need to compare config dicts structurally
+Phase 1 should begin immediately — config dict comparison is a known
+need and `deep-eq`/`shallow-eq` have no dependencies.
 
-Phase 2 should begin when:
-- `Any` typing for dual-dispatch builtins causes a real false positive
-- Dual-dispatch builtins need precise static checking
-- The type system needs to distinguish "supports equality" from "any type"
+Phase 2 should begin after let-generalization and builtin-type-signatures
+are complete. `Any` typing for dual-dispatch builtins already causes
+false positives.
 
-Phase 3 should follow when:
-- User-defined types need to participate in equality, comparison, or
-  arithmetic protocols
-- Structural contracts need type-level validation (e.g., "this record
-  implements the Serializable protocol")
+Phase 3 follows Phase 2 and enables user-extensible protocols for
+equality, comparison, arithmetic, and structural contract validation.
 
 ## References
 
 - Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." In *POPL '89*, pp. 60-76. ACM. — The foundational type classes paper. Defines the dictionary-passing translation.
-- Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." In *FPCA '93*, pp. 52-61. ACM. — Extends type classes to higher-kinded type constructors. Required for `Functor` class over Dict/Seq.
+- Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." In *FPCA '93*, pp. 52-61. ACM. — Extends type classes to higher-kinded type constructors. Required for `Mappable` class over Dict/Seq.
 - Jones, M.P. (1995). *Qualified types: Theory and practice.* Cambridge University Press. — Comprehensive treatment of qualified types (type classes as a special case). Covers constraint propagation through inference.
 - Gaster, B.R. & Jones, M.P. (1996). "A polymorphic type system for extensible records and variants." TR NOTTCS-TR-96-3, Nottingham. — Row-level constraints for type classes. Directly applicable to tinct's row polymorphism + type classes interaction.
 - Hall, C.V., Hammond, K., Peyton Jones, S.L. & Wadler, P. (1996). "Type classes in Haskell." *ACM TOPLAS*, 18(2), pp. 109-138. — Implementation-oriented treatment covering dictionary passing, default methods, and superclasses. Relevant to Phase 2 design.

@@ -285,17 +285,16 @@ returns the instantiated type.
 ]
 ```
 
-### Phase 3: Partial Application (Deferred)
+### Phase 3: Partial Application
 
 Allow applying fewer arguments than parameters:
 `[Mapper Int]` with `Mapper: [type [a b] [Fn@b [a]]]` produces a
 one-parameter alias equivalent to `[type [b] [Fn@b [Int]]]`.
 
-This is a convenience, not a necessity. Defer until partial application
-patterns emerge in user code. Partial application of type aliases
-corresponds to type-level currying and is a prerequisite for
-higher-kinded type variables (`Functor f` requires `f` to accept one
-type argument).
+Partial application of type aliases corresponds to type-level currying
+and is a prerequisite for higher-kinded type variables (`Functor f`
+requires `f` to accept one type argument). Ships with the type class
+phase.
 
 ### Prerequisites
 
@@ -304,22 +303,15 @@ type argument).
 - Let-generalization complete (parameter instantiation reuses the
   substitution machinery from `types.rs`).
 - Phase 2 requires Phase 1.
-- Phase 3 requires Phase 2 and is only motivated by type class adoption
+- Phase 3 requires Phase 2 and is co-scheduled with type class adoption
   (`doc/whatif/typeclasses.md`).
 
 ### Trigger
 
-- When variable name collision causes a real type error that confuses
-  a user
-- When the type system needs arity-checked type constructors
-  (prerequisite for type classes)
-- When users request generic record type definitions for reusable
-  config schemas
-
-The TODO.md item correctly notes: "Deferred until variable name
-collision becomes a real problem. Textual expansion is sufficient for
-now." This remains the right call — parameterized aliases add value
-only when the collision problem actually manifests.
+Variable name collision is a known problem (demonstrated in the
+What Doesn't Work section). Arity-checked type constructors are a
+prerequisite for type classes. Generic record type definitions enable
+reusable config schemas. All three motivations are present today.
 
 ## References
 

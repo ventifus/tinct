@@ -348,9 +348,9 @@ instead. New `is_consistent()` function (~30 lines) handles `Unknown`
 interactions.
 
 **Impact:** Major. `is_subtype` becomes a proper partial order (reflexive,
-transitive, antisymmetric). ~20 call sites change from `is_subtype(_, Any)`
-to `is_consistent`. This is the foundational change that makes the type
-system sound.
+transitive, antisymmetric). ~40 sites across `types.rs` and `typecheck.rs`
+must be audited and reclassified. This is the foundational change that makes
+the type system sound.
 
 ### Type Inference (`src/typecheck.rs`)
 
@@ -435,8 +435,8 @@ Deliverables:
 Replace `Type::Any` with `Unknown` + `Top` in a single migration. Audit
 every use of `Any` and reclassify: unannotated params to `Unknown`, builtin
 returns to `Unknown`, TypeAssert upper bound to `Top`. Add the consistency
-relation as `is_consistent()` alongside `is_subtype()`. Update ~20 call
-sites from `is_subtype(_, Any)` to `is_consistent`.
+relation as `is_consistent()` alongside `is_subtype()`. ~40 sites across
+`types.rs` and `typecheck.rs` must be audited and reclassified.
 
 ### Phase 3: Blame Tracking
 
@@ -510,10 +510,10 @@ protect the downstream section from it.
 ### Prerequisites
 
 - Phase 1: no prerequisites (documentation work)
-- Phase 2:
-  - `let-generalization` complete (type schemes must carry `Unknown` correctly)
-  - `bidirectional-typing` complete (synthesis/checking modes interact with
-    consistency relation)
+- Phase 2: ships after union types (B1) so union subtyping immediately
+  uses the proper lattice. `let-generalization` and `bidirectional-typing`
+  should also be complete by this point (no hard dep, but the cluster
+  schedule puts them earlier).
 - Phase 3a:
   - Phase 2 complete
   - `ThunkState::Guarded` already in place (TypeAssert proxy contracts)
@@ -524,22 +524,17 @@ protect the downstream section from it.
 
 ### Trigger
 
-- Phase 1 can begin at any time — it is documentation work
-- Phase 2 should begin when:
-  - The type system gains union types or type classes (both are incompatible
-    with `Any`-as-top-and-bottom — see `doc/whatif/algebraic-subtypes.md`)
-  - `Any`-as-top-and-bottom causes a type-checking false positive
-  - TypeAssert contracts prove insufficient without blame tracking
-- Phase 3a should begin when:
-  - Phase 2 is complete and the first real-world type failures are reported
-    without clear blame attribution
-  - TypeAssert errors reference source lines that are far from the actual
-    origin of mismatched values
-- Phase 3b should begin when:
-  - Phase 3a is in place and implicit boundaries (unannotated params, builtin
-    returns) are the dominant source of confusing type errors
-  - The `---` pipeline boundary is a common site of type mismatches that users
-    cannot trace to the originating section
+- Phase 1 should begin immediately — it is documentation work with no
+  dependencies.
+- Phase 2 (`Any` split) ships after annotation-only unions (B1).
+  Annotation-only unions safely coexist with `Any`-as-top-and-bottom
+  since `unify` never produces unions. The split is required before
+  algebraic subtyping (D2) and type classes Phase 2 (B4).
+- Phase 3a should begin immediately after Phase 2 — type failures
+  without blame attribution are the primary obstacle to user trust in
+  the type system.
+- Phase 3b completes the gradual typing story. Begin after Phase 3a
+  confirms the blame infrastructure works.
 
 ## References
 
