@@ -4029,3 +4029,10 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] format_source_compact() API; push_space/push_newline/first_char_of_expr helpers
 - [x] 9 unit tests: oneline basic/comments/separator/named/type, nospaces basic/adjacency, minimize, idempotent
 - [x] doc/12-tooling.md updated with compact formatter modes documentation
+
+### ast-dict-core: AST Dict Schema + ast_to_dict Minimal Mode
+
+- [x] New src/ast_dict.rs with AstToDictOpts, ast_to_dict_expr covering all Expr variants
+- [x] ast_to_dict wrapping File→Document→expressions hierarchy with schema-version: 1
+- [x] Helpers: annotation_to_dict, entry_to_dict, param_to_dict, span_to_dict
+- [x] Unit tests for Int, VarRef, File schema-version round-trips

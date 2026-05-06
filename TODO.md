@@ -92,15 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### ast-dict-core: AST Dict Schema + `ast_to_dict` Minimal Mode
-
-See doc/15-ast.md §AST Dict Schema. No dependencies.
-
-- [ ] New `src/ast_dict.rs` with `AstToDictOpts` struct; `ast_to_dict_expr` covering all `Expr` variants with `type:` string discriminator and `span:` on every node; stub arms for `Quote`/`DefMacro` (later sprints) (`src/ast_dict.rs`)
-- [ ] `ast_to_dict` wrapping `File → Document → expressions` hierarchy; root carries `schema-version: 1` (`src/ast_dict.rs`)
-- [ ] Helpers: `annotation_to_dict`, `entry_to_dict`, `param_to_dict`, `span_to_dict`; `[]` for absent optional fields (`src/ast_dict.rs`)
-- [ ] Tests: every `Expr` variant round-trips through `ast_to_dict_expr`; schema-version present; span on every node; type discriminator correct per variant (`tests/`)
-
 ### formatter-compact: Compact Formatter Modes in Tinct
 
 See doc/12-tooling.md §Compact Formatter Modes. **Depends on:** `ast-dict-core`. **Supersedes:** `fmt-oneline` sprint (Rust implementation) — once this lands, remove the Rust compact formatter code.
