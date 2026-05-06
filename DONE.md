@@ -3985,3 +3985,11 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] `definition_provider` + `GotoDefinition::METHOD` handler in src/lsp/server.rs
 - [x] 6 unit tests: simple, mutually recursive, annotated keys, no match, nested dict, parse error
 - [x] doc/12-tooling.md updated with Go To Definition capability
+
+### lsp-include-prelude: Prelude Awareness in LSP
+
+- [x] PreludeIndex with Arc-based sharing, find_stdlib_prelude_path, build_prelude_index
+- [x] TypeEnv seeded with prelude names (with_prelude_names); typecheck_file_with_types_and_env
+- [x] hover_at and definition_at fall back to prelude index for types and definitions
+- [x] definition_at returns (Url, Span) for cross-file navigation to prelude
+- [x] 4 unit tests: prelude index non-empty, hover prelude name, definition at prelude, no false undefined

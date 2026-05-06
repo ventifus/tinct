@@ -179,11 +179,23 @@ fn reset_expr(expr: &Spanned<Expr>) {
 /// **`desugar::desugar_file` must be called on the [`File`] before passing it here.**
 /// See [`typecheck_file`] for details.
 pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap) {
+    typecheck_file_with_types_and_env(file, Rc::new(TypeEnv::with_builtins()))
+}
+
+/// Type-check a parsed [`File`] with a custom initial type environment.
+///
+/// Like [`typecheck_file_with_types`], but accepts a custom initial environment.
+/// This is used by the LSP to seed the type environment with prelude names,
+/// suppressing false "undefined variable" errors for stdlib functions.
+pub fn typecheck_file_with_types_and_env(
+    file: &File,
+    initial_env: Rc<TypeEnv>,
+) -> (Vec<TypeError>, TypeMap) {
     // Reset elaboration state to allow re-typechecking cached ASTs
     reset_elaboration(file);
 
     let mut errors = Vec::new();
-    let mut env = Rc::new(TypeEnv::with_builtins());
+    let mut env = initial_env;
     let mut state = InferState::new();
     let mut type_map = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();

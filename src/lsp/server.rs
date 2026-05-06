@@ -8,14 +8,15 @@ use lsp_types::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
         PublishDiagnostics,
     },
-    request::{HoverRequest, Request as _},
-    Diagnostic, DiagnosticSeverity, HoverContents, HoverParams, InitializeParams, InitializeResult,
-    MarkedString, PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
+    request::{GotoDefinition, HoverRequest, Request as _},
+    Diagnostic, DiagnosticSeverity, GotoDefinitionParams, GotoDefinitionResponse, HoverContents,
+    HoverParams, InitializeParams, InitializeResult, Location, MarkedString,
+    PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, Url,
 };
 
-use crate::lsp::analysis::{diagnostics_for, hover_at};
-use crate::lsp::convert::lsp_position_to_offset;
+use crate::lsp::analysis::{definition_at, diagnostics_for, hover_at};
+use crate::lsp::convert::{llt_span_to_lsp_range, lsp_position_to_offset};
 use crate::lsp::document::DocumentStore;
 
 /// Maximum document size the LSP server will process: 10 MB (matches `MAX_FILE_SIZE` in builtins).
@@ -44,6 +45,7 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
     let capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
         ..Default::default()
     };
 
@@ -113,7 +115,8 @@ fn handle_request(
             let hover = store
                 .get(&uri)
                 .and_then(|doc| {
-                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| hover_at(doc, offset))
+                    lsp_position_to_offset(&pos, &doc.text)
+                        .and_then(|offset| hover_at(doc, offset, &store.prelude_index))
                 })
                 .map(|text| lsp_types::Hover {
                     contents: HoverContents::Scalar(MarkedString::String(text)),
@@ -121,6 +124,56 @@ fn handle_request(
                 });
 
             let result = serde_json::to_value(hover)?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        GotoDefinition::METHOD => {
+            let params: GotoDefinitionParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", GotoDefinition::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document_position_params.text_document.uri;
+            let pos = params.text_document_position_params.position;
+
+            let location = store.get(&uri).and_then(|doc| {
+                lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
+                    definition_at(doc, &uri, offset, &store.prelude_index).map(
+                        |(target_uri, span)| {
+                            // For prelude definitions, we need to read the prelude source to convert span to range.
+                            // For document-local definitions, use the doc text.
+                            let source_text = if target_uri == uri {
+                                &doc.text
+                            } else {
+                                // target_uri != uri implies prelude definition (the only cross-file case currently)
+                                // Future: when workspace indexing is added, this will need to read from a file cache
+                                include_str!("../../stdlib/prelude.llt")
+                            };
+                            Location {
+                                uri: target_uri,
+                                range: llt_span_to_lsp_range(&span, source_text),
+                            }
+                        },
+                    )
+                })
+            })
+            .map(GotoDefinitionResponse::Scalar);
+
+            let result = serde_json::to_value(location)?;
             connection.sender.send(Message::Response(Response {
                 id: req.id,
                 result: Some(result),
@@ -377,7 +430,7 @@ mod tests {
         let uri = Url::parse("file:///test.llt").unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let hover = hover_at(doc, 4); // on '42'
+        let hover = hover_at(doc, 4, &store.prelude_index); // on '42'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Int"));
     }
