@@ -121,31 +121,34 @@ The promotion table is built into the evaluator. User-defined numeric types part
 
 Data access has two distinct modes: **key-based** (look up by key) and **position-based** (look up by insertion-order index). For dense lists `[a b c]` = `[0: a 1: b 2: c]`, these coincide. They diverge for sparse or mutated dicts.
 
-**Key-based access** — brackets and dot notation:
+**Key-based access** — dot notation and `get` builtin:
 
 ```tinct
-# Dot notation (string keys)
-person.name                     # ≡ [get person "name"]
-config.database.host            # ≡ chained get
+# Dot notation (string keys and integer dot access)
+person.name                     # string key "name"
+config.database.host            # chained string key access
+data.0                          # integer dot access — looks up Key::Int(0)
 
-# Bracket notation (any key type)
-data[5]                         # Integer key 5
-data[-1]                        # Integer key -1 (NOT last element)
-data[key]                       # Computed key lookup
-config.services[0].host         # Mixed chaining — key 0 on services
+# get builtin (dynamic key access, replaces bracket access)
+[get 5 data]                    # Integer key 5
+[get "name" data]               # String key "name"
+[get $key data]                 # Computed key lookup
+[get 0 config.services].host    # Dynamic key then dot chain
 ```
 
-**Rules:** Identifiers can start access chains directly — `foo.bar` and `$foo.bar` are both valid. Brackets are always key-based — `data[5]` finds the entry whose key is 5, not the 5th entry by position.
+**Rules:** Identifiers can start access chains directly — `foo.bar` and `$foo.bar` are both valid. `[get key data]` finds the entry whose key matches `key`, not the nth entry by position.
 
-**Key-range slicing** with `..`:
+**Note:** Bracket access (`data[5]`, `data[$key]`) was removed in access-pipeline-phase2. Use `[get key data]` for integer and dynamic key access.
+
+**Subsequence operations** — stdlib functions:
 
 ```tinct
-data[2..5]                      # Entries with keys in [2, 5)
-data[2..]                       # Entries with keys ≥ 2
-data[..3]                       # Entries with keys < 3
+[slice data 2 5]                # Entries at positions 2, 3, 4 (position-based)
+[take 3 data]                   # First 3 entries
+[drop 2 data]                   # All entries after the first 2
 ```
 
-Key-range slicing requires keys to be comparable. All-integer or all-string keys work; mixed-type keys are an error (caught by the type system). The range operator uses `..` (not `:`, which would conflict with the key-value separator).
+**Note:** Range access (`data[2..5]`, `data[2..]`, `data[..3]`) was removed in access-pipeline-phase2. Use `slice`, `take`, and `drop` for subsequences.
 
 **Position-based access** — stdlib functions:
 
@@ -156,7 +159,7 @@ Key-range slicing requires keys to be comparable. All-integer or all-string keys
 [slice data 2 5]                # Entries at positions 2, 3, 4
 ```
 
-**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `data[0]` (key 0) and `[nth data 0]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
+**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `[get 0 data]` (key 0) and `[nth data 0]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
 
 ### Lazy Sequences — Value::Seq
 
@@ -215,7 +218,9 @@ sparse: [0: a  5: b  10: c]
 
 ### Access Chain Evaluation — Formal Specification
 
-Formalizes the three access forms (dot, bracket, range) as an access algebra with compositional chain semantics. Access chains are the primary data extraction mechanism in tinct — they desugar to nested AST nodes that the evaluator reduces inside-out, forcing the target at each step.
+Formalizes access forms (dot and `get` builtin) as an access algebra with compositional chain semantics. Access chains are the primary data extraction mechanism in tinct — they desugar to nested AST nodes that the evaluator reduces inside-out, forcing the target at each step.
+
+**Note:** Bracket access (`data[key]`) and range access (`data[2..5]`) were removed in access-pipeline-phase2. The formal specification below covers the current implementation: dot access and the `get` builtin. The ACCESS-BRACKET and ACCESS-RANGE rules below are retained as historical reference (they document the removed evaluation rules).
 
 #### Part 1: Access Algebra
 
@@ -224,10 +229,10 @@ An **access chain** is a sequence of projections applied left-to-right to a targ
 **Projections.** A projection `π` extracts data from a dict:
 
 ```
-π ::= dot(f)              — field access by literal string key f
-    | bracket(e)          — field access by evaluated expression e
-    | range(s?, e?)       — key-range slice with optional bounds [s, e)
+π ::= dot(f)              — field access by literal string key f (or integer key n for dot-int access)
 ```
+
+(Historical: `bracket(e)` and `range(s?, e?)` projections were removed in access-pipeline-phase2. Use `[get key data]` for dynamic key access and `[slice data start end]` for subsequences.)
 
 **Chains.** An access chain `C = π₁ · π₂ · ... · πₙ` applied to target expression `t` evaluates as left-to-right composition:
 
@@ -236,17 +241,19 @@ eval_chain(t, [], ρ, d) = eval(t, ρ, d)                          (empty chain)
 eval_chain(t, [π₁, ...πₙ], ρ, d) = eval_chain(apply(π₁, t, ρ, d), [π₂, ...πₙ], ρ, d)
 ```
 
-**Parser correspondence:** The parser produces nested AST nodes for chains. `$a.b[0].c` parses as:
+**Parser correspondence:** The parser produces nested AST nodes for chains. `$a.b.0.c` parses as:
 
 ```
 DotAccess(
-  BracketAccess(
+  DotAccess(
     DotAccess(VarRef("a"), "b"),
     Int(0)),
   "c")
 ```
 
-The evaluator reduces inside-out: first `eval(VarRef("a"))`, then `apply(dot("b"), ...)`, then `apply(bracket(0), ...)`, then `apply(dot("c"), ...)`. This inside-out reduction is equivalent to the left-to-right chain evaluation defined above.
+(Bracket access was removed in access-pipeline-phase2. Use `[get 0 $a.b].c` to look up integer key 0 then dot-access "c".)
+
+The evaluator reduces inside-out: first `eval(VarRef("a"))`, then `apply(dot("b"), ...)`, then `apply(dot(0), ...)`, then `apply(dot("c"), ...)`. This inside-out reduction is equivalent to the left-to-right chain evaluation defined above.
 
 #### Part 2: Projection Rules
 
@@ -262,7 +269,7 @@ v = Dict(map)                               (target must be Dict; type error oth
 force_dict(target, ρ, d) ⇒ map
 ```
 
-If `v` is not a `Dict`, evaluation fails with `type_mismatch("Dict", v.type_name(), span)`. This is inherent materialization (§Selective Materialization) — the dict structure must be known to perform key lookup. FORCE-DICT is a composite rule combining `eval`, `force`, and pattern match — it is not a primitive judgment of the Thunk Lifecycle. All three projection rules below conclude with `⇒ Rc<Thunk>` — ACCESS-DOT and ACCESS-BRACKET return an alias to an existing thunk in the dict, while ACCESS-RANGE wraps its result in a fresh `Materialized` thunk.
+If `v` is not a `Dict`, evaluation fails with `type_mismatch("Dict", v.type_name(), span)`. This is inherent materialization (§Selective Materialization) — the dict structure must be known to perform key lookup. FORCE-DICT is a composite rule combining `eval`, `force`, and pattern match — it is not a primitive judgment of the Thunk Lifecycle. ACCESS-DOT returns an alias to an existing thunk in the dict.
 
 **[ACCESS-DOT]** — Dot access: `$target.field`
 
@@ -276,63 +283,25 @@ eval_dot(target, field, ρ, d) ⇒ θ
 
 Error case: if `key ∉ dom(map)`, error `key_not_found(field, span)`. No default — missing keys are always errors (§No Null — Missing Keys Are Errors).
 
-**[ACCESS-BRACKET]** — Bracket access: `$target[key_expr]`
+**[ACCESS-BRACKET]** — Bracket access (historical — removed in access-pipeline-phase2)
 
-```
-map = force_dict(target, ρ, d)
-key = eval_key(key_expr, ρ, d)              (evaluate key expression to String or Int)
-map[key] = θ                                 (look up key; error if absent)
-────────────────────────────────────────────
-eval_bracket(target, key_expr, ρ, d) ⇒ θ
-```
+Bracket access (`$target[key_expr]`) was removed. Use `[get key_expr target]` (the `get` builtin) for dynamic key access. The `get` builtin evaluates its key argument and materializes it to a concrete `String` or `Int` key, then performs the lookup. Error if key not found.
 
-`eval_key` evaluates the key expression and materializes it to obtain a concrete `String` or `Int` key. This is the same `eval_key` used by DICT-SCOPE (§Scope Chain Semantics) — key evaluation is shared infrastructure.
+**[ACCESS-RANGE]** — Range access (historical — removed in access-pipeline-phase2)
 
-Error case: if `key ∉ dom(map)`, error `key_not_found(key, span)`.
-
-**[ACCESS-RANGE]** — Range access: `$target[start..end]`
-
-```
-map = force_dict(target, ρ, d)
-s = start.map(|e| eval_key(e, ρ, d))        (optional start bound, evaluated)
-e = end.map(|e| eval_key(e, ρ, d))          (optional end bound, evaluated)
-
-result = {}
-∀(k, θ) ∈ map (in insertion order):
-  key_in_range(k, s, e) ⟹ result[k] ← θ   (include matching entries)
-────────────────────────────────────────────
-eval_range(target, start, end, ρ, d) ⇒ Materialized(Dict(result))
-```
-
-**Range semantics:** Half-open interval `[start, end)` — start inclusive, end exclusive. When `start` is `None`, all keys from the beginning are included. When `end` is `None`, all keys to the end are included. When both are `None` (`$data[..]`), all entries are included (identity slice).
-
-**`key_in_range` comparability:**
-
-```
-key_in_range(k, s, e):
-  ∀bound ∈ {s, e} where bound ≠ None:
-    k.partial_cmp(bound) must be Some(_)     (keys must be comparable)
-  after_start = s = None ∨ k ≥ s
-  before_end  = e = None ∨ k < e
-  return after_start ∧ before_end
-```
-
-`Key::PartialOrd` returns `Some` for same-type comparisons (`Int-Int`, `String-String`) and `None` for mixed types (`Int-String`). When `partial_cmp` returns `None`, evaluation fails with `"range access requires comparable key types"`. Both bounds are checked unconditionally — a key that fails one bound may still error on the other if types are incomparable. In practice, this is unreachable because the type system requires homogeneous key types for range-accessed dicts (§Type Inference Algorithm).
-
-**Result construction:** ACCESS-RANGE returns a `Materialized(Dict(result))` — unlike ACCESS-DOT and ACCESS-BRACKET which return an existing thunk from the dict, ACCESS-RANGE constructs a new dict. The individual entry thunks `θ` are shared (`Rc::clone`) with the source dict, preserving memoization. The `key_in_range` predicate determines the result *set* independently of iteration order (it tests each key against the bounds). Insertion order from the source dict is preserved in the result dict, affecting only the ordering of entries, not which entries are included.
+Range access (`$target[start..end]`) was removed. Use `[slice target start end]`, `[take n target]`, or `[drop n target]` for subsequences. These builtins work on position (insertion order), not on key values.
 
 #### Part 3: Error Taxonomy
 
-Four error classes, each mapping to a specific point in the projection rules:
+Error classes for current access forms:
 
 | Error | Rule | Condition | Message |
 |-------|------|-----------|---------|
 | Target not a Dict | FORCE-DICT | `v` is not `Dict` | `type_mismatch("Dict", v.type_name())` |
 | Key not found (dot) | ACCESS-DOT | `String(field) ∉ dom(map)` | `key_not_found(field)` |
-| Key not found (bracket) | ACCESS-BRACKET | `key ∉ dom(map)` | `key_not_found(key)` |
-| Incomparable keys (range) | ACCESS-RANGE | `partial_cmp` returns `None` | `"range access requires comparable key types"` |
+| Key not found (`get`) | `get` builtin | `key ∉ dom(map)` | `key_not_found(key)` |
 
-Error context is enriched via `push_frame`: dot access adds `"accessing .{field}"`, bracket adds `"accessing [..]"`, range adds `"accessing [..:..]"`. This stack frame identifies which step in a chain failed.
+Error context is enriched via `push_frame`: dot access adds `"accessing .{field}"`. (Bracket and range push_frame entries were removed with ACCESS-BRACKET and ACCESS-RANGE in access-pipeline-phase2.)
 
 #### Part 4: Chain Properties
 
@@ -346,9 +315,9 @@ Five properties that hold for all access chains.
 
 **Property 2: Result Laziness**
 
-*Statement:* ACCESS-DOT and ACCESS-BRACKET return the thunk stored in the dict without forcing it. The result may be `Unevaluated`, `PendingBuiltin`, `PendingCall`, or `Materialized` — access does not trigger evaluation of the accessed value.
+*Statement:* ACCESS-DOT returns the thunk stored in the dict without forcing it. The result may be `Unevaluated`, `PendingBuiltin`, `PendingCall`, or `Materialized` — access does not trigger evaluation of the accessed value.
 
-*Proof sketch:* Both rules return `Rc::clone(thunk)` from `map.get(&key)` — a pointer copy, not a `force` call. The thunk's state is unchanged by the access. ACCESS-RANGE also preserves laziness of individual entries (shared via `Rc::clone`), though it constructs a new `Materialized(Dict(...))` wrapper. ∎
+*Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)` — a pointer copy, not a `force` call. The thunk's state is unchanged by the access. ∎
 
 **Property 3: Error Short-Circuiting**
 
@@ -364,9 +333,9 @@ Five properties that hold for all access chains.
 
 **Property 5: Sharing Preservation**
 
-*Statement:* ACCESS-DOT and ACCESS-BRACKET return an `Rc::clone` of the thunk stored in the dict — an alias, not a copy. If the same field is accessed twice, both accesses obtain pointers to the same `Rc<Thunk>`. Once the first access forces it, the second access gets FORCE-CACHED (§Thunk Lifecycle). ACCESS-RANGE creates a new dict wrapper but shares entry thunks via `Rc::clone`, so memoization is preserved for individual entries.
+*Statement:* ACCESS-DOT returns an `Rc::clone` of the thunk stored in the dict — an alias, not a copy. If the same field is accessed twice, both accesses obtain pointers to the same `Rc<Thunk>`. Once the first access forces it, the second access gets FORCE-CACHED (§Thunk Lifecycle).
 
-*Proof sketch:* ACCESS-DOT and ACCESS-BRACKET return `Rc::clone(thunk)` from `map.get(&key)`. The `Rc` reference count increases, but both the dict entry and the accessor hold pointers to the same `Thunk`. When either forces it, the thunk transitions to `Materialized` (or `Failed`), and subsequent accesses via any alias see the cached state. This is the Launchbury (1993) sharing guarantee applied to record projection — access is observation, not duplication. ∎
+*Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)`. The `Rc` reference count increases, but both the dict entry and the accessor hold pointers to the same `Thunk`. When either forces it, the thunk transitions to `Materialized` (or `Failed`), and subsequent accesses via any alias see the cached state. This is the Launchbury (1993) sharing guarantee applied to record projection — access is observation, not duplication. ∎
 
 #### Part 5: Type System Correspondence
 
@@ -377,31 +346,25 @@ The type checker mirrors the access algebra with type-level projections:
 | Runtime rule | Type rule | Type-level behavior |
 |-------------|-----------|-------------------|
 | ACCESS-DOT | `check_dot_access` | `Record(fields) → fields[f]`; open record → `Any`; closed + missing → error |
-| ACCESS-BRACKET | `check_bracket_access` | Literal key → exact field lookup; variable key → `Any`; open record → `Any` |
-| ACCESS-RANGE | `check_range_access` | Bounds must be `Int` or `Str`; result type = target type (preserves record type) |
+| ACCESS-DOT (Int) | `check_dot_access_int` | Integer dot access `.N`; looks up `Key::Int(N)`; open record → `Any` |
+| `get` builtin | `check_bracket_access` (historical) | Now handled as a regular builtin call; key access via `[get key data]` |
 
 **Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error (`typecheck.rs:313` falls through to `not_a_record`). Constraint-based row unification would bind `α` to `Record([field: β], ρ)` — see §Row-Variable Unification in [Type System Extensions](07-type-extensions.md). Row variables (`RowVar(r)`) appearing in record types are treated as markers for openness during access type checking; they are not bound to remainder types during access operations (consistent with U-REC in §Type Inference Algorithm).
 
-**Open records and Any:** When a dot or bracket access targets an open record (`Record(fields, Open)` or `Record(fields, RowVar(_))`) and the field is not in `fields`, the type checker returns `Any` rather than an error. This reflects Tinct's gradual typing design: open records may contain fields not visible to the type checker. Rather than reject valid programs, the type checker admits the access but types the result as `Any`, deferring validation to runtime. This is sound because `Any` serves as both top and bottom type (S-ANY-TOP, S-ANY-BOT in §Type Inference Algorithm) — values of any type flow through `Any` positions. For closed records, a missing field is a static error.
+**Open records and Any:** When a dot access targets an open record (`Record(fields, Open)` or `Record(fields, RowVar(_))`) and the field is not in `fields`, the type checker returns `Any` rather than an error. This reflects Tinct's gradual typing design: open records may contain fields not visible to the type checker. Rather than reject valid programs, the type checker admits the access but types the result as `Any`, deferring validation to runtime. This is sound because `Any` serves as both top and bottom type (S-ANY-TOP, S-ANY-BOT in §Type Inference Algorithm) — values of any type flow through `Any` positions. For closed records, a missing field is a static error.
 
-**Bracket key precision:** When the bracket key is a literal (`Expr::Str` or `Expr::Int`) or has a singleton type (`StringLiteral(s)` or `IntLiteral(n)`), the type checker performs exact field lookup. When the key is a variable with type `Str`, `Int`, or `Any`, the result type is `Any` — since the key value is not known until runtime, the type checker cannot determine which field will be accessed, so it conservatively returns `Any`. This is the trade-off between expressiveness (allow computed keys) and precision (lose static type information).
-
-**Range type preservation:** Range access conservatively types the result as the target type rather than attempting to narrow the field set (`typecheck.rs:384` returns `target_ty` unchanged). This is sound: the result dict is structurally a subtype of the target type (it contains a subset of the fields). Precise inference would require dependent types or refinement types to track which fields are included based on the runtime range bounds. The type checker does not currently verify that range bounds have compatible types with each other or with the target record's key types — `$data["a"..3]` with a String start and Int end passes type checking but fails at runtime. This is a known completeness gap; statically rejecting mixed-type bounds would require unifying the bound types.
+**`get` builtin precision:** When the key passed to `[get key data]` is a literal (`Expr::Str` or `Expr::Int`), the type checker performs exact field lookup. When the key is a variable with type `Str`, `Int`, or `Any`, the result type is `Any` — since the key value is not known until runtime, the type checker cannot determine which field will be accessed. The `get` builtin is now checked as a regular call rather than via the historical `check_bracket_access` function (removed in access-pipeline-phase2).
 
 #### Part 6: Implementation Correspondence
 
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
-| FORCE-DICT | Inlined in each access function (`eval` + `materialize` on target) | `eval.rs:1022-1143` |
-| ACCESS-DOT | `eval()` returns `Unevaluated` thunk; `force_step()` via `DotAccessForce` continuation | `eval.rs` |
-| ACCESS-BRACKET | `eval()` returns `Unevaluated` thunk; `force_step()` via `BracketForceTarget` continuation | `eval.rs` |
-| ACCESS-RANGE | `eval_range_access()` | `eval.rs:1099-1143` |
-| `key_in_range` | `key_in_range()` | `eval.rs:26-46` |
-| `Key::PartialOrd` | `impl PartialOrd for Key` | `value.rs:34-42` |
-| Chain nesting | Parser produces nested `DotAccess`/`BracketAccess`/`RangeAccess` AST nodes | `ast.rs:79-93` |
-| Type-level dot | `check_dot_access()` | `typecheck.rs:297-315` |
-| Type-level bracket | `check_bracket_access()` | `typecheck.rs:317-357` |
-| Type-level range | `check_range_access()` | `typecheck.rs:359-387` |
+| FORCE-DICT | Inlined in each access function (`eval` + `materialize` on target) | `eval_materialize.rs` |
+| ACCESS-DOT | `eval()` returns `Unevaluated` thunk; `force_step()` via `DotAccessForce` continuation | `eval_materialize.rs` |
+| `Key::PartialOrd` | `impl PartialOrd for Key` | `value.rs` |
+| Chain nesting | Parser produces nested `DotAccess` AST nodes | `ast.rs` |
+| Type-level dot | `check_dot_access()` | `typecheck.rs` |
+| Note: `BracketForceTarget`, `eval_range_access`, `key_in_range`, `check_bracket_access`, `check_range_access` | All removed in access-pipeline-phase2 | — |
 
 #### Part 7: Worked Examples
 
@@ -421,26 +384,23 @@ Chain: `dot("database") · dot("host")` applied to `config`.
 
 Note: `θ_port` is never forced — Property 2 (result laziness) means accessing `.host` does not evaluate `.port`.
 
-**Example 2: Mixed chain with bracket**
+**Example 2: Dynamic key access with `get` builtin**
 
 ```tinct
-services[0].host
+[get 0 services].host
 ```
 
-Chain: `bracket(Int(0)) · dot("host")`.
-1. `force_dict(services)` → map. `eval_key(Int(0))` → `Key::Int(0)`. `map[Int(0)]` → `θ_svc0`.
-2. `force_dict(θ_svc0)` → `{host: θ_host, ...}`. `map[String("host")]` → `θ_host`.
+`[get 0 services]` calls the `get` builtin with key `Int(0)` and dict `services`. The builtin materializes `services`, looks up `Key::Int(0)` → `θ_svc0`. Then `.host` dot-accesses `θ_svc0`.
 
-**Example 3: Range access**
+(Historical: The old `services[0].host` — bracket access followed by dot — was removed in access-pipeline-phase2.)
+
+**Example 3: Subsequence with `slice` (replaces range access)**
 
 ```tinct
 data: [a: 1  b: 2  c: 3  d: 4]
-data["b".."d"]
+[slice data 1 3]
 ```
 
-`force_dict(data)` → `{a: θ₁, b: θ₂, c: θ₃, d: θ₄}`. Bounds: `s = String("b")`, `e = String("d")`.
-- `key_in_range(String("a"), "b", "d")`: `"a" < "b"` → `after_start` = false → exclude.
-- `key_in_range(String("b"), "b", "d")`: `"b" ≥ "b"` ∧ `"b" < "d"` → include.
-- `key_in_range(String("c"), "b", "d")`: `"c" ≥ "b"` ∧ `"c" < "d"` → include.
-- `key_in_range(String("d"), "b", "d")`: `"d" ≥ "b"` ∧ `"d" < "d"` → `before_end` = false → exclude.
-- Result: `Materialized(Dict({b: θ₂, c: θ₃}))`. Half-open: start inclusive, end exclusive.
+`[slice data 1 3]` returns entries at positions 1 and 2 (half-open interval `[1, 3)` by insertion order), yielding `[0: 2  1: 3]` (renumbered). Use `slice`, `take`, and `drop` for subsequences.
+
+(Historical: The old `data["b".."d"]` — range access by key value — was removed in access-pipeline-phase2.)

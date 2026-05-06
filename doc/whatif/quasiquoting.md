@@ -1,5 +1,7 @@
 # What If: Quasiquoting for tinct
 
+**State:** Accepted — 2026-05-05
+
 What would it take to add quasiquoting --- AST-as-data representation with
 `quote`/`unquote` --- to tinct?
 
@@ -163,6 +165,15 @@ must track nesting depth: inside a `[quote ...]`, `[unquote ...]` switches
 back to expression mode (evaluated). Nested quotes increment the depth;
 `unquote` only evaluates at depth 1. This follows Lisp's established
 quasiquote semantics (Bawden, 1999).
+
+**`unquote-splice` position restriction:** `[unquote-splice expr]` is only
+valid in a *list position* — inside the `args:` of a call or the `entries:`
+of a dict, where the splice has a sequence to extend. It is a parse error at
+the *top level* of a `[quote ...]` where there is no enclosing list to splice
+into. Per Bawden (1999) Appendix A, `qq-expand` rejects `tag-comma-atsign?`
+at top level: there is no meaningful semantics for splicing into a scalar
+position. The parser enforces this: `[quote [unquote-splice xs]]` is an error;
+`[quote [f [unquote-splice xs]]]` (splice into `f`'s arg list) is valid.
 
 ### Interaction with Lazy Evaluation
 

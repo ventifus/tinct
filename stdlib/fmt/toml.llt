@@ -33,7 +33,7 @@ toml-array-items: [fn [d i]
   [if [>= i [length d]]
     ""
     [str
-      [toml-scalar d[i]]
+      [toml-scalar [get i d]]
       [if [< [+ i 1] [length d]] ", " ""]
       [toml-array-items d [+ i 1]]]]]
 
@@ -41,23 +41,23 @@ toml-array-items: [fn [d i]
 toml-partition: [fn [d ks i flat-keys table-keys]
   [if [>= i [length ks]]
     [flat: flat-keys  tables: table-keys]
-    [if [dict? d[ks[i]]]
-      [toml-partition d ks [+ i 1] flat-keys [append table-keys ks[i]]]
-      [toml-partition d ks [+ i 1] [append flat-keys ks[i]] table-keys]]]]
+    [if [dict? [get [get i ks] d]]
+      [toml-partition d ks [+ i 1] flat-keys [append table-keys [get i ks]]]
+      [toml-partition d ks [+ i 1] [append flat-keys [get i ks]] table-keys]]]]
 
 # Internal: format flat key-value pairs
 toml-flat: [fn [d ks i acc]
   [if [>= i [length ks]]
     acc
     [toml-flat d ks [+ i 1]
-      [str acc ks[i] " = " [toml-value d[ks[i]]] "\n"]]]]
+      [str acc [get i ks] " = " [toml-value [get [get i ks] d]] "\n"]]]]
 
 # Internal: format tables (nested dicts)
 toml-tables: [fn [d ks i acc]
   [if [>= i [length ks]]
     acc
     [toml-tables d ks [+ i 1]
-      [str acc "\n[" ks[i] "]\n" [toml d[ks[i]]]]]]]
+      [str acc "\n[" [get i ks] "]\n" [toml [get [get i ks] d]]]]]]
 
 # Internal: format a value (scalar or inline array)
 toml-value: [fn [val]

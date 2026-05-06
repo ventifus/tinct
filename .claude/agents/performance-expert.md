@@ -32,7 +32,7 @@ You are a performance expert for the tinct language runtime. You understand Rust
 | `src/builtins.rs` | Per-builtin allocation, intermediate collections, argument materialization patterns |
 | `src/typecheck.rs` | Substitution application scaling, four-pass dict inference, unification cost |
 | `src/parser.rs` | Iterative parse time, StackFrame allocation, colon-ahead scan per token, Spanned wrapper boxing |
-| `src/lexer.rs` | Full tokenization upfront, Position tracking overhead, BracketAccess detection |
+| `src/lexer.rs` | Full tokenization upfront, Position tracking overhead, ImmediateAt detection |
 | `src/types.rs` | Type tree traversal in apply/unify, Row variant matching overhead |
 | `stdlib/prelude.llt` | Recursive function depth, intermediate dict construction, pipeline length |
 

@@ -125,17 +125,6 @@ pub enum Expr {
         expr: Box<Spanned<Expr>>,
         field: DotKey,
     },
-    /// Bracket key access, e.g. `$a[0]` or `$a[$key]`
-    BracketAccess {
-        expr: Box<Spanned<Expr>>,
-        key: Box<Spanned<Expr>>,
-    },
-    /// Key-range slice, e.g. `$a[2..5]` or `$a[2..]`
-    RangeAccess {
-        expr: Box<Spanned<Expr>>,
-        start: Option<Box<Spanned<Expr>>>,
-        end: Option<Box<Spanned<Expr>>>,
-    },
     /// Pipe operator, e.g. `$a | f` (desugared before evaluation)
     Pipe {
         lhs: Box<Spanned<Expr>>,
@@ -290,18 +279,6 @@ impl fmt::Display for Expr {
                 DotKey::Ident(s) => write!(f, "{}.{s}", expr.node),
                 DotKey::Int(n) => write!(f, "{}.{n}", expr.node),
             },
-            Expr::BracketAccess { expr, key } => write!(f, "{}[{}]", expr.node, key.node),
-            Expr::RangeAccess { expr, start, end } => {
-                write!(f, "{}[", expr.node)?;
-                if let Some(s) = start {
-                    write!(f, "{}", s.node)?;
-                }
-                write!(f, "..")?;
-                if let Some(e) = end {
-                    write!(f, "{}", e.node)?;
-                }
-                write!(f, "]")
-            }
             Expr::Pipe { lhs, rhs } => write!(f, "{} | {}", lhs.node, rhs.node),
             Expr::Dict(entries) => {
                 write!(f, "[")?;
@@ -425,46 +402,6 @@ impl Expr {
 mod tests {
     use super::*;
     use crate::test_util::sp;
-
-    #[test]
-    fn test_display_range_access_full() {
-        let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::var_ref("list".into()))),
-            start: Some(Box::new(sp(Expr::Int(1)))),
-            end: Some(Box::new(sp(Expr::Int(5)))),
-        };
-        assert_eq!(format!("{expr}"), "list[1..5]");
-    }
-
-    #[test]
-    fn test_display_range_access_start_only() {
-        let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::var_ref("list".into()))),
-            start: Some(Box::new(sp(Expr::Int(2)))),
-            end: None,
-        };
-        assert_eq!(format!("{expr}"), "list[2..]");
-    }
-
-    #[test]
-    fn test_display_range_access_end_only() {
-        let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::var_ref("list".into()))),
-            start: None,
-            end: Some(Box::new(sp(Expr::Int(10)))),
-        };
-        assert_eq!(format!("{expr}"), "list[..10]");
-    }
-
-    #[test]
-    fn test_display_range_access_unbounded() {
-        let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::var_ref("list".into()))),
-            start: None,
-            end: None,
-        };
-        assert_eq!(format!("{expr}"), "list[..]");
-    }
 
     #[test]
     fn test_display_type_assert() {

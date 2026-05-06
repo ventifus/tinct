@@ -1,6 +1,6 @@
-# Bracket access with integer key
+# Bracket access with integer key (migrated to get)
 [data: [0: "zero"  1: "one"  2: "two"]]
 
-data[1]
+[get 1 data]
 ===
 String("one")

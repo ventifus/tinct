@@ -54,7 +54,7 @@ yaml-list-item: [fn [d indent i]
   [str
     [join "" [take indent [repeat " "]]]
     "- "
-    [yaml-list-value d[i] [+ indent 2]]
+    [yaml-list-value [get i d] [+ indent 2]]
     [if [< [+ i 1] [length d]] "\n" ""]
     [yaml-list-items d indent [+ i 1]]]]
 
@@ -85,9 +85,9 @@ yaml-dict-entries: [fn [d indent ks i]
 yaml-dict-entry: [fn [d indent ks i]
   [str
     [join "" [take indent [repeat " "]]]
-    ks[i]
+    [get i ks]
     ": "
-    [yaml-dict-value d[ks[i]] [+ indent 2]]
+    [yaml-dict-value [get [get i ks] d] [+ indent 2]]
     [if [< [+ i 1] [length ks]] "\n" ""]
     [yaml-dict-entries d indent ks [+ i 1]]]]
 

@@ -1,6 +1,6 @@
 # What If: Canonical AST Dict Schema for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-05
 
 What would it take to define a stable, versioned mapping from tinct's `Expr` AST to tinct dicts — the shared data language for the formatter, quasiquoting, and macros?
 
@@ -16,7 +16,7 @@ Each proposal referenced the schema independently. Without a canonical definitio
 
 ### What's Missing
 
-1. A complete mapping for every `Expr` variant, including `DotAccess`, `RangeAccess`, `Pipe`, `TypeAlias`, `TypeAssert`, `Annotated`, `Rest`
+1. A complete mapping for every `Expr` variant, including `DotAccess`, `Pipe`, `TypeAlias`, `TypeAssert`, `Annotated`, `Rest`
 2. A schema for supporting types: `Entry`, `Param`, `NamedArg`, `Annotation`, `Document`, `File`
 3. A policy for optional fields (absent vs null), spans, comments, and bare-word detection
 4. Defined Rust functions `ast_to_dict` and `dict_to_ast` with their full signatures

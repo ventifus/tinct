@@ -119,24 +119,6 @@ fn try_wrap(expr: &mut Spanned<Expr>) -> bool {
             false
         }
 
-        // WRAP-BRACKET: target is DIRECT (not the key)
-        Expr::BracketAccess { expr: target, .. } => {
-            if is_direct_underscore(&target.node) {
-                wrap_expr_in_lambda(expr);
-                return true;
-            }
-            false
-        }
-
-        // WRAP-RANGE: target is DIRECT (not bounds)
-        Expr::RangeAccess { expr: target, .. } => {
-            if is_direct_underscore(&target.node) {
-                wrap_expr_in_lambda(expr);
-                return true;
-            }
-            false
-        }
-
         // WRAP-PIPE: LHS is DIRECT (e.g., `$_ | f` becomes `[fn [_] $_ | f]`)
         // The desugar_pipe step inside the lambda body will then transform
         // `$_ | f` to `Call(f, [VarRef("_")])` at depth > 0 where `_` is bound.
@@ -155,15 +137,13 @@ fn try_wrap(expr: &mut Spanned<Expr>) -> bool {
 
 /// DIRECT predicate: tests whether an expression is `$_` or an access chain rooted at `$_`.
 ///
-/// Access chain keys, range bounds, and dict entry keys are excluded — only the
+/// Access chain keys and dict entry keys are excluded — only the
 /// access *target* triggers desugaring.
 fn is_direct_underscore(expr: &Expr) -> bool {
     match expr {
         Expr::VarRef { name, .. } => name == "_",
         // Access chains on $_ count as DIRECT (e.g., $_.name)
         Expr::DotAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
-        Expr::BracketAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
-        Expr::RangeAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
         // Pipe chains: check LHS (e.g., $_ | f becomes [fn [_] $_ | f])
         Expr::Pipe { lhs, .. } => is_direct_underscore(&lhs.node),
         // All other expressions: not DIRECT
@@ -212,29 +192,9 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         | Expr::Rest(_)
         | Expr::Error(_) => {}
 
-        // Access expressions: recurse into target and key/bounds
+        // Access expressions: recurse into target
         Expr::DotAccess { expr: target, .. } => {
             desugar(target, depth);
-        }
-        Expr::BracketAccess {
-            expr: target,
-            key: key_expr,
-        } => {
-            desugar(target, depth);
-            desugar(key_expr, depth);
-        }
-        Expr::RangeAccess {
-            expr: target,
-            start,
-            end,
-        } => {
-            desugar(target, depth);
-            if let Some(s) = start {
-                desugar(s, depth);
-            }
-            if let Some(e) = end {
-                desugar(e, depth);
-            }
         }
         // Pipe: recurse into both sides at the CURRENT depth, then rewrite the pipe itself.
         //
@@ -484,27 +444,6 @@ mod tests {
         assert!(is_direct_underscore(&expr));
     }
 
-    /// Test DIRECT predicate for BracketAccess on $_
-    #[test]
-    fn test_direct_underscore_bracket_access() {
-        let expr = Expr::BracketAccess {
-            expr: Box::new(sp(Expr::var_ref("_".into()))),
-            key: Box::new(sp(Expr::Int(0))),
-        };
-        assert!(is_direct_underscore(&expr));
-    }
-
-    /// Test DIRECT predicate for RangeAccess on $_
-    #[test]
-    fn test_direct_underscore_range_access() {
-        let expr = Expr::RangeAccess {
-            expr: Box::new(sp(Expr::var_ref("_".into()))),
-            start: Some(Box::new(sp(Expr::Int(2)))),
-            end: Some(Box::new(sp(Expr::Int(5)))),
-        };
-        assert!(is_direct_underscore(&expr));
-    }
-
     /// Test DIRECT predicate for non-underscore access chain
     #[test]
     fn test_direct_underscore_dot_access_non_underscore() {
@@ -689,116 +628,6 @@ mod tests {
                 }
             }
             _ => panic!("Expected Fn wrapper, got {:?}", expr.node),
-        }
-    }
-
-    /// Test WRAP-BRACKET: $data[$_] does NOT wrap (key position excluded)
-    #[test]
-    fn test_no_wrap_bracket_key() {
-        let mut expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::var_ref("data".into()))),
-            key: Box::new(sp(Expr::var_ref("_".into()))),
-        });
-
-        desugar_expr(&mut expr, 0);
-
-        // Should remain BracketAccess (target is not DIRECT)
-        match &expr.node {
-            Expr::BracketAccess { expr: target, key } => {
-                assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "data"));
-                assert!(matches!(&key.node, Expr::VarRef { name, .. } if name == "_"));
-            }
-            _ => panic!("Expected BracketAccess, got {:?}", expr.node),
-        }
-    }
-
-    /// Test WRAP-BRACKET: $_[0] wraps (target is DIRECT)
-    #[test]
-    fn test_wrap_bracket_target() {
-        let mut expr = sp(Expr::BracketAccess {
-            expr: Box::new(sp(Expr::var_ref("_".into()))),
-            key: Box::new(sp(Expr::Int(0))),
-        });
-
-        desugar_expr(&mut expr, 0);
-
-        match &expr.node {
-            Expr::Fn { params, body, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].node.name, "_");
-
-                match &body.node {
-                    Expr::BracketAccess { expr: target, key } => {
-                        assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "_"));
-                        assert!(matches!(key.node, Expr::Int(0)));
-                    }
-                    _ => panic!("Expected BracketAccess in lambda body"),
-                }
-            }
-            _ => panic!("Expected Fn wrapper, got {:?}", expr.node),
-        }
-    }
-
-    /// Test WRAP-RANGE: $_[2..5] wraps (target is DIRECT)
-    #[test]
-    fn test_wrap_range_target() {
-        let mut expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::var_ref("_".into()))),
-            start: Some(Box::new(sp(Expr::Int(2)))),
-            end: Some(Box::new(sp(Expr::Int(5)))),
-        });
-
-        desugar_expr(&mut expr, 0);
-
-        match &expr.node {
-            Expr::Fn { params, body, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].node.name, "_");
-
-                match &body.node {
-                    Expr::RangeAccess {
-                        expr: target,
-                        start,
-                        end,
-                    } => {
-                        assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "_"));
-                        assert!(matches!(start.as_ref().unwrap().node, Expr::Int(2)));
-                        assert!(matches!(end.as_ref().unwrap().node, Expr::Int(5)));
-                    }
-                    _ => panic!("Expected RangeAccess in lambda body"),
-                }
-            }
-            _ => panic!("Expected Fn wrapper, got {:?}", expr.node),
-        }
-    }
-
-    /// Test range bounds exclusion: $data[$_..5] does NOT wrap
-    #[test]
-    fn test_no_wrap_range_bounds() {
-        let mut expr = sp(Expr::RangeAccess {
-            expr: Box::new(sp(Expr::var_ref("data".into()))),
-            start: Some(Box::new(sp(Expr::var_ref("_".into())))),
-            end: Some(Box::new(sp(Expr::Int(5)))),
-        });
-
-        desugar_expr(&mut expr, 0);
-
-        // Should remain RangeAccess (target is not DIRECT)
-        match &expr.node {
-            Expr::RangeAccess {
-                expr: target,
-                start,
-                end,
-            } => {
-                assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "data"));
-                // Bounds are recursed into but don't trigger WRAP
-                assert!(matches!(
-                    &start.as_ref().unwrap().node,
-                    Expr::VarRef { name, .. } if name == "_"
-                ));
-                assert!(matches!(end.as_ref().unwrap().node, Expr::Int(5)));
-            }
-            _ => panic!("Expected RangeAccess, got {:?}", expr.node),
         }
     }
 
@@ -1343,7 +1172,12 @@ mod tests {
 
         // Should have wrapped in a lambda
         match &expr.node {
-            Expr::Fn { params, body, desugared, .. } => {
+            Expr::Fn {
+                params,
+                body,
+                desugared,
+                ..
+            } => {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "_");
                 assert!(desugared, "WRAP-PIPE should produce desugared=true lambda");
@@ -1362,7 +1196,10 @@ mod tests {
                             args[0].node
                         );
                     }
-                    _ => panic!("expected Call in WRAP-PIPE lambda body, got {:?}", body.node),
+                    _ => panic!(
+                        "expected Call in WRAP-PIPE lambda body, got {:?}",
+                        body.node
+                    ),
                 }
             }
             _ => panic!("expected Fn wrapper from WRAP-PIPE, got {:?}", expr.node),

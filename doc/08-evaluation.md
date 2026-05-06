@@ -431,7 +431,7 @@ Error variants for FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN follow FORC
 
 **Fast path:** In FORCE-BUILTIN, FORCE-CALL, and FORCE-CALL-BUILTIN, if θ' is already Materialized, skip the recursive `force` and extract the value directly. This is observationally equivalent to the general rule — FORCE-CACHED fires immediately on the recursive `force(θ', d+1)` — but avoids the function call overhead (in `materialize()` PendingBuiltin and PendingCall cases in `src/eval.rs`).
 
-**Value::Proxy access dispatch.** Dot access (`$proxy.field`) and bracket access (`$proxy[key]`) on a `Value::Proxy` are not part of the thunk lifecycle — they occur *after* materialization produces a Proxy value. The evaluator dispatches to `invoke_proxy_handler`, which materializes the handler thunk (sharing-preserving via Launchbury memoization) and invokes it with the key. Each proxy access costs one depth level via `materialize(handler, ..., depth + 1)`. Proxy-handler-returns-Proxy chains are bounded by `MAX_EVAL_DEPTH`.
+**Value::Proxy access dispatch.** Dot access (`$proxy.field`) on a `Value::Proxy` is not part of the thunk lifecycle — it occurs *after* materialization produces a Proxy value. The evaluator dispatches to `invoke_proxy_handler`, which materializes the handler thunk (sharing-preserving via Launchbury memoization) and invokes it with the key. Each proxy access costs one depth level via `materialize(handler, ..., depth + 1)`. Proxy-handler-returns-Proxy chains are bounded by `MAX_EVAL_DEPTH`.
 
 ### Part 3: Semantic Properties
 
@@ -1024,7 +1024,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 - **Key cloning reduction**: Eliminate the 2× `String` clone per dict entry in `eval_dict` (once into `dict_env` bindings, once into `dict_map`). Use `entry_mut()` pattern or restructure insert order. ~30% of dict allocation cost.
 - **AST cloning reduction**: Change `CallExpr` args from `Spanned<Expr>` to `Rc<Spanned<Expr>>` so `eval_call` can `Rc::clone` instead of deep-cloning entire AST subtrees per argument. ~20-40% of call overhead. Internal refactor to ast.rs and parser.rs; backward-compatible at the public API level.
 - **func_label allocation reduction**: `format!("${name}")` on every PendingCall creation → `Cow<'static, str>` for the common VarRef case (most calls). Only allocate for DotAccess labels. ~5-10% of call overhead.
-- **Capacity hints**: `IndexMap::with_capacity(entries.len())` on all dict construction paths (`eval_dict`, `builtin_drop` Dict path, range access, `builtin_split`).
+- **Capacity hints**: `IndexMap::with_capacity(entries.len())` on all dict construction paths (`eval_dict`, `builtin_drop` Dict path, `builtin_split`).
 - **SmallVec**: `SmallVec<[Rc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
 - **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
 
@@ -1222,6 +1222,48 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Relationship to allocation strategy:** This design is Phase 2 of the allocation strategy. Arena allocation and flat environments integrate naturally: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
+## Quote Semantics
+
+`[quote expr]` converts the syntactic form of `expr` into an AST dict (per `doc/15-ast.md` §AST Dict Schema) without evaluating it. The conversion happens when the `Expr::Quote` node is forced by the normal evaluator — this is runtime evaluation, not a compile-time operation. The result is an ordinary `Value::Dict`.
+
+`[unquote expr]` inside a `[quote ...]` evaluates `expr` in the current runtime environment when the surrounding `[quote]` is forced, then splices the result into the dict structure. `[unquote-splice expr]` evaluates to a `Value::Seq` and splices each element into the enclosing list position. Nesting depth follows Bawden (1999): nested `[quote [quote [unquote x]]]` preserves the inner `unquote` as AST (not evaluated, since depth > 1).
+
+Quoted expressions have type `Dict`. No special type rules — `quote` is transparent to the type system.
+
+## Macro Expansion Pipeline
+
+After parsing, the pipeline inserts an expansion phase:
+
+```
+parse → expand_macros → desugar → resolve → typecheck → eval
+```
+
+`expand_macros` walks the AST top-down. When a `Call` node's function name matches a registered macro in `MacroEnv`, the expander:
+1. Quotes all arguments (calls `ast_to_dict_expr` per arg — arguments are never evaluated)
+2. Calls the macro function with the quoted argument dicts
+3. Calls `dict_to_ast` on the result to produce a replacement AST node
+4. Replaces the original call with the expansion and re-expands
+
+`[defmacro name [params] body]` is processed by the expander: the body is evaluated in a **fresh `EvalContext`** (not shared with the runtime pass — prevents `IncludeContext` cache pollution and depth budget erosion) that inherits `EvalConfig` (capability flags, `no_fs`). The resulting callable is registered in `MacroEnv`. The `Expr::DefMacro` node is removed from the AST after registration — the typechecker and evaluator never see it.
+
+**Termination:** Depth limit 100 per call-site (configurable via `TINCT_MACRO_DEPTH`), plus a total node-count cap of 100k nodes post-expansion to prevent exponential AST blowup. A `HashSet<(file_id, byte_offset)>` tracks in-progress call sites; macro-generated nodes with no source position receive a `SyntheticId(u64)` as an alternate key.
+
+**Namespace protection:** Macros cannot shadow registered Rust builtins — enforced at registration time.
+
+**`gensym`:** Produces names of the form `:gensym:N` (colon prefix is forbidden in bare-word identifiers, making user collision structurally impossible). Names are unique but not stable across evaluation orders.
+
+**Include ordering:** Macro definitions from `$include`d files are available to the includer only when the include path is a statically-determinable string literal — a consequence of Flatt (2002) phase separation. Dynamic include paths cannot be resolved during expansion.
+
+## Macro Hygiene
+
+Scope sets (Flatt 2016) prevent accidental variable capture. Each macro invocation gets a fresh `ScopeId(u32)`. Bindings introduced by the macro body carry the definition-site scope; call-site variables carry the caller's scope. Two bindings with the same string name but different `ScopeId`s are distinct.
+
+This is a simplification of Flatt's full biggest-subset binding resolution rule, sufficient for non-recursive macros. If recursive macro patterns or nested macro definitions arise, upgrade to the full biggest-subset model.
+
+**Dual-span error provenance** uses a side map (`HashMap<NodeKey, Span>`) maintained by the expander. The side map records `(macro_name, call_site_span, expansion_rule_index)` per generated node — honest tags per Pombrio & Krishnamurthi (2015) Theorem 2 (Abstraction). Error messages show "in expansion of `<name>` at line N" with provenance chains for nested expansions.
+
+**No intentional hygiene escape hatch.** `var!` or any mechanism that lets a macro inject bindings into the caller's scope is deferred pending real-world usage observation.
+
 **Precedent:** Jsonnet's VM uses 22 `FrameKind` variants with a value register (production-tested at Google). Nickel uses an iterative stack machine with `OpFirst`/`OpSecond` continuations (production Rust). Both are defunctionalized CPS machines. The theoretical foundation is Felleisen & Friedman's CEK machine.
 
 **Recursive call sites being converted:**
@@ -1231,8 +1273,6 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 | `eval()` → `eval()` (TypeAssert, desugar, defaults) | `Action::Eval` + `Cont::TypeAssertCheck` etc. |
 | `eval_call()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::CallForceFunc` |
 | `eval_dot_access()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DotAccessForce` |
-| `eval_bracket_access()` → `eval()` + `materialize()` ×2 | `Action::Eval` + `Cont::BracketForceTarget` → `Cont::BracketForceKey` |
-| `eval_range_access()` → `materialize()` ×3 | `Action::Materialize` + `Cont::RangeForceTarget` → `Cont::RangeForceStart` → `Cont::RangeForceEnd` |
 | `eval_dict()` → computed key materialization | `Action::Eval` + `Cont::DictBuildKey` |
 | `eval_document()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DocumentScope` (`%` bound as `Unevaluated` thunk, never materialized) |
 | `bind_args_thunks()` → default eval | `Action::Eval` + `Cont::BindArgDefault` |

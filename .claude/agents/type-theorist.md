@@ -51,7 +51,7 @@ Rémy-style row-variable unification is FULLY IMPLEMENTED with kinded substituti
 - **Level lowering**: `lower_row_var_levels` called after row-var binding to prevent unsound generalization of inner type/row vars
 - **Generalize/instantiate**: row vars participate identically to type vars via levels, `TypeScheme` has separate `type_vars` and `row_vars` lists
 
-**Forward work**: Access chain constraint generation (Part 5) — bind unknown type vars to Record with row var tail when accessed via dot/bracket.
+**Forward work**: Access chain constraint generation (Part 5) — bind unknown type vars to Record with row var tail when accessed via dot (bracket access was removed in access-pipeline-phase2; use `[get key data]` for dynamic key access).
 
 ## When Working on Type System Changes
 

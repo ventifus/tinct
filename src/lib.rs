@@ -72,8 +72,8 @@ pub use eval::{
 };
 pub use eval_deep::deep_materialize;
 
-/// Builtin infrastructure: stdlib creation, JSON conversion.
-pub use builtins::{create_stdlib_env, json_to_value, MAX_FILE_SIZE};
+/// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
+pub use builtins::{create_stdlib_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE};
 
 // Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
 #[cfg(feature = "lsp")]
@@ -239,8 +239,14 @@ pub fn visit_value<V: ValueVisitor>(
         }
         value::Value::Overlay(l, r) => {
             // Flatten overlay to a concrete dict, then visit it.
-            let map =
-                builtins::flatten_overlay(l, r, "value serialization", ctx, depth, ast::Span::origin())?;
+            let map = builtins::flatten_overlay(
+                l,
+                r,
+                "value serialization",
+                ctx,
+                depth,
+                ast::Span::origin(),
+            )?;
             visit_value(&value::Value::Dict(map), ctx, depth, visitor)
         }
         value::Value::Seq { head, .. } => {
@@ -930,8 +936,10 @@ mod tests {
 
     #[test]
     fn test_pipeline_stdin_json_array() {
+        // Access the 0th element of the pipeline array via get builtin
+        // Bracket access removed — use [get 0 %] instead of %[0]
         let input_json = serde_json::json!([1, 2, 3]);
-        let result = eval_to_json_with_input("[first: %[0]]", Some(input_json));
+        let result = eval_to_json_with_input("[first: [get 0 %]]", Some(input_json));
         assert_eq!(result, serde_json::json!({"first": 1}));
     }
 

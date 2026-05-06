@@ -1,6 +1,6 @@
-# Bracket access with string key
+# Bracket access with string key (migrated to dot)
 [data: [name: "world"]]
 
-data["name"]
+data.name
 ===
 String("world")

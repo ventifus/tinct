@@ -168,42 +168,38 @@ Note: After desugaring, `_`-containing expressions become `Fn { params: [Param {
 
 **Input:**
 ```tinct
-config.services[0].host
+[get 0 config.services].host
 ```
 
 **AST:**
 ```json
 DotAccess {
-    expr: BracketAccess {
-        expr: DotAccess {
-            expr: VarRef("config"),
-            field: "services",
-        },
-        key: Int(0),
+    expr: Call {
+        func: VarRef("get"),
+        args: [Int(0), DotAccess { expr: VarRef("config"), field: "services" }],
     },
     field: "host",
 }
 ```
 
-Note: Access chains parse as nested AST nodes. The evaluator reduces inside-out: `VarRef("config")` → dot "services" → bracket 0 → dot "host", forcing each target before the next projection.
+Note: Bracket access was removed in access-pipeline-phase2. The old `config.services[0].host` is now written as `[get 0 config.services].host`. Access chains still parse as nested AST nodes; the evaluator reduces inside-out, forcing each target before the next projection.
 
-### 8.8 Range Access
+### 8.8 Subsequence Operations (replaces Range Access)
 
 **Input:**
 ```tinct
-data[2..5]
+[slice data 2 5]
 ```
 
 **AST:**
 ```json
-RangeAccess {
-    expr: VarRef("data"),
-    start: Some(Int(2)),
-    end: Some(Int(5)),
+Call {
+    func: VarRef("slice"),
+    args: [VarRef("data"), Int(2), Int(5)],
 }
 ```
 
-Note: Range access uses half-open interval semantics `[start, end)`. `None` bounds mean unbounded. The evaluator materializes the target dict and filters entries by key comparison.
+Note: Range access (`data[2..5]`) was removed in access-pipeline-phase2. Use the `slice`, `take`, and `drop` stdlib functions for subsequences. `[slice data 2 5]` returns entries at positions 2, 3, 4 (half-open interval). `[take 3 data]` returns the first 3 entries. `[drop 2 data]` returns all entries after the first 2.
 
 ### 8.9 Type Assertion
 

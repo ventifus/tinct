@@ -5,6 +5,6 @@
     [map [fn [z] [+ z 1]]
       [a: 1  b: [error "map chain should not force"]]]]]
 ---
-%["a"]
+%.a
 ===
 Int(112)

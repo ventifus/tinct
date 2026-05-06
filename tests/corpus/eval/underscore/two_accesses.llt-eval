@@ -1,4 +1,4 @@
-# Underscore with two independent access chains - call the desugared function
-[call [identity [+ _["x"] _["y"]]] [x: 10  y: 20]]
+# Underscore with two independent access chains - call the desugared function (migrated to dot)
+[call [identity [+ _.x _.y]] [x: 10  y: 20]]
 ===
 Int(30)

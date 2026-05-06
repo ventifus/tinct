@@ -1,7 +1,7 @@
 # Empty range: start == end produces empty dict
-# Range is half-open [start, end), so [1..1] selects nothing
+# Range is half-open [start, end), so slice 1 1 selects nothing
 [data: [0: "a"  1: "b"  2: "c"]]
 
-[result: data[1..1]]
+[result: [slice data 1 1]]
 ===
 Dict({"result": Dict({})})

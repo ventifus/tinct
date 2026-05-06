@@ -58,7 +58,7 @@
 
 # Internal helper — not part of the public API.
 # Construct a single-entry dict from a computed key and value.
-# Access expressions like ks[i] can't appear in key position syntactically;
+# Access expressions like [get i ks] can't appear in key position syntactically;
 # passing through function params makes the key a plain k var_ref.
 make-entry: [fn [k v] [$k: v]]
 
@@ -117,7 +117,7 @@ any?: [fn [pred xs]
 any?-impl: [fn [pred xs ks i len]
     [builtin-if [>= i len]
         false
-        [builtin-if [pred xs[ks[i]]]
+        [builtin-if [pred [get [get i ks] xs]]
             true
             [any?-impl pred xs ks [builtin-add i 1] len]]]]
 
@@ -134,7 +134,7 @@ all?: [fn [pred xs]
 all?-impl: [fn [pred xs ks i len]
     [builtin-if [>= i len]
         true
-        [builtin-if [pred xs[ks[i]]]
+        [builtin-if [pred [get [get i ks] xs]]
             [all?-impl pred xs ks [builtin-add i 1] len]
             false]]]
 
@@ -272,7 +272,7 @@ cond: [fn [pairs] [cond-impl pairs 0]]
 cond-impl: [fn [pairs i]
     [builtin-if [>= i [length pairs]]
         []
-        [cond-check pairs i pairs[i][0] pairs[i][1]]]]
+        [cond-check pairs i [get i pairs].0 [get i pairs].1]]]
 
 cond-check: [fn [pairs i condition result]
     [builtin-if condition
@@ -292,11 +292,11 @@ cond-check: [fn [pairs i condition result]
 # assert: [get "b" [a: 1  b: 2]] => 2
 get: [fn [k xs] [builtin-get k xs]]
 
-# Check if a key exists in a dict. Uses try around bracket access.
+# Check if a key exists in a dict. Uses try around get access.
 # assert: [has? [x: 1] "x"] => true
 # assert: [has? [x: 1] "y"] => false
 has?: [fn [xs k]
-    [has?-impl [try [fn [] xs[k]]]]]
+    [has?-impl [try [fn [] [get k xs]]]]]
 
 has?-impl: [fn [try-result]
     [builtin-eq [first [keys try-result]] "ok"]]
@@ -305,7 +305,7 @@ has?-impl: [fn [try-result]
 # assert: [get-or [x: 1] "x" 99] => 1
 # assert: [get-or [x: 1] "y" 99] => 99
 get-or: [fn [xs k default]
-    [builtin-if [has? xs k] xs[k] default]]
+    [builtin-if [has? xs k] [get k xs] default]]
 
 # Traverse nested dicts by a list of keys.
 # Returns error when any intermediate key is missing.
@@ -315,9 +315,9 @@ get-or: [fn [xs k default]
 get-in: [fn [xs path]
     [builtin-if [builtin-eq [length path] 0]
         xs
-        [builtin-if [has? xs path[0]]
-            [get-in xs[path[0]] [rest path]]
-            [error [str "key not found: " path[0]]]]]]
+        [builtin-if [has? xs path.0]
+            [get-in [get path.0 xs] [rest path]]
+            [error [str "key not found: " path.0]]]]]
 
 # Traverse nested dicts by a list of keys with a default fallback.
 # Returns default when any intermediate key is missing.
@@ -326,8 +326,8 @@ get-in: [fn [xs path]
 get-in-or: [fn [xs path default]
     [builtin-if [builtin-eq [length path] 0]
         xs
-        [builtin-if [has? xs path[0]]
-            [get-in-or xs[path[0]] [rest path] default]
+        [builtin-if [has? xs path.0]
+            [get-in-or [get path.0 xs] [rest path] default]
             default]]]
 
 # Check if a collection is empty.
@@ -348,18 +348,18 @@ remove: [fn [xs k] [remove-impl xs [keys xs] k 0 []]]
 remove-impl: [fn [xs ks exclude i acc]
     [builtin-if [>= i [length ks]]
         acc
-        [remove-step xs ks exclude i acc ks[i]]]]
+        [remove-step xs ks exclude i acc [get i ks]]]]
 
 remove-step: [fn [xs ks exclude i acc current-key]
     [builtin-if [builtin-eq current-key exclude]
         [remove-impl xs ks exclude [builtin-add i 1] acc]
         [remove-impl xs ks exclude [builtin-add i 1]
-            [merge acc [make-entry current-key xs[current-key]]]]]]
+            [merge acc [make-entry current-key [get current-key xs]]]]]]
 
 # Update a key by applying a function to its current value.
 # assert: [update [x: 5] "x" [fn [v] [+ v 1]]] => [x: 6]
 update: [fn [xs k f]
-    [set xs k [f xs[k]]]]
+    [set xs k [f [get k xs]]]]
 
 # Get all values from a dict as an integer-indexed list.
 # Preserves dict insertion order: values are returned in the same order as keys.
@@ -369,11 +369,11 @@ values: [fn [xs] [values-impl xs [keys xs] 0 []]]
 values-impl: [fn [xs ks i acc]
     [builtin-if [>= i [length ks]]
         acc
-        [values-step xs ks i acc ks[i]]]]
+        [values-step xs ks i acc [get i ks]]]]
 
 values-step: [fn [xs ks i acc current-key]
     [values-impl xs ks [builtin-add i 1]
-        [append acc xs[current-key]]]]
+        [append acc [get current-key xs]]]]
 
 # Get all entries as a list of [key: k  value: v] dicts.
 # Preserves dict insertion order: entries appear in the same order as the source dict.
@@ -382,11 +382,11 @@ entries: [fn [xs] [entries-impl xs [keys xs] 0 []]]
 entries-impl: [fn [xs ks i acc]
     [builtin-if [>= i [length ks]]
         acc
-        [entries-step xs ks i acc ks[i]]]]
+        [entries-step xs ks i acc [get i ks]]]]
 
 entries-step: [fn [xs ks i acc current-key]
     [entries-impl xs ks [builtin-add i 1]
-        [append acc [key: current-key value: xs[current-key]]]]]
+        [append acc [key: current-key value: [get current-key xs]]]]]
 
 # Reconstruct a dict from a list of [key: k value: v] pairs. Inverse of entries.
 from-entries: [fn [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
@@ -397,7 +397,7 @@ from-entries: [fn [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry 
 
 # Get the first element of a list.
 # assert: [first [10 20 30]] => 10
-first: [fn [xs] xs[0]]
+first: [fn [xs] xs.0]
 
 # Get the nth element by insertion-order position.
 # Supports negative indices: -1 is last, -2 is second-to-last, etc.
@@ -440,11 +440,11 @@ reindex: [fn [xs] [reindex-impl xs [keys xs] 0 []]]
 reindex-impl: [fn [xs ks i acc]
     [builtin-if [>= i [length ks]]
         acc
-        [reindex-step xs ks i acc ks[i]]]]
+        [reindex-step xs ks i acc [get i ks]]]]
 
 reindex-step: [fn [xs ks i acc current-key]
     [reindex-impl xs ks [builtin-add i 1]
-        [append acc xs[current-key]]]]
+        [append acc [get current-key xs]]]]
 
 # ============================================================================
 # Sorting (Mergesort)
@@ -477,9 +477,9 @@ sort-merge: [fn [cmp left right]
         right
         [builtin-if [empty? right]
             left
-            [builtin-if [cmp left[0] right[0]]
-                [cons left[0] [sort-merge cmp [rest left] right]]
-                [cons right[0] [sort-merge cmp left [rest right]]]]]]]
+            [builtin-if [cmp left.0 right.0]
+                [cons left.0 [sort-merge cmp [rest left] right]]
+                [cons right.0 [sort-merge cmp left [rest right]]]]]]]
 
 # ============================================================================
 # Universal Collection Operations (preserve keys)
@@ -501,12 +501,12 @@ take-while: [fn [pred xs]
 take-while-impl: [fn [pred xs ks i acc]
     [builtin-if [>= i [length ks]]
         acc
-        [take-while-check pred xs ks i acc ks[i]]]]
+        [take-while-check pred xs ks i acc [get i ks]]]]
 
 take-while-check: [fn [pred xs ks i acc current-key]
-    [builtin-if [pred xs[current-key]]
+    [builtin-if [pred [get current-key xs]]
         [take-while-impl pred xs ks [builtin-add i 1]
-            [merge acc [make-entry current-key xs[current-key]]]]
+            [merge acc [make-entry current-key [get current-key xs]]]]
         acc]]
 
 # Drop elements from the beginning while predicate holds.
@@ -522,17 +522,17 @@ drop-while: [fn [pred xs]
 drop-while-impl: [fn [pred xs ks i acc dropping]
     [builtin-if [>= i [length ks]]
         acc
-        [drop-while-check pred xs ks i acc dropping ks[i]]]]
+        [drop-while-check pred xs ks i acc dropping [get i ks]]]]
 
 drop-while-check: [fn [pred xs ks i acc dropping current-key]
     [builtin-if dropping
-        [builtin-if [pred xs[current-key]]
+        [builtin-if [pred [get current-key xs]]
             [drop-while-impl pred xs ks [builtin-add i 1] acc true]
             [drop-while-impl pred xs ks [builtin-add i 1]
-                [merge acc [make-entry current-key xs[current-key]]]
+                [merge acc [make-entry current-key [get current-key xs]]]
                 false]]
         [drop-while-impl pred xs ks [builtin-add i 1]
-            [merge acc [make-entry current-key xs[current-key]]]
+            [merge acc [make-entry current-key [get current-key xs]]]
             false]]]
 
 # Apply a function to every [key: k value: v] entry dict, returning new values under same keys.
@@ -546,13 +546,13 @@ map-entries: [fn [f xs] [map-entries-impl f xs [keys xs] 0 []]]
 map-entries-impl: [fn [f xs ks i acc]
     [builtin-if [>= i [length ks]]
         acc
-        [map-entries-step f xs ks i acc ks[i]]]]
+        [map-entries-step f xs ks i acc [get i ks]]]]
 
 map-entries-step: [fn [f xs ks i acc current-key]
     [map-entries-impl f xs ks [builtin-add i 1]
         [merge acc
             [make-entry current-key
-                [f [key: current-key value: xs[current-key]]]]]]]
+                [f [key: current-key value: [get current-key xs]]]]]]]
 
 # Left fold: alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
 # Type: ((b -> a -> b) -> b -> Dict a -> b)
@@ -571,12 +571,12 @@ slice-impl: [fn [xs ks start end i acc]
     [builtin-if [>= i [length ks]]
         acc
         [builtin-if [and [>= i start] [builtin-lt i end]]
-            [slice-step xs ks start end i acc ks[i]]
+            [slice-step xs ks start end i acc [get i ks]]
             [slice-impl xs ks start end [builtin-add i 1] acc]]]]
 
 slice-step: [fn [xs ks start end i acc current-key]
     [slice-impl xs ks start end [builtin-add i 1]
-        [merge acc [make-entry current-key xs[current-key]]]]]
+        [merge acc [make-entry current-key [get current-key xs]]]]]
 
 # Pair entries from two collections by position. Returns a list of pairs.
 # If both xs and ys are Seq: lazy Seq of pairs.
@@ -602,11 +602,11 @@ zip-dict-impl: [fn [xs ys]
 zip-impl: [fn [xs ys xks yks i acc]
     [builtin-if [or [>= i [length xks]] [>= i [length yks]]]
         acc
-        [zip-step xs ys xks yks i acc xks[i] yks[i]]]]
+        [zip-step xs ys xks yks i acc [get i xks] [get i yks]]]]
 
 zip-step: [fn [xs ys xks yks i acc xk yk]
     [zip-impl xs ys xks yks [builtin-add i 1]
-        [append acc [$xs[xk] ys[yk]]]]]
+        [append acc [[get xk xs] [get yk ys]]]]]
 
 # Flatten nested lists one level deep.
 # Inherently materializing: must inspect each value to check if it is a list.
@@ -618,14 +618,14 @@ flatten: [fn [xs]
 flatten-impl: [fn [xs ks i acc]
     [builtin-if [>= i [length ks]]
         acc
-        [flatten-step xs ks i acc ks[i]]]]
+        [flatten-step xs ks i acc [get i ks]]]]
 
 flatten-step: [fn [xs ks i acc current-key]
-    [builtin-if [builtin-eq [type-of xs[current-key]] "Dict"]
+    [builtin-if [builtin-eq [type-of [get current-key xs]] "Dict"]
         [flatten-impl xs ks [builtin-add i 1]
-            [concat acc [reindex xs[current-key]]]]
+            [concat acc [reindex [get current-key xs]]]]
         [flatten-impl xs ks [builtin-add i 1]
-            [append acc xs[current-key]]]]]
+            [append acc [get current-key xs]]]]]
 
 # Recursively search for a key in nested dicts.
 # Inherently materializing: must traverse nested structure recursively to search.
@@ -635,13 +635,13 @@ find-deep: [fn [xs target]
 find-deep-impl: [fn [xs target ks i]
     [builtin-if [>= i [length ks]]
         [error [str "key not found: " target]]
-        [find-deep-check xs target ks i ks[i]]]]
+        [find-deep-check xs target ks i [get i ks]]]]
 
 find-deep-check: [fn [xs target ks i current-key]
     [builtin-if [builtin-eq current-key target]
-        xs[current-key]
-        [builtin-if [builtin-eq [type-of xs[current-key]] "Dict"]
-            [find-deep-try xs[current-key] target xs ks i]
+        [get current-key xs]
+        [builtin-if [builtin-eq [type-of [get current-key xs]] "Dict"]
+            [find-deep-try [get current-key xs] target xs ks i]
             [find-deep-impl xs target ks [builtin-add i 1]]]]]
 
 find-deep-try: [fn [subtree target parent ks i]
@@ -730,10 +730,10 @@ deep-merge-step: [fn [acc a b k]
                 [and
                     [has? a k]
                     [and
-                        [builtin-eq [type-of a[k]] "Dict"]
-                        [builtin-eq [type-of b[k]] "Dict"]]]
-                [deep-merge a[k] b[k]]
-                b[k]]]]]
+                        [builtin-eq [type-of [get k a]] "Dict"]
+                        [builtin-eq [type-of [get k b]] "Dict"]]]
+                [deep-merge [get k a] [get k b]]
+                [get k b]]]]]
 
 # Apply a function bottom-up to every node in a nested dict structure.
 # For dicts: recursively transform all values first, then apply f to the resulting dict.
@@ -747,7 +747,7 @@ walk: [fn [f xs]
 walk-dict: [fn [f xs]
     [builtin-reduce
         [fn [acc k]
-            [merge acc [make-entry k [walk f xs[k]]]]]
+            [merge acc [make-entry k [walk f [get k xs]]]]]
         []
         [keys xs]]]
 
@@ -755,8 +755,8 @@ walk-dict: [fn [f xs]
 # Takes a list of 2-element dicts [0: a 1: b] and returns [a: [0: a0 1: a1 ...] b: [0: b0 1: b1 ...]].
 # Inherently materializing: must map over the entire collection.
 unzip: [fn [pairs]
-    [a: [builtin-map [fn [p] p[0]] pairs]
-     b: [builtin-map [fn [p] p[1]] pairs]]]
+    [a: [builtin-map [fn [p] p.0] pairs]
+     b: [builtin-map [fn [p] p.1] pairs]]]
 
 # Transpose a 2D dict structure (flip rows and columns).
 # Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]].
@@ -772,7 +772,7 @@ transpose-impl: [fn [rows col-keys]
         [fn [acc col-key]
             [merge acc
                 [make-entry col-key
-                    [builtin-map [fn [row] row[col-key]] rows]]]]
+                    [builtin-map [fn [row] [get col-key row]] rows]]]]
         []
         col-keys]]
 
@@ -827,7 +827,7 @@ uniq: [fn [xs]
 uniq-impl: [fn [ks xs acc seen i]
     [builtin-if [>= i [length ks]]
         acc
-        [uniq-step ks xs acc seen i xs[ks[i]]]]]
+        [uniq-step ks xs acc seen i [get [get i ks] xs]]]]
 
 uniq-step: [fn [ks xs acc seen i v]
     [builtin-if [contains? seen v]
