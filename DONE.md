@@ -4036,3 +4036,9 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] ast_to_dict wrapping File→Document→expressions hierarchy with schema-version: 1
 - [x] Helpers: annotation_to_dict, entry_to_dict, param_to_dict, span_to_dict
 - [x] Unit tests for Int, VarRef, File schema-version round-trips
+
+### formatter-compact: Compact Formatter Modes in Tinct
+
+- [x] stdlib/formatter/compact.llt: tinct-hosted compact formatter dispatching on AST dict node types
+- [x] CLI: --tinct-fmt flag wires ast_to_dict → compact.llt evaluation path
+- [x] Integration tests: round-trip parsing and idempotence verification
