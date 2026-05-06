@@ -985,13 +985,6 @@ pub(crate) fn eval_dict(
             }
         };
 
-        if dict_map.contains_key(&key) {
-            return Err(Box::new(EvalError::duplicate_key(
-                &key.to_string(),
-                entry.span,
-            )));
-        }
-
         // Fast path for literal values: create Materialized thunks directly,
         // avoiding Unevaluated → Materialized state transition overhead (Nix maybeThunk pattern)
         let thunk = match &entry.node.value.node {
@@ -1033,7 +1026,20 @@ pub(crate) fn eval_dict(
                 .insert(name.clone(), Rc::clone(&thunk));
         }
 
-        dict_map.insert(key, ctx.alloc_thunk(thunk));
+        // Check for duplicate keys using insert(), which returns Some(old_value) if present.
+        // This fuses the contains_key + insert operations into a single lookup.
+        // Note: ctx.alloc_thunk() and dict_env are updated before duplicate detection.
+        // Both are abandoned when Err is returned; the arena allocation is a minor leak
+        // on duplicate-key error paths (benign since the arena is dropped with the context).
+        if dict_map
+            .insert(key.clone(), ctx.alloc_thunk(thunk))
+            .is_some()
+        {
+            return Err(Box::new(EvalError::duplicate_key(
+                &key.to_string(),
+                entry.span,
+            )));
+        }
     }
 
     Ok(Rc::new(Thunk::new_materialized(
@@ -1637,6 +1643,7 @@ pub fn materialize(
             }
             Err(e) => {
                 // Inner materialization error propagates (not a type mismatch)
+                let e = decorate(e);
                 if e.kind.is_cacheable() {
                     thunk.cache_failure(&e);
                 } else {
