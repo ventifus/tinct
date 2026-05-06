@@ -17,55 +17,6 @@ See doc/whatif/io.md.
 
 
 
-## Templating: Text Output and Formatters
-
-See doc/whatif/templating.md.
-
-- [x] Accept templating — see doc/whatif/templating.md (State: Accepted — 2026-05-04)
-
-
-### templating-phase2: Standard Formatters
-
-**Depends on:** `templating-phase1`
-
-See doc/whatif/templating.md §Phase 2.
-
-- [x] Create `stdlib/fmt/` with yaml.llt, toml.llt, json-pretty.llt, env.llt, csv.llt — all pure tinct
-- [x] 8 corpus tests for formatters; arena ThunkId cross-context bug fixed
-- [x] doc/11-stdlib.md: Standard Formatters section documented
-
-### templating-phase3: String Interpolation (complete)
-
-- [x] `i"..."` lexer + parser desugaring; `$ident`, `${expr}`, `$$` escape all supported
-- [x] Formatter: `i"..."` round-trip preserved (heuristic detection); 5 formatter tests
-- [x] 8 corpus tests; doc/02-syntax.md §2.3.5 documented
-
-### templating-phase4: Literate Mode
-
-See doc/whatif/templating.md §Phase 4.
-
-- [x] `tinct literate tangle|eval|weave <file>` subcommand (`src/main.rs`, `src/literate.rs`)
-- [x] tangle: extract ```tinct/```llt blocks, join with `---`; eval: tangle + evaluate; weave: annotate results inline
-- [x] 10 CLI integration tests; doc/09-documents.md §Literate Mode
-
-### default-emit: Default Emit Program
-
-When `tinct eval` finishes and `emit` was never called, run the result through
-a pure-tinct JSON formatter instead of the current hardcoded Rust `value_to_json()`.
-This makes the default output behavior user-observable and replaceable.
-
-- [ ] Implement `stdlib/fmt/json.llt` — pure-tinct compact JSON serializer using
-  type predicates (`int?`, `str?`, `dict?`, `seq?`, `null?`, `bool?`, `float?`)
-  and `str` concatenation; handles nested dicts/seqs, string escaping, null (`[]`) (`stdlib/fmt/json.llt`)
-- [ ] Wire in CLI: when `emitted == false` after evaluation, run the result through
-  `stdlib/fmt/json.llt` as an implicit final pipeline stage (same mechanism as
-  multi-file pipeline) rather than calling `value_to_json()` directly (`src/main.rs`)
-- [ ] Keep `value_to_json()` for LSP, tests, and the REPL — only the CLI default
-  output path switches to the tinct formatter (`src/main.rs`)
-- [ ] Corpus/CLI tests: verify default output of `tinct eval simple.llt` matches
-  previous JSON output for Int, Float, String, Bool, Dict, Seq, Null (`tests/cli_tests.rs`)
-- [ ] Update `doc/09-documents.md` and `doc/12-tooling.md` to document that the
-  default output is produced by `stdlib/fmt/json.llt`
 
 ## Language Design Research
 
@@ -353,3 +304,13 @@ Gaps between the macros-cluster plan (`doc/whatif/plans/macros-cluster.md`) and 
 - [x] M5a honest tags for Abstraction: Pombrio & Krishnamurthi (2015) Theorem 2 (Abstraction) requires "honest tags" — the expansion side map must record accurate before/after patterns, not just the call-site span. Note this requirement in the dual-span tracking design so that error provenance chains are faithful to the actual expansion. (`doc/whatif/plans/macros-cluster.md` M5a) [Minor, computer-scientist train]
 - [x] M4b blackhole detection for synthetic nodes: the plan uses `HashSet<(file_id, byte_offset)>` to track in-progress call sites, but macro-generating macros can produce NEW call sites with no source position. Specify how synthetic nodes (from `dict_to_ast` with absent `span:`) are tracked — e.g., assign synthetic node IDs or use the parent expansion's call site. (`doc/whatif/plans/macros-cluster.md` M4b task 11) [Minor, computer-scientist train]
 - [x] M5b dynamic include limitation as phase constraint: frame the static-paths-only limitation for `$include` macro ordering as a formal consequence of Flatt's (2002) phase separation model — compile-time imports must be resolved before expansion begins; dynamic paths cannot participate in phase separation. (`doc/whatif/plans/macros-cluster.md` §5 Cross-Cutting Concerns) [Minor, computer-scientist train]
+
+## Typing Cluster: Theoretical Gaps
+
+Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.
+
+- [ ] C5 divergent values in coverage analysis: the C5 exhaustiveness sprint does not account for Karachalias et al.'s (2015) three-way partition (Covered/Divergent/Uncovered). In a lazy language, a clause may force divergence without covering any values. Inaccessible-RHS warnings require tracking the Divergent set alongside Uncovered. (`doc/whatif/plans/typing-cluster.md` C5, `doc/whatif/pattern-matching.md` §Phase 5) [Minor, computer-scientist train]
+- [ ] D2 Marques et al. soundness unproven: the D2 algebraic subtyping sprint cites Marques et al. (2024) as a "direct implementation template" for row variables under algebraic subtyping. However, the paper explicitly states soundness and completeness proofs "do not have yet done" (§1). Tinct should not depend on unproven results for a foundational type system change. Note this risk in the plan and identify alternative proven foundations (Dolan 2016 Theorem 4.1 covers the non-row fragment). (`doc/whatif/plans/typing-cluster.md` D2) [Major, computer-scientist train]
+- [x] D4 Greenman et al. venue correction: the §References section lists "ICFP '19" for Greenman, Felleisen & Dimoulas (2019). The correct venue is OOPSLA '19 (Proc. ACM Program. Lang. 3, OOPSLA, Article 122, doi:10.1145/3360548). Fixed in typing-cluster.md, gradual-typing.md, and doc/17-references.md. (`doc/whatif/plans/typing-cluster.md` §References) [Nit, computer-scientist train]
+- [ ] Occurrence typing tasks missing: the plan mentions "occurrence typing (Tobin-Hochstadt & Felleisen 2010)" in C1 ADTs but includes no implementation tasks for proposition-based narrowing. Tobin-Hochstadt & Felleisen's system requires: (1) latent propositions on type-predicate function types, (2) proposition environments threaded through conditionals, (3) object paths for compound data access. At minimum, the C1 sprint should include a task to narrow scrutinee type inside match arms when the scrutinee has a union type. (`doc/whatif/plans/typing-cluster.md` C1, `doc/whatif/algebraic-data-types.md`) [Minor, computer-scientist train]
+- [ ] B4 constraint duplication during instantiation: Jones (1995, §8.3) proves that constraint propagation through let-generalization is sound provided instantiation copies constraints without duplication. The plan's §5 Cross-Cutting Concerns item 4 mentions this interaction but does not specify the proof obligation: each fresh type variable created by instantiation must carry exactly the constraints from the generalized scheme, not accumulated constraints from prior unification. (`doc/whatif/plans/typing-cluster.md` B4) [Minor, computer-scientist train]

@@ -1277,7 +1277,7 @@ for this plan:
 - Findler, R.B. & Felleisen, M. (2002). Contracts for higher-order functions. *ICFP '02*, pp. 48-59. — Proxy contracts and blame (D4).
 - Garcia, R., Clark, A.M. & Tanter, E. (2016). Abstracting gradual typing. *POPL '16*, pp. 429-442. — AGT framework for `Any` split (B2).
 - Garrigue, J. (1998). Programming with polymorphic variants. *ML Workshop '98*. — Structural discrimination (C1).
-- Greenman, B., Felleisen, M. & Dimoulas, C. (2019). Complete monitors for gradual types. *ICFP '19*, Article 122. — Co-natural blame (D4).
+- Greenman, B., Felleisen, M. & Dimoulas, C. (2019). Complete monitors for gradual types. *Proc. ACM Program. Lang.* 3, OOPSLA, Article 122. doi:10.1145/3360548. — Co-natural blame (D4).
 - Jones, M.P. (1993). A system of constructor classes. *FPCA '93*, pp. 52-61. — Higher-kinded type constructors for `Functor` (D1).
 - Jones, M.P. (1995). *Qualified types: Theory and practice.* Cambridge University Press. — Constraint propagation through let-generalization (B4).
 - Karachalias, G., Schrijvers, T., Vytiniotis, D. & Peyton Jones, S. (2015). GADTs meet their match. *ICFP '15*, pp. 424-436. — Guards treated as opaque for exhaustiveness (C5).

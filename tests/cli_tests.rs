@@ -1924,8 +1924,9 @@ fn env_missing() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
-    // env returns null (empty dict) for missing vars
-    assert_eq!(json, serde_json::json!({}));
+    // env returns null (empty dict) for missing vars.
+    // json.llt serializes LLT null (empty dict []) as JSON null.
+    assert_eq!(json, serde_json::Value::Null);
 }
 
 #[test]
@@ -1943,8 +1944,9 @@ fn env_no_env_flag() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
-    // --no-env makes env return null for all vars
-    assert_eq!(json, serde_json::json!({}));
+    // --no-env makes env return null for all vars.
+    // json.llt serializes LLT null (empty dict []) as JSON null.
+    assert_eq!(json, serde_json::Value::Null);
 }
 
 #[test]
@@ -2552,4 +2554,126 @@ fn seq_with_collect_produces_json_array() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
     assert_eq!(json, serde_json::json!([0, 1, 2]));
+}
+
+// ---------------------------------------------------------------------------
+// default-emit sprint: default CLI output via stdlib/fmt/json.llt
+//
+// These tests verify that `tinct eval` on a file whose top-level expression
+// was never passed to `emit` produces correct JSON output via the json.llt
+// path (format_with_json_llt → compact JSON → serde_json::to_string_pretty).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_output_int() {
+    // A file returning an integer scalar produces compact JSON integer output.
+    let (path, _dir) = write_temp_llt("default_output_int", "42");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON for integer output");
+    assert_eq!(json, serde_json::json!(42));
+}
+
+#[test]
+fn default_output_string() {
+    // A file returning a string produces JSON string output (quoted and escaped).
+    let (path, _dir) = write_temp_llt("default_output_string", "\"hello\"");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON for string output");
+    assert_eq!(json, serde_json::json!("hello"));
+}
+
+#[test]
+fn default_output_bool() {
+    // A file returning a boolean produces JSON boolean output.
+    let (path, _dir) = write_temp_llt("default_output_bool", "true");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON for boolean output");
+    assert_eq!(json, serde_json::json!(true));
+}
+
+#[test]
+fn default_output_dict() {
+    // A file returning a multi-key dict produces pretty-printed JSON object output.
+    // json.llt serializes keys in insertion order; serde_json::to_string_pretty
+    // re-formats the compact JSON with newlines and 2-space indentation.
+    let (path, _dir) = write_temp_llt("default_output_dict", "[x: 1  y: 2]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Structural equality: compare as parsed JSON values (key order is preserved
+    // by json.llt but serde_json::Value comparison is order-insensitive for objects).
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON for dict output");
+    assert_eq!(json, serde_json::json!({"x": 1, "y": 2}));
+    // Pretty-printing: multi-key object must span multiple lines with indentation.
+    assert!(
+        stdout.contains('\n'),
+        "expected pretty-printed JSON with newlines for dict output, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("  "),
+        "expected 2-space indentation in pretty-printed dict output, got: {stdout}"
+    );
+}
+
+#[test]
+fn default_output_null() {
+    // A file returning [] (the tinct null / empty dict) produces JSON null.
+    // json.llt's json-value checks null? first, so [] → "null".
+    let (path, _dir) = write_temp_llt("default_output_null", "[]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON for null output");
+    assert_eq!(json, serde_json::Value::Null);
 }

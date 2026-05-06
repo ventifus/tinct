@@ -492,6 +492,7 @@ Tinct ships a set of ready-made formatters in `stdlib/fmt/`. They are not bundle
 | File | Function | Input | Output |
 |------|----------|-------|--------|
 | `fmt/yaml.llt` | `yaml` | any value | YAML 1.2 string |
+| `fmt/json.llt` | `json` | any value | compact JSON string |
 | `fmt/json-pretty.llt` | `json-pretty` | any value | indented JSON string |
 | `fmt/toml.llt` | `toml` | flat or nested dict | TOML string |
 | `fmt/env.llt` | `env` | flat string-keyed dict | `KEY=VALUE` lines (`.env` format) |
@@ -511,6 +512,17 @@ Converts any tinct value to a YAML 1.2 string. Dicts with integer keys are emitt
 # tags:
 # - admin
 # - editor
+```
+
+### `fmt/json.llt` — compact JSON
+
+Converts any tinct value to compact (single-line) JSON. This is the formatter used by `tinct eval` as the default output when no `emit` call is made. Dicts with sequential integer keys `0..n-1` become JSON arrays; all other dicts become JSON objects with string-coerced keys. Empty dicts serialize as `null`.
+
+```tinct
+[include libdir "fmt/json.llt"]
+---
+[json [name: "Alice" age: 30]]
+# => {"name":"Alice","age":30}
 ```
 
 ### `fmt/json-pretty.llt` — indented JSON

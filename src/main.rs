@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::process;
 use std::rc::Rc;
 use tinct::{
-    create_stdlib_env, deep_materialize, eval_file_with_input, format_source, json_to_value,
-    literate, materialize, parse, value_to_display_string, value_to_json, EvalContext, Span, Thunk,
-    MAX_COLLECT_SIZE, MAX_FILE_SIZE,
+    create_stdlib_env, deep_materialize, eval_file_with_input, format_source, format_with_json_llt,
+    json_to_value, literate, materialize, parse, value_to_display_string, value_to_json,
+    EvalContext, Span, Thunk, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -571,6 +571,35 @@ fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Resu
     Ok(())
 }
 
+/// Resolve the stdlib directory path from the binary location.
+///
+/// Tries two layouts in order:
+/// 1. Development: `<exe_grandparent>/stdlib/`
+/// 2. Installed: `<exe_parent>/../share/tinct/stdlib/`
+///
+/// Returns `None` if neither directory exists.
+fn find_libdir_path() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent() // target/debug
+                .and_then(|p| p.parent()) // target
+                .and_then(|p| p.parent()) // project root
+                .map(|root| root.join("stdlib"))
+        })
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| {
+                    exe.parent() // bin/
+                        .and_then(|p| p.parent()) // <prefix>/
+                        .map(|prefix| prefix.join("share").join("tinct").join("stdlib"))
+                })
+                .filter(|p| p.is_dir())
+        })
+}
+
 /// Parse a CLI NetCap entry (from --cap-net NAME=ENTRY).
 fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
     use tinct::NetCapEntry;
@@ -753,37 +782,14 @@ fn run_eval(
     // any reference to `libdir` in the program will fail with "undefined variable".
     // Phase 1: resolve libdir from the binary's location or a well-known relative path.
     // If resolution fails, libdir is not injected (stdlib is embedded at compile time anyway).
+    // The resolved path is also saved for the JSON output path (format_with_json_llt).
+    let resolved_libdir_path: Option<std::path::PathBuf> =
+        if !no_libdir { find_libdir_path() } else { None };
     if !no_libdir {
         use tinct::Value;
-        // Attempt to find the stdlib directory relative to the binary.
-        // Typical installation layout: <prefix>/bin/tinct, <prefix>/share/tinct/stdlib/
-        // Development layout: target/debug/tinct, stdlib/ (in project root)
-        let libdir_path: Option<std::path::PathBuf> = std::env::current_exe()
-            .ok()
-            .and_then(|exe| {
-                // Try development layout: exe's grandparent + "stdlib"
-                // e.g. /project/target/debug/tinct -> /project/stdlib
-                exe.parent() // target/debug
-                    .and_then(|p| p.parent()) // target
-                    .and_then(|p| p.parent()) // project root
-                    .map(|root| root.join("stdlib"))
-            })
-            .filter(|p| p.is_dir())
-            .or_else(|| {
-                // Try installation layout: exe's parent/../share/tinct/stdlib
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|exe| {
-                        exe.parent() // bin/
-                        .and_then(|p| p.parent()) // <prefix>/
-                        .map(|prefix| prefix.join("share").join("tinct").join("stdlib"))
-                    })
-                    .filter(|p| p.is_dir())
-            });
-
-        if let Some(path) = libdir_path {
+        if let Some(ref path) = resolved_libdir_path {
             if let Ok(libdir_std) =
-                cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+                cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
             {
                 let libdir_value = Value::DirCap(Rc::new(libdir_std));
                 let libdir_thunk =
@@ -1097,18 +1103,61 @@ fn run_eval(
     if !eval_ctx.emitted.get() {
         match format {
             OutputFormat::Json => {
-                let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
-                    let mut error_str = format!("{e}");
-                    if let Some(snippet) =
-                        tinct::render_span_snippet(&last_source, e.definition_span)
-                    {
-                        error_str.push('\n');
-                        error_str.push_str(&snippet);
+                // Try stdlib/fmt/json.llt for pure-tinct JSON serialization.
+                // Falls back to value_to_json() when json.llt is not found (e.g., no libdir).
+                let json_llt_path = resolved_libdir_path
+                    .as_deref()
+                    .map(|p| p.join("fmt").join("json.llt"));
+
+                let output = if let Some(ref json_llt_path) = json_llt_path {
+                    match format_with_json_llt(
+                        Rc::clone(&thunk),
+                        &eval_ctx,
+                        Rc::clone(&env),
+                        json_llt_path,
+                    ) {
+                        Ok(Some(compact_json)) => {
+                            // json.llt produces compact JSON. Parse and re-serialize as
+                            // pretty-printed to preserve the expected output format.
+                            let parsed: serde_json::Value = serde_json::from_str(&compact_json)
+                                .map_err(|e| {
+                                    format!("json.llt produced invalid JSON: {e}\noutput: {compact_json}")
+                                })?;
+                            serde_json::to_string_pretty(&parsed)
+                                .map_err(|e| format!("JSON pretty-print error: {e}"))?
+                        }
+                        Ok(None) => {
+                            // json.llt not found — fall back to Rust serializer.
+                            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
+                                let mut error_str = format!("{e}");
+                                if let Some(snippet) =
+                                    tinct::render_span_snippet(&last_source, e.definition_span)
+                                {
+                                    error_str.push('\n');
+                                    error_str.push_str(&snippet);
+                                }
+                                error_str
+                            })?;
+                            serde_json::to_string_pretty(&json)
+                                .map_err(|e| format!("JSON serialization error: {e}"))?
+                        }
+                        Err(e) => return Err(e),
                     }
-                    error_str
-                })?;
-                let output = serde_json::to_string_pretty(&json)
-                    .map_err(|e| format!("JSON serialization error: {e}"))?;
+                } else {
+                    // No libdir resolved — fall back to Rust serializer.
+                    let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
+                        let mut error_str = format!("{e}");
+                        if let Some(snippet) =
+                            tinct::render_span_snippet(&last_source, e.definition_span)
+                        {
+                            error_str.push('\n');
+                            error_str.push_str(&snippet);
+                        }
+                        error_str
+                    })?;
+                    serde_json::to_string_pretty(&json)
+                        .map_err(|e| format!("JSON serialization error: {e}"))?
+                };
                 println!("{output}");
             }
             OutputFormat::Llt => {
@@ -1382,9 +1431,40 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
 
     // Respect emit: if any emit call fired during eval, suppress JSON output.
     if !eval_ctx.emitted.get() {
-        let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
-        let output = serde_json::to_string_pretty(&json)
-            .map_err(|e| format!("JSON serialization error: {e}"))?;
+        // Use the same format_with_json_llt → fallback pattern as run_eval for consistent
+        // null semantics ([] → JSON null, not {}).
+        let json_llt_path = find_libdir_path().map(|p| p.join("fmt").join("json.llt"));
+
+        let output = if let Some(ref json_llt_path) = json_llt_path {
+            match format_with_json_llt(
+                Rc::clone(&thunk),
+                &eval_ctx,
+                Rc::clone(&env),
+                json_llt_path,
+            ) {
+                Ok(Some(compact_json)) => {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&compact_json).map_err(|e| {
+                            format!(
+                                "json.llt produced invalid JSON: {e}\noutput: {compact_json}"
+                            )
+                        })?;
+                    serde_json::to_string_pretty(&parsed)
+                        .map_err(|e| format!("JSON pretty-print error: {e}"))?
+                }
+                Ok(None) => {
+                    let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+                    serde_json::to_string_pretty(&json)
+                        .map_err(|e| format!("JSON serialization error: {e}"))?
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+            serde_json::to_string_pretty(&json)
+                .map_err(|e| format!("JSON serialization error: {e}"))?
+        };
+
         println!("{output}");
     }
 

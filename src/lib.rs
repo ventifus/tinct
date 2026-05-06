@@ -494,6 +494,137 @@ pub fn value_to_display_string(
     visit_value(val, ctx, depth, &DisplayVisitor)
 }
 
+/// Format a tinct value as a compact JSON string using `stdlib/fmt/json.llt`.
+///
+/// Reads and evaluates the json.llt file at `json_llt_path`, then calls its
+/// `json` function with `result_thunk` as the argument in the same evaluation
+/// context as the main program. This ensures all `ThunkId` references in the
+/// result value are resolved from the correct arena.
+///
+/// # Returns
+///
+/// - `Ok(Some(json_string))` — json.llt produced a string.
+/// - `Ok(None)` — `json_llt_path` does not exist; the caller should fall back
+///   to [`value_to_json`].
+/// - `Err(message)` — parse or evaluation error from json.llt.
+///
+/// # Laziness note
+///
+/// json.llt contains `[emit [json %]]` as a lazy auto-indexed dict entry. This
+/// entry is **never forced** by this function — only the `json` key (a function)
+/// is accessed, so no `emit` side-effect fires.
+pub fn format_with_json_llt(
+    result_thunk: Rc<value::Thunk>,
+    eval_ctx: &Rc<eval::EvalContext>,
+    env: Rc<std::cell::RefCell<value::Environment>>,
+    json_llt_path: &std::path::Path,
+) -> Result<Option<String>, String> {
+    use eval_call::{invoke_function, CallContext};
+    use value::Key;
+
+    // Bail early if json.llt does not exist — caller will fall back.
+    if !json_llt_path.is_file() {
+        return Ok(None);
+    }
+
+    // Read json.llt source.
+    // Use Ok(None) on any read failure (e.g. Landlock blocks access when --allow-path is set).
+    // The caller falls back to value_to_json() in that case.
+    let json_llt_source = match std::fs::read_to_string(json_llt_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+
+    // Parse json.llt (it's a single dict expression — one document).
+    let mut ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
+    desugar::desugar_file(&mut ast.node);
+    resolve::resolve_file(&ast.node);
+    let _ = typecheck::typecheck_file(&ast.node);
+
+    // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
+    // from the result_thunk are resolvable when the json functions access dict entries.
+    // The initial `%` = result_thunk; json.llt's `[emit [json %]]` is a lazy dict
+    // entry (auto-index 0) that is never forced here.
+    let module_thunk = eval::eval_file_with_input(
+        &ast.node,
+        Rc::clone(&env),
+        eval_ctx,
+        Some(Rc::clone(&result_thunk)),
+        0,
+    )
+    .map_err(|e| format!("json.llt: eval error: {e}"))?;
+
+    // Materialize the json module dict (forces the outer dict, not its entries).
+    let module_val = eval::materialize(&module_thunk, None, eval_ctx, 0)
+        .map_err(|e| format!("json.llt: materialize module error: {e}"))?;
+
+    // Look up the `json` key from the module dict.
+    let json_key = Key::String("json".into());
+    let json_fn_thunk = match &module_val {
+        value::Value::Dict(map) => {
+            let thunk_id = map
+                .get(&json_key)
+                .ok_or_else(|| "json.llt: missing 'json' function in module dict".to_string())?;
+            eval_ctx.get_thunk(*thunk_id)
+        }
+        other => {
+            return Err(format!(
+                "json.llt: expected Dict from module, got {}",
+                other.type_name()
+            ))
+        }
+    };
+
+    // Materialize the `json` function thunk.
+    let json_fn_val = eval::materialize(&json_fn_thunk, None, eval_ctx, 0)
+        .map_err(|e| format!("json.llt: materialize json function error: {e}"))?;
+
+    // Call `json(result_thunk)` via invoke_function.
+    let call_span = ast::Span::origin();
+    // Bind the positional argument in an explicit local so the slice reference is valid
+    // for the entire `call_ctx` lifetime (required by CallContext<'a>).
+    let positional_args = [Rc::clone(&result_thunk)];
+    let result_call_thunk = match &json_fn_val {
+        value::Value::Function {
+            params,
+            body,
+            env: closure_env,
+        } => {
+            let call_ctx = CallContext {
+                params,
+                body,
+                closure_env,
+                positional: &positional_args,
+                named: None,
+                default_env: closure_env,
+                call_span,
+                depth: 0,
+                origin: None,
+                ctx: eval_ctx,
+            };
+            invoke_function(&call_ctx).map_err(|e| format!("json.llt: call error: {e}"))?
+        }
+        other => {
+            return Err(format!(
+                "json.llt: 'json' key is {}, expected Function",
+                other.type_name()
+            ))
+        }
+    };
+
+    // Materialize the result — should be a String.
+    let result_val = eval::materialize(&result_call_thunk, None, eval_ctx, 0)
+        .map_err(|e| format!("json.llt: serialize error: {e}"))?;
+
+    match result_val {
+        value::Value::String(s) => Ok(Some(s)),
+        other => Err(format!(
+            "json.llt: expected String result, got {}",
+            other.type_name()
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

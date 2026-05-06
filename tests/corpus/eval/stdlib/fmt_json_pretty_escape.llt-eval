@@ -1,0 +1,9 @@
+# json-pretty: string escaping and integer key
+[include "stdlib/fmt/json-pretty.llt"]
+---
+[call %.json-pretty [
+  text: "Hello \"world\"\nNew line"
+  1: "item"
+]]
+===
+String("{\n  \"text\": \"Hello \\\"world\\\"\\nNew line\",\n  \"1\": \"item\"\n}")
