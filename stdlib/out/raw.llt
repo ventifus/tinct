@@ -1,0 +1,12 @@
+# Raw output formatter
+# If % is a String, emit it unquoted
+# If % is a Seq, emit each element on its own line
+# Otherwise error
+
+[
+  cond [
+    [str? %]         %
+    [seq? %]         [each % [fn [x] [emit x]]]
+    true             [error "raw formatter: expected String or Seq, got " [type-of %]]
+  ]
+]
