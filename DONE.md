@@ -4055,3 +4055,10 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] stdlib/formatter/compact.llt: tinct-hosted compact formatter dispatching on AST dict node types
 - [x] CLI: --tinct-fmt flag wires ast_to_dict → compact.llt evaluation path
 - [x] Integration tests: round-trip parsing and idempotence verification
+
+### unquote: [unquote] and [unquote-splice]
+
+- [x] Expr::Unquote and Expr::UnquoteSplice variants + keyword denylist
+- [x] Parser: quote depth tracking, unquote outside quote is parse error
+- [x] Evaluator: eval_quote_expr_to_dict handles unquote by evaluating and splicing
+- [x] All exhaustive matches updated; corpus tests for quote+unquote

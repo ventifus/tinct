@@ -92,15 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### unquote: `[unquote]` and `[unquote-splice]`
-
-See doc/02-syntax.md §Quasiquoting, doc/08-evaluation.md §Quote Semantics. **Depends on:** `quote`.
-
-- [ ] `unquote` and `unquote-splice` added to denylist; `Expr::Unquote`, `Expr::UnquoteSplice` AST variants (`src/lexer.rs`, `src/parser.rs`, `src/ast.rs`)
-- [ ] Parser: nesting depth tracker; `unquote` outside `quote` is parse error; `[unquote-splice ...]` at top level of `[quote ...]` (not in list position) is parse error per Bawden (1999) (`src/parser.rs`)
-- [ ] Evaluator: walk quoted AST for `Unquote`/`UnquoteSplice` subexpressions; evaluate and splice results (`src/eval.rs`)
-- [ ] Tests: `[quote [+ [unquote x] 1]]` with `x: 42`; splice into args; `unquote` outside quote = error; top-level splice = error; nested depth preserved (`tests/corpus/eval/`)
-
 ### dict-to-ast: `dict_to_ast` + `eval-ast` Builtin
 
 See doc/15-ast.md §dict-to-ast, doc/11a-builtins.md. **Depends on:** `ast-dict-core`.
