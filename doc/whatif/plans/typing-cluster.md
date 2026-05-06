@@ -162,7 +162,6 @@ These proposals cannot be implemented without their prerequisites:
 | Recursive ADTs (Phase 4) | Parameterized type aliases Phase 2 |
 | Narrowing Phase 1-2 | Pattern matching Phase 2 (`if` as special form) |
 | Narrowing Phase 3 | Type predicates (DONE) + Narrowing Phase 1-2 |
-| Narrowing Phase 4 | Algebraic subtyping (D2) for negation types |
 
 ### Which Are Alternatives
 
@@ -309,9 +308,9 @@ Items 1-6 can proceed without any type representation changes. Items
 
 Note: Narrowing Phases 1-3 can ship before union types (B1). Without
 B1, the join of branch types uses `Any` or the existing LUB instead of
-`τ₁ | τ₂`. Full result type precision comes when B1 lands. Narrowing
-Phase 4 (false-branch narrowing via negation types) requires algebraic
-subtyping (D2) and ships in Phase D.
+`τ₁ | τ₂`. Full result type precision comes when B1 lands. False-branch
+narrowing (negation types) is out of scope for the typing cluster entirely
+— see `doc/whatif/boolean-algebraic-subtyping.md`.
 
 ---
 

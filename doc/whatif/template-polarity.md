@@ -11,7 +11,7 @@ of dynamic values?
 
 tinct's templating story covers three modes, all implemented:
 
-- **Data-first formatters** (`emit` + `stdlib/fmt/yaml.llt` etc.): tinct
+- **Data-first formatters** (`emit` + `stdlib/out/yaml.llt` etc.): tinct
   computes structure, a formatter serializes it to the target format.
 - **String interpolation** (`i"..."`): micro-level variable substitution
   inside tinct string literals.

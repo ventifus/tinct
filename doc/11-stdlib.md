@@ -475,12 +475,12 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 ## Standard Formatters
 
-Tinct ships a set of ready-made formatters in `stdlib/fmt/`. They are not bundled with the prelude — each must be loaded explicitly with `include`. The public API of each formatter is a single function that accepts a value and returns a string.
+Tinct ships a set of ready-made formatters in `stdlib/out/`. They are not bundled with the prelude — each must be loaded explicitly with `include`. The public API of each formatter is a single function that accepts a value and returns a string.
 
 ### Loading pattern
 
 ```tinct
-[include libdir "fmt/yaml.llt"]
+[include libdir "out/yaml.llt"]
 ---
 [emit [yaml %]]
 ```
@@ -503,7 +503,7 @@ Tinct ships a set of ready-made formatters in `stdlib/fmt/`. They are not bundle
 Converts any tinct value to a YAML 1.2 string. Dicts with integer keys are emitted as YAML sequences; string-keyed dicts become YAML mappings. Nested dicts recurse. Scalar values render as their YAML equivalents (`null`, `true`/`false`, bare numbers, quoted strings). Strings that collide with YAML keywords (`true`, `false`, `null`, `yes`, `~`, empty string) are double-quoted automatically.
 
 ```tinct
-[include libdir "fmt/yaml.llt"]
+[include libdir "out/yaml.llt"]
 ---
 [yaml [name: "Alice" age: 30 tags: ["admin" "editor"]]]
 # =>
@@ -519,7 +519,7 @@ Converts any tinct value to a YAML 1.2 string. Dicts with integer keys are emitt
 Converts any tinct value to compact (single-line) JSON. This is the formatter used by `tinct eval` as the default output when no `emit` call is made. Dicts with sequential integer keys `0..n-1` become JSON arrays; all other dicts become JSON objects with string-coerced keys. Empty dicts serialize as `null`.
 
 ```tinct
-[include libdir "fmt/json.llt"]
+[include libdir "out/json.llt"]
 ---
 [json [name: "Alice" age: 30]]
 # => {"name":"Alice","age":30}
@@ -530,7 +530,7 @@ Converts any tinct value to compact (single-line) JSON. This is the formatter us
 Converts any tinct value to indented JSON. Dicts with integer keys become JSON arrays; string-keyed dicts become JSON objects. Indentation uses 2-space steps.
 
 ```tinct
-[include libdir "fmt/json-pretty.llt"]
+[include libdir "out/json-pretty.llt"]
 ---
 [json-pretty [x: 1 y: [2 3]]]
 # =>
@@ -548,7 +548,7 @@ Converts any tinct value to indented JSON. Dicts with integer keys become JSON a
 Converts a tinct dict to TOML format. Flat scalar keys are emitted as top-level `key = value` pairs. Nested dict values become `[section]` tables. Integer-keyed dicts (lists) are emitted as inline TOML arrays. Nested dict values containing further nesting are emitted as inline `{}` (TOML does not support arbitrarily deep `[[array of tables]]` from this formatter).
 
 ```tinct
-[include libdir "fmt/toml.llt"]
+[include libdir "out/toml.llt"]
 ---
 [toml [host: "localhost" port: 5432 db: [name: "prod" pool: 10]]]
 # =>
@@ -565,7 +565,7 @@ Converts a tinct dict to TOML format. Flat scalar keys are emitted as top-level 
 Converts a flat string-keyed dict to `.env`-style `KEY=VALUE` lines. Each entry becomes one line. Values are coerced to strings with `str`. Nested dicts are not supported — pass a flat dict.
 
 ```tinct
-[include libdir "fmt/env.llt"]
+[include libdir "out/env.llt"]
 ---
 [env [DATABASE_URL: "postgres://localhost/mydb" PORT: 3000]]
 # =>
@@ -578,7 +578,7 @@ Converts a flat string-keyed dict to `.env`-style `KEY=VALUE` lines. Each entry 
 Converts a list of dicts (all sharing the same keys) to CSV format. The header row is derived from the keys of the first row. Each dict in the list becomes a data row; missing keys default to the empty string. All fields are double-quoted; literal `"` characters are escaped as `""` (RFC 4180).
 
 ```tinct
-[include libdir "fmt/csv.llt"]
+[include libdir "out/csv.llt"]
 ---
 [csv [
   [name: "Alice" score: 95]

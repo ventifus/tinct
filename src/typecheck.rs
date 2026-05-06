@@ -172,6 +172,11 @@ fn reset_expr(expr: &Spanned<Expr>) {
         Expr::Quote(inner) => {
             reset_expr(inner);
         }
+
+        // Unquote and UnquoteSplice: recurse into the inner expression
+        Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            reset_expr(inner);
+        }
     }
 }
 
@@ -796,6 +801,41 @@ fn infer_expr(
                 fields: HashMap::new(),
                 tail: RowTail::RowVar(rho_name, rho_level),
             }))
+        }
+
+        Expr::Unquote(inner) => {
+            // [unquote expr] evaluates expr and returns its type.
+            // It must be inside a [quote ...], but the parser enforces that.
+            // The result should be a Dict (AST node).
+            infer_expr(inner, env, state, type_map)
+        }
+
+        Expr::UnquoteSplice(inner) => {
+            // [unquote-splice expr] expects expr to be a list (Dict with integer keys).
+            // Type: Dict (open record, like [quote ...]).
+            let inner_ty = infer_expr(inner, env, state, type_map)?;
+
+            // The inner expression should be a Dict (list).
+            // For now, just require it to be a Dict.
+            let (rho_name, rho_level) = state.fresh_row_var_name();
+            let expected_list_ty = Type::Record(Row {
+                fields: HashMap::new(),
+                tail: RowTail::RowVar(rho_name, rho_level),
+            });
+
+            let mut subst = std::mem::take(&mut state.subst);
+            let result = unify(&inner_ty, &expected_list_ty, &mut subst, state, inner.span);
+            state.subst = subst;
+            result.map_err(|_e| {
+                vec![TypeError::new(
+                    &format!("unquote-splice expects a list (Dict), got {}", inner_ty),
+                    inner.span,
+                )]
+            })?;
+
+            // UnquoteSplice itself doesn't have a standalone type — it's only valid
+            // in list positions where it splices elements. Return Dict for now.
+            Ok(expected_list_ty)
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(

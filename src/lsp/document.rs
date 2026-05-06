@@ -13,7 +13,9 @@ use crate::builtins::create_stdlib_env;
 use crate::error::EvalError;
 use crate::eval::{eval_file, materialize};
 use crate::parser::{parse2, ParseError};
-use crate::typecheck::{typecheck_file_with_types, typecheck_file_with_types_and_env, TypeMap};
+use crate::typecheck::{
+    typecheck_file_with_types, typecheck_file_with_types_and_env, DocMap, TypeMap,
+};
 use crate::types::{TypeEnv, TypeError};
 use crate::value::Environment;
 
@@ -34,6 +36,8 @@ pub struct DocumentState {
     pub eval_errors: Vec<EvalError>,
     /// Map from expression spans to inferred types (for hover).
     pub type_map: TypeMap,
+    /// Map from variable/parameter names to documentation strings (for hover).
+    pub doc_map: DocMap,
 }
 
 impl DocumentState {
@@ -64,6 +68,7 @@ impl DocumentState {
         let mut type_errors = Vec::new();
         let mut eval_errors = Vec::new();
         let mut type_map = TypeMap::new();
+        let mut doc_map = DocMap::new();
 
         if let Ok(ref mut file) = ast {
             // Desugar before type check and eval: rewrites $_ implicit lambdas to explicit forms.
@@ -76,17 +81,17 @@ impl DocumentState {
             crate::resolve::resolve_file(&file.node);
 
             // Run type checker (advisory), collecting the span-to-type map for hover.
-            // Seed the type environment with prelude names to suppress false "undefined variable" errors.
-            let prelude_names: Vec<&str> = prelude_index
-                .name_to_key_span()
-                .keys()
-                .map(|s| s.as_str())
-                .collect();
+            // Seed the type environment with prelude types from the prelude index to suppress
+            // false "undefined variable" errors and provide accurate types for hover.
             let base_env = Rc::new(TypeEnv::with_builtins());
-            let seeded_env = Rc::new(base_env.with_prelude_names(&prelude_names));
-            let (errs, map) = typecheck_file_with_types_and_env(&file.node, seeded_env);
+            let seeded_env = Rc::new(
+                base_env
+                    .with_prelude_types(prelude_index.name_to_key_span(), prelude_index.type_map()),
+            );
+            let (errs, map, docs) = typecheck_file_with_types_and_env(&file.node, seeded_env);
             type_errors = errs;
             type_map = map;
+            doc_map = docs;
 
             // Attempt evaluation to catch runtime errors early (child scope of cached stdlib env).
             // Always materialize (even when no_fs=true) so that IncludeForbidden errors
@@ -108,6 +113,7 @@ impl DocumentState {
             type_errors,
             eval_errors,
             type_map,
+            doc_map,
         }
     }
 }
@@ -163,6 +169,171 @@ impl PreludeIndex {
     }
 }
 
+/// Resolve an include path relative to a base URL.
+///
+/// Returns `None` for non-`file://` base URLs or resolution failures.
+pub fn resolve_include_url(base_url: &Url, path: &str) -> Option<Url> {
+    // Only support file:// URLs for now
+    if base_url.scheme() != "file" {
+        return None;
+    }
+
+    // Convert base URL to a file path
+    let base_path = base_url.to_file_path().ok()?;
+    let base_dir = base_path.parent()?;
+
+    // Resolve the include path relative to the base directory
+    let resolved_path = base_dir.join(path);
+
+    // Canonicalize to handle .. and . components
+    let canonical_path = resolved_path.canonicalize().ok()?;
+
+    // Convert back to URL
+    Url::from_file_path(canonical_path).ok()
+}
+
+/// Index a file and its includes into the include graph.
+///
+/// Recursively indexes all included files up to a depth limit of 16.
+/// Uses plain `std::fs::read_to_string` (not eval-time `$include`) — safe
+/// because no user code execution occurs, only parsing.
+pub fn index_file(
+    url: Url,
+    graph: &mut IncludeGraph,
+    stdlib_env: &Rc<RefCell<Environment>>,
+    eval_ctx: &Rc<crate::eval::EvalContext>,
+    prelude_index: &PreludeIndex,
+    depth: usize,
+) -> Result<(), String> {
+    const MAX_DEPTH: usize = 16;
+
+    if depth >= MAX_DEPTH {
+        return Err(format!(
+            "Include depth limit ({}) exceeded at {}",
+            MAX_DEPTH, url
+        ));
+    }
+
+    // Skip if already indexed
+    if graph.contains_key(&url) {
+        return Ok(());
+    }
+
+    // Read the file
+    let path = url
+        .to_file_path()
+        .map_err(|_| format!("Cannot convert URL to path: {}", url))?;
+
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+    // Create document state
+    let state = DocumentState::new(text, stdlib_env, eval_ctx, prelude_index);
+
+    // Collect include paths from this file
+    let include_paths = if let Ok(ref file) = state.ast {
+        crate::lsp::analysis::collect_include_paths(&file.node)
+    } else {
+        vec![]
+    };
+
+    // Resolve include URLs
+    let mut includes = Vec::new();
+    for (path, _span) in include_paths {
+        if let Some(include_url) = resolve_include_url(&url, &path) {
+            includes.push(include_url);
+        }
+    }
+
+    // Insert this node into the graph (before recursing, to handle circular deps)
+    graph.insert(
+        url.clone(),
+        IncludeNode {
+            state,
+            includes: includes.clone(),
+            included_by: vec![],
+        },
+    );
+
+    // Recursively index included files and build reverse edges
+    for include_url in &includes {
+        // Recurse
+        if let Err(e) = index_file(
+            include_url.clone(),
+            graph,
+            stdlib_env,
+            eval_ctx,
+            prelude_index,
+            depth + 1,
+        ) {
+            eprintln!("LSP: Failed to index {}: {}", include_url, e);
+            continue;
+        }
+
+        // Add reverse edge
+        if let Some(included_node) = graph.get_mut(include_url) {
+            if !included_node.included_by.contains(&url) {
+                included_node.included_by.push(url.clone());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Invalidate and re-index all dependents of a changed file.
+///
+/// Follows reverse edges breadth-first to find all files that transitively
+/// include the changed file, then re-indexes them.
+pub fn invalidate_dependents(
+    changed_url: &Url,
+    graph: &mut IncludeGraph,
+    stdlib_env: &Rc<RefCell<Environment>>,
+    eval_ctx: &Rc<crate::eval::EvalContext>,
+    prelude_index: &PreludeIndex,
+) {
+    use std::collections::VecDeque;
+    let mut queue = VecDeque::new();
+    let mut visited = std::collections::HashSet::new();
+
+    // Start with the changed file's dependents
+    if let Some(node) = graph.get(changed_url) {
+        for dependent_url in &node.included_by {
+            queue.push_back(dependent_url.clone());
+        }
+    }
+
+    // BFS through reverse edges
+    while let Some(url) = queue.pop_front() {
+        if !visited.insert(url.clone()) {
+            continue; // Already processed
+        }
+
+        // Re-index this file
+        // Remove the old entry first to avoid depth-limit issues
+        graph.remove(&url);
+
+        if let Err(e) = index_file(
+            url.clone(),
+            graph,
+            stdlib_env,
+            eval_ctx,
+            prelude_index,
+            0, // Reset depth for re-indexing
+        ) {
+            eprintln!("LSP: Failed to re-index {}: {}", url, e);
+            continue;
+        }
+
+        // Add its dependents to the queue
+        if let Some(node) = graph.get(&url) {
+            for dependent_url in &node.included_by {
+                queue.push_back(dependent_url.clone());
+            }
+        }
+    }
+}
+
 /// Find the on-disk stdlib/prelude.llt path.
 ///
 /// Tries two layouts in order:
@@ -185,12 +356,18 @@ fn find_stdlib_prelude_path() -> Option<PathBuf> {
                 .ok()
                 .and_then(|exe| {
                     let bin_dir = exe.parent()?; // bin/
-                    // Verify we're in a bin/ directory before assuming installed layout
+                                                 // Verify we're in a bin/ directory before assuming installed layout
                     if bin_dir.file_name()? != std::ffi::OsStr::new("bin") {
                         return None;
                     }
                     let prefix = bin_dir.parent()?; // <prefix>/
-                    Some(prefix.join("share").join("tinct").join("stdlib").join("prelude.llt"))
+                    Some(
+                        prefix
+                            .join("share")
+                            .join("tinct")
+                            .join("stdlib")
+                            .join("prelude.llt"),
+                    )
                 })
                 .filter(|p| p.is_file())
         })
@@ -220,8 +397,8 @@ pub fn build_prelude_index() -> PreludeIndex {
     // Variable resolution pass
     crate::resolve::resolve_file(&file);
 
-    // Type-check to extract the TypeMap
-    let (type_errors, type_map) = typecheck_file_with_types(&file);
+    // Type-check to extract the TypeMap and DocMap
+    let (type_errors, type_map, _doc_map) = typecheck_file_with_types(&file);
 
     if !type_errors.is_empty() {
         eprintln!(
@@ -257,6 +434,23 @@ pub fn build_prelude_index() -> PreludeIndex {
     }
 }
 
+/// Node in the include dependency graph.
+#[derive(Debug, Clone)]
+pub struct IncludeNode {
+    /// Parsed and analyzed state of this file.
+    pub state: DocumentState,
+    /// URLs of files this file includes (forward edges).
+    pub includes: Vec<Url>,
+    /// URLs of files that include this file (reverse edges).
+    pub included_by: Vec<Url>,
+}
+
+/// Include dependency graph for cross-file resolution.
+///
+/// Tracks all files reachable via `$include` from open documents.
+/// Enables go-to-definition and hover across file boundaries.
+pub type IncludeGraph = HashMap<Url, IncludeNode>;
+
 /// Storage for all open documents.
 ///
 /// Holds a cached stdlib environment that is created once and shared across
@@ -270,6 +464,8 @@ pub struct DocumentStore {
     base_eval_ctx: Rc<crate::eval::EvalContext>,
     /// Index of prelude definitions for LSP features.
     pub prelude_index: PreludeIndex,
+    /// Include dependency graph for cross-file resolution.
+    pub include_graph: IncludeGraph,
 }
 
 impl DocumentStore {
@@ -310,6 +506,7 @@ impl DocumentStore {
             stdlib_env,
             base_eval_ctx,
             prelude_index,
+            include_graph: HashMap::new(),
         }
     }
 
@@ -341,9 +538,84 @@ impl DocumentStore {
             });
         let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
 
-        self.docs.insert(
-            url,
-            DocumentState::new(text, &self.stdlib_env, &eval_ctx, &self.prelude_index),
+        let state = DocumentState::new(text, &self.stdlib_env, &eval_ctx, &self.prelude_index);
+
+        // Collect include paths from the new AST
+        let new_includes = if let Ok(ref file) = state.ast {
+            crate::lsp::analysis::collect_include_paths(&file.node)
+                .into_iter()
+                .filter_map(|(path, _span)| resolve_include_url(&url, &path))
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
+        // Get old includes to detect changes
+        let old_includes = self
+            .include_graph
+            .get(&url)
+            .map(|node| node.includes.clone())
+            .unwrap_or_default();
+
+        // Index new includes
+        for include_url in &new_includes {
+            if !old_includes.contains(include_url) {
+                // New include detected — index it
+                if let Err(e) = index_file(
+                    include_url.clone(),
+                    &mut self.include_graph,
+                    &self.stdlib_env,
+                    &eval_ctx,
+                    &self.prelude_index,
+                    0,
+                ) {
+                    eprintln!("LSP: Failed to index {}: {}", include_url, e);
+                }
+            }
+        }
+
+        // Remove stale reverse edges for removed includes
+        for old_include in &old_includes {
+            if !new_includes.contains(old_include) {
+                if let Some(node) = self.include_graph.get_mut(old_include) {
+                    node.included_by.retain(|u| u != &url);
+                }
+            }
+        }
+
+        // Update or insert this document's node in the include graph
+        self.include_graph.insert(
+            url.clone(),
+            IncludeNode {
+                state: state.clone(),
+                includes: new_includes.clone(),
+                included_by: self
+                    .include_graph
+                    .get(&url)
+                    .map(|n| n.included_by.clone())
+                    .unwrap_or_default(),
+            },
+        );
+
+        // Add forward edges (reverse edges on included files)
+        for include_url in &new_includes {
+            if let Some(node) = self.include_graph.get_mut(include_url) {
+                if !node.included_by.contains(&url) {
+                    node.included_by.push(url.clone());
+                }
+            }
+        }
+
+        // Store in docs as well for backward compatibility
+        self.docs.insert(url.clone(), state);
+
+        // Invalidate and re-index dependents
+        invalidate_dependents(
+            &url,
+            &mut self.include_graph,
+            &self.stdlib_env,
+            &eval_ctx,
+            &self.prelude_index,
         );
     }
 
@@ -387,7 +659,12 @@ mod tests {
     #[test]
     fn test_document_state_valid_source() {
         let env = test_env();
-        let state = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), &test_prelude_index());
+        let state = DocumentState::new(
+            "[x: 42]".to_string(),
+            &env,
+            &test_ctx(),
+            &test_prelude_index(),
+        );
         assert!(state.ast.is_ok());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
@@ -396,7 +673,12 @@ mod tests {
     #[test]
     fn test_document_state_parse_error() {
         let env = test_env();
-        let state = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), &test_prelude_index());
+        let state = DocumentState::new(
+            "[unterminated".to_string(),
+            &env,
+            &test_ctx(),
+            &test_prelude_index(),
+        );
         assert!(state.ast.is_err());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
@@ -405,7 +687,12 @@ mod tests {
     #[test]
     fn test_document_state_type_error() {
         let env = test_env();
-        let state = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), &test_prelude_index());
+        let state = DocumentState::new(
+            "[@Number hello]".to_string(),
+            &env,
+            &test_ctx(),
+            &test_prelude_index(),
+        );
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty());
         // TypeAssert without default: also errors at runtime on type mismatch.
@@ -415,7 +702,12 @@ mod tests {
     #[test]
     fn test_document_state_eval_error() {
         let env = test_env();
-        let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), &test_prelude_index());
+        let state = DocumentState::new(
+            "$undefined".to_string(),
+            &env,
+            &test_ctx(),
+            &test_prelude_index(),
+        );
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty()); // undefined variable is also a type error
         assert!(!state.eval_errors.is_empty());
@@ -492,7 +784,12 @@ mod tests {
         // true → false is caught by verifying $include produces an eval error.
         let env = test_env();
         let ctx = test_ctx();
-        let state = DocumentState::new("[call $include \"some_file.llt\"]".to_string(), &env, &ctx, &test_prelude_index());
+        let state = DocumentState::new(
+            "[call $include \"some_file.llt\"]".to_string(),
+            &env,
+            &ctx,
+            &test_prelude_index(),
+        );
         assert!(state.ast.is_ok(), "parse should succeed");
         assert!(
             !state.eval_errors.is_empty(),
@@ -542,5 +839,53 @@ mod tests {
             "should have zero type errors (prelude names seeded); got: {:?}",
             state.type_errors
         );
+    }
+
+    #[test]
+    fn test_resolve_include_url_relative_path() {
+        let base_url = Url::parse("file:///home/user/project/main.llt").unwrap();
+        let include_path = "lib/utils.llt";
+        // resolve_include_url calls canonicalize, which requires the file to exist
+        // So this test can't verify the exact URL without creating real files.
+        // We can only test that it doesn't panic and returns None for non-existent paths.
+        let result = resolve_include_url(&base_url, include_path);
+        // Result is None because the path doesn't exist (canonicalize fails)
+        assert!(
+            result.is_none(),
+            "should return None for non-existent paths"
+        );
+    }
+
+    #[test]
+    fn test_resolve_include_url_absolute_path() {
+        let base_url = Url::parse("file:///home/user/project/main.llt").unwrap();
+        let include_path = "/etc/hosts"; // absolute path to a file that usually exists
+        let result = resolve_include_url(&base_url, include_path);
+        // On systems where /etc/hosts exists, this should succeed
+        // On systems where it doesn't, it should return None
+        // We can't make strong assertions without knowing the test environment
+        // but we can at least verify it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_resolve_include_url_parent_directory() {
+        let base_url = Url::parse("file:///home/user/project/src/main.llt").unwrap();
+        let include_path = "../lib/utils.llt";
+        let result = resolve_include_url(&base_url, include_path);
+        // Should attempt to resolve to /home/user/project/lib/utils.llt
+        // Returns None because the path doesn't exist
+        assert!(
+            result.is_none(),
+            "should return None for non-existent paths"
+        );
+    }
+
+    #[test]
+    fn test_resolve_include_url_non_file_scheme() {
+        let base_url = Url::parse("http://example.com/main.llt").unwrap();
+        let include_path = "lib/utils.llt";
+        let result = resolve_include_url(&base_url, include_path);
+        assert!(result.is_none(), "should return None for non-file:// URLs");
     }
 }

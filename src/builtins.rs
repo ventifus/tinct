@@ -1237,6 +1237,28 @@ fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     )))
 }
 
+/// `eval-ast`: takes 1 arg (Dict from quote), reconstructs AST, evaluates it.
+/// Inherently materializing: must materialize dict to extract AST structure,
+/// then evaluate the reconstructed expression.
+fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("eval-ast", args, named, &ctx, depth, call_span)?;
+
+    // Convert the dict to an AST node
+    let ast = crate::ast_dict::dict_to_ast(&val, &ctx)
+        .map_err(|e| EvalError::user_error(format!("eval-ast: {}", e), call_span))?;
+
+    // Evaluate the reconstructed AST in the stdlib environment
+    let env = Rc::clone(&ctx.config.stdlib_env);
+    crate::eval::eval(Rc::new(ast), env, &ctx, depth)
+}
+
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
 /// Returns "Dict" for all dicts, with no distinction between list-like (sequential int keys)
@@ -3087,6 +3109,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("error", builtin_error, [Strictness::Seq]),
         builtin!("try", builtin_try, [Strictness::Id]),
         builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
+        builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
         builtin!("until", builtin_until),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
@@ -8164,7 +8187,8 @@ mod tests {
         assert!(names.contains(&"each-kv"), "missing each-kv");
         // Total count: Wave 1 sprint added 4 access-pipeline builtins (builtin-get, each, each-key, each-kv).
         // Update this count when standard_builtins() changes.
-        assert_eq!(names.len(), 76, "expected 76 builtins, got {}", names.len());
+        assert!(names.contains(&"eval-ast"), "missing eval-ast");
+        assert_eq!(names.len(), 77, "expected 77 builtins, got {}", names.len());
     }
 
     #[test]

@@ -32,14 +32,21 @@ Comments are attached to code based on their line position:
 
 Semicolons are normalized away. They are syntactic sugar for newlines, and the formatter emits the canonical whitespace-separated form. `[x: 1; y: 2]` becomes `[x: 1 y: 2]` (single-line) or two separate lines (multi-line). The stdlib uses zero semicolons — this is the canonical style.
 
-### Configurability: Zero-Config
+### Configurability: Zero-Config for Canonical Style
 
-No formatting options. The formatter defines the canonical Tinct style. The only CLI flags control I/O behavior:
+The formatter defines one canonical Tinct style with no layout configuration options. CLI flags control I/O behavior and output mode:
+
+**I/O flags:**
 - `--check` — exit 1 if any file is not formatted (CI mode)
 - `--in-place` — overwrite files in place
-- `--stdin` — read from stdin, write to stdout
+- `stdin` (`-` as file argument) — read from stdin, write to stdout
 
-**Rationale:** gofmt's zero-config philosophy. One canonical style eliminates bikeshedding. Pre-1.0, if a genuine need for configurability emerges, knobs can be added later. Starting opinionated is easier than tightening.
+**Compact mode flags:**
+- `--oneline` — single-line output (comments stripped, no trailing newline)
+- `--nospaces` — minimize inter-token spacing
+- `--minimize` — shorthand for `--oneline --nospaces`
+
+**Rationale:** gofmt's zero-config philosophy. One canonical style eliminates bikeshedding. Compact modes are for embedding and piping, not for primary source formatting. Pre-1.0, if a genuine need for layout configurability emerges (e.g. `--width 100`), knobs can be added later. Starting opinionated is easier than tightening.
 
 ### Additional Rules
 
@@ -58,49 +65,170 @@ No formatting options. The formatter defines the canonical Tinct style. The only
 
 ### Compact Formatter Modes
 
-Three compact modes produce space-efficient output for embedding, piping, or minimization:
+Three compact modes produce space-efficient output for embedding tinct expressions in shell scripts, piping through `-e` strings, or minimizing file size:
 
 | Flag | Behavior |
 |------|----------|
-| `--oneline` | All output on a single line; comments stripped; section headers as `; name` |
+| `--oneline` | All output on a single line; comments stripped; no trailing newline; section headers emit `; ` after metadata |
 | `--nospaces` | Spaces removed except where required for unambiguous tokenization |
-| `--minimize` | Shorthand for `--oneline --nospaces` |
+| `--minimize` | Shorthand for `--oneline --nospaces` (maximally compact) |
 
-Compact modes are implemented in `stdlib/formatter/compact.llt` — a tinct program that receives the AST dict (from `ast_to_dict(None, None)`) as `%` and returns a formatted string. The Rust formatter is not used for compact modes.
+**Examples:**
 
-### Tinct-Hosted Formatter
+```bash
+# Normal format (default)
+$ tinct fmt config.llt
+[x: 1 y: 2]
 
-The full `tinct fmt` formatter is implemented in `stdlib/formatter/format.llt` — a tinct program that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source. The Rust formatter (`format_source_rust()`) is retained for LSP use (where loading a tinct program would be too slow).
+# Oneline mode: single line, comments stripped
+$ tinct fmt --oneline config.llt
+[x: 1 y: 2]
 
-Layout uses speculative rendering (Oppen 1980 line-breaking, Wadler 2003 group semantics): `fits-inline?` renders a node as single-line and measures the width. If width ≤ 80 and entry count ≤ 4, the inline rendering is used; otherwise, block rendering is used. Lazy evaluation memoizes `render-inline` when bound with `let:`, so each node is measured at most once.
+# Nospaces mode: minimal inter-token spacing
+$ tinct fmt --nospaces config.llt
+[x:1 y:2]
 
-**Configurable layout:**
-- `tinct fmt --width 100` — override the 80-character line width
-- `tinct fmt --max-entries 6` — override the 4-entry threshold
-- `tinct fmt --formatter path/to/custom.llt` — use a custom formatter program
+# Minimize mode: both oneline and nospaces
+$ tinct fmt --minimize config.llt
+[x:1 y:2]
+```
 
-**Prerequisites:** `str-length: Str -> Int` Rust builtin (for width measurement) and `str-repeat: Str -> Int -> Str` in `stdlib/prelude.llt` (for indentation).
+**Section headers in oneline mode:**
+
+Section headers (`---`) emit as `; ` (semicolon + space) after the header metadata when in oneline mode:
+
+```bash
+# Input
+[x: 1]
+--- %defaults@Dict
+[y: 2]
+
+# Oneline output
+[x: 1] --- %defaults@Dict; [y: 2]
+```
+
+The `---` separator is preserved verbatim even in minimize mode to ensure document structure remains parseable.
+
+**Bare-word adjacency rule (nospaces mode):**
+
+When `--nospaces` is enabled, a space is inserted between two consecutive tokens **only** when both the preceding token's last character **and** the following token's first character are bare-word characters (alphanumeric, `-`, `_`, `?`, `!`, `/`, `%`, `~`).
+
+This rule prevents unintended token merging. For example:
+
+- `[x: 1 y: 2]` → `[x:1 y:2]` — space required between `1` (ends with digit) and `y` (starts with letter)
+- `[call f arg]` → `[call f arg]` — all tokens are bare words, spaces required
+- `--- %name` → `---%name` would lex as a single bare word, so the space is preserved
+
+**Round-trip guarantee:**
+
+All three modes are re-parseable:
+
+```bash
+# Round-trip via oneline
+$ tinct fmt --oneline file.llt | tinct eval -
+(same output as `tinct eval file.llt`)
+
+# Idempotency
+$ tinct fmt --minimize file.llt | tinct fmt --minimize -
+(output unchanged)
+```
+
+Comments are stripped in `--oneline` and `--minimize` modes (comments cannot survive without newlines). Section headers with `%name@Type` and `expects: @Type` metadata survive all modes.
+
+### Tinct-Hosted Formatter (Future)
+
+The formatter is currently implemented in Rust (`src/formatter.rs`). A future tinct-hosted formatter will be implemented in `stdlib/formatter/format.llt` — a tinct program that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source. The Rust formatter will be retained for LSP use (where loading a tinct program would be too slow).
+
+See `doc/whatif/tinct-hosted-formatter.md` and `doc/whatif/plans/macros-cluster.md` for the full design. The tinct-hosted formatter depends on the `ast-dict-source` sprint (AST dict schema with source info and comments).
+
+## Inline Expressions and I/O Formatters (`tinct eval`)
+
+The `tinct eval` command supports inline expressions (`-e`), input formatters (`-i`), and output formatters (`-o`) to enable jq-style JSON processing and flexible pipeline composition.
+
+### `-e <expr>` / `--expr <expr>` — Inline Expressions
+
+Evaluate an inline tinct expression as a pipeline stage. Repeatable — each `-e` occurrence inserts a pipeline stage at that position in the command line, interleaved with file arguments. Each expression receives `%` from the previous stage.
+
+```bash
+# Access a field from piped JSON (auto-detection)
+tinct eval -e '%.x' <<< '{"x":42}'                  # → 42
+
+# Chain multiple expressions
+tinct eval -e '[x: 1]' -e '[merge % [y: 2]]'       # → {"x":1,"y":2}
+
+# --- is valid inside a single -e string for multiple stages
+tinct eval -e '[x: 1] --- [y: %.x]'                 # → {"y":1}
+```
+
+Semicolons (`;`) are whitespace-equivalent and compress multi-line syntax but do not create pipeline stages.
+
+### `-i <format>` / `--input <format>` — Input Formatters
+
+Prepend an input formatter from `stdlib/in/<format>.llt` as the first pipeline stage. Suppresses stdin JSON auto-detection so the input program reads from the `stdin` Handle directly. Error if the formatter file does not exist.
+
+```bash
+# Explicit JSON input (equivalent to auto-detection but via formatter)
+tinct eval -i json -e '%.x' <<< '{"x":42}'          # → 42
+```
+
+**Convention:** Input formatters live in `stdlib/in/`. Each formatter reads from the `stdin` Handle and produces a tinct value as `%` for the next stage.
+
+**Included input formatters:**
+- `json` — `[from-json [slurp stdin]]` (parse JSON from stdin)
+
+When `-i` is present, auto-detection is suppressed and the input program reads from stdin as a Handle (via `$slurp` or `$lines`).
+
+### `-o <format>` / `--output <format>` — Output Formatters
+
+Append an output formatter from `stdlib/out/<format>.llt` as the final pipeline stage. Error if the formatter file does not exist.
+
+```bash
+# String output without JSON quotes
+tinct eval -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
+```
+
+**Convention:** Output formatters live in `stdlib/out/`. Each formatter receives `%` and produces formatted output (typically via `$emit` or as the final value).
+
+**Included output formatters:**
+- `raw` — Emit strings unquoted; Seq elements one per line; error for other types
+
+### Symmetric Pipeline Model
+
+The three flags compose to form a symmetric pipeline:
+
+```
+stdin → [-i input] → [files/exprs] → [-o output] → stdout
+```
+
+**Example — jq-style JSON processing:**
+
+```bash
+# Extract a field and emit it without quotes
+tinct eval -i json -o raw -e '%.response' < mcp.json
+
+# Equivalent to jq -r '.response'
+```
 
 ## Default Output Format (`tinct eval`)
 
-When `tinct eval` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/fmt/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
+When `tinct eval` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/out/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
 
 **Key properties:**
 
-- The formatter is user-visible and lives at `stdlib/fmt/json.llt`. You can inspect it or use it directly in programs: `[include libdir "fmt/json.llt"]`.
-- If `stdlib/fmt/json.llt` is not found (e.g. running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. Note: the fallback serializes empty dicts as `{}` (JSON empty object) rather than `null`.
+- The formatter is user-visible and lives at `stdlib/out/json.llt`. You can inspect it or use it directly in programs: `[include libdir "out/json.llt"]`.
+- If `stdlib/out/json.llt` is not found (e.g. running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. Note: the fallback serializes empty dicts as `{}` (JSON empty object) rather than `null`.
 - The output is indented (2-space pretty-printed) by default.
 
 **Using the formatters directly:**
 
 ```bash
-tinct eval config.llt                  # indented JSON via stdlib/fmt/json.llt (2-space pretty-printed)
+tinct eval config.llt                  # indented JSON via stdlib/out/json.llt (2-space pretty-printed)
 ```
 
 ```tinct
 # Load and call the JSON formatter explicitly in a pipeline
 [
-  json: [include libdir "fmt/json.llt"]
+  json: [include libdir "out/json.llt"]
   output: [json.json my-value]
 ]
 ```

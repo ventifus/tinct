@@ -170,34 +170,53 @@ fn desugar_interpolated_string(
 
 /// Helper: count how many whitespace/newline/semicolon tokens to skip from the current position.
 /// Also collects comment tokens into the leading_comments map (keyed by the next non-whitespace token's offset).
+/// Detects blank lines (consecutive newlines) and marks the next token with blank_before: true.
 fn skip_whitespace_tokens(
     tokens: &[Spanned<Token>],
     current_index: usize,
     leading_comments: &mut BTreeMap<usize, Vec<String>>,
+    blank_before: &mut BTreeMap<usize, bool>,
 ) -> usize {
     let mut count = 0;
     let mut idx = current_index;
     let mut collected_comments = Vec::new();
+    let mut consecutive_newlines = 0;
+    let mut has_blank_line = false;
 
     while idx < tokens.len() {
         match &tokens[idx].node {
             Token::Comment(text) => {
                 collected_comments.push(text.clone());
+                consecutive_newlines = 0; // Reset on comment
                 count += 1;
                 idx += 1;
             }
-            Token::Newline | Token::Semicolon => {
+            Token::Newline => {
+                consecutive_newlines += 1;
+                if consecutive_newlines >= 2 {
+                    has_blank_line = true;
+                }
+                count += 1;
+                idx += 1;
+            }
+            Token::Semicolon => {
+                consecutive_newlines = 0; // Semicolon doesn't contribute to blank lines
                 count += 1;
                 idx += 1;
             }
             _ => {
-                // Found non-whitespace token — attach collected comments to it
-                if !collected_comments.is_empty() && idx < tokens.len() {
+                // Found non-whitespace token — attach collected comments and blank-line flag to it
+                if idx < tokens.len() {
                     let next_offset = tokens[idx].span.start.offset;
-                    leading_comments
-                        .entry(next_offset)
-                        .or_insert_with(Vec::new)
-                        .extend(collected_comments);
+                    if !collected_comments.is_empty() {
+                        leading_comments
+                            .entry(next_offset)
+                            .or_insert_with(Vec::new)
+                            .extend(collected_comments);
+                    }
+                    if has_blank_line {
+                        blank_before.insert(next_offset, true);
+                    }
                 }
                 break;
             }
@@ -343,6 +362,10 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             },
         },
         Expr::Quote(inner) => Expr::Quote(Box::new(adjust_spanned_expr(*inner, base))),
+        Expr::Unquote(inner) => Expr::Unquote(Box::new(adjust_spanned_expr(*inner, base))),
+        Expr::UnquoteSplice(inner) => {
+            Expr::UnquoteSplice(Box::new(adjust_spanned_expr(*inner, base)))
+        }
     }
 }
 
@@ -384,6 +407,7 @@ fn parse_annotation(
     tokens: &[Spanned<Token>],
     start_index: usize,
     leading_comments: &mut BTreeMap<usize, Vec<String>>,
+    blank_before: &mut BTreeMap<usize, bool>,
     input: &str,
     recovered_errors: Option<&mut Vec<ParseError>>,
 ) -> Result<(Spanned<Annotation>, usize), ParseError> {
@@ -403,7 +427,7 @@ fn parse_annotation(
     }
 
     // Skip whitespace after @
-    i += skip_whitespace_tokens(tokens, i, leading_comments);
+    i += skip_whitespace_tokens(tokens, i, leading_comments, blank_before);
 
     if i >= tokens.len() {
         let err = ParseError {
@@ -584,6 +608,7 @@ fn parse_param_list(
     tokens: &[Spanned<Token>],
     i: &mut usize,
     leading_comments: &mut BTreeMap<usize, Vec<String>>,
+    blank_before: &mut BTreeMap<usize, bool>,
     input: &str,
     mut recovered_errors: Option<&mut Vec<ParseError>>,
 ) -> Result<Vec<Spanned<Param>>, ParseError> {
@@ -602,7 +627,7 @@ fn parse_param_list(
     let mut saw_variadic = false;
 
     loop {
-        *i += skip_whitespace_tokens(tokens, *i, leading_comments);
+        *i += skip_whitespace_tokens(tokens, *i, leading_comments, blank_before);
 
         if *i >= tokens.len() {
             return Err(ParseError {
@@ -634,7 +659,7 @@ fn parse_param_list(
                 let ellipsis_span = tokens[*i].span;
                 *i += 1;
 
-                *i += skip_whitespace_tokens(tokens, *i, leading_comments);
+                *i += skip_whitespace_tokens(tokens, *i, leading_comments, blank_before);
 
                 if *i >= tokens.len() {
                     let err = ParseError {
@@ -718,6 +743,7 @@ fn parse_param_list(
                             tokens,
                             *i,
                             leading_comments,
+                            blank_before,
                             input,
                             recovered_errors.as_deref_mut(),
                         ) {
@@ -828,6 +854,16 @@ enum StackFrame {
         expr: Option<Spanned<Expr>>,
         span_start: Position,
     },
+    /// Unquote special form: `[unquote expr]` (only valid inside quote)
+    Unquote {
+        expr: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Unquote-splice special form: `[unquote-splice expr]` (only valid in list positions inside quote)
+    UnquoteSplice {
+        expr: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
     /// Pipe operator: `lhs | rhs`
     /// Holds the LHS and waits for the RHS to be parsed
     Pipe {
@@ -850,6 +886,8 @@ enum CallArg {
 ///
 /// `leading_comments` are keyed by the `span.start.offset` of the node they precede.
 /// `trailing_comments` are keyed by the `span.start.offset` of the node they follow.
+/// `blank_before` is keyed by the `span.start.offset` of the node and set to `true` when
+/// there was a blank line (consecutive newlines) before that node.
 ///
 /// `errors` contains parse errors that were recovered from during parsing. These are
 /// errors that occurred inside bracket forms; the parser substituted an `Expr::Error`
@@ -865,6 +903,7 @@ pub struct ParseOutput {
     pub source: String,
     pub leading_comments: BTreeMap<usize, Vec<String>>,
     pub trailing_comments: BTreeMap<usize, String>,
+    pub blank_before: BTreeMap<usize, bool>,
     /// Recovered parse errors (errors inside bracket forms where the parser continued).
     pub errors: Vec<ParseError>,
 }
@@ -1157,6 +1196,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     // Stack of frames tracking bracket nesting
     let mut stack: Vec<StackFrame> = Vec::new();
 
+    // Quote nesting depth — incremented when entering [quote ...], decremented when leaving.
+    // Used to track whether we're inside a quote (depth > 0) for unquote/unquote-splice validation.
+    let mut quote_depth: u32 = 0;
+
     // Current document being built (one or more expressions)
     let mut current_document_expressions: Vec<Rc<Spanned<Expr>>> = Vec::new();
 
@@ -1166,6 +1209,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     // Comment maps
     let mut leading_comments: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     let mut trailing_comments: BTreeMap<usize, String> = BTreeMap::new();
+    let mut blank_before: BTreeMap<usize, bool> = BTreeMap::new();
 
     // Recovered parse errors (errors inside bracket forms)
     let mut recovered_errors: Vec<ParseError> = Vec::new();
@@ -1240,7 +1284,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "call" token
-                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
                         i += 1;
                         continue;
                     }
@@ -1256,7 +1305,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         // (depth already checked above)
 
                         i += 1; // Consume the OpenBracket
-                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
                         i += 1; // Consume the "fn" token
 
                         // Check for return annotation: fn@RetType
@@ -1267,6 +1321,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 &token_vec,
                                 i,
                                 &mut leading_comments,
+                                &mut blank_before,
                                 input,
                                 Some(&mut recovered_errors),
                             ) {
@@ -1307,7 +1362,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         };
 
                         // Parse param list if present: [fn [params] body]
-                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
                         let params = if i < token_vec.len()
                             && matches!(&token_vec[i].node, Token::OpenBracket)
                         {
@@ -1315,6 +1375,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 &token_vec,
                                 &mut i,
                                 &mut leading_comments,
+                                &mut blank_before,
                                 input,
                                 Some(&mut recovered_errors),
                             ) {
@@ -1362,7 +1423,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "type" token
-                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
                         i += 1;
                         continue;
                     }
@@ -1380,9 +1446,88 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             expr: None,
                             span_start: span.start,
                         });
+                        quote_depth += 1; // Entering a quote context
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "quote" token
-                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "unquote"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Unquote form: [unquote expr]
+                        // (Not an unquote form if the keyword is followed by colon: [unquote: x] is a dict.)
+                        // (depth already checked above)
+                        if quote_depth == 0 {
+                            return Err(ParseError {
+                                message: "unquote is only valid inside [quote ...]".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        stack.push(StackFrame::Unquote {
+                            expr: None,
+                            span_start: span.start,
+                        });
+                        quote_depth -= 1; // Unquote decrements depth (evaluates in outer context)
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "unquote" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "unquote-splice"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Unquote-splice form: [unquote-splice expr]
+                        // (Not an unquote-splice form if the keyword is followed by colon: [unquote-splice: x] is a dict.)
+                        // (depth already checked above)
+                        if quote_depth == 0 {
+                            return Err(ParseError {
+                                message: "unquote-splice is only valid inside [quote ...]"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        // Check if we're at the top level of a quote (not in a list position).
+                        // If the parent frame is Quote, that's an error per Bawden (1999).
+                        if matches!(stack.last(), Some(StackFrame::Quote { .. })) {
+                            return Err(ParseError {
+                                message: "unquote-splice at top level of [quote ...] is invalid; it must be in a list position".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        stack.push(StackFrame::UnquoteSplice {
+                            expr: None,
+                            span_start: span.start,
+                        });
+                        quote_depth -= 1; // Unquote-splice decrements depth (evaluates in outer context)
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "unquote-splice" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
                         i += 1;
                         continue;
                     }
@@ -1442,7 +1587,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         // Consume the OpenBracket
                         i += 1;
                         // Skip whitespace to the identifier
-                        i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
 
                         // Capture the identifier span and value
                         let func_span = token_vec[i].span;
@@ -1741,25 +1891,77 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                     },
 
-                    StackFrame::Quote { expr, span_start } => match expr {
-                        None => {
-                            close_bracket_recover!(ParseError {
-                                message: "quote form requires an expression".to_string(),
-                                span: Some(span),
-                            });
-                        }
-                        Some(expr) => {
-                            let quote_expr = Expr::Quote(Box::new(expr));
-                            let spanned_quote = Spanned::new(quote_expr, dict_span(span_start));
-                            if let Err(push_err) = push_value(
-                                &mut stack,
-                                &mut current_document_expressions,
-                                spanned_quote,
-                            ) {
-                                close_bracket_recover!(push_err);
+                    StackFrame::Quote { expr, span_start } => {
+                        quote_depth -= 1; // Leaving a quote context
+                        match expr {
+                            None => {
+                                close_bracket_recover!(ParseError {
+                                    message: "quote form requires an expression".to_string(),
+                                    span: Some(span),
+                                });
+                            }
+                            Some(expr) => {
+                                let quote_expr = Expr::Quote(Box::new(expr));
+                                let spanned_quote = Spanned::new(quote_expr, dict_span(span_start));
+                                if let Err(push_err) = push_value(
+                                    &mut stack,
+                                    &mut current_document_expressions,
+                                    spanned_quote,
+                                ) {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
-                    },
+                    }
+
+                    StackFrame::Unquote { expr, span_start } => {
+                        quote_depth += 1; // Leaving an unquote context (back to quote context)
+                        match expr {
+                            None => {
+                                close_bracket_recover!(ParseError {
+                                    message: "unquote form requires an expression".to_string(),
+                                    span: Some(span),
+                                });
+                            }
+                            Some(expr) => {
+                                let unquote_expr = Expr::Unquote(Box::new(expr));
+                                let spanned_unquote =
+                                    Spanned::new(unquote_expr, dict_span(span_start));
+                                if let Err(push_err) = push_value(
+                                    &mut stack,
+                                    &mut current_document_expressions,
+                                    spanned_unquote,
+                                ) {
+                                    close_bracket_recover!(push_err);
+                                }
+                            }
+                        }
+                    }
+
+                    StackFrame::UnquoteSplice { expr, span_start } => {
+                        quote_depth += 1; // Leaving an unquote-splice context (back to quote context)
+                        match expr {
+                            None => {
+                                close_bracket_recover!(ParseError {
+                                    message: "unquote-splice form requires an expression"
+                                        .to_string(),
+                                    span: Some(span),
+                                });
+                            }
+                            Some(expr) => {
+                                let unquote_splice_expr = Expr::UnquoteSplice(Box::new(expr));
+                                let spanned_unquote_splice =
+                                    Spanned::new(unquote_splice_expr, dict_span(span_start));
+                                if let Err(push_err) = push_value(
+                                    &mut stack,
+                                    &mut current_document_expressions,
+                                    spanned_unquote_splice,
+                                ) {
+                                    close_bracket_recover!(push_err);
+                                }
+                            }
+                        }
+                    }
 
                     StackFrame::Pipe { .. } => {
                         // A Pipe frame is never opened by `[` — pipe is an infix operator
@@ -1994,6 +2196,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         &token_vec,
                         i,
                         &mut leading_comments,
+                        &mut blank_before,
                         input,
                         Some(&mut recovered_errors),
                     ) {
@@ -2286,6 +2489,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                     &token_vec,
                                     i,
                                     &mut leading_comments,
+                                    &mut blank_before,
                                     input,
                                     Some(&mut recovered_errors),
                                 ) {
@@ -2328,6 +2532,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 &token_vec,
                                 i,
                                 &mut leading_comments,
+                                &mut blank_before,
                                 input,
                                 Some(&mut recovered_errors),
                             ) {
@@ -2353,6 +2558,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 &token_vec,
                                 i,
                                 &mut leading_comments,
+                                &mut blank_before,
                                 input,
                                 Some(&mut recovered_errors),
                             ) {
@@ -2432,7 +2638,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 i += 1; // Consume the Dot
 
                 // Skip whitespace
-                i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                i +=
+                    skip_whitespace_tokens(&token_vec, i, &mut leading_comments, &mut blank_before);
 
                 if i >= token_vec.len() {
                     let err = ParseError {
@@ -2613,6 +2820,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             &token_vec,
                             i,
                             &mut leading_comments,
+                            &mut blank_before,
                             input,
                             Some(&mut recovered_errors),
                         ) {
@@ -2666,7 +2874,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 if let Some(StackFrame::Dict { .. }) = stack.last() {
                     let ellipsis_span = span;
                     i += 1; // Consume ellipsis
-                    i += skip_whitespace_tokens(&token_vec, i, &mut leading_comments);
+                    i += skip_whitespace_tokens(
+                        &token_vec,
+                        i,
+                        &mut leading_comments,
+                        &mut blank_before,
+                    );
                     // Check for optional name after ...
                     let (rest_name, rest_end) = if i < token_vec.len() {
                         match &token_vec[i].node {
@@ -2740,6 +2953,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::TypeAlias { span_start, .. } => *span_start,
             StackFrame::TypeAssert { span_start, .. } => *span_start,
             StackFrame::Quote { span_start, .. } => *span_start,
+            StackFrame::Unquote { span_start, .. } => *span_start,
+            StackFrame::UnquoteSplice { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -2831,6 +3046,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
         source: input.to_string(),
         leading_comments,
         trailing_comments,
+        blank_before,
         errors: recovered_errors,
     })
 }
@@ -2938,6 +3154,26 @@ fn pop_last_value_from_frame(
                 })
             }
         }
+        Some(StackFrame::Unquote { ref mut expr, .. }) => {
+            if let Some(e) = expr.take() {
+                Ok(e)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
+        Some(StackFrame::UnquoteSplice { ref mut expr, .. }) => {
+            if let Some(e) = expr.take() {
+                Ok(e)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
             message: "pipe operator '|' requires a right-hand expression".to_string(),
             span: Some(span),
@@ -3019,6 +3255,32 @@ fn push_expr_to_parent(
                     });
                 }
                 *quote_expr = Some(expr);
+                Ok(())
+            }
+            Some(StackFrame::Unquote {
+                expr: ref mut unquote_expr,
+                ..
+            }) => {
+                if unquote_expr.is_some() {
+                    return Err(ParseError {
+                        message: "unquote form can only have one expression".to_string(),
+                        span: Some(expr.span),
+                    });
+                }
+                *unquote_expr = Some(expr);
+                Ok(())
+            }
+            Some(StackFrame::UnquoteSplice {
+                expr: ref mut unquote_splice_expr,
+                ..
+            }) => {
+                if unquote_splice_expr.is_some() {
+                    return Err(ParseError {
+                        message: "unquote-splice form can only have one expression".to_string(),
+                        span: Some(expr.span),
+                    });
+                }
+                *unquote_splice_expr = Some(expr);
                 Ok(())
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {
@@ -3185,6 +3447,7 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
                 source: input.to_string(),
                 leading_comments: BTreeMap::new(),
                 trailing_comments: BTreeMap::new(),
+                blank_before: BTreeMap::new(),
                 errors: vec![fatal_error],
             }
         }

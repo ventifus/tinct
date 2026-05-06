@@ -92,14 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### dict-to-ast: `dict_to_ast` + `eval-ast` Builtin
-
-See doc/15-ast.md §dict-to-ast, doc/11a-builtins.md. **Depends on:** `ast-dict-core`.
-
-- [ ] `dict_to_ast(v: &Value) -> Result<Expr, AstError>` — validate `type:` key; reconstruct `Expr`; unknown fields ignored; `span:` optional; `AstError` with `field_path` (`src/ast_dict.rs`)
-- [ ] `eval-ast` builtin: `Dict -> Any` — calls `dict_to_ast`, evaluates in current environment; obeys capability model (`src/builtins.rs`)
-- [ ] Tests: every `type:` value round-trips; missing `type:` → error; `eval-ast` executes constructed call node (`tests/`)
-
 ### defmacro: `[defmacro]` + Expansion Loop
 
 See doc/08-evaluation.md §Macro Expansion Pipeline. **Depends on:** `quote`, `dict-to-ast`.

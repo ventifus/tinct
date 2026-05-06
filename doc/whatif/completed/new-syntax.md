@@ -413,7 +413,7 @@ key-value pattern on the `---` line.
 output becomes `%` for the next file:
 
 ```bash
-tinct eval config.llt stdlib/fmt/yaml.llt
+tinct eval config.llt stdlib/out/yaml.llt
 ```
 
 **Named sections are file-local.** The named-section map `Σ`
@@ -432,7 +432,7 @@ declares what it expects via `expects:` on its first `---`
 header:
 
 ```tinct
-# stdlib/fmt/yaml.llt
+# stdlib/out/yaml.llt
 --- expects: [server: [host: String  port: Int]  workers: Int]
 [emit [to-yaml %]]
 ```
@@ -506,7 +506,7 @@ Multi-section pipeline with naming and contracts:
 Multi-file pipeline chaining:
 
 ```bash
-tinct eval config.llt stdlib/fmt/yaml.llt
+tinct eval config.llt stdlib/out/yaml.llt
 ```
 
 ```tinct
@@ -515,7 +515,7 @@ tinct eval config.llt stdlib/fmt/yaml.llt
 ```
 
 ```tinct
-# stdlib/fmt/yaml.llt
+# stdlib/out/yaml.llt
 --- expects: [server: [host: String  port: Int]  workers: Int]
 [emit [to-yaml %]]
 ```
@@ -716,13 +716,13 @@ output:
 ```
 
 ```tinct
-# stdlib/fmt/yaml.llt
+# stdlib/out/yaml.llt
 --- expects: [server: [host: String  port: Int]  workers: Int]
 [emit [to-yaml %]]
 ```
 
 ```bash
-tinct eval config.llt stdlib/fmt/yaml.llt
+tinct eval config.llt stdlib/out/yaml.llt
 ```
 
 The type checker validates `config.llt`'s output against
