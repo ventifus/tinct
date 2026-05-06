@@ -92,14 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### formatter-compact: Compact Formatter Modes in Tinct
-
-See doc/12-tooling.md §Compact Formatter Modes. **Depends on:** `ast-dict-core`. **Supersedes:** `fmt-oneline` sprint (Rust implementation) — once this lands, remove the Rust compact formatter code.
-
-- [ ] `stdlib/formatter/compact.llt`: `format-node` dispatch via `cond` chains (no `[match]` yet); section headers as `[str "; " ...]`; dicts as `[key: value ...]` space-separated (`stdlib/formatter/compact.llt`)
-- [ ] CLI: `tinct fmt --oneline` / `--nospaces` / `--minimize` calls `ast_to_dict(None, None)` then evaluates `compact.llt` with AST dict as `%`; Rust formatter retained for `tinct fmt` (no flag) and LSP (`src/main.rs`)
-- [ ] Tests: every `Expr` variant round-trips through compact formatter; output is re-parseable; idempotent; `--nospaces` and `--oneline` correct (`tests/`)
-
 ### quote: `[quote expr]` Special Form
 
 See doc/02-syntax.md §Quasiquoting, doc/08-evaluation.md §Quote Semantics. **Depends on:** `ast-dict-core`.

@@ -1,0 +1,33 @@
+# Compact formatter: simple dict with mixed types
+[include "stdlib/formatter/compact.llt"]
+---
+[call %.format [
+  type: "file"
+  schema-version: 1
+  documents: [
+    0: [
+      type: "document"
+      name: []
+      output-type: []
+      expects: []
+      expressions: [
+        0: [
+          type: "dict"
+          entries: [
+            0: [
+              type: "entry"
+              key: [type: "literal" kind: "str" value: "port" bare: true span: [start: [line: 1 col: 1 offset: 0] end: [line: 1 col: 1 offset: 0]]]
+              value: [type: "literal" kind: "int" value: 8080 span: [start: [line: 1 col: 1 offset: 0] end: [line: 1 col: 1 offset: 0]]]
+              blank-before: false
+            ]
+          ]
+          span: [start: [line: 1 col: 1 offset: 0] end: [line: 1 col: 1 offset: 0]]
+        ]
+      ]
+      span: [start: [line: 1 col: 1 offset: 0] end: [line: 1 col: 1 offset: 0]]
+    ]
+  ]
+  span: [start: [line: 1 col: 1 offset: 0] end: [line: 1 col: 1 offset: 0]]
+]]
+===
+String("[port: 8080]\n")

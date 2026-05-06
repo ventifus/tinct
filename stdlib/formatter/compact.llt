@@ -1,0 +1,258 @@
+# Compact Formatter for Tinct AST
+# Converts AST dict (from ast_to_dict) to compact source text
+#
+# This formatter implements --oneline, --nospaces, and --minimize modes:
+# - Semicolons instead of newlines for section separators
+# - Dicts rendered as [key: value ...] space-separated
+# - No layout decisions (always single-line)
+# - No comments (they're stripped by ast_to_dict in minimal mode)
+
+[
+# ============================================================================
+# Utilities
+# ============================================================================
+
+# Join strings with a separator
+join-strings: [fn [sep items]
+  [join-strings-impl sep items 0 ""]]
+
+join-strings-impl: [fn [sep items i acc]
+  [if [>= i [length items]]
+    acc
+    [join-strings-impl
+      sep
+      items
+      [+ i 1]
+      [str acc
+        [if [> i 0] sep ""]
+        [get i items]]]]]
+
+# Map a function over a list-shaped dict
+map-list: [fn [f xs]
+  [map-list-impl f xs 0]]
+
+map-list-impl: [fn [f xs i]
+  [if [>= i [length xs]]
+    []
+    [merge
+      [make-entry i [f [get i xs]]]
+      [map-list-impl f xs [+ i 1]]]]]
+
+# Helper to construct single-entry dict
+make-entry: [fn [k v] [$k: v]]
+
+# ============================================================================
+# Node Formatters
+# ============================================================================
+
+# Main entry point: dispatch on node.type
+format-node: [fn [node]
+  [cond [
+    [[= [get "type" node] "literal"]     [format-literal node]]
+    [[= [get "type" node] "var"]         [get "name" node]]
+    [[= [get "type" node] "dot-access"]  [format-dot-access node]]
+    [[= [get "type" node] "pipe"]        [format-pipe node]]
+    [[= [get "type" node] "dict"]        [format-dict node]]
+    [[= [get "type" node] "call"]        [format-call node]]
+    [[= [get "type" node] "fn"]          [format-fn node]]
+    [[= [get "type" node] "type-alias"]  [format-type-alias node]]
+    [[= [get "type" node] "type-assert"] [format-type-assert node]]
+    [[= [get "type" node] "annotated"]   [format-annotated node]]
+    [[= [get "type" node] "rest"]        [format-rest node]]
+    [[= [get "type" node] "error"]       "<error>"]
+    [true [error [str "unknown node type: " [get "type" node]]]]
+  ]]]
+
+# Format a literal (int, float, bool, str)
+format-literal: [fn [node]
+  [cond [
+    [[= [get "kind" node] "int"]   [str [get "value" node]]]
+    [[= [get "kind" node] "float"] [str [get "value" node]]]
+    [[= [get "kind" node] "bool"]  [if [get "value" node] "true" "false"]]
+    [[= [get "kind" node] "str"]
+      [if [get "bare" node]
+        [get "value" node]
+        [str "\"" [get "value" node] "\""]]]
+    [true [error [str "unknown literal kind: " [get "kind" node]]]]
+  ]]]
+
+# Format dot access: target.field
+format-dot-access: [fn [node]
+  [str
+    [format-node [get "target" node]]
+    "."
+    [if [int? [get "field" node]]
+      [str [get "field" node]]
+      [get "field" node]]]]
+
+# Format pipe: lhs | rhs
+format-pipe: [fn [node]
+  [str
+    [format-node [get "lhs" node]]
+    " | "
+    [format-node [get "rhs" node]]]]
+
+# Format dict: [key: value ...]
+format-dict: [fn [node]
+  [if [empty? [get "entries" node]]
+    "[]"
+    [str "["
+      [join-strings " "
+        [map-list
+          [fn [e] [format-entry e]]
+          [get "entries" node]]]
+      "]"]]]
+
+# Format a single entry
+format-entry: [fn [entry]
+  [if [empty? [get "key" entry]]
+    # Auto-indexed entry (no key)
+    [format-node [get "value" entry]]
+    # Keyed entry
+    [str
+      [format-node [get "key" entry]]
+      ": "
+      [format-node [get "value" entry]]]]]
+
+# Format call: [fn args...] or [call fn args...]
+format-call: [fn [node]
+  [str
+    "["
+    [if [not [get "implied" node]] "call " ""]
+    [format-node [get "fn" node]]
+    [if [> [length [get "args" node]] 0]
+      [str " " [join-strings " "
+        [map-list format-node [get "args" node]]]]
+      ""]
+    [if [> [length [get "named-args" node]] 0]
+      [str " " [join-strings " "
+        [map-list format-named-arg [get "named-args" node]]]]
+      ""]
+    "]"]]
+
+# Format named argument: name: value
+format-named-arg: [fn [na]
+  [str
+    [get "name" na]
+    ": "
+    [format-node [get "value" na]]]]
+
+# Format function: [fn [params] body]
+format-fn: [fn [node]
+  [str
+    "[fn ["
+    [join-strings " "
+      [map-list format-param [get "params" node]]]
+    "] "
+    [format-node [get "body" node]]
+    "]"]]
+
+# Format parameter
+format-param: [fn [param]
+  [str
+    [get "name" param]
+    [if [not [empty? [get "annotation" param]]]
+      [str "@" [format-annotation [get "annotation" param]]]
+      ""]
+    [if [get "variadic" param] "..." ""]]]
+
+# Format annotation
+format-annotation: [fn [ann]
+  [cond [
+    [[= [get "kind" ann] "simple"]
+      [get "value" ann]]
+    [[= [get "kind" ann] "dict"]
+      [str "["
+        [join-strings " "
+          [map-list
+            [fn [e]
+              [str
+                [get "key" e]
+                ": "
+                [if [str? [get "value" e]]
+                  [get "value" e]
+                  [str [get "value" e]]]]]
+            [get "entries" ann]]]
+        "]"]]
+    [true [error [str "unknown annotation kind: " [get "kind" ann]]]]
+  ]]]
+
+# Format type alias: `expr
+format-type-alias: [fn [node]
+  [str "`" [format-node [get "expr" node]]]]
+
+# Format type assert: expr@Ann
+format-type-assert: [fn [node]
+  [str
+    [format-node [get "expr" node]]
+    "@"
+    [format-annotation [get "annotation" node]]]]
+
+# Format annotated: @Name expr
+format-annotated: [fn [node]
+  [str
+    "@"
+    [get "name" node]
+    " "
+    [format-annotation [get "annotation" node]]]]
+
+# Format rest: ... or ...name
+format-rest: [fn [node]
+  [if [empty? [get "name" node]]
+    "..."
+    [str "..." [get "name" node]]]]
+
+# ============================================================================
+# Document & File Formatters
+# ============================================================================
+
+# Format a document (list of expressions)
+format-document: [fn [doc]
+  [join-strings "; "
+    [map-list format-node [get "expressions" doc]]]]
+
+# Format a file (list of documents with --- separators)
+format-file: [fn [file]
+  [format-file-impl file [get "documents" file] 0 ""]]
+
+format-file-impl: [fn [file docs i acc]
+  [if [>= i [length docs]]
+    [str acc "\n"]
+    [format-file-impl
+      file
+      docs
+      [+ i 1]
+      [str
+        acc
+        [if [> i 0]
+          [str "; ---"
+            [format-doc-header [get i docs]]
+            "; "]
+          ""]
+        [format-document [get i docs]]]]]]
+
+# Format document header (section name, output type, expects)
+format-doc-header: [fn [doc]
+  [str
+    [if [not [empty? [get "name" doc]]]
+      [str " %" [get "name" doc]]
+      ""]
+    [if [not [empty? [get "output-type" doc]]]
+      [str "@" [format-annotation [get "output-type" doc]]]
+      ""]
+    [if [not [empty? [get "expects" doc]]]
+      [str " expects: @" [format-annotation [get "expects" doc]]]
+      ""]]]
+
+# ============================================================================
+# Public API
+# ============================================================================
+
+# Format an AST dict to compact source
+# Expects % to be a file dict from ast_to_dict
+format: [fn [ast]
+  [format-file ast]]
+
+# Pipeline mode: receive AST as % and emit formatted source
+[emit [format %]]
+]
