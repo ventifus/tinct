@@ -3993,3 +3993,11 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] hover_at and definition_at fall back to prelude index for types and definitions
 - [x] definition_at returns (Url, Span) for cross-file navigation to prelude
 - [x] 4 unit tests: prelude index non-empty, hover prelude name, definition at prelude, no false undefined
+
+### lsp-workspace-index: Cross-File Include Resolution
+
+- [x] collect_include_paths, IncludeGraph, resolve_include_url, index_file, invalidate_dependents
+- [x] DocumentStore::update_document integrates include graph
+- [x] definition_at and hover_at search direct includes after prelude lookup
+- [x] Prelude type seeding fixed: with_prelude_types() uses actual TypeSchemes instead of Type::Any
+- [x] Unit tests for collect_include_paths, resolve_include_url, include graph
