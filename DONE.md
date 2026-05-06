@@ -3978,3 +3978,10 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] Add JSON formatter error corpus tests — `tests/corpus/eval/errors/fmt_json_seq_error.llt-eval`, `fmt_json_function_error.llt-eval` (also unit tests in `src/lib.rs`)
 - [x] Add pipe + each integration corpus tests — `tests/corpus/eval/cross_feature/pipe_each_collect.llt-eval`, `pipe_each_key_map.llt-eval`, `pipe_each_kv_filter.llt-eval`
 - [x] 1714 tests pass — 35 new laziness tests, 12 pipeline tests, 15+ error tests, PendingCall lifecycle tests, JSON formatter unit tests
+
+### lsp-goto-definition: Go To Definition
+
+- [x] `key_name()`, `name_at_offset()`, `find_key_definition()`, `definition_at()` in src/lsp/analysis.rs
+- [x] `definition_provider` + `GotoDefinition::METHOD` handler in src/lsp/server.rs
+- [x] 6 unit tests: simple, mutually recursive, annotated keys, no match, nested dict, parse error
+- [x] doc/12-tooling.md updated with Go To Definition capability
