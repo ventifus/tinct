@@ -18,6 +18,7 @@
 
 pub(crate) mod arena;
 pub mod ast;
+pub mod ast_dict;
 pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod eval_access;
@@ -90,7 +91,7 @@ const _: () = {
 pub use error::{render_span_snippet, ArityBound, ErrorKind, EvalError, EvalResult, StackFrame};
 
 /// Formatter: canonical source reformatter.
-pub use formatter::format_source;
+pub use formatter::{format_source, format_source_compact, format_source_tinct};
 
 #[cfg(feature = "repl")]
 pub use repl::run_repl;
@@ -494,7 +495,7 @@ pub fn value_to_display_string(
     visit_value(val, ctx, depth, &DisplayVisitor)
 }
 
-/// Format a tinct value as a compact JSON string using `stdlib/fmt/json.llt`.
+/// Format a tinct value as a compact JSON string using `stdlib/out/json.llt`.
 ///
 /// Reads and evaluates the json.llt file at `json_llt_path`, then calls its
 /// `json` function with `result_thunk` as the argument in the same evaluation
@@ -640,6 +641,7 @@ mod tests {
     }
 
     /// Build a materialized dict thunk with entries allocated into `ctx`'s arena.
+    #[allow(dead_code)]
     fn thunk_dict(map: IndexMap<Key, Rc<Thunk>>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
         let mut id_map: IndexMap<Key, value::ThunkId> = IndexMap::with_capacity(map.len());
         for (k, v) in map {
@@ -652,6 +654,7 @@ mod tests {
     }
 
     /// Build a materialized Seq thunk with head and tail allocated into `ctx`'s arena.
+    #[allow(dead_code)]
     fn seq_thunk(head: Rc<Thunk>, tail: Rc<Thunk>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
         Rc::new(Thunk::new_materialized(
             Value::Seq {
@@ -663,6 +666,7 @@ mod tests {
     }
 
     /// Build a Proxy thunk with the handler allocated into `ctx`'s arena.
+    #[allow(dead_code)]
     fn proxy_thunk(handler: Rc<Thunk>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
         Rc::new(Thunk::new_materialized(
             Value::Proxy {

@@ -18,10 +18,18 @@ pub struct AstToDictOpts<'a> {
     /// Source text — enables `bare:` flag on string literals.
     /// None → bare is always false (safe default for generated code).
     pub source: Option<&'a str>,
-    /// Comment map from ParseOutput — enables leading-comments, trailing-comment,
+    /// Comment maps from ParseOutput — enables leading-comments, trailing-comment,
     /// and blank-before fields on Entry and Document nodes.
     /// None → no comment fields emitted (compact formatter, quasiquoting).
-    pub comments: Option<&'a std::collections::HashMap<usize, Vec<String>>>,
+    pub comments: Option<CommentMaps<'a>>,
+}
+
+/// Comment and blank-line metadata from ParseOutput.
+#[derive(Clone)]
+pub struct CommentMaps<'a> {
+    pub leading_comments: &'a std::collections::BTreeMap<usize, Vec<String>>,
+    pub trailing_comments: &'a std::collections::BTreeMap<usize, String>,
+    pub blank_before: &'a std::collections::BTreeMap<usize, bool>,
 }
 
 /// Converts a full File AST to a tinct thunk matching the canonical schema.
@@ -144,6 +152,27 @@ fn document_to_dict(
             ))),
         },
     );
+
+    // leading-comments: absent when None or empty
+    if let Some(comment_maps) = &opts.comments {
+        if let Some(comments) = comment_maps.leading_comments.get(&span.start.offset) {
+            if !comments.is_empty() {
+                let comment_ids: Vec<ThunkId> = comments
+                    .iter()
+                    .map(|c| {
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            Value::String(c.clone()),
+                            span,
+                        )))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("leading-comments".into()),
+                    list_to_thunk_id(comment_ids, span, ctx)?,
+                );
+            }
+        }
+    }
 
     dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
 
@@ -584,7 +613,7 @@ fn expr_to_thunk_id(
 
 fn entry_to_thunk_id(
     entry: &Entry,
-    _span: Span,
+    entry_span: Span,
     opts: &AstToDictOpts,
     ctx: &Rc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
@@ -616,14 +645,55 @@ fn entry_to_thunk_id(
         expr_to_thunk_id(&entry.value.node, entry.value.span, opts, ctx)?,
     );
 
-    // blank-before: always false for now (comment support in Phase 2)
+    // blank-before: true if there was a blank line before this entry
+    // Use entry_span (outer Spanned<Entry> span) for comment lookups — the parser keys
+    // comments/blank-before by the first token's offset, which is the key's offset for
+    // keyed entries and the value's offset for positional entries.
+    let blank_before = opts
+        .comments
+        .as_ref()
+        .and_then(|maps| maps.blank_before.get(&entry_span.start.offset))
+        .copied()
+        .unwrap_or(false);
     dict.insert(
         Key::String("blank-before".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(false), span))),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Bool(blank_before),
+            span,
+        ))),
     );
 
-    // leading-comments and trailing-comment omitted when comments: None (Phase 1)
-    // Phase 2 will populate these from opts.comments
+    // leading-comments: absent when None or empty
+    if let Some(comment_maps) = &opts.comments {
+        if let Some(comments) = comment_maps.leading_comments.get(&entry_span.start.offset) {
+            if !comments.is_empty() {
+                let comment_ids: Vec<ThunkId> = comments
+                    .iter()
+                    .map(|c| {
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            Value::String(c.clone()),
+                            span,
+                        )))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("leading-comments".into()),
+                    list_to_thunk_id(comment_ids, span, ctx)?,
+                );
+            }
+        }
+
+        // trailing-comment: absent when None
+        if let Some(comment) = comment_maps.trailing_comments.get(&entry_span.start.offset) {
+            dict.insert(
+                Key::String("trailing-comment".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(comment.clone()),
+                    span,
+                ))),
+            );
+        }
+    }
 
     Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
@@ -880,23 +950,7 @@ fn list_to_thunk_id(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Position;
     use crate::test_util::sp;
-
-    fn test_span() -> Span {
-        Span::new(
-            Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            Position {
-                offset: 10,
-                line: 1,
-                column: 11,
-            },
-        )
-    }
 
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
         use crate::value::Environment;
@@ -997,6 +1051,530 @@ mod tests {
                 assert_eq!(version_thunk.try_get_materialized(), Some(Value::Int(1)));
             }
             _ => panic!("expected Dict"),
+        }
+    }
+
+    #[test]
+    fn test_bare_flag_on_bare_word_strings() {
+        use crate::parser::parse2;
+
+        // Parse "[foo: 1]" — the key "foo" should have bare: true
+        let input = "[foo: 1]";
+        let parse_output = parse2(input).unwrap();
+        let opts = AstToDictOpts {
+            source: Some(input),
+            comments: None,
+        };
+        let ctx = test_ctx();
+
+        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+
+        // Navigate to the first document's first expression (the dict)
+        match thunk.try_get_materialized() {
+            Some(Value::Dict(file_dict)) => {
+                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_thunk = ctx.get_thunk(*docs_id);
+                match docs_thunk.try_get_materialized() {
+                    Some(Value::Dict(docs_list)) => {
+                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        match doc_thunk.try_get_materialized() {
+                            Some(Value::Dict(doc_dict)) => {
+                                let exprs_id =
+                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                match exprs_thunk.try_get_materialized() {
+                                    Some(Value::Dict(exprs_list)) => {
+                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        match expr_thunk.try_get_materialized() {
+                                            Some(Value::Dict(dict_node)) => {
+                                                // Get the entries list
+                                                let entries_id = dict_node
+                                                    .get(&Key::String("entries".into()))
+                                                    .unwrap();
+                                                let entries_thunk = ctx.get_thunk(*entries_id);
+                                                match entries_thunk.try_get_materialized() {
+                                                    Some(Value::Dict(entries_list)) => {
+                                                        let entry_id =
+                                                            entries_list.get(&Key::Int(0)).unwrap();
+                                                        let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        match entry_thunk.try_get_materialized() {
+                                                            Some(Value::Dict(entry_dict)) => {
+                                                                // Get the key expression
+                                                                let key_id = entry_dict
+                                                                    .get(&Key::String("key".into()))
+                                                                    .unwrap();
+                                                                let key_thunk =
+                                                                    ctx.get_thunk(*key_id);
+                                                                match key_thunk
+                                                                    .try_get_materialized()
+                                                                {
+                                                                    Some(Value::Dict(key_dict)) => {
+                                                                        // Check bare: true
+                                                                        let bare_id = key_dict
+                                                                            .get(&Key::String(
+                                                                                "bare".into(),
+                                                                            ))
+                                                                            .expect(
+                                                                                "bare field missing",
+                                                                            );
+                                                                        let bare_thunk =
+                                                                            ctx.get_thunk(*bare_id);
+                                                                        assert_eq!(
+                                                                            bare_thunk
+                                                                                .try_get_materialized(),
+                                                                            Some(Value::Bool(true)),
+                                                                            "bare should be true for bare word 'foo'"
+                                                                        );
+                                                                    }
+                                                                    _ => panic!(
+                                                                        "expected Dict for key"
+                                                                    ),
+                                                                }
+                                                            }
+                                                            _ => panic!("expected Dict for entry"),
+                                                        }
+                                                    }
+                                                    _ => panic!("expected Dict for entries list"),
+                                                }
+                                            }
+                                            _ => panic!("expected Dict for dict node"),
+                                        }
+                                    }
+                                    _ => panic!("expected Dict for exprs list"),
+                                }
+                            }
+                            _ => panic!("expected Dict for document"),
+                        }
+                    }
+                    _ => panic!("expected Dict for docs list"),
+                }
+            }
+            _ => panic!("expected Dict for file"),
+        }
+    }
+
+    #[test]
+    fn test_bare_flag_on_quoted_strings() {
+        use crate::parser::parse2;
+
+        // Parse "[\"foo\": 1]" — the key "foo" should have bare: false
+        let input = "[\"foo\": 1]";
+        let parse_output = parse2(input).unwrap();
+        let opts = AstToDictOpts {
+            source: Some(input),
+            comments: None,
+        };
+        let ctx = test_ctx();
+
+        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+
+        // Navigate to the key and check bare: false
+        match thunk.try_get_materialized() {
+            Some(Value::Dict(file_dict)) => {
+                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_thunk = ctx.get_thunk(*docs_id);
+                match docs_thunk.try_get_materialized() {
+                    Some(Value::Dict(docs_list)) => {
+                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        match doc_thunk.try_get_materialized() {
+                            Some(Value::Dict(doc_dict)) => {
+                                let exprs_id =
+                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                match exprs_thunk.try_get_materialized() {
+                                    Some(Value::Dict(exprs_list)) => {
+                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        match expr_thunk.try_get_materialized() {
+                                            Some(Value::Dict(dict_node)) => {
+                                                let entries_id = dict_node
+                                                    .get(&Key::String("entries".into()))
+                                                    .unwrap();
+                                                let entries_thunk = ctx.get_thunk(*entries_id);
+                                                match entries_thunk.try_get_materialized() {
+                                                    Some(Value::Dict(entries_list)) => {
+                                                        let entry_id =
+                                                            entries_list.get(&Key::Int(0)).unwrap();
+                                                        let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        match entry_thunk.try_get_materialized() {
+                                                            Some(Value::Dict(entry_dict)) => {
+                                                                let key_id = entry_dict
+                                                                    .get(&Key::String("key".into()))
+                                                                    .unwrap();
+                                                                let key_thunk =
+                                                                    ctx.get_thunk(*key_id);
+                                                                match key_thunk
+                                                                    .try_get_materialized()
+                                                                {
+                                                                    Some(Value::Dict(key_dict)) => {
+                                                                        let bare_id = key_dict
+                                                                            .get(&Key::String(
+                                                                                "bare".into(),
+                                                                            ))
+                                                                            .expect(
+                                                                                "bare field missing",
+                                                                            );
+                                                                        let bare_thunk =
+                                                                            ctx.get_thunk(*bare_id);
+                                                                        assert_eq!(
+                                                                            bare_thunk
+                                                                                .try_get_materialized(),
+                                                                            Some(Value::Bool(false)),
+                                                                            "bare should be false for quoted string \"foo\""
+                                                                        );
+                                                                    }
+                                                                    _ => panic!(
+                                                                        "expected Dict for key"
+                                                                    ),
+                                                                }
+                                                            }
+                                                            _ => panic!("expected Dict for entry"),
+                                                        }
+                                                    }
+                                                    _ => panic!("expected Dict for entries list"),
+                                                }
+                                            }
+                                            _ => panic!("expected Dict for dict node"),
+                                        }
+                                    }
+                                    _ => panic!("expected Dict for exprs list"),
+                                }
+                            }
+                            _ => panic!("expected Dict for document"),
+                        }
+                    }
+                    _ => panic!("expected Dict for docs list"),
+                }
+            }
+            _ => panic!("expected Dict for file"),
+        }
+    }
+
+    #[test]
+    fn test_comment_embedding() {
+        use crate::parser::parse2;
+
+        // Parse "[# comment\nx: 1]" — the entry should have leading-comments: [" comment"]
+        let input = "[# comment\nx: 1]";
+        let parse_output = parse2(input).unwrap();
+        let comment_maps = CommentMaps {
+            leading_comments: &parse_output.leading_comments,
+            trailing_comments: &parse_output.trailing_comments,
+            blank_before: &parse_output.blank_before,
+        };
+        let opts = AstToDictOpts {
+            source: Some(input),
+            comments: Some(comment_maps),
+        };
+        let ctx = test_ctx();
+
+        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+
+        // Navigate to the entry and check for leading-comments
+        match thunk.try_get_materialized() {
+            Some(Value::Dict(file_dict)) => {
+                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_thunk = ctx.get_thunk(*docs_id);
+                match docs_thunk.try_get_materialized() {
+                    Some(Value::Dict(docs_list)) => {
+                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        match doc_thunk.try_get_materialized() {
+                            Some(Value::Dict(doc_dict)) => {
+                                let exprs_id =
+                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                match exprs_thunk.try_get_materialized() {
+                                    Some(Value::Dict(exprs_list)) => {
+                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        match expr_thunk.try_get_materialized() {
+                                            Some(Value::Dict(dict_node)) => {
+                                                let entries_id = dict_node
+                                                    .get(&Key::String("entries".into()))
+                                                    .unwrap();
+                                                let entries_thunk = ctx.get_thunk(*entries_id);
+                                                match entries_thunk.try_get_materialized() {
+                                                    Some(Value::Dict(entries_list)) => {
+                                                        let entry_id =
+                                                            entries_list.get(&Key::Int(0)).unwrap();
+                                                        let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        match entry_thunk.try_get_materialized() {
+                                                            Some(Value::Dict(entry_dict)) => {
+                                                                // Check for leading-comments field
+                                                                let comments_id = entry_dict
+                                                                    .get(&Key::String(
+                                                                        "leading-comments".into(),
+                                                                    ))
+                                                                    .expect("leading-comments field missing");
+                                                                let comments_thunk =
+                                                                    ctx.get_thunk(*comments_id);
+                                                                match comments_thunk
+                                                                    .try_get_materialized()
+                                                                {
+                                                                    Some(Value::Dict(
+                                                                        comments_list,
+                                                                    )) => {
+                                                                        let comment_id =
+                                                                            comments_list
+                                                                                .get(&Key::Int(0))
+                                                                                .expect("comment 0 missing");
+                                                                        let comment_thunk =
+                                                                            ctx.get_thunk(*comment_id);
+                                                                        assert_eq!(
+                                                                            comment_thunk
+                                                                                .try_get_materialized(),
+                                                                            Some(Value::String(" comment".into())),
+                                                                            "leading comment should be ' comment'"
+                                                                        );
+                                                                    }
+                                                                    _ => panic!(
+                                                                        "expected Dict for comments list"
+                                                                    ),
+                                                                }
+                                                            }
+                                                            _ => panic!("expected Dict for entry"),
+                                                        }
+                                                    }
+                                                    _ => panic!("expected Dict for entries list"),
+                                                }
+                                            }
+                                            _ => panic!("expected Dict for dict node"),
+                                        }
+                                    }
+                                    _ => panic!("expected Dict for exprs list"),
+                                }
+                            }
+                            _ => panic!("expected Dict for document"),
+                        }
+                    }
+                    _ => panic!("expected Dict for docs list"),
+                }
+            }
+            _ => panic!("expected Dict for file"),
+        }
+    }
+
+    #[test]
+    fn test_blank_before_flag() {
+        use crate::parser::parse2;
+        use std::collections::BTreeMap;
+
+        // Manually inject blank-before data to test the ast_dict lookup.
+        // The parser's main loop does not track blank lines between dict entries
+        // (skip_whitespace_tokens handles that in specific call sites), so we
+        // construct the blank_before map by hand.
+        let input = "[a: 1\nb: 2]";
+        let parse_output = parse2(input).unwrap();
+
+        // Find the offset of 'b' (the second entry's key).
+        // In "[a: 1\nb: 2]": [ at 0, a at 1, : at 2, ' ' at 3, 1 at 4, \n at 5, b at 6
+        let mut blank_before_map = BTreeMap::new();
+        blank_before_map.insert(6usize, true); // mark 'b' as having a blank line before it
+        let comment_maps = CommentMaps {
+            leading_comments: &parse_output.leading_comments,
+            trailing_comments: &parse_output.trailing_comments,
+            blank_before: &blank_before_map,
+        };
+        let opts = AstToDictOpts {
+            source: Some(input),
+            comments: Some(comment_maps),
+        };
+        let ctx = test_ctx();
+
+        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+
+        // Navigate to the second entry and check blank-before: true
+        match thunk.try_get_materialized() {
+            Some(Value::Dict(file_dict)) => {
+                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_thunk = ctx.get_thunk(*docs_id);
+                match docs_thunk.try_get_materialized() {
+                    Some(Value::Dict(docs_list)) => {
+                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        match doc_thunk.try_get_materialized() {
+                            Some(Value::Dict(doc_dict)) => {
+                                let exprs_id =
+                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                match exprs_thunk.try_get_materialized() {
+                                    Some(Value::Dict(exprs_list)) => {
+                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        match expr_thunk.try_get_materialized() {
+                                            Some(Value::Dict(dict_node)) => {
+                                                let entries_id = dict_node
+                                                    .get(&Key::String("entries".into()))
+                                                    .unwrap();
+                                                let entries_thunk = ctx.get_thunk(*entries_id);
+                                                match entries_thunk.try_get_materialized() {
+                                                    Some(Value::Dict(entries_list)) => {
+                                                        let entry_id =
+                                                            entries_list.get(&Key::Int(1)).unwrap();
+                                                        let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        match entry_thunk.try_get_materialized() {
+                                                            Some(Value::Dict(entry_dict)) => {
+                                                                // Check blank-before: true
+                                                                let blank_id = entry_dict
+                                                                    .get(&Key::String(
+                                                                        "blank-before".into(),
+                                                                    ))
+                                                                    .expect("blank-before field missing");
+                                                                let blank_thunk =
+                                                                    ctx.get_thunk(*blank_id);
+                                                                assert_eq!(
+                                                                    blank_thunk
+                                                                        .try_get_materialized(),
+                                                                    Some(Value::Bool(true)),
+                                                                    "blank-before should be true for second entry"
+                                                                );
+                                                            }
+                                                            _ => panic!("expected Dict for entry"),
+                                                        }
+                                                    }
+                                                    _ => panic!("expected Dict for entries list"),
+                                                }
+                                            }
+                                            _ => panic!("expected Dict for dict node"),
+                                        }
+                                    }
+                                    _ => panic!("expected Dict for exprs list"),
+                                }
+                            }
+                            _ => panic!("expected Dict for document"),
+                        }
+                    }
+                    _ => panic!("expected Dict for docs list"),
+                }
+            }
+            _ => panic!("expected Dict for file"),
+        }
+    }
+
+    #[test]
+    fn test_both_none_mode_unchanged() {
+        use crate::parser::parse2;
+
+        // Parse "[foo: 1]" with both source and comments None
+        let input = "[foo: 1]";
+        let parse_output = parse2(input).unwrap();
+        let opts = AstToDictOpts {
+            source: None,
+            comments: None,
+        };
+        let ctx = test_ctx();
+
+        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+
+        // Navigate to the key and check bare: false (default when source is None)
+        match thunk.try_get_materialized() {
+            Some(Value::Dict(file_dict)) => {
+                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_thunk = ctx.get_thunk(*docs_id);
+                match docs_thunk.try_get_materialized() {
+                    Some(Value::Dict(docs_list)) => {
+                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_thunk = ctx.get_thunk(*doc_id);
+                        match doc_thunk.try_get_materialized() {
+                            Some(Value::Dict(doc_dict)) => {
+                                let exprs_id =
+                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_thunk = ctx.get_thunk(*exprs_id);
+                                match exprs_thunk.try_get_materialized() {
+                                    Some(Value::Dict(exprs_list)) => {
+                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_thunk = ctx.get_thunk(*expr_id);
+                                        match expr_thunk.try_get_materialized() {
+                                            Some(Value::Dict(dict_node)) => {
+                                                let entries_id = dict_node
+                                                    .get(&Key::String("entries".into()))
+                                                    .unwrap();
+                                                let entries_thunk = ctx.get_thunk(*entries_id);
+                                                match entries_thunk.try_get_materialized() {
+                                                    Some(Value::Dict(entries_list)) => {
+                                                        let entry_id =
+                                                            entries_list.get(&Key::Int(0)).unwrap();
+                                                        let entry_thunk = ctx.get_thunk(*entry_id);
+                                                        match entry_thunk.try_get_materialized() {
+                                                            Some(Value::Dict(entry_dict)) => {
+                                                                let key_id = entry_dict
+                                                                    .get(&Key::String("key".into()))
+                                                                    .unwrap();
+                                                                let key_thunk =
+                                                                    ctx.get_thunk(*key_id);
+                                                                match key_thunk
+                                                                    .try_get_materialized()
+                                                                {
+                                                                    Some(Value::Dict(key_dict)) => {
+                                                                        let bare_id = key_dict
+                                                                            .get(&Key::String(
+                                                                                "bare".into(),
+                                                                            ))
+                                                                            .expect(
+                                                                                "bare field missing",
+                                                                            );
+                                                                        let bare_thunk =
+                                                                            ctx.get_thunk(*bare_id);
+                                                                        assert_eq!(
+                                                                            bare_thunk
+                                                                                .try_get_materialized(),
+                                                                            Some(Value::Bool(false)),
+                                                                            "bare should be false when source is None"
+                                                                        );
+                                                                    }
+                                                                    _ => panic!(
+                                                                        "expected Dict for key"
+                                                                    ),
+                                                                }
+
+                                                                // Check that blank-before is still present (always included)
+                                                                let blank_id = entry_dict
+                                                                    .get(&Key::String(
+                                                                        "blank-before".into(),
+                                                                    ))
+                                                                    .expect("blank-before field missing");
+                                                                let blank_thunk =
+                                                                    ctx.get_thunk(*blank_id);
+                                                                assert_eq!(
+                                                                    blank_thunk
+                                                                        .try_get_materialized(),
+                                                                    Some(Value::Bool(false)),
+                                                                    "blank-before should be false when comments is None"
+                                                                );
+
+                                                                // Check that leading-comments is absent
+                                                                assert!(
+                                                                    entry_dict
+                                                                        .get(&Key::String(
+                                                                            "leading-comments".into()
+                                                                        ))
+                                                                        .is_none(),
+                                                                    "leading-comments should be absent when comments is None"
+                                                                );
+                                                            }
+                                                            _ => panic!("expected Dict for entry"),
+                                                        }
+                                                    }
+                                                    _ => panic!("expected Dict for entries list"),
+                                                }
+                                            }
+                                            _ => panic!("expected Dict for dict node"),
+                                        }
+                                    }
+                                    _ => panic!("expected Dict for exprs list"),
+                                }
+                            }
+                            _ => panic!("expected Dict for document"),
+                        }
+                    }
+                    _ => panic!("expected Dict for docs list"),
+                }
+            }
+            _ => panic!("expected Dict for file"),
         }
     }
 }
