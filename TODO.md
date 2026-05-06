@@ -86,26 +86,6 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 - [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
 - [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)
 
-## CLI: Inline Expressions and JSON Streaming
-
-### fmt-oneline: Single-Line Formatter Mode
-
-**Depends on:** `eval-cli` (the `Token::Semicolon` header-break fix must land first so `--oneline` output is re-parseable)
-
-Add `tinct fmt --oneline` that produces a single-line, re-parseable representation of any tinct program. Useful for constructing `-e` strings programmatically, diffing, and log-safe embedding of tinct expressions.
-
-The formatter already builds output as a `String` via `self.output`. The changes are localized to the section-separator block and document formatting — the expression formatting already compresses naturally when not given line-breaking hints.
-
-- [ ] Add `--oneline` flag to `tinct fmt` subcommand; thread an `oneline: bool` field through `Formatter` struct (`src/main.rs`, `src/formatter.rs`)
-- [ ] In `format_file` document separator block (`src/formatter.rs:40-72`): when `oneline`, replace the leading `\n\n` with ` ` (or nothing if first doc), emit `---` + header metadata as normal, then emit `; ` instead of `\n\n` after the header — making `[doc1] --- %name@Type; [doc2]` the single-line form
-- [ ] Strip comments in `--oneline` mode: comments (`Token::Comment`) cannot survive without newlines; skip all `leading_comments` emission in the formatter when `oneline` is set (`src/formatter.rs`)
-- [ ] Suppress `ensure_trailing_newline()` when `--oneline` (single-line output has no trailing newline) (`src/formatter.rs`)
-- [ ] In `format_document` and sub-formatters: replace any remaining `\n` emitted within expressions with single spaces when `oneline` is set — audit all `self.output.push('\n')` call sites in `src/formatter.rs` (`src/formatter.rs`)
-- [ ] Add `--nospaces` flag: remove inter-token spaces except where required for unambiguous tokenization; rule — insert a single space between consecutive tokens only when the preceding token's last character AND the following token's first character are both bare-word characters (alphanumeric, `-`, `_`, `?`, `!`, `/`, `%`, `~`); without this guard `---%name` would lex as a single bare word rather than `DocSeparator` + `%name` identifier (`src/formatter.rs`)
-- [ ] Add `--minimize` flag: shorthand that sets both `oneline = true` and `nospaces = true`; equivalent to `tinct fmt --oneline --nospaces`; useful for producing maximally compact one-line output for embedding in shell scripts or `-e` strings (`src/main.rs`, `src/formatter.rs`)
-- [ ] Round-trip tests: `tinct fmt --oneline file.llt | tinct eval -` equals `tinct eval file.llt`; `tinct fmt --nospaces file.llt | tinct eval file.llt` equals original; `tinct fmt --minimize file.llt | tinct eval -` equals original; section headers with `%name@Type expects: T` survive all modes; comments stripped in `--oneline`/`--minimize`; all three modes are idempotent (`src/formatter.rs`, `tests/`)
-- [ ] Update `doc/12-tooling.md`: document `--oneline`, `--nospaces`, `--minimize`; note comments stripped in oneline/minimize; explain the bare-word-adjacency rule for `--nospaces`; give section-header `;` example
-
 ## Metaprogramming: AST-as-Data, Quasiquoting, Macros, Formatter
 
 AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. See `doc/whatif/plans/macros-cluster.md` for the full cluster plan, dependency graph, and decision gates.

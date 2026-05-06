@@ -4020,3 +4020,12 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] stdlib/in/json.llt and stdlib/out/raw.llt implemented
 - [x] 8 CLI integration tests covering all new flags
 - [x] doc/12-tooling.md documented with examples
+
+### fmt-oneline: Single-Line Formatter Mode
+
+- [x] --oneline flag: single-line output, comments stripped, document separators use ; 
+- [x] --nospaces flag: remove inter-token spaces except where required for bare-word adjacency
+- [x] --minimize flag: shorthand for --oneline --nospaces
+- [x] format_source_compact() API; push_space/push_newline/first_char_of_expr helpers
+- [x] 9 unit tests: oneline basic/comments/separator/named/type, nospaces basic/adjacency, minimize, idempotent
+- [x] doc/12-tooling.md updated with compact formatter modes documentation
