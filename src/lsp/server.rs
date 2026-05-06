@@ -115,8 +115,15 @@ fn handle_request(
             let hover = store
                 .get(&uri)
                 .and_then(|doc| {
-                    lsp_position_to_offset(&pos, &doc.text)
-                        .and_then(|offset| hover_at(doc, offset, &store.prelude_index))
+                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
+                        hover_at(
+                            doc,
+                            &uri,
+                            offset,
+                            &store.prelude_index,
+                            &store.include_graph,
+                        )
+                    })
                 })
                 .map(|text| lsp_types::Hover {
                     contents: HoverContents::Scalar(MarkedString::String(text)),
@@ -150,28 +157,48 @@ fn handle_request(
             let uri = params.text_document_position_params.text_document.uri;
             let pos = params.text_document_position_params.position;
 
-            let location = store.get(&uri).and_then(|doc| {
-                lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                    definition_at(doc, &uri, offset, &store.prelude_index).map(
-                        |(target_uri, span)| {
-                            // For prelude definitions, we need to read the prelude source to convert span to range.
-                            // For document-local definitions, use the doc text.
-                            let source_text = if target_uri == uri {
-                                &doc.text
+            let location = store
+                .get(&uri)
+                .and_then(|doc| {
+                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
+                        definition_at(
+                            doc,
+                            &uri,
+                            offset,
+                            &store.prelude_index,
+                            &store.include_graph,
+                        )
+                        .map(|(target_uri, span)| {
+                            // Determine source text for converting span to range:
+                            // - Document-local: use doc.text
+                            // - Prelude: use embedded prelude source
+                            // - Included file: read from include_graph
+                            let source_text: String = if target_uri == uri {
+                                doc.text.clone()
+                            } else if store
+                                .prelude_index
+                                .path()
+                                .and_then(|p| Url::from_file_path(p).ok())
+                                == Some(target_uri.clone())
+                            {
+                                // Prelude definition
+                                include_str!("../../stdlib/prelude.llt").to_string()
                             } else {
-                                // target_uri != uri implies prelude definition (the only cross-file case currently)
-                                // Future: when workspace indexing is added, this will need to read from a file cache
-                                include_str!("../../stdlib/prelude.llt")
+                                // Included file: read from include_graph
+                                store
+                                    .include_graph
+                                    .get(&target_uri)
+                                    .map(|node| node.state.text.clone())
+                                    .unwrap_or_default()
                             };
                             Location {
                                 uri: target_uri,
-                                range: llt_span_to_lsp_range(&span, source_text),
+                                range: llt_span_to_lsp_range(&span, &source_text),
                             }
-                        },
-                    )
+                        })
+                    })
                 })
-            })
-            .map(GotoDefinitionResponse::Scalar);
+                .map(GotoDefinitionResponse::Scalar);
 
             let result = serde_json::to_value(location)?;
             connection.sender.send(Message::Response(Response {
@@ -430,7 +457,7 @@ mod tests {
         let uri = Url::parse("file:///test.llt").unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let hover = hover_at(doc, 4, &store.prelude_index); // on '42'
+        let hover = hover_at(doc, &uri, 4, &store.prelude_index, &store.include_graph); // on '42'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Int"));
     }

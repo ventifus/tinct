@@ -1,5 +1,5 @@
 # yaml: format list
-[include "stdlib/fmt/yaml.llt"]
+[include "stdlib/out/yaml.llt"]
 ---
 [call %.yaml [1 2 3]]
 ===

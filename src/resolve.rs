@@ -236,6 +236,14 @@ impl Resolver {
                 self.walk_expr(expr);
             }
             Expr::TypeAlias(expr) => self.walk_expr(expr),
+            // Quote: do NOT resolve variables inside the quoted expression.
+            // Variables in quoted code are AST data, not runtime bindings.
+            Expr::Quote(_) => {}
+            // Unquote and UnquoteSplice: DO resolve variables inside the unquoted expression.
+            // The expression is evaluated in the current runtime environment.
+            Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+                self.walk_expr(inner);
+            }
             // Literals have no child expressions
             Expr::Int(_)
             | Expr::Float(_)

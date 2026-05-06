@@ -79,9 +79,9 @@ result is `τ₁ | τ₂`.
 ### Narrowing Patterns
 
 The `narrow()` function recognizes specific condition shapes. Each pattern
-has a true-branch refinement. False-branch refinement requires negation
-types (available under algebraic subtyping, Phase 4). Until then, the
-false branch gets the original unrefined environment.
+has a true-branch refinement. The false branch gets the original unrefined
+environment — false-branch narrowing is out of scope for this proposal
+(see `doc/whatif/boolean-algebraic-subtyping.md`).
 
 #### Pattern 1: Equality with Literal
 
@@ -90,7 +90,7 @@ false branch gets the original unrefined environment.
 ```
 
 - **True branch:** `x : StringLiteral("hello")`
-- **False branch:** `x : Str` (no negation — would need `Str \ {"hello"}`)
+- **False branch:** `x : Str` (unchanged)
 
 Recognizes `=` with one operand being a `VarRef` and the other a literal
 expression. Both operand orderings are recognized (`[= "hello" x]` and
@@ -162,7 +162,7 @@ fn extract_narrowings(cond: &Expr, env: &TypeEnv) -> Vec<Narrowing> {
 The type checker creates forked environments for each branch:
 
 1. `env_true` = clone `env`, apply narrowings
-2. `env_false` = clone `env` (no false-branch narrowing initially)
+2. `env_false` = clone `env` (unrefined — false-branch narrowing is out of scope)
 
 Per-`if` cost: one environment clone per branch (two clones total). In
 programs with nested conditionals, this multiplies — a chain of 10 nested
@@ -205,9 +205,9 @@ Recommended: start with `if` only.
 
 ### Limitations
 
-1. **No false-branch narrowing.** Requires negation types (`Str \ {"hello"}`).
-   Phase 4 adds this when algebraic subtyping provides negation types
-   (`doc/whatif/algebraic-subtypes.md`).
+1. **No false-branch narrowing.** The false branch gets the original unrefined
+   environment. False-branch narrowing (`x : ~Int` after `[int? x]` fails) is out
+   of scope — see `doc/whatif/boolean-algebraic-subtyping.md`.
 
 2. **Only `if` initially.** `cond`, `when`, `unless`, and user-defined
    conditional patterns are not narrowed. Explicit TypeAssert is the
@@ -294,13 +294,6 @@ When type predicates are available (see `doc/whatif/type-predicates.md`),
 extend Pattern 2 to recognize `[int? x]`, `[str? x]`, etc. as
 direct narrowing triggers without the `type-of` indirection.
 
-### Phase 4: False-Branch Narrowing (requires algebraic subtyping)
-
-Algebraic subtyping (`doc/whatif/algebraic-subtypes.md`) provides negation
-types, enabling false-branch narrowing:
-after `[= x "hello"]`, the false branch knows
-`x : Str \ StringLiteral("hello")`.
-
 ### Prerequisites
 
 - Phase 1-2 are scheduled after pattern matching (A3) — match arms
@@ -308,15 +301,11 @@ after `[= x "hello"]`, the false branch knows
   but this ordering maximizes practical value.
 - Phase 3 requires `type-predicates` Phase 1 (DONE — see
   `doc/whatif/completed/type-predicates.md`)
-- Phase 4 requires algebraic subtyping (see
-  `doc/whatif/algebraic-subtypes.md`)
 
 ### Trigger
 
 Redundant `[@Type expr]` assertions in `if` branches are already
-common. Begin Phase 1 after pattern matching (A3) ships. Phase 4
-activates when algebraic subtyping lands, providing the negation types
-that false-branch narrowing requires.
+common. Begin Phase 1 after pattern matching (A3) ships.
 
 ## References
 

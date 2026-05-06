@@ -169,7 +169,7 @@ output becomes `%` for the next.
 
 ```bash
 # Pipeline: data program -> formatter program
-tinct eval config.llt stdlib/fmt/yaml.llt
+tinct eval config.llt stdlib/out/yaml.llt
 
 # Inline
 tinct eval -e '[emit [to-yaml [port: 8080  host: "localhost"]]]'
@@ -233,10 +233,10 @@ on.
 tinct eval config.llt
 
 # Two-stage pipeline
-tinct eval config.llt stdlib/fmt/yaml.llt
+tinct eval config.llt stdlib/out/yaml.llt
 
 # Three-stage pipeline
-tinct eval raw.llt transform.llt stdlib/fmt/toml.llt
+tinct eval raw.llt transform.llt stdlib/out/toml.llt
 ```
 
 This is equivalent to concatenating files with `---` separators but
@@ -253,7 +253,7 @@ filesystem state.
 
 ### Standard Formatters
 
-Ship in `stdlib/fmt/` as tinct programs:
+Ship in `stdlib/out/` as tinct programs:
 
 - `yaml.llt` — YAML 1.2 serializer
 - `toml.llt` — TOML serializer
@@ -266,7 +266,7 @@ Each formatter is both a standalone pipeline stage and a function
 importable via `include`:
 
 ```tinct
-# stdlib/fmt/yaml.llt — YAML formatter (simplified)
+# stdlib/out/yaml.llt — YAML formatter (simplified)
 
 to-yaml-value: [fn [val indent]
   [cond
@@ -765,9 +765,9 @@ requires threading type information across file boundaries.
 ### Standard Library
 
 **Current:** `stdlib/prelude.llt` provides core functions. No
-`stdlib/fmt/` directory.
+`stdlib/out/` directory.
 
-**Proposed:** Add `stdlib/fmt/` with standard formatters (yaml.llt,
+**Proposed:** Add `stdlib/out/` with standard formatters (yaml.llt,
 toml.llt, json-pretty.llt, env.llt, ini.llt, csv.llt).
 
 **Impact:** Minor. New files, no changes to existing code.
@@ -790,7 +790,7 @@ Three prerequisites that enable Part 1:
 
 ### Phase 2: Standard Formatters
 
-Ship `stdlib/fmt/` with tinct-implemented formatters. Writing these
+Ship `stdlib/out/` with tinct-implemented formatters. Writing these
 exercises and validates tinct's string handling, recursion, type
 predicates, and composition patterns.
 

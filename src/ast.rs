@@ -184,6 +184,19 @@ pub enum Expr {
     /// Row variable / open record marker, e.g. `...` or `...rest`
     Rest(Option<String>),
 
+    /// Quote special form, e.g. `[quote expr]` — captures the AST of `expr` as a dict value.
+    /// Phase 1 (opaque quote): no unquote handling yet.
+    Quote(Box<Spanned<Expr>>),
+
+    /// Unquote special form, e.g. `[unquote expr]` — evaluates `expr` and splices the result
+    /// into a quoted AST. Only valid inside `[quote ...]`.
+    Unquote(Box<Spanned<Expr>>),
+
+    /// Unquote-splice special form, e.g. `[unquote-splice expr]` — evaluates `expr` (must be
+    /// a list) and splices each element into the enclosing list position within a quoted AST.
+    /// Only valid in list positions inside `[quote ...]` (not at top level of quote).
+    UnquoteSplice(Box<Spanned<Expr>>),
+
     /// Parse error — a section of source that couldn't be parsed.
     /// Emitted by bracket-level error recovery (parser-rewrite.md §Phase 4).
     /// The span covers the entire unparseable region.
@@ -349,6 +362,9 @@ impl fmt::Display for Expr {
             }
             Expr::Rest(None) => write!(f, "..."),
             Expr::Rest(Some(name)) => write!(f, "...{name}"),
+            Expr::Quote(inner) => write!(f, "[quote {}]", inner.node),
+            Expr::Unquote(inner) => write!(f, "[unquote {}]", inner.node),
+            Expr::UnquoteSplice(inner) => write!(f, "[unquote-splice {}]", inner.node),
             Expr::Error(span) => write!(f, "<error at {span}>"),
         }
     }

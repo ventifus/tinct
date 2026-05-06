@@ -4062,3 +4062,9 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] Parser: quote depth tracking, unquote outside quote is parse error
 - [x] Evaluator: eval_quote_expr_to_dict handles unquote by evaluating and splicing
 - [x] All exhaustive matches updated; corpus tests for quote+unquote
+
+### dict-to-ast: dict_to_ast + eval-ast Builtin
+
+- [x] dict_to_ast(val, ctx) → Result<Spanned<Expr>, AstError> in src/ast_dict.rs
+- [x] eval-ast builtin: takes dict, reconstructs AST, evaluates in stdlib env
+- [x] Corpus test: [eval-ast [quote [+ 1 2]]] → Int(3)

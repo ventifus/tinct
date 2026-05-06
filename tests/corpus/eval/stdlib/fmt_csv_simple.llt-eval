@@ -1,5 +1,5 @@
 # csv: format list of dicts
-[include "stdlib/fmt/csv.llt"]
+[include "stdlib/out/csv.llt"]
 ---
 [call %.csv [
   [name: "Alice"  age: 30]

@@ -1,5 +1,5 @@
 # yaml: format simple dict
-[include "stdlib/fmt/yaml.llt"]
+[include "stdlib/out/yaml.llt"]
 ---
 [call %.yaml [
   name: "Alice"

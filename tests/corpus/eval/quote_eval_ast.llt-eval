@@ -1,0 +1,4 @@
+# Test eval-ast reconstructs and evaluates a quoted expression
+[eval-ast [quote [+ 1 2]]]
+===
+Int(3)

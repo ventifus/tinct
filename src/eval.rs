@@ -17,6 +17,7 @@ use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Span, Spanned};
+use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
 
 thread_local! {
     /// Cached empty dict thunk used as the default `%` when no stdin is provided.
@@ -764,6 +765,21 @@ pub(crate) fn eval_recursive(
             Value::Dict(IndexMap::new()),
             expr.span,
         ))),
+        Expr::Quote(inner) => {
+            // Convert the quoted expression to its AST dict representation.
+            // Phase 2: walk the quoted AST and evaluate any Unquote/UnquoteSplice subexpressions.
+            eval_quote(inner, env, ctx)
+        }
+        Expr::Unquote(_) => Err(EvalError::internal(
+            "unquote is only valid inside [quote ...]".to_string(),
+            expr.span,
+        )
+        .into()),
+        Expr::UnquoteSplice(_) => Err(EvalError::internal(
+            "unquote-splice is only valid inside [quote ...]".to_string(),
+            expr.span,
+        )
+        .into()),
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,
@@ -777,6 +793,56 @@ pub(crate) fn eval_recursive(
             expr.span,
         )
         .into()),
+    }
+}
+
+/// Evaluate a [quote ...] expression, walking the quoted AST and evaluating
+/// any [unquote ...] or [unquote-splice ...] subexpressions.
+fn eval_quote(
+    quoted_expr: &Spanned<Expr>,
+    env: Rc<RefCell<Environment>>,
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<Rc<Thunk>> {
+    eval_quote_walk(&quoted_expr.node, quoted_expr.span, env, ctx)
+}
+
+/// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
+///
+/// For Unquote nodes: evaluate the inner expression and return the result.
+/// For UnquoteSplice nodes: error (must be in list position, handled by parent).
+/// For all other nodes: delegate to existing ast_to_dict_expr (unquote handling will be
+/// added to ast_to_dict_expr in a future refactor to eliminate code duplication).
+fn eval_quote_walk(
+    expr: &Expr,
+    span: Span,
+    env: Rc<RefCell<Environment>>,
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<Rc<Thunk>> {
+    match expr {
+        Expr::Unquote(inner) => {
+            // Evaluate the unquoted expression in the current environment
+            eval_recursive(Rc::new((**inner).clone()), env, ctx, 0)
+        }
+        Expr::UnquoteSplice(_) => {
+            // UnquoteSplice at non-list position is an error
+            Err(EvalError::internal(
+                "unquote-splice must be in a list position (inside call args or dict entries)"
+                    .to_string(),
+                span,
+            )
+            .into())
+        }
+        _ => {
+            // For all other expressions, use the existing ast_to_dict_expr.
+            // TODO: This doesn't handle unquote/unquote-splice in nested positions.
+            // Full implementation requires extending ast_dict.rs to accept an optional
+            // unquote handler callback. For now, this works for simple cases.
+            let opts = AstToDictOpts {
+                source: None,
+                comments: None,
+            };
+            ast_to_dict_expr(&Spanned::new(expr.clone(), span), &opts, ctx)
+        }
     }
 }
 

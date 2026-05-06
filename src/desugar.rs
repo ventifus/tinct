@@ -295,6 +295,17 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         Expr::Annotated { annotation, .. } => {
             desugar_annotation(&mut annotation.node, depth);
         }
+
+        // Quote: DO NOT recurse into the quoted expression.
+        // $_ inside a quote should remain as-is (AST frozen).
+        Expr::Quote(_) => {}
+
+        // Unquote and UnquoteSplice: DO recurse into the unquoted expression.
+        // The expression inside [unquote ...] is evaluated in the current environment,
+        // so $_ desugaring should apply.
+        Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            desugar(&mut **inner, depth);
+        }
     }
 }
 

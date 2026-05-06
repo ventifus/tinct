@@ -2557,7 +2557,7 @@ fn seq_with_collect_produces_json_array() {
 }
 
 // ---------------------------------------------------------------------------
-// default-emit sprint: default CLI output via stdlib/fmt/json.llt
+// default-emit sprint: default CLI output via stdlib/out/json.llt
 //
 // These tests verify that `tinct eval` on a file whose top-level expression
 // was never passed to `emit` produces correct JSON output via the json.llt
@@ -2676,4 +2676,237 @@ fn default_output_null() {
     let json: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("expected valid JSON for null output");
     assert_eq!(json, serde_json::Value::Null);
+}
+
+// ---------------------------------------------------------------------------
+// -e / --expr inline expression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn expr_flag_simple() {
+    // `tinct eval -e '%.x' <<< '{"x":42}'` → 42 (with stdin JSON auto-detection)
+    use std::io::Write;
+    let mut child = Command::new(tinct_bin())
+        .args(["eval", "-e", "%.x"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn tinct");
+
+    {
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(b"{\"x\":42}")
+            .expect("failed to write to stdin");
+    }
+
+    let output = child.wait_with_output().expect("failed to wait for tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!(42));
+}
+
+#[test]
+fn expr_flag_chained() {
+    // `tinct eval -e '[x: 1]' -e '[merge % [y: 2]]'` → {"x":1,"y":2}
+    let output = Command::new(tinct_bin())
+        .args(["eval", "-e", "[x: 1]", "-e", "[merge % [y: 2]]"])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!({"x": 1, "y": 2}));
+}
+
+// ---------------------------------------------------------------------------
+// -i / --input formatter tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn input_flag_json() {
+    // Skip if stdlib/in/json.llt doesn't exist (created by another agent)
+    let libdir = match std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
+        .filter(|p| p.is_dir())
+    {
+        Some(path) if path.join("in").join("json.llt").exists() => path,
+        _ => {
+            eprintln!("Skipping input_flag_json: stdlib/in/json.llt not found");
+            return;
+        }
+    };
+
+    // `tinct eval -i json -e '%.x' <<< '{"x":42}'` → 42 (explicit input formatter)
+    use std::io::Write;
+    let mut child = Command::new(tinct_bin())
+        .args(["eval", "-i", "json", "-e", "%.x"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn tinct");
+
+    {
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(b"{\"x\":42}")
+            .expect("failed to write to stdin");
+    }
+
+    let output = child.wait_with_output().expect("failed to wait for tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json, serde_json::json!(42));
+}
+
+#[test]
+fn input_flag_unknown_format() {
+    // `tinct eval -i nonexistent` should error clearly
+    let output = Command::new(tinct_bin())
+        .args(["eval", "-i", "nonexistent"])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--input") || stderr.contains("formatter not found"),
+        "expected --input error message, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// -o / --output formatter tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn output_flag_raw() {
+    // Skip if stdlib/out/raw.llt doesn't exist (created by another agent)
+    let libdir = match std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
+        .filter(|p| p.is_dir())
+    {
+        Some(path) if path.join("out").join("raw.llt").exists() => path,
+        _ => {
+            eprintln!("Skipping output_flag_raw: stdlib/out/raw.llt not found");
+            return;
+        }
+    };
+
+    // `tinct eval -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'` → hello (no quotes)
+    use std::io::Write;
+    let mut child = Command::new(tinct_bin())
+        .args(["eval", "-i", "json", "-e", "%.msg", "-o", "raw"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn tinct");
+
+    {
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(b"{\"msg\":\"hello\"}")
+            .expect("failed to write to stdin");
+    }
+
+    let output = child.wait_with_output().expect("failed to wait for tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // raw formatter emits string unquoted (no JSON encoding)
+    assert_eq!(stdout.trim(), "hello");
+}
+
+#[test]
+fn output_flag_unknown_format() {
+    // `tinct eval -o nonexistent -e '42'` should error clearly
+    let output = Command::new(tinct_bin())
+        .args(["eval", "-o", "nonexistent", "-e", "42"])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--output") || stderr.contains("formatter not found"),
+        "expected --output error message, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Combined -i/-o/-e tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn input_output_expr_pipeline() {
+    // Skip if formatters don't exist (created by another agent)
+    let libdir = match std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
+        .filter(|p| p.is_dir())
+    {
+        Some(path)
+            if path.join("in").join("json.llt").exists()
+                && path.join("out").join("raw.llt").exists() =>
+        {
+            path
+        }
+        _ => {
+            eprintln!("Skipping input_output_expr_pipeline: formatters not found");
+            return;
+        }
+    };
+
+    // Full pipeline: -i json -e expr -o raw
+    use std::io::Write;
+    let mut child = Command::new(tinct_bin())
+        .args(["eval", "-i", "json", "-e", "%.msg", "-o", "raw"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn tinct");
+
+    {
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(b"{\"msg\":\"hello\"}")
+            .expect("failed to write to stdin");
+    }
+
+    let output = child.wait_with_output().expect("failed to wait for tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "hello");
 }

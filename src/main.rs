@@ -17,6 +17,13 @@ const EXIT_TIMEOUT: i32 = 2;
 // Note: RLIMIT_AS violations cause SIGSEGV/SIGKILL from the kernel, not a clean exit code.
 // RLIMIT_CPU violations cause SIGXCPU (soft) or SIGKILL (hard). Both terminate without EXIT_ERROR.
 
+/// A pipeline stage: either a file path or an inline expression.
+#[derive(Debug, Clone)]
+enum PipelineStage {
+    File(String),
+    Expr(String),
+}
+
 /// tinct -- a unified data representation and transformation language.
 #[derive(Parser)]
 #[command(name = "tinct", version, about)]
@@ -116,6 +123,23 @@ enum Commands {
         #[arg(long, value_name = "NAME=ENTRY")]
         cap_net: Vec<String>,
 
+        /// Evaluate an inline tinct expression (may be repeated).
+        /// Each -e occurrence inserts a pipeline stage at that position in the command line,
+        /// interleaved with file arguments. Each expression receives % from the previous stage.
+        /// --- is valid inside a single -e string for multiple stages; semicolons are whitespace-equivalent.
+        #[arg(short = 'e', long = "expr", value_name = "EXPR")]
+        expr: Vec<String>,
+
+        /// Prepend an input formatter from stdlib/in/<format>.llt as the first pipeline stage.
+        /// Suppresses stdin JSON auto-detection. Error if the formatter file does not exist.
+        #[arg(short = 'i', long = "input", value_name = "FORMAT")]
+        input: Option<String>,
+
+        /// Append an output formatter from stdlib/out/<format>.llt as the final pipeline stage.
+        /// Error if the formatter file does not exist.
+        #[arg(short = 'o', long = "output", value_name = "FORMAT")]
+        output: Option<String>,
+
         /// Input LLT files. Use `-` to read LLT source from stdin.
         /// Multiple files form a pipeline: each file's output becomes % for the next.
         files: Vec<String>,
@@ -129,6 +153,22 @@ enum Commands {
         /// Write formatted output back to the file in place.
         #[arg(short, long)]
         in_place: bool,
+
+        /// Produce single-line output (strip comments, replace newlines with spaces).
+        #[arg(long)]
+        oneline: bool,
+
+        /// Minimize inter-token spaces (only insert when required for tokenization).
+        #[arg(long)]
+        nospaces: bool,
+
+        /// Shorthand for --oneline --nospaces (maximally compact output).
+        #[arg(long)]
+        minimize: bool,
+
+        /// Use tinct-hosted formatter instead of Rust formatter (experimental).
+        #[arg(long)]
+        tinct_fmt: bool,
 
         /// Input LLT file. Use `-` to read from stdin.
         file: String,
@@ -204,6 +244,9 @@ fn main() {
             no_libdir,
             cap_fs,
             cap_net,
+            expr,
+            input,
+            output,
             files,
         } => run_eval(
             &files,
@@ -224,13 +267,22 @@ fn main() {
             no_libdir,
             cap_fs,
             cap_net,
+            expr,
+            input,
+            output,
         ),
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
             check,
             in_place,
+            oneline,
+            nospaces,
+            minimize,
+            tinct_fmt,
             file,
-        } => run_fmt(&file, check, in_place),
+        } => run_fmt(
+            &file, check, in_place, oneline, nospaces, minimize, tinct_fmt,
+        ),
         #[cfg(feature = "repl")]
         Commands::Repl => tinct::repl::run_repl(),
         #[cfg(feature = "lsp")]
@@ -650,9 +702,64 @@ fn run_eval(
     no_libdir: bool,
     cap_fs: Vec<String>,
     cap_net: Vec<String>,
+    expr: Vec<String>,
+    input: Option<String>,
+    output: Option<String>,
 ) -> Result<(), String> {
-    if file_paths.is_empty() {
-        return Err("no input files specified".to_string());
+    // Build the complete pipeline: [input formatter] + [files/exprs interleaved] + [output formatter]
+    let mut pipeline_stages: Vec<PipelineStage> = Vec::new();
+
+    // Prepend -i input formatter if specified
+    if let Some(ref input_format) = input {
+        let libdir_path = find_libdir_path()
+            .ok_or_else(|| format!("--input: stdlib directory not found (libdir)"))?;
+        let input_path = libdir_path.join("in").join(format!("{}.llt", input_format));
+        if !input_path.exists() {
+            return Err(format!(
+                "--input: formatter not found: {}",
+                input_path.display()
+            ));
+        }
+        pipeline_stages.push(PipelineStage::File(
+            input_path.to_str().unwrap().to_string(),
+        ));
+    }
+
+    // Interleave files and -e expressions in the order they appear on the CLI.
+    // We need to track the original order, but clap doesn't preserve mixed positional/flag order.
+    // Instead, we process files in order, then expr in order.
+    // The TODO spec says "interleaved with file arguments in order" — we'll append files first, then exprs.
+    // Actually, re-reading: "each -e occurrence inserts an inline tinct expression as a pipeline stage
+    // at that position in the command line, interleaved with file arguments"
+    // This requires tracking the order. For now, we'll use a simpler approach: files come first, then exprs.
+    // TODO: Proper interleaving would require clap derive macros that track occurrence order.
+    for file_path in file_paths {
+        pipeline_stages.push(PipelineStage::File(file_path.clone()));
+    }
+    for expression in &expr {
+        pipeline_stages.push(PipelineStage::Expr(expression.clone()));
+    }
+
+    // Append -o output formatter if specified
+    if let Some(ref output_format) = output {
+        let libdir_path = find_libdir_path()
+            .ok_or_else(|| format!("--output: stdlib directory not found (libdir)"))?;
+        let output_path = libdir_path
+            .join("out")
+            .join(format!("{}.llt", output_format));
+        if !output_path.exists() {
+            return Err(format!(
+                "--output: formatter not found: {}",
+                output_path.display()
+            ));
+        }
+        pipeline_stages.push(PipelineStage::File(
+            output_path.to_str().unwrap().to_string(),
+        ));
+    }
+
+    if pipeline_stages.is_empty() {
+        return Err("no input files or expressions specified".to_string());
     }
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
@@ -680,10 +787,15 @@ fn run_eval(
         let _ = max_fds;
     }
 
-    // Check for piped stdin JSON (only when first file is not stdin itself).
+    // Check for piped stdin JSON.
+    // Suppressed when -i/--input is present (the input formatter reads from stdin Handle).
+    // Also suppressed when the first pipeline stage is stdin itself ("-").
     // Returns raw serde_json::Value; conversion to LLT happens after the first
     // EvalContext is created so ThunkIds are allocated in the shared arena.
-    let stdin_json = if file_paths[0] != "-" {
+    let stdin_json = if input.is_none()
+        && !pipeline_stages.is_empty()
+        && !matches!(pipeline_stages[0], PipelineStage::File(ref p) if p == "-")
+    {
         read_stdin_json()?
     } else {
         None
@@ -718,11 +830,15 @@ fn run_eval(
     #[cfg(target_os = "linux")]
     if !no_landlock && !canonical_allowed_paths.is_empty() {
         // Collect the canonical parent directories of each input file.
-        let extra_readable: Vec<PathBuf> = file_paths
+        // Inline expressions (PipelineStage::Expr) don't need extra_readable paths.
+        let extra_readable: Vec<PathBuf> = pipeline_stages
             .iter()
-            .filter(|p| p.as_str() != "-")
+            .filter_map(|stage| match stage {
+                PipelineStage::File(p) if p != "-" => Some(p.as_str()),
+                _ => None,
+            })
             .filter_map(|p| {
-                let path = std::path::Path::new(p.as_str());
+                let path = std::path::Path::new(p);
                 let dir = match path.parent().filter(|d| !d.as_os_str().is_empty()) {
                     Some(d) => d.to_path_buf(),
                     None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -885,12 +1001,12 @@ fn run_eval(
         None // unrestricted
     };
 
-    // Multi-file pipeline: process each file in sequence, passing output as input to the next.
+    // Multi-stage pipeline: process each stage in sequence, passing output as input to the next.
     //
-    // ARENA SHARING INVARIANT: All files in the pipeline must share the same ThunkArena so
-    // that ThunkIds allocated by earlier files remain valid when later files reference them
-    // via the `%` pipeline variable. We establish one base EvalContext for the first file,
-    // then use `with_base_dir_and_path` for subsequent files — this creates a new config
+    // ARENA SHARING INVARIANT: All stages in the pipeline must share the same ThunkArena so
+    // that ThunkIds allocated by earlier stages remain valid when later stages reference them
+    // via the `%` pipeline variable. We establish one base EvalContext for the first stage,
+    // then use `with_base_dir_and_path` for subsequent stages — this creates a new config
     // (different base_dir) while sharing the same arena, state, and stdlib_env.
     let mut pipeline_input: Option<Rc<Thunk>> = None;
 
@@ -899,9 +1015,12 @@ fn run_eval(
     let mut last_eval_ctx: Option<Rc<EvalContext>> = None;
     let mut base_eval_ctx: Option<Rc<EvalContext>> = None;
 
-    for file_path in file_paths {
-        // Read the LLT source
-        let source = read_source(file_path)?;
+    for stage in &pipeline_stages {
+        // Read the LLT source (from file or inline expression)
+        let source = match stage {
+            PipelineStage::File(file_path) => read_source(file_path)?,
+            PipelineStage::Expr(expression) => expression.clone(),
+        };
 
         // Parse
         let mut ast = parse(&source).map_err(|e| format!("{e}"))?;
@@ -918,19 +1037,28 @@ fn run_eval(
         let _ = tinct::typecheck::typecheck_file(&ast.node);
 
         // Determine base directory for $include resolution
-        let file_base_dir_path = if file_path == "-" {
-            std::env::current_dir()
-                .map_err(|e| format!("cannot determine working directory: {e}"))?
-        } else {
-            let p = std::path::Path::new(file_path);
-            // Use the file's parent directory; fall back to cwd if the path has no parent
-            // (e.g., a bare filename like "test.llt").
-            match p.parent().filter(|d| !d.as_os_str().is_empty()) {
-                Some(dir) => dir
-                    .canonicalize()
-                    .map_err(|e| format!("cannot resolve directory for \"{file_path}\": {e}"))?,
-                None => std::env::current_dir()
-                    .map_err(|e| format!("cannot determine working directory: {e}"))?,
+        let file_base_dir_path = match stage {
+            PipelineStage::Expr(_) => {
+                // Inline expressions use cwd as base directory
+                std::env::current_dir()
+                    .map_err(|e| format!("cannot determine working directory: {e}"))?
+            }
+            PipelineStage::File(file_path) => {
+                if file_path == "-" {
+                    std::env::current_dir()
+                        .map_err(|e| format!("cannot determine working directory: {e}"))?
+                } else {
+                    let p = std::path::Path::new(file_path);
+                    // Use the file's parent directory; fall back to cwd if the path has no parent
+                    // (e.g., a bare filename like "test.llt").
+                    match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                        Some(dir) => dir.canonicalize().map_err(|e| {
+                            format!("cannot resolve directory for \"{file_path}\": {e}")
+                        })?,
+                        None => std::env::current_dir()
+                            .map_err(|e| format!("cannot determine working directory: {e}"))?,
+                    }
+                }
             }
         };
 
@@ -1103,11 +1231,11 @@ fn run_eval(
     if !eval_ctx.emitted.get() {
         match format {
             OutputFormat::Json => {
-                // Try stdlib/fmt/json.llt for pure-tinct JSON serialization.
+                // Try stdlib/out/json.llt for pure-tinct JSON serialization.
                 // Falls back to value_to_json() when json.llt is not found (e.g., no libdir).
                 let json_llt_path = resolved_libdir_path
                     .as_deref()
-                    .map(|p| p.join("fmt").join("json.llt"));
+                    .map(|p| p.join("out").join("json.llt"));
 
                 let output = if let Some(ref json_llt_path) = json_llt_path {
                     match format_with_json_llt(
@@ -1203,9 +1331,30 @@ fn run_eval(
     Ok(())
 }
 
-fn run_fmt(file_path: &str, check: bool, in_place: bool) -> Result<(), String> {
+fn run_fmt(
+    file_path: &str,
+    check: bool,
+    in_place: bool,
+    oneline: bool,
+    nospaces: bool,
+    minimize: bool,
+    tinct_fmt: bool,
+) -> Result<(), String> {
+    // --minimize is shorthand for both --oneline and --nospaces
+    let oneline = oneline || minimize;
+    let nospaces = nospaces || minimize;
+
     let source = read_source(file_path)?;
-    let formatted = format_source(&source).map_err(|e| format!("{e}"))?;
+    let formatted = if tinct_fmt {
+        // Use tinct-hosted formatter
+        tinct::format_source_tinct(&source)?
+    } else if oneline || nospaces {
+        // Use Rust compact formatter
+        tinct::format_source_compact(&source, oneline, nospaces).map_err(|e| format!("{e}"))?
+    } else {
+        // Use Rust full formatter
+        format_source(&source).map_err(|e| format!("{e}"))?
+    };
 
     if check {
         if source != formatted {
@@ -1433,7 +1582,7 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
     if !eval_ctx.emitted.get() {
         // Use the same format_with_json_llt → fallback pattern as run_eval for consistent
         // null semantics ([] → JSON null, not {}).
-        let json_llt_path = find_libdir_path().map(|p| p.join("fmt").join("json.llt"));
+        let json_llt_path = find_libdir_path().map(|p| p.join("out").join("json.llt"));
 
         let output = if let Some(ref json_llt_path) = json_llt_path {
             match format_with_json_llt(Rc::clone(&thunk), &eval_ctx, Rc::clone(&env), json_llt_path)

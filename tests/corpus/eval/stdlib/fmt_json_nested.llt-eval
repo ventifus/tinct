@@ -1,5 +1,5 @@
 # json: format nested structures
-[include "stdlib/fmt/json.llt"]
+[include "stdlib/out/json.llt"]
 ---
 [call %.json [
   users: [

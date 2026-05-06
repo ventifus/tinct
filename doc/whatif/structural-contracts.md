@@ -397,7 +397,7 @@ Implementation:
 ### Trigger
 
 Phase 1 (`%@Type`): adopt after multi-file pipeline ships.
-`stdlib/fmt/` formatters already exist and lack declared input shapes.
+`stdlib/out/` formatters already exist and lack declared input shapes.
 
 Phase 2 (`validate`): adopt after Phase 1. External data from
 `from-json`/`from-yaml` is already untyped — schema validation fills

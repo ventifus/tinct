@@ -1724,6 +1724,14 @@ pub(crate) fn eval_step(
         // At runtime, they evaluate to an empty dict to maintain dict structure without
         // contributing runtime values.
         Expr::TypeAlias(_inner) => Action::Continue(Ok(Value::Dict(IndexMap::new()))),
+        Expr::Quote(_) => {
+            unreachable!("Quote is handled in eval_recursive before reaching eval_expr_step")
+        }
+        Expr::Unquote(_) | Expr::UnquoteSplice(_) => {
+            unreachable!(
+                "Unquote/UnquoteSplice are handled in eval_quote before reaching eval_expr_step"
+            )
+        }
         Expr::Rest(_) => Action::Continue(Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,

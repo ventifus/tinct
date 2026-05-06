@@ -1,5 +1,5 @@
 # toml: format simple dict
-[include "stdlib/fmt/toml.llt"]
+[include "stdlib/out/toml.llt"]
 ---
 [call %.toml [
   name: "Alice"

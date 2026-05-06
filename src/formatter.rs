@@ -12,9 +12,88 @@ use crate::parser::{parse2, ParseError, ParseOutput};
 
 pub fn format_source(input: &str) -> Result<String, ParseError> {
     let output = parse2(input)?;
-    let mut formatter = Formatter::new(&output, input);
+    let mut formatter = Formatter::new(&output, input, false, false);
     formatter.format_file();
     Ok(formatter.output)
+}
+
+pub fn format_source_compact(
+    input: &str,
+    oneline: bool,
+    nospaces: bool,
+) -> Result<String, ParseError> {
+    let output = parse2(input)?;
+    let mut formatter = Formatter::new(&output, input, oneline, nospaces);
+    formatter.format_file();
+    Ok(formatter.output)
+}
+
+/// Format source using the tinct-hosted compact formatter.
+///
+/// This evaluates `stdlib/formatter/compact.llt` with the AST dict as `%`.
+/// The formatter returns a compact source string (oneline mode with semicolons).
+pub fn format_source_tinct(input: &str) -> Result<String, String> {
+    use crate::ast_dict::{ast_to_dict, AstToDictOpts};
+    use crate::builtins::create_stdlib_env;
+    use crate::desugar;
+    use crate::eval::{self, EvalContext};
+    use crate::parser::parse;
+    use crate::resolve;
+    use crate::typecheck;
+    use crate::value::Value;
+
+    // Parse the input
+    let file = parse(input).map_err(|e| format!("{e}"))?;
+
+    // Convert AST to dict (minimal mode: no source info, no comments)
+    let base_dir_path = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.canonicalize().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory: {e}"))?;
+
+    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
+
+    let opts = AstToDictOpts::default(); // Minimal mode (no source, no comments)
+    let ast_thunk = ast_to_dict(&file.node, &opts, &ctx).map_err(|e| format!("{e}"))?;
+
+    // Load and evaluate the formatter
+    let formatter_source = include_str!("../stdlib/formatter/compact.llt");
+    let mut formatter_file =
+        parse(formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
+
+    // Desugar, resolve, typecheck the formatter program
+    desugar::desugar_file(&mut formatter_file.node);
+    resolve::resolve_file(&formatter_file.node);
+    let _ = typecheck::typecheck_file(&formatter_file.node);
+
+    // Evaluate formatter with AST as % (pipeline input)
+    let formatter_thunk = eval::eval_file_with_input(
+        &formatter_file.node,
+        Rc::clone(&env),
+        &ctx,
+        Some(ast_thunk),
+        0,
+    )
+    .map_err(|e| format!("formatter eval error: {e}"))?;
+
+    // Materialize the result (should be a string)
+    let formatted = eval::materialize(&formatter_thunk, None, &ctx, 0)
+        .map_err(|e| format!("formatter materialize error: {e}"))?;
+
+    match formatted {
+        Value::String(s) => Ok(s.to_string()),
+        _ => {
+            let display_str = crate::value_to_display_string(&formatted, &ctx, 0)
+                .unwrap_or_else(|_| "<error displaying value>".to_string());
+            Err(format!(
+                "formatter returned non-string value: {}",
+                display_str
+            ))
+        }
+    }
 }
 
 struct Formatter<'a> {
@@ -22,15 +101,19 @@ struct Formatter<'a> {
     source: &'a str,
     output: String,
     indent_level: usize,
+    oneline: bool,
+    nospaces: bool,
 }
 
 impl<'a> Formatter<'a> {
-    fn new(parse_output: &'a ParseOutput, source: &'a str) -> Self {
+    fn new(parse_output: &'a ParseOutput, source: &'a str, oneline: bool, nospaces: bool) -> Self {
         Self {
             parse_output,
             source,
             output: String::with_capacity(source.len()),
             indent_level: 0,
+            oneline,
+            nospaces,
         }
     }
 
@@ -39,18 +122,27 @@ impl<'a> Formatter<'a> {
         for (i, doc) in file.node.documents.iter().enumerate() {
             if i > 0 {
                 // Document separator
-                if !self.output.is_empty() {
-                    if !self.output.ends_with('\n') {
-                        self.output.push('\n');
+                if self.oneline {
+                    // In oneline mode, replace leading space with single space (or nothing if first doc),
+                    // emit --- + header metadata as normal, then emit "; " instead of "\n\n"
+                    if !self.output.is_empty() {
+                        self.push_space(Some('-'));
                     }
-                    if !self.output.ends_with("\n\n") {
-                        self.output.push('\n');
+                } else {
+                    // Normal mode: ensure double newline before separator
+                    if !self.output.is_empty() {
+                        if !self.output.ends_with('\n') {
+                            self.output.push('\n');
+                        }
+                        if !self.output.ends_with("\n\n") {
+                            self.output.push('\n');
+                        }
                     }
                 }
                 self.output.push_str("---");
                 // Emit section header fields if present on this document.
                 if let Some(ref name) = doc.node.name {
-                    self.output.push(' ');
+                    self.push_space(Some('%'));
                     self.output.push('%');
                     self.output.push_str(name);
                 }
@@ -59,17 +151,28 @@ impl<'a> Formatter<'a> {
                     // Unnamed section: --- @Type (space after --- already present from
                     // the section_name branch not running, so we add the space here).
                     if doc.node.name.is_none() {
-                        self.output.push(' ');
+                        self.push_space(Some('@'));
                     }
                     self.output.push('@');
                     self.format_annotation(output_ann);
                 }
                 if let Some(ref expects_ann) = doc.node.expects {
-                    self.output.push_str(" expects: @");
+                    self.push_space(Some('e'));
+                    self.output.push_str("expects:");
+                    self.push_space(Some('@'));
+                    self.output.push('@');
                     self.format_annotation(expects_ann);
                 }
-                self.output.push('\n');
-                self.output.push('\n');
+                if self.oneline {
+                    self.output.push(';');
+                    // Push space before next document's first expression
+                    if !doc.node.expressions.is_empty() {
+                        self.push_space_before_expr(&doc.node.expressions[0]);
+                    }
+                } else {
+                    self.output.push('\n');
+                    self.output.push('\n');
+                }
             }
             self.format_document(&doc.node, doc.span.start.offset);
         }
@@ -78,6 +181,17 @@ impl<'a> Formatter<'a> {
 
     fn format_document(&mut self, document: &Document, _doc_offset: usize) {
         if document.expressions.is_empty() {
+            return;
+        }
+
+        // In oneline mode, comments are always stripped and expressions are always on one line
+        if self.oneline {
+            for (i, expr) in document.expressions.iter().enumerate() {
+                if i > 0 {
+                    self.push_space_before_expr(expr);
+                }
+                self.format_expr_top_level(expr);
+            }
             return;
         }
 
@@ -90,6 +204,9 @@ impl<'a> Formatter<'a> {
             | Expr::Call { .. }
             | Expr::Fn { .. }
             | Expr::TypeAlias(_)
+            | Expr::Quote(_)
+            | Expr::Unquote(_)
+            | Expr::UnquoteSplice(_)
             | Expr::Error(_) => false,
             _ => true,
         });
@@ -108,7 +225,7 @@ impl<'a> Formatter<'a> {
             // Format all on one line with spaces
             for (i, expr) in document.expressions.iter().enumerate() {
                 if i > 0 {
-                    self.output.push(' ');
+                    self.push_space_before_expr(expr);
                 }
                 self.format_expr_top_level(expr);
             }
@@ -127,19 +244,19 @@ impl<'a> Formatter<'a> {
                     .get(&expr.span.start.offset)
                 {
                     if i > 0 {
-                        self.output.push('\n');
+                        self.push_newline();
                     }
                     for comment in comments {
                         self.write_indent();
                         self.output.push('#');
                         self.output.push_str(comment);
-                        self.output.push('\n');
+                        self.push_newline();
                     }
                 }
 
                 // Blank line before non-first expression (but not if there's a leading comment)
                 if i > 0 && !has_leading_comment {
-                    self.output.push('\n');
+                    self.push_newline();
                 }
 
                 self.format_expr_top_level(expr);
@@ -150,12 +267,12 @@ impl<'a> Formatter<'a> {
                     .trailing_comments
                     .get(&expr.span.start.offset)
                 {
-                    self.output.push(' ');
+                    self.push_space(Some('#'));
                     self.output.push('#');
                     self.output.push_str(comment);
                 }
 
-                self.output.push('\n');
+                self.push_newline();
             }
         }
     }
@@ -220,7 +337,9 @@ impl<'a> Formatter<'a> {
             }
             Expr::Pipe { lhs, rhs } => {
                 self.format_expr(lhs, false);
-                self.output.push_str(" | ");
+                self.push_space(Some('|'));
+                self.output.push('|');
+                self.push_space_before_expr(rhs);
                 self.format_expr(rhs, false);
             }
             Expr::Dict(entries) => self.format_dict(entries),
@@ -237,7 +356,9 @@ impl<'a> Formatter<'a> {
                 desugared: _,
             } => self.format_fn(return_ann, params, body),
             Expr::TypeAlias(type_expr) => {
-                self.output.push_str("[type ");
+                self.output.push('[');
+                self.output.push_str("type");
+                self.push_space_before_expr(type_expr);
                 self.format_expr(type_expr, true);
                 self.output.push(']');
             }
@@ -247,7 +368,7 @@ impl<'a> Formatter<'a> {
                 self.output.push('[');
                 self.output.push('@');
                 self.format_annotation(annotation);
-                self.output.push(' ');
+                self.push_space_before_expr(expr);
                 self.format_expr(expr, true);
                 self.output.push(']');
             }
@@ -255,6 +376,27 @@ impl<'a> Formatter<'a> {
                 self.output.push_str(name);
                 self.output.push('@');
                 self.format_annotation(annotation);
+            }
+            Expr::Quote(inner) => {
+                self.output.push('[');
+                self.output.push_str("quote");
+                self.push_space_before_expr(inner);
+                self.format_expr(inner, true);
+                self.output.push(']');
+            }
+            Expr::Unquote(inner) => {
+                self.output.push('[');
+                self.output.push_str("unquote");
+                self.push_space_before_expr(inner);
+                self.format_expr(inner, true);
+                self.output.push(']');
+            }
+            Expr::UnquoteSplice(inner) => {
+                self.output.push('[');
+                self.output.push_str("unquote-splice");
+                self.push_space_before_expr(inner);
+                self.format_expr(inner, true);
+                self.output.push(']');
             }
             Expr::Rest(name) => {
                 self.output.push_str("...");
@@ -462,6 +604,9 @@ impl<'a> Formatter<'a> {
             Expr::Annotated { name, annotation } => {
                 name.len() + 1 + self.measure_annotation_width(&annotation.node)
             }
+            Expr::Quote(inner) => 1 + 5 + 1 + self.measure_expr_width(inner) + 1, // [quote <expr>]
+            Expr::Unquote(inner) => 1 + 7 + 1 + self.measure_expr_width(inner) + 1, // [unquote <expr>]
+            Expr::UnquoteSplice(inner) => 1 + 14 + 1 + self.measure_expr_width(inner) + 1, // [unquote-splice <expr>]
             Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
             Expr::Error(span) => {
                 // Measure the width of the original source text
@@ -481,11 +626,12 @@ impl<'a> Formatter<'a> {
         self.output.push('[');
         for (i, entry) in entries.iter().enumerate() {
             if i > 0 {
-                self.output.push(' ');
+                self.push_space_before_expr(&entry.node.value);
             }
             if let Some(key) = &entry.node.key {
                 self.format_expr(key, true);
-                self.output.push_str(": ");
+                self.output.push(':');
+                self.push_space_before_expr(&entry.node.value);
             }
             self.format_expr(&entry.node.value, true);
         }
@@ -504,18 +650,19 @@ impl<'a> Formatter<'a> {
                 .get(&entry.span.start.offset)
             {
                 for comment in comments {
-                    self.output.push('\n');
+                    self.push_newline();
                     self.write_indent();
                     self.output.push('#');
                     self.output.push_str(comment);
                 }
             }
 
-            self.output.push('\n');
+            self.push_newline();
             self.write_indent();
             if let Some(key) = &entry.node.key {
                 self.format_expr(key, true);
-                self.output.push_str(": ");
+                self.output.push(':');
+                self.push_space_before_expr(&entry.node.value);
             }
             self.format_expr(&entry.node.value, true);
 
@@ -525,14 +672,14 @@ impl<'a> Formatter<'a> {
                 .trailing_comments
                 .get(&entry.node.value.span.start.offset)
             {
-                self.output.push(' ');
+                self.push_space(Some('#'));
                 self.output.push('#');
                 self.output.push_str(comment);
             }
         }
 
         self.indent_level -= 1;
-        self.output.push('\n');
+        self.push_newline();
         self.write_indent();
         self.output.push(']');
     }
@@ -555,17 +702,19 @@ impl<'a> Formatter<'a> {
 
         self.output.push('[');
         if !implied {
-            self.output.push_str("call ");
+            self.output.push_str("call");
+            self.push_space_before_expr(func);
         }
         self.format_expr(func, true);
         for arg in args {
-            self.output.push(' ');
+            self.push_space_before_expr(arg);
             self.format_expr(arg, true);
         }
         for named_arg in named_args {
-            self.output.push(' ');
+            self.push_space(named_arg.node.name.chars().next());
             self.output.push_str(&named_arg.node.name);
-            self.output.push_str(": ");
+            self.output.push(':');
+            self.push_space_before_expr(&named_arg.node.value);
             self.format_expr(&named_arg.node.value, true);
         }
         self.output.push(']');
@@ -642,13 +791,18 @@ impl<'a> Formatter<'a> {
             self.output.push('@');
             self.format_annotation(ann);
         }
-        self.output.push(' ');
+        self.push_space(Some('['));
 
         // Params always single-line
         self.output.push('[');
         for (i, param) in params.iter().enumerate() {
             if i > 0 {
-                self.output.push(' ');
+                let first_char = if param.node.variadic {
+                    Some('.')
+                } else {
+                    param.node.name.chars().next()
+                };
+                self.push_space(first_char);
             }
             if param.node.variadic {
                 self.output.push_str("...");
@@ -661,7 +815,7 @@ impl<'a> Formatter<'a> {
         }
         self.output.push(']');
 
-        self.output.push(' ');
+        self.push_space_before_expr(body);
         self.format_expr(body, true);
         self.output.push(']');
     }
@@ -683,10 +837,97 @@ impl<'a> Formatter<'a> {
     }
 
     fn ensure_trailing_newline(&mut self) {
-        if !self.output.ends_with('\n') {
+        if !self.oneline && !self.output.ends_with('\n') {
             self.output.push('\n');
         }
     }
+
+    /// Push a space, but only if required by the `nospaces` mode.
+    /// When `nospaces` is true, only insert a space if both the last character of the output
+    /// and the next character to be written are bare-word characters (alphanumeric, -, _, ?, !, /, %, ~).
+    /// The next_char parameter should be the first character of the next token (or None if unknown).
+    fn push_space(&mut self, next_char: Option<char>) {
+        if self.nospaces {
+            // Only insert space if both preceding and following chars are bare-word chars
+            let last_is_bareword = self.output.chars().last().map_or(false, is_bare_word_char);
+            let next_is_bareword = next_char.map_or(false, is_bare_word_char);
+            if last_is_bareword && next_is_bareword {
+                self.output.push(' ');
+            }
+        } else {
+            self.output.push(' ');
+        }
+    }
+
+    /// Push a newline, or a space if in `oneline` mode.
+    fn push_newline(&mut self) {
+        if self.oneline {
+            self.output.push(' ');
+        } else {
+            self.output.push('\n');
+        }
+    }
+
+    /// Push a space before an expression, considering the nospaces mode.
+    fn push_space_before_expr(&mut self, expr: &Spanned<Expr>) {
+        let first_char = self.first_char_of_expr(expr);
+        self.push_space(first_char);
+    }
+
+    /// Get the first character that will be emitted when formatting this expression.
+    fn first_char_of_expr(&self, expr: &Spanned<Expr>) -> Option<char> {
+        match &expr.node {
+            Expr::Int(n) => {
+                if *n < 0 {
+                    Some('-')
+                } else {
+                    n.to_string().chars().next()
+                }
+            }
+            Expr::Float(_) => Some('0'), // approximate
+            Expr::Bool(b) => Some(if *b { 't' } else { 'f' }),
+            Expr::Str(_) => {
+                // Check if quoted or bare
+                let is_quoted = self
+                    .source
+                    .as_bytes()
+                    .get(expr.span.start.offset)
+                    .map_or(false, |&b| b == b'"');
+                if is_quoted {
+                    Some('"')
+                } else {
+                    // Bare string - first char of the string content
+                    Some('a') // placeholder - bare identifiers start with alphanumeric
+                }
+            }
+            Expr::VarRef { .. } => {
+                let is_escaped = self
+                    .source
+                    .as_bytes()
+                    .get(expr.span.start.offset)
+                    .map_or(false, |&b| b == b'$');
+                if is_escaped {
+                    Some('$')
+                } else {
+                    Some('a') // placeholder
+                }
+            }
+            Expr::DotAccess { .. } => Some('a'), // starts with whatever the base expr is
+            Expr::Pipe { .. } => Some('a'),      // starts with lhs
+            Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias(_) => Some('['),
+            Expr::TypeAssert { .. } => Some('['),
+            Expr::Quote(_) | Expr::Unquote(_) | Expr::UnquoteSplice(_) => Some('['),
+            Expr::Annotated { name, .. } => name.chars().next(),
+            Expr::Rest(_) => Some('.'),
+            Expr::Error(_) => None,
+        }
+    }
+}
+
+/// Check if a character is a bare-word character (can appear in unquoted identifiers).
+/// Used by the `--nospaces` mode to determine when spaces are required.
+fn is_bare_word_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '-' | '_' | '?' | '!' | '/' | '%' | '~')
 }
 
 #[cfg(test)]
@@ -1253,5 +1494,96 @@ mod tests {
         let input = "[x: 1]\n---\n[y: 2]";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[x: 1]\n\n---\n\n[y: 2]\n");
+    }
+
+    // --- Oneline mode tests ---
+
+    #[test]
+    fn test_oneline_basic() {
+        let input = "[x: 1 y: 2]";
+        let formatted = format_source_compact(input, true, false).unwrap();
+        // oneline mode: no trailing newline
+        assert_eq!(formatted, "[x: 1 y: 2]");
+    }
+
+    #[test]
+    fn test_oneline_strips_comments() {
+        let input = "# comment\n[x: 1]";
+        let formatted = format_source_compact(input, true, false).unwrap();
+        assert_eq!(formatted, "[x: 1]");
+        assert!(!formatted.contains('#'));
+    }
+
+    #[test]
+    fn test_oneline_document_separator() {
+        let input = "[x: 1]\n---\n[y: 2]";
+        let formatted = format_source_compact(input, true, false).unwrap();
+        // Document separator becomes "; " in oneline mode
+        assert_eq!(formatted, "[x: 1] ---; [y: 2]");
+    }
+
+    #[test]
+    fn test_oneline_named_section() {
+        let input = "[x: 1]\n--- %defaults\n[y: 2]";
+        let formatted = format_source_compact(input, true, false).unwrap();
+        assert_eq!(formatted, "[x: 1] --- %defaults; [y: 2]");
+    }
+
+    #[test]
+    fn test_oneline_section_with_type() {
+        let input = "[x: 1]\n--- %cfg@Dict\n[y: 2]";
+        let formatted = format_source_compact(input, true, false).unwrap();
+        assert_eq!(formatted, "[x: 1] --- %cfg@Dict; [y: 2]");
+    }
+
+    #[test]
+    fn test_nospaces_basic() {
+        let input = "[x: 1 y: 2]";
+        let formatted = format_source_compact(input, false, true).unwrap();
+        // nospaces: remove spaces except where required
+        // "[x:1 y:2]" - space needed between "1" and "y" (both bare-word chars)
+        assert_eq!(formatted, "[x:1 y:2]\n");
+    }
+
+    #[test]
+    fn test_nospaces_preserves_required_spaces() {
+        let input = "[call f arg]";
+        let formatted = format_source_compact(input, false, true).unwrap();
+        // "call" and "f" both end/start with bare-word chars, need space
+        // "f" and "arg" both end/start with bare-word chars, need space
+        assert_eq!(formatted, "[call f arg]\n");
+    }
+
+    #[test]
+    fn test_minimize_combines_both() {
+        let input = "# comment\n[x: 1]\n---\n[y: 2]";
+        let formatted = format_source_compact(input, true, true).unwrap();
+        // minimize = oneline + nospaces
+        // no comments, no trailing newline, minimal spaces
+        assert_eq!(formatted, "[x:1]---;[y:2]");
+    }
+
+    #[test]
+    fn test_oneline_idempotent() {
+        let input = "[x: 1 y: 2]";
+        let once = format_source_compact(input, true, false).unwrap();
+        let twice = format_source_compact(&once, true, false).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn test_nospaces_idempotent() {
+        let input = "[x: 1 y: 2]";
+        let once = format_source_compact(input, false, true).unwrap();
+        let twice = format_source_compact(&once, false, true).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn test_minimize_idempotent() {
+        let input = "[x: 1 y: 2]";
+        let once = format_source_compact(input, true, true).unwrap();
+        let twice = format_source_compact(&once, true, true).unwrap();
+        assert_eq!(once, twice);
     }
 }
