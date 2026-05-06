@@ -543,6 +543,24 @@ impl Substitution {
         if self.is_empty() {
             return ty.clone();
         }
+        // Fast-path for concrete types: no type variables, so return clone immediately.
+        // Avoids allocating visited_types/visited_rows HashSets for the common case.
+        match ty {
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::Str
+            | Type::Number
+            | Type::Any
+            | Type::Proxy
+            | Type::Error
+            | Type::DirCap
+            | Type::NetCap
+            | Type::Handle => {
+                return ty.clone();
+            }
+            _ => {}
+        }
         let mut visited_types = HashSet::new();
         let mut visited_rows = HashSet::new();
         self.apply_type(ty, 0, &mut visited_types, &mut visited_rows)
@@ -827,6 +845,19 @@ fn resolve_row<'a>(row: &'a Row, subst: &Substitution) -> Cow<'a, Row> {
     match &row.tail {
         RowTail::RowVar(name, _level) => {
             if let Some(bound) = subst.row_map.get(name) {
+                // Fast-path: if the original row has no fields, the resolved row is the result.
+                // No need to clone and merge — return the resolved row directly.
+                if row.fields.is_empty() {
+                    let mut visited_types = HashSet::new();
+                    let mut visited_rows = HashSet::new();
+                    return Cow::Owned(subst.apply_row(
+                        bound,
+                        0,
+                        &mut visited_types,
+                        &mut visited_rows,
+                    ));
+                }
+
                 // Apply the row to chase through the binding
                 let mut visited_types = HashSet::new();
                 let mut visited_rows = HashSet::new();
@@ -921,15 +952,10 @@ fn lower_row_var_levels(row: &Row, max_level: u32, state: &mut InferState) {
     if let RowTail::RowVar(name, _) = &row.tail {
         row_vars.insert(name.clone());
     }
-    // Lower all collected type vars
-    for tv in type_vars {
-        let current = state.levels.get(&tv).copied().unwrap_or(0);
-        state.levels.insert(tv, current.min(max_level));
-    }
-    // Lower all collected row vars
-    for rv in row_vars {
-        let current = state.levels.get(&rv).copied().unwrap_or(0);
-        state.levels.insert(rv, current.min(max_level));
+    // Lower all collected vars in a single pass
+    for var in type_vars.iter().chain(&row_vars) {
+        let current = state.levels.get(var).copied().unwrap_or(0);
+        state.levels.insert(var.clone(), current.min(max_level));
     }
 }
 
@@ -2281,7 +2307,11 @@ impl TypeEnv {
             "emit".to_string(),
             Type::Function {
                 params: vec![Type::Str],
-                ret: Box::new(Type::Any), // returns Null (empty dict)
+                // Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
                 variadic: false,
             },
         );
@@ -2337,7 +2367,11 @@ impl TypeEnv {
             "write".to_string(),
             Type::Function {
                 params: vec![Type::DirCap, Type::Str, Type::Str],
-                ret: Box::new(Type::Any), // returns Null (empty dict)
+                // Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
                 variadic: false,
             },
         );
@@ -2345,7 +2379,11 @@ impl TypeEnv {
             "write-atomic".to_string(),
             Type::Function {
                 params: vec![Type::DirCap, Type::Str, Type::Str],
-                ret: Box::new(Type::Any), // returns Null (empty dict)
+                // Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
                 variadic: false,
             },
         );
@@ -2361,7 +2399,11 @@ impl TypeEnv {
             "revoke-cap".to_string(),
             Type::Function {
                 params: vec![Type::DirCap],
-                ret: Box::new(Type::Any), // returns Null (empty dict)
+                // Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
                 variadic: false,
             },
         );

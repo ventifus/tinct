@@ -2333,6 +2333,28 @@ fn resolve_type_name(
             fields: HashMap::new(),
             tail: RowTail::Empty,
         })),
+        "Dict" => {
+            // Open record type with a fresh row variable tail — represents "any dict".
+            // Any concrete record is a subtype via is_subtype's RowVar tail rule (open sup allows
+            // all sub records). During unification, the row var binds to match the actual record
+            // structure passed at the call site.
+            let (rho_name, rho_level) = state.fresh_row_var_name();
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+                tail: RowTail::RowVar(rho_name, rho_level),
+            }))
+        }
+        "Fn" => {
+            // A function type that accepts any callable. Use variadic=true with empty params
+            // so any call arity is permitted and the return is Any (unconstrained).
+            // The arity check in check_call uses `min_required = params.len()` when
+            // `variadic && params.is_empty()`, so zero minimum args are required.
+            Ok(Type::Function {
+                params: vec![],
+                ret: Box::new(Type::Any),
+                variadic: true,
+            })
+        }
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Cross-kind collision check (row→type direction): if the name was already
@@ -3650,7 +3672,10 @@ mod tests {
                 );
                 // Return type should be Null = empty closed record
                 match *ret {
-                    Type::Record(Row { ref fields, ref tail }) => {
+                    Type::Record(Row {
+                        ref fields,
+                        ref tail,
+                    }) => {
                         assert!(
                             fields.is_empty(),
                             "fn@Null return type should have no fields, got {:?}",
@@ -3663,9 +3688,9 @@ mod tests {
                             tail
                         );
                     }
-                    other => panic!(
-                        "fn@Null return type should be Record(Row::Empty), got {other}"
-                    ),
+                    other => {
+                        panic!("fn@Null return type should be Record(Row::Empty), got {other}")
+                    }
                 }
             }
             other => panic!("expected Function type for [fn@Null [s@String] []], got {other}"),
@@ -7911,16 +7936,22 @@ mod tests {
         match ty {
             Type::Function { params, ret, .. } => {
                 let param_row_var = match &params[0] {
-                    Type::Record(Row { tail: RowTail::RowVar(name, _), .. }) => name.clone(),
-                    other => panic!(
-                        "expected param to be open record with RowVar tail, got {other}"
-                    ),
+                    Type::Record(Row {
+                        tail: RowTail::RowVar(name, _),
+                        ..
+                    }) => name.clone(),
+                    other => {
+                        panic!("expected param to be open record with RowVar tail, got {other}")
+                    }
                 };
                 let ret_row_var = match ret.as_ref() {
-                    Type::Record(Row { tail: RowTail::RowVar(name, _), .. }) => name.clone(),
-                    other => panic!(
-                        "expected return to be open record with RowVar tail, got {other}"
-                    ),
+                    Type::Record(Row {
+                        tail: RowTail::RowVar(name, _),
+                        ..
+                    }) => name.clone(),
+                    other => {
+                        panic!("expected return to be open record with RowVar tail, got {other}")
+                    }
                 };
                 // Both ...r occurrences in the annotation should produce the same fresh name.
                 // If row_ann_mapping were None (un-threaded), each would get an independent
@@ -7947,7 +7978,7 @@ mod tests {
         // Both TypeAsserts should succeed independently.
         let result = check(
             "[x: [@[a: Int ...r] [a: 1  extra: true]]\
-             \n y: [@[a: String ...r] [a: \"hello\"  other: 42]]]"
+             \n y: [@[a: String ...r] [a: \"hello\"  other: 42]]]",
         );
         assert!(
             result.is_ok(),

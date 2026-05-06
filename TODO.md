@@ -31,13 +31,6 @@ See doc/whatif/io.md.
 
 ## Type System Correctness and Performance
 
-### prelude-type-annotations: Full Type Annotations for stdlib/prelude.llt
-
-Add complete type annotations (parameter types and return types) to all functions in `stdlib/prelude.llt`. Currently most prelude functions have no annotations, relying entirely on inference.
-
-- [ ] Add type annotations to all 82 public prelude functions: parameter types, return types, and where relevant rest-row constraints (`stdlib/prelude.llt`)
-- [ ] Verify annotations don't narrow inference — no regressions on existing corpus tests
-- [ ] Add reference section to `doc/11-stdlib.md` documenting prelude function type signatures
 
 ## Test Coverage
 
@@ -292,8 +285,8 @@ Gaps between the macros-cluster plan (`doc/whatif/plans/macros-cluster.md`) and 
 
 Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.
 
-- [ ] C5 divergent values in coverage analysis: the C5 exhaustiveness sprint does not account for Karachalias et al.'s (2015) three-way partition (Covered/Divergent/Uncovered). In a lazy language, a clause may force divergence without covering any values. Inaccessible-RHS warnings require tracking the Divergent set alongside Uncovered. (`doc/whatif/plans/typing-cluster.md` C5, `doc/whatif/pattern-matching.md` §Phase 5) [Minor, computer-scientist train]
+- [x] C5 divergent values in coverage analysis: the C5 exhaustiveness sprint now implements the full Maranget (2007) usefulness algorithm with lazy ⊥-as-constructor extension, yielding the Karachalias et al. (2015) three-way partition (Covered/Divergent/Uncovered). Coverage algorithm in Rust (`src/coverage.rs`), exposed as `check-coverage` builtin. Inaccessible-RHS warnings from divergent-useful detection. (`doc/whatif/plans/typing-cluster.md` C5) [Minor, computer-scientist train]
 - [ ] D2 Marques et al. soundness unproven: the D2 algebraic subtyping sprint cites Marques et al. (2024) as a "direct implementation template" for row variables under algebraic subtyping. However, the paper explicitly states soundness and completeness proofs "do not have yet done" (§1). Tinct should not depend on unproven results for a foundational type system change. Note this risk in the plan and identify alternative proven foundations (Dolan 2016 Theorem 4.1 covers the non-row fragment). (`doc/whatif/plans/typing-cluster.md` D2) [Major, computer-scientist train]
 - [x] D4 Greenman et al. venue correction: the §References section lists "ICFP '19" for Greenman, Felleisen & Dimoulas (2019). The correct venue is OOPSLA '19 (Proc. ACM Program. Lang. 3, OOPSLA, Article 122, doi:10.1145/3360548). Fixed in typing-cluster.md, gradual-typing.md, and doc/17-references.md. (`doc/whatif/plans/typing-cluster.md` §References) [Nit, computer-scientist train]
-- [ ] Occurrence typing tasks missing: the plan mentions "occurrence typing (Tobin-Hochstadt & Felleisen 2010)" in C1 ADTs but includes no implementation tasks for proposition-based narrowing. Tobin-Hochstadt & Felleisen's system requires: (1) latent propositions on type-predicate function types, (2) proposition environments threaded through conditionals, (3) object paths for compound data access. At minimum, the C1 sprint should include a task to narrow scrutinee type inside match arms when the scrutinee has a union type. (`doc/whatif/plans/typing-cluster.md` C1, `doc/whatif/algebraic-data-types.md`) [Minor, computer-scientist train]
+- [x] Occurrence typing tasks missing: narrowing added as proposal #12 to typing-cluster plan with two sprints: B5a `narrowing-basic` (8 tasks: `if` as type-level special form, `Narrowing` enum, `extract_narrowings`, environment forking, branch type join, conjunction, type map, tests) and B5b `narrowing-predicates` (5 tasks: `int?`/`str?`/etc. direct narrowing, `num?` supertype, `cond` narrowing, tests). Wired into dependency graph, implementation calendar (weeks 7-8), and cross-cutting concerns (§5 items 6-7). (`doc/whatif/plans/typing-cluster.md` B5a, B5b) [Minor, computer-scientist train]
 - [ ] B4 constraint duplication during instantiation: Jones (1995, §8.3) proves that constraint propagation through let-generalization is sound provided instantiation copies constraints without duplication. The plan's §5 Cross-Cutting Concerns item 4 mentions this interaction but does not specify the proof obligation: each fresh type variable created by instantiation must carry exactly the constraints from the generalized scheme, not accumulated constraints from prior unification. (`doc/whatif/plans/typing-cluster.md` B4) [Minor, computer-scientist train]

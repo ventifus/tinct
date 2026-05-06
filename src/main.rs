@@ -1436,18 +1436,12 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
         let json_llt_path = find_libdir_path().map(|p| p.join("fmt").join("json.llt"));
 
         let output = if let Some(ref json_llt_path) = json_llt_path {
-            match format_with_json_llt(
-                Rc::clone(&thunk),
-                &eval_ctx,
-                Rc::clone(&env),
-                json_llt_path,
-            ) {
+            match format_with_json_llt(Rc::clone(&thunk), &eval_ctx, Rc::clone(&env), json_llt_path)
+            {
                 Ok(Some(compact_json)) => {
                     let parsed: serde_json::Value =
                         serde_json::from_str(&compact_json).map_err(|e| {
-                            format!(
-                                "json.llt produced invalid JSON: {e}\noutput: {compact_json}"
-                            )
+                            format!("json.llt produced invalid JSON: {e}\noutput: {compact_json}")
                         })?;
                     serde_json::to_string_pretty(&parsed)
                         .map_err(|e| format!("JSON pretty-print error: {e}"))?
