@@ -32,8 +32,8 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [`let` Binding Form](let-binding.md) | Sequential expressions inside `[fn ...]` bodies — no new keywords |
 | [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption |
-| [Macro-Rewrite](macro-rewrite.md) | Replace `src/desugar.rs` with `[defmacro]` definitions; land `let`, `match`, `union`, `i"..."` as macros instead of Rust AST variants |
-| [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — `[match]` arms use full-annotated-expression equality so `n@Int` and `n@String` coexist as distinct pattern keys |
+| [Macro-Rewrite](macro-rewrite.md) | Replace `src/desugar.rs` with `[defmacro]` definitions; land `i"..."` as macro (let-binding is parser change, match is `Expr::Match` special form) |
+| [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — user-defined macros can use full-annotated-expression equality for dict keys |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 
 ## Runtime and Performance
@@ -125,7 +125,7 @@ These proposals have no gating conditions and deliver standalone value at low co
 
 **[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental Phases 1 + 3.
 
-**[Structural Contracts](structural-contracts.md) Phase 1** — `%@Type` pipeline boundary annotation. Note: `%` is now the pipeline variable in new-syntax (replacing `$$`); Phase 1 syntax needs reconciliation before implementation — likely `%name@Type` or an `@Type` output annotation on named sections.
+**[Structural Contracts](structural-contracts.md) Phase 1** — `%@Type` pipeline boundary annotation. `%` is the pipeline input variable; `%@NginxConfig` annotates it with a type using standard `var@Type` syntax. No new syntax needed.
 
 **[Algebraic Data Types](algebraic-data-types.md) Phase 1** — Convention documentation only. Zero-cost, immediate value.
 
@@ -152,8 +152,8 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
-| [Macro-Rewrite](macro-rewrite.md) | When macros Phase 2 (`[defmacro]`) ships — implement before any typing-cluster A1/A2/A3/C1 Rust sprints |
-| [Parse-Stage Macros](parse-stage-macros.md) | When `[defmacro match]` Phase 2 lands — `n@Int` and `n@String` as distinct pattern keys requires context-sensitive key identity at parse time |
+| [Macro-Rewrite](macro-rewrite.md) | When macros Phase 2 (`[defmacro]`) ships. Let-binding (A1) is a parser change, not a macro. Match (A2/A3) is `Expr::Match`, independent of macro-rewrite |
+| [Parse-Stage Macros](parse-stage-macros.md) | When a second macro needs context-sensitive key identity or argument-position parse modes. No longer gated on match — match arm parsing is handled by `Expr::Match` parser mode |
 | [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 complete with zero failures; formal semantics in doc/08-evaluation.md |
 
 ### Additive Capability (No TODO Replacement)

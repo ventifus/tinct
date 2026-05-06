@@ -24,6 +24,7 @@ See doc/whatif/io.md.
 - [x] Research tinct-hosted formatter — see doc/whatif/tinct-hosted-formatter.md and doc/whatif/ast-schema.md
 - [x] Research macro-rewrite — see doc/whatif/macro-rewrite.md
 - [x] Research parse-stage macros — see doc/whatif/parse-stage-macros.md
+- [ ] Research Boolean-Algebraic Subtyping (BAS) as alternative foundation for D2 algebraic subtyping — Chau & Parreaux (POPL 2026) proves BAS encodes extensible records without row variables (one new term form, one typing rule, no subtyping changes). Complete soundness proofs. May supersede Marques et al. (2024) which lacks proofs. Write whatif evaluating BAS vs Rémy row variables for tinct's record model. Post-typing-cluster. Paper: doi:10.1145/3776689, preprint: https://lptk.github.io/files/boolean-algebraic-subtyping.pdf
 
 ## Template-Polarity Research
 
@@ -31,6 +32,17 @@ See doc/whatif/io.md.
 
 ## Type System Correctness and Performance
 
+### type-annotation-fixes: Fix @Fn Unification and Cross-Kind Collision Detection
+
+- [x] Change `resolve_type_name("Fn")` to return `Type::Any` instead of `Function { params:[], ret:Any, variadic:true }` — current encoding cannot unify with any concrete function type, producing false type errors for ~50 prelude functions annotated with `@Fn` [Major — computer-scientist, type-theorist]
+- [x] Fix cross-kind collision detection: same name used as both type var and row var in one annotation scope should error rather than silently creating two independent bindings; implement unified `KindEnv` or single keyed map [Critical — type-theorist]
+- [x] Fix comment syntax errors in `src/types.rs:1791,1800,1808` — single `/` should be `//` in the `generalize()` function [Major — type-theorist]
+- [x] Document bare `@Fn` vs `Fn@T` distinction in `doc/06-type-inference.md:296`; document `@Dict` fresh-row-var-per-site behavior in `doc/05-type-annotations.md` [Minor — computer-scientist, type-theorist]
+- [x] Fix `doc/02-syntax.md` EBNF: `named_arg_key` should be `identifier` only (remove `escaped_ref |`); add note that `$key: val` works in dicts but not in call named args [Critical — grammar-architect]
+- [x] Remove stale bracket access examples from `doc/02-syntax.md` (lines ~106, 196, 380-381, 583-584 showing old `a[0]` syntax alongside new `[get key data]`) [Critical — grammar-architect]
+- [x] Update `doc/11-stdlib.md` stale builtin count: change "59 Rust-native builtins" to "76 Rust-native builtins" [Major — stdlib-author]
+- [x] Update `doc/10-errors.md` Part 8 implementation correspondence table: replace stale line numbers with function-name anchors [Major — integration-verifier]
+- [x] Clarify `Expr::Pipe` lifecycle in `doc/15-ast.md`: present in post-parse AST, eliminated by desugar before type-check/eval [Major — grammar-architect]
 
 ## Test Coverage
 
@@ -46,6 +58,11 @@ See doc/whatif/io.md.
 - [ ] Add MAX_PARSE_DEPTH boundary tests: 256-nested-bracket file (valid) and 257 (error) in `tests/corpus/` [Major — test-crafter]
 - [ ] Add CRLF formatter roundtrip unit test in `src/formatter.rs`: parse CRLF input, format, assert line endings preserved [Major — test-crafter]
 - [ ] Add builtin limit enforcement tests for MAX_COLLECT_SIZE and MAX_STRING_SIZE in `tests/corpus/eval/errors/` [Minor — test-crafter]
+- [ ] Add unit test module in `src/builtins.rs` for `builtin_each`, `builtin_each_key`, `builtin_each_kv`, `builtin_get` covering empty dict, multi-entry, offset-based recursion, and type errors [Critical — test-crafter]
+- [ ] Add error corpus tests for `each`, `each-key`, `each-kv` called on non-Dict values in `tests/corpus/eval/errors/` [Critical — test-crafter]
+- [ ] Add pipe operator precedence and associativity corpus tests: `x | f.g`, `[f x | g]`, `[a: x | f]`, `a | b | c` left-associativity in `tests/corpus/eval/access/` [Major — test-crafter]
+- [ ] Add JSON formatter error corpus tests: Seq serialization error, Function/Builtin error in `tests/corpus/eval/errors/` [Major — test-crafter]
+- [ ] Add pipe + each integration corpus tests: `dict | each | collect`, `d | each-key | map str`, three-stage `each-kv | filter | collect-kv` in `tests/corpus/eval/cross_feature/` [Major — test-crafter]
 
 ## Error Diagnostics: Source Snippets
 
@@ -286,7 +303,7 @@ Gaps between the macros-cluster plan (`doc/whatif/plans/macros-cluster.md`) and 
 Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.
 
 - [x] C5 divergent values in coverage analysis: the C5 exhaustiveness sprint now implements the full Maranget (2007) usefulness algorithm with lazy ⊥-as-constructor extension, yielding the Karachalias et al. (2015) three-way partition (Covered/Divergent/Uncovered). Coverage algorithm in Rust (`src/coverage.rs`), exposed as `check-coverage` builtin. Inaccessible-RHS warnings from divergent-useful detection. (`doc/whatif/plans/typing-cluster.md` C5) [Minor, computer-scientist train]
-- [ ] D2 Marques et al. soundness unproven: the D2 algebraic subtyping sprint cites Marques et al. (2024) as a "direct implementation template" for row variables under algebraic subtyping. However, the paper explicitly states soundness and completeness proofs "do not have yet done" (§1). Tinct should not depend on unproven results for a foundational type system change. Note this risk in the plan and identify alternative proven foundations (Dolan 2016 Theorem 4.1 covers the non-row fragment). (`doc/whatif/plans/typing-cluster.md` D2) [Major, computer-scientist train]
+- [ ] D2 Marques et al. soundness unproven: the D2 algebraic subtyping sprint cites Marques et al. (2024) as a "direct implementation template" for row variables under algebraic subtyping. However, the paper explicitly states soundness and completeness proofs "do not have yet done" (§1). Decision: proceed with Marques et al. (Path A), accepting the risk. Risk is documented in typing-cluster.md D2 §Formal model and §Risk. Alternative identified for future research: Chau & Parreaux (POPL 2026) BAS — see §Language Design Research. (`doc/whatif/plans/typing-cluster.md` D2) [Major, computer-scientist train]
 - [x] D4 Greenman et al. venue correction: the §References section lists "ICFP '19" for Greenman, Felleisen & Dimoulas (2019). The correct venue is OOPSLA '19 (Proc. ACM Program. Lang. 3, OOPSLA, Article 122, doi:10.1145/3360548). Fixed in typing-cluster.md, gradual-typing.md, and doc/17-references.md. (`doc/whatif/plans/typing-cluster.md` §References) [Nit, computer-scientist train]
 - [x] Occurrence typing tasks missing: narrowing added as proposal #12 to typing-cluster plan with two sprints: B5a `narrowing-basic` (8 tasks: `if` as type-level special form, `Narrowing` enum, `extract_narrowings`, environment forking, branch type join, conjunction, type map, tests) and B5b `narrowing-predicates` (5 tasks: `int?`/`str?`/etc. direct narrowing, `num?` supertype, `cond` narrowing, tests). Wired into dependency graph, implementation calendar (weeks 7-8), and cross-cutting concerns (§5 items 6-7). (`doc/whatif/plans/typing-cluster.md` B5a, B5b) [Minor, computer-scientist train]
-- [ ] B4 constraint duplication during instantiation: Jones (1995, §8.3) proves that constraint propagation through let-generalization is sound provided instantiation copies constraints without duplication. The plan's §5 Cross-Cutting Concerns item 4 mentions this interaction but does not specify the proof obligation: each fresh type variable created by instantiation must carry exactly the constraints from the generalized scheme, not accumulated constraints from prior unification. (`doc/whatif/plans/typing-cluster.md` B4) [Minor, computer-scientist train]
+- [x] B4 constraint duplication during instantiation: proof obligation now stated in typing-cluster.md §5 Cross-Cutting Concerns item 4 — each fresh variable carries exactly the constraints from the generalized scheme (Jones 1995, §8.3), not accumulated constraints from the current inference state. (`doc/whatif/plans/typing-cluster.md` B4) [Minor, computer-scientist train]
