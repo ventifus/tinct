@@ -40,7 +40,7 @@ json-array-body: [fn [d indent]
   [str
     "[\n"
     [json-array-items d [+ indent 2] 0]
-    [repeat indent " "]
+    [join "" [take indent [repeat " "]]]
     "]"]]
 
 json-array-items: [fn [d indent i]
@@ -50,7 +50,7 @@ json-array-items: [fn [d indent i]
 
 json-array-item: [fn [d indent i]
   [str
-    [repeat indent " "]
+    [join "" [take indent [repeat " "]]]
     [json-value d[i] indent]
     [if [< [+ i 1] [length d]] ",\n" "\n"]
     [json-array-items d indent [+ i 1]]]]
@@ -65,7 +65,7 @@ json-dict-body: [fn [d indent]
   [str
     "{\n"
     [json-dict-entries d [+ indent 2] [keys d] 0]
-    [repeat indent " "]
+    [join "" [take indent [repeat " "]]]
     "}"]]
 
 json-dict-entries: [fn [d indent ks i]
@@ -75,7 +75,7 @@ json-dict-entries: [fn [d indent ks i]
 
 json-dict-entry: [fn [d indent ks i]
   [str
-    [repeat indent " "]
+    [join "" [take indent [repeat " "]]]
     [json-quote ks[i]]
     ": "
     [json-value d[ks[i]] indent]

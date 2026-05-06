@@ -26,6 +26,8 @@ pub enum Token {
     Dot,
     /// `..` (range operator, only in bracket-access context)
     Range,
+    /// `|` (pipe operator)
+    Pipe,
     /// `@` (annotation separator)
     At,
     /// `@` immediately after a bare word (no whitespace gap) — annotation
@@ -78,6 +80,7 @@ impl fmt::Display for Token {
             Token::Semicolon => write!(f, ";"),
             Token::Dot => write!(f, "."),
             Token::Range => write!(f, ".."),
+            Token::Pipe => write!(f, "|"),
             Token::At => write!(f, "@"),
             Token::ImmediateAt => write!(f, "@"),
             Token::Ellipsis => write!(f, "..."),
@@ -396,6 +399,15 @@ impl<'a> Lexer<'a> {
                 self.after_access_dot = false;
                 self.lex_percent_word()
             }
+            '|' => {
+                self.after_access_dot = false;
+                self.advance();
+                let end = self.current_position();
+                self.tokens
+                    .push(Spanned::new(Token::Pipe, Span::new(start, end)));
+                self.last_significant_token = Some(LastSignificantToken::Other);
+                Ok(())
+            }
             '-' => {
                 // Could be negative number or doc separator or bare word
                 if self.peek_ahead(1) == Some('-') && self.peek_ahead(2) == Some('-') {
@@ -483,7 +495,7 @@ impl<'a> Lexer<'a> {
         if let Some(c) = self.peek_ahead(offset) {
             !matches!(
                 c,
-                ' ' | '\t' | '\r' | '\n' | '[' | ']' | ':' | ';' | '#' | '"' | '@' | '$'
+                ' ' | '\t' | '\r' | '\n' | '[' | ']' | ':' | ';' | '#' | '"' | '@' | '$' | '|'
             )
         } else {
             false
@@ -853,10 +865,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn is_var_ident_char(&self, c: char) -> bool {
-        // Denylist: exclude whitespace, structural delimiters, and dot (access operator)
+        // Denylist: exclude whitespace, structural delimiters, dot (access operator), and pipe
         !matches!(
             c,
-            ' ' | '\t' | '\r' | '\n' | '[' | ']' | ':' | ';' | '#' | '"' | '@' | '.'
+            ' ' | '\t' | '\r' | '\n' | '[' | ']' | ':' | ';' | '#' | '"' | '@' | '.' | '|'
         )
     }
 
@@ -886,7 +898,7 @@ impl<'a> Lexer<'a> {
         // Check for number pattern
         if let Some(c) = self.peek_char() {
             if c.is_ascii_digit() {
-                return self.lex_number(start, word_start);
+                return self.lex_number(start, word_start, in_access_field);
             }
         }
 
@@ -950,7 +962,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_number(&mut self, start: Position, word_start: usize) -> Result<(), LexError> {
+    fn lex_number(
+        &mut self,
+        start: Position,
+        word_start: usize,
+        in_access_field: bool,
+    ) -> Result<(), LexError> {
         // Collect digits
         while let Some(c) = self.peek_char() {
             if c.is_ascii_digit() {
@@ -960,8 +977,11 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        // Check for float (decimal point followed by digits)
-        if self.peek_char() == Some('.') {
+        // Check for float (decimal point followed by digits).
+        // Suppressed when in_access_field is true: in `$a.0.1`, the `.` after `0`
+        // is a field-access dot, not a decimal separator. Without this guard,
+        // `$a.0.1` would lex the `0.1` fragment as a Float token.
+        if !in_access_field && self.peek_char() == Some('.') {
             let next = self.peek_ahead(1);
             if next.is_some() && next.unwrap().is_ascii_digit() {
                 self.advance(); // skip '.'

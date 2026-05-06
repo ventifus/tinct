@@ -3856,3 +3856,29 @@ See doc/whatif/templating.md (State: Accepted — 2026-05-04).
 - [x] tinct literate tangle|eval|weave <file> subcommand; LiterateMode enum
 - [x] 10 CLI integration tests covering all 3 modes
 - [x] doc/09-documents.md: §Literate Mode documentation
+
+## Access and Generator Pipeline
+
+Pipe operator, integer dot access, `get` builtin, and generator stdlib. See `doc/whatif/access-pipeline.md`.
+
+### access-pipeline-phase1: Dot Extension, `|` Desugar, Generator Builtins
+
+See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continues to work.
+
+- [x] Add `DotKey` enum (`DotKey::Ident(String)` / `DotKey::Int(i64)`) to `Expr::DotAccess` (`src/ast.rs`)
+- [x] Extend lexer: add `Token::Pipe` (`|`); add `|` to `is_var_ident_char` and `is_bare_word_char_at` denylists (`src/lexer.rs`)
+- [x] Extend parser: handle `Token::Int` after `.` (producing `DotKey::Int`); add `|` as left-associative infix operator; keep bracket access working (`src/parser.rs`)
+- [x] Add desugar rules for `Expr::Pipe` in desugar pass: `Pipe(lhs, Call(f,args)) → Call(f, args++[lhs])`; `Pipe(lhs, VarRef(n)) → Call(n, [lhs])`; extend `is_direct_underscore` to recurse into Pipe lhs (`src/desugar.rs`)
+- [x] Extend `DotAccessForce` to handle `DotKey::Int(n)` → `Key::Int(n)` lookup (`src/eval_materialize.rs`)
+- [x] Extend formatter to emit `lhs | rhs` for `Expr::Pipe` and `n` (bare integer) for `DotKey::Int` (`src/formatter.rs`)
+- [x] Update all exhaustive `Expr` match sites for `Pipe` and `DotKey` changes: `resolve.rs`, `typecheck.rs`, `eval.rs`, `desugar.rs`, `ast.rs` Display
+- [x] Extend `check_dot_access` for `DotKey::Int` (`src/typecheck.rs`) — bracket/range removal deferred to Phase 2
+- [x] Add `builtin-get : Key → Dict → Any` Rust primitive (`src/builtins.rs`); redefine `get` in prelude as `[fn [k xs] [builtin-get k xs]]` — keeps `get` tinct-native (`stdlib/prelude.llt`)
+- [x] Add `each`, `each-key`, `each-kv` as Rust builtins — required because `Value::Seq` construction is not expressible in tinct (`src/builtins.rs`)
+- [x] Add `collect-kv` as a tinct stdlib function using `builtin-reduce` + `merge` (`stdlib/prelude.llt`)
+- [x] Corpus tests for `|` desugar, integer dot access, `get`, generator builtins (`tests/corpus/`)
+- [x] Update stale builtin counts: `doc/11a-builtins.md` §Summary table updated to 76 Rust-native builtins
+- [x] Add missing I/O capability builtins to `doc/11a-builtins.md` §I/O section
+- [x] Update `doc/10-errors.md` Part 8 implementation correspondence table: replace stale line numbers with function-name anchors
+- [x] Fix synthetic `"serialize"` builtin name in `src/lib.rs:243` — changed to `"value serialization"`
+- [x] Update `doc/06-type-inference.md` §Unification to acknowledge bidirectional promotion arms as pragmatic fast-paths

@@ -30,8 +30,10 @@ timeout@[type: Number  default: 30]   # named param with default
 |----------|---------|
 | `type` | Compile-time type (the common case, covered by shorthand) |
 | `default` | Default value — makes the parameter named/optional |
+| `doc` | Human-readable description — surfaced in LSP hover, ignored by the type checker |
+| `is` | Runtime predicate — `Fn@Bool [Any]`; value must return `true` for the annotation to pass. Used in match arm guards and structural contracts. |
 
-Future properties (extensible without syntax changes): `validate`, `doc`.
+**Arbitrary keys are allowed.** The core system reads `type:` and `default:` and ignores everything else. Programmers may add any metadata keys they find useful — `doc:`, `is:`, `example:`, `deprecated:`, etc. Tooling can read these at the AST or annotation level. Unknown keys are never an error.
 
 **Any parameter is nameable at the call site** (Kotlin model). A parameter with `default:` is optional — it uses the default value when neither a positional nor named argument covers it. A parameter without `default:` is required — it must be covered by either a positional argument at its index or a named argument. Required and optional parameters may be freely interleaved in the parameter list.
 

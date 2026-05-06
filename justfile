@@ -16,12 +16,10 @@ rust_image := "rust:" + rust_version
 # Project name for volume naming
 project_name := "tinct"
 
-# Common container run flags (using named volumes for target and cargo cache)
-# --memory 4g prevents runaway evaluations from swapping the host system
-run_flags := "--rm --memory 8g -v .:/workspace:z -v " + project_name + "-target:/workspace/target -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
-
-# User flag to match host UID/GID (prevents permission issues)
-user_flag := "--user $(id -u):$(id -g)"
+# Common container run flags
+# target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
+# cargo registry cache stays a named volume — no need to expose it on the host
+run_flags := "--rm --memory 8g -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
 
 # Default recipe - show available commands
 default:
@@ -29,130 +27,88 @@ default:
 
 # Build the project (debug mode)
 build:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo build
-
-# Build the project as root (use when Cargo.lock is not writable by the host user)
-build-root:
     {{container}} run {{run_flags}} {{rust_image}} cargo build
+
+# Install release binary to ~/.local/bin/tinct (symlink)
+install: build-release
+    mkdir -p ~/.local/bin
+    ln -sf "$(pwd)/target/release/tinct" ~/.local/bin/tinct
+    @echo "Symlinked target/release/tinct → ~/.local/bin/tinct"
 
 # Build the project (release mode)
 build-release:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo build --release
+    {{container}} run {{run_flags}} {{rust_image}} cargo build --release
 
 # Run all tests: lib tests (single-threaded to prevent parallel 128MB-thread exhaustion)
 # followed by corpus integration tests and CLI integration tests, in separate containers.
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib -- --test-threads=1
-    {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --test cli_tests
-
-# Run all tests as root (use when target/ is owned by root, e.g. after just fmt)
-test-root:
     {{container}} run {{run_flags}} {{rust_image}} cargo test --lib -- --test-threads=1
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
     {{container}} run {{run_flags}} {{rust_image}} cargo test --test cli_tests
 
 # Run tests with output
 test-verbose:
-    {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test -- --nocapture
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test -- --nocapture
 
 # Run a specific test
 test-one TEST:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test {{TEST}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo test {{TEST}}
 
 # Run only lib unit tests (no integration tests)
 test-lib:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo test --lib
-
-# Run only lib unit tests as root (use when target/ is owned by root)
-test-lib-root:
-    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib -- --test-threads=1
+    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib
 
 # Run only corpus tests
 test-corpus:
-    {{container}} run {{run_flags}} {{user_flag}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
-
-# Run only corpus tests as root (use when target/ is owned by root)
-test-corpus-root:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
-
-# Run only the eval_corpus test as root (for debugging)
-test-eval-corpus-root:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests test_eval_corpus -- --nocapture --test-threads=1
-
-# Run corpus tests excluding eval_error (which causes stack overflow) as root
-test-corpus-no-error-root:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1 --skip test_eval_error_corpus
-
-# Run only the valid_corpus test as root
-test-valid-corpus-root:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests test_valid_corpus -- --nocapture --test-threads=1
-
-# Run only the eval_error corpus test as root
-test-eval-error-corpus-root:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests test_eval_error_corpus -- --nocapture --test-threads=1
-
-# Run cli tests as root
-test-cli-root:
-    {{container}} run {{run_flags}} {{rust_image}} cargo test --test cli_tests
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
 
 # Run clippy (linter)
 lint:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy -- -D warnings"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy -- -D warnings"
 
-# Run clippy with auto-fixes (runs as container root so it can write to bind-mounted source files)
+# Run clippy with auto-fixes
 lint-fix:
     {{container}} run {{run_flags}} {{rust_image}} cargo clippy --fix --allow-dirty --allow-staged
 
 # Check code formatting
 fmt-check:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt -- --check"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt -- --check"
 
-# Format code (runs as container root so it can write to bind-mounted source files)
+# Format code
 fmt:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt"
 
 # Run the application with test_input.llt (eval, JSON output)
 run:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval test_input.llt
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval test_input.llt
 
 # Run the application with custom input file
 run-file FILE:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
 
 # Run with LLT display format
 run-llt FILE:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval -f llt {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval -f llt {{FILE}}
 
 # Run with piped JSON stdin
 run-json JSON FILE:
-    echo '{{JSON}}' | {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
+    echo '{{JSON}}' | {{container}} run -i {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
 
 # Run the release build
 run-release:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct --release -- eval test_input.llt
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct --release -- eval test_input.llt
 
 # Clean build artifacts
 clean:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo clean
-
-# Clean build artifacts as root (use if permission errors occur)
-clean-root:
     {{container}} run {{run_flags}} {{rust_image}} cargo clean
 
 # Check if the code compiles without building
 check:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo check
+    {{container}} run {{run_flags}} {{rust_image}} cargo check
 
 # Update dependencies
 update:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo update
-
-# Update dependencies as root (use if permission errors occur).
-# Runs without {{user_flag}} because the cargo cache volume may lack write access
-# for the host user inside the container; root always has write access.
-update-root:
     {{container}} run {{run_flags}} {{rust_image}} cargo update
 
 # Downgrade dependencies that require Rust 1.87+; pin to last Rust-1.86-compatible versions.
@@ -161,17 +117,16 @@ update-root:
 #   url 2.5.3           — newer versions depend on idna ≥ 1.0 which requires Rust 1.87+
 #   idna_adapter 1.2.0  — newer versions (via idna 1.x) require Rust 1.87+
 # (icu_* packages are pulled in transitively through idna; pinning idna_adapter is sufficient)
-# Runs as root for the same reason as update-root (cargo cache volume permissions).
 downgrade-deps:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo update home --precise 0.5.5 && cargo update url --precise 2.5.3 && cargo update idna_adapter --precise 1.2.0"
 
 # Pin a specific dependency version
 update-precise PKG VER:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo update {{PKG}} --precise {{VER}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo update {{PKG}} --precise {{VER}}
 
 # Show dependency tree
 tree:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo tree
+    {{container}} run {{run_flags}} {{rust_image}} cargo tree
 
 # Run full CI pipeline (check, test, lint, fmt-check, audit)
 ci: check test lint fmt-check audit
@@ -179,11 +134,11 @@ ci: check test lint fmt-check audit
 
 # Start interactive REPL
 repl:
-    {{container}} run -it {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- repl
+    {{container}} run -it {{run_flags}} {{rust_image}} cargo run --bin tinct -- repl
 
 # Start LSP server (stdio transport)
 lsp:
-    {{container}} run -i {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- lsp
+    {{container}} run -i {{run_flags}} {{rust_image}} cargo run --bin tinct -- lsp
 
 # Tree-sitter grammar
 node_image := "node:22"
@@ -201,21 +156,17 @@ ts-test:
 ts-parse FILE:
     {{container}} run {{ts_run_flags}} -v {{project_name}}-ts-node:/workspace/tree-sitter-llt/node_modules {{node_image}} sh -c "npm install --no-save tree-sitter-cli && npx tree-sitter parse /workspace/{{FILE}}"
 
-# Build the VS Code extension (compile TypeScript)
+# Build and package the VS Code extension as a .vsix file
 ext:
-    {{container}} run --rm -v .:/workspace:z -w /workspace/editors/vscode {{node_image}} sh -c "npm install && npm run compile"
-
-# Package the VS Code extension as a .vsix file
-ext-package:
-    {{container}} run --rm -v .:/workspace:z -w /workspace/editors/vscode {{node_image}} sh -c "npm install && npm run compile && npx vsce package --no-dependencies"
+    {{container}} run --rm -v .:/workspace:z -w /workspace/editors/vscode {{node_image}} sh -c "npm install && npm run compile && npx @vscode/vsce package --no-dependencies"
 
 # Format LLT source file and print to stdout
 fmt-llt FILE:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- fmt {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- fmt {{FILE}}
 
 # Check LLT source formatting (exit 1 if unformatted)
 fmt-llt-check FILE:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo run --bin tinct -- fmt --check {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- fmt --check {{FILE}}
 
 # Format LLT source file in place
 fmt-llt-fix FILE:
@@ -228,11 +179,11 @@ version:
 
 # Build documentation
 doc:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo doc --no-deps
+    {{container}} run {{run_flags}} {{rust_image}} cargo doc --no-deps
 
 # Build and open documentation
 doc-open:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo doc --no-deps --open
+    {{container}} run {{run_flags}} {{rust_image}} cargo doc --no-deps --open
 
 # Generate stdlib reference documentation from annotated source (stdlib/prelude.llt).
 # TODO: implement a real generator that reads @doc annotations and produces doc/11-stdlib.md entries.
@@ -243,12 +194,12 @@ docs:
 
 # Run cargo bench (if benchmarks exist)
 bench:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} cargo bench
+    {{container}} run {{run_flags}} {{rust_image}} cargo bench
 
 # Generate LLVM coverage report (requires cargo-llvm-cov; install with: cargo install cargo-llvm-cov)
 # Opens the HTML report in the default browser after generation.
 coverage:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "rustup component add llvm-tools-preview 2>/dev/null; cargo llvm-cov --open"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add llvm-tools-preview 2>/dev/null; cargo llvm-cov --open"
 
 # Property-based testing via proptest (planned — see doc/whatif/eval-semantics-verification.md §Part A)
 proptest:
@@ -263,7 +214,7 @@ proptest:
 # Run a named fuzz target for TIME seconds (default 60s).
 # Example: just fuzz parse 300
 fuzz TARGET TIME="60":
-    {{container}} run {{run_flags}} {{user_flag}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz run {{TARGET}} -- -max_total_time={{TIME}}"
+    {{container}} run {{run_flags}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz run {{TARGET}} -- -max_total_time={{TIME}}"
 
 # Quick smoke run: each target for 30 seconds — catches immediate panics
 fuzz-smoke:
@@ -273,11 +224,11 @@ fuzz-smoke:
 
 # Build all fuzz targets without running (compile check on nightly)
 fuzz-build:
-    {{container}} run {{run_flags}} {{user_flag}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz build"
+    {{container}} run {{run_flags}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz build"
 
 # List available fuzz targets
 fuzz-list:
-    {{container}} run {{run_flags}} {{user_flag}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz list"
+    {{container}} run {{run_flags}} {{nightly_image}} sh -c "cargo install cargo-fuzz --locked && cargo fuzz list"
 
 # Generate stdlib reference docs from annotations
 # TODO: implement — parse doc comments from stdlib/prelude.llt and src/builtins.rs,
@@ -289,11 +240,11 @@ stdlib-docs:
 
 # Audit dependencies for security vulnerabilities
 audit:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "cargo install cargo-audit@0.22.1 --locked && cargo audit"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo install cargo-audit@0.22.1 --locked && cargo audit"
 
 # Watch for changes and run tests (requires cargo-watch)
 watch:
-    {{container}} run {{run_flags}} {{user_flag}} {{rust_image}} sh -c "cargo install cargo-watch && cargo watch -x test"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo install cargo-watch && cargo watch -x test"
 
 # Remove all container images (cleanup)
 clean-images:
@@ -301,7 +252,8 @@ clean-images:
 
 # Remove build volumes (WARNING: clears all build cache)
 clean-volumes:
-    {{container}} volume rm {{project_name}}-target {{project_name}}-cargo || true
+    rm -rf ./target
+    {{container}} volume rm {{project_name}}-cargo || true
 
 # Full cleanup (images + volumes)
 clean-all: clean-images clean-volumes

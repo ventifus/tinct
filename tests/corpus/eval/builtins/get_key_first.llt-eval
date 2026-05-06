@@ -1,0 +1,4 @@
+# get: stdlib wrapper for builtin-get; key-first signature for pipeline use
+[get "a" [a: 42  b: 99]]
+===
+Int(42)

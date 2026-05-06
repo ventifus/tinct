@@ -82,10 +82,34 @@ nested `[call [fn [name] ...] value]` layer.
 
 ## Design
 
+Two complementary implementation paths exist. When macros land first
+(see `doc/whatif/macro-rewrite.md`), the explicit `[let]` form is the
+primary path and the implicit sequential body is a follow-on addition.
+
+### Path A: `[defmacro let]` (Primary — requires macros Phase 2)
+
+`[let [bindings] body]` as a compile-time macro that desugars to nested
+function application — no parser change:
+
+```tinct
+[let [cleaned [clean data]
+      validated [validate cleaned]]
+    [transform validated]]
+# desugars to:
+# [[fn [cleaned] [[fn [validated] [transform validated]] [validate cleaned]]] [clean data]]
+```
+
+This is the preferred form when macros are available: explicit, no parser
+change, immediately available after `[defmacro]` ships.
+
+### Path B: Multi-Expression Function Bodies (Parser Change)
+
 Extend function bodies to accept expression sequences, reusing the
 existing sequential scoping mechanism. No new keyword or special form
 is introduced — this is the same mechanism that already exists at
-document level, applied to function body position.
+document level, applied to function body position. This is a complement
+to `[defmacro let]`, not a replacement: it enables arms in `[match]`
+and document-level sequential bodies, which `[let]` cannot serve alone.
 
 ### Syntax
 
@@ -275,11 +299,8 @@ makes this trivial — match arm bodies desugar to the same nested
 
 ### Prerequisites
 
-- Parser change to function body parsing (Phase 1 only dependency).
-- The evaluator's sequential expression handling (already implemented
-  for documents) must be factored out for reuse in function bodies if
-  not using the desugaring approach.
-- No dependency on other whatif features or TODO.md sprints.
+- **Path A (`[defmacro let]`):** Macros Phase 2 (`[defmacro]` and expansion loop, `doc/whatif/macros.md`). No parser change. Ships immediately when macros land.
+- **Path B (parser change):** Parser change to function body parsing. The evaluator's sequential expression handling (already implemented for documents) must be factored out for reuse. No other dependency.
 
 ### Trigger
 

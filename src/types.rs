@@ -2078,7 +2078,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Any],
                 ret: Box::new(Type::Str),
-                variadic: false,
+                variadic: true,
             },
         );
         for name in ["split", "replace"] {
@@ -2659,6 +2659,34 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+
+        // Capability and handle types: register as type aliases so @DirCap, @NetCap, @Handle
+        // are valid in user annotations.
+        env.insert_type_alias("DirCap".to_string(), Type::DirCap);
+        env.insert_type_alias("NetCap".to_string(), Type::NetCap);
+        env.insert_type_alias("Handle".to_string(), Type::Handle);
+
+        // builtin-* aliases: same types as canonical counterparts.
+        // Used by stdlib/prelude to call builtins when canonical names may be shadowed.
+        for (alias, canonical) in [
+            ("builtin-get", "get"),
+            ("builtin-lt", "<"),
+            ("builtin-eq", "="),
+            ("builtin-add", "+"),
+            ("builtin-sub", "-"),
+            ("builtin-mul", "*"),
+            ("builtin-div", "/"),
+            ("builtin-if", "if"),
+            ("builtin-filter", "filter"),
+            ("builtin-map", "map"),
+            ("builtin-reduce", "reduce"),
+            ("builtin-take", "take"),
+            ("builtin-drop", "drop"),
+        ] {
+            if let Some(scheme) = env.get(canonical).cloned() {
+                env.insert_scheme(alias.to_string(), scheme);
+            }
+        }
 
         env
     }

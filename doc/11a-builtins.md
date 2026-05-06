@@ -1,6 +1,6 @@
 # Builtin Reference
 
-This chapter provides a complete reference for all 59 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
+This chapter provides a complete reference for all 76 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
 
 ## Notation
 
@@ -78,6 +78,23 @@ Core operations on dicts. All materialize the dict structure (the IndexMap) to p
 - `length`: Type mismatch if arg is not Dict or Seq
 - `merge`: Type mismatch if either arg is not Dict
 - `append`: Type mismatch if first arg is not Dict or second arg is not a two-entry dict (key-value pair)
+
+## Dict Access (Seq-Producing)
+
+Convert a Dict to a lazy Seq of its contents. All three builtins use an internal offset parameter to avoid O(n²) IndexMap rebuilds — each recursive step increments the offset rather than rebuilding the remaining dict.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `builtin-get` | 2 | `S × S → Θ` | Any | Look up key (Int or String) in dict; returns value thunk or errors if key absent |
+| `each` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of its values in insertion order; keys are discarded |
+| `each-key` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of its keys in insertion order; values are discarded |
+| `each-kv` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of `[key: K  value: V]` dicts in insertion order |
+
+**`builtin-get` note:** This is a primitive for runtime key lookup by computed key value. Use `$xs[$k]` for static key access; `builtin-get` is for cases where the key itself is a runtime value (e.g., the result of `each-key`).
+
+**Error cases:**
+- `builtin-get`: Type mismatch if first arg is not Int or String; key-not-found error if key is absent from dict
+- `each`, `each-key`, `each-kv`: Type mismatch if arg is not Dict
 
 ## Strings
 
@@ -271,20 +288,21 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 60 Rust-native builtins + 12 stable aliases = 72 registered names.
+**Total:** 76 Rust-native builtins + 12 stable aliases = 88 registered names.
 
 **By category:**
-- Arithmetic: 4
-- Comparison: 2
-- Control: 1
-- Dict primitives: 4
-- Strings: 6
-- Numeric: 4 (floor, round, to-int, to-float)
-- Evaluation: 4 (eval, error, try, apply)
-- General: 1 (until)
+- Arithmetic: 4 (+, -, *, /)
+- Comparison: 2 (=, <)
+- Control: 1 (if)
+- Dict primitives: 4 (keys, length, merge, append)
+- Dict access: 4 (builtin-get, each, each-key, each-kv)
+- Strings: 6 (str, split, replace, upper, lower, trim)
+- Numeric: 2 (floor, round)
+- Parsing: 2 (to-int, to-float)
+- Evaluation: 5 (eval, error, try, apply, until)
 - Type introspection: 10 (type-of, int?, float?, num?, str?, bool?, null?, dict?, fn?, seq?)
-- I/O: 3 (from-json, include, emit)
-- Sequences: 16 (6 constructors, 3 destructors, 7 higher-order ops)
+- I/O: 15 (emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, net-cap, connect, lines, write, write-atomic, from-json, include)
+- Sequences: 16 (seq, head, tail, collect, range, repeat, cycle, iterate, unfold, map, filter, take, drop, reduce, join, concat)
 - List operations: 4 (rest, cons, reverse, sort)
 - Proxy: 1
 

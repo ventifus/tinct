@@ -59,7 +59,9 @@ fn write_temp_llt(label: &str, content: &str) -> (PathBuf, TempDir) {
 
 #[test]
 fn eval_simple_dict_json_output() {
-    let (path, _dir) = write_temp_llt("eval_simple_dict", "[x: 1 y: hello]");
+    // Use quoted string "hello" since bare words (hello) are VarRefs in LLT, not strings.
+    // rebuild marker: wave1-sprint-fix
+    let (path, _dir) = write_temp_llt("eval_simple_dict", "[x: 1 y: \"hello\"]");
     let output = Command::new(tinct_bin())
         .args(["eval", path.to_str().unwrap()])
         .output()
@@ -2019,7 +2021,7 @@ fn write_basic() {
     let llt_content = format!(
         r#"
 [cap: [dir-cap "{}"]]
-[_ : [write cap "output.txt" "hello world"]]
+[write cap "output.txt" "hello world"]
 [fh: [open cap "output.txt" "r"]]
 [slurp fh]
 "#,
@@ -2054,7 +2056,7 @@ fn write_atomic_basic() {
     let llt_content = format!(
         r#"
 [cap: [dir-cap "{}"]]
-[_ : [write-atomic cap "output.txt" "atomic content"]]
+[write-atomic cap "output.txt" "atomic content"]
 [fh: [open cap "output.txt" "r"]]
 [slurp fh]
 "#,
@@ -2097,7 +2099,7 @@ fn write_and_slurp_roundtrip() {
         r#"
 [include libdir "io.llt"]
 [cap: [dir-cap "{}"]]
-[_ : [write-file cap "test.txt" "roundtrip data"]]
+[write-file cap "test.txt" "roundtrip data"]
 [read-file cap "test.txt"]
 "#,
         dir.path().display()

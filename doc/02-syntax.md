@@ -116,6 +116,7 @@ The following punctuation characters are used as inline literals throughout the 
 | `:` | Key-value separator |
 | `;` | Entry separator |
 | `@` | Annotation separator |
+| `\|` | Pipe operator (desugar-only infix; `a \| f` → `[f a]`) |
 | `...` | Variadic parameter prefix |
 | `..` | Range operator (inside bracket access) |
 | `---` | Document separator (via `doc_separator` rule) |
@@ -167,12 +168,12 @@ Literals are recognized in precedence order. The first matching rule wins.
 ```ebnf
 identifier = @{ ident_char+ }
 ident_char = _{
-    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".")
+    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "." | "|")
     ~ ANY
 }
 ```
 
-The denylist provides extensibility for new operators without reserved keywords and enables full Unicode identifier support. `.` is excluded so `a.b` is dot access, not a single identifier.
+The denylist provides extensibility for new operators without reserved keywords and enables full Unicode identifier support. `.` is excluded so `a.b` is dot access, not a single identifier. `|` is excluded so `a | b` is a pipe expression, not a single identifier.
 
 **`$` (escaped reference)** follows the same character rules:
 
@@ -274,7 +275,7 @@ Identifiers are the fallback — any token that doesn't match a prior rule. They
 identifier = @{ ident_start ~ ident_cont* }
 
 ident_start = _{
-    !("$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
+    !("$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@" | "|"
       | " " | "\t" | "\r" | "\n"
       | "...")
     ~ ident_char
@@ -282,19 +283,19 @@ ident_start = _{
 
 ident_cont = _{
     !(" " | "\t" | "\r" | "\n"
-      | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".")
+      | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "." | "|")
     ~ ident_char
 }
 
 ident_char = _{
-    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".")
+    !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "." | "|")
     ~ ANY
 }
 ```
 
-`ident_char` uses a denylist — any character except structural delimiters and `.`. Both `@` and `.` are excluded, so they always end an identifier. The `"..."` exclusion is only needed at token start (variadic sigil context).
+`ident_char` uses a denylist — any character except structural delimiters and `.`. Both `@` and `.` are excluded, so they always end an identifier. `|` is excluded so `a|b` tokenizes as `a`, `|`, `b` (pipe expression), not as the identifier `a|b`. The `"..."` exclusion is only needed at token start (variadic sigil context).
 
-**Valid characters (denylist approach):** Any character is valid *except* structural delimiters: whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, and `.`. This means `[a-zA-Z0-9_/-]`, Unicode, `%`, `$`, and most other characters are all valid in identifiers. Identifiers are the default — anything that isn't a recognized special token is an identifier (a variable reference).
+**Valid characters (denylist approach):** Any character is valid *except* structural delimiters: whitespace, `[`, `]`, `:`, `;`, `#`, `"`, `@`, `.`, and `|`. This means `[a-zA-Z0-9_/-]`, Unicode, `%`, `$`, and most other characters are all valid in identifiers. Identifiers are the default — anything that isn't a recognized special token is an identifier (a variable reference).
 
 **Cannot start with:** `$`, `@`, `#`, `[`, `]`, `:`, `;`, `"`, or `...` (variadic sigil). These characters have special meaning at the start of a token.
 
@@ -856,7 +857,7 @@ keyword_type = "type" ~ !ident_char ~ !colon_ahead
 colon_ahead = ws_chars* ~ ":"
 ws_chars    = " " | "\t"
 
-ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".") ~ ANY
+ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "." | "|") ~ ANY
 
 call_args = (named_arg | value)*
 
@@ -936,7 +937,7 @@ escaped_ref = "$" ~ esc_ident
 
 esc_ident = esc_ident_char+
 
-esc_ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | ".") ~ ANY
+esc_ident_char = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "." | "|") ~ ANY
 
 float_lit = "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+
 
@@ -950,16 +951,16 @@ escape_seq    = "\\" ~ ("\"" | "\\" | "n" | "t" | "r")
 
 identifier = ident_start ~ ident_cont*
 
-ident_start = !( "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@"
+ident_start = !( "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@" | "|"
                | " " | "\t" | "\r" | "\n"
                | "..." )
               ~ ident_char_body
 
 ident_cont = !( " " | "\t" | "\r" | "\n"
-              | "[" | "]" | ":" | ";" | "#" | "\"" | "@" )
+              | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "|" )
              ~ ident_char_body
 
-ident_char_body = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$") ~ ANY
+ident_char_body = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$" | "|") ~ ANY
 ```
 
 ---

@@ -6,7 +6,7 @@ top of the structural ADT system?
 ## Current State
 
 tinct's structural ADT proposal (`doc/whatif/algebraic-data-types.md`) describes
-sum types via `[union ...]` where variants are discriminated by key set. A dict
+sum types via `[type ...]` where variants are discriminated by key set. A dict
 `[ok: 42]` satisfies the `Ok` variant of `Result` because its key set matches.
 This structural approach is appropriate for the majority of config-language use
 cases — external data (JSON, config files) automatically satisfies variant types
@@ -16,8 +16,8 @@ Three things structural ADTs cannot provide:
 
 ```tinct
 # Problem 1: Two constructors with the same field structure are indistinguishable
-Left:  [union [value: a]]    # Left has one field "value"
-Right: [union [value: a]]    # Right also has one field "value"
+Left:  [type [value: a]]    # Left has one field "value"
+Right: [type [value: a]]    # Right also has one field "value"
 # [value: 42] satisfies BOTH — there is no discrimination
 
 # Problem 2: Variant values are also plain dicts — field access always works
@@ -65,9 +65,9 @@ the constructor wrapper.
 
 ## Design
 
-### Extending `[union ...]` with Case
+### Extending `[type ...]` with Case
 
-Nominal and structural variants coexist in a single `[union ...]` form, discriminated
+Nominal and structural variants coexist in a single `[type ...]` form, discriminated
 by case. This reuses tinct's existing convention: **uppercase = concrete type**
 (`Int`, `Str`, `Person`), **lowercase = variable or string literal**.
 
@@ -79,20 +79,20 @@ by case. This reuses tinct's existing convention: **uppercase = concrete type**
 | `None` | Nominal unit | Constructor `None` with no payload |
 
 ```tinct
-# Pure structural (existing)
-Status:  [union ok err pending]
-Result:  [union [ok: a] [err: Str]]
+# Pure structural (existing) — quoted strings for tag-only variants
+Status:  [type "ok" "err" "pending"]
+Result:  [type [ok: a] [err: Str]]
 
-# Pure nominal (new)
-Option:  [union [Some a] None]
-Either:  [union [Left a] [Right b]]
-Color:   [union Red Green Blue]
+# Pure nominal (new) — uppercase bare words/forms are nominal constructors
+Option:  [type [Some a] None]
+Either:  [type [Left a] [Right b]]
+Color:   [type Red Green Blue]
 
-# Mixed — structural and nominal variants in one union
-Outcome: [union
+# Mixed — structural and nominal variants in one type
+Outcome: [type
     [ok: a]          # structural: plain dict, JSON-transparent
     [Err Str]        # nominal: opaque error wrapper
-    pending]         # structural unit: string literal "pending"
+    "pending"]       # structural unit: string literal "pending"
 ```
 
 ### Construction
@@ -102,12 +102,12 @@ Outcome: [union
 
 ```tinct
 success: [ok: 42]     # plain dict, structural Ok variant
-status:  pending      # plain string, structural unit variant
+status:  "pending"    # string value, structural unit variant
 ```
 
 **Nominal variants** are constructed by calling the registered constructor function.
 Each constructor name (`Some`, `None`, `Ok`, `Err`, `Left`, `Right`, etc.) is
-registered as a builtin function when its `[union ...]` type is declared:
+registered as a builtin function when its `[type ...]` type is declared:
 
 ```tinct
 wrapped:  [Some 42]       # → Variant { tag: "Some", payload: 42 }
@@ -128,25 +128,25 @@ literals evaluate in value position (`ok` → `"ok"`) but for nominal unit varia
 
 ```tinct
 [match x
-    [ok: v]   ...    # structural dict pattern: dict with key "ok", bind value to v
-    [Ok v]    ...    # nominal constructor pattern: Ok wrapping payload, bind to v
-    ok         ...    # structural unit: matches string "ok"
-    None       ...]   # nominal unit: matches None constructor
+    [ok: v]:   ...    # structural dict pattern: dict with key "ok", bind value to v
+    [Ok v]:    ...    # nominal constructor pattern: Ok wrapping payload, bind to v
+    "ok":      ...    # structural unit: matches string "ok"
+    None:      ...]   # nominal unit: matches None constructor
 
 # Option type — full pattern coverage
 [match maybe
-    [Some v]  v
-    None       default-value]
+    [Some v]:  v
+    None:      default-value]
 
 # Either — payload patterns nest
 [match either
-    [Left a]   [handle-left a]
-    [Right b]  [handle-right b]]
+    [Left a]:   [handle-left a]
+    [Right b]:  [handle-right b]]
 
 # Tree — recursive nominal ADT (Phase 4 of algebraic-data-types.md)
 [match tree
-    Leaf            0
-    [Node v l r] [+ 1 [+ [depth l] [depth r]]]]
+    Leaf:          0
+    [Node v l r]:  [+ 1 [+ [depth l] [depth r]]]]
 ```
 
 The structural vs nominal distinction in patterns is visually unambiguous:
@@ -181,11 +181,11 @@ convention where possible:
 
 | Variant | JSON output |
 |---------|------------|
-| `[call Some 42]` | `{"Some": 42}` |
+| `[Some 42]` | `{"Some": 42}` |
 | `None` | `{"None": null}` |
 | `[Ok [+ 1 2]]` | `{"Ok": 3}` |
 | `Red` | `{"Red": null}` |
-| `[call Left [call Some 42]]` | `{"Left": {"Some": 42}}` |
+| `[Left [Some 42]]` | `{"Left": {"Some": 42}}` |
 
 The serialization is identical to what a structural ADT would produce for the same
 shape — `[call Some 42]` serializes as `{"Some": 42}`, the same as the structural
@@ -201,7 +201,7 @@ not automatic inference from shape.
 ### Interaction with Structural ADTs
 
 Nominal and structural variants are **separate type-system concepts** that share
-the `[union ...]` declaration form. They do not interconvert:
+the `[type ...]` declaration form. They do not interconvert:
 
 - A structural `[ok: 42]` dict is **not** a nominal `Ok 42` variant, even if the
   tag names match (modulo case).
@@ -210,7 +210,7 @@ the `[union ...]` declaration form. They do not interconvert:
 This separation is what makes nominal variants worth having. If they interconverted,
 the nominality guarantee (only constructors create variant values) would be lost.
 
-Mixed unions (`Outcome: [union [ok: a] [Err Str] pending]`) are valid. Nominal arms
+Mixed types (`Outcome: [type [ok: a] [Err Str] "pending"]`) are valid. Nominal arms
 in `[match]` check for `Value::Variant { tag }`, structural arms check for `Value::Dict`
 or string equality. No ambiguity at runtime because `Value::Variant` and `Value::Dict`
 are distinct runtime types.
@@ -220,7 +220,7 @@ are distinct runtime types.
 The type-level representation adds `Type::NominalVariant(tag: String, payload: Option<Box<Type>>)`.
 A union containing nominal constructors expands to:
 
-```
+```rust
 Option a = Type::Union([
     NominalVariant("Some", Some(TypeVar("a"))),
     NominalVariant("None", None),
@@ -259,7 +259,7 @@ are forced.
 **Current:** No nominal variant syntax. Uppercase bare words in value position are
 strings. `[Uppercase ...]` inside `[]` would parse as a dict with positional entries.
 
-**Proposed:** In `[union ...]` declaration position, the parser distinguishes
+**Proposed:** In `[type ...]` declaration position, the parser distinguishes
 uppercase entries as nominal constructor declarations. In `[match]` pattern position,
 `[Uppercase binding]` is a constructor pattern and uppercase bare words are unit
 constructor patterns. In value expression position, uppercase bare words that name
@@ -312,7 +312,7 @@ registration logic.
 
 **Current:** No handling for constructor patterns or nominal variant types.
 
-**Proposed:** At `[union ...]` declaration time with nominal entries: register
+**Proposed:** At `[type ...]` declaration time with nominal entries: register
 constructor functions in the type environment (`Some : Fn@[Option a] [a]`, `None :
 [Option a]`). In `[match]` arm type-checking: for `[Some v]` patterns, narrow
 the scrutinee to `NominalVariant("Some", _)` and bind `v` to the payload type.
@@ -343,7 +343,7 @@ No payload constructors, no pattern matching yet. Unit constructors are usable a
 enum-like values:
 
 ```tinct
-Color:    [union Red Green Blue]
+Color:    [type Red Green Blue]
 selected: Red                       # Value::Variant { tag: "Red", payload: None }
 name:     [tag-of selected]         # → "Red"
 is-red:   [= [tag-of selected] Red] # → true
@@ -363,7 +363,7 @@ and `Pattern::Constructor` matching in `[match]`. This is the full nominal varia
 system:
 
 ```tinct
-Option: [union [Some a] None]
+Option: [type [Some a] None]
 
 lookup: [fn [dict@[...] key@Str]
     [if [has? dict key]
@@ -372,8 +372,8 @@ lookup: [fn [dict@[...] key@Str]
 
 # Pattern match on the result
 found: [match [lookup config "timeout"]
-    [Some v]   v
-    None       30]      # default
+    [Some v]:  v
+    None:      30]      # default
 ```
 
 **Prerequisites:** Phase 1 complete. `doc/whatif/pattern-matching.md` Phase 2
@@ -386,7 +386,7 @@ Exhaustiveness checking in `[match]` for unions containing nominal constructors:
 
 ```tinct
 [match maybe         # Option a
-    [Some v]  v]    # Error: non-exhaustive — missing arm for None
+    [Some v]:  v]   # Error: non-exhaustive — missing arm for None
 ```
 
 This reuses the exhaustiveness infrastructure from `doc/whatif/algebraic-data-types.md`
@@ -407,7 +407,7 @@ exhaustiveness checking straightforward.
 ### Trigger
 
 **Phase 1** (unit constructors): adopt when:
-- Structural tag-only variants (`Status: [union ok err pending]`) cause confusion
+- Structural tag-only variants (`Status: [type "ok" "err" "pending"]`) cause confusion
   because string values can accidentally satisfy them
 - Any declared "enum" needs to be provably confined to declared values
 

@@ -1,4 +1,4 @@
-# get: access dict value by key
-[get [x: 1 y: 2] "x"]
+# get: access dict value by key (key-first signature: [get key dict])
+[get "x" [x: 1 y: 2]]
 ===
 Int(1)

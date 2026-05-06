@@ -106,13 +106,13 @@ As a procedural macro operating on AST-dicts:
 
 ```tinct
 # DIRECT predicate: is this node _ or an access chain rooted at _?
+# Note: bracket-access removed by accepted access-pipeline whatif;
+# pipe (lhs | rhs) replaces chained dynamic access — check lhs for _.
 direct?: [fn [node]
   [or
-    [and [= node.type "var"] [= node.name "_"]]
-    [and [= node.type "dot-access"]
-               [direct? node.target]]
-    [and [= node.type "bracket-access"]
-               [direct? node.target]]]]
+    [and [= node.type "var"]        [= node.name "_"]]
+    [and [= node.type "dot-access"] [direct? node.target]]
+    [and [= node.type "pipe"]       [direct? node.lhs]]]]
 
 # Check if any child of a node is DIRECT
 has-direct-child?: [fn [node]
@@ -180,11 +180,22 @@ source -> parse -> quote_macros -> expand (call macro fns on quoted AST) -> type
 - Convention over enforcement: macros should use `gensym` for internal bindings
 - This matches Template Haskell and early Common Lisp --- hygiene is opt-in
 
-Default hygiene via scope sets (Flatt 2016) or context-annotated variables
-(Elixir model) is a later upgrade path. Variables introduced by the macro
-template would be scoped to the macro definition site; variables from the
-call site scoped to the caller. `gensym` provides fresh names when hygiene
-must be broken intentionally.
+`gensym` names use a prefix containing `:` (a character forbidden in bare
+words), making collision structurally impossible: a user cannot write
+`:gensym:0` as a bare-word identifier in source. Names have the form
+`:gensym:N` where N is a monotonically increasing integer. The names are
+unique but not stable across evaluation orders (lazy forcing may invoke
+`gensym` in any sequence); this is intentional --- `gensym` guarantees
+uniqueness, not reproducibility.
+
+Default hygiene via scope sets (Flatt 2016) is a later upgrade path
+(macros Phase 3). Variables introduced by the macro template would be
+scoped to the macro definition site; variables from the call site scoped to
+the caller. An intentional hygiene escape hatch (allowing a macro to inject
+bindings into the caller's scope) is deferred pending observation of
+real-world macro usage patterns --- it creates an unrestricted scope
+injection surface for library macros and is not needed for any example in
+this document.
 
 ### AST-as-Dict Representation
 
@@ -203,9 +214,9 @@ dict with a `type` key discriminator. This representation should:
 - **Be versionable** --- add a `version` field to the root if schema
   changes are needed later.
 
-See `doc/whatif/quasiquoting.md` for the full AST dict schema
-specification and the `quote`/`unquote` mechanism that makes this
-representation ergonomic.
+See `doc/whatif/ast-schema.md` for the canonical AST dict schema
+— all consumers (formatter, quasiquoting, macros) share one definition.
+See `doc/whatif/quasiquoting.md` for the `quote`/`unquote` mechanism.
 
 ### Compile-Time Evaluation
 
@@ -322,12 +333,10 @@ multi-location spans.
 
 ### Phase 1: AST-as-Dict Infrastructure
 
-Implement `ast_to_dict(expr: &Expr) -> Value` and
-`dict_to_ast(value: &Value) -> Result<Expr, Error>` in Rust. Define the
-dict schema for every `Expr` variant. Add `quote` as a builtin that
-converts an expression to its dict representation. No grammar changes.
-
-This phase is shared with `doc/whatif/quasiquoting.md` Phase 1.
+Implement `ast_to_dict_expr`, `ast_to_dict`, and `dict_to_ast` per the
+canonical schema in `doc/whatif/ast-schema.md`. This phase is shared with
+`doc/whatif/quasiquoting.md` Phase 1 and `doc/whatif/tinct-hosted-formatter.md`
+Phase 1 — all three are unblocked by the same `src/ast_dict.rs` implementation.
 
 ### Phase 2: `defmacro` and Basic Expansion
 
@@ -378,8 +387,10 @@ Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
   Original hygiene algorithm (KFFD). Time-stamped renaming to prevent
   accidental capture.
 - Clinger, W.D. & Rees, J. (1991). "Macros that work." In *POPL '91*,
-  pp. 155--162. ACM. --- Unified hygienic expansion with syntactic
-  closures. Linear-time algorithm.
+  pp. 155--162. ACM. --- Unified hygienic expansion combining KFFD
+  renaming with the R4RS `syntax-rules` pattern language. Linear-time
+  algorithm. (Note: syntactic closures are a different mechanism,
+  introduced in Bawden & Rees 1988.)
 - Dybvig, R.K., Hieb, R. & Bruggeman, C. (1993). "Syntactic abstraction
   in Scheme." *Lisp and Symbolic Computation*, 5(4), 295--326. ---
   `syntax-case`: full procedural power with automatic hygiene via syntax
@@ -393,6 +404,11 @@ Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
 - Flatt, M. (2016). "Binding as sets of scopes." In *POPL '16*,
   pp. 705--717. ACM. --- Scope sets: simpler, more uniform hygiene model
   replacing rename-based approaches. Candidate for Phase 3 hygiene.
+- Bawden, A. & Rees, J. (1988). "Syntactic closures." In *LFP '88*,
+  pp. 86--95. ACM. --- Introduces syntactic closures: first-class
+  representations of syntactic environments that allow controlled
+  variable capture. A distinct hygiene mechanism from KFFD renaming and
+  Clinger & Rees pattern-based expansion.
 - Ballantyne, M., King, A. & Felleisen, M. (2020). "Macros for
   domain-specific languages." *OOPSLA '20*. --- Surface-to-core
   architecture for DSL macros. Relevant to tinct's "one language"
@@ -408,8 +424,15 @@ Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
 **Error reporting through macros:**
 - Pombrio, J. & Krishnamurthi, S. (2014). "Resugaring: lifting
   evaluation sequences through syntactic sugar." In *PLDI '14*,
-  pp. 361--371. ACM. --- Maps errors in expanded code back to surface
-  syntax. Essential for usable macro error messages.
+  pp. 361--371. ACM. --- Formalizes how to present desugared evaluation
+  steps in terms of surface syntax. The underlying principle --- that
+  expanded code should be traceable back to the user's original source
+  --- motivates dual-span tracking for macro error messages.
+- Pombrio, J. & Krishnamurthi, S. (2015). "Hygienic resugaring of
+  compositional desugaring." In *ICFP '15*, pp. 75--87. ACM. ---
+  Extends the 2014 resugaring framework to handle compositional (nested)
+  desugaring hygienically. Directly applicable to nested macro expansion
+  provenance.
 - Krishnamurthi, S. (2012). *Programming Languages: Application and
   Interpretation.* --- parse -> desugar -> typecheck -> eval pipeline that
   tinct's expansion phase follows.

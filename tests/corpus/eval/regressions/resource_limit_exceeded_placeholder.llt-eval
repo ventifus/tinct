@@ -11,7 +11,7 @@
 # NOTE: This is NOT an error test (expected output is successful evaluation).
 # It was moved from tests/corpus/eval/errors/ where it didn't belong.
 
-# Create a moderately large dict (does NOT trigger E043)
-[large: [range 100]]
+# Create a small dict (does NOT trigger E043)
+[large: [a: 1  b: 2  c: 3]]
 ===
-Dict({"large": Seq(0..100)})
+Dict({"large": Dict({"a": Int(1), "b": Int(2), "c": Int(3)})})

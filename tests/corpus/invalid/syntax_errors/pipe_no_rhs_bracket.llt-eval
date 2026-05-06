@@ -1,0 +1,3 @@
+[[a b | ] ]]
+===
+pipe operator '|' requires a right-hand expression

@@ -1,6 +1,6 @@
 # Type mismatch inside desugared lambda
 # [call $+ $_ 1] desugars to [fn [_] [call $+ $_ 1]]
 # Calling with "hello" produces type mismatch (can't add string and int)
-[[+ _ 1] "hello"]
+[call [+ _ 1] "hello"]
 ===
 [E010] +/-/*//: expected Int or Float, got String and Int

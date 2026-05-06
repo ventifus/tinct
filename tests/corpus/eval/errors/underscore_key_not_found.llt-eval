@@ -1,6 +1,6 @@
 # Desugared access chain where key doesn't exist
-# $_.missing desugars to [fn [_] $_.missing]
+# _.missing desugars to [fn [_] _.missing] via WRAP-DOT
 # When called with [a: 1], key "missing" is not found
-[_.missing [a: 1]]
+[call _.missing [a: 1]]
 ===
 [E001] key not found: missing (available keys: a)

@@ -54,10 +54,12 @@
   },
   "devDependencies": {
     "@types/vscode": "^1.75.0",
+    "esbuild": "^0.25.0",
     "typescript": "^5.0.0"
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "node esbuild.js",
+    "typecheck": "tsc -p ./ --noEmit",
     "package": "vsce package"
   }
 }

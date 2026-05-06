@@ -240,7 +240,7 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::Overlay(l, r) => {
             // Flatten overlay to a concrete dict, then visit it.
             let map =
-                builtins::flatten_overlay(l, r, "serialize", ctx, depth, ast::Span::origin())?;
+                builtins::flatten_overlay(l, r, "value serialization", ctx, depth, ast::Span::origin())?;
             visit_value(&value::Value::Dict(map), ctx, depth, visitor)
         }
         value::Value::Seq { head, .. } => {
@@ -502,6 +502,48 @@ mod tests {
         Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 1)))
     }
 
+    /// Build a materialized dict thunk with entries allocated into `ctx`'s arena.
+    fn thunk_dict(map: IndexMap<Key, Rc<Thunk>>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
+        let mut id_map: IndexMap<Key, value::ThunkId> = IndexMap::with_capacity(map.len());
+        for (k, v) in map {
+            id_map.insert(k, ctx.alloc_thunk(v));
+        }
+        Rc::new(Thunk::new_materialized(
+            Value::Dict(id_map),
+            test_span(1, 1, 1, 1),
+        ))
+    }
+
+    /// Build a materialized Seq thunk with head and tail allocated into `ctx`'s arena.
+    fn seq_thunk(head: Rc<Thunk>, tail: Rc<Thunk>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
+        Rc::new(Thunk::new_materialized(
+            Value::Seq {
+                head: ctx.alloc_thunk(head),
+                tail: ctx.alloc_thunk(tail),
+            },
+            test_span(1, 1, 1, 1),
+        ))
+    }
+
+    /// Build a Proxy thunk with the handler allocated into `ctx`'s arena.
+    fn proxy_thunk(handler: Rc<Thunk>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
+        Rc::new(Thunk::new_materialized(
+            Value::Proxy {
+                handler: ctx.alloc_thunk(handler),
+            },
+            test_span(1, 1, 1, 1),
+        ))
+    }
+
+    /// Build a `Value::Dict` with entries allocated into `ctx`'s arena.
+    fn make_dict(map: IndexMap<Key, Rc<Thunk>>, ctx: &Rc<eval::EvalContext>) -> Value {
+        let mut id_map: IndexMap<Key, value::ThunkId> = IndexMap::with_capacity(map.len());
+        for (k, v) in map {
+            id_map.insert(k, ctx.alloc_thunk(v));
+        }
+        Value::Dict(id_map)
+    }
+
     fn test_ctx() -> Rc<eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
@@ -605,103 +647,124 @@ mod tests {
 
     #[test]
     fn test_json_dict_string_keys() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(
             Key::String("name".into()),
             thunk(Value::String("Alice".into())),
         );
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
-        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
+        let val = make_dict(map, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!({"name": "Alice", "age": 30}));
     }
 
     #[test]
     fn test_json_dict_int_keys_non_sequential() {
         // Int keys that are NOT sequential from 0 -> object with stringified keys
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(5), thunk(Value::String("five".into())));
         map.insert(Key::Int(10), thunk(Value::String("ten".into())));
-        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
+        let val = make_dict(map, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!({"5": "five", "10": "ten"}));
     }
 
     #[test]
     fn test_json_dict_mixed_keys() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("zero".into())));
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
-        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
+        let val = make_dict(map, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!({"0": "zero", "x": 1}));
     }
 
     #[test]
     fn test_json_dict_array_like() {
         // Sequential int keys 0, 1, 2 -> JSON array
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
         map.insert(Key::Int(2), thunk(Value::String("c".into())));
-        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
+        let val = make_dict(map, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!(["a", "b", "c"]));
     }
 
     #[test]
     fn test_json_dict_array_single_element() {
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::Bool(true)));
-        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
+        let val = make_dict(map, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!([true]));
     }
 
     #[test]
     fn test_json_dict_array_wrong_order() {
         // Keys are 0 and 1, but inserted in wrong order in IndexMap -> not sequential
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(1), thunk(Value::String("b".into())));
         map.insert(Key::Int(0), thunk(Value::String("a".into())));
         // First key is 1 at index 0 -> not array-like
-        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
+        let val = make_dict(map, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!({"1": "b", "0": "a"}));
     }
 
     #[test]
     fn test_json_dict_array_starting_at_one() {
         // Keys 1, 2, 3 -- not starting from 0, so object
+        let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(Key::Int(1), thunk(Value::Int(10)));
         map.insert(Key::Int(2), thunk(Value::Int(20)));
-        let result = value_to_json(&Value::Dict(map), &test_ctx(), 0).unwrap();
+        let val = make_dict(map, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!({"1": 10, "2": 20}));
     }
 
     #[test]
     fn test_json_nested_dict() {
+        let ctx = test_ctx();
         let mut inner = IndexMap::new();
         inner.insert(Key::String("x".into()), thunk(Value::Int(1)));
+        let inner_val = make_dict(inner, &ctx);
         let mut outer = IndexMap::new();
-        outer.insert(Key::String("inner".into()), thunk(Value::Dict(inner)));
+        outer.insert(Key::String("inner".into()), thunk(inner_val));
         outer.insert(Key::String("y".into()), thunk(Value::Int(2)));
-        let result = value_to_json(&Value::Dict(outer), &test_ctx(), 0).unwrap();
+        let val = make_dict(outer, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!({"inner": {"x": 1}, "y": 2}));
     }
 
     #[test]
     fn test_json_array_of_objects() {
+        let ctx = test_ctx();
         let mut obj1 = IndexMap::new();
         obj1.insert(
             Key::String("name".into()),
             thunk(Value::String("Alice".into())),
         );
+        let obj1_val = make_dict(obj1, &ctx);
         let mut obj2 = IndexMap::new();
         obj2.insert(
             Key::String("name".into()),
             thunk(Value::String("Bob".into())),
         );
+        let obj2_val = make_dict(obj2, &ctx);
 
         let mut arr = IndexMap::new();
-        arr.insert(Key::Int(0), thunk(Value::Dict(obj1)));
-        arr.insert(Key::Int(1), thunk(Value::Dict(obj2)));
-        let result = value_to_json(&Value::Dict(arr), &test_ctx(), 0).unwrap();
+        arr.insert(Key::Int(0), thunk(obj1_val));
+        arr.insert(Key::Int(1), thunk(obj2_val));
+        let val = make_dict(arr, &ctx);
+        let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(
             result,
             serde_json::json!([{"name": "Alice"}, {"name": "Bob"}])
@@ -726,17 +789,22 @@ mod tests {
 
     #[test]
     fn test_json_seq_error() {
-        let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(
+        let ctx = test_ctx();
+        let seq = {
+            let head_thunk = Rc::new(Thunk::new_materialized(
                 Value::Int(1),
                 test_span(1, 1, 1, 1),
-            )),
-            tail: Rc::new(Thunk::new_materialized(
+            ));
+            let tail_thunk = Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
-            )),
+            ));
+            Value::Seq {
+                head: ctx.alloc_thunk(head_thunk),
+                tail: ctx.alloc_thunk(tail_thunk),
+            }
         };
-        let err = value_to_json(&seq, &test_ctx(), 0).unwrap_err();
+        let err = value_to_json(&seq, &ctx, 0).unwrap_err();
         assert!(
             err.message().contains("cannot serialize Seq to JSON"),
             "got: {}",
@@ -770,9 +838,12 @@ mod tests {
 
     #[test]
     fn test_json_proxy_error() {
-        let handler = Rc::new(Thunk::new_materialized(Value::Int(0), ast::Span::origin()));
-        let proxy = Value::Proxy { handler };
-        let err = value_to_json(&proxy, &test_ctx(), 0).unwrap_err();
+        let ctx = test_ctx();
+        let handler_thunk = Rc::new(Thunk::new_materialized(Value::Int(0), ast::Span::origin()));
+        let proxy = Value::Proxy {
+            handler: ctx.alloc_thunk(handler_thunk),
+        };
+        let err = value_to_json(&proxy, &ctx, 0).unwrap_err();
         assert!(
             err.message().contains("cannot serialize Proxy to JSON"),
             "got: {}",
@@ -822,7 +893,8 @@ mod tests {
         let ctx = test_ctx();
 
         let initial_input = stdin_json.map(|json| {
-            builtins::json_to_value(&json, 0, ast::Span::origin()).expect("json_to_value failed")
+            builtins::json_to_value(&json, 0, ast::Span::origin(), &ctx)
+                .expect("json_to_value failed")
         });
 
         let thunk = eval::eval_file_with_input(&file.node, env, &ctx, initial_input, 0)
@@ -917,29 +989,36 @@ mod tests {
 
     #[test]
     fn test_display_seq() {
-        let seq = Value::Seq {
-            head: Rc::new(Thunk::new_materialized(
+        let ctx = test_ctx();
+        let seq = {
+            let head_thunk = Rc::new(Thunk::new_materialized(
                 Value::Int(1),
                 test_span(1, 1, 1, 1),
-            )),
-            tail: Rc::new(Thunk::new_materialized(
+            ));
+            let tail_thunk = Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
-            )),
+            ));
+            Value::Seq {
+                head: ctx.alloc_thunk(head_thunk),
+                tail: ctx.alloc_thunk(tail_thunk),
+            }
         };
-        let display = value_to_display_string(&seq, &test_ctx(), 0).expect("display failed");
+        let display = value_to_display_string(&seq, &ctx, 0).expect("display failed");
         assert_eq!(display, "Seq(Int(1), ...)");
     }
 
     #[test]
     fn test_display_proxy() {
+        let ctx = test_ctx();
+        let handler_thunk = Rc::new(Thunk::new_materialized(
+            Value::Int(42),
+            test_span(1, 1, 1, 1),
+        ));
         let proxy = Value::Proxy {
-            handler: Rc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )),
+            handler: ctx.alloc_thunk(handler_thunk),
         };
-        let display = value_to_display_string(&proxy, &test_ctx(), 0).expect("display failed");
+        let display = value_to_display_string(&proxy, &ctx, 0).expect("display failed");
         assert_eq!(display, "Proxy");
     }
 

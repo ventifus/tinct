@@ -137,6 +137,17 @@ fn try_wrap(expr: &mut Spanned<Expr>) -> bool {
             false
         }
 
+        // WRAP-PIPE: LHS is DIRECT (e.g., `$_ | f` becomes `[fn [_] $_ | f]`)
+        // The desugar_pipe step inside the lambda body will then transform
+        // `$_ | f` to `Call(f, [VarRef("_")])` at depth > 0 where `_` is bound.
+        Expr::Pipe { lhs, .. } => {
+            if is_direct_underscore(&lhs.node) {
+                wrap_expr_in_lambda(expr);
+                return true;
+            }
+            false
+        }
+
         // All other cases: no wrapping
         _ => false,
     }
@@ -153,6 +164,8 @@ fn is_direct_underscore(expr: &Expr) -> bool {
         Expr::DotAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
         Expr::BracketAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
         Expr::RangeAccess { expr: inner, .. } => is_direct_underscore(&inner.node),
+        // Pipe chains: check LHS (e.g., $_ | f becomes [fn [_] $_ | f])
+        Expr::Pipe { lhs, .. } => is_direct_underscore(&lhs.node),
         // All other expressions: not DIRECT
         _ => false,
     }
@@ -222,6 +235,22 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             if let Some(e) = end {
                 desugar(e, depth);
             }
+        }
+        // Pipe: recurse into both sides at the CURRENT depth, then rewrite the pipe itself.
+        //
+        // Why here (recurse_children) rather than in try_wrap?
+        //   try_wrap handles only the WRAP-PIPE case (`$_ | f` at depth 0, where the whole
+        //   pipe is wrapped in `[fn [_] ...]`). After wrapping, the lambda body is recursed
+        //   at depth+1 — catching any child $_ references inside the body.
+        //   recurse_children handles the non-wrapping case (any other pipe, or depth>0):
+        //   recurse both sides so that nested $_ in lhs/rhs are desugared, then rewrite the
+        //   Pipe node itself into a Call via desugar_pipe. This ordering (recurse children,
+        //   THEN rewrite) ensures that the children of the Pipe are fully desugared before
+        //   the Pipe disappears from the AST.
+        Expr::Pipe { lhs, rhs } => {
+            desugar(lhs, depth);
+            desugar(rhs, depth);
+            desugar_pipe(expr);
         }
 
         // Dict: recurse into keys and values
@@ -336,6 +365,68 @@ fn desugar_annotation(ann: &mut Annotation, depth: usize) {
     }
 }
 
+/// Desugar a Pipe expression by transforming it into a Call.
+///
+/// Rules:
+/// - `Pipe(lhs, Call(f, args))` → `Call(f, args ++ [lhs])`
+/// - `Pipe(lhs, VarRef(n))` → `Call(VarRef(n), [lhs])`
+/// - `Pipe(lhs, other)` → `Call(other, [lhs])`
+///
+/// This transformation happens after `$_` desugaring and recursion into children.
+fn desugar_pipe(expr: &mut Spanned<Expr>) {
+    let span = expr.span;
+
+    // Extract lhs and rhs from the Pipe node
+    let (lhs, rhs) = match &mut expr.node {
+        Expr::Pipe { lhs, rhs } => {
+            // Take ownership by replacing with dummy values
+            let lhs_box = std::mem::replace(lhs, Box::new(Spanned::new(Expr::Int(0), span)));
+            let rhs_box = std::mem::replace(rhs, Box::new(Spanned::new(Expr::Int(0), span)));
+            (*lhs_box, *rhs_box)
+        }
+        _ => return, // Not a Pipe, nothing to do
+    };
+
+    // Transform based on RHS type
+    let new_node = match rhs.node {
+        Expr::Call {
+            func,
+            mut args,
+            named_args,
+            implied,
+        } => {
+            // Append lhs as final positional argument
+            args.push(Rc::new(lhs));
+            Expr::Call {
+                func,
+                args,
+                named_args,
+                implied,
+            }
+        }
+        Expr::VarRef { name, resolved } => {
+            // Bare word: call it with lhs as the only argument
+            Expr::Call {
+                func: Box::new(Spanned::new(Expr::VarRef { name, resolved }, rhs.span)),
+                args: vec![Rc::new(lhs)],
+                named_args: vec![],
+                implied: true,
+            }
+        }
+        other_expr => {
+            // Any other expression: call it with lhs
+            Expr::Call {
+                func: Box::new(Spanned::new(other_expr, rhs.span)),
+                args: vec![Rc::new(lhs)],
+                named_args: vec![],
+                implied: true,
+            }
+        }
+    };
+
+    expr.node = new_node;
+}
+
 /// Desugar an optional annotation.
 fn desugar_annotation_option(ann: &mut Option<Spanned<Annotation>>, depth: usize) {
     if let Some(ann_spanned) = ann {
@@ -375,7 +466,7 @@ mod tests {
     fn test_direct_underscore_dot_access() {
         let expr = Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("_".into()))),
-            field: "age".into(),
+            field: crate::ast::DotKey::Ident("age".into()),
         };
         assert!(is_direct_underscore(&expr));
     }
@@ -386,9 +477,9 @@ mod tests {
         let expr = Expr::DotAccess {
             expr: Box::new(sp(Expr::DotAccess {
                 expr: Box::new(sp(Expr::var_ref("_".into()))),
-                field: "user".into(),
+                field: crate::ast::DotKey::Ident("user".into()),
             })),
-            field: "name".into(),
+            field: crate::ast::DotKey::Ident("name".into()),
         };
         assert!(is_direct_underscore(&expr));
     }
@@ -419,7 +510,7 @@ mod tests {
     fn test_direct_underscore_dot_access_non_underscore() {
         let expr = Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("data".into()))),
-            field: "age".into(),
+            field: crate::ast::DotKey::Ident("age".into()),
         };
         assert!(!is_direct_underscore(&expr));
     }
@@ -576,7 +667,7 @@ mod tests {
     fn test_wrap_dot_access() {
         let mut expr = sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("_".into()))),
-            field: "age".into(),
+            field: crate::ast::DotKey::Ident("age".into()),
         });
 
         desugar_expr(&mut expr, 0);
@@ -592,7 +683,7 @@ mod tests {
                         field,
                     } => {
                         assert!(matches!(&target.node, Expr::VarRef { name, .. } if name == "_"));
-                        assert_eq!(field, "age");
+                        assert_eq!(*field, crate::ast::DotKey::Ident("age".into()));
                     }
                     _ => panic!("Expected DotAccess in lambda body"),
                 }
@@ -766,7 +857,7 @@ mod tests {
                     args: vec![
                         Rc::new(sp(Expr::DotAccess {
                             expr: Box::new(sp(Expr::var_ref("_".into()))),
-                            field: "age".into(),
+                            field: crate::ast::DotKey::Ident("age".into()),
                         })),
                         Rc::new(sp(Expr::Int(30))),
                     ],
@@ -815,7 +906,7 @@ mod tests {
                                             &target.node,
                                             Expr::VarRef { name, .. } if name == "_"
                                         ));
-                                        assert_eq!(field, "age");
+                                        assert_eq!(*field, crate::ast::DotKey::Ident("age".into()));
                                     }
                                     _ => panic!("Expected DotAccess"),
                                 }
@@ -1233,6 +1324,119 @@ mod tests {
                 }
             }
             _ => panic!("Expected outer Fn, got {:?}", expr.node),
+        }
+    }
+
+    // --- Pipe desugaring tests ---
+
+    /// WRAP-PIPE: `$_ | f` wraps to `[fn [_] [call f _]]`.
+    /// When the pipe LHS is DIRECT ($_ or access chain on $_), the whole pipe
+    /// expression is wrapped in a lambda at depth 0.
+    #[test]
+    fn test_wrap_pipe_direct_lhs() {
+        let mut expr = sp(Expr::Pipe {
+            lhs: Box::new(sp(Expr::var_ref("_".into()))),
+            rhs: Box::new(sp(Expr::var_ref("f".into()))),
+        });
+
+        desugar_expr(&mut expr, 0);
+
+        // Should have wrapped in a lambda
+        match &expr.node {
+            Expr::Fn { params, body, desugared, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].node.name, "_");
+                assert!(desugared, "WRAP-PIPE should produce desugared=true lambda");
+                // Body: the pipe $_ | f desugared to Call(f, [$_])
+                match &body.node {
+                    Expr::Call { func, args, .. } => {
+                        assert!(
+                            matches!(&func.node, Expr::VarRef { name, .. } if name == "f"),
+                            "expected func = VarRef(f), got {:?}",
+                            func.node
+                        );
+                        assert_eq!(args.len(), 1);
+                        assert!(
+                            matches!(&args[0].node, Expr::VarRef { name, .. } if name == "_"),
+                            "expected arg = VarRef(_), got {:?}",
+                            args[0].node
+                        );
+                    }
+                    _ => panic!("expected Call in WRAP-PIPE lambda body, got {:?}", body.node),
+                }
+            }
+            _ => panic!("expected Fn wrapper from WRAP-PIPE, got {:?}", expr.node),
+        }
+    }
+
+    /// Non-WRAP-PIPE: `x | f` does NOT wrap — only DIRECT lhs triggers WRAP-PIPE.
+    /// Instead it desugars directly to `Call(f, [x])`.
+    #[test]
+    fn test_no_wrap_pipe_non_direct_lhs() {
+        let mut expr = sp(Expr::Pipe {
+            lhs: Box::new(sp(Expr::var_ref("x".into()))),
+            rhs: Box::new(sp(Expr::var_ref("f".into()))),
+        });
+
+        desugar_expr(&mut expr, 0);
+
+        // Should NOT wrap — desugars directly to Call(f, [x])
+        match &expr.node {
+            Expr::Call { func, args, .. } => {
+                assert!(
+                    matches!(&func.node, Expr::VarRef { name, .. } if name == "f"),
+                    "expected func = VarRef(f), got {:?}",
+                    func.node
+                );
+                assert_eq!(args.len(), 1);
+                assert!(
+                    matches!(&args[0].node, Expr::VarRef { name, .. } if name == "x"),
+                    "expected arg = VarRef(x), got {:?}",
+                    args[0].node
+                );
+            }
+            _ => panic!("expected Call from pipe desugar, got {:?}", expr.node),
+        }
+    }
+
+    /// Pipe CALL-EXTEND: `x | [f a]` appends x as the last arg → `[f a x]`.
+    #[test]
+    fn test_pipe_call_extend() {
+        let mut expr = sp(Expr::Pipe {
+            lhs: Box::new(sp(Expr::var_ref("x".into()))),
+            rhs: Box::new(sp(Expr::Call {
+                func: Box::new(sp(Expr::var_ref("f".into()))),
+                args: vec![Rc::new(sp(Expr::var_ref("a".into())))],
+                named_args: vec![],
+                implied: false,
+            })),
+        });
+
+        desugar_expr(&mut expr, 0);
+
+        // `x | [f a]` → `[f a x]` (lhs appended at end per rule)
+        match &expr.node {
+            Expr::Call { func, args, .. } => {
+                assert!(
+                    matches!(&func.node, Expr::VarRef { name, .. } if name == "f"),
+                    "expected func = VarRef(f), got {:?}",
+                    func.node
+                );
+                assert_eq!(args.len(), 2, "expected 2 args after pipe extend");
+                // First arg is original: a
+                assert!(
+                    matches!(&args[0].node, Expr::VarRef { name, .. } if name == "a"),
+                    "expected args[0] = VarRef(a), got {:?}",
+                    args[0].node
+                );
+                // Second arg is the lhs appended: x
+                assert!(
+                    matches!(&args[1].node, Expr::VarRef { name, .. } if name == "x"),
+                    "expected args[1] = VarRef(x), got {:?}",
+                    args[1].node
+                );
+            }
+            _ => panic!("expected Call from CALL-EXTEND pipe, got {:?}", expr.node),
         }
     }
 }

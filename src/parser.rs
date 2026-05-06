@@ -328,6 +328,10 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             desugared,
         },
         Expr::TypeAlias(inner) => Expr::TypeAlias(Box::new(adjust_spanned_expr(*inner, base))),
+        Expr::Pipe { lhs, rhs } => Expr::Pipe {
+            lhs: Box::new(adjust_spanned_expr(*lhs, base)),
+            rhs: Box::new(adjust_spanned_expr(*rhs, base)),
+        },
         Expr::TypeAssert {
             annotation,
             expr,
@@ -837,6 +841,12 @@ enum StackFrame {
         is_range: bool,
         /// The expression after `..` (only for range access)
         range_end: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Pipe operator: `lhs | rhs`
+    /// Holds the LHS and waits for the RHS to be parsed
+    Pipe {
+        lhs: Spanned<Expr>,
         span_start: Position,
     },
 }
@@ -1794,6 +1804,19 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                     },
 
+                    StackFrame::Pipe { .. } => {
+                        // A Pipe frame is never opened by `[` — pipe is an infix operator
+                        // between two expressions, not a bracket form. A CloseBracket here
+                        // means the enclosing bracket form is being closed while a Pipe is
+                        // on the stack, which indicates a malformed expression like `[x | ]`.
+                        // Recover gracefully with a parse error instead of panicking.
+                        close_bracket_recover!(ParseError {
+                            message: "pipe operator '|' requires a right-hand expression"
+                                .to_string(),
+                            span: Some(span),
+                        });
+                    }
+
                     StackFrame::BracketAccessKey {
                         target,
                         key_expr,
@@ -2527,10 +2550,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     return Err(err);
                 }
 
-                // Next token must be an Identifier for the field name
+                // Next token must be an Identifier or Int for the field name
                 match &token_vec[i].node {
                     Token::Identifier(field) => {
-                        let field_name = field.clone();
+                        let field_key = crate::ast::DotKey::Ident(field.clone());
                         let dot_access_span = Span {
                             start: target.span.start,
                             end: token_vec[i].span.end,
@@ -2538,7 +2561,43 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                         let dot_access_expr = Expr::DotAccess {
                             expr: Box::new(target),
-                            field: field_name,
+                            field: field_key,
+                        };
+
+                        let spanned_access = Spanned::new(dot_access_expr, dot_access_span);
+
+                        if stack.is_empty() {
+                            current_document_expressions.push(Rc::new(spanned_access.clone()));
+                        } else if let Err(push_err) = push_value(
+                            &mut stack,
+                            &mut current_document_expressions,
+                            spanned_access,
+                        ) {
+                            i = recover_from_bracket_error(
+                                push_err,
+                                dot_access_span,
+                                &token_vec,
+                                i + 1,
+                                &mut stack,
+                                &mut current_document_expressions,
+                                &mut recovered_errors,
+                            );
+                            continue;
+                        }
+
+                        i += 1;
+                        continue;
+                    }
+                    Token::Int(n) => {
+                        let field_key = crate::ast::DotKey::Int(*n);
+                        let dot_access_span = Span {
+                            start: target.span.start,
+                            end: token_vec[i].span.end,
+                        };
+
+                        let dot_access_expr = Expr::DotAccess {
+                            expr: Box::new(target),
+                            field: field_key,
                         };
 
                         let spanned_access = Spanned::new(dot_access_expr, dot_access_span);
@@ -2568,7 +2627,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     _ => {
                         let err = ParseError {
                             message: format!(
-                                "expected field name (identifier) after '.', found {:?}",
+                                "expected field name (identifier or integer) after '.', found {:?}",
                                 token_vec[i].node
                             ),
                             span: Some(token_vec[i].span),
@@ -2588,6 +2647,49 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         return Err(err);
                     }
                 }
+            }
+
+            Token::Pipe => {
+                // Pipe operator: pop the preceding expression (LHS) and push a Pipe frame
+                // Precedence: . > call > |
+                // Inside [...], | terminates call argument accumulation
+                let lhs = if stack.is_empty() {
+                    if current_document_expressions.is_empty() {
+                        return Err(ParseError {
+                            message: "pipe operator requires a left-hand expression before '|'"
+                                .to_string(),
+                            span: Some(span),
+                        });
+                    }
+                    let rc = current_document_expressions.pop().unwrap();
+                    Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
+                } else {
+                    // Inside a frame — pop the last value from the current frame
+                    match pop_last_value_from_frame(&mut stack, span) {
+                        Ok(lhs_expr) => lhs_expr,
+                        Err(pop_err) => {
+                            i = recover_from_bracket_error(
+                                pop_err,
+                                span,
+                                &token_vec,
+                                i + 1,
+                                &mut stack,
+                                &mut current_document_expressions,
+                                &mut recovered_errors,
+                            );
+                            continue;
+                        }
+                    }
+                };
+
+                // Push a Pipe frame to wait for the RHS expression
+                stack.push(StackFrame::Pipe {
+                    lhs,
+                    span_start: span.start,
+                });
+
+                i += 1; // Consume the Pipe token
+                continue;
             }
 
             Token::Range => {
@@ -2768,6 +2870,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::TypeAlias { span_start, .. } => *span_start,
             StackFrame::TypeAssert { span_start, .. } => *span_start,
             StackFrame::BracketAccessKey { span_start, .. } => *span_start,
+            StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
         let unclosed_span = Span {
@@ -2780,10 +2883,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
         };
 
         let count = stack.len();
-        let message = if count == 1 {
-            "unclosed bracket".to_string()
-        } else {
-            format!("{} unclosed brackets", count)
+        let message = match innermost_frame {
+            StackFrame::Pipe { .. } => {
+                "pipe operator '|' requires a right-hand expression".to_string()
+            }
+            _ if count == 1 => "unclosed bracket".to_string(),
+            _ => format!("{} unclosed brackets", count),
         };
 
         return Err(ParseError {
@@ -2981,6 +3086,10 @@ fn pop_last_value_from_frame(
                 })
             }
         }
+        Some(StackFrame::Pipe { .. }) => Err(ParseError {
+            message: "pipe operator '|' requires a right-hand expression".to_string(),
+            span: Some(span),
+        }),
         None => Err(ParseError {
             message: "dot access requires a target before '.'".to_string(),
             span: Some(span),
@@ -3076,6 +3185,25 @@ fn push_expr_to_parent(
                     *key_expr = Some(expr);
                 }
                 Ok(())
+            }
+            Some(StackFrame::Pipe { lhs, span_start }) => {
+                // We have the RHS expression; pop the frame and create the Pipe node
+                let lhs_expr = lhs.clone();
+                let pipe_span = Span {
+                    start: *span_start,
+                    end: expr.span.end,
+                };
+                stack.pop(); // Remove the Pipe frame
+
+                let pipe_expr = Expr::Pipe {
+                    lhs: Box::new(lhs_expr),
+                    rhs: Box::new(expr),
+                };
+
+                let spanned_pipe = Spanned::new(pipe_expr, pipe_span);
+
+                // Push to parent context
+                push_value(stack, current_document_expressions, spanned_pipe)
             }
             None => unreachable!("stack.is_empty() was false but last_mut returned None"),
         }
@@ -4167,7 +4295,7 @@ mod tests {
                     Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
-                assert_eq!(field, "b");
+                assert_eq!(*field, DotKey::Ident("b".to_string()));
             }
             other => panic!("expected DotAccess, got {other:?}"),
         }
@@ -4182,13 +4310,13 @@ mod tests {
                 expr: outer_expr,
                 field: outer_field,
             } => {
-                assert_eq!(outer_field, "c");
+                assert_eq!(*outer_field, DotKey::Ident("c".to_string()));
                 match &outer_expr.node {
                     Expr::DotAccess {
                         expr: inner_expr,
                         field: inner_field,
                     } => {
-                        assert_eq!(inner_field, "b");
+                        assert_eq!(*inner_field, DotKey::Ident("b".to_string()));
                         match &inner_expr.node {
                             Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                             other => panic!("expected VarRef at base, got {other:?}"),
@@ -4220,7 +4348,7 @@ mod tests {
                 assert_eq!(args.len(), 1);
                 match &args[0].node {
                     Expr::DotAccess { expr, field } => {
-                        assert_eq!(field, "b");
+                        assert_eq!(*field, DotKey::Ident("b".to_string()));
                         match &expr.node {
                             Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                             other => panic!("expected VarRef, got {other:?}"),
@@ -4249,7 +4377,7 @@ mod tests {
                 }
                 match &entries[0].node.value.node {
                     Expr::DotAccess { expr, field } => {
-                        assert_eq!(field, "z");
+                        assert_eq!(*field, DotKey::Ident("z".to_string()));
                         match &expr.node {
                             Expr::VarRef { name, .. } => assert_eq!(name, "y"),
                             other => panic!("expected VarRef, got {other:?}"),
@@ -4467,7 +4595,7 @@ mod tests {
         );
         match &doc.expressions[0].node {
             Expr::DotAccess { expr: inner, field } => {
-                assert_eq!(field, "b");
+                assert_eq!(*field, DotKey::Ident("b".to_string()));
                 match &inner.node {
                     Expr::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef('a') inside DotAccess, got {other:?}"),
@@ -4579,7 +4707,7 @@ mod tests {
         );
         match &doc.expressions[0].node {
             Expr::DotAccess { expr, field } => {
-                assert_eq!(field, "x");
+                assert_eq!(*field, DotKey::Ident("x".to_string()));
                 match &expr.node {
                     Expr::Dict(entries) => {
                         assert_eq!(entries.len(), 1);
@@ -5361,7 +5489,7 @@ mod tests {
                     Expr::VarRef { name, .. } => assert_eq!(name, "str"),
                     other => panic!("expected func=VarRef(str), got {other:?}"),
                 }
-                assert_eq!(args.len(), 1, "expected 1 arg for lone ${expr}");
+                assert_eq!(args.len(), 1, "expected 1 arg for lone interpolation expr");
                 // The arg should be the re-parsed [+ $x 1] — an implied Call
                 match &args[0].node {
                     Expr::Call {
@@ -5433,5 +5561,183 @@ mod tests {
             "expected unterminated error, got: {}",
             err.message
         );
+    }
+
+    // --- Pipe (|) operator parsing tests ---
+
+    /// `a | b` parses as Pipe { lhs: VarRef("a"), rhs: VarRef("b") }.
+    #[test]
+    fn test_pipe_basic() {
+        let expr = parse_expr("a | b");
+        match &expr.node {
+            Expr::Pipe { lhs, rhs } => {
+                assert!(
+                    matches!(&lhs.node, Expr::VarRef { name, .. } if name == "a"),
+                    "expected lhs = VarRef(a), got {:?}",
+                    lhs.node
+                );
+                assert!(
+                    matches!(&rhs.node, Expr::VarRef { name, .. } if name == "b"),
+                    "expected rhs = VarRef(b), got {:?}",
+                    rhs.node
+                );
+            }
+            other => panic!("expected Pipe, got {other:?}"),
+        }
+    }
+
+    /// `a | b | c` is left-associative: parsed as `(a | b) | c`.
+    #[test]
+    fn test_pipe_left_assoc() {
+        let expr = parse_expr("a | b | c");
+        match &expr.node {
+            Expr::Pipe { lhs, rhs } => {
+                // rhs must be VarRef("c")
+                assert!(
+                    matches!(&rhs.node, Expr::VarRef { name, .. } if name == "c"),
+                    "expected rhs = VarRef(c), got {:?}",
+                    rhs.node
+                );
+                // lhs must be Pipe { a | b }
+                match &lhs.node {
+                    Expr::Pipe { lhs: inner_lhs, rhs: inner_rhs } => {
+                        assert!(
+                            matches!(&inner_lhs.node, Expr::VarRef { name, .. } if name == "a"),
+                            "expected inner_lhs = VarRef(a), got {:?}",
+                            inner_lhs.node
+                        );
+                        assert!(
+                            matches!(&inner_rhs.node, Expr::VarRef { name, .. } if name == "b"),
+                            "expected inner_rhs = VarRef(b), got {:?}",
+                            inner_rhs.node
+                        );
+                    }
+                    other => panic!("expected nested Pipe for lhs, got {other:?}"),
+                }
+            }
+            other => panic!("expected Pipe, got {other:?}"),
+        }
+    }
+
+    /// `$x | [f $y]` — pipe where RHS is an explicit Call bracket expression.
+    /// Note: dot access (`.`) has higher precedence than pipe (`|`). So `a.b | c.d`
+    /// parses as `DotAccess(Pipe(DotAccess(a,b), c), d)` — the trailing `.d` extends
+    /// beyond the pipe. To test pipe with a bracket RHS, use an explicit `[...]` form.
+    #[test]
+    fn test_pipe_inside_brackets() {
+        // $x | [f $y] — top-level pipe, RHS is an explicit Call
+        let expr = parse_expr("$x | [f $y]");
+        match &expr.node {
+            Expr::Pipe { lhs, rhs } => {
+                assert!(
+                    matches!(&lhs.node, Expr::VarRef { name, .. } if name == "x"),
+                    "expected lhs = VarRef(x), got {:?}",
+                    lhs.node
+                );
+                assert!(
+                    matches!(&rhs.node, Expr::Call { .. }),
+                    "expected rhs = Call, got {:?}",
+                    rhs.node
+                );
+            }
+            other => panic!("expected Pipe, got {other:?}"),
+        }
+    }
+
+    /// `a.b | c.d` — dot access on both sides of pipe.
+    #[test]
+    fn test_pipe_dot_then_pipe() {
+        let expr = parse_expr("$data.name | upper");
+        match &expr.node {
+            Expr::Pipe { lhs, rhs } => {
+                assert!(
+                    matches!(&lhs.node, Expr::DotAccess { .. }),
+                    "expected lhs = DotAccess, got {:?}",
+                    lhs.node
+                );
+                assert!(
+                    matches!(&rhs.node, Expr::VarRef { name, .. } if name == "upper"),
+                    "expected rhs = VarRef(upper), got {:?}",
+                    rhs.node
+                );
+            }
+            other => panic!("expected Pipe, got {other:?}"),
+        }
+    }
+
+    // --- DotKey::Int parsing tests ---
+
+    /// `$a.0` parses as DotAccess with DotKey::Int(0).
+    #[test]
+    fn test_dot_access_int_key() {
+        let expr = parse_expr("$a.0");
+        match &expr.node {
+            Expr::DotAccess { field, .. } => {
+                assert!(
+                    matches!(field, DotKey::Int(0)),
+                    "expected DotKey::Int(0), got {:?}",
+                    field
+                );
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
+    }
+
+    /// `$a.0.name` parses as chained DotAccess: outer is Ident("name"), inner is Int(0).
+    #[test]
+    fn test_dot_access_int_then_ident() {
+        let expr = parse_expr("$a.0.name");
+        match &expr.node {
+            Expr::DotAccess { expr: target, field, .. } => {
+                // outer field: "name"
+                assert!(
+                    matches!(field, DotKey::Ident(s) if s == "name"),
+                    "expected outer DotKey::Ident(name), got {:?}",
+                    field
+                );
+                // inner: DotAccess on $a with Int(0)
+                match &target.node {
+                    Expr::DotAccess { field: inner_field, .. } => {
+                        assert!(
+                            matches!(inner_field, DotKey::Int(0)),
+                            "expected inner DotKey::Int(0), got {:?}",
+                            inner_field
+                        );
+                    }
+                    other => panic!("expected inner DotAccess, got {other:?}"),
+                }
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
+    }
+
+    /// `$a.0.1` parses as chained DotAccess with two Int keys (not Float 0.1).
+    /// Regression test: the lexer must suppress float detection after access-dot,
+    /// otherwise `0.1` would be lexed as a single Float token.
+    #[test]
+    fn test_dot_access_int_chain() {
+        let expr = parse_expr("$a.0.1");
+        match &expr.node {
+            Expr::DotAccess { expr: target, field, .. } => {
+                // outer field: Int(1)
+                assert!(
+                    matches!(field, DotKey::Int(1)),
+                    "expected outer DotKey::Int(1), got {:?}",
+                    field
+                );
+                // inner: DotAccess on $a with Int(0)
+                match &target.node {
+                    Expr::DotAccess { field: inner_field, .. } => {
+                        assert!(
+                            matches!(inner_field, DotKey::Int(0)),
+                            "expected inner DotKey::Int(0), got {:?}",
+                            inner_field
+                        );
+                    }
+                    other => panic!("expected inner DotAccess, got {other:?}"),
+                }
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
     }
 }

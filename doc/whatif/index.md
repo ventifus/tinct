@@ -11,6 +11,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
+| [Null Semantics](null-semantics.md) | `@Null` annotation = `Type::Record(Row::Empty)`; void-returning builtins typed precisely |
 | [Path-Sensitive Narrowing](narrowing.md) | Refine variable types inside `if` branches from equality/type guards |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site, fixing name-collision bugs |
 | [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) |
@@ -33,8 +34,16 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption |
 | [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros |
 | [Desugaring as Macros](macros.md) | Procedural AST macros for user-defined syntactic transformations |
+| [Macro-Rewrite](macro-rewrite.md) | Replace `src/desugar.rs` with `[defmacro]` definitions; land `let`, `match`, `union`, `i"..."` as macros instead of Rust AST variants |
+| [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — `[match]` arms use full-annotated-expression equality so `n@Int` and `n@String` coexist as distinct pattern keys |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
-| [Unified Access and Generator Pipeline](access-pipeline.md) | Replace bracket access with `\|` reverse-apply infix; dot access extended to integer keys; generator semantics via `each`/`each-key`/`each-kv` |
+
+## Metaprogramming Infrastructure
+
+| Proposal | Summary |
+|----------|---------|
+| [AST Dict Schema](ast-schema.md) | Canonical `Expr` → tinct dict mapping shared by formatter, quasiquoting, and macros; `ast_to_dict` / `dict_to_ast` Rust functions |
+| [Tinct-Hosted Formatter](tinct-hosted-formatter.md) | `tinct fmt` delegated to `stdlib/formatter/format.llt`; speculative rendering for width measurement; shared `ast_to_dict` infrastructure with quasiquoting |
 
 ## Runtime and Performance
 
@@ -64,6 +73,12 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [TLS, PKI, and HTTP](lib-tls.md) | mTLS, custom CA bundles, certificate pinning, ALPN, HTTP/2 via `fetch` |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
+
+## Templating
+
+| Proposal | Summary |
+|----------|---------|
+| [Template-Polarity Embedding](template-polarity.md) | `tinct template` subcommand — `{{ expr }}` / `{% block %}` Jinja-style preprocessing of foreign-format files (nginx.conf, Dockerfile, Makefile) |
 
 ## Standard Library
 
@@ -99,9 +114,15 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 
 These proposals have been formally accepted: `State: Accepted` marked, spec integrated, implementation sprints created in TODO.md. Not yet fully implemented.
 
+| Proposal | Summary | Accepted |
+|----------|---------|----------|
+| [Unified Access and Generator Pipeline](access-pipeline.md) | Remove bracket access; add `\|` desugar-only pipe; `DotKey::Int` for `list.0`; `get`, `each`, `collect-kv` builtins | 2026-05-05 |
+
 ### Adopt Now
 
 These proposals have no gating conditions and deliver standalone value at low cost.
+
+**[Null Semantics](null-semantics.md) Phase 1** — One arm in `resolve_type_name`: `"Null" => Type::Record(Row::Empty)`. Zero new runtime machinery. `fn@Null` for void-returning builtins. Trigger already met — `type-checker-fixes` sprint asks for it.
 
 **[`let` Binding Form](let-binding.md)** — Removes structural friction in every multi-step function. No new keywords; extends existing sequential scoping model to `[fn ...]` bodies. No dependencies.
 
@@ -137,6 +158,11 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
 | [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
+| [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
+| [AST Dict Schema](ast-schema.md) | When compact formatter modes (`--oneline`/`--nospaces`) or quasiquoting are accepted — Phase 1 `ast_to_dict` unblocks both simultaneously |
+| [Tinct-Hosted Formatter](tinct-hosted-formatter.md) | Phase 1: when compact formatter modes are wanted; Phase 2: when a new `Expr` variant would require dual Rust+tinct updates |
+| [Macro-Rewrite](macro-rewrite.md) | When macros Phase 2 (`[defmacro]`) ships — implement before any typing-cluster A1/A2/A3/C1 Rust sprints |
+| [Parse-Stage Macros](parse-stage-macros.md) | When `[defmacro match]` Phase 2 lands — `n@Int` and `n@String` as distinct pattern keys requires context-sensitive key identity at parse time |
 | [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 complete with zero failures; formal semantics in doc/08-evaluation.md |
 
 ### Additive Capability (No TODO Replacement)

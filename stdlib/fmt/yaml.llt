@@ -7,7 +7,7 @@ yaml-needs-quote?: [fn [s]
   [or
     [= s ""]
     [or [= s "true"] [or [= s "false"] [or [= s "null"]
-      [or [= s "~"] [= s "yes"]]]]]]
+      [or [= s "~"] [= s "yes"]]]]]]]
 
 # Internal: quote a string for YAML
 yaml-quote: [fn [s]
@@ -52,7 +52,7 @@ yaml-list-items: [fn [d indent i]
 
 yaml-list-item: [fn [d indent i]
   [str
-    [repeat indent " "]
+    [join "" [take indent [repeat " "]]]
     "- "
     [yaml-list-value d[i] [+ indent 2]]
     [if [< [+ i 1] [length d]] "\n" ""]
@@ -84,7 +84,7 @@ yaml-dict-entries: [fn [d indent ks i]
 
 yaml-dict-entry: [fn [d indent ks i]
   [str
-    [repeat indent " "]
+    [join "" [take indent [repeat " "]]]
     ks[i]
     ": "
     [yaml-dict-value d[ks[i]] [+ indent 2]]

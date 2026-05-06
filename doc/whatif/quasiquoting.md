@@ -117,30 +117,34 @@ its argument, which no regular function or builtin can do.
 
 ### AST Dict Schema
 
-Each AST node type maps to a tinct dict with a `type` discriminator key:
+The canonical schema is defined in `doc/whatif/ast-schema.md` — all consumers
+(quasiquoting, macros, tinct-hosted formatter) share one definition to prevent
+drift. Key conventions: `type:` string discriminator on every node, `[]` for
+absent optionals, `span:` on every node, `schema-version: 1` on the root
+`File` node.
 
-| AST Node | Dict Representation |
-|----------|-------------------|
-| `42` | `[type: "literal"  kind: "int"  value: 42]` |
-| `"hello"` | `[type: "literal"  kind: "str"  value: "hello"]` |
-| `true` | `[type: "literal"  kind: "bool"  value: true]` |
-| `x` | `[type: "var"  name: "x"]` |
-| `x.field` | `[type: "dot-access"  target: [type: "var"  name: "x"]  field: "field"]` |
-| `[a b c]` | `[type: "dict"  entries: [...]]` |
-| `[f x]` | `[type: "call"  fn: [type: "var"  name: "f"]  args: [...]]` |
-| `[fn [x] body]` | `[type: "fn"  params: [...]  body: ...]` |
+A few representative examples:
 
-The schema should:
+```tinct
+[quote [+ 1 2]]
+# -> [type: "call"
+#     fn:   [type: "var"     name: "+"]
+#     args: [[type: "literal"  kind: "int"  value: 1  span: ...]
+#            [type: "literal"  kind: "int"  value: 2  span: ...]]
+#     implied: true
+#     span: ...]
 
-- **Use string `type` discriminator** --- `[type: call ...]`,
-  `[type: var ...]`, etc. This is the tagged-union convention already
-  used by `try` results (`[ok: ...]` / `[err: ...]`).
-- **Mirror the `Expr` enum** --- one dict shape per `Expr` variant, with
-  fields matching the Rust struct fields.
-- **Include spans** --- `[span: [start: [line: 1 col: 5] end: [line: 1 col: 12]]]`
-  on every node. Macro-generated nodes carry the expansion site's span.
-- **Be versionable** --- add a `version` field to the root if schema
-  changes are needed later.
+[quote config.host]
+# -> [type: "dot-access"  target: [type: "var"  name: "config"]  field: "host"  span: ...]
+
+[quote data.0]
+# -> [type: "dot-access"  target: [type: "var"  name: "data"]  field: 0  span: ...]
+```
+
+See `doc/whatif/ast-schema.md` for the complete mapping of every `Expr`
+variant, supporting types (`Entry`, `Param`, `Annotation`, `Document`),
+comment embedding, and the `ast_to_dict_expr` / `ast_to_dict` / `dict_to_ast`
+Rust function signatures.
 
 ### Why Special Forms
 
@@ -163,11 +167,14 @@ quasiquote semantics (Bawden, 1999).
 ### Interaction with Lazy Evaluation
 
 `[quote expr]` does *not* create a thunk --- it converts the syntactic
-form of `expr` into a dict at parse/expansion time. The resulting dict is
-an ordinary tinct value (a `Value::Dict`) subject to normal lazy
-evaluation rules. `[unquote expr]` inside a quote evaluates `expr` eagerly
-during quote processing --- the result is spliced into the dict structure.
-This is expansion-time evaluation, not runtime evaluation.
+form of `expr` into a dict when the `Expr::Quote` node is forced by the
+normal evaluator. The resulting dict is an ordinary tinct value (a
+`Value::Dict`) subject to normal lazy evaluation rules. `[unquote expr]`
+inside a quote evaluates `expr` in the current runtime environment when the
+surrounding `[quote]` is forced --- the result is spliced into the dict
+structure. This is runtime evaluation, not expansion-time evaluation:
+`[unquote]` fires at the same point `[quote]` is forced, not during the
+`expand_macros` pass.
 
 ### Interaction with Type System
 
@@ -247,15 +254,14 @@ arbitrary code, which interacts with sandboxing (doc/12-tooling.md Sandboxing).
 
 ## Phased Adoption
 
-### Phase 1: AST Dict Schema
+### Phase 1: AST Dict Schema and `ast_to_dict_expr`
 
-Define the dict representation for every `Expr` variant. Document in
-doc/15-ast.md. No syntax changes --- this is a specification.
-
-Implement `ast_to_dict(expr: &Expr) -> Value` and
-`dict_to_ast(value: &Value) -> Result<Expr, Error>` in Rust. These are
-the serialization/deserialization functions that `quote`/`unquote` use
-internally.
+The canonical schema is `doc/whatif/ast-schema.md` — implement it there, not
+here. The key function for quasiquoting is `ast_to_dict_expr(expr: &Expr, opts: AstToDictOpts) -> Value`
+(per-expression, not whole-file). `[quote expr]` calls this on the quoted
+subexpression. This phase is shared with `doc/whatif/tinct-hosted-formatter.md`
+Phase 1 (compact modes) — both are unblocked by the same `ast_to_dict_expr`
+implementation.
 
 ### Phase 2: `quote` Special Form
 
@@ -312,17 +318,23 @@ Connect quasiquoting to the macro system (`doc/whatif/macros.md`):
   ACM*, 3(4), 184--195. --- Original `quote` in LISP. Establishes
   code-as-data as a language primitive.
 - Bawden, A. (1999). "Quasiquotation in Lisp." In *PEPM '99*, pp.
-  4--12. ACM. --- Formal treatment of quasiquotation semantics.
-  Defines nesting depth rules for nested quotes and the interaction
-  between quote and unquote levels. Directly applicable to tinct's
-  contextual parsing design.
+  4--12. ACM. --- The definitive formal treatment of quasiquotation
+  semantics. Defines the nesting depth algebra: `quote` increments
+  depth, `unquote` decrements it, evaluation occurs only at depth 0.
+  Bawden gives a recursive expansion function that provably handles
+  arbitrarily nested quote/unquote combinations and proves the algebra
+  is a left inverse of quotation (unquoting a quoted value recovers the
+  original). Directly applicable to tinct's contextual parsing design
+  (nesting depth tracker in M3c).
 - Elixir documentation: Quote and unquote. `quote do ... end` and
   `unquote(expr)` --- closest practical precedent for tinct's model.
   Elixir represents AST as 3-tuples; tinct uses dicts.
 - Flatt, M. (2002). "Composable and compilable macros: you want it
   when?" In *ICFP '02*, pp. 72--83. ACM. --- Phase separation for
-  compile-time evaluation. Relevant to the expansion-time evaluation
-  semantics of `unquote`.
+  compile-time evaluation. In tinct, `[unquote]` evaluates at runtime
+  (when `[quote]` is forced), not at expansion time --- but Flatt's
+  phase model is relevant to how `[defmacro]` bodies execute in a
+  separate compile-time context (see `doc/whatif/macros.md`).
 - Taha, W. & Sheard, T. (2000). "MetaML and multi-stage programming
   with explicit annotations." *Theoretical Computer Science*, 248(1--2),
   211--242. --- Multi-stage programming with typed code quotation.

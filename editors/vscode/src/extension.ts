@@ -3,7 +3,6 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
-  TransportKind,
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
@@ -15,7 +14,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const serverOptions: ServerOptions = {
     command: serverPath,
     args: ['lsp'],
-    transport: TransportKind.stdio,
   };
 
   const clientOptions: LanguageClientOptions = {

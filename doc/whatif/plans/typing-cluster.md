@@ -9,6 +9,7 @@ critical path, and groups work into independently shippable phases.
 
 | # | Proposal | Whatif Document |
 |---|----------|----------------|
+| 0 | Null Semantics | `null-semantics.md` |
 | 1 | Type Predicates | `completed/type-predicates.md` |
 | 2 | Pattern Matching | `pattern-matching.md` |
 | 3 | Let Binding | `let-binding.md` |
@@ -20,6 +21,48 @@ critical path, and groups work into independently shippable phases.
 | 9 | Structural Contracts | `structural-contracts.md` |
 | 10 | Numeric Types | `numeric-types.md` |
 | 11 | Parameterized Type Aliases | `parameterized-type-aliases.md` |
+
+**Proposal 0 note:** Null Semantics (`@Null` = `Type::Record(Row::Empty)`) is
+a prerequisite to B1. It does not need a dedicated cluster sprint — the full
+acceptance scope is:
+
+- Mark `doc/whatif/null-semantics.md` `State: Accepted`
+- Add `"Null" => Ok(Type::Record(Row::Empty))` to `resolve_type_name` (`src/typecheck.rs`)
+- Update void-returning builtin type signatures from `Type::Any` to `Type::Record(Row::Empty)`:
+  `emit`, `write`, `write-atomic`, `revoke-cap`, `mkdir`, `delete` (`src/types.rs`)
+- Add `Null` to the type conventions table in `doc/05-type-annotations.md`
+- Update `doc/11a-builtins.md` void-returning builtin signatures to show `fn@Null`
+- Move entry in `doc/whatif/index.md` from Adopt Now → Accepted
+
+These tasks may be folded into an existing sprint (e.g., `type-checker-fixes`)
+or executed as a standalone micro-sprint before B1. Either way they must land
+before `union-types` (B1) since `x@[String Null]` is the primary nullable
+annotation example and requires `@Null` to resolve correctly.
+
+---
+
+## 0. Cluster Acceptance Procedure
+
+When formally accepting any proposal in this cluster, apply these steps for
+**each whatif being accepted** — in addition to the proposal-specific tasks
+listed in §3 and §4:
+
+1. **Mark the whatif doc**: add `**State:** Accepted — YYYY-MM-DD` as the
+   second line of `doc/whatif/<name>.md` (after the `# What If:` title).
+2. **Integrate spec content**: write the design into the named `doc/*.md`
+   chapter(s) listed under "Spec chapters:" for that sprint. Write in present
+   tense — no "planned", "will be", or TODO references.
+3. **Update `doc/whatif/index.md`**: move the proposal's entry from its
+   current adoption bucket (Adopt Now / Wait for Trigger / etc.) to the
+   **Accepted** section. Add acceptance date as a third column.
+4. **Update `doc/17-references.md`**: add any new citations the proposal
+   introduces. Keep entries sorted by author.
+5. **Create implementation sprints**: use the sprint task lists in §4 as the
+   blueprint. Sprints go in TODO.md under the relevant `##` section.
+
+**Proposal #0 (null-semantics)** is a special case: its acceptance tasks are
+fully enumerated in the Proposal #0 note above — do not re-run the general
+procedure; it is handled there.
 
 ---
 
@@ -135,7 +178,7 @@ Reading order: an arrow `A --> B` means A must be implemented before B.
                     |   (type primitives)         +------------------------+
                     |                             |                        |
                     |   union-types Ph2 ----------+--> ADTs Ph2            |
-                    |   (Type::Union,             |    ([union ...] decl)  |
+                    |   (Type::Union,             |    ([type T1 T2] decl) |
                     |    subtype rules)           |         |              |
                     |         |                   |         v              |
                     |         |                   |  nominal-variants Ph2  |
@@ -176,7 +219,7 @@ type-predicates (DONE)
   --> pattern-matching Ph2 (basic match)
     --> pattern-matching Ph3 (dict/seq destructuring)
       --> union-types Ph2 (Type::Union)
-        --> ADTs Ph2 ([union ...] declarations)
+        --> ADTs Ph2 ([type T1 T2 ...] declarations)
           --> nominal-variants Ph2 (constructors + match)
             --> exhaustiveness (pattern-matching Ph5 + ADTs Ph3)
 ```
@@ -335,27 +378,44 @@ independently shippable but they build on each other.
 
 `Type::Union(Vec<Type>)` with subtyping rules. Unions appear only in
 explicit annotations and builtin signatures --- `unify` never produces
-them:
+them.
+
+**Syntax:** Positional entries in `@[...]` annotations are collected
+and unioned. No infix operator (avoids collision with `|` pipe operator
+from access-pipeline). Named entries remain metadata.
 
 ```tinct
-nullable-name: [fn [x : Int | Null] ...]
-map : (a -> b) -> (Dict a | Seq a) -> (Dict b | Seq b)
-Result: [type [ok: a] | [err: Str]]
+x@[Int Null]                          # type: Int | Null
+x@[String Null default: ""]          # type: String | Null, with default
+nullable-name: [fn [x@[Int Null]] ...]
+map: [fn [f@[Fn@b [a]]  xs@[Dict Seq]] ...]
+Result: [type [ok: a] [err: Str]]     # union of two record types
 ```
+
+**Desugar rule** (annotation resolution, not a parser pass):
+```
+x@[T1 T2 ...named...]  →  x@[type: [T1 T2]  ...named...]
+x@[T]                  →  x@[type: T]    (single positional unwraps)
+x@T                    →  x@[type: T]    (existing shorthand, unchanged)
+```
+The type resolver handles `type: [T1 T2]` as `Union(T1, T2)`. Existing
+`x@[type: Number  default: 30]` (no positional entries) is unchanged.
 
 - **Scope:** New `Type::Union` variant. Three subtyping rules:
   `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` (Pierce 2002,
-  Chapter 15). Parser: `|` in type position. Normalize unions to
-  canonical form (sorted, deduplicated, flattened).
-- **Formal model:** Standard covariant union subtyping. Decidable,
-  preserves transitivity. Principal types preserved because unions only
-  appear in annotations --- inference never produces them.
+  Chapter 15). Annotation resolver collects positional entries into
+  union — no parser change needed. Normalize unions to canonical form
+  (sorted, deduplicated, flattened).
+- **Formal model:** Standard covariant union subtyping (Pierce 2002,
+  §15.7). Decidable, preserves transitivity. Principal types preserved
+  because unions only appear in annotations — inference never produces
+  them, so Robinson's (1965) MGU guarantee is unaffected.
 - **Risk:** Moderate. `Type::Union` propagates through `is_subtype`,
   `apply_substitution`, `collect_type_vars`, `display`, `occurs_in`.
   Every exhaustive `match` on `Type` gains one arm.
 - **Unlocks:** ADTs Phase 2, nullable types, `try` return type
   precision, dual-dispatch builtin signatures.
-- **Key files:** `src/types.rs`, `src/typecheck.rs`, `src/parser.rs`.
+- **Key files:** `src/types.rs`, `src/typecheck.rs` (`resolve_annotation`).
 
 **B2. Gradual Typing Phase 2 --- Split `Any`**
 
@@ -447,22 +507,22 @@ map : Functor f => (a -> b) -> f a -> f b
 These build the user-facing type declaration and consumption story.
 They require Phase B's type primitives.
 
-**C1. ADTs Phase 2 --- `[union ...]` Declarations**
+**C1. ADTs Phase 2 --- Multi-Entry `[type ...]` Declarations**
 
-Named structural union types:
+Named structural union types via multi-entry `[type ...]` — no new keyword,
+no new parser rule. Two-line type checker extension:
 
 ```tinct
-Result: [union [ok: a] [err: Str]]
-Status: [union ok err pending]
-Event: [union
+Result: [type [ok: a] [err: Str]]
+Status: [type "ok" "err" "pending"]
+Event: [type
     [click: [x: Int  y: Int]]
     [key:   [code: Str]]
-    resize]
+    "resize"]
 ```
 
-- **Scope:** `union` keyword. Parser: `[union ...]` in type expression
-  position. Type checker: expand to `Type::Union(vec![...])`, register
-  as type alias. `[@Result expr]` enforces variant membership.
+- **Scope:** Type checker extension only — multi-entry `[type ...]` body expands to
+  `Type::Union(vec![...])`, registered as type alias. `Expr::Str` in type position → `Type::StringLiteral`. `[@Result expr]` enforces variant membership.
 - **Formal model:** Structural discrimination by key set --- parallels
   TypeScript's discriminated unions and OCaml's polymorphic variants
   (Garrigue 1998). No new `Value` variant needed --- ADTs are dicts
@@ -480,7 +540,7 @@ Event: [union
 `Value::Variant` for enum-like values:
 
 ```tinct
-Color: [union Red Green Blue]
+Color: [type Red Green Blue]
 selected: Red                        # Value::Variant { tag: "Red" }
 name: [tag-of selected]             # "Red"
 ```
@@ -500,10 +560,10 @@ name: [tag-of selected]             # "Red"
 Full nominal variant system with pattern matching:
 
 ```tinct
-Option: [union [Some a] None]
+Option: [type [Some a] None]
 
 found: [match [lookup config "timeout"]
-    [Some v]  v
+    [Some v]:  v
     None      30]
 ```
 
@@ -522,9 +582,9 @@ found: [match [lookup config "timeout"]
 
 ```tinct
 [match x
-    n when [> n 0]  "positive"
-    n when [< n 0]  "negative"
-    _               "zero"]
+    n@[is: [> _ 0]]:   "positive"
+    n@[is: [< _ 0]]:   "negative"
+    _:                  "zero"]
 
 [match result
     [ok: v] | [success: v]   v
@@ -551,8 +611,9 @@ res: [@Result [try risky]]
   a declared union type. Wildcard covers all remaining variants.
   Unreachable arm warnings.
 - **Formal model:** Maranget (2008) for exhaustiveness and redundancy
-  analysis via pattern matrices. Karachalias et al. (2015) for GADTs
-  (not needed initially but documents the ceiling).
+  analysis via pattern matrices. Karachalias et al. (2015) for guard
+  opacity — guards (`is:` predicates) do not contribute to coverage
+  analysis — and as the theoretical ceiling for GADT-aware exhaustiveness.
 - **Risk:** Moderate. Requires tracking the variant set from the
   scrutinee type, then checking coverage against the arm patterns.
 - **Depends on:** Union types Phase 2 (B1) + ADTs Phase 2 (C1) +
@@ -623,7 +684,7 @@ result: [if cond [ok: v] [err: msg]]
 **D3. Recursive ADTs**
 
 ```tinct
-Tree: [union Leaf [node: a  left: [Tree a]  right: [Tree a]]]
+Tree: [type Leaf [node: a  left: [Tree a]  right: [Tree a]]]
 ```
 
 - **Scope:** Equi-recursive type unfolding with depth guard. Amadio &
@@ -690,6 +751,7 @@ Price: [type Decimal@[precision: 2]]
 - **Dependencies:** None
 - **Key files:** `src/parser.rs` (fn body parsing), `src/ast.rs`
   (if `Expr::Fn` body changes), tests
+- **Spec chapters:** `doc/04-functions.md` (§Let Binding — multi-expression fn bodies, sequential scoping)
 - **Unlocks:** Pattern matching Phase 3 (multi-expression arm bodies)
 
 #### A2. `pattern-matching-basic`
@@ -709,6 +771,7 @@ Price: [type Decimal@[precision: 2]]
 - **Dependencies:** Type predicates (DONE)
 - **Key files:** `src/parser.rs`, `src/ast.rs`, `src/eval.rs`,
   `src/typecheck.rs`, `src/formatter.rs`
+- **Spec chapters:** `doc/02-syntax.md` (§Match Expression — syntax, arm forms, pin operator), `doc/08-evaluation.md` (§Pattern Matching — arm testing, scrutinee materialization)
 - **Unlocks:** Pattern matching Phase 3, basic type dispatch
 
 #### A3. `pattern-matching-destructure`
@@ -727,6 +790,7 @@ Price: [type Decimal@[precision: 2]]
 - **Dependencies:** A2 (`pattern-matching-basic`), A1 (`let-binding`)
   for multi-expression arm bodies
 - **Key files:** `src/parser.rs`, `src/eval.rs`
+- **Spec chapters:** `doc/02-syntax.md` (§Structural Patterns — dict/seq/nested patterns, path-key desugar), `doc/08-evaluation.md` (§Structural Pattern Matching — lazy dict forcing, recursive binding)
 - **Unlocks:** Self-hosting dual-dispatch builtins, `try` result
   ergonomics, ADT consumption
 
@@ -743,12 +807,17 @@ Price: [type Decimal@[precision: 2]]
   4. `apply_substitution` handles `Union`
   5. `occurs_in` handles `Union`
   6. `collect_type_vars` handles `Union`
-  7. Parser: `|` as type-level operator in annotation positions
+  7. Annotation resolver: collect positional entries from
+     `Annotation::PropertyDict` into `type:` value as list; resolve
+     `type: [T1 T2]` as `Union(normalize(T1), normalize(T2))` in
+     `resolve_annotation` (`src/typecheck.rs`) — no parser change needed
   8. Tests: 10+ (union creation, subtyping injection/elimination,
      union in function signatures, union in TypeAssert, union display,
-     duplicate elimination, nested union flattening)
+     duplicate elimination, nested union flattening, positional desugar
+     `x@[Int Null]`)
 - **Dependencies:** None (can be done in parallel with Phase A)
-- **Key files:** `src/types.rs`, `src/typecheck.rs`, `src/parser.rs`
+- **Key files:** `src/types.rs`, `src/typecheck.rs`
+- **Spec chapters:** `doc/05-type-annotations.md` (§Union Types — `@[T1 T2]` positional syntax, desugar rule, `type: [T1 T2]` resolution), `doc/06-type-inference.md` (§Union Subtyping — `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` rules), `doc/17-references.md` (Pierce 2002 Ch.15 already present)
 - **Unlocks:** ADTs Phase 2, nullable types, dual-dispatch signatures
 
 #### B2. `gradual-typing-split`
@@ -771,6 +840,7 @@ Price: [type Decimal@[precision: 2]]
 - **Dependencies:** None technically, but recommended after B1 so that
   union subtyping can immediately use the proper lattice
 - **Key files:** `src/types.rs` (every `Type::Any` arm), `src/typecheck.rs`
+- **Spec chapters:** `doc/06-type-inference.md` (§Gradual Typing — `Unknown` vs `Top`, consistency relation), `doc/07-type-extensions.md` (§Gradual Typing extension roadmap), `doc/17-references.md` (Siek & Taha 2006, Garcia et al. 2016)
 - **Unlocks:** Sound union subtyping, type classes Phase 2, blame
   tracking
 
@@ -787,6 +857,7 @@ Price: [type Decimal@[precision: 2]]
      row variable in alias body, backward compat for zero-param)
 - **Dependencies:** None
 - **Key files:** `src/parser.rs`, `src/typecheck.rs`
+- **Spec chapters:** `doc/05-type-annotations.md` (§Parameterized Type Aliases — `[type [a] body]` syntax, instantiation semantics)
 - **Unlocks:** Recursive ADTs, higher-kinded types (type classes Phase 3)
 
 #### B4. `type-classes-constrained`
@@ -808,6 +879,7 @@ Price: [type Decimal@[precision: 2]]
 - **Dependencies:** Gradual typing Phase 2 (B2), let-generalization
   complete
 - **Key files:** `src/types.rs`, `src/typecheck.rs`, `src/builtins.rs`
+- **Spec chapters:** `doc/06-type-inference.md` (§Constrained Type Variables — `Eq a =>`, fixed instance sets), `doc/07-type-extensions.md` (§Dual-Dispatch Builtins — update with constrained signatures), `doc/17-references.md` (Wadler & Blott 1989, Jones 1995)
 - **Unlocks:** Static rejection of invalid operations, precise builtin
   typing
 
@@ -816,16 +888,16 @@ Price: [type Decimal@[precision: 2]]
 #### C1. `adts`
 
 - **Sprint slug:** `adts`
-- **Estimated tasks:** 6
-  1. `union` keyword in denylist
-  2. Parser: `[union ...]` in type expression position
-  3. Type checker: expand variants to `Type::Union(vec![Record(...)])`
-  4. Type alias registration for named unions
-  5. `try` return type updated to `Union([ok: a], [err: Str])`
+- **Estimated tasks:** 5
+  1. Type checker: multi-entry `[type ...]` body → `Type::Union(vec![...])`
+  2. Type checker: `Expr::Str` in type-expression position → `Type::StringLiteral(s)`
+  3. Type alias registration for named union types
+  4. `try` return type updated to `Union([ok: a], [err: Str])`
   6. Tests: 8+ (union declaration, tag-only variants, mixed variants,
      TypeAssert enforcement, `try` result type, type alias usage)
 - **Dependencies:** Union types Phase 2 (B1)
-- **Key files:** `src/parser.rs`, `src/typecheck.rs`
+- **Key files:** `src/typecheck.rs`
+- **Spec chapters:** `doc/05-type-annotations.md` (§Union Declarations — multi-entry `[type ...]` syntax, string literal type variants), `doc/03-data-model.md` (§Algebraic Data Types — structural discrimination, runtime representation)
 - **Unlocks:** Nominal variants, exhaustiveness checking
 
 #### C2. `nominal-variants-unit`
@@ -835,13 +907,14 @@ Price: [type Decimal@[precision: 2]]
   1. `Value::Variant { tag: String, payload: Option<Rc<Thunk>> }`
   2. `type-of` returns `"Variant"` for nominal values
   3. `tag-of` builtin: `Variant -> Str`
-  4. Parser: uppercase bare words in `[union ...]` as nominal
+  4. Parser: uppercase bare words in `[type ...]` multi-entry position as nominal
      constructors
   5. Serialization: `Value::Variant` to JSON as `{"Tag": null}`
   6. Tests: 6+ (unit constructor creation, tag-of, serialization,
      type-of, equality)
 - **Dependencies:** ADTs Phase 1 (convention --- effectively none)
 - **Key files:** `src/value.rs`, `src/builtins.rs`, `src/eval.rs`
+- **Spec chapters:** `doc/03-data-model.md` (§Nominal Variants — `Value::Variant`, `tag-of`, serialization as `{"Tag": null}`), `doc/05-type-annotations.md` (§Nominal Constructors — uppercase bare words in union declarations)
 - **Unlocks:** Payload constructors
 
 #### C3. `nominal-variants-full`
@@ -861,6 +934,7 @@ Price: [type Decimal@[precision: 2]]
 - **Dependencies:** C2 + Pattern matching Phase 2 (A2)
 - **Key files:** `src/value.rs`, `src/eval.rs`, `src/parser.rs`,
   `src/types.rs`, `src/typecheck.rs`
+- **Spec chapters:** `doc/03-data-model.md` (§Nominal Variant Payloads — constructor application, lazy payload, serialization), `doc/08-evaluation.md` (§Constructor Evaluation), `doc/05-type-annotations.md` (§Constructor Types — `Some : a -> Option a`)
 - **Unlocks:** `[map Some items]`, mandatory elimination
 
 #### C4. `pattern-matching-guards`
@@ -874,25 +948,56 @@ Price: [type Decimal@[precision: 2]]
      binding errors)
 - **Dependencies:** Pattern matching Phase 3 (A3)
 - **Key files:** `src/parser.rs`, `src/eval.rs`
+- **Spec chapters:** `doc/02-syntax.md` (§Pattern Guards — `when` syntax, or-patterns), `doc/08-evaluation.md` (§Guard Evaluation)
 - **Unlocks:** More expressive pattern matching
 
 #### C5. `exhaustiveness`
 
+**Exhaustiveness design (decided):** Exhaustiveness checking is performed at
+**macro expansion time** when the scrutinee is wrapped in a TypeAssert —
+the Dhall model (`merge` requires an explicit union type). No new `Expr::Match`
+AST variant is introduced.
+
+```tinct
+# Without TypeAssert — dynamically correct, statically unverified
+[match res
+    [ok: v]:    v
+    [err: msg]: [error msg]]
+
+# With TypeAssert — exhaustiveness verified at macro expansion time
+[match [@Result res]
+    [ok: v]:    v
+    [err: msg]: [error msg]]
+# Non-exhaustive → macro expansion error
+```
+
+When `[defmacro match]` detects a TypeAssert scrutinee `[@Type expr]`, it:
+1. Looks up `Type` in the type alias registry (accessible at expansion time)
+2. Extracts the `Type::Union` variant set from the registered alias
+3. Performs Maranget-style coverage analysis on the arm keys against that variant set
+4. Emits an expansion-time error if any variant is uncovered
+
+Without TypeAssert, match expands normally without coverage analysis — same as
+today. This makes exhaustiveness opt-in but honest: coverage can only be verified
+when the union type is statically declared. Consistent with Karachalias et al.
+(2015): opaque guards (`is:` predicates) never contribute to coverage; type-tag
+arms (`n@Int:`) do.
+
+The macro expander must have read access to the type alias registry at expansion
+time — a new requirement for the expansion infrastructure.
+
 - **Sprint slug:** `exhaustiveness`
-- **Estimated tasks:** 8
-  1. Variant set extraction from scrutinee union type
-  2. Pattern coverage analysis (which variants does each arm cover?)
-  3. Wildcard/variable coverage (covers all remaining variants)
-  4. Non-exhaustive warning emission
-  5. Unreachable arm warning emission
-  6. Nominal variant coverage (constructor set from union type)
-  7. Or-pattern multi-variant coverage
-  8. Tests: 10+ (complete coverage, missing variant warning,
-     unreachable arm warning, wildcard coverage, nominal exhaustiveness,
-     mixed structural+nominal)
-- **Dependencies:** Union types (B1) + ADTs (C1) + Pattern matching
-  Phase 3 (A3). Nominal exhaustiveness additionally depends on C3.
-- **Key files:** `src/typecheck.rs`
+- **Estimated tasks:** 7
+  1. Expose type alias registry to macro expander at expansion time (`src/typecheck.rs` or a shared registry module)
+  2. `[defmacro match]` extension: detect TypeAssert scrutinee `[@Type expr]`; look up `Type` alias; extract `Type::Union` variant set (`stdlib/macros.llt`)
+  3. Maranget-style coverage matrix: arm keys vs variant set; wildcard/variable arms cover all remaining variants; or-pattern arms (`Pipe` key) cover both sub-patterns (`stdlib/macros.llt`)
+  4. Non-exhaustive error: expansion-time error listing uncovered variants when scrutinee has TypeAssert
+  5. Unreachable arm warning: arm after wildcard `_:` is unreachable
+  6. Nominal variant coverage: constructor set from `Type::Union` containing `Type::NominalVariant` entries (depends on C3)
+  7. Tests: 10+ (complete coverage passes; missing variant fails; wildcard covers; or-pattern coverage; unreachable arm; `is:` guard arms treated as opaque/not covering; nominal exhaustiveness; no TypeAssert → no check)
+- **Dependencies:** Union types (B1) + ADTs (C1) + Pattern matching Phase 3 (A3) + type alias registry accessible at expansion time. Nominal exhaustiveness additionally depends on C3.
+- **Key files:** `stdlib/macros.llt` (coverage check in `[defmacro match]`), `src/typecheck.rs` (registry exposure)
+- **Spec chapters:** `doc/06-type-inference.md` (§Exhaustiveness Checking — variant coverage analysis, non-exhaustive warnings, unreachable arm warnings), `doc/07-type-extensions.md` (§Pattern Matrix — Maranget 2008 reference)
 - **Unlocks:** Compiler-verified case coverage
 
 ### Phase D: Advanced Typing
@@ -901,13 +1006,13 @@ Price: [type Decimal@[precision: 2]]
 
 Sprint slugs and estimated task counts:
 
-| Sprint | Slug | Est. Tasks | Depends On |
-|--------|------|-----------|------------|
-| Type Classes Phase 3 | `type-classes-full` | 15+ | B4, B3 |
-| Algebraic Subtyping | `algebraic-subtyping` | 20+ | B1, B2 |
-| Recursive ADTs | `recursive-adts` | 6 | B3, C1 |
-| Blame Tracking | `blame-tracking` | 12+ | B2 |
-| Numeric Types Phases 1-4 | `numeric-*` | 6 per phase | 9.1 for Phase 1 |
+| Sprint | Slug | Est. Tasks | Depends On | Spec Chapters |
+|--------|------|-----------|------------|---------------|
+| Type Classes Phase 3 | `type-classes-full` | 15+ | B4, B3 | `doc/06-type-inference.md` (§Type Classes), `doc/07-type-extensions.md`, `doc/17-references.md` |
+| Algebraic Subtyping | `algebraic-subtyping` | 20+ | B1, B2 | `doc/06-type-inference.md` (§Algebraic Subtyping — Simple-sub, constraint solving, `Any` split integration), `doc/17-references.md` |
+| Recursive ADTs | `recursive-adts` | 6 | B3, C1 | `doc/05-type-annotations.md` (§Recursive Type Aliases), `doc/07-type-extensions.md` |
+| Blame Tracking | `blame-tracking` | 12+ | B2 | `doc/10-errors.md` (§Blame — provenance, typed/untyped boundary), `doc/08-evaluation.md` (§Blame Labels) |
+| Numeric Types Phases 1-4 | `numeric-*` | 6 per phase | 9.1 for Phase 1 | `doc/05-type-annotations.md` (§Range Annotations, §Decimal Type), `doc/03-data-model.md` (§Numeric Types) |
 
 ---
 
@@ -975,7 +1080,7 @@ that require special care:
 | Change | Breaking? | Mitigation |
 |--------|-----------|-----------|
 | `match` keyword | Yes --- `match` can no longer be a variable name | Low risk: `match` is unlikely as a user-chosen name. Keyword denylist expansion. |
-| `union` keyword | Yes --- `union` can no longer be a variable name | Low risk: same reasoning as `match`. |
+| `union` keyword | Not introduced — `[type T1 T2 ...]` replaces `[union ...]`; no new keyword needed | — |
 | `Any` split | Potentially | If any user code relies on `Any`-as-bottom behavior (e.g., `[@Any expr]` passing where a concrete type is expected), the split to `Top` changes semantics. Mitigated by: (a) `Any` usage is rare in user code, (b) `[@Any expr]` becomes `[@Top expr]` with the same behavior. |
 | `Type::Union` | No | Additive --- new `Type` variant, existing types unchanged. |
 | `Value::Variant` | No | Additive --- new `Value` variant. Existing values unchanged. |
@@ -1150,8 +1255,8 @@ After SC:  Numeric types Ph2+ (Decimal, BigInt)
 | Phase | What Ships | What Users Get |
 |-------|-----------|----------------|
 | **A** (foundations) | `let-binding`, `match` with type/literal/dict/seq patterns | Multi-step functions, `try` result destructuring, type dispatch without string comparison |
-| **B** (type primitives) | `Type::Union`, `Any` split, parameterized aliases, constrained vars | Nullable types (`Int \| Null`), precise builtin types, `[= fn fn]` rejected statically, generic type aliases |
-| **C** (algebraic types) | `[union ...]` declarations, `Value::Variant`, exhaustiveness | Named sum types (`Result`, `Option`), first-class constructors (`[map Some items]`), compiler-verified case coverage |
+| **B** (type primitives) | `Type::Union`, `Any` split, parameterized aliases, constrained vars | Nullable types (`x@[Int Null]`), precise builtin types, `[= fn fn]` rejected statically, generic type aliases |
+| **C** (algebraic types) | Multi-entry `[type ...]` ADT declarations, `Value::Variant`, exhaustiveness | Named sum types (`Result`, `Option`), first-class constructors (`[map Some items]`), compiler-verified case coverage |
 | **D** (advanced) | Full type classes, algebraic subtyping, recursive ADTs, blame | User-extensible protocols, inferred union types, `Tree a`, actionable type error provenance |
 
 Each phase is independently shippable. Phase A delivers immediate
@@ -1165,16 +1270,25 @@ expressiveness. Phase D delivers completeness.
 Papers cited in the individual whatif documents that are load-bearing
 for this plan:
 
-- Augustsson, L. (1985). Compiling pattern matching. *FPCA '85*, LNCS 201, pp. 368-381.
-- Dolan, S. & Mycroft, A. (2017). Polymorphism, subtyping, and type inference in MLsub. *POPL '17*, pp. 228-242.
-- Garcia, R., Clark, A.M. & Tanter, E. (2016). Abstracting gradual typing. *POPL '16*, pp. 429-442.
-- Garrigue, J. (1998). Programming with polymorphic variants. *ML Workshop '98*.
-- Greenman, B., Felleisen, M. & Dimoulas, C. (2019). Complete monitors for gradual types. *ICFP '19*, Article 122.
-- Jones, M.P. (1995). *Qualified types: Theory and practice.* Cambridge University Press.
-- Maranget, L. (2008). Compiling pattern matching to good decision trees. *ML '08*, pp. 35-46.
-- Marques, R., Florido, M. & Vasconcelos, P. (2024). Towards algebraic subtyping for extensible records. arXiv:2407.06747.
-- Parreaux, L. (2020). The simple essence of algebraic subtyping. *ICFP '20*, Article 124.
-- Pierce, B.C. (2002). *Types and Programming Languages.* MIT Press.
-- Siek, J.G. & Taha, W. (2006). Gradual typing for functional languages. *Scheme Workshop*, pp. 81-92.
-- Wadler, P. & Blott, S. (1989). How to make ad-hoc polymorphism less ad hoc. *POPL '89*, pp. 60-76.
-- Wadler, P. & Findler, R.B. (2009). Well-typed programs can't be blamed. *ESOP '09*, LNCS 5502, pp. 1-16.
+- Amadio, R.M. & Cardelli, L. (1993). Subtyping recursive types. *ACM TOPLAS*, 15(4), 575-631. — Decidability of equi-recursive type equality with depth guard. Foundation for D3 recursive ADTs.
+- Ariola, Z.M. & Felleisen, M. (1997). The call-by-need lambda calculus. *J. Functional Programming*, 7(3), 265-301. — `let*` semantics for sequential binding (A1).
+- Augustsson, L. (1985). Compiling pattern matching. *FPCA '85*, LNCS 201, pp. 368-381. — Sequential arm testing (A2).
+- Dolan, S. & Mycroft, A. (2017). Polymorphism, subtyping, and type inference in MLsub. *POPL '17*, pp. 228-242. — Algebraic subtyping (D2).
+- Findler, R.B. & Felleisen, M. (2002). Contracts for higher-order functions. *ICFP '02*, pp. 48-59. — Proxy contracts and blame (D4).
+- Garcia, R., Clark, A.M. & Tanter, E. (2016). Abstracting gradual typing. *POPL '16*, pp. 429-442. — AGT framework for `Any` split (B2).
+- Garrigue, J. (1998). Programming with polymorphic variants. *ML Workshop '98*. — Structural discrimination (C1).
+- Greenman, B., Felleisen, M. & Dimoulas, C. (2019). Complete monitors for gradual types. *ICFP '19*, Article 122. — Co-natural blame (D4).
+- Jones, M.P. (1993). A system of constructor classes. *FPCA '93*, pp. 52-61. — Higher-kinded type constructors for `Functor` (D1).
+- Jones, M.P. (1995). *Qualified types: Theory and practice.* Cambridge University Press. — Constraint propagation through let-generalization (B4).
+- Karachalias, G., Schrijvers, T., Vytiniotis, D. & Peyton Jones, S. (2015). GADTs meet their match. *ICFP '15*, pp. 424-436. — Guards treated as opaque for exhaustiveness (C5).
+- Launchbury, J. (1993). A natural semantics for lazy evaluation. *POPL '93*, pp. 144-154. — Sharing preservation for let binding (A1).
+- Maranget, L. (2008). Compiling pattern matching to good decision trees. *ML '08*, pp. 35-46. — Exhaustiveness and redundancy analysis (C5).
+- Marques, R., Florido, M. & Vasconcelos, P. (2024). Towards algebraic subtyping for extensible records. arXiv:2407.06747. — Row variables under algebraic subtyping (D2).
+- Parreaux, L. (2020). The simple essence of algebraic subtyping. *ICFP '20*, Article 124. — Simple-sub algorithm (D2).
+- Pierce, B.C. (2002). *Types and Programming Languages.* MIT Press. — Union subtyping rules §15.7 (B1), labeled variants §11 (C1, C3).
+- Pierce, B.C. & Turner, D.N. (2000). Local type inference. *ACM TOPLAS*, 22(1), 1-44. — Checking mode for union annotations (B1).
+- Robinson, J.A. (1965). A machine-oriented logic based on the resolution principle. *JACM*, 12(1), 23-41. — MGU guarantee preserved by annotation-only unions (B1).
+- Siek, J.G. & Taha, W. (2006). Gradual typing for functional languages. *Scheme Workshop*, pp. 81-92. — Consistency relation (B2).
+- Tobin-Hochstadt, S. & Felleisen, M. (2010). Logical types for untyped languages. *ICFP '10*, pp. 117-128. — Occurrence typing for arm narrowing (C1).
+- Wadler, P. & Blott, S. (1989). How to make ad-hoc polymorphism less ad hoc. *POPL '89*, pp. 60-76. — Type classes (B4, D1).
+- Wadler, P. & Findler, R.B. (2009). Well-typed programs can't be blamed. *ESOP '09*, LNCS 5502, pp. 1-16. — Blame theorem (D4).
