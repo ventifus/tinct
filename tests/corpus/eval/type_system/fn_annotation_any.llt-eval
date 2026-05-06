@@ -1,0 +1,6 @@
+# @Fn in TypeAssert position resolves to Type::Any at runtime:
+# any value passes, including non-callables. Callability is
+# enforced only at the call site (NotAFunction), not at annotation.
+[@Fn 42]
+===
+Int(42)

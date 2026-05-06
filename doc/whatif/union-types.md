@@ -152,7 +152,8 @@ positions where `is_subtype` mediates.
 
 `Any` remains the inferred join for incompatible types. Splitting `Any` into
 `Unknown` (gradual) + `Top` (subtyping ceiling) is required for full union
-semantics but deferred to Phase 3 — see `doc/whatif/gradual-typing.md`.
+semantics and is scheduled for Phase 3 — coordinated with
+`doc/whatif/gradual-typing.md` Phase 2.
 
 ### Full Algebraic Subtyping: Simple-sub
 
@@ -286,23 +287,27 @@ let-generalization.
 has multiple lower (union) or upper (intersection) bounds.
 
 **3d. `Any` Split:** Split `Type::Any` into `Top`, `Bottom`, and `Unknown`.
-Required for lattice soundness. Coordinate with `doc/whatif/gradual-typing.md` Phase 2.
+Required for lattice soundness. **Note:** In the typing-cluster plan, the
+`Any` split ships as B2 (`gradual-typing-split`) *before* algebraic
+subtyping (D2). See `doc/whatif/gradual-typing.md` Phase 2.
 
 ### Prerequisites
 
-- Phase 1: `let-generalization` and `builtin-type-signatures` complete
-- Phase 2: Phase 1 complete; `gradual-typing` Phase 2 (`Any` → `Unknown` + `Top`)
+- Phase 2: No hard dependencies. Annotation-only unions do not conflict
+  with `Any`-as-top-and-bottom since `unify` never produces them. `Any`
+  split (B2) follows after B1.
 - Phase 3: `row-polymorphism` stable; `gradual-typing` Phase 2 complete;
   Phase 2 complete (Phase 3 requires `Type::Union` already existing)
 
 ### Trigger
 
-**Phase 2:** When nullable types (`Int | Null`) are needed, or tagged union
-patterns become common, or `try` result types need `[ok: a] | [err: String]` precision.
+**Phase 2:** Nullable types (`Int | Null`), tagged unions, and `try` result
+types (`[ok: a] | [err: String]`) all require annotation-only unions. Adopt
+after Phase 1.
 
-**Phase 3:** When `if` return types need inferred unions (not just annotated),
-annotation-only unions create too much annotation burden, or Rémy-style row
-unification interacts badly with [U-SUBSUME] causing false positives.
+**Phase 3:** Inferred unions eliminate annotation burden and fix [U-SUBSUME]
+false positives. Adopt after annotation-only unions are established and their
+limitations are quantified.
 
 ## References
 

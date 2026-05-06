@@ -69,7 +69,7 @@ assert-done: [fn@Bool [result@Null]
 "Null" => Ok(Type::Record(Row::Empty)),
 ```
 
-**`null` keyword**: deferred. Users write `[]` for the empty dict. A `null` keyword that desugars to `[]` could be added later for ergonomics, but it is not part of this proposal — the type system fix is independent of syntax.
+**`null` keyword**: a `null` keyword desugaring to `[]` improves ergonomics and should follow in a subsequent proposal. This proposal focuses on the type-level fix.
 
 ### No new `Type::Null` variant
 
@@ -89,7 +89,7 @@ An alternative design would add a new `Type::Null` variant to the `Type` enum, d
 - `[@String some_nullable]` is a type error — you cannot silently pass null where a string is expected
 - SQL-style null propagation (`null + 1 = null`) does not apply — tinct's `+` will error on an empty-dict argument
 
-### Nullable Types (deferred to union-types proposal)
+### Nullable Types (completes with union-types Phase 2)
 
 The correct way to express "this value may be a string or null" is:
 
@@ -98,7 +98,7 @@ The correct way to express "this value may be a string or null" is:
 result: x@[String | Null]
 ```
 
-This is explicitly deferred to the union-types proposal. The `Null` type name established here slots cleanly into that future: `String | Null` in union-types becomes `Type::Union(Type::Str, Type::Record(Row::Empty))`.
+This completes when the union-types proposal Phase 2 lands — `String | Null` becomes `Type::Union(Type::Str, Type::Record(Row::Empty))` with no additional work.
 
 ## What Would Change
 
@@ -122,9 +122,9 @@ This is explicitly deferred to the union-types proposal. The `Null` type name es
 
 **Current:** `env` registers `Type::Any` because it may return either a `String` or null (when the variable is unset or not permitted).
 
-**Proposed:** Keep `Type::Any` for now — expressing `String | Null` requires union types. Document this in the type signature comment.
+**Proposed:** Retain `Type::Any` until union types provide `String | Null`. Document this in the type signature comment.
 
-**Impact:** None for Phase 1. Revisit when union-types Phase 2 lands.
+**Impact:** None for Phase 1. Retype to `String | Null` when union-types Phase 2 lands.
 
 **Gradual-typing B2 interaction note:** After `doc/whatif/gradual-typing.md` Phase 2
 splits `Type::Any` into `Unknown` (consistent with everything) and `Top` (true supertype),

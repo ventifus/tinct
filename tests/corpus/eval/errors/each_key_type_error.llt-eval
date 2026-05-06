@@ -1,0 +1,4 @@
+# each-key: type error when called on String (expects Dict)
+[each-key "hello"]
+===
+[E010] each-key: expected Dict, got String

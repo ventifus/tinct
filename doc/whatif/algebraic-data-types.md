@@ -259,7 +259,7 @@ the union wraps them in `Type::Union`. This is sound and does not require a
 dedicated variant row type.
 
 If a future phase adds `Type::Variant(Row)` as a distinct row-kinded type (the
-Gaster & Jones (1996) / Blume (2006) approach), the `[union ...]` declaration form
+Gaster & Jones (1996) / Blume (2006) approach), the `[type ...]` declaration form
 and all usage sites remain unchanged — the internal representation changes but the
 surface syntax does not. Approach A does not close off this future.
 
@@ -268,10 +268,10 @@ surface syntax does not. Approach A does not close off this future.
 Under Simple-sub (Parreaux 2020, see `doc/whatif/algebraic-subtypes.md`), structural
 union types become *inferred*, not just annotated. With algebraic subtyping, `[if
 cond [ok: v] [err: msg]]` would automatically produce type `[ok: T] | [err: Str]`
-without a `Result` declaration. The `[union ...]` declaration then becomes a
+without a `Result` declaration. The `[type ...]` declaration then becomes a
 *name* for a set of shapes the type system already understands — an alias,
 not a foundation. This means Phase 3 of `doc/whatif/algebraic-subtypes.md` makes
-`[union ...]` declarations more ergonomic, not less relevant.
+`[type ...]` declarations more ergonomic, not less relevant.
 
 ### The Structural Typing Trade-Off
 
@@ -315,9 +315,10 @@ general expressions and interpreted by the type checker.
 
 **Proposed:** No new `Expr` variant is strictly required if type expressions are
 parsed as general `Expr` nodes (current approach). The type checker recognises
-`[union ...]` as a type-expression context and converts positional entries to
-`Type::Union(vec![...])`. Alternatively, a dedicated `TypeExpr::Union(Vec<TypeExpr>)`
-could be added if type expressions are separated from value expressions.
+multi-entry `[type ...]` as a type-expression context and converts positional
+entries to `Type::Union(vec![...])`. Alternatively, a dedicated
+`TypeExpr::Union(Vec<TypeExpr>)` could be added if type expressions are separated
+from value expressions.
 
 **Impact:** Minor to Moderate depending on whether type expressions gain a
 dedicated AST. The simpler path (no new AST variant) reuses existing infrastructure
@@ -328,8 +329,9 @@ at the cost of some clarity.
 **Current:** No `Type::Union` variant. The escape hatch is `Type::Any`.
 
 **Proposed:** `Type::Union(Vec<Type>)` from `doc/whatif/union-types.md` Phase 2.
-This is the hard prerequisite — `[union ...]` declarations cannot be represented
-without it. Canonical form: sorted, deduplicated, flattened (no nested unions).
+This is the hard prerequisite — multi-entry `[type ...]` declarations cannot be
+represented without it. Canonical form: sorted, deduplicated, flattened (no nested
+unions).
 
 **Impact:** Fundamental prerequisite; must arrive with `doc/whatif/union-types.md`
 Phase 2.
@@ -340,9 +342,9 @@ Phase 2.
 
 **Proposed:** Three extensions:
 
-1. **Declaration parsing.** When resolving `[union ...]` in type expression position,
-   convert each variant to a `Type` and wrap in `Type::Union(vec![...])`. Register
-   as a type alias.
+1. **Declaration parsing.** When resolving multi-entry `[type ...]` in type expression
+   position, convert each variant to a `Type` and wrap in `Type::Union(vec![...])`.
+   Register as a type alias.
 
 2. **Union alias instantiation.** When `res@Result` appears in a function parameter,
    instantiate the `Result` alias with fresh type variables. This uses the existing
@@ -394,12 +396,12 @@ Establish naming conventions:
 No implementation work. This phase formalises existing practice, so existing code
 is already compliant.
 
-### Phase 2: `[union ...]` Declarations and Named Types
+### Phase 2: Multi-Entry `[type ...]` Declarations and Named Types
 
-Add `union` keyword, parse `[union ...]` in type expression position, expand to
-`Type::Union`, register as type alias.
+Extend `[type ...]` to accept multiple positional entries, expanding to
+`Type::Union`. No new keyword — reuses the existing `[type ...]` form.
 
-- `Result: [union [ok: a] [err: Str]]` becomes a registered type alias.
+- `Result: [type [ok: a] [err: Str]]` becomes a registered type alias.
 - `res@Result` instantiates the alias at usage sites.
 - `[@Result expr]` enforces union membership via TypeAssert.
 - `try` receives its precise return type: `Union([ok: a], [err: Str])`.
@@ -446,16 +448,16 @@ Recursive ADTs require two things that do not exist today:
 
 ```tinct
 # Phase 4 syntax — requires parameterized-type-aliases
-Tree: [union Leaf [node: a  left: [Tree a]  right: [Tree a]]]
+Tree: [type Leaf [node: a  left: [Tree a]  right: [Tree a]]]
 
 # Usage
 leaf: Leaf
 tree: [node: 1  left: Leaf  right: [node: 2  left: Leaf  right: Leaf]]
 ```
 
-Recursive ADTs are rare in configuration use cases — `Result`, `Event`, and status
-enumerations are non-recursive. Phase 4 gates on parameterized type aliases landing
-and is separately researched as `doc/whatif/parameterized-type-aliases.md`.
+Phase 4 gates on parameterized type aliases. While uncommon in configuration,
+recursive types are essential for self-hosting stdlib functions (tree
+traversals, nested parse results). See `doc/whatif/parameterized-type-aliases.md`.
 
 **Prerequisites:** `doc/whatif/parameterized-type-aliases.md` complete; equi-recursive
 unfolding research (a future `doc/whatif/` item).
@@ -471,19 +473,17 @@ unfolding research (a future `doc/whatif/` item).
 
 ### Trigger
 
-**Phase 2** (named union types): adopt when:
-- `try` result types cause real type errors that `Any` masks (e.g., accessing
-  `.ok` on an `[err: msg]` result at a statically known failure path)
-- Users define recurring `[ok: T] / [err: Str]` patterns in their own types
-- `union-types.md` Phase 2 lands (the shared prerequisite with Phase 2)
+**Phase 2** (named union types): adopt immediately after `union-types.md`
+Phase 2 lands. `try` result types already lack precision and
+`[ok: T] / [err: Str]` patterns are already recurring.
 
-**Phase 3** (exhaustiveness): adopt together with `pattern-matching.md` Phase 5 —
-exhaustiveness checking is the primary motivation for both, and the two are
-co-dependent.
+**Phase 3** (exhaustiveness): adopt together with `pattern-matching.md`
+Phase 5 — exhaustiveness checking is the primary motivation for both,
+and the two are co-dependent.
 
-**Phase 4** (recursive variants): adopt when parameterised type aliases land and
-a concrete use case for recursive types in tinct code appears (most likely in a
-stdlib function written in tinct rather than Rust).
+**Phase 4** (recursive variants): adopt after parameterised type aliases
+land. Stdlib functions written in tinct (tree traversals, nested decode)
+are the primary use case.
 
 ## References
 
@@ -510,12 +510,12 @@ stdlib function written in tinct rather than Rust).
 - Parreaux, L. (2020). "The simple essence of algebraic subtyping." In *ICFP '20*,
   Article 124. ACM. — Simple-sub inference: structural union types become *inferred*
   rather than annotated. Under algebraic subtyping (see `doc/whatif/algebraic-subtypes.md`),
-  `[union ...]` declarations become named aliases for shapes the type system already
+  `[type ...]` declarations become named aliases for shapes the type system already
   understands. See `doc/whatif/union-types.md` Phase 3.
 - Gaster, B.R. & Jones, M.P. (1996). "A polymorphic type system for extensible
   records and variants." TR NOTTCS-TR-96-3, University of Nottingham. — Variant
   rows dual to record rows; the Remy-Gaster-Jones duality motivates keeping
-  `[union ...]`'s surface syntax stable across a future `Type::Variant(Row)` migration.
+  `[type ...]`'s surface syntax stable across a future `Type::Variant(Row)` migration.
 - Pierce, B.C. (2002). *Types and Programming Languages.* MIT Press. Chapter 11
   (variants as sum types), Chapter 15 (subtyping for records and variants). —
   Standard subtyping rules `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` adopted

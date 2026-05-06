@@ -28,11 +28,11 @@ The corpus test format doesn't support multi-file scenarios, and the `# no_fs` d
 
 ## Parse Depth 256 Success (Task 7)
 
-**File**: `tests/corpus/valid/edge_cases/parse_depth_256_succeeds.llt-eval` (not created)
+**File**: `tests/corpus/valid/edge_cases/parse_depth_256_succeeds.llt-eval` (created)
 
-**Reason**: A test with exactly 256 levels of nesting would be enormous (thousands of lines of `[` followed by thousands of `]`). The test file would be unwieldy and slow to parse.
+**Status**: This test now exists. 256 levels of `[` are written on a single line, making the file compact and fast to parse. It verifies that exactly MAX_PARSE_DEPTH levels of nesting succeeds, exercising the boundary just before the depth-exceeded error fires.
 
-**Alternative**: This is better tested as a unit test (already exists in `src/parser.rs`) where depth can be precisely controlled programmatically.
+**Additional coverage**: A unit test in `src/parser.rs` covers the same boundary programmatically.
 
 ## Include errors E050, E051, E053, E054
 

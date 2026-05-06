@@ -1,7 +1,8 @@
-# Laziness proof: filter + head never evaluates the error element.
-# Element 1 (value 1) passes the predicate and satisfies head.
-# Element 3 ([/ 1 0]) is the laziness sentinel — it would error if forced, but head returns
-# before the filter machinery reaches it. Elements beyond the first match are never evaluated.
+# Laziness proof: filter returns a Seq; head only forces the first element of that Seq.
+# The input dict [1 2 [/ 1 0]] is filtered by [> x 0]. Elements 1 and 2 both satisfy
+# the predicate, so element 1 becomes the head of the resulting Seq. head returns after
+# finding the first element, so element 3 ([/ 1 0]) — the laziness sentinel — is never
+# forced and its division-by-zero error never fires.
 [filtered: [filter [fn [x] [> x 0]] [1 2 [/ 1 0]]]]
 [result: [head filtered]]
 ===

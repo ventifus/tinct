@@ -1,12 +1,15 @@
-# Regression test placeholder: E043 ResourceLimitExceeded is not yet triggerable
-# This test documents that E043 exists in the error taxonomy but cannot be triggered
-# via corpus tests because no resource limits are currently enforced beyond depth
-# limits (which use E040/E041).
+# Regression test placeholder: E043 ResourceLimitExceeded (MAX_STRING_SIZE path)
+# This test documents that MAX_STRING_SIZE has no dedicated corpus test. The limit
+# cannot be triggered via corpus tests because its threshold is too large to reach
+# with a fixed input.
 #
-# BACKGROUND: E043 was added in Cycle #40 (2026-04-27) for resource-guard errors,
-# but the triggering code paths (MAX_COLLECT_SIZE, MAX_STRING_SIZE) are enforced
-# only in unit tests where they can be set to small values. Corpus tests cannot
-# configure these limits, so E043 remains untestable here.
+# NOTE: E043 is now triggerable via corpus for the MAX_COLLECT_SIZE path.
+# See tests/corpus/eval/errors/collect_infinite_seq.llt-eval which triggers E043
+# via [collect [range 0]] (an infinite sequence).
+#
+# BACKGROUND: E043 was added in Cycle #40 (2026-04-27) for resource-guard errors.
+# MAX_COLLECT_SIZE is enforced in collect_infinite_seq.llt-eval; MAX_STRING_SIZE
+# is enforced only in unit tests where the limit can be set to a small value.
 #
 # NOTE: This is NOT an error test (expected output is successful evaluation).
 # It was moved from tests/corpus/eval/errors/ where it didn't belong.

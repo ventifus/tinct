@@ -1,0 +1,4 @@
+# each: type error when called on Int (expects Dict)
+[each 42]
+===
+[E010] each: expected Dict, got Int

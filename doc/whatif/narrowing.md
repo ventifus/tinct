@@ -80,8 +80,8 @@ result is `τ₁ | τ₂`.
 
 The `narrow()` function recognizes specific condition shapes. Each pattern
 has a true-branch refinement. False-branch refinement requires negation
-types and is deferred (the false branch gets the original unrefined
-environment).
+types (available under algebraic subtyping, Phase 4). Until then, the
+false branch gets the original unrefined environment.
 
 #### Pattern 1: Equality with Literal
 
@@ -205,9 +205,9 @@ Recommended: start with `if` only.
 
 ### Limitations
 
-1. **No false-branch narrowing.** Requires negation types (`Str \ {"hello"}`)
-   which tinct does not have. The false branch gets the unrefined type.
-   Revisit if algebraic subtyping is adopted (`doc/whatif/algebraic-subtypes.md`).
+1. **No false-branch narrowing.** Requires negation types (`Str \ {"hello"}`).
+   Phase 4 adds this when algebraic subtyping provides negation types
+   (`doc/whatif/algebraic-subtypes.md`).
 
 2. **Only `if` initially.** `cond`, `when`, `unless`, and user-defined
    conditional patterns are not narrowed. Explicit TypeAssert is the
@@ -294,33 +294,29 @@ When type predicates are available (see `doc/whatif/type-predicates.md`),
 extend Pattern 2 to recognize `[int? x]`, `[str? x]`, etc. as
 direct narrowing triggers without the `type-of` indirection.
 
-### Phase 4: False-Branch Narrowing (deferred)
+### Phase 4: False-Branch Narrowing (requires algebraic subtyping)
 
-If algebraic subtyping is adopted (see `doc/whatif/algebraic-subtypes.md`),
-negation types become available, enabling false-branch narrowing:
+Algebraic subtyping (`doc/whatif/algebraic-subtypes.md`) provides negation
+types, enabling false-branch narrowing:
 after `[= x "hello"]`, the false branch knows
 `x : Str \ StringLiteral("hello")`.
 
 ### Prerequisites
 
-- Phase 1 requires `let-generalization` (narrowing refines type schemes),
-  `bidirectional-typing` (narrowing feeds into checking mode), and
-  `typeassert-structural` (narrowing complements explicit contracts)
-- Phase 2 has no additional prerequisites beyond Phase 1
-- Phase 3 requires `type-predicates` Phase 1 (see
-  `doc/whatif/type-predicates.md`)
-- Phase 4 requires `algebraic-subtypes` adoption (see
+- Phase 1-2 are scheduled after pattern matching (A3) — match arms
+  produce the `if` chains that narrowing refines. No hard technical dep,
+  but this ordering maximizes practical value.
+- Phase 3 requires `type-predicates` Phase 1 (DONE — see
+  `doc/whatif/completed/type-predicates.md`)
+- Phase 4 requires algebraic subtyping (see
   `doc/whatif/algebraic-subtypes.md`)
 
 ### Trigger
 
-- Begin Phase 1 when `bidirectional-typing` and `typeassert-structural`
-  sprints are complete — narrowing builds directly on both.
-- Begin Phase 1 when user code contains repeated `[@Type expr]` assertions
-  in `if` branches that could be inferred from the condition — narrowing
-  eliminates this boilerplate.
-- Revisit Phase 4 (false-branch narrowing) if algebraic subtyping is
-  adopted and negation types become available.
+Redundant `[@Type expr]` assertions in `if` branches are already
+common. Begin Phase 1 after pattern matching (A3) ships. Phase 4
+activates when algebraic subtyping lands, providing the negation types
+that false-branch narrowing requires.
 
 ## References
 

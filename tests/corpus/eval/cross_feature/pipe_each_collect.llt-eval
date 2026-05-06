@@ -1,0 +1,5 @@
+# Pipe + each integration: dict | each | collect
+# Tests that pipe operator works with each builtin and collect stdlib function
+[a: 10  b: 20  c: 30] | each | collect
+===
+Dict({0: Int(10), 1: Int(20), 2: Int(30)})

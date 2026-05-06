@@ -396,26 +396,18 @@ Implementation:
 
 ### Trigger
 
-Phase 1 (`%@Type`): adopt when:
-- Multi-file pipeline is implemented (templating.md Phase 1)
-- Formatters exist in `stdlib/fmt/` and users need to discover their
-  expected input shapes
-- LSP auto-complete for `%` becomes a requested feature
+Phase 1 (`%@Type`): adopt after multi-file pipeline ships.
+`stdlib/fmt/` formatters already exist and lack declared input shapes.
 
-Phase 2 (`validate`): adopt when:
-- Type annotations alone are insufficient — users need range checks,
-  patterns, optionality
-- External data sources (`from-json`, `from-yaml`) make static
-  typing inadequate (dynamic data is `Any`)
+Phase 2 (`validate`): adopt after Phase 1. External data from
+`from-json`/`from-yaml` is already untyped — schema validation fills
+the gap.
 
-Phase 3 (`tinct describe`): adopt when:
-- A library of formatters/transforms exists and discoverability
-  matters
-- CI/CD pipelines need to validate contracts before execution
+Phase 3 (`tinct describe`): adopt after Phase 2. Contract inspection
+is the tooling complement to contract declaration.
 
-Phase 4 (pipeline blame): adopt when:
-- Multi-stage pipelines (3+ files) are common and debugging contract
-  violations across stages is painful
+Phase 4 (pipeline blame): adopt after Phase 3. Multi-stage pipeline
+debugging is the primary motivator for the entire contract system.
 
 ## References
 

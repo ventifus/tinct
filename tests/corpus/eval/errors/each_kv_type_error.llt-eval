@@ -1,0 +1,4 @@
+# each-kv: type error when called on Bool (expects Dict)
+[each-kv true]
+===
+[E010] each-kv: expected Dict, got Bool

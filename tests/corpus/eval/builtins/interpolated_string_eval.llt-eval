@@ -1,0 +1,4 @@
+# Interpolated string evaluation - verifies desugaring to str calls
+[name: "Alice"  greeting: i"Hello $name!"]
+===
+Dict({"name": String("Alice"), "greeting": String("Hello Alice!")})

@@ -284,6 +284,8 @@ fn test_corpus_structure() {
         "tests/corpus/eval/type_errors",
         "tests/corpus/eval/typecheck",
         "tests/corpus/eval/pipeline",
+        "tests/corpus/eval/type_system",
+        "tests/corpus/eval/letrec",
         "tests/corpus/eval/underscore",
         // Invalid corpus
         "tests/corpus/invalid/pipeline",

@@ -31,13 +31,15 @@ schedules these features as Rust changes:
 | Sprint | Rust surface area added |
 |--------|------------------------|
 | `let-binding` (A1) | Parser change to `fn` body; new `Expr::Sequential` or similar |
-| `pattern-matching-basic` (A2) | `Expr::Match` + `eval::eval_match()` + `typecheck::check_match()` + `formatter::format_match()` + arms in resolve.rs, desugar.rs |
+| `pattern-matching-basic` (A2) | `Expr::Match` + `eval::eval_match()` + `typecheck::infer_match()` + `formatter::format_match()` + arms in resolve.rs, desugar.rs |
 | `pattern-matching-destructure` (A3) | `Pattern::Dict`, `Pattern::Seq`, evaluator + formatter extensions |
 | `adts` (C1) | `[type ...]` multi-entry extension to type checker; `Type::Union` from B1 |
 
-`Expr::Match` alone would add arms to every exhaustive match on `Expr` in the
-codebase — approximately 20 sites spanning eval.rs, typecheck.rs, formatter.rs,
-resolve.rs, desugar.rs, and ast_dict.rs.
+**Decision:** `Expr::Match` (A2, A3) is implemented as a Rust special form,
+not as a macro. The type checker benefits of first-class `Expr::Match` —
+per-arm narrowing, exhaustiveness with inferred types, precise union result
+types — outweigh the AST surface area cost. Match is excluded from this
+proposal's scope. See `doc/whatif/pattern-matching.md` §Why a Special Form.
 
 ### What's Missing
 
@@ -51,23 +53,23 @@ resolve.rs, desugar.rs, and ast_dict.rs.
 
 ## Why Macro-Rewrite Matters
 
-**Fewer Rust changes per feature.** A `[defmacro match]` that expands to
-nested `if`/`type-of` chains requires zero new AST variants, zero evaluator
+**Fewer Rust changes per feature.** A `[defmacro let]` that expands to
+nested `fn` applications requires zero new AST variants, zero evaluator
 cases, zero formatter arms, zero type checker cases. The macro expander handles
-all of it. Adding a new pattern type is a tinct code change, not a Rust change.
+all of it.
 
 **Self-documenting desugar.** A `[defmacro let]` in `stdlib/macros.llt` is
 readable tinct code with corpus tests. The current `desugar.rs` is Rust that
 requires Rust knowledge to understand and modify.
 
-**Typing-cluster lands faster.** Pattern matching and let binding as macros
-have no Rust dependency beyond the macro expansion infrastructure already being
-built. They can be written the day macros Phase 2 ships.
+**Typing-cluster A1 lands faster.** Let binding as a macro has no Rust
+dependency beyond the macro expansion infrastructure already being built.
+It can be written the day macros Phase 2 ships.
 
-**Smaller permanent Rust surface.** `Expr::Match` would live forever once
-added — every future feature that touches the AST (new eval strategy, new
-optimization, LSP features, the tinct-hosted formatter) must handle it. A
-macro keeps that complexity in tinct, where it belongs.
+**Note:** Match (`Expr::Match`) is excluded from macro-rewrite — see
+decision note in §Current State. The type checker benefits of first-class
+match (per-arm narrowing, exhaustiveness, precise union result types) justify
+the AST surface area cost.
 
 ## Design
 
@@ -135,50 +137,18 @@ Sequential scoping is preserved: `y`'s initializer `[+ x 1]` is inside the
 scope where `x` is bound. No new AST variant. No evaluator change. Lazy
 semantics of `[fn ...]` application handle the binding naturally.
 
-#### `[match x arms...]` → `[defmacro match]`
+#### ~~`[match x arms...]` → `[defmacro match]`~~ — Excluded
 
-Replaces `pattern-matching-basic` (A2) and `pattern-matching-destructure` (A3)
-as Rust sprints. `[match]` becomes a macro that desugars to nested `if` chains.
+**Decision:** Match is implemented as `Expr::Match` (a Rust special form), not
+as a macro. See the decision note in §Current State above. The type checker
+benefits of first-class `Expr::Match` — per-arm narrowing, exhaustiveness
+checking with inferred types, precise union result types — outweigh the AST
+surface area cost. See `doc/whatif/pattern-matching.md` §Why a Special Form
+for the full rationale.
 
-```tinct
-[defmacro match [scrutinee ...arms]
-  # arms are pairs: [pattern body pattern body ...]
-  # expand to: [if (matches? scrutinee pattern1)
-  #                (bind-pattern scrutinee pattern1 body1)
-  #                [if ...]]
-  [expand-match-arms scrutinee [pair-up arms]]]
-
-expand-match-arms: [fn [scrutinee arm-pairs]
-  [if [null? arm-pairs]
-    [quote [error "match: no arm matched"]]
-    [let [arm [head arm-pairs]
-          rest [tail arm-pairs]
-          pat arm.0
-          body arm.1]
-      [quote [if [unquote [pattern-test scrutinee pat]]
-                 [unquote [pattern-bind scrutinee pat body]]
-                 [unquote [expand-match-arms scrutinee rest]]]]]]]
-```
-
-Pattern classification — `pattern-test` and `pattern-bind` dispatch on the
-pattern node's shape:
-
-| Pattern | `pattern-test` emits | `pattern-bind` emits |
-|---------|---------------------|---------------------|
-| `Int`, `Str`, `Bool` (uppercase var) | `[int? s]`, `[str? s]`, `[bool? s]` | body unchanged |
-| `42`, `"hello"` (literal) | `[= s 42]` | body unchanged |
-| `_` (wildcard) | `true` | body unchanged |
-| `name` (lowercase var) | `true` | `[[fn [name] body] s]` |
-| `[ok: v]` (dict pattern) | `[and [dict? s] [has? s "ok"]]` | `[[fn [v] body] s.ok]` |
-| `[seq h t]` (seq pattern) | `[seq? s]` | `[[fn [h t] body] [head s] [tail s]]` |
-
-This replaces sprints A2 and A3 entirely — no `Expr::Match`, no
-`eval::eval_match()`, no `format_match()`.
-
-**Type narrowing** — the type checker sees expanded `if`/`type-of`/`int?` chains.
-Pattern typing starts as `Any` (same as the planned Rust implementation for Phase A).
-When `narrowing.md` lands, the type checker can narrow `x` in each branch of the
-expanded `if` — no changes needed to `[defmacro match]` itself.
+Pattern matching sprints A2 and A3 are implemented via `Expr::Match`,
+`eval::eval_match()`, and `typecheck::infer_match()` in Rust, as specified
+in `doc/whatif/plans/typing-cluster.md`.
 
 #### Multi-entry `[type [ok: a] [err: Str]]` — no macro needed
 
@@ -206,30 +176,27 @@ Updated sprint status after macro-rewrite:
 | Sprint | Before | After |
 |--------|--------|-------|
 | `let-binding` (A1) | Parser change + desugar | `[defmacro let]` in `stdlib/macros.llt` — no Rust |
-| `pattern-matching-basic` (A2) | `Expr::Match` + evaluator | `[defmacro match]` Phase 1 — no Rust |
-| `pattern-matching-destructure` (A3) | Pattern variants + evaluator | Extend `[defmacro match]` — no Rust |
+| `pattern-matching-basic` (A2) | `Expr::Match` + evaluator | `Expr::Match` — Rust special form (excluded from macro-rewrite) |
+| `pattern-matching-destructure` (A3) | Pattern variants + evaluator | Extends `Expr::Match` — Rust special form (excluded from macro-rewrite) |
 | `adts` (C1) | Parser + type alias registration | Multi-entry `[type ...]` — type checker extension (union body + StringLiteral + TypeScheme storage), no macro |
 | `tmpl` string interpolation | In `src/parser.rs` | `[defmacro tmpl]` in `stdlib/macros.llt` |
 
-Rust that is **eliminated**:
-- `Expr::Match` variant (and all ~20 exhaustive match sites in the codebase)
-- `eval::eval_match()`
-- `typecheck::check_match()`
-- `formatter::format_match()`
-- `Pattern::Dict`, `Pattern::Seq` variants and their evaluator cases
+Rust that is **eliminated** by macro-rewrite:
 - `desugar_interpolated_string()` in `src/parser.rs`
+
+Rust that **stays** (match as special form, not macro):
+- `Expr::Match`, `Pattern::*` variants — implemented in typing-cluster A2/A3
+- `eval::eval_match()`, `typecheck::infer_match()`, `formatter::format_match()`
 
 `src/desugar.rs` shrinks to two rules: `$_` and `|` pipe.
 
 ### Parse-Stage Macros
 
-When pattern matching Phase 4+ lands (guards `when`, or-patterns `|`), the
-post-parse re-interpretation of arm syntax may become ambiguous (e.g.,
-`[f x]` in an arm position could be a constructor pattern or a call). Parse-stage
-macros — where the macro controls how its body is tokenized and parsed — resolve
-this cleanly. This is tracked as a separate research item
-(`doc/whatif/parse-stage-macros.md`) and scheduled between regular macros and
-the typing-cluster implementation.
+Parse-stage macros (`doc/whatif/parse-stage-macros.md`) remain relevant for
+future syntax extensions — e.g., custom infix operators, argument-position
+parse modes — but are no longer gated on `[match]`. Match arm parsing is
+handled by the parser's dedicated pattern-parsing mode as part of the
+`Expr::Match` special form (typing-cluster A2).
 
 ## What Would Change
 
@@ -256,18 +223,19 @@ Standard library macros loaded alongside `stdlib/prelude.llt`:
 
 - `[defmacro tmpl [template] ...]` — string interpolation
 - `[defmacro let [bindings body] ...]` — sequential binding
-- `[defmacro match [scrutinee ...arms] ...]` — pattern matching
 - ADT declarations via multi-entry `[type ...]` — no macro, type checker extension only
+
+Match is excluded — implemented as `Expr::Match` special form (see decision note
+in §Current State).
 
 Corpus-tested. Readable. Modifiable without recompiling tinct.
 
 ### Typing-Cluster Plan (`doc/whatif/plans/typing-cluster.md`)
 
-Sprint tasks for A1, A2, A3, C1 updated to reflect macro-based implementation:
-no `Expr::Match` or `Pattern::*` variants, no evaluator cases, no formatter arms.
-The spec chapters for these features (`doc/02-syntax.md`, `doc/08-evaluation.md`)
-still document the user-facing syntax — the fact that it's macro-implemented is
-an implementation detail.
+Sprints A2 and A3 (pattern matching) are **not** affected by macro-rewrite —
+match is implemented as `Expr::Match` (Rust special form). Sprint A1
+(let-binding) is a parser change (multi-expression fn bodies), not a macro.
+Sprint C1 (ADTs) uses type checker extension, not macros.
 
 ## Phased Adoption
 
@@ -281,21 +249,7 @@ infrastructure on a real existing feature.
 - `stdlib/macros.llt`: `[defmacro tmpl ...]` with `parse-template` helper
 - Tests: all existing string interpolation corpus tests pass through the macro path
 
-### Phase 2: `[defmacro let]` and `[defmacro match]` Phase 1
-
-- `stdlib/macros.llt`: `[defmacro let]` + `[defmacro match]` (type + literal + wildcard + variable patterns)
-- Replaces `let-binding` and `pattern-matching-basic` Rust sprints
-- Tests: 10+ corpus tests for `let` sequential scoping; 10+ for `match` basic patterns
-
-### Phase 3: `[defmacro match]` Phase 2 — Structural Patterns
-
-Extend `[defmacro match]` with dict patterns `[ok: v]` and seq patterns `[seq h t]`.
-
-- `stdlib/macros.llt`: extend `pattern-test` and `pattern-bind` dispatch
-- Replaces `pattern-matching-destructure` Rust sprint
-- Tests: 10+ corpus tests for structural destructuring
-
-### Phase 4: Multi-Entry `[type ...]` for ADTs
+### Phase 2: Multi-Entry `[type ...]` for ADTs
 
 - `src/typecheck.rs`: extend `resolve_type_dict`/`[type ...]` handler to union multiple positional entries; add `Expr::Str` → `Type::StringLiteral` to `resolve_type_expr`
 - Depends on `Type::Union` (B1) for the union type representation
@@ -303,21 +257,23 @@ Extend `[defmacro match]` with dict patterns `[ok: v]` and seq patterns `[seq h 
 
 ### Prerequisites
 
-- **Macros Phase 2** (`[defmacro]` and expansion loop) — required for all phases
+- **Macros Phase 2** (`[defmacro]` and expansion loop) — required for Phase 1
 - **Quasiquoting Phase 2** (`[quote]`/`[unquote]`) — strongly recommended for ergonomic macro bodies
 - **`ast_to_dict_expr`** (`doc/whatif/ast-schema.md` Phase 1) — required for macro expansion
+- **`Type::Union`** (typing-cluster B1) — required for Phase 2
 
-### Trigger
+### Dependencies
 
-When macros Phase 2 ships — implement all phases of this proposal before
-attempting typing-cluster sprints A1, A2, A3, C1 in Rust.
+Follows macro-integration (M5b). Phase 2 additionally requires `Type::Union`
+(typing-cluster B1). Let-binding (typing-cluster A1) is a parser change, not
+a macro. Match is `Expr::Match` (Rust special form).
 
 ## References
 
 - tinct `doc/whatif/macros.md` — base macro system; `[defmacro]`, hygiene model, expansion pipeline
 - tinct `doc/whatif/quasiquoting.md` — `[quote]`/`[unquote]` for ergonomic macro bodies
 - tinct `doc/whatif/ast-schema.md` — AST dict schema used by macro bodies
-- tinct `doc/whatif/plans/typing-cluster.md` — sprints affected by this proposal (A1, A2, A3, C1)
+- tinct `doc/whatif/plans/typing-cluster.md` — sprints affected by this proposal (C1)
 - tinct `doc/whatif/parse-stage-macros.md` — future extension for parse-time control over arm syntax
 - Flatt, M. (2002). "Composable and compilable macros: you want it when?" *ICFP '02*, pp. 72–83. ACM. — phase separation; macro bodies execute at compile time
 - Ballantyne, M., King, A. & Felleisen, M. (2020). "Macros for domain-specific languages." *OOPSLA '20*. — surface-to-core macro architecture; `[match]` as a DSL macro is the canonical example

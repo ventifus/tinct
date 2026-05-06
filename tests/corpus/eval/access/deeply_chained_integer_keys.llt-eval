@@ -1,0 +1,12 @@
+# Deeply chained access - integer dot access
+[
+  data: [
+    items: [
+      0: [name: "item1"]
+      1: [name: "item2"]
+    ]
+  ]
+  result: data.items.1.name
+]
+===
+Dict({"data": Dict({"items": Dict({0: ..., 1: ...})}), "result": String("item2")})

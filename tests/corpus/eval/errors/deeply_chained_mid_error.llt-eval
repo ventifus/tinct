@@ -1,0 +1,6 @@
+# Deeply chained access - mid-chain error case
+[data: [level1: [level2: 42]]]
+
+data.level1.level2.nonexistent
+===
+[E010]

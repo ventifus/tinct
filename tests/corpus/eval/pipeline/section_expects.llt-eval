@@ -1,0 +1,6 @@
+# Pipeline section with expects: contract (advisory, doesn't block evaluation)
+[input: 42]
+--- expects: @[type: Dict]
+[doubled: [* %.input 2]]
+===
+Dict({"doubled": Int(84)})
