@@ -3128,6 +3128,12 @@ Core error model improvements. Foundation for all later error work.
 - [x] Corpus tests: quote_literal, quote_dot_access, quote_type_of
 - [x] Fix `TypeMismatch::context` field always `None` — added context strings to 8 call sites: $try, $apply (builtins.rs), dot access, bracket access, range access (eval.rs) [Major, span-integrity-checker]
 
+### ast-dict-source: AST Dict Source Info + Comments
+
+- [x] bare: true on string literals when source char at token start ≠ " via AstToDictOpts.source
+- [x] leading-comments:, trailing-comment:, blank-before: on Entry and Document nodes via CommentMaps
+- [x] Tests: bare flag, comment embedding, blank-before, both-None mode unchanged
+
 ### error-typeassert: TypeAssert Error Reporting (Post typeassert-structural Sprint) — Final Items
 
 Remaining items from the error-typeassert sprint (earlier items already in DONE.md above).

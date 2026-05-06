@@ -92,14 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### ast-dict-source: AST Dict Source Info + Comments
-
-See doc/15-ast.md §AST Dict Schema. No blocking dependencies (extends `ast-dict-core`).
-
-- [ ] `bare: true` on string literals when source char at token start ≠ `"` via `AstToDictOpts.source: Option<&str>` (`src/ast_dict.rs`)
-- [ ] `leading-comments:`, `trailing-comment:`, `blank-before:` on `Entry` and `Document` nodes via `AstToDictOpts.comments` (`src/ast_dict.rs`)
-- [ ] Tests: `bare: true` for bare-word strings; comment embedding; `blank-before: true`; both-`None` mode unchanged (`tests/`)
-
 ### unquote: `[unquote]` and `[unquote-splice]`
 
 See doc/02-syntax.md §Quasiquoting, doc/08-evaluation.md §Quote Semantics. **Depends on:** `quote`.
