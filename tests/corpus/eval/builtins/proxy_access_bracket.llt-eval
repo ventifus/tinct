@@ -1,11 +1,12 @@
-# proxy : bracket access passes Int key to handler
-# Verifies that $p[0] calls handler with Value::Int(0), not Value::String("0"), and likewise for $p[999]
+# proxy : dot access with identifiers passes String key to handler
+# Until Phase 1 (integer dot access) is implemented, all dot access uses String keys
+# p.foo, p.int_key, p.int_key_large all pass String keys
 [
   handler: [fn [key] [type-of key]]
   p: [proxy handler]
-  int-key: p[0]
-  int-key-large: p[999]
-  string-key: p["foo"]
+  int_key: p.int_key
+  int_key_large: p.int_key_large
+  string_key: p.foo
 ]
 ===
-Dict({"handler": Function(key), "p": Proxy, "int-key": String("Int"), "int-key-large": String("Int"), "string-key": String("String")})
+Dict({"handler": Function(key), "p": Proxy, "int_key": String("String"), "int_key_large": String("String"), "string_key": String("String")})

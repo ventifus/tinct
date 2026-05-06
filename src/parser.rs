@@ -2,8 +2,8 @@
 //!
 //! Hand-written recursive-descent parser that replaced the pest-based parser in sprint parser-core-c3.
 //! Implements all language constructs: call/fn/type-alias/type-assert forms, keyed entries,
-//! bracket access, range access, dot access chains, document separators, comment collection,
-//! and fn param list parsing (simple, annotated, variadic).
+//! dot access chains (identifier and integer keys), pipe expressions, document separators,
+//! comment collection, and fn param list parsing (simple, annotated, variadic).
 //!
 //! The parser enforces a maximum nesting depth of 256 brackets to prevent stack overflow.
 //! Unlike the previous pest parser (which recursed on Rust's call stack), this implementation
@@ -80,7 +80,7 @@ fn peek_next_horizontal<'a>(
 /// Returns None for complex expressions where comparison isn't meaningful.
 ///
 /// Parse-time duplicate detection is literal-keys-only; computed keys (DotAccess,
-/// BracketAccess, Call) return None here and are checked at eval-time.
+/// Call) return None here and are checked at eval-time.
 fn key_to_string(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Str(s) => Some(s.clone()),
@@ -262,15 +262,6 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             expr: Box::new(adjust_spanned_expr(*expr, base)),
             field,
         },
-        Expr::BracketAccess { expr, key } => Expr::BracketAccess {
-            expr: Box::new(adjust_spanned_expr(*expr, base)),
-            key: Box::new(adjust_spanned_expr(*key, base)),
-        },
-        Expr::RangeAccess { expr, start, end } => Expr::RangeAccess {
-            expr: Box::new(adjust_spanned_expr(*expr, base)),
-            start: start.map(|s| Box::new(adjust_spanned_expr(*s, base))),
-            end: end.map(|e| Box::new(adjust_spanned_expr(*e, base))),
-        },
         Expr::Dict(entries) => Expr::Dict(adjust_entries(entries, base)),
         Expr::Call {
             func,
@@ -448,7 +439,7 @@ fn parse_annotation(
             let mut found = false;
             for j in bracket_start..tokens.len() {
                 match &tokens[j].node {
-                    Token::OpenBracket | Token::BracketAccess => depth += 1,
+                    Token::OpenBracket => depth += 1,
                     Token::CloseBracket => {
                         depth -= 1;
                         if depth == 0 {
@@ -787,7 +778,7 @@ fn parse_param_list(
 /// Stack frame types for the iterative parser.
 ///
 /// Each variant corresponds to a bracket-form being parsed. The parser pushes
-/// a frame on `Token::OpenBracket` or `Token::BracketAccess`, collects entries/args/params
+/// a frame on `Token::OpenBracket`, collects entries/args/params
 /// during iteration, then pops and constructs the AST node on `Token::CloseBracket`.
 #[derive(Debug, Clone)]
 enum StackFrame {
@@ -831,18 +822,6 @@ enum StackFrame {
         expr: Option<Spanned<Expr>>,
         span_start: Position,
     },
-    /// Bracket access key: `$a[key_expr]` where `key_expr` may contain nested brackets
-    /// Also handles range access: `$a[2..5]`
-    BracketAccessKey {
-        target: Spanned<Expr>,
-        /// The first expression before `..` (if range) or the full key (if not range)
-        key_expr: Option<Spanned<Expr>>,
-        /// Set to true if we've seen a `..` token, making this a range access
-        is_range: bool,
-        /// The expression after `..` (only for range access)
-        range_end: Option<Spanned<Expr>>,
-        span_start: Position,
-    },
     /// Pipe operator: `lhs | rhs`
     /// Holds the LHS and waits for the RHS to be parsed
     Pipe {
@@ -884,7 +863,7 @@ pub struct ParseOutput {
     pub errors: Vec<ParseError>,
 }
 
-/// Given a token slice and a start index pointing just past an `[` (or `BracketAccess`),
+/// Given a token slice and a start index pointing just past an `[`,
 /// advance until the matching `]` is found (tracking nesting depth).
 ///
 /// Returns the index of the `CloseBracket` token that closes the bracket opened before
@@ -899,7 +878,7 @@ fn skip_to_closing_bracket(tokens: &[Spanned<Token>], from_idx: usize) -> usize 
     let mut idx = from_idx;
     while idx < tokens.len() {
         match &tokens[idx].node {
-            Token::OpenBracket | Token::BracketAccess => depth += 1,
+            Token::OpenBracket => depth += 1,
             Token::CloseBracket => {
                 depth -= 1;
                 if depth == 0 {
@@ -1071,7 +1050,7 @@ fn recover_from_bracket_error(
                 }
             }
             _ => {
-                // For other frame types (Fn, TypeAlias, TypeAssert, BracketAccessKey),
+                // For other frame types (Fn, TypeAlias, TypeAssert, Pipe),
                 // we can't meaningfully preserve partial state, so just emit Error.
                 Spanned::new(Expr::Error(error_span), error_span)
             }
@@ -1103,8 +1082,8 @@ fn recover_from_bracket_error(
 
 /// Recover from a parse error that occurred when *opening* a bracket form (frame NOT yet pushed).
 ///
-/// Called when the parser fails to push a new `StackFrame` (e.g., depth limit exceeded,
-/// or no target expression available for bracket access). Since no frame was pushed, this
+/// Called when the parser fails to push a new `StackFrame` (e.g., depth limit exceeded).
+/// Since no frame was pushed, this
 /// function does NOT pop anything. It:
 /// 1. Records the error in `recovered_errors`.
 /// 2. Pushes `Expr::Error(error_span)` to the current top frame (or document).
@@ -1153,9 +1132,8 @@ fn recover_from_failed_open(
 /// - Fn forms: `[fn [x y@Int ...rest] body]`, `[fn@Type [params] body]` with full param parsing
 /// - Type-alias: `[type expr]`
 /// - Type-assert: `[@Annotation expr]`
-/// - Bracket access: `$a[0]`, `$a[$key]`
-/// - Dot access chains: `$a.b.c`, `$a.b[0]`
-/// - Range access: `$a[2..5]`, `$a[..5]`, `$a[2..]`, `$a[..]`
+/// - Dot access chains: `$a.b.c`, `$a.0` (identifier and integer keys)
+/// - Pipe expressions: `$a | $f` (reverse-apply)
 /// - Document separators: `---` between document sections
 /// - Comment collection: leading and trailing comments attached by span offset
 ///
@@ -1475,73 +1453,6 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 }
             }
 
-            Token::BracketAccess => {
-                // Check depth before pushing
-                if stack.len() >= MAX_PARSE_DEPTH {
-                    let err = ParseError {
-                        message: format!(
-                            "maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"
-                        ),
-                        span: Some(span),
-                    };
-                    if !stack.is_empty() {
-                        // BracketAccessKey frame was not pushed; use recover_from_failed_open.
-                        i = recover_from_failed_open(
-                            err,
-                            span,
-                            &token_vec,
-                            i + 1,
-                            &mut stack,
-                            &mut current_document_expressions,
-                            &mut recovered_errors,
-                        );
-                        continue;
-                    }
-                    return Err(err);
-                }
-
-                // Pop the target expression from the current context (document or frame)
-                let target = if stack.is_empty() {
-                    if current_document_expressions.is_empty() {
-                        return Err(ParseError {
-                            message: "bracket access requires a target expression before '['"
-                                .to_string(),
-                            span: Some(span),
-                        });
-                    }
-                    let rc = current_document_expressions.pop().unwrap();
-                    Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
-                } else {
-                    match pop_last_value_from_frame(&mut stack, span) {
-                        Ok(t) => t,
-                        Err(pop_err) => {
-                            // Inside a frame with no poppable target; BracketAccessKey was not
-                            // pushed. Use recover_from_failed_open (no pop of current frame).
-                            i = recover_from_failed_open(
-                                pop_err,
-                                span,
-                                &token_vec,
-                                i + 1,
-                                &mut stack,
-                                &mut current_document_expressions,
-                                &mut recovered_errors,
-                            );
-                            continue;
-                        }
-                    }
-                };
-
-                stack.push(StackFrame::BracketAccessKey {
-                    target,
-                    key_expr: None,
-                    is_range: false,
-                    range_end: None,
-                    span_start: span.start,
-                });
-                i += 1;
-                continue;
-            }
-
             Token::CloseBracket => {
                 // Pop the frame and construct the AST node
                 let frame = stack.pop().ok_or_else(|| ParseError {
@@ -1815,59 +1726,6 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 .to_string(),
                             span: Some(span),
                         });
-                    }
-
-                    StackFrame::BracketAccessKey {
-                        target,
-                        key_expr,
-                        is_range,
-                        range_end,
-                        span_start,
-                    } => {
-                        if is_range {
-                            // Range access: $a[start..end]
-                            let range_access_expr = Expr::RangeAccess {
-                                expr: Box::new(target),
-                                start: key_expr.map(Box::new),
-                                end: range_end.map(Box::new),
-                            };
-
-                            let spanned_access =
-                                Spanned::new(range_access_expr, dict_span(span_start));
-                            if let Err(push_err) = push_value(
-                                &mut stack,
-                                &mut current_document_expressions,
-                                spanned_access,
-                            ) {
-                                close_bracket_recover!(push_err);
-                            }
-                        } else {
-                            match key_expr {
-                                None => {
-                                    close_bracket_recover!(ParseError {
-                                        message: "bracket access requires a key expression"
-                                            .to_string(),
-                                        span: Some(span),
-                                    });
-                                }
-                                Some(key) => {
-                                    let bracket_access_expr = Expr::BracketAccess {
-                                        expr: Box::new(target),
-                                        key: Box::new(key),
-                                    };
-
-                                    let spanned_access =
-                                        Spanned::new(bracket_access_expr, dict_span(span_start));
-                                    if let Err(push_err) = push_value(
-                                        &mut stack,
-                                        &mut current_document_expressions,
-                                        spanned_access,
-                                    ) {
-                                        close_bracket_recover!(push_err);
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -2692,40 +2550,6 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 continue;
             }
 
-            Token::Range => {
-                // Range operator: must be inside a BracketAccessKey frame
-                match stack.last_mut() {
-                    Some(StackFrame::BracketAccessKey {
-                        ref mut is_range, ..
-                    }) => {
-                        *is_range = true;
-                        i += 1;
-                        continue;
-                    }
-                    _ => {
-                        let err = ParseError {
-                            message:
-                                "range operator '..' can only appear in bracket access context"
-                                    .to_string(),
-                            span: Some(span),
-                        };
-                        if !stack.is_empty() {
-                            i = recover_from_bracket_error(
-                                err,
-                                span,
-                                &token_vec,
-                                i + 1,
-                                &mut stack,
-                                &mut current_document_expressions,
-                                &mut recovered_errors,
-                            );
-                            continue;
-                        }
-                        return Err(err);
-                    }
-                }
-            }
-
             Token::At | Token::ImmediateAt => {
                 // Check context: if we're in a TypeAssert frame and don't have annotation yet, parse it
                 let is_type_assert_no_ann = matches!(
@@ -2869,7 +2693,6 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Fn { span_start, .. } => *span_start,
             StackFrame::TypeAlias { span_start, .. } => *span_start,
             StackFrame::TypeAssert { span_start, .. } => *span_start,
-            StackFrame::BracketAccessKey { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -3036,34 +2859,6 @@ fn pop_last_value_from_frame(
                 })
             }
         }
-        Some(StackFrame::BracketAccessKey {
-            ref mut key_expr,
-            ref mut range_end,
-            ref is_range,
-            ..
-        }) => {
-            if *is_range {
-                if let Some(end) = range_end.take() {
-                    Ok(end)
-                } else if let Some(start) = key_expr.take() {
-                    Ok(start)
-                } else {
-                    Err(ParseError {
-                        message: "dot access requires a target before '.'".to_string(),
-                        span: Some(span),
-                    })
-                }
-            } else {
-                if let Some(key) = key_expr.take() {
-                    Ok(key)
-                } else {
-                    Err(ParseError {
-                        message: "dot access requires a target before '.'".to_string(),
-                        span: Some(span),
-                    })
-                }
-            }
-        }
         Some(StackFrame::TypeAlias {
             ref mut type_expr, ..
         }) => {
@@ -3154,36 +2949,6 @@ fn push_expr_to_parent(
                     });
                 }
                 *type_assert_expr = Some(expr);
-                Ok(())
-            }
-            Some(StackFrame::BracketAccessKey {
-                ref mut key_expr,
-                ref is_range,
-                ref mut range_end,
-                ..
-            }) => {
-                if *is_range {
-                    // We've seen .., so this expression is the end of the range
-                    if range_end.is_some() {
-                        return Err(ParseError {
-                            message: "range access can only have one expression after '..'"
-                                .to_string(),
-                            span: Some(expr.span),
-                        });
-                    }
-                    *range_end = Some(expr);
-                } else {
-                    // No .. yet, so this is the key or range start
-                    if key_expr.is_some() {
-                        return Err(ParseError {
-                            message:
-                                "bracket access can only have one key expression before '..' or ']'"
-                                    .to_string(),
-                            span: Some(expr.span),
-                        });
-                    }
-                    *key_expr = Some(expr);
-                }
                 Ok(())
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {
@@ -3601,37 +3366,22 @@ mod tests {
     }
 
     #[test]
-    fn test_bracket_access_literal_key() {
+    fn test_bracket_access_removed_parses_as_two_expressions() {
+        // $a[0] — BracketAccess syntax removed. Now parses as two separate expressions:
+        // VarRef("a") and Dict([Int(0)]). The `[` is always OpenBracket.
         let output = parse2("$a[0]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 2);
         match &doc.expressions[0].node {
-            Expr::BracketAccess { expr, key } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
-                    other => panic!("expected VarRef, got {other:?}"),
-                }
-                assert!(matches!(&key.node, Expr::Int(0)));
-            }
-            other => panic!("expected BracketAccess, got {other:?}"),
+            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
+            other => panic!("expected VarRef, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_bracket_access_variable_key() {
-        let output = parse2("$a[$key]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::BracketAccess { expr, key } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
-                    other => panic!("expected VarRef, got {other:?}"),
-                }
-                match &key.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "key"),
-                    other => panic!("expected VarRef key, got {other:?}"),
-                }
+        match &doc.expressions[1].node {
+            Expr::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert!(matches!(&entries[0].node.value.node, Expr::Int(0)));
             }
-            other => panic!("expected BracketAccess, got {other:?}"),
+            other => panic!("expected Dict, got {other:?}"),
         }
     }
 
@@ -3747,23 +3497,6 @@ mod tests {
                 .message
                 .contains("type-assert form requires an expression"),
             "expected error about missing expression, got: {}",
-            output.errors[0].message
-        );
-    }
-
-    #[test]
-    fn test_bracket_access_empty() {
-        // $a[] — bracket access with empty key
-        let output = parse2("$a[]").expect("recovery should succeed");
-        assert!(
-            !output.errors.is_empty(),
-            "expected recovered error for empty bracket access"
-        );
-        assert!(
-            output.errors[0]
-                .message
-                .contains("bracket access requires a key expression"),
-            "expected error about empty key, got: {}",
             output.errors[0].message
         );
     }
@@ -4075,33 +3808,6 @@ mod tests {
     }
 
     #[test]
-    fn test_bracket_access_inside_dict() {
-        // [a: $x[0]] — bracket access works as dict value (BracketAccess pops from frame)
-        let output = parse2("[a: $x[0]]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "a"),
-                    other => panic!("expected key 'a', got {other:?}"),
-                }
-                match &entries[0].node.value.node {
-                    Expr::BracketAccess { expr, key } => {
-                        match &expr.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "x"),
-                            other => panic!("expected VarRef('x'), got {other:?}"),
-                        }
-                        assert!(matches!(&key.node, Expr::Int(0)));
-                    }
-                    other => panic!("expected BracketAccess as value, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_annotation_invalid_token() {
         // [@123] — parse_annotation receives Int(123) after @, not Identifier or OpenBracket
         let output = parse2("[@123]").expect("recovery should succeed");
@@ -4116,45 +3822,6 @@ mod tests {
             "expected error about invalid annotation token, got: {}",
             output.errors[0].message
         );
-    }
-
-    #[test]
-    fn test_nested_bracket_access() {
-        // $a[0][1] — second BracketAccess wraps the result of the first
-        let output = parse2("$a[0][1]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::BracketAccess {
-                expr: outer_expr,
-                key: outer_key,
-            } => {
-                // outer key is Int(1)
-                assert!(
-                    matches!(&outer_key.node, Expr::Int(1)),
-                    "expected outer key Int(1), got {:?}",
-                    outer_key.node
-                );
-                // outer target is BracketAccess($a, 0)
-                match &outer_expr.node {
-                    Expr::BracketAccess {
-                        expr: inner_expr,
-                        key: inner_key,
-                    } => {
-                        match &inner_expr.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
-                            other => panic!("expected VarRef('a') as inner target, got {other:?}"),
-                        }
-                        assert!(
-                            matches!(&inner_key.node, Expr::Int(0)),
-                            "expected inner key Int(0), got {:?}",
-                            inner_key.node
-                        );
-                    }
-                    other => panic!("expected inner BracketAccess, got {other:?}"),
-                }
-            }
-            other => panic!("expected outer BracketAccess, got {other:?}"),
-        }
     }
 
     #[test]
@@ -4391,90 +4058,6 @@ mod tests {
     }
 
     #[test]
-    fn test_range_access_both() {
-        let output = parse2("$a[2..5]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::RangeAccess { expr, start, end } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
-                    other => panic!("expected VarRef, got {other:?}"),
-                }
-                assert!(start.is_some());
-                match &start.as_ref().unwrap().node {
-                    Expr::Int(n) => assert_eq!(*n, 2),
-                    other => panic!("expected Int(2) for start, got {other:?}"),
-                }
-                assert!(end.is_some());
-                match &end.as_ref().unwrap().node {
-                    Expr::Int(n) => assert_eq!(*n, 5),
-                    other => panic!("expected Int(5) for end, got {other:?}"),
-                }
-            }
-            other => panic!("expected RangeAccess, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_access_unbounded() {
-        let output = parse2("$a[..]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::RangeAccess { expr, start, end } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
-                    other => panic!("expected VarRef, got {other:?}"),
-                }
-                assert!(start.is_none());
-                assert!(end.is_none());
-            }
-            other => panic!("expected RangeAccess, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_access_start_only() {
-        let output = parse2("$a[2..]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::RangeAccess { expr, start, end } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
-                    other => panic!("expected VarRef, got {other:?}"),
-                }
-                assert!(start.is_some());
-                match &start.as_ref().unwrap().node {
-                    Expr::Int(n) => assert_eq!(*n, 2),
-                    other => panic!("expected Int(2) for start, got {other:?}"),
-                }
-                assert!(end.is_none());
-            }
-            other => panic!("expected RangeAccess, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_range_access_end_only() {
-        let output = parse2("$a[..5]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::RangeAccess { expr, start, end } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
-                    other => panic!("expected VarRef, got {other:?}"),
-                }
-                assert!(start.is_none());
-                assert!(end.is_some());
-                match &end.as_ref().unwrap().node {
-                    Expr::Int(n) => assert_eq!(*n, 5),
-                    other => panic!("expected Int(5) for end, got {other:?}"),
-                }
-            }
-            other => panic!("expected RangeAccess, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_doc_separator() {
         let output = parse2("[a: 1]\n---\n[b: 2]").expect("parse failed");
         assert_eq!(output.file.node.documents.len(), 2);
@@ -4555,7 +4138,7 @@ mod tests {
 
     #[test]
     fn test_range_outside_bracket_access() {
-        // .. outside brackets emits two consecutive Dot tokens (Range is only emitted inside brackets).
+        // `..` always emits two consecutive Dot tokens — `Token::Range` has been removed.
         // `1..5` lexes as Int(1), Dot, Dot, Int(5). The first Dot triggers dot-access on Int(1)
         // but the next token is another Dot (not an identifier) → parse error at top level.
         // At top level (stack empty), the parser returns Err rather than recovering.
@@ -4606,8 +4189,8 @@ mod tests {
     }
 
     #[test]
-    fn test_whitespace_prevents_bracket_access() {
-        // "$a [0]" has whitespace before "["; lexer emits OpenBracket (not BracketAccess)
+    fn test_bracket_parses_as_separate_dict() {
+        // "$a [0]" parses as two separate expressions: VarRef and Dict([Int(0)])
         let output = parse2("$a [0]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(
@@ -4740,42 +4323,6 @@ mod tests {
             "expected to find 'trailing comment' in trailing_comments, got: {:?}",
             output.trailing_comments
         );
-    }
-
-    #[test]
-    fn test_range_in_nested_context() {
-        // "[x: $y[2..5]]" — range access as dict value
-        let output = parse2("[x: $y[2..5]]").expect("parse failed");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "x"),
-                    other => panic!("expected key 'x', got {other:?}"),
-                }
-                match &entries[0].node.value.node {
-                    Expr::RangeAccess { expr, start, end } => {
-                        match &expr.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "y"),
-                            other => panic!("expected VarRef('y'), got {other:?}"),
-                        }
-                        assert!(start.is_some());
-                        match &start.as_ref().unwrap().node {
-                            Expr::Int(n) => assert_eq!(*n, 2),
-                            other => panic!("expected Int(2) for start, got {other:?}"),
-                        }
-                        assert!(end.is_some());
-                        match &end.as_ref().unwrap().node {
-                            Expr::Int(n) => assert_eq!(*n, 5),
-                            other => panic!("expected Int(5) for end, got {other:?}"),
-                        }
-                    }
-                    other => panic!("expected RangeAccess as dict value, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
     }
 
     #[test]
@@ -4939,82 +4486,6 @@ mod tests {
             "expected to find 'my comment' in leading_comments, got: {:?}",
             output.leading_comments
         );
-    }
-
-    /// Regression test for f1e38a2: bracket-access value inside a keyed dict entry caused a
-    /// false "duplicate key" error. `[key: $current-key value: $xs[$current-key]]` was
-    /// incorrectly rejected because `pop_last_value_from_frame` restored the popped entry's key
-    /// as `pending_key` without removing it from `seen_keys`, so when `push_value` re-inserted
-    /// the completed bracket-access entry it found the key already in `seen_keys`.
-    #[test]
-    fn test_bracket_access_value_in_keyed_dict_no_false_duplicate() {
-        // Two distinct keys: "key" and "value". The value for "value" is a bracket-access expr.
-        // This must parse without a "duplicate key" error.
-        let output = parse2("[key: $k value: $xs[$k]]").expect(
-            "parse failed: bracket-access value in keyed dict incorrectly rejected as duplicate key",
-        );
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 2, "expected 2 entries");
-                // First entry: key: $k
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "key"),
-                    other => panic!("expected key 'key', got {other:?}"),
-                }
-                match &entries[0].node.value.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "k"),
-                    other => panic!("expected VarRef('k') as value, got {other:?}"),
-                }
-                // Second entry: value: $xs[$k]
-                match &entries[1].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "value"),
-                    other => panic!("expected key 'value', got {other:?}"),
-                }
-                match &entries[1].node.value.node {
-                    Expr::BracketAccess { expr, key } => {
-                        match &expr.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "xs"),
-                            other => {
-                                panic!("expected VarRef('xs') as bracket target, got {other:?}")
-                            }
-                        }
-                        match &key.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "k"),
-                            other => panic!("expected VarRef('k') as bracket key, got {other:?}"),
-                        }
-                    }
-                    other => panic!("expected BracketAccess as value for 'value:', got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    /// Regression test: VarRef as dict key followed by bracket-access value.
-    /// `[$k: $xs[$idx]]` — VarRef key "k" whose value is a bracket-access expression.
-    /// Must not produce a duplicate key error.
-    #[test]
-    fn test_varref_key_with_bracket_access_value() {
-        let output = parse2("[$k: $xs[$idx]]")
-            .expect("parse failed: VarRef key with bracket-access value incorrectly rejected");
-        let doc = &output.file.node.documents[0].node;
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
-                assert_eq!(entries.len(), 1);
-                // Key is VarRef("k")
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "k"),
-                    other => panic!("expected VarRef key 'k', got {other:?}"),
-                }
-                // Value is BracketAccess
-                match &entries[0].node.value.node {
-                    Expr::BracketAccess { .. } => {}
-                    other => panic!("expected BracketAccess value, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
     }
 
     /// Regression test: bracket forms should have correct line and column numbers in their spans.
@@ -5383,49 +4854,12 @@ mod tests {
 
     #[test]
     fn test_underscore_exclusion_positions() {
-        // Verify that $_ in exclusion positions (bracket key, range bounds, dict key)
-        // is parsed as VarRef, not desugared. The parser should emit VarRef("_") AST nodes.
-        // Desugaring happens in a later pass, which checks these exclusion positions.
-
-        // $_ in bracket key position: $dict[$_]
-        let expr = parse_expr("$dict[$_]");
-        match &expr.node {
-            Expr::BracketAccess { expr, key } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "dict"),
-                    other => panic!("expected VarRef for target, got {other:?}"),
-                }
-                match &key.node {
-                    Expr::VarRef { name, .. } => {
-                        assert_eq!(name, "_", "$_ in bracket key should be VarRef")
-                    }
-                    other => panic!("expected VarRef(_) for bracket key, got {other:?}"),
-                }
-            }
-            other => panic!("expected BracketAccess, got {other:?}"),
-        }
-
-        // $_ in range start bound: $x[$_..10]
-        let expr2 = parse_expr("$x[$_..10]");
-        match &expr2.node {
-            Expr::RangeAccess { start, end, .. } => {
-                match start.as_ref().map(|s| &s.node) {
-                    Some(Expr::VarRef { name, .. }) => {
-                        assert_eq!(name, "_", "$_ in range start should be VarRef")
-                    }
-                    other => panic!("expected VarRef(_) for range start, got {other:?}"),
-                }
-                match end.as_ref().map(|e| &e.node) {
-                    Some(Expr::Int(10)) => {}
-                    other => panic!("expected Int(10) for range end, got {other:?}"),
-                }
-            }
-            other => panic!("expected RangeAccess, got {other:?}"),
-        }
+        // Verify that $_ in exclusion positions (dict key) is parsed as VarRef.
+        // Bracket access and range access syntax have been removed.
 
         // $_ in dict key position: [$_: 42]
-        let expr3 = parse_expr("[$_: 42]");
-        match &expr3.node {
+        let expr = parse_expr("[$_: 42]");
+        match &expr.node {
             Expr::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 let key_expr = entries[0].node.key.as_ref().expect("expected key");
@@ -5600,7 +5034,10 @@ mod tests {
                 );
                 // lhs must be Pipe { a | b }
                 match &lhs.node {
-                    Expr::Pipe { lhs: inner_lhs, rhs: inner_rhs } => {
+                    Expr::Pipe {
+                        lhs: inner_lhs,
+                        rhs: inner_rhs,
+                    } => {
                         assert!(
                             matches!(&inner_lhs.node, Expr::VarRef { name, .. } if name == "a"),
                             "expected inner_lhs = VarRef(a), got {:?}",
@@ -5688,7 +5125,11 @@ mod tests {
     fn test_dot_access_int_then_ident() {
         let expr = parse_expr("$a.0.name");
         match &expr.node {
-            Expr::DotAccess { expr: target, field, .. } => {
+            Expr::DotAccess {
+                expr: target,
+                field,
+                ..
+            } => {
                 // outer field: "name"
                 assert!(
                     matches!(field, DotKey::Ident(s) if s == "name"),
@@ -5697,7 +5138,9 @@ mod tests {
                 );
                 // inner: DotAccess on $a with Int(0)
                 match &target.node {
-                    Expr::DotAccess { field: inner_field, .. } => {
+                    Expr::DotAccess {
+                        field: inner_field, ..
+                    } => {
                         assert!(
                             matches!(inner_field, DotKey::Int(0)),
                             "expected inner DotKey::Int(0), got {:?}",
@@ -5718,7 +5161,11 @@ mod tests {
     fn test_dot_access_int_chain() {
         let expr = parse_expr("$a.0.1");
         match &expr.node {
-            Expr::DotAccess { expr: target, field, .. } => {
+            Expr::DotAccess {
+                expr: target,
+                field,
+                ..
+            } => {
                 // outer field: Int(1)
                 assert!(
                     matches!(field, DotKey::Int(1)),
@@ -5727,7 +5174,9 @@ mod tests {
                 );
                 // inner: DotAccess on $a with Int(0)
                 match &target.node {
-                    Expr::DotAccess { field: inner_field, .. } => {
+                    Expr::DotAccess {
+                        field: inner_field, ..
+                    } => {
                         assert!(
                             matches!(inner_field, DotKey::Int(0)),
                             "expected inner DotKey::Int(0), got {:?}",

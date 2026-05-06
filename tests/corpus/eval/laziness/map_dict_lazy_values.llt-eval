@@ -2,6 +2,6 @@
 # Map a function over a dict but only access one key - the $error in other key should not fire
 [map [fn [x] [+ x 10]] [a: 1  b: [error "should not evaluate"]]]
 ---
-%["a"]
+%.a
 ===
 Int(11)

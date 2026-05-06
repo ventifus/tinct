@@ -146,7 +146,7 @@ This is useful for creating projection functions in pipelines:
 
 **`_` in func position:** `_` in the function position of `[_ ...]` does **not** trigger implicit lambda desugaring. Only `_` in arguments, named arguments, dict values, and access chains triggers desugaring. `[_ x]` is a call where the function is looked up from the variable `_`, not an implicit lambda.
 
-**`_` in access chain keys/bounds:** `_` in the key position of bracket access (e.g., `data[_]`) or in range bounds (e.g., `data[_..5]`) does **not** trigger desugaring. Only `_` as the *target* of an access chain (e.g., `_[0]`, `_.name`) triggers implicit lambda wrapping.
+**`_` in dict entry keys:** `_` as a dict entry key (e.g., `[_: value]`) does **not** trigger desugaring. Only `_` as the *target* of a dot access chain (e.g., `_.name`) or as a direct argument triggers implicit lambda wrapping. (Bracket access was removed in access-pipeline-phase2; `_[0]` no longer parses as bracket access.)
 
 **Scoping rule:** The lambda boundary is the innermost `[...]` that directly contains `_`. Nested bracket expressions that contain their own `_` create separate lambdas:
 
@@ -193,16 +193,16 @@ source → parse → desugar_underscores → typecheck → eval
 
 The pass operates on `Spanned<File>` (multi-document) and `Spanned<Expr>` (single expression for REPL). Both `eval_source()` and REPL entry points call the desugar pass after parsing.
 
-**DIRECT predicate.** Tests whether an expression is `_` or an access chain rooted at `_`. Operates on **raw** (pre-desugaring) AST nodes. Access chain keys, range bounds, and dict entry keys are excluded — only the access *target* triggers desugaring:
+**DIRECT predicate.** Tests whether an expression is `_` or a dot access chain rooted at `_`. Operates on **raw** (pre-desugaring) AST nodes. Dict entry keys are excluded — only the access *target* triggers desugaring:
 
 ```
 DIRECT(e) = match e with:
   | VarRef("_")              → true
   | DotAccess(e', _)         → DIRECT(e')
-  | BracketAccess(e', _)     → DIRECT(e')    -- target only, not key
-  | RangeAccess(e', _, _)    → DIRECT(e')    -- target only, not bounds
   | _                        → false
 ```
+
+Note: `BracketAccess` and `RangeAccess` arms were removed from DIRECT in access-pipeline-phase2 (those AST variants no longer exist).
 
 **Rewrite rules.** The pass checks WRAP conditions on **raw** (un-desugared) children *before* recursing. DIRECT subtrees are left as-is inside the generated `Fn` body — they are variable references to the `_` parameter, not candidates for further wrapping. Non-DIRECT children are recursed into at depth+1 (inside the generated lambda, `_` is bound). This avoids the greedy-wrapping problem where naive bottom-up traversal would wrap `_.age` before its enclosing Call could claim it (Visser 1998).
 
@@ -233,22 +233,14 @@ DESUGAR(e, depth) =
             [e{value=DESUGAR(e.value, depth + 1)}
              | e ∈ entries]))
 
-  -- WRAP-DOT/BRACKET/RANGE: standalone access chain rooted at _
+  -- WRAP-DOT: standalone access chain rooted at _
   -- Only fires when no enclosing Call/Dict claimed it
   | DotAccess(target, field)
       where DIRECT(target)
       → Fn([_], DotAccess(target, field))                -- [WRAP-DOT]
 
-  | BracketAccess(target, key)
-      where DIRECT(target)
-      → Fn([_], BracketAccess(                           -- [WRAP-BRACKET]
-            target, DESUGAR(key, depth + 1)))
-
-  | RangeAccess(target, lo, hi)
-      where DIRECT(target)
-      → Fn([_], RangeAccess(                             -- [WRAP-RANGE]
-            target, DESUGAR(lo, depth + 1),
-            DESUGAR(hi, depth + 1)))
+  -- Note: WRAP-BRACKET and WRAP-RANGE were removed in access-pipeline-phase2.
+  -- BracketAccess and RangeAccess AST variants no longer exist.
 
   -- PASS: no wrapping, recurse into all children
   | _ → RECURSE_CHILDREN(e, depth)                       -- [PASS]
@@ -261,14 +253,13 @@ DESUGAR(e, depth) =
 | WRAP-CALL | Any arg or named arg value is DIRECT (func position excluded) | Wrap in `Fn([_], Call(...))` |
 | WRAP-DICT | Any entry value is DIRECT | Wrap in `Fn([_], Dict(...))` |
 | WRAP-DOT | Standalone `_.field` (not inside a Call/Dict that claims it) | Wrap in `Fn([_], DotAccess(...))` |
-| WRAP-BRACKET | Standalone `_[key]` | Wrap in `Fn([_], BracketAccess(...))` |
-| WRAP-RANGE | Standalone `_[lo..hi]` | Wrap in `Fn([_], RangeAccess(...))` |
+| WRAP-PIPE | `$_ \| f` — lhs is `$_` (implicit arg) | Wrap in `Fn([_], Pipe(_, f))` |
+
+Note: WRAP-BRACKET and WRAP-RANGE were removed in access-pipeline-phase2 (bracket/range access no longer exists).
 
 **Exclusions.** The following positions do **not** trigger desugaring:
 
 - **Func position in Call:** The function position is excluded from the DIRECT check (not from the wrapping). WRAP-CALL fires when any arg or named value is DIRECT, regardless of whether the function itself is also DIRECT. When both func and an arg are DIRECT (e.g., `[_ _]`), wrapping produces `[fn [_] [_ _]]` where both references bind to the same `_` parameter. A bare `[_ x]` (func is DIRECT, no args are DIRECT) does not trigger WRAP-CALL; the func `_` falls through to PASS and is recursed normally.
-- **Bracket access keys:** `data[_]` — `_` in the key position is not checked by DIRECT on the target.
-- **Range bounds:** `data[_..5]` — bounds are not checked by DIRECT on the target.
 - **Dict entry keys:** `[_: value]` — WRAP-DICT checks `DIRECT(entry.value)` only, never `entry.key`.
 - **TypeAssert values:** `[@Number _.age]` — TypeAssert is not a WRAP form. The inner `_.age` triggers WRAP-DOT independently, producing `[@Number [fn [_] _.age]]` (a type assertion on a function). This is likely a user error; the type checker will report a mismatch.
 
@@ -323,7 +314,7 @@ fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
 
 #### Testing Requirements
 
-Corpus tests are required for each WRAP rule (WRAP-CALL, WRAP-DICT, WRAP-DOT, WRAP-BRACKET, WRAP-RANGE) and each exclusion position (func position in Call, bracket access keys, range bounds, dict entry keys). Tests should verify that desugaring produces the expected `Fn([_], ...)` wrapper and that excluded positions do not trigger wrapping.
+Corpus tests are required for each WRAP rule (WRAP-CALL, WRAP-DICT, WRAP-DOT, WRAP-PIPE) and each exclusion position (func position in Call, dict entry keys). Tests should verify that desugaring produces the expected `Fn([_], ...)` wrapper and that excluded positions do not trigger wrapping. (WRAP-BRACKET and WRAP-RANGE were removed in access-pipeline-phase2.)
 
 ## Call Convention — Formal Specification
 

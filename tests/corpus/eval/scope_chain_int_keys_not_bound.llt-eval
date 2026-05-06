@@ -1,6 +1,6 @@
-# Int-keyed entries are accessible via bracket on % but don't create variable bindings
+# Int-keyed entries are accessible via get on % but don't create variable bindings
 [1 2 3]
 ---
-%[0]
+[get 0 %]
 ===
 Int(1)

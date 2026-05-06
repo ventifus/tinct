@@ -1,8 +1,8 @@
-# $_ in range START bound (excluded from WRAP-RANGE)
-# $data[$_..5] does NOT wrap - only target position triggers WRAP-RANGE
+# $_ in slice START bound
+# [slice data _ 3] uses $_ as start bound
 # Wrap in explicit function to provide $_ as bound variable
 [data: [0 10 20 30 40 50]]
 
-[call [fn [_] data[_..3]] 1]
+[call [fn [_] [slice data _ 3]] 1]
 ===
 Dict({1: Int(10), 2: Int(20)})

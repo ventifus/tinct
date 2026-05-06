@@ -22,7 +22,7 @@ Each function receives data as its **last** parameter: `[map fn data]`, `[filter
 [get-in-or config path default]  # data-first
 ```
 
-**Rationale:** Data-first order mirrors bracket access syntax `$data[$key]` and follows Clojure's `get` convention, making lookups read naturally as "from collection, get key, or default." The trade-off: these functions don't compose directly with `->` threading (they would require wrapping in a lambda to reorder arguments).
+**Rationale:** Data-first order follows Clojure's `get` convention, making lookups read naturally as "from collection, get key, or default." The trade-off: these functions don't compose directly with `->` threading (they would require wrapping in a lambda to reorder arguments).
 
 ### Special Forms vs Stdlib Functions
 
@@ -343,7 +343,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `get` | `[fn [xs k] ...]` | Get value by key (bracket access wrapper) |
+| `get` | `[fn [k xs] ...]` | Key accessor, curried for pipeline composition: `[get "name" dict]`, `dict \| [get $key]` |
 | `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `try` around access) |
 | `get-or` | `[fn [xs k default] ...]` | Get value by key with fallback default |
 | `get-in` | `[fn [xs path] ...]` | Traverse nested dicts by a list of keys; errors on missing key |
@@ -724,7 +724,7 @@ Both `[<= NaN NaN]` and `[>= NaN NaN]` return `true`, even though `[= NaN NaN]` 
 
 ### Part 6: Key Ordering (`Key::PartialOrd`)
 
-Separate from value comparison, the `Key` type has its own partial ordering used by range access (`$data[start..end]`):
+Separate from value comparison, the `Key` type has its own partial ordering used by `sort-by` ordering:
 
 ```
 Key::partial_cmp:
@@ -734,7 +734,7 @@ Key::partial_cmp:
   (String(_), Int(_))    → None                # mixed key types: incomparable
 ```
 
-Mixed-type key comparison in range access raises an error (via `key_in_range`, §Access Chain Evaluation). `Key::PartialOrd` is semantically equivalent to the Int/String subset of `dispatch_lt` but exists as a separate relation because it operates at the `Key` level (before value materialization), while `$<` operates at the `Value` level (after materialization). Range access needs to filter dict keys without forcing any values — it compares keys directly from the `IndexMap<Key, Rc<Thunk>>`, never touching the thunks. This is an optimization that preserves laziness: `$data[2..5]` filters keys without materializing any values.
+`Key::PartialOrd` is semantically equivalent to the Int/String subset of `dispatch_lt` but exists as a separate relation because it operates at the `Key` level (before value materialization), while `$<` operates at the `Value` level (after materialization).
 
 ### Part 7: `Value::PartialEq` vs `$=` Divergence
 

@@ -3882,3 +3882,21 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] Update `doc/10-errors.md` Part 8 implementation correspondence table: replace stale line numbers with function-name anchors
 - [x] Fix synthetic `"serialize"` builtin name in `src/lib.rs:243` — changed to `"value serialization"`
 - [x] Update `doc/06-type-inference.md` §Unification to acknowledge bidirectional promotion arms as pragmatic fast-paths
+
+### access-pipeline-phase2: Remove Bracket Access + Prelude Migration
+
+- [x] Remove `Token::BracketAccess`, `Token::Range` (`..`) from lexer; remove whitespace-sensitive `[` detection (`src/lexer.rs`)
+- [x] Remove `StackFrame::BracketAccessKey` from parser; remove `Expr::BracketAccess`, `Expr::RangeAccess` from AST (`src/parser.rs`, `src/ast.rs`)
+- [x] Remove all `BracketAccess`/`RangeAccess` arms from: `desugar.rs`, `resolve.rs`, `typecheck.rs`, `eval.rs`, `eval_materialize.rs`, `eval_access.rs`, `formatter.rs`
+- [x] Add Seq-at-top-level error to CLI with MAX_COLLECT_SIZE drain cap (`src/main.rs`)
+- [x] Refactor `stdlib/prelude.llt`: replace all bracket access with `get`/dot syntax (~40 occurrences)
+- [x] Migrate all corpus tests from bracket access to new syntax (35 files)
+
+### access-pipeline-stdlib: Migrate Existing Stdlib Files
+
+- [x] Migrate `stdlib/fmt/toml.llt` — 6 bracket-access occurrences
+- [x] Migrate `stdlib/fmt/csv.llt` — 4 bracket-access occurrences
+- [x] Migrate `stdlib/fmt/yaml.llt` — 3 bracket-access occurrences
+- [x] Migrate `stdlib/fmt/json-pretty.llt` — 3 bracket-access occurrences
+- [x] Migrate `stdlib/fmt/env.llt` — 1 bracket-access occurrence
+- [x] Verify all stdlib corpus tests pass with new syntax (`tests/corpus/`)

@@ -208,19 +208,6 @@ impl Resolver {
             }
             // Recursively walk all child expressions
             Expr::DotAccess { expr, .. } => self.walk_expr(expr),
-            Expr::BracketAccess { expr, key } => {
-                self.walk_expr(expr);
-                self.walk_expr(key);
-            }
-            Expr::RangeAccess { expr, start, end } => {
-                self.walk_expr(expr);
-                if let Some(s) = start {
-                    self.walk_expr(s);
-                }
-                if let Some(e) = end {
-                    self.walk_expr(e);
-                }
-            }
             Expr::Pipe { .. } => {
                 // Pipe is eliminated by the desugar pass before resolve runs.
                 // desugar::desugar_file is always called before resolve::resolve_file
@@ -709,86 +696,6 @@ mod tests {
                         }
                     }
                     other => panic!("expected DotAccess, got {:?}", other),
-                }
-            }
-            other => panic!("expected Dict, got {:?}", other),
-        }
-    }
-
-    /// Fix 8b: BracketAccess — both the base VarRef and the key VarRef resolve correctly.
-    #[test]
-    fn test_resolve_bracket_access() {
-        use crate::parser::parse;
-
-        let source = "[x: 1  k: 0  result: $x[$k]]";
-        let file = parse(source).expect("parse failed");
-        resolve_file(&file.node);
-
-        let doc = &file.node.documents[0].node;
-        let dict_expr = &doc.expressions[0].node;
-        match dict_expr {
-            Expr::Dict(entries) => {
-                // Third entry: result: $x[$k]
-                let result_value = &entries[2].node.value.node;
-                match result_value {
-                    Expr::BracketAccess { expr, key } => {
-                        match &expr.node {
-                            Expr::VarRef { name, resolved } => {
-                                assert_eq!(name, "x");
-                                // Level 1 (level 0 is synthetic % scope), slot 0
-                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
-                            }
-                            other => {
-                                panic!("expected VarRef as BracketAccess target, got {:?}", other)
-                            }
-                        }
-                        match &key.node {
-                            Expr::VarRef { name, resolved } => {
-                                assert_eq!(name, "k");
-                                // Level 1 (level 0 is synthetic % scope), slot 1
-                                assert_eq!(resolved.borrow().flatten(), Some((1, 1)));
-                            }
-                            other => {
-                                panic!("expected VarRef as BracketAccess key, got {:?}", other)
-                            }
-                        }
-                    }
-                    other => panic!("expected BracketAccess, got {:?}", other),
-                }
-            }
-            other => panic!("expected Dict, got {:?}", other),
-        }
-    }
-
-    /// Fix 8c: RangeAccess — the base VarRef resolves correctly.
-    #[test]
-    fn test_resolve_range_access() {
-        use crate::parser::parse;
-
-        let source = "[x: 1  result: $x[0..2]]";
-        let file = parse(source).expect("parse failed");
-        resolve_file(&file.node);
-
-        let doc = &file.node.documents[0].node;
-        let dict_expr = &doc.expressions[0].node;
-        match dict_expr {
-            Expr::Dict(entries) => {
-                // Second entry: result: $x[0..2]
-                let result_value = &entries[1].node.value.node;
-                match result_value {
-                    Expr::RangeAccess { expr, .. } => {
-                        match &expr.node {
-                            Expr::VarRef { name, resolved } => {
-                                assert_eq!(name, "x");
-                                // Level 1 (level 0 is synthetic % scope), slot 0
-                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
-                            }
-                            other => {
-                                panic!("expected VarRef as RangeAccess target, got {:?}", other)
-                            }
-                        }
-                    }
-                    other => panic!("expected RangeAccess, got {:?}", other),
                 }
             }
             other => panic!("expected Dict, got {:?}", other),

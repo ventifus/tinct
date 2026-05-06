@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_source, json_to_value,
     literate, materialize, parse, value_to_display_string, value_to_json, EvalContext, Span, Thunk,
-    MAX_FILE_SIZE,
+    MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -1011,6 +1011,87 @@ fn run_eval(
     } else {
         val
     };
+
+    // Handle top-level Seq value.
+    //
+    // A Seq at the top level has two valid interpretations depending on whether
+    // emit was called:
+    //
+    // 1. emitted=true (generator + emit pattern): drain the Seq by forcing each
+    //    element's tail to completion. This drives any emit side-effects inside
+    //    the generator elements. Element values themselves are discarded.
+    //
+    // 2. emitted=false (bare Seq with no text output): this is almost certainly
+    //    a mistake — the user forgot to collect or emit. Return a clear error
+    //    rather than silently failing to produce output.
+    if matches!(val, tinct::Value::Seq { .. }) {
+        if eval_ctx.emitted.get() {
+            // Drive the Seq to completion so all emit calls inside generator elements fire.
+            // We force each head (which triggers emit side-effects) then advance to the tail.
+            // This mirrors builtin_collect's spine traversal but discards the collected values.
+            let mut current = val;
+            let mut drain_count: usize = 0;
+            loop {
+                match current {
+                    tinct::Value::Seq { head, tail } => {
+                        // Enforce element limit to prevent unbounded CPU/memory consumption
+                        // from infinite sequences (mirrors MAX_COLLECT_SIZE in builtins_seq_prim.rs).
+                        if drain_count >= MAX_COLLECT_SIZE {
+                            return Err(format!(
+                                "top-level Seq drain exceeded maximum collection size ({}). Use $take to limit infinite sequences.",
+                                MAX_COLLECT_SIZE
+                            ));
+                        }
+                        drain_count += 1;
+                        // Force the head to trigger any emit calls inside it.
+                        let head_thunk = eval_ctx.get_thunk(head);
+                        materialize(&head_thunk, None, &eval_ctx, 0).map_err(|e| {
+                            let mut error_str = format!("{e}");
+                            if let Some(snippet) =
+                                tinct::render_span_snippet(&last_source, e.definition_span)
+                            {
+                                error_str.push('\n');
+                                error_str.push_str(&snippet);
+                            }
+                            error_str
+                        })?;
+                        // Advance to the tail.
+                        let tail_thunk = eval_ctx.get_thunk(tail);
+                        current = materialize(&tail_thunk, None, &eval_ctx, 0).map_err(|e| {
+                            let mut error_str = format!("{e}");
+                            if let Some(snippet) =
+                                tinct::render_span_snippet(&last_source, e.definition_span)
+                            {
+                                error_str.push('\n');
+                                error_str.push_str(&snippet);
+                            }
+                            error_str
+                        })?;
+                    }
+                    tinct::Value::Dict(ref d) if d.is_empty() => break,
+                    other => {
+                        return Err(format!(
+                            "top-level Seq has malformed tail: expected Seq or [] but got {}",
+                            other.type_name()
+                        ));
+                    }
+                }
+            }
+        } else {
+            return Err(
+                "top-level Seq — use '| collect' for JSON array output or 'emit' for text output"
+                    .to_string(),
+            );
+        }
+        // Cancel any pending alarm before returning
+        #[cfg(unix)]
+        if timeout.is_some() {
+            unsafe {
+                libc::alarm(0);
+            }
+        }
+        return Ok(());
+    }
 
     // Serialize and output (skip if emit was called)
     if !eval_ctx.emitted.get() {

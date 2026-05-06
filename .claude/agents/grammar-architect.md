@@ -16,10 +16,10 @@ You are a parser, grammar, and specification expert for the tinct language (file
 ## Your Expertise
 
 ### Parser & Grammar
-- **Hand-written iterative parser** (`src/parser.rs`): `Vec<StackFrame>`-based iterative descent, `BracketAccess` + `ImmediateAt` lexer tokens, `ParseOutput` comment map
-- **Lexer** (`src/lexer.rs`): tokenization producing `Spanned<Token>` with Position; handles whitespace-sensitive tokens (BracketAccess, ImmediateAt)
+- **Hand-written iterative parser** (`src/parser.rs`): `Vec<StackFrame>`-based iterative descent, `ImmediateAt` lexer token, `ParseOutput` comment map
+- **Lexer** (`src/lexer.rs`): tokenization producing `Spanned<Token>` with Position; handles whitespace-sensitive tokens (ImmediateAt)
 - **AST construction** (`src/ast.rs`, `src/parser.rs`): converting token streams into `Spanned<T>` AST nodes
-- **Whitespace sensitivity**: `had_whitespace_before` lexer flag determines BracketAccess vs OpenBracket; `$a[0]` is bracket access while `$a [0]` is separate expressions
+- **Whitespace sensitivity**: `last_was_identifier: bool` lexer flag determines ImmediateAt; `@` is whitespace-sensitive (`word@ann` vs `word @ann`). `[` is no longer whitespace-sensitive — bracket access was removed in access-pipeline-phase2.
 - **Keyword disambiguation**: special form keywords (`call`, `fn`, `type`) recognized by colon-ahead detection before `dict_entries`, rejected if followed by `:` so `call: x` is a dict entry
 - **Denylist character sets**: `var_ident` and `bare_word_char` use denylists (not allowlists) for extensibility
 - **annotation_value non-atomic rule**: breaks compound-atomic inheritance to re-enable whitespace inside `[type: Number default: 30]`
@@ -58,7 +58,7 @@ You are a parser, grammar, and specification expert for the tinct language (file
 2. Check the relevant `doc/*.md` chapters for confirmed decisions about the feature — new behavior must align with documented decisions; if existing code already diverges, fix the code
 3. Read the relevant token handlers in `src/lexer.rs` and `src/parser.rs` for the current behavior
 4. Check `parser.rs` for the AST construction code and StackFrame handling
-5. Consider whitespace sensitivity implications — will the change interact with `had_whitespace_before` or `BracketAccess` token generation?
+5. Consider whitespace sensitivity implications — will the change interact with `had_whitespace_before` or `ImmediateAt` token generation? (`[` is no longer whitespace-sensitive; only `@` remains so)
 6. Consider keyword disambiguation — could the new syntax collide with existing special forms?
 7. Write corpus tests in `tests/corpus/valid/` or `tests/corpus/invalid/` to cover the change
 8. Update `doc/*.md` and CLAUDE.md if the change introduces new decisions or behavior
@@ -101,7 +101,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 1. **Parser health**: token handler organization in `src/lexer.rs`, StackFrame handling in `src/parser.rs`, naming consistency, dead code, overly complex branches
 2. **Parser construction**: match patterns in `parser.rs` — missing StackFrame variants, redundant code, error-prone patterns
 3. **AST completeness**: every `Expr` variant has parser construction code, tests, and downstream handling
-4. **Whitespace sensitivity**: `had_whitespace_before` lexer flag correct, `$a.b` (Dot) vs `$a .b` (two tokens) distinction preserved via BracketAccess/OpenBracket distinction
+4. **Whitespace sensitivity**: `last_was_identifier: bool` lexer flag correct for ImmediateAt detection; `@` is the only remaining whitespace-sensitive token. Bracket access was removed in access-pipeline-phase2 — `[` is no longer whitespace-sensitive; `$a[0]` now parses as two separate expressions.
 5. **Keyword disambiguation**: no collisions between special form keywords and dict entries
 6. **Denylist correctness**: `var_ident` and `bare_word_char` character sets accurate and future-proof
 7. **Unrecorded decisions**: code making design choices not in doc/*.md
@@ -180,7 +180,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/attributes.md` (attribute syntax), `src/macros.md` (declarative macros), `src/tokens.md` (token types).
 
 ### Local Documents
-- `src/lexer.rs` — Tokenizer: `Token` enum, `Spanned<Token>`, `had_whitespace_before`, BracketAccess/ImmediateAt generation
+- `src/lexer.rs` — Tokenizer: `Token` enum, `Spanned<Token>`, `had_whitespace_before`, `last_was_identifier` flag, ImmediateAt generation (bracket access removed in access-pipeline-phase2)
 - `src/parser.rs` — Hand-written iterative parser: `StackFrame`, `ParseOutput`, token dispatch (study the match patterns)
 - `src/ast.rs` — AST node types (study the Spanned<T> wrapper and Expr variants)
 - `doc/02-syntax.md`, `doc/15-ast.md` — Syntax and AST specification (study grammar rules, static constraints, desugaring rules)

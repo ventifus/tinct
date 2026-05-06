@@ -14,8 +14,6 @@ use crate::ast::{Position, Span, Spanned};
 pub enum Token {
     /// `[` (opening bracket)
     OpenBracket,
-    /// `[` immediately after a value (no whitespace gap) — bracket access
-    BracketAccess,
     /// `]` (closing bracket)
     CloseBracket,
     /// `:` (key-value separator)
@@ -24,8 +22,6 @@ pub enum Token {
     Semicolon,
     /// `.` (dot access operator, only in access context)
     Dot,
-    /// `..` (range operator, only in bracket-access context)
-    Range,
     /// `|` (pipe operator)
     Pipe,
     /// `@` (annotation separator)
@@ -74,12 +70,10 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Token::OpenBracket => write!(f, "["),
-            Token::BracketAccess => write!(f, "["),
             Token::CloseBracket => write!(f, "]"),
             Token::Colon => write!(f, ":"),
             Token::Semicolon => write!(f, ";"),
             Token::Dot => write!(f, "."),
-            Token::Range => write!(f, ".."),
             Token::Pipe => write!(f, "|"),
             Token::At => write!(f, "@"),
             Token::ImmediateAt => write!(f, "@"),
@@ -153,35 +147,19 @@ struct Lexer<'a> {
     /// Tracks if horizontal whitespace (spaces/tabs, not newlines) was skipped before the current position.
     ///
     /// Used to disambiguate whitespace-sensitive syntax:
-    /// - `$a.b` and `$a .b` (any whitespace) → dot access (whitespace not significant for `.`)
     /// - `word@annotation` (no gap) → ImmediateAt; `word @annotation` (gap) → At
-    /// - `$a[0]` (no gap) → BracketAccess; `$a [0]` (gap) → OpenBracket
     ///
     /// This flag is reset at the start of each token loop iteration and set by `skip_whitespace_except_newline()`.
     had_whitespace_before: bool,
-    /// Bracket nesting depth (for range operator context and MAX_LEX_DEPTH enforcement)
+    /// Bracket nesting depth (for MAX_LEX_DEPTH enforcement)
     bracket_depth: usize,
     /// True if the last token was Dot in an access chain (next identifier excludes dots)
     after_access_dot: bool,
-    /// Tracks the last significant token type for O(1) access context detection.
+    /// Tracks whether the last significant token was an Identifier (for ImmediateAt detection).
     ///
-    /// Used to determine when `[` should emit `BracketAccess` (immediately after a value-ending token
-    /// with no whitespace gap) vs `OpenBracket`. Value-ending tokens: EscapedRef, CloseBracket, Identifier,
-    /// QuotedString, Int, Float, BoolLit. This enables `$a[0]` (bracket access) vs `$a [0]` (separate tokens).
-    last_significant_token: Option<LastSignificantToken>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum LastSignificantToken {
-    EscapedRef,
-    CloseBracket,
-    IdentifierAfterDot,
-    QuotedString,
-    Int,
-    Float,
-    BoolLit,
-    Identifier,
-    Other,
+    /// Used to determine when `@` should emit `ImmediateAt` (immediately after a bare Identifier
+    /// with no whitespace gap) vs plain `At`. This enables `x@Int` (ImmediateAt) vs `x @Int` (At).
+    last_was_identifier: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -199,7 +177,7 @@ impl<'a> Lexer<'a> {
             had_whitespace_before: false,
             bracket_depth: 0,
             after_access_dot: false,
-            last_significant_token: None,
+            last_was_identifier: false,
         }
     }
 
@@ -259,11 +237,9 @@ impl<'a> Lexer<'a> {
                     self.advance();
                 }
                 '\r' => {
-                    // Handle CRLF. A newline (even as part of CRLF) acts as whitespace
-                    // for bracket-access detection: `[` on the next line is never a
-                    // BracketAccess on the previous line's value.
+                    // Handle CRLF. A newline resets the ImmediateAt context.
                     self.had_whitespace_before = true;
-                    self.last_significant_token = None;
+                    self.last_was_identifier = false;
                     let start = self.current_position();
                     self.advance();
                     if self.peek_char() == Some('\n') {
@@ -279,10 +255,9 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '\n' => {
-                    // A newline acts as whitespace for bracket-access detection: `[` on
-                    // the next line is never a BracketAccess on the previous line's value.
+                    // A newline resets the ImmediateAt context.
                     self.had_whitespace_before = true;
-                    self.last_significant_token = None;
+                    self.last_was_identifier = false;
                     let start = self.current_position();
                     self.advance();
                     let end = self.current_position();
@@ -305,11 +280,12 @@ impl<'a> Lexer<'a> {
         match c {
             '#' => {
                 self.after_access_dot = false;
-                // Comments don't update last_significant_token
+                // Comments don't update last_was_identifier (ignored for ImmediateAt detection)
                 self.lex_comment()
             }
             '[' => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 // Check depth before incrementing; advance first so the span
                 // covers the `[` character (start..end is one char wide).
                 if self.bracket_depth >= MAX_LEX_DEPTH {
@@ -323,45 +299,37 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 self.bracket_depth += 1;
                 let end = self.current_position();
-
-                // Emit BracketAccess if no whitespace before and previous token is value-ending
-                let token = if !self.had_whitespace_before && self.is_bracket_access_context() {
-                    Token::BracketAccess
-                } else {
-                    Token::OpenBracket
-                };
-
-                self.tokens.push(Spanned::new(token, Span::new(start, end)));
-                self.last_significant_token = Some(LastSignificantToken::Other);
+                self.tokens
+                    .push(Spanned::new(Token::OpenBracket, Span::new(start, end)));
                 Ok(())
             }
             ']' => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 self.advance();
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
                 // Note: Lexer doesn't validate bracket matching (parser's job)
                 let end = self.current_position();
                 self.tokens
                     .push(Spanned::new(Token::CloseBracket, Span::new(start, end)));
-                self.last_significant_token = Some(LastSignificantToken::CloseBracket);
                 Ok(())
             }
             ':' => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 self.advance();
                 let end = self.current_position();
                 self.tokens
                     .push(Spanned::new(Token::Colon, Span::new(start, end)));
-                self.last_significant_token = Some(LastSignificantToken::Other);
                 Ok(())
             }
             ';' => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 self.advance();
                 let end = self.current_position();
                 self.tokens
                     .push(Spanned::new(Token::Semicolon, Span::new(start, end)));
-                self.last_significant_token = Some(LastSignificantToken::Other);
                 Ok(())
             }
             '@' => {
@@ -369,43 +337,47 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 let end = self.current_position();
 
-                // Emit ImmediateAt if no whitespace before and previous token is Identifier
-                let token = if !self.had_whitespace_before && self.is_immediate_at_context() {
+                // Emit ImmediateAt if no whitespace before and previous token was a plain Identifier.
+                let token = if !self.had_whitespace_before && self.last_was_identifier {
                     Token::ImmediateAt
                 } else {
                     Token::At
                 };
 
+                self.last_was_identifier = false;
                 self.tokens.push(Spanned::new(token, Span::new(start, end)));
-                self.last_significant_token = Some(LastSignificantToken::Other);
                 Ok(())
             }
             '"' => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 self.lex_quoted_string()
             }
             'i' if self.peek_ahead(1) == Some('"') => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 self.lex_interpolated_string()
             }
             '$' => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 self.lex_var_ref()
             }
             '%' => {
                 // % starts a pipeline-variable identifier.
                 // Lexed like an EscapedRef (stops at '.' so %.x → Identifier("%") Dot Identifier("x")),
                 // but emits Identifier (not EscapedRef) because % is not a $ sigil.
+                // Note: lex_percent_word sets last_was_identifier = true (% words can be annotated).
                 self.after_access_dot = false;
                 self.lex_percent_word()
             }
             '|' => {
                 self.after_access_dot = false;
+                self.last_was_identifier = false;
                 self.advance();
                 let end = self.current_position();
                 self.tokens
                     .push(Spanned::new(Token::Pipe, Span::new(start, end)));
-                self.last_significant_token = Some(LastSignificantToken::Other);
                 Ok(())
             }
             '-' => {
@@ -425,10 +397,11 @@ impl<'a> Lexer<'a> {
                 }
             }
             '.' => {
-                // Check for ellipsis, range, or bare word
+                // Check for ellipsis, two-dots, or single dot
+                self.last_was_identifier = false;
                 if self.peek_ahead(1) == Some('.') {
                     if self.peek_ahead(2) == Some('.') {
-                        // Ellipsis
+                        // Ellipsis `...`
                         self.after_access_dot = false;
                         self.advance();
                         self.advance();
@@ -436,36 +409,20 @@ impl<'a> Lexer<'a> {
                         let end = self.current_position();
                         self.tokens
                             .push(Spanned::new(Token::Ellipsis, Span::new(start, end)));
-                        self.last_significant_token = Some(LastSignificantToken::Other);
                         Ok(())
                     } else {
-                        // Could be range (`..` inside brackets) or two dots at top level
-                        if self.bracket_depth > 0 {
-                            self.after_access_dot = false;
-                            self.advance();
-                            self.advance();
-                            let end = self.current_position();
-                            self.tokens
-                                .push(Spanned::new(Token::Range, Span::new(start, end)));
-                            self.last_significant_token = Some(LastSignificantToken::Other);
-                            Ok(())
-                        } else {
-                            // At top level, `..` is two consecutive dots — emit the first Dot
-                            // and let the next iteration handle the second. Calling
-                            // lex_bare_word_or_number here would infinite-loop because `.` is
-                            // not a valid identifier character.
-                            self.advance();
-                            let end = self.current_position();
-                            self.tokens
-                                .push(Spanned::new(Token::Dot, Span::new(start, end)));
-                            self.after_access_dot = true;
-                            Ok(())
-                        }
+                        // `..` — two consecutive dots. Emit the first Dot and let the next
+                        // iteration handle the second. Range syntax has been removed.
+                        self.advance();
+                        let end = self.current_position();
+                        self.tokens
+                            .push(Spanned::new(Token::Dot, Span::new(start, end)));
+                        self.after_access_dot = true;
+                        Ok(())
                     }
                 } else {
-                    // In new syntax, '.' is always a dot-access operator. Whitespace before '.'
-                    // is allowed and does not prevent dot access (unlike '[' which is
-                    // whitespace-sensitive). This matches Nix/Jsonnet behavior.
+                    // '.' is always a dot-access operator. Whitespace before '.' is allowed
+                    // and does not prevent dot access. This matches Nix/Jsonnet behavior.
                     self.advance();
                     let end = self.current_position();
                     self.tokens
@@ -502,32 +459,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn is_bracket_access_context(&self) -> bool {
-        // BracketAccess is emitted instead of OpenBracket when `[` follows
-        // a value-ending token with no whitespace gap.
-        // Value-ending tokens: EscapedRef, Identifier, CloseBracket, IdentifierAfterDot, QuotedString, Int, Float, BoolLit
-        matches!(
-            self.last_significant_token,
-            Some(LastSignificantToken::EscapedRef)
-                | Some(LastSignificantToken::Identifier)
-                | Some(LastSignificantToken::CloseBracket)
-                | Some(LastSignificantToken::IdentifierAfterDot)
-                | Some(LastSignificantToken::QuotedString)
-                | Some(LastSignificantToken::Int)
-                | Some(LastSignificantToken::Float)
-                | Some(LastSignificantToken::BoolLit)
-        )
-    }
-
-    fn is_immediate_at_context(&self) -> bool {
-        // ImmediateAt is emitted instead of At when `@` follows
-        // an Identifier with no whitespace gap.
-        matches!(
-            self.last_significant_token,
-            Some(LastSignificantToken::Identifier)
-        )
-    }
-
     fn lex_comment(&mut self) -> Result<(), LexError> {
         let start = self.current_position();
         self.advance(); // skip '#'
@@ -545,7 +476,6 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         self.tokens
             .push(Spanned::new(Token::Comment(text), Span::new(start, end)));
-        // Comments don't update last_significant_token (they're ignored for access context)
         Ok(())
     }
 
@@ -563,7 +493,6 @@ impl<'a> Lexer<'a> {
                         Token::QuotedString(result),
                         Span::new(start, end),
                     ));
-                    self.last_significant_token = Some(LastSignificantToken::QuotedString);
                     return Ok(());
                 }
                 '\\' => {
@@ -637,7 +566,6 @@ impl<'a> Lexer<'a> {
                         Token::InterpolatedString(parts),
                         Span::new(start, end),
                     ));
-                    self.last_significant_token = Some(LastSignificantToken::QuotedString);
                     return Ok(());
                 }
                 '$' => {
@@ -830,7 +758,6 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         self.tokens
             .push(Spanned::new(Token::EscapedRef(name), Span::new(start, end)));
-        self.last_significant_token = Some(LastSignificantToken::EscapedRef);
         Ok(())
     }
 
@@ -839,8 +766,6 @@ impl<'a> Lexer<'a> {
     /// Reads `%` plus identifier characters (stopping at `.` so that `%.x` tokenises as
     /// `Identifier("%")`, `Dot`, `Identifier("x")` rather than `Identifier("%.x")`).
     /// Emits `Identifier` (not `EscapedRef`) because `%` is not a `$` sigil.
-    /// After emission, updates `last_significant_token` to `EscapedRef` so that a following
-    /// `[` without whitespace is recognised for bracket-access detection.
     fn lex_percent_word(&mut self) -> Result<(), LexError> {
         let start = self.current_position();
         let word_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
@@ -859,8 +784,8 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         self.tokens
             .push(Spanned::new(Token::Identifier(name), Span::new(start, end)));
-        // Set EscapedRef so a following '[' without whitespace is recognised for bracket-access detection.
-        self.last_significant_token = Some(LastSignificantToken::EscapedRef);
+        // % words set last_was_identifier = true so that `%name@Annotation` triggers ImmediateAt.
+        self.last_was_identifier = true;
         Ok(())
     }
 
@@ -874,13 +799,13 @@ impl<'a> Lexer<'a> {
 
     fn lex_doc_separator(&mut self) -> Result<(), LexError> {
         let start = self.current_position();
+        self.last_was_identifier = false;
         self.advance();
         self.advance();
         self.advance();
         let end = self.current_position();
         self.tokens
             .push(Spanned::new(Token::DocSeparator, Span::new(start, end)));
-        self.last_significant_token = Some(LastSignificantToken::Other);
         Ok(())
     }
 
@@ -933,20 +858,18 @@ impl<'a> Lexer<'a> {
         if word == "true" {
             self.tokens
                 .push(Spanned::new(Token::BoolLit(true), Span::new(start, end)));
-            self.last_significant_token = Some(LastSignificantToken::BoolLit);
+            self.last_was_identifier = false; // BoolLit does not trigger ImmediateAt
         } else if word == "false" {
             self.tokens
                 .push(Spanned::new(Token::BoolLit(false), Span::new(start, end)));
-            self.last_significant_token = Some(LastSignificantToken::BoolLit);
+            self.last_was_identifier = false; // BoolLit does not trigger ImmediateAt
         } else {
             self.tokens
                 .push(Spanned::new(Token::Identifier(word), Span::new(start, end)));
-            // Identifier after Dot is in access context for chaining
-            if in_access_field {
-                self.last_significant_token = Some(LastSignificantToken::IdentifierAfterDot);
-            } else {
-                self.last_significant_token = Some(LastSignificantToken::Identifier);
-            }
+            // Only plain (non-access-field) identifiers trigger ImmediateAt for annotations.
+            // Access-field identifiers (after `.`) never have `@` immediately after them in
+            // valid syntax — the annotation always follows the bare word in parameter position.
+            self.last_was_identifier = !in_access_field;
         }
         Ok(())
     }
@@ -1001,7 +924,7 @@ impl<'a> Lexer<'a> {
                     Ok(n) => {
                         self.tokens
                             .push(Spanned::new(Token::Float(n), Span::new(start, end)));
-                        self.last_significant_token = Some(LastSignificantToken::Float);
+                        self.last_was_identifier = false;
                         Ok(())
                     }
                     Err(e) => Err(LexError::new(
@@ -1019,7 +942,7 @@ impl<'a> Lexer<'a> {
                     Ok(n) => {
                         self.tokens
                             .push(Spanned::new(Token::Int(n), Span::new(start, end)));
-                        self.last_significant_token = Some(LastSignificantToken::Int);
+                        self.last_was_identifier = false;
                         Ok(())
                     }
                     Err(e) => Err(LexError::new(
@@ -1038,7 +961,7 @@ impl<'a> Lexer<'a> {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::Int(n), Span::new(start, end)));
-                    self.last_significant_token = Some(LastSignificantToken::Int);
+                    self.last_was_identifier = false;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
@@ -1215,19 +1138,18 @@ mod tests {
     }
 
     #[test]
-    fn test_bracket_access() {
-        // EscapedRef precedes — BracketAccess (no whitespace)
+    fn test_bracket_is_always_open_bracket() {
+        // BracketAccess has been removed. `[` always emits OpenBracket regardless of
+        // what preceded it. Bracket access syntax ($a[0]) no longer exists in the grammar.
         assert_eq!(
             tok("$a[0]"),
             vec![
                 Token::EscapedRef("a".into()),
-                Token::BracketAccess,
+                Token::OpenBracket,
                 Token::Int(0),
                 Token::CloseBracket
             ]
         );
-
-        // EscapedRef precedes with whitespace — OpenBracket
         assert_eq!(
             tok("$a [0]"),
             vec![
@@ -1237,55 +1159,19 @@ mod tests {
                 Token::CloseBracket
             ]
         );
-
-        // CloseBracket precedes — BracketAccess
-        assert_eq!(tok("]["), vec![Token::CloseBracket, Token::BracketAccess]);
-
-        // QuotedString precedes — BracketAccess
+        assert_eq!(tok("]["), vec![Token::CloseBracket, Token::OpenBracket]);
         assert_eq!(
-            tok(r#""str"[0]"#),
+            tok("[call $f][0]"),
             vec![
-                Token::QuotedString("str".into()),
-                Token::BracketAccess,
+                Token::OpenBracket,
+                Token::Identifier("call".into()),
+                Token::EscapedRef("f".into()),
+                Token::CloseBracket,
+                Token::OpenBracket,
                 Token::Int(0),
                 Token::CloseBracket
             ]
         );
-
-        // Int precedes — BracketAccess
-        assert_eq!(
-            tok("42[0]"),
-            vec![
-                Token::Int(42),
-                Token::BracketAccess,
-                Token::Int(0),
-                Token::CloseBracket
-            ]
-        );
-
-        // Float precedes — BracketAccess
-        assert_eq!(
-            tok("3.14[0]"),
-            vec![
-                Token::Float(3.14),
-                Token::BracketAccess,
-                Token::Int(0),
-                Token::CloseBracket
-            ]
-        );
-
-        // BoolLit precedes — BracketAccess
-        assert_eq!(
-            tok("true[0]"),
-            vec![
-                Token::BoolLit(true),
-                Token::BracketAccess,
-                Token::Int(0),
-                Token::CloseBracket
-            ]
-        );
-
-        // Identifier with whitespace — OpenBracket
         assert_eq!(
             tok("call [x]"),
             vec![
@@ -1295,51 +1181,11 @@ mod tests {
                 Token::CloseBracket
             ]
         );
-
-        // Call expression followed by bracket access — BracketAccess
-        assert_eq!(
-            tok("[call $f][0]"),
-            vec![
-                Token::OpenBracket,
-                Token::Identifier("call".into()),
-                Token::EscapedRef("f".into()),
-                Token::CloseBracket,
-                Token::BracketAccess,
-                Token::Int(0),
-                Token::CloseBracket
-            ]
-        );
-
-        // IdentifierAfterDot precedes — BracketAccess (real usage: $a.b[0])
-        assert_eq!(
-            tok("$a.b[0]"),
-            vec![
-                Token::EscapedRef("a".into()),
-                Token::Dot,
-                Token::Identifier("b".into()),
-                Token::BracketAccess,
-                Token::Int(0),
-                Token::CloseBracket
-            ]
-        );
     }
 
     #[test]
-    fn test_range_operator() {
-        // Range in bracket access context
-        assert_eq!(
-            tok("$a[2..5]"),
-            vec![
-                Token::EscapedRef("a".into()),
-                Token::BracketAccess,
-                Token::Int(2),
-                Token::Range,
-                Token::Int(5),
-                Token::CloseBracket
-            ]
-        );
-
-        // .. outside brackets: two consecutive dots, each emitted as Dot
+    fn test_double_dot_is_two_dots() {
+        // `..` always emits two Dot tokens — range syntax has been removed.
         assert_eq!(
             tok("file..bak"),
             vec![
@@ -1347,6 +1193,15 @@ mod tests {
                 Token::Dot,
                 Token::Dot,
                 Token::Identifier("bak".into())
+            ]
+        );
+        assert_eq!(
+            tok("$a..b"),
+            vec![
+                Token::EscapedRef("a".into()),
+                Token::Dot,
+                Token::Dot,
+                Token::Identifier("b".into())
             ]
         );
     }
@@ -1379,22 +1234,18 @@ mod tests {
     }
 
     #[test]
-    fn test_newline_prevents_bracket_access() {
-        // A newline between `]` and `[` must produce OpenBracket, not BracketAccess.
-        // `]\n[` is two separate expressions (the `\n` is treated as whitespace for
-        // access-context purposes). Without this, `[x: 42]\n[y: $x]` would parse the
-        // second dict as a bracket access on the first dict rather than a new expression.
+    fn test_bracket_always_open() {
+        // `[` always emits OpenBracket — bracket access syntax has been removed.
         assert_eq!(
             tok("]\n["),
             vec![Token::CloseBracket, Token::Newline, Token::OpenBracket]
         );
-        // CRLF also prevents bracket access
         assert_eq!(
             tok("]\r\n["),
             vec![Token::CloseBracket, Token::Newline, Token::OpenBracket]
         );
-        // Same-line `][` still produces BracketAccess
-        assert_eq!(tok("]["), vec![Token::CloseBracket, Token::BracketAccess]);
+        // Same-line `][` is also OpenBracket now (no BracketAccess)
+        assert_eq!(tok("]["), vec![Token::CloseBracket, Token::OpenBracket]);
     }
 
     #[test]
@@ -1436,8 +1287,7 @@ mod tests {
 
     #[test]
     fn test_percent_word_dot_access() {
-        // lex_percent_word stops at '.' and sets last_significant_token = EscapedRef so
-        // that a following '[' without whitespace is recognised for bracket-access detection.
+        // lex_percent_word stops at '.' (is_var_ident_char excludes '.').
         // %base.x  →  Identifier("%base"), Dot, Identifier("x")
         assert_eq!(
             tok("%base.x"),
@@ -1487,14 +1337,17 @@ mod tests {
     }
 
     #[test]
-    fn test_ellipsis_vs_range() {
+    fn test_ellipsis_vs_double_dot() {
+        // `...` is Ellipsis (unchanged). `..` is always two Dot tokens (range removed).
         assert_eq!(tok("..."), vec![Token::Ellipsis]);
+        // `$a[..]` — `$a` EscapedRef, `[` OpenBracket, `..` two Dots, `]` CloseBracket
         assert_eq!(
             tok("$a[..]"),
             vec![
                 Token::EscapedRef("a".into()),
-                Token::BracketAccess,
-                Token::Range,
+                Token::OpenBracket,
+                Token::Dot,
+                Token::Dot,
                 Token::CloseBracket
             ]
         );

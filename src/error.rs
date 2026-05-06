@@ -1233,7 +1233,7 @@ fn should_display_frame(frame: &StackFrame) -> bool {
 
 /// Infer a context-appropriate verb for the materialization span label.
 /// Checks the first visible stack frame label to determine whether the thunk
-/// was forced by a function call or a field/bracket access.
+/// was forced by a function call or a field access.
 ///
 /// Phase 2 frame formats:
 /// - `"[name ...]"` → function call → "called at"

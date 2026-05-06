@@ -1,6 +1,6 @@
 # What If: Tinct-Hosted Formatter
 
-**State:** Proposal
+**State:** Accepted — 2026-05-05
 
 What would it take to implement `tinct fmt` as a tinct program — with Rust
 responsible only for parsing and calling the evaluator, and the formatting

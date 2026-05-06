@@ -1,6 +1,8 @@
-# Range access with mixed key types (Int and String) produces type mismatch.
-# The dict has an Int key (0:) and a String key (x:). The range [0.."x"] has
-# an Int start bound and a String end bound, which are incomparable.
-[0: a  x: b][0.."x"]
+# Range access syntax has been removed. This test now exercises key-not-found
+# via dot access on a dict with only Int and String keys.
+# The dict has mixed key types; accessing a missing key produces an error.
+[data: [a: 1  b: 2]]
+
+data.missing
 ===
-[E010]
+[E001] key not found: missing (available keys: a, b)

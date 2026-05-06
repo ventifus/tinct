@@ -2,6 +2,6 @@
 # Range is half-open: [start, end)
 [data: [0: "a"  1: "b"  2: "c"  3: "d"  4: "e"]]
 
-data[1..4]
+[slice data 1 4]
 ===
 Dict({1: String("b"), 2: String("c"), 3: String("d")})

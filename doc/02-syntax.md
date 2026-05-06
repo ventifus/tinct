@@ -30,6 +30,10 @@ Only constructs that affect **binding structure** or **dict construction** need 
 | `call` | Triggers function application (exact arity required) |
 | `fn` | Introduces parameter bindings, creates a new scope |
 | `type` | Compile-time type declaration, not a runtime value |
+| `quote` | Captures AST as data without evaluating (code-as-data) |
+| `unquote` | Splices evaluated values into quoted templates (inside `quote` only) |
+| `unquote-splice` | Splices sequence elements into quoted list positions (inside `quote` only) |
+| `defmacro` | Registers compile-time AST transformation (runs before evaluation) |
 
 Everything else can be a regular function in the stdlib:
 
@@ -95,16 +99,15 @@ COMMENT    = "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI)
 
 The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the line (or end of input if the comment is on the last line). `NEWLINE` matches line endings (`\n`, `\r\n`, `\r`).
 
-**Whitespace significance:** Whitespace is significant for bracket access but not for dot access:
+**Whitespace significance:** Whitespace is significant only for `@` (annotation), not for `.` or `[`:
 
 - `a.b` — dot access
 - `a .b` — also dot access (whitespace before `.` is allowed, same behavior as Nix/Jsonnet)
-- `a[0]` — bracket access (no whitespace before `[`)
-- `a [0]` — bare identifier `a` followed by nested expression `[0]`
-- `$a[0]` — bracket access using escaped-ref form (no whitespace before `[`)
-- `$a [0]` — EscapedRef `$a` followed by nested expression `[0]`
+- `a[0]` — two separate expressions: bare identifier `a` followed by nested expression `[0: 0]` (bracket access was removed in access-pipeline-phase2; use `[get 0 a]` instead)
+- `word@Annotation` — annotation (no whitespace before `@`)
+- `word @Annotation` — bare identifier `word` followed by separate expression
 
-Bracket access (`[`) is whitespace-sensitive: a space before `[` switches from bracket-access to a new nested expression. Dot access (`.`) is not whitespace-sensitive: `.` always acts as a field-access operator regardless of preceding whitespace. This is handled by the hand-written lexer at `src/lexer.rs:138-141` using `last_significant_token` tracking for O(1) whitespace-sensitive access detection.
+`@` (ImmediateAt) is the only whitespace-sensitive token: a space before `@` prevents annotation detection. Both `.` and `[` are not whitespace-sensitive. `@` detection is handled by the hand-written lexer using `last_was_identifier: bool` tracking.
 
 ### 2.2 Brackets and Punctuation
 
@@ -118,7 +121,6 @@ The following punctuation characters are used as inline literals throughout the 
 | `@` | Annotation separator |
 | `\|` | Pipe operator (desugar-only infix; `a \| f` → `[f a]`) |
 | `...` | Variadic parameter prefix |
-| `..` | Range operator (inside bracket access) |
 | `---` | Document separator (via `doc_separator` rule) |
 
 ### 2.3 Literals
@@ -161,7 +163,7 @@ Literals are recognized in precedence order. The first matching rule wins.
 [f $x y]             # call f(x, y) — $x and x are identical in non-head position
 ```
 
-**`%` and `%name` are ordinary identifiers** used by convention for pipeline references. `%` refers to the previous document's output; `%name` refers to a named section's output. See §5. The lexer uses `lex_percent_word()` to handle `%name` identifiers — they are lexed identically to escaped references (stopping at `.` and enabling bracket-access detection via `LastSignificantToken::EscapedRef`) but emit `Identifier` tokens (not `EscapedRef`) because `%` is not a `$` sigil.
+**`%` and `%name` are ordinary identifiers** used by convention for pipeline references. `%` refers to the previous document's output; `%name` refers to a named section's output. See §5. The lexer uses `lex_percent_word()` to handle `%name` identifiers — they are lexed identically to escaped references (stopping at `.` so that `%base.x` tokenises as `Identifier("%base")`, `Dot`, `Identifier("x")`; sets `last_was_identifier = true` for ImmediateAt detection) but emit `Identifier` tokens (not `EscapedRef`) because `%` is not a `$` sigil.
 
 **Identifier character rules** (denylist approach — any character valid except structural delimiters):
 
@@ -183,13 +185,15 @@ escaped_ref = @{ "$" ~ ident_char+ }
 
 `$` itself is a valid identifier character: `$+`, `$>=`, `$->`, `$0` are all valid escaped references. A bare `$` not followed by any identifier character is a parse error.
 
-**Access chains** attach to identifiers the same way they attach to escaped references. Whitespace before `.` is allowed (the dot is always a `Dot` token); whitespace before `[` still prevents bracket access:
+**Access chains** attach to identifiers the same way they attach to escaped references. Whitespace before `.` is allowed (the dot is always a `Dot` token):
 
 ```tinct
 name.field           # Tokens: Identifier("name"), Dot, Identifier("field")
-name[0]              # Tokens: Identifier("name"), BracketAccess, Int(0), CloseBracket
 name .field          # Tokens: Identifier("name"), Dot, Identifier("field") — also dot access (whitespace ignored)
+name.0               # Tokens: Identifier("name"), Dot, Int(0) — integer dot access (looks up Key::Int(0))
 ```
+
+Note: Bracket access (`name[0]`) was removed in access-pipeline-phase2. Use `[get 0 name]` for integer key access and `name.field` for string key access.
 
 **Unicode homograph risk:** Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions; tinct accepts all Unicode identifier characters without NFC normalization.
 
@@ -304,7 +308,7 @@ ident_char = _{
 | Character | Purpose |
 |-----------|---------|
 | Whitespace | Ends the identifier |
-| `[` | Ends the identifier (may start bracket access if no whitespace) |
+| `[` | Ends the identifier (starts a new bracket expression) |
 | `]` | Ends the identifier (closes enclosing expression) |
 | `:` | Ends the identifier (key-value separator) |
 | `;` | Ends the identifier (entry separator) |
@@ -356,7 +360,7 @@ Whitespace (including newlines) after `.` is also permitted — the field name m
 ```tinct
 $person.name             # Dot access: get key "name" from $person
 $config.database.host    # Chained dot access: $config -> "database" -> "host"
-$data[0].name            # Dot access after bracket access
+[get 0 data].name        # get integer key, then dot access field
 
 $config
   .database              # Line-continuation: same as $config.database (whitespace before . is OK)
@@ -371,51 +375,28 @@ $x . y                   # $x is an EscapedRef; . y is also dot access (whitespa
 | `$a.b` | `EscapedRef("a")`, `Dot`, `Identifier("b")` | Dot access |
 | `a.b` | `Identifier("a")`, `Dot`, `Identifier("b")` | Dot access chain |
 | `$a .b` | `EscapedRef("a")`, `Dot`, `Identifier("b")` | Dot access (whitespace before `.` ignored) |
-| `$a[0].b` | `EscapedRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `Dot`, `Identifier("b")` | Bracket then dot |
+| `$a.0.b` | `EscapedRef("a")`, `Dot`, `Int(0)`, `Dot`, `Identifier("b")` | Integer dot access then field access |
 
-Note: whitespace before `[` is **not** ignored — `$a [0]` is a separate expression, not bracket access.
-
-#### `[` Bracket Access
-
-`[` immediately after a `$ref` token or after `.key` or after `]` (no whitespace) triggers bracket-access parsing. The tokenizer reads the contents as an expression (variable ref, integer, or range) up to the matching `]`.
-
-`[` with whitespace before it starts a new nested `[]` expression (a dict/list/call).
+Note: Bracket access and range access were removed in access-pipeline-phase2. Use `[get key data]` for dynamic key access and `[slice data start end]` / `[take n data]` / `[drop n data]` for subsequences.
 
 ```tinct
-$data[5]                 # Bracket access: key 5 on $data
-$data[$key]              # Bracket access: computed key
-$data[2..5]              # Bracket access with range
-$config.services[0].host # Bracket access in a chain
-
-$data [5]                # Two separate things: EscapedRef("data"), then list [0: 5]
+# Old syntax (removed):  $data[5]   $data[$key]   $data[2..5]
+# New syntax:
+[get 5 data]             # Integer key access via builtin
+[get $key data]          # Dynamic key access via builtin
+data.name                # String key access via dot notation
+data.0                   # Integer dot access (looks up Key::Int(0))
+[slice data 2 5]         # Subsequence by position
 ```
 
-| Input | Tokens | Interpretation |
-|-------|--------|----------------|
-| `$a[0]` | `EscapedRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Bracket access |
-| `$a [0]` | `EscapedRef("a")`, `OpenBracket`, `Int(0)`, `CloseBracket` | EscapedRef then new list |
-| `$a[0][1]` | `EscapedRef("a")`, `BracketAccess`, `Int(0)`, `CloseBracket`, `BracketAccess`, `Int(1)`, `CloseBracket` | Chained bracket access |
-| `$a.b[0]` | `EscapedRef("a")`, `Dot`, `Identifier("b")`, `BracketAccess`, `Int(0)`, `CloseBracket` | Dot then bracket |
+#### `..` Tokenization
 
-#### `..` Range Operator
-
-Inside bracket access (`$data[2..5]`), two consecutive dots form the range operator. The tokenizer recognizes `..` only in the bracket-access context. Outside bracket access, dots are always access operators — there is no bare-word-with-dots under the new syntax (`.` is excluded from identifier characters).
+`..` always emits two consecutive `Dot` tokens regardless of context — there is no `Token::Range`. A bare `1..5` lexes as `Int(1)`, `Dot`, `Dot`, `Int(5)` and produces a parse error at top level (dot-access on `Int(1)` requires a field name).
 
 ```tinct
-$data[2..5]              # Range: keys in [2, 5)
-$data[2..]               # Range: keys >= 2
-$data[..3]               # Range: keys < 3
-
 config..bak              # Identifier("config"), Dot, Dot, Identifier("bak") — NOT a single string
 "config..bak"            # Quoted string: "config..bak" — use quotes for literal dots
 ```
-
-| Input | Context | Interpretation |
-|-------|---------|----------------|
-| `$data[2..5]` | Inside bracket access | Range operator: keys 2 to 5 |
-| `$data[..]` | Inside bracket access | Range operator: all keys |
-| `file..bak` | Outside bracket access | `Identifier("file")`, `Dot`, `Dot`, `Identifier("bak")` — two dots = two access ops |
-| `a..b` | Outside bracket access | `Identifier("a")`, `Dot`, `Dot`, `Identifier("b")` — not a bare-word string |
 
 #### `@` Annotation
 
@@ -541,7 +522,7 @@ Function application has two forms — implied and explicit — that produce ide
 [call % data]                       # pipeline value used as function
 ```
 
-The `call` keyword is required when the function expression is not a bare identifier — e.g., the result of another call, a dot-access, or a bracket-access.
+The `call` keyword is required when the function expression is not a bare identifier — e.g., the result of another call or a dot-access.
 
 ```ebnf
 call_form = { keyword_call ~ value ~ call_args }
@@ -597,48 +578,31 @@ Examples:
 
 ### 3.4 Access Chains
 
-Access chains attach to identifiers, escaped references, and bracket accesses. Whitespace-sensitivity is achieved by the hand-written lexer using `last_significant_token` tracking — no implicit whitespace skipping between the reference and the `.` or `[`. Both bare identifiers (`name.field`) and escaped references (`$name.field`) trigger access chain detection.
+Access chains attach to identifiers and escaped references via dot notation. Dot access is whitespace-insensitive — the hand-written lexer always emits a `Dot` token, regardless of preceding whitespace. Both bare identifiers (`name.field`) and escaped references (`$name.field`) trigger access chain detection.
+
+**Note:** Bracket access (`$a[0]`, `$a[$key]`) and range access (`$a[2..5]`) were removed in access-pipeline-phase2. Use `[get key data]` for dynamic key access and `[slice data start end]` / `[take n data]` / `[drop n data]` for subsequences.
 
 ```ebnf
 access_expr = ${ (identifier | escaped_ref) ~ access_chain+ }
 
-access_chain = ${ dot_access | bracket_access_chain }
+access_chain = ${ dot_access }
 
 dot_access = ${ "." ~ access_field }
 
 access_field = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "?")* }
-
-bracket_access_chain = ${ "[" ~ bracket_access_inner ~ "]" }
-
-bracket_access_inner = {
-    range_expr
-    | value
-}
-
-range_expr = { range_value? ~ ".." ~ range_value? }
-
-range_value = { int_lit | escaped_ref }
 ```
-
-Range values are limited to integer literals and variable references.
 
 **Field name characters:** The `access_field` rule allows `?` anywhere in continuation characters (not just at the end). This supports the predicate naming convention (`int?`, `dict?`, `list?`) where the `?` suffix indicates a boolean-returning function. Field names can contain multiple `?` characters if needed (e.g., `foo?bar?` is valid).
 
 Dot access is whitespace-insensitive — `$a.b` and `$a .b` parse identically. The `.` always emits a `Dot` token regardless of preceding whitespace; see §2.5 for the formal tokenization rule.
-
-Similarly, `$a[0]` is bracket access, but `$a [0]` is an EscapedRef followed by a nested bracket expression.
 
 **Chaining examples:**
 
 | Input | Parse |
 |-------|-------|
 | `$a.b` | `access_expr(escaped_ref("a"), dot_access("b"))` |
-| `$a[0]` | `access_expr(escaped_ref("a"), bracket_access(int(0)))` |
-| `$a.b[0].c` | `access_expr(escaped_ref("a"), dot("b"), bracket(int(0)), dot("c"))` |
-| `$a[2..5]` | `access_expr(escaped_ref("a"), bracket(range(int(2), int(5))))` |
-| `$a[2..]` | `access_expr(escaped_ref("a"), bracket(range(int(2), none)))` |
-| `$a[..]` | `access_expr(escaped_ref("a"), bracket(range(none, none)))` |
-| `$a[$key]` | `access_expr(escaped_ref("a"), bracket(escaped_ref("key")))` |
+| `$a.b.c` | `access_expr(escaped_ref("a"), dot("b"), dot("c"))` |
+| `$a.0` | `access_expr(escaped_ref("a"), dot_access(Int(0)))` — integer dot access |
 
 ### 3.5 Dict Entries
 
@@ -744,6 +708,34 @@ The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annot
 - `Any` = dynamic escape hatch
 
 **Type inference context.** The type system uses type schemes (`forall a1...an. t`) for polymorphic bindings via levels-based let-generalization (Kiselyov 2013). Type variables carry an integer level for scope tracking (`TypeVar(String, u32)`). These are type checker internals — the parser produces bare type names as strings. See doc/06-type-inference.md for details.
+
+### Quasiquoting
+
+`quote`, `unquote`, and `unquote-splice` are special forms for treating code as data.
+
+```tinct
+[quote [+ 1 2]]          # → dict representing the Call AST node
+[quote [+ [unquote x] 1]] # → Call node with x's value spliced in
+```
+
+`[quote expr]` converts `expr` into its AST dict representation (per `doc/15-ast.md` §AST Dict Schema) without evaluating it. The result is an ordinary `Value::Dict` with `type: "call"`, `fn:`, `args:` fields etc.
+
+`[unquote expr]` is valid only inside `[quote ...]`. It evaluates `expr` in the current environment and splices the result into the quoted dict. The parser tracks nesting depth: nested `[quote ...]` increments the depth; `unquote` only evaluates at depth 1 (Bawden 1999).
+
+`[unquote-splice expr]` is valid only inside `[quote ...]` in a *list position* (call args or dict entries). It evaluates `expr` to a sequence and splices each element into the enclosing list. It is a parse error at the top level of a `[quote ...]` where there is no enclosing list to splice into.
+
+### Macro Definition
+
+`[defmacro name [params] body]` registers a compile-time AST transformation. `name` is a bare-word identifier. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros.
+
+```tinct
+[defmacro my-when [pred body]
+  [quote [if [unquote pred] [unquote body] []]]]
+
+[my-when [> x 0] [process x]]  # expands to: [if [> x 0] [process x] []]
+```
+
+Macro names cannot shadow registered Rust builtins — `[defmacro str ...]` is rejected at registration time. See `doc/08-evaluation.md` §Macro Expansion Pipeline for expansion semantics.
 
 ---
 
@@ -916,20 +908,11 @@ annotated_bare = identifier ~ "@" ~ annotation_value
 
 access_expr = (identifier | escaped_ref) ~ access_chain+
 
-access_chain = dot_access | bracket_access_chain
+access_chain = dot_access
 
 dot_access = "." ~ access_field
 
 access_field = (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "?")*
-
-bracket_access_chain = "[" ~ bracket_access_inner ~ "]"
-
-bracket_access_inner = range_expr | value
-
-range_expr = range_value? ~ ".." ~ range_value?
-
-// Values inside range expressions — limited to atoms (no nested brackets in ranges)
-range_value = int_lit | escaped_ref
 
 // === Literals ===
 
@@ -996,7 +979,7 @@ ident_char_body = !(WHITESPACE | "[" | "]" | ":" | ";" | "#" | "\"" | "@" | "$" 
 | `call:` | Dict key | Colon makes it a key |
 | `%config` | Reference to pipeline section `config` | Identifier with `%` prefix (convention) |
 | `a..b` | `Identifier("a")`, `Dot`, `Dot`, `Identifier("b")` | `.` excluded from identifier chars; both dots are access operators |
-| `a[2..5]` | Range access | `..` inside bracket access |
+| `a[2..5]` | `Identifier("a")`, `OpenBracket`, `Int(2)`, `Dot`, `Dot`, `Int(5)`, `CloseBracket` | Range syntax removed; use `[slice a 2 5]` |
 | `---` (between exprs) | Document separator | `doc_separator` rule |
 | `----` | Identifier | `!ident_char` prevents separator match |
 
@@ -1042,14 +1025,11 @@ true false                      # Bool
 x                               # Variable reference
 [$key: value]                   # Computed key ($-prefix) and bare reference value
 
-# Key-based access (brackets and dot — semantically equivalent to get)
-person.name                     # equivalent to [get person "name"]
-config.database.host            # equivalent to chained get
-data[5]                         # equivalent to [get data 5]  key 5
-data[-1]                        # equivalent to [get data -1] key -1, NOT last
-dict[key]                       # equivalent to [get dict key]
-data[2..5]                      # key-range slice: keys in [2, 5)
-config.services[0].host         # mixed chaining
+# Dot access (removed: bracket access — use get builtin instead)
+person.name                     # dot access: Key::String("name") lookup
+config.database.host            # chained dot access
+# Removed in access-pipeline-phase2: data[5], data[$key], data[2..5], config.services[0].host
+# Use: [get data 5], [get data key], [slice data 2 5], [get [get config.services 0] "host"]
 
 # Position-based access (functions, not syntax)
 [nth data 0]                    # first entry by position

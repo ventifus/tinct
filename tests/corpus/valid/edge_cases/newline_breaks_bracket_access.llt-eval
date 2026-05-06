@@ -1,5 +1,6 @@
-# Newline between identifier and bracket prevents bracket-access in new syntax.
-# a[0] (no gap) = bracket access; a\n[0] (newline) = call a with arg [0]
+# Newline between identifier and bracket creates call form.
+# a\n[0] (newline) = call a with arg [0] (a dict literal)
+# Bracket access syntax has been removed; [a [0]] is always a call form.
 [a
 [0]]
 ===

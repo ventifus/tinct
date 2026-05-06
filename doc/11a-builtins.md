@@ -90,7 +90,7 @@ Convert a Dict to a lazy Seq of its contents. All three builtins use an internal
 | `each-key` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of its keys in insertion order; values are discarded |
 | `each-kv` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of `[key: K  value: V]` dicts in insertion order |
 
-**`builtin-get` note:** This is a primitive for runtime key lookup by computed key value. Use `$xs[$k]` for static key access; `builtin-get` is for cases where the key itself is a runtime value (e.g., the result of `each-key`).
+**`builtin-get` note:** This is a primitive for runtime key lookup by computed key value. Use `data.key` for static string-key dot access; `builtin-get` is for cases where the key itself is a runtime value (e.g., the result of `each-key`).
 
 **Error cases:**
 - `builtin-get`: Type mismatch if first arg is not Int or String; key-not-found error if key is absent from dict

@@ -6,7 +6,7 @@ Every grammar rule maps to an AST node. All nodes carry source span information 
 
 Tinct uses a **hand-written iterative descent parser** composed of two phases:
 
-1. **Tokenization** (`src/lexer.rs`): Converts raw input into a flat token stream with accurate source spans. The lexer handles whitespace-sensitive disambiguation (e.g., `a.b` vs `a .b`, `word@annotation` vs `word @annotation`) by tracking whitespace gaps and emitting context-aware tokens (`BracketAccess`, `ImmediateAt`, `Dot`).
+1. **Tokenization** (`src/lexer.rs`): Converts raw input into a flat token stream with accurate source spans. The lexer handles whitespace-sensitive disambiguation (e.g., `word@annotation` vs `word @annotation`) by tracking whitespace gaps and emitting context-aware tokens (`ImmediateAt`, `Dot`). Note: `[` is not whitespace-sensitive — bracket access was removed in access-pipeline-phase2; `a[0]` now parses as two separate expressions.
 
 2. **Parsing** (`src/parser.rs`): Consumes the token stream using an explicit `Vec<StackFrame>` to avoid Rust call-stack recursion. The iterative parser enforces a maximum nesting depth (`MAX_PARSE_DEPTH = 256`) before allocating stack frames, preventing unbounded memory use.
 
@@ -88,17 +88,10 @@ enum Expr {
     },
     DotAccess {
         expr: Box<Spanned<Expr>>,
-        field: String,
+        field: DotKey,  // DotKey::Ident("name") or DotKey::Int(0)
     },
-    BracketAccess {
-        expr: Box<Spanned<Expr>>,
-        key: Box<Spanned<Expr>>,
-    },
-    RangeAccess {
-        expr: Box<Spanned<Expr>>,
-        start: Option<Box<Spanned<Expr>>>,
-        end: Option<Box<Spanned<Expr>>>,
-    },
+    // Note: BracketAccess and RangeAccess were removed in access-pipeline-phase2.
+    // Use [get key data] (builtin) for dynamic key access, and slice/drop/take for ranges.
 
     // Data
     Dict(Vec<Spanned<Entry>>),
@@ -190,8 +183,6 @@ enum Annotation {
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by Phase 1 resolution pass |
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
-| `BracketAccess` | `a[0]` | Key access: `0` on `a` |
-| `RangeAccess` | `a[2..5]` | Key-range slice |
 | `Pipe { lhs, rhs }` | `a \| f` | Pipe (desugar-only); eliminated before evaluation — see §Pipe Desugaring below |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
@@ -306,11 +297,7 @@ Dot notation and bracket notation desugar to nested access nodes:
 |---------------|-----|
 | `data.name` | `DotAccess { field: DotKey::Ident("name"), .. }` |
 | `data.0` | `DotAccess { field: DotKey::Int(0), .. }` — integer key; looks up `Key::Int(0)` at eval time |
-| `data[5]` | `BracketAccess(VarRef { name: "data", .. }, Int(5))` |
-| `data[key]` | `BracketAccess(VarRef { name: "data", .. }, VarRef { name: "key", .. })` |
-| `data[2..5]` | `RangeAccess(VarRef { name: "data", .. }, Some(Int(2)), Some(Int(5)))` |
-| `data[2..]` | `RangeAccess(VarRef { name: "data", .. }, Some(Int(2)), None)` |
-| `data[..3]` | `RangeAccess(VarRef { name: "data", .. }, None, Some(Int(3)))` |
+| `[get 5 data]` | `Call(VarRef("get"), [Int(5), VarRef("data")])` — use `get` builtin for dynamic key access (bracket access removed in access-pipeline-phase2) |
 | `a.b.0.c` | `DotAccess(DotAccess(DotAccess(VarRef("a"), Ident("b")), Int(0)), Ident("c"))` |
 
 ### Pipe Desugaring
@@ -328,6 +315,40 @@ Three desugar rules, applied in priority order:
 Left-associativity: `a | f | g` parses as `(a | f) | g`, which desugars to `[g [f a]]`.
 
 **Note:** Pipe is eliminated in the desugar pass before type checking and variable resolution run. Any tooling pass that may see `Expr::Pipe` must either run before desugar or handle it explicitly as unreachable.
+
+---
+
+## AST Dict Schema
+
+`ast_to_dict` (`src/ast_dict.rs`) serializes the `Expr` AST to tinct dicts. `dict_to_ast` converts dicts back to `Expr`. These two functions are the shared primitive for quasiquoting (`[quote]`), macros (`[defmacro]`), and the tinct-hosted formatter. The canonical schema is defined in `doc/whatif/ast-schema.md`.
+
+### Conventions
+
+- **`type:` string discriminator** on every node — `[type: "call" ...]`, `[type: "var" ...]`
+- **`[]` for absent optionals** — never omit the key (except comment fields, which are absent when empty)
+- **`span:` on every node** — `[start: [line: 1 col: 5 offset: 4] end: [line: 1 col: 12 offset: 11]]`. "Every node" means every `Spanned<T>` wrapper, not every sub-element; `DotKey` has no independent span
+- **`schema-version: 1`** on the root `File` node — bump on breaking changes
+
+### Modes
+
+`ast_to_dict` accepts an `AstToDictOpts` struct controlling output:
+
+| Field | When set | Effect |
+|-------|----------|--------|
+| `source: None` | Compact mode, quasiquoting | `bare:` is always `false` on string literals |
+| `source: Some(src)` | Full formatter | `bare: true` when source char at token start ≠ `"` |
+| `comments: None` | Compact mode, quasiquoting | No comment fields emitted |
+| `comments: Some(map)` | Full formatter | `leading-comments:`, `trailing-comment:`, `blank-before:` on entries and documents |
+
+### dict_to_ast
+
+`dict_to_ast(v: &Value) -> Result<Expr, AstError>` validates and reconstructs an `Expr`:
+- `type:` must be a known string
+- Required fields must be present and of the correct shape
+- `span:` is optional — absent nodes get a synthetic zero span
+- Unknown fields are ignored (forward-compatible)
+
+Synthetic nodes (from `dict_to_ast` with absent `span:`) receive a `SyntheticId(u64)` for tracking in the macro expansion blackhole detection set.
 
 ### Auto-Indexing
 

@@ -218,24 +218,6 @@ impl<'a> Formatter<'a> {
                     crate::ast::DotKey::Int(n) => self.output.push_str(&n.to_string()),
                 }
             }
-            Expr::BracketAccess { expr, key } => {
-                self.format_expr(expr, false);
-                self.output.push('[');
-                self.format_expr(key, true);
-                self.output.push(']');
-            }
-            Expr::RangeAccess { expr, start, end } => {
-                self.format_expr(expr, false);
-                self.output.push('[');
-                if let Some(s) = start {
-                    self.format_expr(s, true);
-                }
-                self.output.push_str("..");
-                if let Some(e) = end {
-                    self.format_expr(e, true);
-                }
-                self.output.push(']');
-            }
             Expr::Pipe { lhs, rhs } => {
                 self.format_expr(lhs, false);
                 self.output.push_str(" | ");
@@ -404,19 +386,6 @@ impl<'a> Formatter<'a> {
                     crate::ast::DotKey::Int(n) => n.to_string().len(),
                 };
                 self.measure_expr_width(expr) + 1 + field_len
-            }
-            Expr::BracketAccess { expr, key } => {
-                self.measure_expr_width(expr) + 1 + self.measure_expr_width(key) + 1
-            }
-            Expr::RangeAccess { expr, start, end } => {
-                let mut w = self.measure_expr_width(expr) + 3; // [..]
-                if let Some(s) = start {
-                    w += self.measure_expr_width(s);
-                }
-                if let Some(e) = end {
-                    w += self.measure_expr_width(e);
-                }
-                w
             }
             Expr::Pipe { lhs, rhs } => {
                 self.measure_expr_width(lhs) + 3 + self.measure_expr_width(rhs) // lhs | rhs
@@ -843,15 +812,17 @@ mod tests {
 
     #[test]
     fn test_access_chain_in_dict() {
-        assert_eq!(format_source("[x: $a.b[0].c]").unwrap(), "[x: $a.b[0].c]\n");
+        assert_eq!(format_source("[x: $a.b.c]").unwrap(), "[x: $a.b.c]\n");
     }
 
     #[test]
-    fn test_bracket_access_spacing() {
-        // No whitespace before [ — stays without space (BracketAccess token)
-        assert_eq!(format_source("$a[0]").unwrap(), "$a[0]\n");
-        // Whitespace before [ — space preserved (OpenBracket token, separate expression)
-        assert_eq!(format_source("$a [0]").unwrap(), "$a [0]\n");
+    fn test_bracket_no_longer_access() {
+        // Bracket access syntax has been removed. `$a` and `[0]` are now separate expressions.
+        // The formatter handles each as a standalone item in the document.
+        // $a alone formats as a reference.
+        assert_eq!(format_source("$a").unwrap(), "$a\n");
+        // [0] alone formats as a dict with one auto-indexed entry.
+        assert_eq!(format_source("[0]").unwrap(), "[0]\n");
     }
 
     #[test]
@@ -897,12 +868,6 @@ mod tests {
     fn test_variadic_rest() {
         assert_eq!(format_source("[... x]").unwrap(), "[...x]\n");
         assert_eq!(format_source("[...rest]").unwrap(), "[...rest]\n");
-    }
-
-    #[test]
-    fn test_range_operator() {
-        // Range operator in bracket access context
-        assert_eq!(format_source("$x[0..10]").unwrap(), "$x[0..10]\n");
     }
 
     #[test]
@@ -1175,18 +1140,6 @@ mod tests {
         let input = "_.name.first";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted.trim(), "_.name.first");
-
-        let ast_original = crate::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
-        assert_eq!(ast_original.node, ast_reparsed.node);
-    }
-
-    /// Format `_[0]` (bracket access on _) and verify round-trip.
-    #[test]
-    fn test_underscore_roundtrip_bracket_access() {
-        let input = "_[0]";
-        let formatted = format_source(input).unwrap();
-        assert_eq!(formatted.trim(), "_[0]");
 
         let ast_original = crate::parse_expression(input).unwrap();
         let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();

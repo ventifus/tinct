@@ -500,9 +500,9 @@ Sprint slugs and gate conditions:
 - **Estimated tasks:** 5
   1. `unquote` and `unquote-splice` added to denylist
   2. `Expr::Unquote(Box<Spanned<Expr>>)`, `Expr::UnquoteSplice(Box<Spanned<Expr>>)` AST variants
-  3. Parser: nesting depth tracker; inside `[quote ...]` (depth 1), `[unquote ...]` → `Expr::Unquote`, `[unquote-splice ...]` → `Expr::UnquoteSplice`; nested `[quote ...]` increments depth; `unquote` outside `quote` is a parse error
+  3. Parser: nesting depth tracker; inside `[quote ...]` (depth 1), `[unquote ...]` → `Expr::Unquote`, `[unquote-splice ...]` → `Expr::UnquoteSplice`; nested `[quote ...]` increments depth; `unquote` outside `quote` is a parse error; `[unquote-splice expr]` at the **top level** of a `[quote ...]` (not in a list/args position) is a parse error — Bawden (1999) Appendix A (`qq-expand`) rejects `tag-comma-atsign?` at top level; only valid in list positions (call args, dict entries)
   4. Evaluator: `Expr::Quote` updated — walk quoted AST for `Unquote` subexpressions; evaluate `Unquote.inner` and splice the result dict into the parent node's field; `UnquoteSplice` evaluates to `Value::Seq` and splices each element into the enclosing list position
-  5. Tests: `[quote [+ [unquote x] 1]]` with `x: 42` → call node with `args: [[type: "literal" value: 42] [type: "literal" value: 1]]`; `unquote-splice` splicing into args list; `unquote` outside `quote` produces parse error; `[quote [quote [unquote x]]]` preserves depth (inner `unquote` not evaluated)
+  5. Tests: `[quote [+ [unquote x] 1]]` with `x: 42` → call node with `args: [[type: "literal" value: 42] [type: "literal" value: 1]]`; `unquote-splice` splicing into args list; `unquote` outside `quote` produces parse error; `[quote [unquote-splice xs]]` (top-level splice) produces parse error; `[quote [quote [unquote x]]]` preserves depth (inner `unquote` not evaluated)
 - **Dependencies:** M2b (`quote`)
 - **Key files:** `src/lexer.rs`, `src/parser.rs`, `src/ast.rs`, `src/eval.rs`
 - **Spec chapters:** `doc/02-syntax.md` (§Quasiquoting — `[unquote expr]` and `[unquote-splice expr]` syntax, valid-only-inside-quote rule), `doc/08-evaluation.md` (§Quasiquoting Semantics — nesting depth rule, splice evaluation, Bawden 1999 reference)
@@ -538,7 +538,7 @@ Sprint slugs and gate conditions:
   8. `gensym: [] -> Str` builtin returning a guaranteed-fresh unique name. Names have the form `:gensym:N` (colon prefix makes collision structurally impossible — `:` is forbidden in bare-word identifiers, so users cannot write `:gensym:0` in source). Names are unique but not stable across evaluation orders.
   9. Pipeline update in `src/main.rs` **and `src/lsp/document.rs`**: `parse → expand_macros → desugar → resolve → typecheck → eval`. Both entry points must run `expand_macros` — without it, `Expr::DefMacro` nodes reach the typechecker and evaluator with no handler.
   10. `expand_macros` uses a **fresh `EvalContext`** (not the runtime context) — no shared `IncludeContext` cache, no shared `MAX_EVAL_DEPTH` budget. The compile-time context inherits `EvalConfig` (including `no_fs` and capability flags) from the runtime config so that `$include` and capability guards apply equally.
-  11. Termination: depth limit 100 (per macro call-site expansion count, configurable via `TINCT_MACRO_DEPTH`) plus a **total node-count cap** (100k nodes post-expansion) to prevent exponential AST blowup. A `HashSet<(file_id, byte_offset)>` tracks in-progress call sites to detect recursive expansion of the same site (the actual blackhole guard — not `InProgress` thunk state, which is unrelated).
+  11. Termination: depth limit 100 (per macro call-site expansion count, configurable via `TINCT_MACRO_DEPTH`) plus a **total node-count cap** (100k nodes post-expansion) to prevent exponential AST blowup. A `HashSet<(file_id, byte_offset)>` tracks in-progress call sites to detect recursive expansion of the same site (the actual blackhole guard — not `InProgress` thunk state, which is unrelated). **Synthetic node tracking:** macro-generated nodes produced by `dict_to_ast` with absent `span:` receive a synthetic zero span and cannot be keyed on source position. These are tracked by assigning a fresh monotonic `SyntheticId(u64)` at `dict_to_ast` time and including it as an alternate key in the in-progress set. A macro that generates a call to itself by constructing a synthetic call node will be caught via the synthetic ID, not the byte offset.
   12. Namespace rule: macros **cannot shadow registered Rust builtins**. At registration time, if `name` matches a builtin, `expand_macros` rejects the `[defmacro]` with an error. Lookup order: builtins take precedence over macros for built-in names.
   13. Tests: `[defmacro my-when [pred body] [quote [if [unquote pred] [unquote body] []]]]` expands correctly; `gensym` produces unique names with `:` prefix unreachable from user source; infinite expansion hits depth limit with clear error; node-count blowup hits cap; `Expr::DefMacro` absent from post-expansion AST; `[defmacro str ...]` is rejected at registration; LSP diagnostics correct for files using `[defmacro]`
 - **Dependencies:** M2b (`quote`) + M4a (`dict-to-ast`)
@@ -554,8 +554,8 @@ Sprint slugs and gate conditions:
 - **Estimated tasks:** 7
   1. `ScopeId(u32)` type; `ScopeMap` threaded through expander
   2. Each macro invocation gets a fresh `ScopeId`; bindings introduced by macro body carry the definition-site scope; call-site variables carry the caller's scope
-  3. Name resolution: two bindings with the same string name but different `ScopeId`s are distinct (no capture)
-  4. Dual-span tracking uses a **side map** `HashMap<NodeKey, Span>` maintained by the expander, keyed on a stable node identifier (e.g., `(file_id, byte_offset)` of the original call site). The error formatter looks up this map; no changes to `Spanned<T>` wrappers or `Expr` variant fields are needed.
+  3. Name resolution: two bindings with the same string name but different `ScopeId`s are distinct (no capture). **Simplification note:** this is a subset of Flatt (2016) §3.1's full *biggest-subset* binding resolution rule, which handles recursive macro definitions and nested scopes by selecting the binding whose scope set is the biggest subset of the use-site's scope set. The simplified model here (pairwise `ScopeId` inequality) is correct for non-recursive macros and straightforward `[defmacro]` definitions. If recursive macro patterns or unusual binding contexts arise, upgrade to the full biggest-subset rule.
+  4. Dual-span tracking uses a **side map** `HashMap<NodeKey, Span>` maintained by the expander, keyed on a stable node identifier (e.g., `(file_id, byte_offset)` of the original call site). The error formatter looks up this map; no changes to `Spanned<T>` wrappers or `Expr` variant fields are needed. **Honest-tags requirement (Pombrio & Krishnamurthi 2015, Theorem 2 — Abstraction):** the side map must record accurate before/after patterns — the expansion call-site span paired with the specific expansion rule that produced the node — not just a generic call-site span. This ensures error provenance chains are *faithful*: a chain that maps a generated node back to the wrong surface location violates the Abstraction theorem. In practice: the side map value should be `(macro_name, call_site_span, expansion_rule_index)` so that nested expansions produce correct chains.
   5. Error formatter: shows "in expansion of `<name>` at line N" when a macro call span is present in the side map for the reporting node; chains across nested macro expansions
   6. **No intentional hygiene escape hatch.** `var!` (or any mechanism allowing a macro to inject bindings into the caller's scope without the caller's knowledge) is deferred — it creates an unrestricted scope injection surface for library macros. Gate separately after observing real-world usage.
   7. Tests: macro introducing binding `x` does not capture caller's `x`; error in expanded code shows macro call site; nested expansion shows full provenance chain; existing macros from M4b still work correctly
@@ -592,7 +592,7 @@ M2b:
 - Audit recent `src/ast.rs` changes against the schema in `doc/whatif/ast-schema.md`
 - Commit to not renaming existing `Expr` variants without a schema version bump
 - `schema-version: 1` on the root `File` node is the migration escape hatch
-- **Live discrepancy:** `Expr::BracketAccess` and `Expr::RangeAccess` still exist in `src/ast.rs` pending access-pipeline phase 2, but the schema excludes them. M1 must add stub arms for these variants (see M1 task 2). Remove stubs when access-pipeline phase 2 lands.
+- **Resolved discrepancy:** `Expr::BracketAccess` and `Expr::RangeAccess` were removed from `src/ast.rs` in access-pipeline phase 2. The schema no longer needs stub arms for these variants.
 - **Span coverage note:** `span:` on "every node" means every `Spanned<T>` wrapper, not every sub-element. `DotKey` (the field name in a dot-access expression) carries no independent span; the dot-access node's span covers the entire `target.field` expression. Do not attempt to add `span:` fields to `DotKey` in the schema.
 
 `dict_to_ast` is deliberately permissive on unknown fields — new fields can be
@@ -624,7 +624,17 @@ Macro definitions from `$include`d files are available to the includer **only wh
 the include path is a string literal** determinable at expansion time. Dynamic paths
 (`[include [str base-dir "/lib.llt"]]`) cannot be resolved during `expand_macros`
 and their macros are not registered until eval-time — which is after expansion has run.
-Document this constraint in the spec chapter for `defmacro`.
+
+This is a direct consequence of Flatt's (2002) *phase separation* model: compile-time
+imports (macro definitions) must be resolved before expansion begins, because the
+expander needs the macro table to be complete before it walks the AST. A dynamic path
+whose value depends on a runtime binding cannot participate in phase separation —
+it is a runtime import, not a compile-time import. This is not a limitation specific
+to tinct; Racket has the same constraint (`require` paths must be module paths resolvable
+at compile time, not arbitrary expressions).
+
+Document this constraint in the spec chapter for `defmacro`, framed as a phase
+separation consequence rather than an implementation shortcut.
 
 ### Pipeline Coexistence: Expander and Desugar
 

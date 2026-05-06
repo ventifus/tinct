@@ -1,0 +1,5 @@
+[
+  handler: [fn [key] [str "key=" key]]
+  p: [proxy handler]
+  result: [get 0 p]
+]

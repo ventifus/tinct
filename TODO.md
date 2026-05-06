@@ -6,38 +6,6 @@ For future work beyond the active sprints below, see:
 - `doc/whatif/index.md §Adopt Now` — features ready to implement (String Interpolation Phase 1, Let Binding, Structural Contracts Phase 1, ADTs Phase 1, Source Snippets, Circular Dep Error Paths, Eval Semantics Verification Phase 1)
 - `doc/whatif/index.md §Wait for Trigger` — features with complete designs pending a concrete trigger
 
-## Access and Generator Pipeline
-
-Pipe operator, integer dot access, `get` builtin, and generator stdlib. See `doc/whatif/access-pipeline.md`.
-
-- [x] Accept access-pipeline — see doc/whatif/access-pipeline.md (State: Accepted — 2026-05-05)
-
-### access-pipeline-phase2: Remove Bracket Access + Prelude Migration
-
-**Depends on:** `access-pipeline-phase1`
-
-See doc/whatif/access-pipeline.md §Phase 2. Breaking — all bracket/range access must migrate atomically with `stdlib/prelude.llt` refactor, otherwise prelude fails to load.
-
-- [ ] Remove `Token::BracketAccess`, `Token::Range` (`..`) from lexer; remove whitespace-sensitive `[` detection (`src/lexer.rs`)
-- [ ] Remove `StackFrame::BracketAccessKey` from parser; remove `Expr::BracketAccess`, `Expr::RangeAccess` from AST (`src/parser.rs`, `src/ast.rs`)
-- [ ] Remove all `BracketAccess`/`RangeAccess` arms from: `desugar.rs`, `resolve.rs`, `typecheck.rs`, `eval.rs`, `eval_materialize.rs`, `eval_access.rs`, `formatter.rs`
-- [ ] Add Seq-at-top-level error to CLI: if top-level is `Value::Seq` and `emitted = false`, return error; if `emitted = true`, force each element (`src/main.rs`)
-- [ ] Refactor `stdlib/prelude.llt`: redefine `get` to use `builtin-get`; add `collect-kv` using `reduce`+`merge`; replace all dynamic `xs[k]` / `ks[i]` with `[get k xs]` / `[get i ks]`; replace literal integer access `left[0]` → `left.0`, `pairs[i][0]` → `[get i pairs].0` (~30+ occurrences) (`stdlib/prelude.llt`)
-- [ ] Migrate all corpus tests using `dict[$key]`, `list[0]`, `seq[0..n]` to `|` / dot / `get` / `slice` equivalents (`tests/corpus/`)
-
-### access-pipeline-stdlib: Migrate Existing Stdlib Files
-
-**Depends on:** `access-pipeline-phase2`
-
-Migrate all existing stdlib files written in old bracket-access syntax. Future stdlib files (`stdlib/io.llt`, `stdlib/net.llt`) are written fresh in new syntax and do not need migration.
-
-- [ ] Migrate `stdlib/fmt/toml.llt` — 6 bracket-access occurrences (`stdlib/fmt/toml.llt`)
-- [ ] Migrate `stdlib/fmt/csv.llt` — 4 bracket-access occurrences (`stdlib/fmt/csv.llt`)
-- [ ] Migrate `stdlib/fmt/yaml.llt` — 3 bracket-access occurrences (`stdlib/fmt/yaml.llt`)
-- [ ] Migrate `stdlib/fmt/json-pretty.llt` — 3 bracket-access occurrences (`stdlib/fmt/json-pretty.llt`)
-- [ ] Migrate `stdlib/fmt/env.llt` — 1 bracket-access occurrence (`stdlib/fmt/env.llt`)
-- [ ] Verify all stdlib corpus tests pass with new syntax (`tests/corpus/`)
-
 ## I/O and Capabilities
 
 See doc/whatif/io.md.
@@ -143,7 +111,7 @@ Add complete type annotations (parameter types and return types) to all function
 
 - [ ] Add interpolated string corpus tests: `tests/corpus/valid/literals/interpolated_strings.llt-eval` (basic i"Hello $name", i"$$escaped", variable boundaries) and `tests/corpus/eval/builtins/interpolated_string_eval.llt-eval` (desugaring to `str` calls) [Critical — test-crafter]
 - [ ] Add row polymorphism corpus tests: anonymous rest (`...`), named rest (`...r`), rest in function signatures, rest with field constraints in `tests/corpus/eval/type_system/row_*.llt-eval` [Critical — test-crafter]
-- [ ] Add deeply chained access corpus tests: 5+ level chains mixing dot/bracket access and mid-chain error cases (`tests/corpus/eval/access/deeply_chained_mixed.llt-eval`) [Critical — test-crafter]
+- [ ] Add deeply chained access corpus tests: 5+ level chains mixing dot access (identifier and integer keys) and `get` builtin calls, and mid-chain error cases (`tests/corpus/eval/access/deeply_chained_mixed.llt-eval`) [Critical — test-crafter]
 - [ ] Add pipeline section metadata corpus tests for `--- %name@Type` (output type annotation) and `--- expects: Type` (input contract) in `tests/corpus/eval/pipeline/` [Critical — test-crafter]
 - [ ] Add annotation bracket restriction invalid tests: `x@[call f]`, `x@[fn [a] a]`, `x@[@Type e]` must all be parse errors (`tests/corpus/invalid/syntax_errors/annotation_special_form.llt-eval`) [Critical — test-crafter]
 - [ ] Add static constraint corpus test: verify rest entry position `[a ... b]` is valid syntax (`tests/corpus/valid/edge_cases/rest_entry_positions.llt-eval`) [Major — test-crafter]
@@ -179,7 +147,7 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 Intra-document "go to definition" — F12 in VS Code and equivalents. Given a cursor on a variable reference, returns the span of the dict entry key that defines that name in the current file. Builtins and `$include`-introduced names return no result (cross-file resolution is a future concern; `no_fs=true` makes it non-trivial).
 
 - [ ] `fn key_name(key_expr: &Expr) -> Option<&str>`: `Expr::Str(s)` → `s.as_str()`, `Expr::Annotated { name, .. }` → `name.as_str()`, all other key forms → `None` (computed/int keys are not static definition targets) (`src/lsp/analysis.rs`)
-- [ ] `fn name_at_offset(expr: &Expr, span: Span, offset: usize) -> Option<String>`: recursive span-containment walk returning `VarRef.name.clone()` for the innermost `Expr::VarRef` at `offset`; recurses into Dict entries, Call func+args+named_args, Fn body, DotAccess, BracketAccess, RangeAccess, Pipe, TypeAlias, TypeAssert; returns `None` for literals, Error, Rest, Annotated, Fn params (`src/lsp/analysis.rs`)
+- [ ] `fn name_at_offset(expr: &Expr, span: Span, offset: usize) -> Option<String>`: recursive span-containment walk returning `VarRef.name.clone()` for the innermost `Expr::VarRef` at `offset`; recurses into Dict entries, Call func+args+named_args, Fn body, DotAccess, Pipe, TypeAlias, TypeAssert; returns `None` for literals, Error, Rest, Annotated, Fn params (`src/lsp/analysis.rs`)
 - [ ] `fn find_key_definition(expr: &Expr, span: Span, name: &str) -> Option<Span>`: recursive walk; on `Expr::Dict(entries)` matches `key_name(key) == name` and returns key span; recurses into entry values, call args, fn bodies, access targets to find definitions in nested dicts; depth-first, first match wins (`src/lsp/analysis.rs`)
 - [ ] `pub fn definition_at(doc: &DocumentState, offset: usize) -> Option<Span>`: requires `doc.ast.is_ok()`; walks documents → expressions with `name_at_offset` to find the name at cursor; then walks documents → expressions with `find_key_definition`; returns definition span or `None` (`src/lsp/analysis.rs`)
 - [ ] Add `definition_provider: Some(lsp_types::OneOf::Left(true))` to `ServerCapabilities` in `run_lsp()` (`src/lsp/server.rs`)
@@ -247,6 +215,7 @@ No hard dependency on `access-pipeline` — dot access works today. Pipe
 expressions (`|`) work automatically in `-e` strings once `access-pipeline-phase1`
 lands.
 
+- [ ] Default subcommand: if `argv[1]` is not a known subcommand (`eval`, `fmt`, `literate`, `hash`) and does not start with `-`, treat it as `tinct eval <argv[1]> [remaining args]`; enables `#!/usr/bin/env tinct` shebangs and `tinct my-script.llt` shorthand; `#!` shebang lines are already valid tinct (parsed as comments, ignored); no file-existence probing — pass the argument through to `tinct eval` which will produce a normal "file not found" error if needed (`src/main.rs`)
 - [ ] Section header loop: add `Token::Semicolon` as a break condition alongside `Token::Newline` at `src/parser.rs:2350` — currently `;` hits the catch-all "unexpected token in section header" error, making `--- %name@Type; [expr]` fail; every other Newline-break in the parser already includes Semicolon (`peek_next_significant_token`, `skip_whitespace_tokens`, main loop all use `Newline | Semicolon`) (`src/parser.rs`)
 - [ ] Rename `stdlib/fmt/` → `stdlib/out/` via `git mv stdlib/fmt stdlib/out`; update all references in `doc/`, `TODO.md`, and `doc/whatif/` from `stdlib/fmt/` to `stdlib/out/` (`stdlib/`, `doc/`, `TODO.md`)
 - [ ] Add `-e <expr>` / `--expr <expr>` flag to `tinct eval`: repeatable — each occurrence inserts an inline tinct expression as a pipeline stage at that position in the command line, interleaved with file arguments in order; `tinct eval -i json -e '%.x' transform.llt -e '[+ % 1]' -o raw` runs four stages in sequence; each `-e` expression receives `%` from the previous stage exactly as a file would; `---` is valid inside a single `-e` string to create multiple stages within it (the lexer already recognizes `---` anywhere, not just at line start); `;` is whitespace-equivalent and compresses multi-line syntax but does not create pipeline stages (`src/main.rs`)
@@ -275,12 +244,112 @@ The formatter already builds output as a `String` via `self.output`. The changes
 - [ ] Round-trip tests: `tinct fmt --oneline file.llt | tinct eval -` equals `tinct eval file.llt`; `tinct fmt --nospaces file.llt | tinct eval file.llt` equals original; `tinct fmt --minimize file.llt | tinct eval -` equals original; section headers with `%name@Type expects: T` survive all modes; comments stripped in `--oneline`/`--minimize`; all three modes are idempotent (`src/formatter.rs`, `tests/`)
 - [ ] Update `doc/12-tooling.md`: document `--oneline`, `--nospaces`, `--minimize`; note comments stripped in oneline/minimize; explain the bare-word-adjacency rule for `--nospaces`; give section-header `;` example
 
+## Metaprogramming: AST-as-Data, Quasiquoting, Macros, Formatter
+
+AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. See `doc/whatif/plans/macros-cluster.md` for the full cluster plan, dependency graph, and decision gates.
+
+- [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
+
+### ast-dict-core: AST Dict Schema + `ast_to_dict` Minimal Mode
+
+See doc/15-ast.md §AST Dict Schema. No dependencies.
+
+- [ ] New `src/ast_dict.rs` with `AstToDictOpts` struct; `ast_to_dict_expr` covering all `Expr` variants with `type:` string discriminator and `span:` on every node; stub arms for `Quote`/`DefMacro` (later sprints) (`src/ast_dict.rs`)
+- [ ] `ast_to_dict` wrapping `File → Document → expressions` hierarchy; root carries `schema-version: 1` (`src/ast_dict.rs`)
+- [ ] Helpers: `annotation_to_dict`, `entry_to_dict`, `param_to_dict`, `span_to_dict`; `[]` for absent optional fields (`src/ast_dict.rs`)
+- [ ] Tests: every `Expr` variant round-trips through `ast_to_dict_expr`; schema-version present; span on every node; type discriminator correct per variant (`tests/`)
+
+### formatter-compact: Compact Formatter Modes in Tinct
+
+See doc/12-tooling.md §Compact Formatter Modes. **Depends on:** `ast-dict-core`. **Supersedes:** `fmt-oneline` sprint (Rust implementation) — once this lands, remove the Rust compact formatter code.
+
+- [ ] `stdlib/formatter/compact.llt`: `format-node` dispatch via `cond` chains (no `[match]` yet); section headers as `[str "; " ...]`; dicts as `[key: value ...]` space-separated (`stdlib/formatter/compact.llt`)
+- [ ] CLI: `tinct fmt --oneline` / `--nospaces` / `--minimize` calls `ast_to_dict(None, None)` then evaluates `compact.llt` with AST dict as `%`; Rust formatter retained for `tinct fmt` (no flag) and LSP (`src/main.rs`)
+- [ ] Tests: every `Expr` variant round-trips through compact formatter; output is re-parseable; idempotent; `--nospaces` and `--oneline` correct (`tests/`)
+
+### quote: `[quote expr]` Special Form
+
+See doc/02-syntax.md §Quasiquoting, doc/08-evaluation.md §Quote Semantics. **Depends on:** `ast-dict-core`.
+
+- [ ] `quote` added to keyword denylist; `Expr::Quote(Box<Spanned<Expr>>)` AST variant (`src/lexer.rs`, `src/parser.rs`, `src/ast.rs`)
+- [ ] Evaluator: `Expr::Quote` → `ast_to_dict_expr(inner, AstToDictOpts::minimal())` → return `Value::Dict`; no `unquote` handling yet (opaque Phase 2) (`src/eval.rs`)
+- [ ] Type checker: `Quote → Dict`; formatter: `[quote ...]` round-trip; handle new variant in `eval_deep.rs`, `eval_materialize.rs`, `lsp/analysis.rs`, `lsp/document.rs` (`src/typecheck.rs`, `src/formatter.rs`, etc.)
+- [ ] Tests: `[quote 42]` → literal dict; `[quote config.host]` → dot-access dict; `[type-of [quote x]]` → `"dict"` (`tests/corpus/eval/`)
+
+### ast-dict-source: AST Dict Source Info + Comments
+
+See doc/15-ast.md §AST Dict Schema. No blocking dependencies (extends `ast-dict-core`).
+
+- [ ] `bare: true` on string literals when source char at token start ≠ `"` via `AstToDictOpts.source: Option<&str>` (`src/ast_dict.rs`)
+- [ ] `leading-comments:`, `trailing-comment:`, `blank-before:` on `Entry` and `Document` nodes via `AstToDictOpts.comments` (`src/ast_dict.rs`)
+- [ ] Tests: `bare: true` for bare-word strings; comment embedding; `blank-before: true`; both-`None` mode unchanged (`tests/`)
+
+### unquote: `[unquote]` and `[unquote-splice]`
+
+See doc/02-syntax.md §Quasiquoting, doc/08-evaluation.md §Quote Semantics. **Depends on:** `quote`.
+
+- [ ] `unquote` and `unquote-splice` added to denylist; `Expr::Unquote`, `Expr::UnquoteSplice` AST variants (`src/lexer.rs`, `src/parser.rs`, `src/ast.rs`)
+- [ ] Parser: nesting depth tracker; `unquote` outside `quote` is parse error; `[unquote-splice ...]` at top level of `[quote ...]` (not in list position) is parse error per Bawden (1999) (`src/parser.rs`)
+- [ ] Evaluator: walk quoted AST for `Unquote`/`UnquoteSplice` subexpressions; evaluate and splice results (`src/eval.rs`)
+- [ ] Tests: `[quote [+ [unquote x] 1]]` with `x: 42`; splice into args; `unquote` outside quote = error; top-level splice = error; nested depth preserved (`tests/corpus/eval/`)
+
+### dict-to-ast: `dict_to_ast` + `eval-ast` Builtin
+
+See doc/15-ast.md §dict-to-ast, doc/11a-builtins.md. **Depends on:** `ast-dict-core`.
+
+- [ ] `dict_to_ast(v: &Value) -> Result<Expr, AstError>` — validate `type:` key; reconstruct `Expr`; unknown fields ignored; `span:` optional; `AstError` with `field_path` (`src/ast_dict.rs`)
+- [ ] `eval-ast` builtin: `Dict -> Any` — calls `dict_to_ast`, evaluates in current environment; obeys capability model (`src/builtins.rs`)
+- [ ] Tests: every `type:` value round-trips; missing `type:` → error; `eval-ast` executes constructed call node (`tests/`)
+
+### defmacro: `[defmacro]` + Expansion Loop
+
+See doc/08-evaluation.md §Macro Expansion Pipeline. **Depends on:** `quote`, `dict-to-ast`.
+
+- [ ] `defmacro` added to denylist; `Expr::DefMacro` AST variant; parser: `[defmacro name [params] body]` (`src/lexer.rs`, `src/parser.rs`, `src/ast.rs`)
+- [ ] New `src/expand.rs`: `expand_macros` top-down walk with `MacroEnv`; quotes args via `ast_to_dict_expr`, calls macro, `dict_to_ast` result, replaces node, re-expands (`src/expand.rs`)
+- [ ] `DefMacro` handling: evaluate body in fresh `EvalContext` (inherits `EvalConfig`); register in `MacroEnv`; remove from AST after registration (`src/expand.rs`)
+- [ ] Termination: depth limit 100 + 100k node-count cap; `HashSet<(file_id, byte_offset)>` for in-progress tracking; `SyntheticId(u64)` for generated nodes (`src/expand.rs`)
+- [ ] `gensym: [] -> Str` builtin — `:gensym:N` names with forbidden-char prefix (`src/builtins.rs`)
+- [ ] Namespace: macros cannot shadow registered Rust builtins — error at registration time (`src/expand.rs`)
+- [ ] Pipeline update in `src/main.rs` **and** `src/lsp/document.rs`: insert `expand_macros` between parse and desugar (`src/main.rs`, `src/lsp/document.rs`)
+- [ ] Handle new variants in `eval_deep.rs`, `eval_materialize.rs`, `lsp/analysis.rs` (`src/`)
+- [ ] Tests: `[defmacro my-when ...]` expands; `gensym` unique; depth limit hit; node-count cap; `DefMacro` absent post-expansion; `[defmacro str ...]` rejected; LSP diagnostics correct (`tests/`)
+
+### formatter-full: Full Tinct Formatter
+
+See doc/12-tooling.md §Tinct-Hosted Formatter. **Depends on:** `ast-dict-source`, typing-cluster `let-binding`, typing-cluster `pattern-matching-basic`.
+
+- [ ] Add `str-repeat: Str -> Int -> Str` to `stdlib/prelude.llt` (pure-tinct one-liner using `$reduce` over `$range`) (`stdlib/prelude.llt`)
+- [ ] Add `str-length: Str -> Int` Rust builtin (`src/builtins.rs`)
+- [ ] `stdlib/formatter/format.llt`: `format-node` dispatch via `[match ...]`; `fits-inline?` via `[str-length [render-inline node]]`; comment/blank-line preservation; evaluated with prelude loaded (`stdlib/formatter/format.llt`)
+- [ ] `src/main.rs`: `tinct fmt` (no flag) evaluates `format.llt`; Rust formatter retained as `format_source_rust()` for LSP (`src/main.rs`)
+- [ ] Tests: existing formatter corpus passes; idempotent; comments preserved; blank lines preserved; re-parseable (`tests/`)
+
+### macro-hygiene: Scope Sets + Dual-Span Error Reporting
+
+See doc/08-evaluation.md §Macro Hygiene. **Depends on:** `defmacro`.
+
+- [ ] `ScopeId(u32)` type; `ScopeMap` threaded through expander; each invocation gets fresh scope; bindings carry definition-site scope; call-site variables carry caller scope (`src/expand.rs`)
+- [ ] Name resolution: same name + different `ScopeId` = distinct (simplified biggest-subset rule, sufficient for non-recursive macros) (`src/expand.rs`)
+- [ ] Dual-span side map: `HashMap<NodeKey, (String, Span, usize)>` — `(macro_name, call_site_span, expansion_rule_index)` for honest tags per Pombrio & Krishnamurthi (2015) (`src/expand.rs`)
+- [ ] Error formatter: shows "in expansion of `<name>` at line N" with provenance chains for nested expansions (`src/`)
+- [ ] Tests: macro binding `x` does not capture caller's `x`; error shows call site; nested provenance chain; existing macros still work (`tests/`)
+
+### macro-integration: Include Ordering, `_` Port, Formatter Config
+
+See doc/08-evaluation.md §Macro Expansion Pipeline. **Depends on:** `macro-hygiene`, `unquote`, `formatter-full`.
+
+- [ ] Include ordering: `expand_macros` runs on statically-included files first; macro definitions registered in `MacroEnv` before includer expansion; static-path-only constraint documented as Flatt (2002) phase separation consequence; `IncludeContext` cache bypass or `(EvalResult, MacroEnv)` tuples (`src/expand.rs`)
+- [ ] Port `_` desugaring: replace `desugar_underscore()` Rust pass with `[defmacro desugar-underscore ...]`; remove Rust pass atomically; all existing underscore corpus tests pass unchanged (`src/desugar.rs`, `src/expand.rs`)
+- [ ] Formatter config: `max-width:` and `max-entries:` named params; `tinct fmt --width 100 --max-entries 6`; `tinct fmt --formatter path/to/custom.llt` (`src/main.rs`, `stdlib/formatter/format.llt`)
+- [ ] Tests: included file's macros available; `_` macro matches prior Rust output; `--formatter` override works; `--width 100` changes layout (`tests/`)
+
 ## Macros Cluster: Theoretical Gaps
 
 Gaps between the macros-cluster plan (`doc/whatif/plans/macros-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.
 
-- [ ] M3c unquote-splice top-level error: specify that `[unquote-splice expr]` at the top level of a `[quote ...]` (not inside a list/call args) is a parse error — Bawden (1999) Appendix A rejects `tag-comma-atsign?` at top level of `qq-expand`. (`doc/whatif/quasiquoting.md`, `doc/whatif/plans/macros-cluster.md` M3c) [Minor, computer-scientist train]
-- [ ] M5a scope sets: document the biggest-subset binding resolution rule from Flatt (2016) §3.1 — the current M5a description says "distinct bindings with the same name but different ScopeIds do not capture each other" which is a simplification that may not handle recursive macros or nested macro definitions correctly. Add a note that the full scope-set model uses subset-based resolution, and that tinct's initial implementation is a simplification sufficient for non-recursive macros. (`doc/whatif/plans/macros-cluster.md` M5a, `doc/whatif/macros.md`) [Minor, computer-scientist train]
-- [ ] M5a honest tags for Abstraction: Pombrio & Krishnamurthi (2015) Theorem 2 (Abstraction) requires "honest tags" — the expansion side map must record accurate before/after patterns, not just the call-site span. Note this requirement in the dual-span tracking design so that error provenance chains are faithful to the actual expansion. (`doc/whatif/plans/macros-cluster.md` M5a) [Minor, computer-scientist train]
-- [ ] M4b blackhole detection for synthetic nodes: the plan uses `HashSet<(file_id, byte_offset)>` to track in-progress call sites, but macro-generating macros can produce NEW call sites with no source position. Specify how synthetic nodes (from `dict_to_ast` with absent `span:`) are tracked — e.g., assign synthetic node IDs or use the parent expansion's call site. (`doc/whatif/plans/macros-cluster.md` M4b task 11) [Minor, computer-scientist train]
-- [ ] M5b dynamic include limitation as phase constraint: frame the static-paths-only limitation for `$include` macro ordering as a formal consequence of Flatt's (2002) phase separation model — compile-time imports must be resolved before expansion begins; dynamic paths cannot participate in phase separation. (`doc/whatif/plans/macros-cluster.md` §5 Cross-Cutting Concerns) [Minor, computer-scientist train]
+- [x] M3c unquote-splice top-level error: specify that `[unquote-splice expr]` at the top level of a `[quote ...]` (not inside a list/call args) is a parse error — Bawden (1999) Appendix A rejects `tag-comma-atsign?` at top level of `qq-expand`. (`doc/whatif/quasiquoting.md`, `doc/whatif/plans/macros-cluster.md` M3c) [Minor, computer-scientist train]
+- [x] M5a scope sets: document the biggest-subset binding resolution rule from Flatt (2016) §3.1 — the current M5a description says "distinct bindings with the same name but different ScopeIds do not capture each other" which is a simplification that may not handle recursive macros or nested macro definitions correctly. Add a note that the full scope-set model uses subset-based resolution, and that tinct's initial implementation is a simplification sufficient for non-recursive macros. (`doc/whatif/plans/macros-cluster.md` M5a, `doc/whatif/macros.md`) [Minor, computer-scientist train]
+- [x] M5a honest tags for Abstraction: Pombrio & Krishnamurthi (2015) Theorem 2 (Abstraction) requires "honest tags" — the expansion side map must record accurate before/after patterns, not just the call-site span. Note this requirement in the dual-span tracking design so that error provenance chains are faithful to the actual expansion. (`doc/whatif/plans/macros-cluster.md` M5a) [Minor, computer-scientist train]
+- [x] M4b blackhole detection for synthetic nodes: the plan uses `HashSet<(file_id, byte_offset)>` to track in-progress call sites, but macro-generating macros can produce NEW call sites with no source position. Specify how synthetic nodes (from `dict_to_ast` with absent `span:`) are tracked — e.g., assign synthetic node IDs or use the parent expansion's call site. (`doc/whatif/plans/macros-cluster.md` M4b task 11) [Minor, computer-scientist train]
+- [x] M5b dynamic include limitation as phase constraint: frame the static-paths-only limitation for `$include` macro ordering as a formal consequence of Flatt's (2002) phase separation model — compile-time imports must be resolved before expansion begins; dynamic paths cannot participate in phase separation. (`doc/whatif/plans/macros-cluster.md` §5 Cross-Cutting Concerns) [Minor, computer-scientist train]

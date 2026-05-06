@@ -4,6 +4,6 @@
 # This proves that $map does NOT eagerly materialize dict values.
 [map [fn [v] [+ v 10]] [x: 1  y: [/ 1 0]]]
 ---
-%["x"]
+%.x
 ===
 Int(11)

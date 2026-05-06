@@ -73,7 +73,7 @@ pub(crate) use builtin;
 
 /// Maximum collection size for $collect (1,000,000 elements).
 /// Prevents memory exhaustion from infinite sequences without $take.
-pub(crate) const MAX_COLLECT_SIZE: usize = 1_000_000;
+pub const MAX_COLLECT_SIZE: usize = 1_000_000;
 
 /// Maximum JSON nesting depth for `from-json`.
 /// Separate from MAX_EVAL_DEPTH: JSON nesting is a data-model limit (128),
@@ -658,7 +658,11 @@ fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
             let tail_args = vec![Rc::clone(&args[0]), next_offset];
             let tail = Rc::new(Thunk::new_pending_builtin(
-                builtin!("each-key", builtin_each_key, [Strictness::Spine, Strictness::Spine]),
+                builtin!(
+                    "each-key",
+                    builtin_each_key,
+                    [Strictness::Spine, Strictness::Spine]
+                ),
                 tail_args,
                 None,
                 depth + 1,
@@ -752,7 +756,11 @@ fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
             let tail_args = vec![Rc::clone(&args[0]), next_offset];
             let tail = Rc::new(Thunk::new_pending_builtin(
-                builtin!("each-kv", builtin_each_kv, [Strictness::Spine, Strictness::Spine]),
+                builtin!(
+                    "each-kv",
+                    builtin_each_kv,
+                    [Strictness::Spine, Strictness::Spine]
+                ),
                 tail_args,
                 None,
                 depth + 1,
@@ -3047,8 +3055,16 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // each: 2-strictness for both 1-arg (user) and 2-arg (internal offset) calls
         builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
-        builtin!("each-key", builtin_each_key, [Strictness::Spine, Strictness::Spine]),
-        builtin!("each-kv", builtin_each_kv, [Strictness::Spine, Strictness::Spine]),
+        builtin!(
+            "each-key",
+            builtin_each_key,
+            [Strictness::Spine, Strictness::Spine]
+        ),
+        builtin!(
+            "each-kv",
+            builtin_each_kv,
+            [Strictness::Spine, Strictness::Spine]
+        ),
         // Strings
         builtin!("str", builtin_str, [Strictness::Seq]),
         builtin!("split", builtin_split, [Strictness::Seq, Strictness::Seq]),

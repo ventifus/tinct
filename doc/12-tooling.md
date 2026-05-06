@@ -56,6 +56,31 @@ No formatting options. The formatter defines the canonical Tinct style. The only
 | Quoted strings | Preserved exactly (escapes not normalized; idempotency) |
 | Comments in access chains | Cannot occur (compound-atomic grammar); formatter does not handle |
 
+### Compact Formatter Modes
+
+Three compact modes produce space-efficient output for embedding, piping, or minimization:
+
+| Flag | Behavior |
+|------|----------|
+| `--oneline` | All output on a single line; comments stripped; section headers as `; name` |
+| `--nospaces` | Spaces removed except where required for unambiguous tokenization |
+| `--minimize` | Shorthand for `--oneline --nospaces` |
+
+Compact modes are implemented in `stdlib/formatter/compact.llt` — a tinct program that receives the AST dict (from `ast_to_dict(None, None)`) as `%` and returns a formatted string. The Rust formatter is not used for compact modes.
+
+### Tinct-Hosted Formatter
+
+The full `tinct fmt` formatter is implemented in `stdlib/formatter/format.llt` — a tinct program that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source. The Rust formatter (`format_source_rust()`) is retained for LSP use (where loading a tinct program would be too slow).
+
+Layout uses speculative rendering (Oppen 1980 line-breaking, Wadler 2003 group semantics): `fits-inline?` renders a node as single-line and measures the width. If width ≤ 80 and entry count ≤ 4, the inline rendering is used; otherwise, block rendering is used. Lazy evaluation memoizes `render-inline` when bound with `let:`, so each node is measured at most once.
+
+**Configurable layout:**
+- `tinct fmt --width 100` — override the 80-character line width
+- `tinct fmt --max-entries 6` — override the 4-entry threshold
+- `tinct fmt --formatter path/to/custom.llt` — use a custom formatter program
+
+**Prerequisites:** `str-length: Str -> Int` Rust builtin (for width measurement) and `str-repeat: Str -> Int -> Str` in `stdlib/prelude.llt` (for indentation).
+
 ## VS Code Extension (`just ext`)
 
 A VS Code extension that provides Tinct language support: live diagnostics and hover types via the `tinct lsp` language server.

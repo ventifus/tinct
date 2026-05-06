@@ -96,31 +96,10 @@ fn reset_expr(expr: &Spanned<Expr>) {
         | Expr::Rest(_)
         | Expr::Error(_) => {}
 
-        // Access expressions: recurse into target and key/bounds
+        // Access expressions: recurse into target
         Expr::DotAccess { expr: target, .. } => {
             reset_expr(target);
         }
-        Expr::BracketAccess {
-            expr: target,
-            key: key_expr,
-        } => {
-            reset_expr(target);
-            reset_expr(key_expr);
-        }
-        Expr::RangeAccess {
-            expr: target,
-            start,
-            end,
-        } => {
-            reset_expr(target);
-            if let Some(s) = start {
-                reset_expr(s);
-            }
-            if let Some(e) = end {
-                reset_expr(e);
-            }
-        }
-
         // Dict: recurse into keys and values
         Expr::Dict(entries) => {
             for entry_spanned in entries {
@@ -627,16 +606,6 @@ fn infer_expr(
             expr: target,
             field,
         } => check_dot_access(target, field, env, expr.span, state, type_map),
-
-        Expr::BracketAccess { expr: target, key } => {
-            check_bracket_access(target, key, env, expr.span, state, type_map)
-        }
-
-        Expr::RangeAccess {
-            expr: target,
-            start,
-            end,
-        } => check_range_access(target, start, end, env, expr.span, state, type_map),
 
         Expr::Pipe { .. } => {
             unreachable!("Pipe should be desugared before type checking")
@@ -1387,8 +1356,6 @@ fn check_dot_access(
 }
 
 /// Type check integer dot access: `$data.0`
-///
-/// This is identical to `check_bracket_access` with a static integer key.
 fn check_dot_access_int(
     target: &Spanned<Expr>,
     index: i64,
@@ -1472,187 +1439,6 @@ fn check_dot_access_int(
         }
         Type::Any => Ok(Type::Any),
         Type::Proxy => Ok(Type::Any),
-        _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
-    }
-}
-
-// NOTE: The match in this function has a guarded TypeVar arm (static_field.is_some()) and an
-// unguarded TypeVar catch-all arm (static_field.is_none()). The guard structure prevents the
-// unguarded arm from shadowing the guarded one. If the Expr enum gains new variants, the match
-// may silently fall to the catch-all — add explicit arms for new variants as they are added.
-fn check_bracket_access(
-    target: &Spanned<Expr>,
-    key: &Spanned<Expr>,
-    env: &Rc<TypeEnv>,
-    span: Span,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, state, type_map)?;
-    // Apply the global accumulated substitution (same pattern as check_dot_access).
-    // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let target_ty = if state.subst.is_empty() {
-        target_ty
-    } else {
-        state.subst.apply(&target_ty)
-    };
-    let key_ty = infer_expr(key, env, state, type_map)?;
-
-    // Extract the string-literal field name from the key expression (if statically known).
-    let static_field: Option<String> = match &key.node {
-        Expr::Str(s) => Some(s.clone()),
-        Expr::Int(n) => Some(n.to_string()),
-        _ => match &key_ty {
-            Type::StringLiteral(s) => Some(s.clone()),
-            Type::IntLiteral(n) => Some(n.to_string()),
-            _ => None,
-        },
-    };
-
-    match &target_ty {
-        Type::Record(Row {
-            ref fields,
-            ref tail,
-        }) => {
-            // If key is statically known, try field lookup first.
-            if let Some(ref field_name) = static_field {
-                if let Some(ty) = fields.get(field_name.as_str()) {
-                    return Ok(ty.clone());
-                }
-                // Field not found — dispatch on tail (mirrors check_dot_access).
-                match tail {
-                    // Open record (RowVar tail): bind ρ → Row({field: β}, RowVar(ρ_fresh))
-                    RowTail::RowVar(rho, rho_level_creation) => {
-                        let rho_level = state.levels.get(rho).copied().unwrap_or(0);
-                        debug_assert!(
-                            rho_level <= *rho_level_creation,
-                            "RowVar current level ({}) should be ≤ creation level ({})",
-                            rho_level,
-                            rho_level_creation,
-                        );
-
-                        let beta = state.fresh_type_var();
-                        let (rho_fresh_name, rho_fresh_level) = state.fresh_row_var_name();
-
-                        let mut new_fields = HashMap::new();
-                        new_fields.insert(field_name.clone(), beta.clone());
-                        let binding = Row {
-                            fields: new_fields,
-                            tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
-                        };
-
-                        if row_var_occurs_pub(rho, &binding, &state.subst) {
-                            debug_assert!(
-                                false,
-                                "unreachable: fresh row var and fresh type var cannot contain ρ"
-                            );
-                            return Err(vec![TypeError::new(
-                                format!("infinite row type: {rho} occurs in its own binding"),
-                                span,
-                            )]);
-                        }
-
-                        lower_row_var_levels_pub(&binding, rho_level, state);
-                        state.subst.row_map.insert(rho.clone(), binding);
-                        state.subst.check_size(span).map_err(|e| vec![e])?;
-
-                        return Ok(beta);
-                    }
-                    // Closed record (Empty tail): field not found error.
-                    RowTail::Empty => {
-                        return Err(vec![TypeError::field_not_found(
-                            field_name, &target_ty, span,
-                        )]);
-                    }
-                }
-            }
-            // Dynamic key — cannot generate field-level constraints.
-            match &key_ty {
-                Type::Str | Type::Int | Type::Number | Type::Any | Type::TypeVar(_, _) => {
-                    Ok(Type::Any)
-                }
-                _ => Err(vec![TypeError::new(
-                    format!("bracket access key must be String or Int, got {key_ty}"),
-                    span,
-                )]),
-            }
-        }
-        // Unknown type (TypeVar α) with static key: generate constraint α = Record({key: β}, RowVar(ρ))
-        Type::TypeVar(ref alpha, alpha_level) if static_field.is_some() => {
-            let field_name =
-                static_field.expect("static_field.is_some() guaranteed by match guard");
-            let beta = state.fresh_type_var();
-            let (rho_name, rho_level) = state.fresh_row_var_name();
-
-            let mut fields = HashMap::new();
-            fields.insert(field_name, beta.clone());
-            let record_ty = Type::Record(Row {
-                fields,
-                tail: RowTail::RowVar(rho_name, rho_level),
-            });
-
-            let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
-            let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
-            state.subst = subst;
-            result.map_err(|e| vec![e])?;
-
-            Ok(beta)
-        }
-        // Dynamic key (static_field.is_none()) or Any — cannot generate field-level constraints
-        // without knowing the field name at inference time.
-        Type::Any | Type::TypeVar(_, _) => Ok(Type::Any),
-        Type::Proxy => Ok(Type::Any),
-        _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
-    }
-}
-
-fn check_range_access(
-    target: &Spanned<Expr>,
-    start: &Option<Box<Spanned<Expr>>>,
-    end: &Option<Box<Spanned<Expr>>>,
-    env: &Rc<TypeEnv>,
-    span: Span,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, state, type_map)?;
-    // Apply the global accumulated substitution (same pattern as check_dot_access).
-    // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let target_ty = if state.subst.is_empty() {
-        target_ty
-    } else {
-        state.subst.apply(&target_ty)
-    };
-
-    for bound in [start, end].into_iter().flatten() {
-        let bound_ty = infer_expr(bound, env, state, type_map)?;
-        if !matches!(
-            bound_ty,
-            Type::Int
-                | Type::IntLiteral(_)
-                | Type::Str
-                | Type::StringLiteral(_)
-                | Type::Any
-                | Type::TypeVar(_, _)
-        ) {
-            return Err(vec![TypeError::new(
-                format!("range bound must be Int or String, got {bound_ty}"),
-                bound.span,
-            )]);
-        }
-    }
-
-    match &target_ty {
-        Type::Record(..) | Type::Any | Type::TypeVar(_, _) => Ok(target_ty),
-        Type::Proxy => Err(vec![TypeError::new(
-            "range access is not supported on Proxy values",
-            span,
-        )]),
-        Type::Seq(_) => Err(vec![TypeError::new(
-            "range access is not supported on Seq types",
-            span,
-        )]),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -3368,69 +3154,6 @@ mod tests {
         );
     }
 
-    // -- Bracket access --
-
-    #[test]
-    fn test_bracket_access_string_key() {
-        // In new syntax, the bracket key must be a quoted string literal (not bare word).
-        assert_eq!(
-            result_field(
-                "[data: [name: \"hello\"]]\n[result: $data[\"name\"]]",
-                "result"
-            ),
-            Type::StringLiteral("hello".into()),
-        );
-    }
-
-    #[test]
-    fn test_bracket_access_int_key() {
-        // In new syntax, data sequences of strings require quoted literals.
-        assert_eq!(
-            result_field("[list: [\"a\" \"b\" \"c\"]]\n[result: $list[0]]", "result"),
-            Type::StringLiteral("a".into()),
-        );
-    }
-
-    #[test]
-    fn test_bracket_access_dynamic_key_literal() {
-        // In new syntax, string literals require quotes.
-        assert_eq!(
-            result_field(
-                "[data: [x: 1]  key: \"x\"]\n[result: $data[$key]]",
-                "result"
-            ),
-            Type::IntLiteral(1),
-        );
-    }
-
-    #[test]
-    fn test_bracket_access_dynamic_key_non_literal() {
-        // In new syntax, string literals require quotes.
-        assert_eq!(
-            result_field("[result: $data[$key]  data: [x: 1]  key: \"x\"]", "result"),
-            Type::Any,
-        );
-    }
-
-    // -- Range access --
-
-    #[test]
-    fn test_range_access_record() {
-        let ty = result_field(
-            "[data: [a: 1  b: 2  c: 3]]\n[result: $data[0..2]]",
-            "result",
-        );
-        assert!(matches!(ty, Type::Record(..)));
-    }
-
-    #[test]
-    fn test_range_access_invalid_bound() {
-        let errors = check_err("[flag: true  data: [a: 1  b: 2]]\n[result: $data[$flag..2]]");
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("range bound must be Int or String")));
-    }
-
     // -- TypeAssert --
 
     #[test]
@@ -4547,14 +4270,6 @@ mod tests {
             "project scheme should be polymorphic (open row tail), got monomorphic: {:?}",
             project_scheme
         );
-    }
-
-    #[test]
-    fn test_bracket_access_bool_key() {
-        let errors = check_err("[data: [x: 1]  flag: true]\n[result: $data[$flag]]");
-        assert!(errors.iter().any(|e| e
-            .message
-            .contains("bracket access key must be String or Int")));
     }
 
     #[test]
@@ -5736,19 +5451,6 @@ mod tests {
     }
 
     #[test]
-    fn test_let_gen_typevar_in_bracket_access() {
-        // TypeVars should be handled gracefully in bracket access.
-        // In new syntax, string literals require quotes.
-        // key: "x" → StringLiteral("x"), same as old bare-word x but now quoted.
-        // During letrec forward-ref phase, $key has TypeVar type → check_bracket_access
-        // returns Any (TypeVar target + TypeVar-or-Any key → Any).
-        assert_eq!(
-            result_field("[result: $data[$key]  data: [x: 1]  key: \"x\"]", "result"),
-            Type::Any,
-        );
-    }
-
-    #[test]
     fn test_let_gen_typevar_in_dot_access() {
         // Dot access on a TypeVar generates a constraint (TypeVar α case) which is now
         // fully resolved by Pass 3b (row-unification-h). When `$data` has an unknown type
@@ -6619,20 +6321,6 @@ mod tests {
 
     // -- state.subst apply() regression test --
 
-    #[test]
-    fn test_bracket_access_forward_ref_resolves_correctly() {
-        // Forward-reference bracket access should resolve to field type.
-        // Exercises the TypeVar constraint generation in check_bracket_access:
-        // γ_data is a TypeVar (forward ref), bracket access with string-literal key
-        // generates α = Record({name: β}, RowVar(ρ)), Pass 3b resolves β.
-        // In new syntax, string literals require quotes (both value and key).
-        let ty = result_field(
-            "[result: $data[\"name\"]  data: [name: \"hello\"]]",
-            "result",
-        );
-        assert_eq!(ty, Type::StringLiteral("hello".to_string()));
-    }
-
     // -- CALL-POLY state.subst constraint test --
 
     #[test]
@@ -6896,114 +6584,6 @@ mod tests {
             ty,
             Type::IntLiteral(42),
             "check_call_with_scheme CALL-POLY path should unify and apply state.subst"
-        );
-    }
-
-    #[test]
-    fn test_range_access_typevar_target() {
-        // Task 4: Coverage test for check_range_access TypeVar fall-through arm.
-        //
-        // check_range_access has three arms for target_ty:
-        //   Type::Record | Type::Any | Type::TypeVar => Ok(target_ty)
-        //   _ => Err("expected record type")
-        //
-        // The TypeVar arm returns Ok(target_ty) without generating constraints (unlike
-        // check_dot_access, which generates α = Record({field: β}, RowVar(ρ)) for TypeVar α).
-        //
-        // This test verifies that range access on a forward-reference does NOT produce a
-        // spurious "expected record type" error. The full infer pipeline runs all letrec
-        // passes, so by the time infer() returns, the forward-ref TypeVar for $data has been
-        // unified with the concrete Record([a: 1  b: 2]). The range access result therefore
-        // reflects the resolved target type: a Record (not a TypeVar and not an error).
-        //
-        // The key invariant: the expression typechecks successfully (returns Ok, not Err).
-        // The result type of the range access is the resolved target Record type.
-
-        // Forward-reference range access: $data is a TypeVar during Pass 1/2 of letrec,
-        // but by the time infer() returns all passes have completed and the TypeVar is resolved.
-        let ty = infer("[result: $data[0..1]  data: [a: 1  b: 2]]");
-        match ty {
-            Type::Record(Row { fields, .. }) => {
-                let result_ty = fields.get("result").expect("field 'result' should exist");
-                // After full letrec resolution, result is a Record (the resolved target type).
-                // This proves: (1) no spurious "expected record type" error during letrec passes,
-                // and (2) the TypeVar arm of check_range_access accepted the forward ref cleanly.
-                assert!(
-                    matches!(result_ty, Type::Record(_)),
-                    "range access on forward-ref target should resolve to Record after letrec, got {result_ty}"
-                );
-            }
-            other => panic!("expected Record, got {other}"),
-        }
-
-        // TODO: check_range_access should probably generate a constraint like check_dot_access does.
-        // Currently it just accepts TypeVar and returns it, meaning range access on an inferred
-        // type provides no additional type information. See check_dot_access TypeVar arm
-        // for the constraint-generation pattern.
-    }
-
-    #[test]
-    fn test_range_access_on_proxy_errors() {
-        // Range access is NOT supported on Proxy values (unlike dot and bracket access).
-        // Runtime eval_range_access returns an error for Value::Proxy (src/eval.rs:1118-1127).
-        // Type checker should match this behavior.
-        //
-        // Note: cannot test via check_err("[p: proxy  x: $p[0..1]]") because within
-        // a single dict, $p is still a TypeVar during Pass 3 — the TypeVar arm catches
-        // it before the Proxy arm fires. We test check_range_access directly instead.
-
-        let mut file = crate::parse("[dummy: 1][0..1]").unwrap();
-        crate::desugar::desugar_file(&mut file.node);
-        let env = Rc::new(TypeEnv::new());
-        let mut state = InferState::new();
-
-        let target = &file.node.documents[0].node.expressions[0];
-        let span = target.span;
-        let result = check_range_access(target, &None, &None, &env, span, &mut state, &mut None);
-        assert!(result.is_ok(), "range access on Record should succeed");
-
-        // Now test with a Proxy target directly by constructing the match input
-        let mut proxy_target = crate::parse("[call $proxy [fn [k] 42]]").unwrap();
-        crate::desugar::desugar_file(&mut proxy_target.node);
-        let proxy_expr = &proxy_target.node.documents[0].node.expressions[0];
-        let result =
-            check_range_access(proxy_expr, &None, &None, &env, span, &mut state, &mut None);
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("range access is not supported on Proxy")),
-            "expected 'range access is not supported on Proxy' error, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn test_range_access_on_seq_errors() {
-        // Range access is NOT supported on Seq types (sequences are opaque, not dict-like).
-        // The Type::Seq arm in check_range_access produces a clear error so callers learn
-        // they must use $head/$tail or $collect instead of range slicing.
-        //
-        // Strategy: bind variable "s" to Type::Seq(Int) in the env, then parse `$s` and
-        // call check_range_access directly. infer_expr returns the Seq type from the env,
-        // which hits the Type::Seq arm.
-
-        let mut seq_env = TypeEnv::new();
-        seq_env.insert("s".to_string(), Type::Seq(Box::new(Type::Int)));
-        let env = Rc::new(seq_env);
-        let mut state = InferState::new();
-
-        let mut file = crate::parse("$s").unwrap();
-        crate::desugar::desugar_file(&mut file.node);
-        let seq_expr = &file.node.documents[0].node.expressions[0];
-        let span = seq_expr.span;
-
-        let result = check_range_access(seq_expr, &None, &None, &env, span, &mut state, &mut None);
-        let errors = result.unwrap_err();
-        assert!(
-            errors.iter().any(|e| e
-                .message
-                .contains("range access is not supported on Seq types")),
-            "expected 'range access is not supported on Seq types' error, got: {errors:?}"
         );
     }
 
@@ -7555,97 +7135,6 @@ mod tests {
             Type::StringLiteral("hello".to_string()),
             "Pass 3b must unify overlapping state.subst binding; got: {ty}"
         );
-    }
-
-    // -- Bracket access row constraints --
-
-    #[test]
-    fn test_bracket_access_open_record_generates_row_constraint() {
-        // When bracket-accessing an open record with a string-literal key not in known
-        // fields, check_bracket_access should generate ρ → Row({key: β}, RowVar(ρ'))
-        // (mirroring check_dot_access's RowVar arm) instead of returning Type::Any.
-        //
-        // Pattern: [Open: [type [name: String ...]]]
-        //          [p: [@Open [name: Alice  score: 42]]]
-        //          [r: $p["score2"]]
-        // r should be a TypeVar (fresh β from the constraint), not Any.
-        // In new syntax, string literals require quotes (both value and bracket key).
-        let env = doc_env(
-            "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r: $p[\"score2\"]]",
-        );
-        match env.get("r").map(|s| &s.body) {
-            Some(Type::TypeVar(_, _)) => {}
-            Some(other) => panic!(
-                "expected TypeVar for bracket access on open record unknown field, got {other}"
-            ),
-            None => panic!("field 'r' not found in env"),
-        }
-    }
-
-    #[test]
-    fn test_bracket_access_open_record_known_field() {
-        // Bracket access with a string-literal key that IS in known fields should return
-        // the field's type directly, unchanged from previous behavior.
-        // In new syntax, string literals require quotes (both value and bracket key).
-        let env = doc_env(
-            "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"]]]\n[r: $p[\"name\"]]",
-        );
-        match env.get("r").map(|s| &s.body) {
-            Some(Type::Str) => {}
-            Some(other) => panic!("expected Str for bracket access on known field, got {other}"),
-            None => panic!("field 'r' not found in env"),
-        }
-    }
-
-    #[test]
-    fn test_bracket_access_closed_record_missing_field_errors() {
-        // Bracket access with a string-literal key not in fields of a closed record should
-        // error, not return Any.
-        let result = check("[p: [name: Alice]]\n[r: $p[unknown]]");
-        assert!(
-            result.is_err(),
-            "bracket access on closed record for missing field should error"
-        );
-    }
-
-    #[test]
-    fn test_bracket_access_typevar_generates_constraint() {
-        // When target is a TypeVar and key is a string literal, check_bracket_access should
-        // generate α = Record({key: β}, RowVar(ρ)) (mirroring check_dot_access's TypeVar arm).
-        //
-        // Pattern: [result: $data["name"]  data: [name: "hello"]]
-        // Pass 3b resolves β through the γ_data collision → StringLiteral("hello").
-        // In new syntax, string literals require quotes (both value and bracket key).
-        let ty = result_field(
-            "[result: $data[\"name\"]  data: [name: \"hello\"]]",
-            "result",
-        );
-        assert_eq!(
-            ty,
-            Type::StringLiteral("hello".to_string()),
-            "bracket access on TypeVar must generate constraint resolved by Pass 3b; got {ty}"
-        );
-    }
-
-    #[test]
-    fn test_bracket_access_typevar_dynamic_key_returns_any() {
-        // When target is a TypeVar and key is also a TypeVar (dynamic, non-literal),
-        // check_bracket_access cannot generate field-level constraints and returns Any.
-        //
-        // [fn [data key] $data[$key]] — both `data` and `key` are fresh TypeVars (no
-        // annotations). The key TypeVar is not a literal, so static_field = None, falling
-        // to the Type::Any | Type::TypeVar arm in check_bracket_access which returns Any.
-        let fn_ty = infer("[fn [data key] $data[$key]]");
-        match fn_ty {
-            Type::Function { ret, .. } => {
-                assert_eq!(
-                    *ret,
-                    Type::Any,
-                    "bracket access on TypeVar with dynamic TypeVar key must return Any; got {ret}"
-                );
-            }
-            other => panic!("expected Function type, got {other}"),
-        }
     }
 
     // -- resolve_type_assert state.subst.apply() regression --

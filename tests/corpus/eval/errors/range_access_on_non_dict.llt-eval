@@ -1,5 +1,5 @@
 [x: 42]
 
-x[0..2]
+[slice x 0 2]
 ===
-[E010] range access: expected Dict, got Int
+[E010] keys: expected Dict, got Int

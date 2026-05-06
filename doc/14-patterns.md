@@ -97,12 +97,12 @@ See the comparison table below for how Tinct relates to JSONnet, Dhall, Nix, CUE
 | Field access | `.name` | `$.name` | `name` | `data.name` |
 | Nested access | `.a.b.c` | `$.a.b.c` | `a.b.c` | `data.a.b.c` |
 | Deep path (dynamic) | `getpath(p)` | N/A | N/A | `[get-in data path]` |
-| Computed key | `.["k"]` | `$['k']` | N/A | `data[key]` |
-| Key index | `.["k"]` | `$[0]`, `$[1]` | `[0]`, `[-1]` | `data[0]`, `data[-1]` (key-based) |
+| Computed key | `.["k"]` | `$['k']` | N/A | `[get data key]` |
+| Key index | `.["k"]` | `$[0]`, `$[1]` | `[0]`, `[-1]` | `[get data 0]`, `[get data -1]` (key-based) |
 | Positional index | `.[0]`, `.[-1]` | N/A | N/A | `[nth data 0]`, `[nth data -1]` |
-| Key-range slice | N/A | N/A | N/A | `data[2..5]` (keys in range) |
+| Key-range slice | N/A | N/A | N/A | `[slice data 2 5]` (positional; bracket access removed) |
 | Positional slice | `.[2:5]` | `$[2:5]` | `[2:5]` | `[slice data 2 5]` |
-| First/last | `.[0]`, `.[-1]` | `$[0]` | `[0]`, `[-1]` | `data[0]` (key 0), `[last data]` |
+| First/last | `.[0]`, `.[-1]` | `$[0]` | `[0]`, `[-1]` | `[get data 0]` (key 0), `[last data]` |
 | Flatten | `flatten` | N/A | `[]` | `[flatten list]` |
 | All values | `.[]` | `$.*` | `*` | `[values data]` |
 | Filter (simple) | `select(.age > 30)` | `[?(@.age>30)]` | `` [?age>`30`] `` | `[filter [fn [u] [> u.age 30]] data]` |

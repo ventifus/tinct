@@ -94,26 +94,6 @@ fn hover_at_expr(
             })
         }
 
-        Expr::BracketAccess { expr: target, key } => {
-            hover_at_expr(&target.node, target.span, offset, type_map, source)
-                .or_else(|| hover_at_expr(&key.node, key.span, offset, type_map, source))
-        }
-
-        Expr::RangeAccess {
-            expr: target,
-            start,
-            end,
-        } => hover_at_expr(&target.node, target.span, offset, type_map, source)
-            .or_else(|| {
-                start
-                    .as_ref()
-                    .and_then(|s| hover_at_expr(&s.node, s.span, offset, type_map, source))
-            })
-            .or_else(|| {
-                end.as_ref()
-                    .and_then(|e| hover_at_expr(&e.node, e.span, offset, type_map, source))
-            }),
-
         Expr::Dict(entries) => {
             for entry in entries {
                 if let Some(ref key) = entry.node.key {

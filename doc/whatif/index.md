@@ -32,18 +32,9 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [`let` Binding Form](let-binding.md) | Sequential expressions inside `[fn ...]` bodies — no new keywords |
 | [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption |
-| [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros |
-| [Desugaring as Macros](macros.md) | Procedural AST macros for user-defined syntactic transformations |
 | [Macro-Rewrite](macro-rewrite.md) | Replace `src/desugar.rs` with `[defmacro]` definitions; land `let`, `match`, `union`, `i"..."` as macros instead of Rust AST variants |
 | [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — `[match]` arms use full-annotated-expression equality so `n@Int` and `n@String` coexist as distinct pattern keys |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
-
-## Metaprogramming Infrastructure
-
-| Proposal | Summary |
-|----------|---------|
-| [AST Dict Schema](ast-schema.md) | Canonical `Expr` → tinct dict mapping shared by formatter, quasiquoting, and macros; `ast_to_dict` / `dict_to_ast` Rust functions |
-| [Tinct-Hosted Formatter](tinct-hosted-formatter.md) | `tinct fmt` delegated to `stdlib/formatter/format.llt`; speculative rendering for width measurement; shared `ast_to_dict` infrastructure with quasiquoting |
 
 ## Runtime and Performance
 
@@ -117,6 +108,10 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
 | [Unified Access and Generator Pipeline](access-pipeline.md) | Remove bracket access; add `\|` desugar-only pipe; `DotKey::Int` for `list.0`; `get`, `each`, `collect-kv` builtins | 2026-05-05 |
+| [AST Dict Schema](ast-schema.md) | Canonical `Expr` → tinct dict mapping; `ast_to_dict` / `dict_to_ast`; shared by formatter, quasiquoting, macros | 2026-05-05 |
+| [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros | 2026-05-05 |
+| [Desugaring as Macros](macros.md) | Procedural AST macros via `[defmacro]`; user-defined syntactic transformations | 2026-05-05 |
+| [Tinct-Hosted Formatter](tinct-hosted-formatter.md) | `tinct fmt` delegated to `stdlib/formatter/`; speculative rendering; shared `ast_to_dict` infrastructure | 2026-05-05 |
 
 ### Adopt Now
 
@@ -149,8 +144,6 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [Algebraic Data Types](algebraic-data-types.md) Phase 2 | `union-types.md` Phase 2 implemented (`Type::Union` exists) |
 | [Nominal Variants](nominal-variants.md) | Structural ADTs Phase 2 complete; two constructors with identical payload shapes needed |
 | [Narrowing](narrowing.md) | `typeassert-structural-b` + let-generalization + bidirectional typing all complete |
-| [Macros](macros.md) | A second syntactic desugaring beyond `_`, or user-requested domain-specific syntax |
-| [Quasiquoting](quasiquoting.md) | Macro system adoption |
 | [Custom Call Aliases](call-aliases.md) | Macro system adoption |
 | [Parameterized Type Aliases](parameterized-type-aliases.md) | Name collision becomes a real type error, or recursive ADTs needed (Phase 4) |
 | [Pattern Matching](pattern-matching.md) Phase 2+ | Phase 1 gate met (type-predicates complete); Phase 2+ gated on let-binding and union types |
@@ -159,8 +152,6 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
-| [AST Dict Schema](ast-schema.md) | When compact formatter modes (`--oneline`/`--nospaces`) or quasiquoting are accepted — Phase 1 `ast_to_dict` unblocks both simultaneously |
-| [Tinct-Hosted Formatter](tinct-hosted-formatter.md) | Phase 1: when compact formatter modes are wanted; Phase 2: when a new `Expr` variant would require dual Rust+tinct updates |
 | [Macro-Rewrite](macro-rewrite.md) | When macros Phase 2 (`[defmacro]`) ships — implement before any typing-cluster A1/A2/A3/C1 Rust sprints |
 | [Parse-Stage Macros](parse-stage-macros.md) | When `[defmacro match]` Phase 2 lands — `n@Int` and `n@String` as distinct pattern keys requires context-sensitive key identity at parse time |
 | [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 complete with zero failures; formal semantics in doc/08-evaluation.md |

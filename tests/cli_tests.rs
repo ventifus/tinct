@@ -2441,3 +2441,115 @@ fn literate_missing_file_is_error() {
         "expected file-not-found error, got: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Seq-at-top-level handling (access-pipeline Phase 2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn seq_at_top_level_without_emit_is_error() {
+    // A program that returns a bare Seq (without calling emit or collect)
+    // should produce a clear error message guiding the user to use collect or emit.
+    // [call $seq 1 []] is the simplest Seq value: Seq(1, []).
+    let (path, _dir) = write_temp_llt("seq_top_no_emit", "[call $seq 1 []]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for top-level Seq without emit"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 for top-level Seq error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("top-level Seq"),
+        "expected top-level Seq error message, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("collect") || stderr.contains("emit"),
+        "expected guidance about collect or emit in error message, got: {stderr}"
+    );
+}
+
+#[test]
+fn seq_at_top_level_from_range_without_emit_is_error() {
+    // [call $range 0 5] returns a Seq. Without collect it should produce the guidance error.
+    let (path, _dir) = write_temp_llt("seq_range_no_emit", "[call $range 0 5]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for top-level range Seq without emit"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("top-level Seq"),
+        "expected top-level Seq error message, got: {stderr}"
+    );
+}
+
+#[test]
+fn seq_at_top_level_with_emit_runs_to_completion() {
+    // A generator pipeline that uses emit for text output and returns a Seq.
+    // The program calls emit in two ways:
+    //   1. A header line emitted during initial scope-chain evaluation (sets emitted=true).
+    //   2. Per-element emit calls inside the generator function body.
+    //
+    // Scope chain:
+    //   - First expression: [_: [emit "start\n"]] — emits "start\n", sets emitted=true.
+    //   - Second expression: [map [fn [n] [emit [str n "\n"]]] [range 0 3]] — returns Seq.
+    //
+    // The CLI sees emitted=true + top-level Seq → drains the Seq, forcing each head.
+    // Forcing each head calls the map function which calls emit for 0, 1, 2.
+    // Total output: "start\n0\n1\n2\n"
+    // First expression: plain emit call (not inside a dict value), so it fires
+    // during scope-chain intermediate materialization and sets emitted=true.
+    // Second expression: the generator Seq.
+    let source = "[call $emit \"start\\n\"]\n[call $map [fn [n] [call $emit [call $str $n \"\\n\"]]] [call $range 0 3]]";
+    let (path, _dir) = write_temp_llt("seq_emit_generator", source);
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success when Seq is drained via emit; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // emit calls should have written "start\n0\n1\n2\n" to stdout
+    assert_eq!(
+        stdout, "start\n0\n1\n2\n",
+        "expected emit output 'start\\n0\\n1\\n2\\n', got: {stdout}"
+    );
+}
+
+#[test]
+fn seq_with_collect_produces_json_array() {
+    // The recommended way to get JSON output from a Seq: use collect.
+    // [collect [range 0 3]] → {0: 0, 1: 1, 2: 2} → JSON [0, 1, 2]
+    let (path, _dir) = write_temp_llt("seq_collect_json", "[call $collect [call $range 0 3]]");
+    let output = Command::new(tinct_bin())
+        .args(["eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success for collect + JSON; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!([0, 1, 2]));
+}
