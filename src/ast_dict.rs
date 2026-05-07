@@ -541,7 +541,7 @@ fn expr_to_thunk_id(
             );
         }
 
-        Expr::TypeAlias(inner) => {
+        Expr::TypeAlias { params, body } => {
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
@@ -549,9 +549,25 @@ fn expr_to_thunk_id(
                     span,
                 ))),
             );
+            if !params.is_empty() {
+                // Store params as a dict with integer keys (like other lists)
+                let params_thunk_ids: Vec<ThunkId> = params
+                    .iter()
+                    .map(|p| {
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            Value::String(p.clone()),
+                            span,
+                        )))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("params".into()),
+                    list_to_thunk_id(params_thunk_ids, span, ctx)?,
+                );
+            }
             dict.insert(
                 Key::String("expr".into()),
-                expr_to_thunk_id(&inner.node, inner.span, opts, ctx)?,
+                expr_to_thunk_id(&body.node, body.span, opts, ctx)?,
             );
         }
 
@@ -1422,8 +1438,65 @@ pub fn dict_to_ast(
         }
 
         "type-alias" => {
+            let params = match get_optional_dict_field(dict, "params", ctx)? {
+                Some(params_val) => {
+                    match params_val {
+                        Value::Dict(params_dict) => {
+                            // Extract params from integer-keyed dict
+                            let mut param_names = Vec::new();
+                            let mut i = 0i64;
+                            loop {
+                                match params_dict.get(&Key::Int(i)) {
+                                    Some(thunk_id) => {
+                                        let thunk = ctx.get_thunk(*thunk_id);
+                                        let val =
+                                            thunk.try_get_materialized().ok_or_else(|| {
+                                                AstError {
+                                                    message: format!(
+                                                        "param {} is not materialized",
+                                                        i
+                                                    ),
+                                                    field_path: vec![
+                                                        "params".to_string(),
+                                                        i.to_string(),
+                                                    ],
+                                                }
+                                            })?;
+                                        match val {
+                                            Value::String(s) => param_names.push(s),
+                                            _ => {
+                                                return Err(AstError {
+                                                    message: format!("param {} must be String", i),
+                                                    field_path: vec![
+                                                        "params".to_string(),
+                                                        i.to_string(),
+                                                    ],
+                                                });
+                                            }
+                                        }
+                                        i += 1;
+                                    }
+                                    None => break,
+                                }
+                            }
+                            param_names
+                        }
+                        _ => {
+                            return Err(AstError {
+                                message: "params must be a Dict".to_string(),
+                                field_path: vec!["params".to_string()],
+                            });
+                        }
+                    }
+                }
+                None => Vec::new(),
+            };
+
             let expr_val = get_dict_field(dict, "expr", &["type"], ctx)?;
-            Expr::TypeAlias(Box::new(dict_to_ast(&expr_val, ctx)?))
+            Expr::TypeAlias {
+                params,
+                body: Box::new(dict_to_ast(&expr_val, ctx)?),
+            }
         }
 
         "type-assert" => {

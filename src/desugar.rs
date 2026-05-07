@@ -286,8 +286,8 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         // TypeAlias bodies are type expressions, not runtime expressions. $_ desugaring applies
         // here for consistency — `[type X $_.field]` desugars the implicit lambda — but this is
         // likely a user error since type expressions don't evaluate.
-        Expr::TypeAlias(inner) => {
-            desugar(inner, depth);
+        Expr::TypeAlias { body, .. } => {
+            desugar(body, depth);
         }
 
         // TypeAssert: recurse into annotation and expression

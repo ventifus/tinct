@@ -240,7 +240,7 @@ impl Resolver {
                 self.walk_annotation(annotation);
                 self.walk_expr(expr);
             }
-            Expr::TypeAlias(expr) => self.walk_expr(expr),
+            Expr::TypeAlias { body, .. } => self.walk_expr(body),
             // Quote: do NOT resolve variables inside the quoted expression.
             // Variables in quoted code are AST data, not runtime bindings.
             Expr::Quote(_) => {}

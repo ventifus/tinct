@@ -279,9 +279,9 @@ fn hover_at_expr(
             )
         }
 
-        Expr::TypeAlias(inner) => hover_at_expr(
-            &inner.node,
-            inner.span,
+        Expr::TypeAlias { body, .. } => hover_at_expr(
+            &body.node,
+            body.span,
             offset,
             type_map,
             doc_map,
@@ -498,8 +498,8 @@ fn collect_include_paths_expr(expr: &Expr, span: Span, paths: &mut Vec<(String, 
             collect_include_paths_expr(&lhs.node, lhs.span, paths);
             collect_include_paths_expr(&rhs.node, rhs.span, paths);
         }
-        Expr::TypeAlias(inner) => {
-            collect_include_paths_expr(&inner.node, inner.span, paths);
+        Expr::TypeAlias { body, .. } => {
+            collect_include_paths_expr(&body.node, body.span, paths);
         }
         Expr::TypeAssert { expr: inner, .. } => {
             collect_include_paths_expr(&inner.node, inner.span, paths);
@@ -580,7 +580,7 @@ fn name_at_offset(expr: &Expr, span: Span, offset: usize) -> Option<String> {
         Expr::Pipe { lhs, rhs } => name_at_offset(&lhs.node, lhs.span, offset)
             .or_else(|| name_at_offset(&rhs.node, rhs.span, offset)),
 
-        Expr::TypeAlias(inner) => name_at_offset(&inner.node, inner.span, offset),
+        Expr::TypeAlias { body, .. } => name_at_offset(&body.node, body.span, offset),
 
         Expr::TypeAssert { expr: inner, .. } => name_at_offset(&inner.node, inner.span, offset),
 
@@ -647,7 +647,7 @@ fn find_key_definition(expr: &Expr, _span: Span, name: &str) -> Option<Span> {
         Expr::Pipe { lhs, rhs } => find_key_definition(&lhs.node, lhs.span, name)
             .or_else(|| find_key_definition(&rhs.node, rhs.span, name)),
 
-        Expr::TypeAlias(inner) => find_key_definition(&inner.node, inner.span, name),
+        Expr::TypeAlias { body, .. } => find_key_definition(&body.node, body.span, name),
 
         Expr::TypeAssert { expr: inner, .. } => find_key_definition(&inner.node, inner.span, name),
 

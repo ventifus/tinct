@@ -482,10 +482,13 @@ fn expand_expr(
             ))
         }
 
-        Expr::TypeAlias(type_expr) => {
-            let expanded_type_expr = expand_expr(type_expr.as_ref().clone(), env, ctx, stdlib_env)?;
+        Expr::TypeAlias { params, body } => {
+            let expanded_body = expand_expr(body.as_ref().clone(), env, ctx, stdlib_env)?;
             Ok(Spanned::new(
-                Expr::TypeAlias(Box::new(expanded_type_expr)),
+                Expr::TypeAlias {
+                    params: params.clone(),
+                    body: Box::new(expanded_body),
+                },
                 expr.span,
             ))
         }
@@ -838,8 +841,8 @@ fn collect_and_rename_bindings(
             collect_and_rename_bindings(&mut lhs.node, scope_id, renames);
             collect_and_rename_bindings(&mut rhs.node, scope_id, renames);
         }
-        Expr::TypeAlias(inner) => {
-            collect_and_rename_bindings(&mut inner.node, scope_id, renames);
+        Expr::TypeAlias { body, .. } => {
+            collect_and_rename_bindings(&mut body.node, scope_id, renames);
         }
         Expr::TypeAssert { expr: inner, .. } => {
             collect_and_rename_bindings(&mut inner.node, scope_id, renames);
@@ -917,8 +920,8 @@ fn rename_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
             rename_refs(&mut lhs.node, renames);
             rename_refs(&mut rhs.node, renames);
         }
-        Expr::TypeAlias(inner) => {
-            rename_refs(&mut inner.node, renames);
+        Expr::TypeAlias { body, .. } => {
+            rename_refs(&mut body.node, renames);
         }
         Expr::TypeAssert { expr: inner, .. } => {
             rename_refs(&mut inner.node, renames);
