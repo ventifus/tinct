@@ -316,6 +316,15 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             desugar(&mut **inner, depth);
         }
 
+        // Match: recurse into scrutinee and arm bodies (but not patterns).
+        // Patterns don't contain runtime expressions, so they don't need desugaring.
+        Expr::Match { scrutinee, arms } => {
+            desugar(&mut **scrutinee, depth);
+            for arm in arms {
+                desugar(&mut *arm.body, depth);
+            }
+        }
+
         // DefMacro: desugar the transformer expression.
         Expr::DefMacro { transformer, .. } => {
             desugar(&mut **transformer, depth);

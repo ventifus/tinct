@@ -229,6 +229,7 @@ impl<'a> Formatter<'a> {
             | Expr::Unquote(_)
             | Expr::UnquoteSplice(_)
             | Expr::DefMacro { .. }
+            | Expr::Match { .. }
             | Expr::Error(_) => false,
             _ => true,
         });
@@ -437,6 +438,19 @@ impl<'a> Formatter<'a> {
                 self.output.push_str(name);
                 self.push_space_before_expr(transformer);
                 self.format_expr(transformer, true);
+                self.output.push(']');
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.output.push('[');
+                self.output.push_str("match");
+                self.push_space_before_expr(scrutinee);
+                self.format_expr(scrutinee, true);
+                for arm in arms {
+                    self.output.push(' ');
+                    self.format_pattern(&arm.pattern);
+                    self.push_space_before_expr(&arm.body);
+                    self.format_expr(&arm.body, true);
+                }
                 self.output.push(']');
             }
             Expr::Rest(name) => {
@@ -660,10 +674,55 @@ impl<'a> Formatter<'a> {
                 1 + 8 + 1 + name.len() + 1 + self.measure_expr_width(transformer) + 1
                 // [defmacro <name> <transformer>]
             }
+            Expr::Match { scrutinee, arms } => {
+                let mut width = 1 + 5 + 1 + self.measure_expr_width(scrutinee); // [match <scrutinee>
+                for arm in arms {
+                    width += 1 + self.measure_pattern_width(&arm.pattern.node);
+                    width += 1 + self.measure_expr_width(&arm.body);
+                }
+                width + 1 // closing ]
+            }
             Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
             Expr::Error(span) => {
                 // Measure the width of the original source text
                 span.end.offset - span.start.offset
+            }
+        }
+    }
+
+    fn measure_pattern_width(&self, pattern: &crate::ast::Pattern) -> usize {
+        use crate::ast::{LiteralPattern, Pattern};
+        match pattern {
+            Pattern::Wildcard => 1,
+            Pattern::Variable(name) => name.len(),
+            Pattern::TypeTag(tag) => tag.len(),
+            Pattern::Pin(name) => 1 + name.len(), // $name
+            Pattern::Literal(lit) => match lit {
+                LiteralPattern::Int(n) => n.to_string().len(),
+                LiteralPattern::Float(f) => f.to_string().len(),
+                LiteralPattern::Bool(b) => b.to_string().len(),
+                LiteralPattern::Str(s) => 2 + s.len(), // "string" (approximate, doesn't account for escapes)
+            },
+            Pattern::Dict { fields, rest } => {
+                let mut width = 2; // []
+                for (i, (key, pat)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        width += 2; // "  "
+                    }
+                    width += key.len() + 2; // "key: "
+                    width += self.measure_pattern_width(&pat.node);
+                }
+                if *rest {
+                    if !fields.is_empty() {
+                        width += 2; // "  "
+                    }
+                    width += 3; // "..."
+                }
+                width
+            }
+            Pattern::Seq { head, tail } => {
+                6 + self.measure_pattern_width(&head.node) + self.measure_pattern_width(&tail.node)
+                // "[seq h t]"
             }
         }
     }
@@ -883,6 +942,55 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    fn format_pattern(&mut self, pattern: &Spanned<crate::ast::Pattern>) {
+        use crate::ast::{LiteralPattern, Pattern};
+        match &pattern.node {
+            Pattern::Wildcard => self.output.push('_'),
+            Pattern::Variable(name) => self.output.push_str(name),
+            Pattern::TypeTag(tag) => self.output.push_str(tag),
+            Pattern::Pin(name) => {
+                self.output.push('$');
+                self.output.push_str(name);
+            }
+            Pattern::Literal(lit) => match lit {
+                LiteralPattern::Int(n) => self.output.push_str(&n.to_string()),
+                LiteralPattern::Float(f) => self.output.push_str(&f.to_string()),
+                LiteralPattern::Bool(b) => self.output.push_str(&b.to_string()),
+                LiteralPattern::Str(s) => {
+                    self.output.push('"');
+                    self.output
+                        .push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
+                    self.output.push('"');
+                }
+            },
+            Pattern::Dict { fields, rest } => {
+                self.output.push('[');
+                for (i, (key, pat)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.output.push_str("  ");
+                    }
+                    self.output.push_str(key);
+                    self.output.push_str(": ");
+                    self.format_pattern(pat);
+                }
+                if *rest {
+                    if !fields.is_empty() {
+                        self.output.push_str("  ");
+                    }
+                    self.output.push_str("...");
+                }
+                self.output.push(']');
+            }
+            Pattern::Seq { head, tail } => {
+                self.output.push_str("[seq ");
+                self.format_pattern(head);
+                self.output.push(' ');
+                self.format_pattern(tail);
+                self.output.push(']');
+            }
+        }
+    }
+
     fn write_indent(&mut self) {
         for _ in 0..self.indent_level {
             self.output.push_str("  ");
@@ -970,9 +1078,11 @@ impl<'a> Formatter<'a> {
             Expr::Sequential(_) => Some('('),    // starts with (seq
             Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias(_) => Some('['),
             Expr::TypeAssert { .. } => Some('['),
-            Expr::Quote(_) | Expr::Unquote(_) | Expr::UnquoteSplice(_) | Expr::DefMacro { .. } => {
-                Some('[')
-            }
+            Expr::Quote(_)
+            | Expr::Unquote(_)
+            | Expr::UnquoteSplice(_)
+            | Expr::DefMacro { .. }
+            | Expr::Match { .. } => Some('['),
             Expr::Annotated { name, .. } => name.chars().next(),
             Expr::Rest(_) => Some('.'),
             Expr::Error(_) => None,

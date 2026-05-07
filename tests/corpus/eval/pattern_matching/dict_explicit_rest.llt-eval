@@ -1,0 +1,6 @@
+# Explicit rest marker (same as default open matching)
+[match [ok: 42  extra: "data"  more: "stuff"]
+    [ok: v ...]  v
+    _             99]
+===
+Int(42)

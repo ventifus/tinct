@@ -533,8 +533,7 @@ fn expand_expr(
         }
 
         Expr::Match { scrutinee, arms } => {
-            let expanded_scrutinee =
-                expand_expr(scrutinee.as_ref().clone(), env, ctx, stdlib_env)?;
+            let expanded_scrutinee = expand_expr(scrutinee.as_ref().clone(), env, ctx, stdlib_env)?;
             let expanded_arms = arms
                 .iter()
                 .map(|arm| {

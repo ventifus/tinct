@@ -4163,3 +4163,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Evaluator: materialize scrutinee, try arms top-to-bottom, TypeTag/Literal/Variable/Wildcard
 - [x] Type checker: typed as Any initially; formatter round-trip
 - [x] All exhaustive matches updated; 11 corpus tests
+
+### pattern-matching-destructure
+
+- [x] Pattern::Dict with fields + rest flag; Pattern::Seq with head/tail
+- [x] Nested pattern support (recursive patterns)
+- [x] Evaluator: lazy dict matching (only matched keys forced), seq head/tail binding
+- [x] Parser: expr_to_pattern for dict and seq patterns
+- [x] 13 corpus tests: dict destructure, try/result, nested, seq, open/closed matching

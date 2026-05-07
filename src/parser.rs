@@ -3430,9 +3430,110 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
         Expr::Float(f) => Pattern::Literal(LiteralPattern::Float(f)),
         Expr::Bool(b) => Pattern::Literal(LiteralPattern::Bool(b)),
         Expr::Str(s) => Pattern::Literal(LiteralPattern::Str(s)),
+        Expr::Dict(entries) => {
+            // Dict pattern: [key1: pat1  key2: pat2] or [key: pat ...]
+            // Check for `seq` keyword for seq patterns: [seq h t]
+            // Seq pattern has 3 auto-indexed entries: "seq" (bare word), h, t
+            if entries.len() == 3 {
+                if let Some(first_entry) = entries.first() {
+                    // Check if first entry is auto-indexed and is VarRef("seq")
+                    if first_entry.node.key.is_none() {
+                        if let Expr::VarRef { ref name, .. } = first_entry.node.value.node {
+                            if name == "seq" {
+                                // This is a seq pattern: [seq h t]
+                                if let Some(second_entry) = entries.get(1) {
+                                    if let Some(third_entry) = entries.get(2) {
+                                        let head_pat =
+                                            expr_to_pattern((*second_entry.node.value).clone())?;
+                                        let tail_pat =
+                                            expr_to_pattern((*third_entry.node.value).clone())?;
+                                        return Ok(Spanned::new(
+                                            Pattern::Seq {
+                                                head: Box::new(head_pat),
+                                                tail: Box::new(tail_pat),
+                                            },
+                                            span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Regular dict pattern
+            let mut fields = Vec::new();
+            let mut has_rest = true; // Default to open matching (extra keys allowed)
+
+            for entry in entries {
+                if let Expr::Rest(ref _rest_expr) = entry.node.value.node {
+                    // This is a `...` rest marker (explicit open matching)
+                    has_rest = true;
+                    continue;
+                }
+
+                let key_str = if let Some(ref k) = entry.node.key {
+                    match &k.node {
+                        Expr::VarRef { ref name, .. } => name.clone(),
+                        Expr::Str(s) => s.clone(),
+                        _ => {
+                            return Err(ParseError {
+                                message: "dict pattern key must be an identifier or string"
+                                    .to_string(),
+                                span: Some(k.span),
+                            });
+                        }
+                    }
+                } else {
+                    return Err(ParseError {
+                        message: "dict pattern requires named fields (auto-indexed entries not supported)".to_string(),
+                        span: Some(entry.span),
+                    });
+                };
+
+                let value_pattern = expr_to_pattern((*entry.node.value).clone())?;
+                fields.push((key_str, value_pattern));
+            }
+
+            Pattern::Dict {
+                fields,
+                rest: has_rest,
+            }
+        }
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } if named_args.is_empty() && args.len() == 2 => {
+            // Check if this is [seq h t] parsed as a call
+            if let Expr::VarRef { ref name, .. } = func.node {
+                if name == "seq" {
+                    let head_pat = expr_to_pattern((*args[0]).clone())?;
+                    let tail_pat = expr_to_pattern((*args[1]).clone())?;
+                    Pattern::Seq {
+                        head: Box::new(head_pat),
+                        tail: Box::new(tail_pat),
+                    }
+                } else {
+                    return Err(ParseError {
+                        message: "invalid pattern: expected identifier, literal, dict, or _"
+                            .to_string(),
+                        span: Some(span),
+                    });
+                }
+            } else {
+                return Err(ParseError {
+                    message: "invalid pattern: expected identifier, literal, dict, or _"
+                        .to_string(),
+                    span: Some(span),
+                });
+            }
+        }
         _ => {
             return Err(ParseError {
-                message: "invalid pattern: expected identifier, literal, or _".to_string(),
+                message: "invalid pattern: expected identifier, literal, dict, or _".to_string(),
                 span: Some(span),
             });
         }

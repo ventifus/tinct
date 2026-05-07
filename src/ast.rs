@@ -211,6 +211,12 @@ pub enum Expr {
         transformer: Box<Spanned<Expr>>,
     },
 
+    /// Pattern matching, e.g. `[match scrutinee pat1 body1 pat2 body2 ...]`
+    Match {
+        scrutinee: Box<Spanned<Expr>>,
+        arms: Vec<MatchArm>,
+    },
+
     /// Parse error — a section of source that couldn't be parsed.
     /// Emitted by bracket-level error recovery (parser-rewrite.md §Phase 4).
     /// The span covers the entire unparseable region.
@@ -237,6 +243,50 @@ pub struct Param {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
+}
+
+/// A match arm: pattern and corresponding body expression
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Spanned<Pattern>,
+    pub body: Box<Spanned<Expr>>,
+}
+
+/// Pattern for match arms
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    /// Wildcard pattern `_` — always matches
+    Wildcard,
+    /// Variable binding pattern — lowercase bare word like `x` or `result`
+    Variable(String),
+    /// Literal pattern — int, float, bool, or string literal
+    Literal(LiteralPattern),
+    /// Type tag pattern — uppercase bare word like `Int`, `Str`, `Dict`
+    TypeTag(String),
+    /// Pin pattern — `$name` matches against existing variable value
+    Pin(String),
+    /// Dict pattern — matches dicts by key, binds matched values to pattern variables
+    /// `rest: true` means open matching (extra keys allowed)
+    /// `rest: false` means closed matching (extra keys rejected)
+    Dict {
+        fields: Vec<(String, Spanned<Pattern>)>,
+        rest: bool,
+    },
+    /// Seq pattern — matches Seq values, binds head and tail
+    /// `[seq h t]` desugars to `Seq { head: Pattern::Variable("h"), tail: Pattern::Variable("t") }`
+    Seq {
+        head: Box<Spanned<Pattern>>,
+        tail: Box<Spanned<Pattern>>,
+    },
+}
+
+/// Literal pattern values
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiteralPattern {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
 }
 
 /// An annotation (type shorthand or property dict)
@@ -389,6 +439,13 @@ impl fmt::Display for Expr {
             Expr::DefMacro { name, transformer } => {
                 write!(f, "[defmacro {} {}]", name, transformer.node)
             }
+            Expr::Match { scrutinee, arms } => {
+                write!(f, "[match {}", scrutinee.node)?;
+                for arm in arms {
+                    write!(f, " {} {}", arm.pattern.node, arm.body.node)?;
+                }
+                write!(f, "]")
+            }
             Expr::Error(span) => write!(f, "<error at {span}>"),
         }
     }
@@ -412,6 +469,48 @@ impl fmt::Display for Annotation {
                 }
                 write!(f, "]")
             }
+        }
+    }
+}
+
+impl fmt::Display for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Pattern::Wildcard => write!(f, "_"),
+            Pattern::Variable(name) => write!(f, "{name}"),
+            Pattern::Literal(lit) => write!(f, "{lit}"),
+            Pattern::TypeTag(tag) => write!(f, "{tag}"),
+            Pattern::Pin(name) => write!(f, "${name}"),
+            Pattern::Dict { fields, rest } => {
+                write!(f, "[")?;
+                for (i, (key, pat)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}: {}", key, pat.node)?;
+                }
+                if *rest {
+                    if !fields.is_empty() {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "...")?;
+                }
+                write!(f, "]")
+            }
+            Pattern::Seq { head, tail } => {
+                write!(f, "[seq {} {}]", head.node, tail.node)
+            }
+        }
+    }
+}
+
+impl fmt::Display for LiteralPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LiteralPattern::Int(n) => write!(f, "{n}"),
+            LiteralPattern::Float(n) => write!(f, "{n}"),
+            LiteralPattern::Bool(b) => write!(f, "{b}"),
+            LiteralPattern::Str(s) => write!(f, "{s:?}"),
         }
     }
 }

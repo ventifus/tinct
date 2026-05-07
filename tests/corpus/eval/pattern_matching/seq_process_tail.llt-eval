@@ -1,0 +1,6 @@
+# Seq pattern: process head; bind and ignore tail
+[match [seq 10 [seq 20 [seq 30 []]]]
+    [seq h t]  [+ h 5]
+    _          0]
+===
+Int(15)
