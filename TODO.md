@@ -92,16 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### formatter-full: Full Tinct Formatter
-
-See doc/12-tooling.md §Tinct-Hosted Formatter. **Depends on:** `ast-dict-source`, typing-cluster `let-binding`, typing-cluster `pattern-matching-basic`.
-
-- [ ] Add `str-repeat: Str -> Int -> Str` to `stdlib/prelude.llt` (pure-tinct one-liner using `$reduce` over `$range`) (`stdlib/prelude.llt`)
-- [ ] Add `str-length: Str -> Int` Rust builtin (`src/builtins.rs`)
-- [ ] `stdlib/formatter/format.llt`: `format-node` dispatch via `[match ...]`; `fits-inline?` via `[str-length [render-inline node]]`; comment/blank-line preservation; evaluated with prelude loaded (`stdlib/formatter/format.llt`)
-- [ ] `src/main.rs`: `tinct fmt` (no flag) evaluates `format.llt`; Rust formatter retained as `format_source_rust()` for LSP (`src/main.rs`)
-- [ ] Tests: existing formatter corpus passes; idempotent; comments preserved; blank lines preserved; re-parseable (`tests/`)
-
 ### macro-hygiene: Scope Sets + Dual-Span Error Reporting
 
 See doc/08-evaluation.md §Macro Hygiene. **Depends on:** `defmacro`.

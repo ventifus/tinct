@@ -4077,3 +4077,10 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] gensym builtin for unique symbol generation
 - [x] All exhaustive matches updated; pipeline wired (parse→expand→desugar→typecheck→eval)
 - [x] Tests: identity macro, unless macro, gensym, shadow-builtin error
+
+### formatter-full: Full Tinct Formatter
+
+- [x] stdlib/formatter/pretty.llt: full pretty-printing with layout decisions, comment/blank-line preservation
+- [x] str-repeat in prelude.llt + str-length builtin in builtins_string.rs
+- [x] CLI: --tinct-fmt routes to pretty.llt by default, compact.llt with --oneline/--nospaces
+- [x] Tests updated for new format_source_tinct signature
