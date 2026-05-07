@@ -2479,7 +2479,30 @@ fn resolve_annotation(
             resolve_type_name(name, env, span, state, ann_mapping, &row_ref)
         }
         Annotation::PropertyDict(entries) => {
-            if let Some(type_val) = ann.get_property("type") {
+            // Collect positional entries (key=None) for union type construction.
+            // Guard: if entries look like a type dict (e.g. [Fn@Return [Params]]
+            // function type pattern, or a record type with all keyed entries), delegate
+            // to the existing resolve_property_dict_as_record path instead. Union syntax
+            // is only for pure type-name positional entries like @[Int String Bool].
+            let positional_entries: Vec<_> =
+                entries.iter().filter(|e| e.node.key.is_none()).collect();
+
+            if !positional_entries.is_empty() && !entries_look_like_type_dict(entries) {
+                // Positional entries create a union type
+                let mut member_types = Vec::new();
+                for entry in &positional_entries {
+                    let member_ty = resolve_type_expr(
+                        &entry.node.value,
+                        env,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    )?;
+                    member_types.push(member_ty);
+                }
+                // Use normalize_union to flatten, deduplicate, and sort
+                Ok(Type::normalize_union(member_types))
+            } else if let Some(type_val) = ann.get_property("type") {
                 resolve_type_expr(type_val, env, state, ann_mapping, row_ann_mapping)
             } else {
                 resolve_property_dict_as_record(
@@ -4313,7 +4336,8 @@ mod tests {
     }
 
     #[test]
-    fn test_property_dict_no_key_falls_back_to_any() {
+    fn test_property_dict_no_key_resolves_as_union() {
+        // Single positional entry resolves via union path; single-element union unwraps
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 10);
         let sp = |node: Expr| Spanned::new(node, span);
@@ -4334,7 +4358,7 @@ mod tests {
                 &mut None
             )
             .unwrap(),
-            Type::Any
+            Type::Int
         );
     }
 
@@ -8251,5 +8275,260 @@ mod tests {
             "two independent TypeAsserts with ...r should both succeed independently: {:?}",
             result.err()
         );
+    }
+
+    // ===== Union Type Tests =====
+    //
+    // These test resolve_annotation directly with programmatic PropertyDict
+    // construction, because the parser's implied-call rule prevents @[Int String]
+    // from parsing as a Dict with positional entries. Parser-level union syntax
+    // is a future sprint item.
+
+    /// Helper: build a PropertyDict annotation with positional type entries.
+    fn union_annotation(type_names: &[&str]) -> (Annotation, Span) {
+        let span = crate::test_util::test_span(1, 1, 1, 20);
+        let sp = |node: Expr| Spanned::new(node, span);
+        let entries: Vec<Spanned<Entry>> = type_names
+            .iter()
+            .map(|name| {
+                Spanned::new(
+                    Entry {
+                        key: None,
+                        value: Rc::new(sp(Expr::Str((*name).to_string()))),
+                    },
+                    span,
+                )
+            })
+            .collect();
+        (Annotation::PropertyDict(entries), span)
+    }
+
+    #[test]
+    fn test_union_annotation_basic() {
+        // Two positional entries → Union(Int, Str)
+        let (ann, span) = union_annotation(&["Int", "String"]);
+        let env = Rc::new(TypeEnv::new());
+        let ty = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        match ty {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            other => panic!("Expected Union type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_union_annotation_three_types() {
+        // Three positional entries → Union(Int, Str, Bool)
+        let (ann, span) = union_annotation(&["Int", "String", "Bool"]);
+        let env = Rc::new(TypeEnv::new());
+        let ty = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        match ty {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 3);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+                assert!(members.contains(&Type::Bool));
+            }
+            other => panic!("Expected Union type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_union_annotation_single_unwraps() {
+        // Single positional entry → unwraps to bare type
+        let (ann, span) = union_annotation(&["Int"]);
+        let env = Rc::new(TypeEnv::new());
+        let ty = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(ty, Type::Int);
+    }
+
+    #[test]
+    fn test_union_annotation_with_metadata() {
+        // Positional entries + keyed metadata: Union(Int, Str) with default
+        let span = crate::test_util::test_span(1, 1, 1, 20);
+        let sp = |node: Expr| Spanned::new(node, span);
+        let ann = Annotation::PropertyDict(vec![
+            Spanned::new(
+                Entry {
+                    key: None,
+                    value: Rc::new(sp(Expr::Str("Int".into()))),
+                },
+                span,
+            ),
+            Spanned::new(
+                Entry {
+                    key: None,
+                    value: Rc::new(sp(Expr::Str("String".into()))),
+                },
+                span,
+            ),
+            Spanned::new(
+                Entry {
+                    key: Some(sp(Expr::Str("default".into()))),
+                    value: Rc::new(sp(Expr::Int(0))),
+                },
+                span,
+            ),
+        ]);
+        let env = Rc::new(TypeEnv::new());
+        let ty = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        match ty {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            other => panic!("Expected Union type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_union_type_assert_success() {
+        // value_matches_type: Int matches Union(Int, Str)
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(crate::eval::value_matches_type(
+            &crate::value::Value::Int(42),
+            &union
+        ));
+    }
+
+    #[test]
+    fn test_union_type_assert_failure() {
+        // value_matches_type: Bool does NOT match Union(Int, Str)
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(!crate::eval::value_matches_type(
+            &crate::value::Value::Bool(true),
+            &union
+        ));
+    }
+
+    #[test]
+    fn test_union_in_function_signature() {
+        // resolve_annotation with Fn@ whose return type is a union (via PropertyDict)
+        let span = crate::test_util::test_span(1, 1, 1, 20);
+        let sp = |node: Expr| Spanned::new(node, span);
+        // Build annotation: Fn@... where the annotation is a PropertyDict with positional entries
+        // This simulates [Fn@[Int String]]
+        let fn_ann = Annotation::PropertyDict(vec![
+            Spanned::new(
+                Entry {
+                    key: None,
+                    value: Rc::new(sp(Expr::Str("Int".into()))),
+                },
+                span,
+            ),
+            Spanned::new(
+                Entry {
+                    key: None,
+                    value: Rc::new(sp(Expr::Str("String".into()))),
+                },
+                span,
+            ),
+        ]);
+        let env = Rc::new(TypeEnv::new());
+        let ret_ty = resolve_annotation(
+            &fn_ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        match ret_ty {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            other => panic!("Expected Union type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_union_nullable_pattern() {
+        // Union(Int, Record(Empty)) — nullable integer pattern
+        let null_type = Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        });
+        let union = Type::normalize_union(vec![Type::Int, null_type.clone()]);
+        match union {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&null_type));
+            }
+            other => panic!("Expected Union type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_union_deduplication() {
+        // Three positional entries with duplicate → deduplicated Union(Int, Str)
+        let (ann, span) = union_annotation(&["Int", "String", "Int"]);
+        let env = Rc::new(TypeEnv::new());
+        let ty = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        match ty {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            other => panic!("Expected Union type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_union_display_format() {
+        // Union types display with " | " separator
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        let display = format!("{}", union);
+        assert!(display.contains("Int"));
+        assert!(display.contains("String"));
+        assert!(display.contains(" | "));
     }
 }

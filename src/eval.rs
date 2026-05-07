@@ -325,6 +325,12 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::DirCap => matches!(value, Value::DirCap(_) | Value::RevocableDirCap { .. }),
         Type::NetCap => matches!(value, Value::NetCap(_)),
         Type::Handle => matches!(value, Value::Handle(_)),
+        Type::Union(members) => {
+            // Value matches union if it matches ANY member type
+            members
+                .iter()
+                .any(|member| value_matches_type(value, member))
+        }
         // Error is a type-inference sentinel that should never reach runtime validation.
         // Type::Error indicates type inference failed; treating it as a match would mask bugs.
         Type::Error => {

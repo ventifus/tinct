@@ -6,27 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase B: Type System Primitives
 
-### `union-types`
-
-**Depends on:** None (can be done in parallel with Phase A)
-**Spec chapters:** `doc/05-type-annotations.md` (§Union Types — `@[T1 T2]` positional syntax, desugar rule, `type: [T1 T2]` resolution), `doc/06-type-inference.md` (§Union Subtyping — `[UNION-INJ-L]`, `[UNION-INJ-R]`, `[UNION-ELIM]` rules), `doc/17-references.md` (Pierce 2002 Ch.15 already present)
-
-1. `Type::Union(Vec<Type>)` variant
-2. `normalize_union()` — sort, dedup, flatten nested unions
-3. `is_subtype` gains `[UNION-INJ-L]`, `[UNION-INJ-R]`,
-   `[UNION-ELIM]`
-4. `apply_substitution` handles `Union`
-5. `occurs_in` handles `Union`
-6. `collect_type_vars` handles `Union`
-7. Annotation resolver: collect positional entries from
-   `Annotation::PropertyDict` into `type:` value as list; resolve
-   `type: [T1 T2]` as `Union(normalize(T1), normalize(T2))` in
-   `resolve_annotation` (`src/typecheck.rs`) — no parser change needed
-8. Tests: 10+ (union creation, subtyping injection/elimination,
-   union in function signatures, union in TypeAssert, union display,
-   duplicate elimination, nested union flattening, positional desugar
-   `x@[Int Null]`)
-
 ### `gradual-typing-split`
 
 **Depends on:** `union-types` (B1) — ships after B1 so union subtyping immediately uses the proper lattice
