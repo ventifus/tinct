@@ -26,4 +26,11 @@ Int8:  [type Int@[is: [between -128 127]]]
 Int16: [type Int@[is: [between -32768 32767]]]
 Int32: [type Int@[is: [between -2147483648 2147483647]]]
 
+# Binary serialization dispatch based on repr: annotation.
+# to-bytes converts a numeric value to its string representation.
+# The repr: annotation is a storage hint that guides serialization format
+# in downstream binary encoders. This stub returns the string form.
+# Usage: [to-bytes v] where v has a repr: annotation.
+to-bytes: [fn [v] [str v]]
+
 ]
