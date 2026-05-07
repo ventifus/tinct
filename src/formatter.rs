@@ -230,6 +230,8 @@ impl<'a> Formatter<'a> {
             | Expr::UnquoteSplice(_)
             | Expr::DefMacro { .. }
             | Expr::Match { .. }
+            | Expr::ClassDecl { .. }
+            | Expr::InstanceDecl { .. }
             | Expr::Error(_) => false,
             _ => true,
         });
@@ -460,6 +462,53 @@ impl<'a> Formatter<'a> {
                     self.format_pattern(&arm.pattern);
                     self.push_space_before_expr(&arm.body);
                     self.format_expr(&arm.body, true);
+                }
+                self.output.push(']');
+            }
+            Expr::ClassDecl {
+                name,
+                params,
+                superclasses: _,
+                methods,
+            } => {
+                self.output.push('[');
+                self.output.push_str("class");
+                self.output.push_str(" [");
+                self.output.push_str(name);
+                for param in params {
+                    self.output.push(' ');
+                    self.output.push_str(param);
+                }
+                self.output.push(']');
+                for method in methods {
+                    self.output.push(' ');
+                    if let Some(key) = &method.node.key {
+                        self.format_expr(key, false);
+                        self.output.push_str(": ");
+                    }
+                    self.format_expr(&method.node.value, true);
+                }
+                self.output.push(']');
+            }
+            Expr::InstanceDecl {
+                class_name,
+                instance_type,
+                methods,
+            } => {
+                self.output.push('[');
+                self.output.push_str("instance");
+                self.output.push_str(" [");
+                self.output.push_str(class_name);
+                self.output.push(' ');
+                self.format_expr(instance_type, true);
+                self.output.push(']');
+                for method in methods {
+                    self.output.push(' ');
+                    if let Some(key) = &method.node.key {
+                        self.format_expr(key, false);
+                        self.output.push_str(": ");
+                    }
+                    self.format_expr(&method.node.value, true);
                 }
                 self.output.push(']');
             }
@@ -704,6 +753,43 @@ impl<'a> Formatter<'a> {
                 for arm in arms {
                     width += 1 + self.measure_pattern_width(&arm.pattern.node);
                     width += 1 + self.measure_expr_width(&arm.body);
+                }
+                width + 1 // closing ]
+            }
+            Expr::ClassDecl {
+                name,
+                params,
+                methods,
+                ..
+            } => {
+                let mut width = 1 + 5 + 2 + name.len(); // [class [<name>
+                for param in params {
+                    width += 1 + param.len();
+                }
+                width += 1; // closing ]
+                for method in methods {
+                    width += 1;
+                    if let Some(key) = &method.node.key {
+                        width += self.measure_expr_width(key) + 2; // key:
+                    }
+                    width += self.measure_expr_width(&method.node.value);
+                }
+                width + 1 // closing ]
+            }
+            Expr::InstanceDecl {
+                class_name,
+                instance_type,
+                methods,
+                ..
+            } => {
+                let mut width = 1 + 8 + 2 + class_name.len() + 1; // [instance [<name>
+                width += self.measure_expr_width(instance_type) + 1; // <type>]
+                for method in methods {
+                    width += 1;
+                    if let Some(key) = &method.node.key {
+                        width += self.measure_expr_width(key) + 2; // key:
+                    }
+                    width += self.measure_expr_width(&method.node.value);
                 }
                 width + 1 // closing ]
             }
@@ -1145,7 +1231,9 @@ impl<'a> Formatter<'a> {
             | Expr::Unquote(_)
             | Expr::UnquoteSplice(_)
             | Expr::DefMacro { .. }
-            | Expr::Match { .. } => Some('['),
+            | Expr::Match { .. }
+            | Expr::ClassDecl { .. }
+            | Expr::InstanceDecl { .. } => Some('['),
             Expr::Annotated { name, .. } => name.chars().next(),
             Expr::Rest(_) => Some('.'),
             Expr::Error(_) => None,

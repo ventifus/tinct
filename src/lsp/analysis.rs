@@ -428,6 +428,89 @@ fn hover_at_expr(
             None
         }),
 
+        Expr::ClassDecl { methods, .. } => {
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    if let Some(text) = hover_at_expr(
+                        &key.node,
+                        key.span,
+                        offset,
+                        type_map,
+                        doc_map,
+                        source,
+                        prelude_index,
+                        include_graph,
+                        doc_url,
+                    ) {
+                        return Some(text);
+                    }
+                }
+                if let Some(text) = hover_at_expr(
+                    &method.node.value.node,
+                    method.node.value.span,
+                    offset,
+                    type_map,
+                    doc_map,
+                    source,
+                    prelude_index,
+                    include_graph,
+                    doc_url,
+                ) {
+                    return Some(text);
+                }
+            }
+            None
+        }
+
+        Expr::InstanceDecl {
+            instance_type,
+            methods,
+            ..
+        } => hover_at_expr(
+            &instance_type.node,
+            instance_type.span,
+            offset,
+            type_map,
+            doc_map,
+            source,
+            prelude_index,
+            include_graph,
+            doc_url,
+        )
+        .or_else(|| {
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    if let Some(text) = hover_at_expr(
+                        &key.node,
+                        key.span,
+                        offset,
+                        type_map,
+                        doc_map,
+                        source,
+                        prelude_index,
+                        include_graph,
+                        doc_url,
+                    ) {
+                        return Some(text);
+                    }
+                }
+                if let Some(text) = hover_at_expr(
+                    &method.node.value.node,
+                    method.node.value.span,
+                    offset,
+                    type_map,
+                    doc_map,
+                    source,
+                    prelude_index,
+                    include_graph,
+                    doc_url,
+                ) {
+                    return Some(text);
+                }
+            }
+            None
+        }),
+
         Expr::Error(span) => Some(format!(
             "Parse error at {}:{}",
             span.start.line, span.start.column

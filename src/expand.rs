@@ -568,6 +568,69 @@ fn expand_expr(
             ))
         }
 
+        // ClassDecl: expand method signatures
+        Expr::ClassDecl {
+            name,
+            params,
+            superclasses,
+            methods,
+        } => {
+            let expanded_methods = methods
+                .iter()
+                .map(|method| {
+                    let expanded_value =
+                        expand_expr((*method.node.value).clone(), env, ctx, stdlib_env)?;
+                    Ok(Spanned::new(
+                        Entry {
+                            key: method.node.key.clone(),
+                            value: Rc::new(expanded_value),
+                        },
+                        method.span,
+                    ))
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(
+                Expr::ClassDecl {
+                    name: name.clone(),
+                    params: params.clone(),
+                    superclasses: superclasses.clone(),
+                    methods: expanded_methods,
+                },
+                expr.span,
+            ))
+        }
+
+        // InstanceDecl: expand instance type and method implementations
+        Expr::InstanceDecl {
+            class_name,
+            instance_type,
+            methods,
+        } => {
+            let expanded_type = expand_expr(instance_type.as_ref().clone(), env, ctx, stdlib_env)?;
+            let expanded_methods = methods
+                .iter()
+                .map(|method| {
+                    let expanded_value =
+                        expand_expr((*method.node.value).clone(), env, ctx, stdlib_env)?;
+                    Ok(Spanned::new(
+                        Entry {
+                            key: method.node.key.clone(),
+                            value: Rc::new(expanded_value),
+                        },
+                        method.span,
+                    ))
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(
+                Expr::InstanceDecl {
+                    class_name: class_name.clone(),
+                    instance_type: Box::new(expanded_type),
+                    methods: expanded_methods,
+                },
+                expr.span,
+            ))
+        }
+
         // Leaf nodes — no expansion needed
         Expr::Int(_)
         | Expr::Float(_)
@@ -876,6 +939,35 @@ fn collect_and_rename_bindings(
                 collect_and_rename_bindings(&mut arm.body.node, scope_id, renames);
             }
         }
+        Expr::ClassDecl { methods, .. } => {
+            for method in methods.iter_mut() {
+                if let Some(ref mut key_expr) = method.node.key {
+                    collect_and_rename_bindings(&mut key_expr.node, scope_id, renames);
+                }
+                collect_and_rename_bindings(
+                    &mut Rc::make_mut(&mut method.node.value).node,
+                    scope_id,
+                    renames,
+                );
+            }
+        }
+        Expr::InstanceDecl {
+            instance_type,
+            methods,
+            ..
+        } => {
+            collect_and_rename_bindings(&mut instance_type.node, scope_id, renames);
+            for method in methods.iter_mut() {
+                if let Some(ref mut key_expr) = method.node.key {
+                    collect_and_rename_bindings(&mut key_expr.node, scope_id, renames);
+                }
+                collect_and_rename_bindings(
+                    &mut Rc::make_mut(&mut method.node.value).node,
+                    scope_id,
+                    renames,
+                );
+            }
+        }
         // Leaf nodes — nothing to do
         Expr::Int(_)
         | Expr::Float(_)
@@ -956,6 +1048,27 @@ fn rename_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
                     rename_refs(&mut guard.node, renames);
                 }
                 rename_refs(&mut arm.body.node, renames);
+            }
+        }
+        Expr::ClassDecl { methods, .. } => {
+            for method in methods.iter_mut() {
+                if let Some(ref mut key_expr) = method.node.key {
+                    rename_refs(&mut key_expr.node, renames);
+                }
+                rename_refs(&mut Rc::make_mut(&mut method.node.value).node, renames);
+            }
+        }
+        Expr::InstanceDecl {
+            instance_type,
+            methods,
+            ..
+        } => {
+            rename_refs(&mut instance_type.node, renames);
+            for method in methods.iter_mut() {
+                if let Some(ref mut key_expr) = method.node.key {
+                    rename_refs(&mut key_expr.node, renames);
+                }
+                rename_refs(&mut Rc::make_mut(&mut method.node.value).node, renames);
             }
         }
         // Leaf nodes — nothing to do

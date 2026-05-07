@@ -6,22 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase D: Advanced Typing
 
-### `type-classes-full`
-
-See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depends on:** `type-classes-constrained` (B4), `param-type-aliases` (B3).
-
-- [ ] `class` and `instance` keywords added to denylist; `Expr::ClassDecl`, `Expr::InstanceDecl` AST variants; parser: `[class [Name a] method: Type]`, `[instance [Name Int] method: impl]` (`src/lexer.rs`, `src/parser.rs`, `src/ast.rs`)
-- [ ] Class environment: `ClassEnv` map from class name → `ClassDecl { params, methods, superclasses }`; registered during expansion/eval-time, queried during type-check (`src/typecheck.rs`)
-- [ ] Instance environment: `InstanceEnv` map from `(ClassName, Type)` → `InstanceDecl { methods }`; checked for uniqueness, no overlapping instances (`src/typecheck.rs`)
-- [ ] Superclass hierarchy: `ClassEnv` stores `superclasses: Vec<String>`; constraint entailment (`Equatable a ⊢ Showable a` if Showable is a superclass of Equatable) (`src/typecheck.rs`)
-- [ ] Dictionary construction: for each instance, build `Value::Dict` of method implementations at instance registration time; bind to environment (`src/eval.rs`)
-- [ ] Dictionary threading: overloaded function calls look up the dictionary for the concrete type and pass it as an implicit first argument at eval time (`src/eval.rs`)
-- [ ] Kind system extension: `Kind::Type` and `Kind::Arrow(Box<Kind>, Box<Kind>)` to support `Functor f` (higher-kinded); type variables carry a `kind` field (`src/types.rs`)
-- [ ] Higher-kinded type variable inference: resolve `Functor f` where `f` must have kind `Type → Type`; unification checks kind compatibility (`src/typecheck.rs`)
-- [ ] Error messages: "no instance of `Equatable` for type `Function`"; "ambiguous type variable `a` in class constraint" (`src/error.rs`)
-- [ ] Update overloaded builtin signatures to use class constraints from B4 plus new D1 instances (`src/builtins.rs`)
-- [ ] Tests: `[class [Equatable a] ...]` declaration; `[instance [Equatable Int] ...]`; dictionary lookup; superclass entailment; kind error on wrong arity; no-instance error (`tests/corpus/eval/type_system/`)
-
 ### `algebraic-subtyping`
 
 See doc/06-type-inference.md §Algebraic Subtyping, doc/whatif/completed/union-types.md §Full Algebraic Subtyping. **Depends on:** `union-types` (B1), `gradual-typing-split` (B2).

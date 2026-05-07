@@ -220,6 +220,30 @@ pub enum Expr {
         arms: Vec<MatchArm>,
     },
 
+    /// Type class declaration, e.g. `[class [Equatable a] eq: [Fn@Bool [a a]]]`
+    /// Declares a type class with type parameters and method signatures.
+    ClassDecl {
+        /// Class name (e.g., "Equatable")
+        name: String,
+        /// Type parameters (e.g., ["a"])
+        params: Vec<String>,
+        /// Superclass constraints (e.g., ["Ord"] for a class that requires Ord)
+        superclasses: Vec<String>,
+        /// Method signatures as dict entries (method_name: Type)
+        methods: Vec<Spanned<Entry>>,
+    },
+
+    /// Type class instance declaration, e.g. `[instance [Equatable Int] eq: [fn [x y] [= x y]]]`
+    /// Provides method implementations for a specific type.
+    InstanceDecl {
+        /// Class name (e.g., "Equatable")
+        class_name: String,
+        /// Instance type (e.g., Int, [name: Str age: Int])
+        instance_type: Box<Spanned<Expr>>,
+        /// Method implementations as dict entries (method_name: impl)
+        methods: Vec<Spanned<Entry>>,
+    },
+
     /// Parse error — a section of source that couldn't be parsed.
     /// Emitted by bracket-level error recovery (parser-rewrite.md §Phase 4).
     /// The span covers the entire unparseable region.
@@ -465,6 +489,37 @@ impl fmt::Display for Expr {
                 write!(f, "[match {}", scrutinee.node)?;
                 for arm in arms {
                     write!(f, " {} {}", arm.pattern.node, arm.body.node)?;
+                }
+                write!(f, "]")
+            }
+            Expr::ClassDecl {
+                name,
+                params,
+                methods,
+                ..
+            } => {
+                write!(f, "[class [{name}")?;
+                for p in params {
+                    write!(f, " {p}")?;
+                }
+                write!(f, "]")?;
+                for entry in methods {
+                    if let Some(key) = &entry.node.key {
+                        write!(f, " {}: {}", key.node, entry.node.value.node)?;
+                    }
+                }
+                write!(f, "]")
+            }
+            Expr::InstanceDecl {
+                class_name,
+                instance_type,
+                methods,
+            } => {
+                write!(f, "[instance [{class_name} {}]", instance_type.node)?;
+                for entry in methods {
+                    if let Some(key) = &entry.node.key {
+                        write!(f, " {}: {}", key.node, entry.node.value.node)?;
+                    }
                 }
                 write!(f, "]")
             }

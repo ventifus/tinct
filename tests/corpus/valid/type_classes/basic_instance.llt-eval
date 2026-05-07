@@ -1,0 +1,3 @@
+[instance [Equatable Int] eq: [fn [x y] [= x y]]]
+===
+[instance [Equatable Int] "eq": [fn [x y] [= x y]]]

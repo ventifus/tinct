@@ -329,6 +329,25 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         Expr::DefMacro { transformer, .. } => {
             desugar(&mut **transformer, depth);
         }
+
+        // ClassDecl: recurse into method signatures (type expressions may contain $_ in complex annotations)
+        Expr::ClassDecl { methods, .. } => {
+            for method_spanned in methods {
+                desugar_entry(&mut method_spanned.node, depth);
+            }
+        }
+
+        // InstanceDecl: recurse into instance type and method implementations
+        Expr::InstanceDecl {
+            instance_type,
+            methods,
+            ..
+        } => {
+            desugar(instance_type, depth);
+            for method_spanned in methods {
+                desugar_entry(&mut method_spanned.node, depth);
+            }
+        }
     }
 }
 

@@ -398,6 +398,26 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                 })
                 .collect(),
         },
+        Expr::ClassDecl {
+            name,
+            params,
+            superclasses,
+            methods,
+        } => Expr::ClassDecl {
+            name,
+            params,
+            superclasses,
+            methods: adjust_entries(methods, base),
+        },
+        Expr::InstanceDecl {
+            class_name,
+            instance_type,
+            methods,
+        } => Expr::InstanceDecl {
+            class_name,
+            instance_type: Box::new(adjust_spanned_expr(*instance_type, base)),
+            methods: adjust_entries(methods, base),
+        },
     }
 }
 
@@ -955,6 +975,25 @@ enum StackFrame {
         arms: Vec<MatchArm>,
         /// Pending pattern (with optional guard) for the current arm
         pending_pattern: Option<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>)>,
+        span_start: Position,
+    },
+    /// Class declaration: `[class [ClassName param...] method: Type ...]`
+    ClassDecl {
+        name: Option<String>,
+        params: Vec<String>,
+        superclasses: Vec<String>,
+        methods: Vec<Entry>,
+        /// Pending key for method entries
+        pending_key: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Instance declaration: `[instance [ClassName Type] method: impl ...]`
+    InstanceDecl {
+        class_name: Option<String>,
+        instance_type: Option<Spanned<Expr>>,
+        methods: Vec<Entry>,
+        /// Pending key for method entries
+        pending_key: Option<Spanned<Expr>>,
         span_start: Position,
     },
     /// Pipe operator: `lhs | rhs`
@@ -1678,6 +1717,63 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
                         continue;
                     }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "class"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Class declaration: [class [Name a] method: Type ...]
+                        // (Not a class form if the keyword is followed by colon: [class: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::ClassDecl {
+                            name: None,
+                            params: Vec::new(),
+                            superclasses: Vec::new(),
+                            methods: Vec::new(),
+                            pending_key: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "class" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "instance"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Instance declaration: [instance [Name Type] method: impl ...]
+                        // (Not an instance form if the keyword is followed by colon: [instance: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::InstanceDecl {
+                            class_name: None,
+                            instance_type: None,
+                            methods: Vec::new(),
+                            pending_key: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "instance" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
                     Some((Token::At, _)) | Some((Token::ImmediateAt, _)) => {
                         // Type-assert form: [@Annotation expr]
                         // (depth already checked above)
@@ -2218,6 +2314,110 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                     }
 
+                    StackFrame::ClassDecl {
+                        name,
+                        params,
+                        superclasses,
+                        methods,
+                        pending_key,
+                        span_start,
+                    } => {
+                        if name.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "class form requires a class name".to_string(),
+                                span: Some(span),
+                            });
+                        } else if pending_key.is_some() {
+                            close_bracket_recover!(ParseError {
+                                message: "class form has incomplete method (key without value)"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        } else {
+                            let class_expr = Expr::ClassDecl {
+                                name: name.unwrap(),
+                                params,
+                                superclasses,
+                                methods: methods
+                                    .into_iter()
+                                    .map(|e| {
+                                        let entry_span = if let Some(ref key) = e.key {
+                                            Span {
+                                                start: key.span.start,
+                                                end: e.value.span.end,
+                                            }
+                                        } else {
+                                            e.value.span
+                                        };
+                                        Spanned::new(e, entry_span)
+                                    })
+                                    .collect(),
+                            };
+                            let spanned_class = Spanned::new(class_expr, dict_span(span_start));
+                            if let Err(push_err) = push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_class,
+                            ) {
+                                close_bracket_recover!(push_err);
+                            }
+                        }
+                    }
+
+                    StackFrame::InstanceDecl {
+                        class_name,
+                        instance_type,
+                        methods,
+                        pending_key,
+                        span_start,
+                    } => {
+                        if class_name.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "instance form requires a class name".to_string(),
+                                span: Some(span),
+                            });
+                        } else if instance_type.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "instance form requires an instance type".to_string(),
+                                span: Some(span),
+                            });
+                        } else if pending_key.is_some() {
+                            close_bracket_recover!(ParseError {
+                                message: "instance form has incomplete method (key without value)"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        } else {
+                            let instance_expr = Expr::InstanceDecl {
+                                class_name: class_name.unwrap(),
+                                instance_type: Box::new(instance_type.unwrap()),
+                                methods: methods
+                                    .into_iter()
+                                    .map(|e| {
+                                        let entry_span = if let Some(ref key) = e.key {
+                                            Span {
+                                                start: key.span.start,
+                                                end: e.value.span.end,
+                                            }
+                                        } else {
+                                            e.value.span
+                                        };
+                                        Spanned::new(e, entry_span)
+                                    })
+                                    .collect(),
+                            };
+                            let spanned_instance =
+                                Spanned::new(instance_expr, dict_span(span_start));
+                            if let Err(push_err) = push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_instance,
+                            ) {
+                                close_bracket_recover!(push_err);
+                            }
+                        }
+                    }
+
                     StackFrame::Pipe { .. } => {
                         // A Pipe frame is never opened by `[` — pipe is an infix operator
                         // between two expressions, not a bracket form. A CloseBracket here
@@ -2266,8 +2466,37 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             None // Pending key is set; next expression will be the value
                         }
                     }
+                    Some(StackFrame::ClassDecl {
+                        ref mut pending_key,
+                        ..
+                    }) => {
+                        if pending_key.is_none() {
+                            Some(ParseError {
+                                message: "`:` without a method name (expected method: Type)"
+                                    .to_string(),
+                                span: Some(span),
+                            })
+                        } else {
+                            None // Pending key is set; next expression will be the value
+                        }
+                    }
+                    Some(StackFrame::InstanceDecl {
+                        ref mut pending_key,
+                        ..
+                    }) => {
+                        if pending_key.is_none() {
+                            Some(ParseError {
+                                message: "`:` without a method name (expected method: impl)"
+                                    .to_string(),
+                                span: Some(span),
+                            })
+                        } else {
+                            None // Pending key is set; next expression will be the value
+                        }
+                    }
                     _ => Some(ParseError {
-                        message: "`:` can only appear in dict or call forms".to_string(),
+                        message: "`:` can only appear in dict, call, class, or instance forms"
+                            .to_string(),
                         span: Some(span),
                     }),
                 };
@@ -2541,6 +2770,28 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }) => {
                             // Named arg key — store the string name
                             *pending_key = Some((s.clone(), span));
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::ClassDecl {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Method name in class: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(s.clone()), span);
+                            *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::InstanceDecl {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Method name in instance: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(s.clone()), span);
+                            *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
@@ -3212,6 +3463,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::UnquoteSplice { span_start, .. } => *span_start,
             StackFrame::DefMacro { span_start, .. } => *span_start,
             StackFrame::Match { span_start, .. } => *span_start,
+            StackFrame::ClassDecl { span_start, .. } => *span_start,
+            StackFrame::InstanceDecl { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -3455,6 +3708,14 @@ fn pop_last_value_from_frame(
         }
         Some(StackFrame::DefMacro { .. }) => Err(ParseError {
             message: "dot access is not valid inside defmacro form".to_string(),
+            span: Some(span),
+        }),
+        Some(StackFrame::ClassDecl { .. }) => Err(ParseError {
+            message: "dot access is not valid inside class form".to_string(),
+            span: Some(span),
+        }),
+        Some(StackFrame::InstanceDecl { .. }) => Err(ParseError {
+            message: "dot access is not valid inside instance form".to_string(),
             span: Some(span),
         }),
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
@@ -3987,6 +4248,167 @@ fn push_expr_to_parent(
                     Ok(())
                 }
             }
+            Some(StackFrame::ClassDecl {
+                ref mut name,
+                ref mut params,
+                superclasses: _,
+                ..
+            }) => {
+                // ClassDecl expects: [class [Name params...] method: Type ...]
+                // First expression is the class header: [Name params...]
+                if name.is_none() {
+                    // This is the class header — must be a dict or call with class name
+                    // Parse: [Equatable a] or [Ord] or just Ord
+                    match &expr.node {
+                        Expr::VarRef {
+                            name: class_name, ..
+                        } => {
+                            // Simple class: [class Equatable ...]
+                            *name = Some(class_name.clone());
+                            Ok(())
+                        }
+                        Expr::Dict(entries) if !entries.is_empty() => {
+                            // Dict form: [class [Equatable a] ...]
+                            // First entry should be the class name, rest are params
+                            if let Expr::VarRef {
+                                name: class_name, ..
+                            } = &entries[0].node.value.node
+                            {
+                                *name = Some(class_name.clone());
+                                for entry in entries.iter().skip(1) {
+                                    if let Expr::VarRef {
+                                        name: param_name, ..
+                                    } = &entry.node.value.node
+                                    {
+                                        params.push(param_name.clone());
+                                    } else {
+                                        return Err(ParseError {
+                                            message: "class parameters must be identifiers"
+                                                .to_string(),
+                                            span: Some(entry.span),
+                                        });
+                                    }
+                                }
+                                Ok(())
+                            } else {
+                                Err(ParseError {
+                                    message: "class header must start with class name".to_string(),
+                                    span: Some(expr.span),
+                                })
+                            }
+                        }
+                        Expr::Call {
+                            func,
+                            args,
+                            implied: true,
+                            ..
+                        } => {
+                            // Implied call form: [class [Equatable a b] ...]
+                            if let Expr::VarRef {
+                                name: class_name, ..
+                            } = &func.node
+                            {
+                                *name = Some(class_name.clone());
+                                for arg in args {
+                                    if let Expr::VarRef {
+                                        name: param_name, ..
+                                    } = &arg.node
+                                    {
+                                        params.push(param_name.clone());
+                                    } else {
+                                        return Err(ParseError {
+                                            message: "class parameters must be identifiers"
+                                                .to_string(),
+                                            span: Some(arg.span),
+                                        });
+                                    }
+                                }
+                                Ok(())
+                            } else {
+                                Err(ParseError {
+                                    message: "class header must start with class name".to_string(),
+                                    span: Some(expr.span),
+                                })
+                            }
+                        }
+                        _ => Err(ParseError {
+                            message: "class header must be class name or [ClassName params...]"
+                                .to_string(),
+                            span: Some(expr.span),
+                        }),
+                    }
+                } else {
+                    // Already have name/params — subsequent expressions should be handled
+                    // by push_value (which handles pending_key for method entries)
+                    Err(ParseError {
+                        message:
+                            "unexpected expression in class form (expected method: Type entries)"
+                                .to_string(),
+                        span: Some(expr.span),
+                    })
+                }
+            }
+            Some(StackFrame::InstanceDecl {
+                ref mut class_name,
+                ref mut instance_type,
+                ..
+            }) => {
+                // InstanceDecl expects: [instance [ClassName Type] method: impl ...]
+                // First expression is the instance header: [ClassName Type]
+                if class_name.is_none() {
+                    // This is the instance header
+                    match &expr.node {
+                        Expr::Dict(entries) if entries.len() >= 2 => {
+                            // Dict form: [instance [Equatable Int] ...]
+                            if let Expr::VarRef { name: cls_name, .. } = &entries[0].node.value.node
+                            {
+                                *class_name = Some(cls_name.clone());
+                                // Instance type is the second entry
+                                *instance_type = Some((*entries[1].node.value).clone());
+                                Ok(())
+                            } else {
+                                Err(ParseError {
+                                    message: "instance header must start with class name"
+                                        .to_string(),
+                                    span: Some(expr.span),
+                                })
+                            }
+                        }
+                        Expr::Call {
+                            func,
+                            args,
+                            implied: true,
+                            ..
+                        } if !args.is_empty() => {
+                            // Implied call form: [instance [Equatable Int] ...]
+                            if let Expr::VarRef { name: cls_name, .. } = &func.node {
+                                *class_name = Some(cls_name.clone());
+                                *instance_type = Some((*args[0]).clone());
+                                Ok(())
+                            } else {
+                                Err(ParseError {
+                                    message: "instance header must start with class name"
+                                        .to_string(),
+                                    span: Some(expr.span),
+                                })
+                            }
+                        }
+                        _ => Err(ParseError {
+                            message: "instance header must be [ClassName Type]".to_string(),
+                            span: Some(expr.span),
+                        }),
+                    }
+                } else {
+                    // Already have class_name/instance_type — subsequent expressions should be handled
+                    // by push_value (which handles pending_key for method entries)
+                    Err(ParseError {
+                        message:
+                            "unexpected expression in instance form (expected method: impl entries)"
+                                .to_string(),
+                        span: Some(expr.span),
+                    })
+                }
+            }
             Some(StackFrame::Pipe { lhs, span_start }) => {
                 // We have the RHS expression; pop the frame and create the Pipe node
                 let lhs_expr = lhs.clone();
@@ -4067,6 +4489,56 @@ fn push_value(
                 args.push(CallArg::Positional(Rc::new(expr)));
             }
             Ok(())
+        }
+        Some(StackFrame::ClassDecl {
+            ref name,
+            ref mut methods,
+            ref mut pending_key,
+            ..
+        }) => {
+            if name.is_none() {
+                // Header not yet parsed — delegate to push_expr_to_parent
+                push_expr_to_parent(stack, current_document_expressions, expr)
+            } else if let Some(key) = pending_key.take() {
+                // This value completes a method signature entry
+                methods.push(Entry {
+                    key: Some(key),
+                    value: Rc::new(expr),
+                });
+                Ok(())
+            } else {
+                // ClassDecl expects keyed entries only (method names)
+                Err(ParseError {
+                    message: "class methods must have names (e.g., `eq: Type`)".to_string(),
+                    span: Some(expr.span),
+                })
+            }
+        }
+        Some(StackFrame::InstanceDecl {
+            ref class_name,
+            ref instance_type,
+            ref mut methods,
+            ref mut pending_key,
+            ..
+        }) => {
+            if class_name.is_none() || instance_type.is_none() {
+                // Header not yet fully parsed — delegate to push_expr_to_parent
+                push_expr_to_parent(stack, current_document_expressions, expr)
+            } else if let Some(key) = pending_key.take() {
+                // This value completes a method implementation entry
+                methods.push(Entry {
+                    key: Some(key),
+                    value: Rc::new(expr),
+                });
+                Ok(())
+            } else {
+                // InstanceDecl expects keyed entries only (method names)
+                Err(ParseError {
+                    message: "instance methods must have names (e.g., `eq: [fn [x y] ...]`)"
+                        .to_string(),
+                    span: Some(expr.span),
+                })
+            }
         }
         _ => {
             // All other frames: delegate to push_expr_to_parent
@@ -4542,7 +5014,7 @@ mod tests {
     #[test]
     fn test_colon_outside_dict_call() {
         // [fn :] — "fn" not followed by colon directly → Fn form.
-        // Then ":" in Fn frame → "`:` can only appear in dict or call forms" (recovered).
+        // Then ":" in Fn frame → "`:` can only appear in dict, call, class, or instance forms" (recovered).
         let output = parse2("[fn :]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
@@ -4553,7 +5025,7 @@ mod tests {
                 || output.errors[0].message.contains("`:` without a key")
                 || output.errors[0]
                     .message
-                    .contains("`:` can only appear in dict or call forms"),
+                    .contains("`:` can only appear in dict, call, class, or instance forms"),
             "expected key-related error for [fn :], got: {}",
             output.errors[0].message
         );
@@ -4566,7 +5038,7 @@ mod tests {
         assert!(
             output2.errors[0]
                 .message
-                .contains("`:` can only appear in dict or call forms"),
+                .contains("`:` can only appear in dict, call, class, or instance forms"),
             "expected error about colon in wrong context for [type x :], got: {}",
             output2.errors[0].message
         );

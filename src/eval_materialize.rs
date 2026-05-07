@@ -1740,6 +1740,16 @@ pub(crate) fn eval_step(
             // Fall back for now.
             unreachable!("Match should be handled by eval_recursive (not yet in CEK machine)")
         }
+        Expr::ClassDecl { .. } => {
+            // ClassDecl is handled by eval_recursive in eval.rs, not the CEK machine.
+            unreachable!("ClassDecl should be handled by eval_recursive (not yet in CEK machine)")
+        }
+        Expr::InstanceDecl { .. } => {
+            // InstanceDecl is handled by eval_recursive in eval.rs, not the CEK machine.
+            unreachable!(
+                "InstanceDecl should be handled by eval_recursive (not yet in CEK machine)"
+            )
+        }
         Expr::Rest(_) => Action::Continue(Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,

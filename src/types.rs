@@ -39,6 +39,25 @@ pub struct Row {
     pub tail: RowTail,                 // Empty (closed) or RowVar(ρ) (open)
 }
 
+/// Kind for higher-kinded types (Jones 1993)
+/// Kinds classify types: * for proper types, (* -> *) for type constructors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// * — kind of proper types (Int, Str, [name: Str], etc.)
+    Type,
+    /// k1 -> k2 — kind of type constructors (Seq: * -> *, Mappable: (* -> *) -> Constraint)
+    Arrow(Box<Kind>, Box<Kind>),
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Kind::Type => write!(f, "*"),
+            Kind::Arrow(k1, k2) => write!(f, "({} -> {})", k1, k2),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Type {
     Int,
@@ -2387,6 +2406,141 @@ impl fmt::Display for Type {
 pub struct TypeAlias {
     pub params: Vec<String>,
     pub body: Type,
+}
+
+/// Type class declaration (Wadler & Blott 1989)
+/// Example: `[class [Equatable a] eq: [Fn@Bool [a a]]]`
+#[derive(Debug, Clone)]
+pub struct ClassDecl {
+    /// Class name (e.g., "Equatable")
+    pub name: String,
+    /// Type parameters with their kinds (e.g., [("a", Kind::Type)])
+    pub params: Vec<(String, Kind)>,
+    /// Superclass constraints (e.g., ["Ord"])
+    pub superclasses: Vec<String>,
+    /// Method signatures: method_name -> type scheme
+    pub methods: HashMap<String, TypeScheme>,
+}
+
+/// Type class instance declaration
+/// Example: `[instance [Equatable Int] eq: [fn [x y] [= x y]]]`
+#[derive(Debug, Clone)]
+pub struct InstanceDecl {
+    /// Class name (e.g., "Equatable")
+    pub class_name: String,
+    /// Instance type (e.g., Int, or type constructor application)
+    pub instance_type: Type,
+    /// Method implementations: method_name -> inferred type
+    /// (The actual dictionary value is stored in eval::ClassDictionary)
+    pub method_types: HashMap<String, Type>,
+}
+
+/// Class environment: global registry of type class declarations
+/// Scoped like TypeEnv (supports shadowing in nested scopes)
+#[derive(Debug, Clone)]
+pub struct ClassEnv {
+    classes: HashMap<String, ClassDecl>,
+    parent: Option<Rc<ClassEnv>>,
+}
+
+impl ClassEnv {
+    pub fn new() -> Self {
+        Self {
+            classes: HashMap::new(),
+            parent: None,
+        }
+    }
+
+    pub fn with_parent(parent: &Rc<ClassEnv>) -> Self {
+        Self {
+            classes: HashMap::new(),
+            parent: Some(Rc::clone(parent)),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ClassDecl> {
+        if let Some(class) = self.classes.get(name) {
+            return Some(class);
+        }
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            if let Some(class) = env.classes.get(name) {
+                return Some(class);
+            }
+            current = env.parent.as_deref();
+        }
+        None
+    }
+
+    pub fn insert(&mut self, class_decl: ClassDecl) {
+        self.classes.insert(class_decl.name.clone(), class_decl);
+    }
+}
+
+impl Default for ClassEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Instance environment: global registry of type class instances
+/// Key is (class_name, instance_type_string) to allow fast lookup
+#[derive(Debug, Clone)]
+pub struct InstanceEnv {
+    instances: HashMap<(String, String), InstanceDecl>,
+    parent: Option<Rc<InstanceEnv>>,
+}
+
+impl InstanceEnv {
+    pub fn new() -> Self {
+        Self {
+            instances: HashMap::new(),
+            parent: None,
+        }
+    }
+
+    pub fn with_parent(parent: &Rc<InstanceEnv>) -> Self {
+        Self {
+            instances: HashMap::new(),
+            parent: Some(Rc::clone(parent)),
+        }
+    }
+
+    /// Look up an instance by class name and type.
+    /// Returns the instance declaration if found.
+    pub fn get(&self, class_name: &str, ty: &Type) -> Option<&InstanceDecl> {
+        let key = (class_name.to_string(), ty.to_string());
+        if let Some(inst) = self.instances.get(&key) {
+            return Some(inst);
+        }
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            if let Some(inst) = env.instances.get(&key) {
+                return Some(inst);
+            }
+            current = env.parent.as_deref();
+        }
+        None
+    }
+
+    /// Insert an instance. Returns an error if an overlapping instance already exists.
+    pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
+        let key = (inst.class_name.clone(), inst.instance_type.to_string());
+        if self.instances.contains_key(&key) {
+            return Err(format!(
+                "overlapping instance for {} {}",
+                inst.class_name, inst.instance_type
+            ));
+        }
+        self.instances.insert(key, inst);
+        Ok(())
+    }
+}
+
+impl Default for InstanceEnv {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone)]

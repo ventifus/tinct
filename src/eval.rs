@@ -969,6 +969,37 @@ pub(crate) fn eval_recursive(
             )
             .into())
         }
+        Expr::ClassDecl { name, .. } => {
+            // TODO: Register the class in a class registry
+            // For now, just return a placeholder marker dict
+            let mut map = IndexMap::new();
+            let name_thunk = Rc::new(Thunk::new_materialized(
+                Value::String(name.clone()),
+                expr.span,
+            ));
+            map.insert(Key::String("__class__".into()), ctx.alloc_thunk(name_thunk));
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Dict(map),
+                expr.span,
+            )))
+        }
+        Expr::InstanceDecl { class_name, .. } => {
+            // TODO: Register the instance in an instance registry
+            // For now, just return a placeholder marker dict
+            let mut map = IndexMap::new();
+            let name_thunk = Rc::new(Thunk::new_materialized(
+                Value::String(class_name.clone()),
+                expr.span,
+            ));
+            map.insert(
+                Key::String("__instance__".into()),
+                ctx.alloc_thunk(name_thunk),
+            );
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Dict(map),
+                expr.span,
+            )))
+        }
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,
