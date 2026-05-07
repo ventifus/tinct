@@ -398,6 +398,38 @@ fn hover_at_expr(
             )
         }),
 
+        Expr::Match { scrutinee, arms } => {
+            hover_at_expr(
+                &scrutinee.node,
+                scrutinee.span,
+                offset,
+                type_map,
+                doc_map,
+                source,
+                prelude_index,
+                include_graph,
+                doc_url,
+            )
+            .or_else(|| {
+                for arm in arms {
+                    if let Some(text) = hover_at_expr(
+                        &arm.body.node,
+                        arm.body.span,
+                        offset,
+                        type_map,
+                        doc_map,
+                        source,
+                        prelude_index,
+                        include_graph,
+                        doc_url,
+                    ) {
+                        return Some(text);
+                    }
+                }
+                None
+            })
+        }
+
         Expr::Error(span) => Some(format!(
             "Parse error at {}:{}",
             span.start.line, span.start.column

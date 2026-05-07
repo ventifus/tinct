@@ -381,6 +381,19 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             name,
             transformer: Box::new(adjust_spanned_expr(*transformer, base)),
         },
+        Expr::Match { scrutinee, arms } => Expr::Match {
+            scrutinee: Box::new(adjust_spanned_expr(*scrutinee, base)),
+            arms: arms
+                .into_iter()
+                .map(|arm| crate::ast::MatchArm {
+                    pattern: Spanned {
+                        span: adjust_span(arm.pattern.span, base),
+                        node: arm.pattern.node,
+                    },
+                    body: Box::new(adjust_spanned_expr(*arm.body, base)),
+                })
+                .collect(),
+        },
     }
 }
 
@@ -884,6 +897,14 @@ enum StackFrame {
     DefMacro {
         name: Option<String>,
         transformer: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Match expression: `[match scrutinee pat1 body1 pat2 body2 ...]`
+    Match {
+        scrutinee: Option<Spanned<Expr>>,
+        arms: Vec<MatchArm>,
+        /// Pending pattern or body for the current arm
+        pending_pattern: Option<Spanned<Pattern>>,
         span_start: Position,
     },
     /// Pipe operator: `lhs | rhs`
@@ -1579,6 +1600,33 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
                         continue;
                     }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "match"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Match form: [match scrutinee pat1 body1 pat2 body2 ...]
+                        // (Not a match form if the keyword is followed by colon: [match: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::Match {
+                            scrutinee: None,
+                            arms: Vec::new(),
+                            pending_pattern: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "match" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
                     Some((Token::At, _)) | Some((Token::ImmediateAt, _)) => {
                         // Type-assert form: [@Annotation expr]
                         // (depth already checked above)
@@ -2053,6 +2101,44 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             }
                         }
                     },
+
+                    StackFrame::Match {
+                        scrutinee,
+                        arms,
+                        pending_pattern,
+                        span_start,
+                    } => {
+                        if scrutinee.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "match form requires a scrutinee expression".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        if pending_pattern.is_some() {
+                            close_bracket_recover!(ParseError {
+                                message: "match form has unpaired pattern (missing body)"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        if arms.is_empty() {
+                            close_bracket_recover!(ParseError {
+                                message: "match form requires at least one pattern-body pair"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        let match_expr = Expr::Match {
+                            scrutinee: Box::new(scrutinee.unwrap()),
+                            arms,
+                        };
+                        let spanned_match = Spanned::new(match_expr, dict_span(span_start));
+                        if let Err(push_err) =
+                            push_value(&mut stack, &mut current_document_expressions, spanned_match)
+                        {
+                            close_bracket_recover!(push_err);
+                        }
+                    }
 
                     StackFrame::Pipe { .. } => {
                         // A Pipe frame is never opened by `[` — pipe is an infix operator
@@ -3047,6 +3133,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Unquote { span_start, .. } => *span_start,
             StackFrame::UnquoteSplice { span_start, .. } => *span_start,
             StackFrame::DefMacro { span_start, .. } => *span_start,
+            StackFrame::Match { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -3266,6 +3353,32 @@ fn pop_last_value_from_frame(
                 })
             }
         }
+        Some(StackFrame::Match {
+            ref mut scrutinee,
+            ref mut arms,
+            ref mut pending_pattern,
+            ..
+        }) => {
+            if pending_pattern.is_some() {
+                // Last push was a pattern (already converted) — can't retroactively transform
+                Err(ParseError {
+                    message: "dot access on a pattern is not supported".to_string(),
+                    span: Some(span),
+                })
+            } else if !arms.is_empty() {
+                // Pop the last arm, restore its pattern as pending, return body
+                let last_arm = arms.pop().unwrap();
+                *pending_pattern = Some(last_arm.pattern);
+                Ok(*last_arm.body)
+            } else if let Some(s) = scrutinee.take() {
+                Ok(s)
+            } else {
+                Err(ParseError {
+                    message: "dot access requires a target before '.'".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
         Some(StackFrame::DefMacro { .. }) => Err(ParseError {
             message: "dot access is not valid inside defmacro form".to_string(),
             span: Some(span),
@@ -3282,6 +3395,51 @@ fn pop_last_value_from_frame(
 }
 
 /// Helper: push an expression to the parent frame or current document.
+/// Convert an expression to a pattern for match arms.
+///
+/// Pattern syntax (basic implementation):
+/// - `_` → Wildcard
+/// - Bare lowercase identifier → Variable binding
+/// - Bare uppercase identifier → TypeTag (Int, Str, Dict, etc.)
+/// - Int/Float/Bool/Str literal → Literal pattern
+///
+/// TODO: Pin patterns (`$name`) require tracking whether the VarRef came from
+/// Token::EscapedRef or Token::Identifier, which is lost after expr parsing.
+/// Either parse patterns directly from tokens or add escaped flag to VarRef.
+fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> {
+    let span = expr.span;
+    let pattern = match expr.node {
+        Expr::VarRef { name, .. } if name == "_" => Pattern::Wildcard,
+        Expr::VarRef { name, .. } if name.chars().next().map_or(false, |c| c.is_lowercase()) => {
+            Pattern::Variable(name)
+        }
+        Expr::VarRef { name, .. } if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
+            Pattern::TypeTag(name)
+        }
+        Expr::VarRef { name, .. } => {
+            // Other cases (e.g., names starting with special chars like %)
+            return Err(ParseError {
+                message: format!(
+                    "invalid pattern: '{}' (must start with lowercase, uppercase, or be '_')",
+                    name
+                ),
+                span: Some(span),
+            });
+        }
+        Expr::Int(n) => Pattern::Literal(LiteralPattern::Int(n)),
+        Expr::Float(f) => Pattern::Literal(LiteralPattern::Float(f)),
+        Expr::Bool(b) => Pattern::Literal(LiteralPattern::Bool(b)),
+        Expr::Str(s) => Pattern::Literal(LiteralPattern::Str(s)),
+        _ => {
+            return Err(ParseError {
+                message: "invalid pattern: expected identifier, literal, or _".to_string(),
+                span: Some(span),
+            });
+        }
+    };
+    Ok(Spanned::new(pattern, span))
+}
+
 fn push_expr_to_parent(
     stack: &mut Vec<StackFrame>,
     current_document_expressions: &mut Vec<Rc<Spanned<Expr>>>,
@@ -3402,6 +3560,37 @@ fn push_expr_to_parent(
                             .to_string(),
                         span: Some(expr.span),
                     })
+                }
+            }
+            Some(StackFrame::Match {
+                ref mut scrutinee,
+                ref mut arms,
+                ref mut pending_pattern,
+                ..
+            }) => {
+                // Match expects: [match scrutinee pat1 body1 pat2 body2 ...]
+                // First expression is the scrutinee, then alternating pattern and body
+                if scrutinee.is_none() {
+                    // This is the scrutinee
+                    *scrutinee = Some(expr);
+                    Ok(())
+                } else if pending_pattern.is_none() {
+                    // This is a pattern — convert expression to pattern
+                    match expr_to_pattern(expr) {
+                        Ok(pattern) => {
+                            *pending_pattern = Some(pattern);
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    // This is a body — complete the arm
+                    let pattern = pending_pattern.take().unwrap();
+                    arms.push(MatchArm {
+                        pattern,
+                        body: Box::new(expr),
+                    });
+                    Ok(())
                 }
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {

@@ -35,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::ast::{Document, Entry, Expr, File, NamedArg, Span, Spanned};
+use crate::ast::{Document, Entry, Expr, File, MatchArm, NamedArg, Span, Spanned};
 use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
@@ -532,6 +532,29 @@ fn expand_expr(
             ))
         }
 
+        Expr::Match { scrutinee, arms } => {
+            let expanded_scrutinee =
+                expand_expr(scrutinee.as_ref().clone(), env, ctx, stdlib_env)?;
+            let expanded_arms = arms
+                .iter()
+                .map(|arm| {
+                    let expanded_body =
+                        expand_expr(arm.body.as_ref().clone(), env, ctx, stdlib_env)?;
+                    Ok(MatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: Box::new(expanded_body),
+                    })
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(
+                Expr::Match {
+                    scrutinee: Box::new(expanded_scrutinee),
+                    arms: expanded_arms,
+                },
+                expr.span,
+            ))
+        }
+
         // Leaf nodes — no expansion needed
         Expr::Int(_)
         | Expr::Float(_)
@@ -831,6 +854,12 @@ fn collect_and_rename_bindings(
         Expr::UnquoteSplice(inner) => {
             collect_and_rename_bindings(&mut inner.node, scope_id, renames);
         }
+        Expr::Match { scrutinee, arms } => {
+            collect_and_rename_bindings(&mut scrutinee.node, scope_id, renames);
+            for arm in arms.iter_mut() {
+                collect_and_rename_bindings(&mut arm.body.node, scope_id, renames);
+            }
+        }
         // Leaf nodes — nothing to do
         Expr::Int(_)
         | Expr::Float(_)
@@ -903,6 +932,12 @@ fn rename_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
         }
         Expr::UnquoteSplice(inner) => {
             rename_refs(&mut inner.node, renames);
+        }
+        Expr::Match { scrutinee, arms } => {
+            rename_refs(&mut scrutinee.node, renames);
+            for arm in arms {
+                rename_refs(&mut arm.body.node, renames);
+            }
         }
         // Leaf nodes — nothing to do
         Expr::Int(_)

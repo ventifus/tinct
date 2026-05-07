@@ -16,7 +16,9 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
-use crate::ast::{Annotation, Document, Entry, Expr, File, Param, Span, Spanned};
+use crate::ast::{
+    Annotation, Document, Entry, Expr, File, LiteralPattern, Param, Pattern, Span, Spanned,
+};
 use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
 
 thread_local! {
@@ -850,6 +852,38 @@ pub(crate) fn eval_recursive(
             expr.span,
         )
         .into()),
+        Expr::Match { scrutinee, arms } => {
+            // Evaluate the scrutinee and materialize it
+            let scrutinee_thunk = eval(Rc::new(scrutinee.as_ref().clone()), Rc::clone(&env), ctx, depth + 1)?;
+            let scrutinee_value =
+                materialize(&scrutinee_thunk, Some(&scrutinee.span), ctx, depth + 1)?;
+
+            // Try each arm in order
+            for arm in arms {
+                if let Some(bound_env) = match_pattern(
+                    &arm.pattern.node,
+                    &scrutinee_value,
+                    &env,
+                    &scrutinee.span,
+                    ctx,
+                )? {
+                    // Pattern matched — evaluate the body in the extended environment
+                    return eval(
+                        Rc::new(arm.body.as_ref().clone()),
+                        bound_env,
+                        ctx,
+                        depth + 1,
+                    );
+                }
+            }
+
+            // No arm matched
+            Err(EvalError::new(
+                "non-exhaustive match: no pattern matched the scrutinee".to_string(),
+                expr.span,
+            )
+            .into())
+        }
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,
@@ -1807,6 +1841,96 @@ pub fn materialize(
 
 // Re-export deep_materialize from eval_deep module
 pub use crate::eval_deep::deep_materialize;
+
+/// Match a pattern against a value, returning the extended environment if the pattern matches.
+///
+/// Returns Ok(Some(env)) if the pattern matches (env contains any bindings from the pattern).
+/// Returns Ok(None) if the pattern does not match.
+/// Returns Err if there's an evaluation error (e.g., undefined pin variable).
+fn match_pattern(
+    pattern: &Pattern,
+    value: &Value,
+    env: &Rc<RefCell<Environment>>,
+    value_span: &Span,
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<Option<Rc<RefCell<Environment>>>> {
+    match pattern {
+        Pattern::Wildcard => {
+            // Wildcard always matches, no bindings
+            Ok(Some(Rc::clone(env)))
+        }
+        Pattern::Variable(name) => {
+            // Variable always matches and binds the value
+            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+            let value_thunk = Rc::new(Thunk::new_materialized(value.clone(), *value_span));
+            child_env.borrow_mut().insert(name.clone(), value_thunk);
+            Ok(Some(child_env))
+        }
+        Pattern::TypeTag(tag) => {
+            // TypeTag matches if type-of the value equals the tag
+            let type_name = value.type_name();
+            // Handle supertypes and aliases:
+            //   Number matches both Int and Float
+            //   Str is an alias for String (type_name returns "String")
+            let matches = if tag == "Number" {
+                type_name == "Int" || type_name == "Float"
+            } else if tag == "Str" {
+                type_name == "String"
+            } else {
+                type_name == tag
+            };
+            if matches {
+                Ok(Some(Rc::clone(env)))
+            } else {
+                Ok(None)
+            }
+        }
+        Pattern::Literal(lit) => {
+            // Literal matches if the value equals the literal
+            let matches = match (lit, value) {
+                (LiteralPattern::Int(n), Value::Int(v)) => n == v,
+                (LiteralPattern::Float(f), Value::Float(v)) => f == v,
+                (LiteralPattern::Bool(b), Value::Bool(v)) => b == v,
+                (LiteralPattern::Str(s), Value::String(v)) => s == v,
+                _ => false,
+            };
+            if matches {
+                Ok(Some(Rc::clone(env)))
+            } else {
+                Ok(None)
+            }
+        }
+        Pattern::Pin(name) => {
+            // Pin matches if the variable's value equals the scrutinee value
+            let var_thunk = env
+                .borrow()
+                .get(name)
+                .ok_or_else(|| EvalError::undefined_variable(name.clone(), *value_span))?;
+            let var_value = materialize(&var_thunk, Some(value_span), ctx, 0)?;
+
+            // Compare values for equality
+            let matches = values_equal(&var_value, value);
+            if matches {
+                Ok(Some(Rc::clone(env)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// Check if two values are equal (for pattern matching).
+/// This is a simple structural equality check.
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Dict(_), Value::Dict(_)) => false, // Dict equality is complex, not supported for now
+        _ => false,
+    }
+}
 
 #[cfg(test)]
 mod tests {

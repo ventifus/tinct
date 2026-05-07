@@ -189,6 +189,14 @@ fn reset_expr(expr: &Spanned<Expr>) {
         Expr::DefMacro { transformer, .. } => {
             reset_expr(transformer);
         }
+
+        // Match: recurse into scrutinee and arm bodies
+        Expr::Match { scrutinee, arms } => {
+            reset_expr(scrutinee);
+            for arm in arms {
+                reset_expr(&arm.body);
+            }
+        }
     }
 }
 
@@ -900,6 +908,21 @@ fn infer_expr(
             // UnquoteSplice itself doesn't have a standalone type — it's only valid
             // in list positions where it splices elements. Return Dict for now.
             Ok(expected_list_ty)
+        }
+
+        Expr::Match { scrutinee, arms } => {
+            // Basic match support: infer scrutinee type and all arm body types.
+            // Type the match expression as Any for now (full type narrowing comes in later phases).
+            let _scrutinee_ty = infer_expr(scrutinee, env, state, type_map)?;
+
+            // Infer each arm body's type (patterns don't affect types in this basic implementation)
+            for arm in arms {
+                let _arm_ty = infer_expr(&arm.body, env, state, type_map)?;
+            }
+
+            // Return Any for now — full union result typing and exhaustiveness checking
+            // comes with narrowing-basic and exhaustiveness sprints
+            Ok(Type::Any)
         }
 
         Expr::DefMacro { .. } => {
