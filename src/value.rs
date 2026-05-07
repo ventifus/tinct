@@ -42,12 +42,21 @@ pub enum Strictness {
 }
 
 /// Builtin function definition with strictness metadata.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone)]
 pub struct BuiltinDef {
     pub func: BuiltinFn,
     pub name: &'static str,
     pub pos_strictness: &'static [Strictness],
 }
+
+impl PartialEq for BuiltinDef {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare by name only — function pointer comparison is unreliable
+        self.name == other.name
+    }
+}
+
+impl Eq for BuiltinDef {}
 
 impl fmt::Debug for BuiltinDef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -551,7 +560,7 @@ impl Thunk {
         self
     }
 
-    pub fn state(&self) -> Ref<ThunkState> {
+    pub fn state(&self) -> Ref<'_, ThunkState> {
         self.state.borrow()
     }
 
@@ -917,6 +926,50 @@ mod tests {
             pos_strictness: &[],
         });
         assert_ne!(b.clone(), b);
+    }
+
+    #[test]
+    fn test_builtin_def_partial_eq_by_name() {
+        // BuiltinDef equality is name-based, not function-pointer-based.
+        // Two BuiltinDefs with the same name must compare equal regardless of their
+        // function pointers; two with different names must compare unequal.
+        fn func_a(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(1),
+                ctx.call_span,
+            )))
+        }
+        fn func_b(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Int(2),
+                ctx.call_span,
+            )))
+        }
+
+        let same_name_a = BuiltinDef {
+            func: func_a,
+            name: "my-builtin",
+            pos_strictness: &[],
+        };
+        let same_name_b = BuiltinDef {
+            func: func_b, // different function pointer, same name
+            name: "my-builtin",
+            pos_strictness: &[Strictness::Seq],
+        };
+        let different_name = BuiltinDef {
+            func: func_a,
+            name: "other-builtin",
+            pos_strictness: &[],
+        };
+
+        assert_eq!(
+            same_name_a, same_name_b,
+            "BuiltinDefs with the same name must compare equal regardless of function pointer"
+        );
+        assert_ne!(
+            same_name_a, different_name,
+            "BuiltinDefs with different names must compare unequal"
+        );
     }
 
     #[test]

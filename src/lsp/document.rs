@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use lsp_types::Url;
+use lsp_types::Uri;
 
 use crate::ast::{Expr, File, Span, Spanned};
 use crate::builtins::create_stdlib_env;
@@ -195,17 +195,14 @@ impl PreludeIndex {
     }
 }
 
-/// Resolve an include path relative to a base URL.
+/// Resolve an include path relative to a base URI.
 ///
-/// Returns `None` for non-`file://` base URLs or resolution failures.
-pub fn resolve_include_url(base_url: &Url, path: &str) -> Option<Url> {
-    // Only support file:// URLs for now
-    if base_url.scheme() != "file" {
-        return None;
-    }
+/// Returns `None` for non-`file://` base URIs or resolution failures.
+pub fn resolve_include_uri(base_uri: &Uri, path: &str) -> Option<Uri> {
+    use crate::lsp::convert::{file_path_to_uri, uri_to_file_path};
 
-    // Convert base URL to a file path
-    let base_path = base_url.to_file_path().ok()?;
+    // Convert base URI to a file path (implicitly checks for file:// scheme)
+    let base_path = uri_to_file_path(base_uri)?;
     let base_dir = base_path.parent()?;
 
     // Resolve the include path relative to the base directory
@@ -214,8 +211,8 @@ pub fn resolve_include_url(base_url: &Url, path: &str) -> Option<Url> {
     // Canonicalize to handle .. and . components
     let canonical_path = resolved_path.canonicalize().ok()?;
 
-    // Convert back to URL
-    Url::from_file_path(canonical_path).ok()
+    // Convert back to URI
+    file_path_to_uri(&canonical_path)
 }
 
 /// Index a file and its includes into the include graph.
@@ -224,7 +221,7 @@ pub fn resolve_include_url(base_url: &Url, path: &str) -> Option<Url> {
 /// Uses plain `std::fs::read_to_string` (not eval-time `$include`) — safe
 /// because no user code execution occurs, only parsing.
 pub fn index_file(
-    url: Url,
+    uri: Uri,
     graph: &mut IncludeGraph,
     stdlib_env: &Rc<RefCell<Environment>>,
     eval_ctx: &Rc<crate::eval::EvalContext>,
@@ -236,19 +233,19 @@ pub fn index_file(
     if depth >= MAX_DEPTH {
         return Err(format!(
             "Include depth limit ({}) exceeded at {}",
-            MAX_DEPTH, url
+            MAX_DEPTH,
+            uri.as_str()
         ));
     }
 
     // Skip if already indexed
-    if graph.contains_key(&url) {
+    if graph.contains_key(&uri) {
         return Ok(());
     }
 
     // Read the file
-    let path = url
-        .to_file_path()
-        .map_err(|_| format!("Cannot convert URL to path: {}", url))?;
+    let path = crate::lsp::convert::uri_to_file_path(&uri)
+        .ok_or_else(|| format!("Cannot convert URI to path: {}", uri.as_str()))?;
 
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
@@ -263,17 +260,17 @@ pub fn index_file(
         vec![]
     };
 
-    // Resolve include URLs
+    // Resolve include URIs
     let mut includes = Vec::new();
     for (path, _span) in include_paths {
-        if let Some(include_url) = resolve_include_url(&url, &path) {
-            includes.push(include_url);
+        if let Some(include_uri) = resolve_include_uri(&uri, &path) {
+            includes.push(include_uri);
         }
     }
 
     // Insert this node into the graph (before recursing, to handle circular deps)
     graph.insert(
-        url.clone(),
+        uri.clone(),
         IncludeNode {
             state,
             includes: includes.clone(),
@@ -282,24 +279,24 @@ pub fn index_file(
     );
 
     // Recursively index included files and build reverse edges
-    for include_url in &includes {
+    for include_uri in &includes {
         // Recurse
         if let Err(e) = index_file(
-            include_url.clone(),
+            include_uri.clone(),
             graph,
             stdlib_env,
             eval_ctx,
             prelude_index,
             depth + 1,
         ) {
-            eprintln!("LSP: Failed to index {}: {}", include_url, e);
+            eprintln!("LSP: Failed to index {}: {}", include_uri.as_str(), e);
             continue;
         }
 
         // Add reverse edge
-        if let Some(included_node) = graph.get_mut(include_url) {
-            if !included_node.included_by.contains(&url) {
-                included_node.included_by.push(url.clone());
+        if let Some(included_node) = graph.get_mut(include_uri) {
+            if !included_node.included_by.contains(&uri) {
+                included_node.included_by.push(uri.clone());
             }
         }
     }
@@ -312,7 +309,7 @@ pub fn index_file(
 /// Follows reverse edges breadth-first to find all files that transitively
 /// include the changed file, then re-indexes them.
 pub fn invalidate_dependents(
-    changed_url: &Url,
+    changed_uri: &Uri,
     graph: &mut IncludeGraph,
     stdlib_env: &Rc<RefCell<Environment>>,
     eval_ctx: &Rc<crate::eval::EvalContext>,
@@ -323,38 +320,38 @@ pub fn invalidate_dependents(
     let mut visited = std::collections::HashSet::new();
 
     // Start with the changed file's dependents
-    if let Some(node) = graph.get(changed_url) {
-        for dependent_url in &node.included_by {
-            queue.push_back(dependent_url.clone());
+    if let Some(node) = graph.get(changed_uri) {
+        for dependent_uri in &node.included_by {
+            queue.push_back(dependent_uri.clone());
         }
     }
 
     // BFS through reverse edges
-    while let Some(url) = queue.pop_front() {
-        if !visited.insert(url.clone()) {
+    while let Some(uri) = queue.pop_front() {
+        if !visited.insert(uri.clone()) {
             continue; // Already processed
         }
 
         // Re-index this file
         // Remove the old entry first to avoid depth-limit issues
-        graph.remove(&url);
+        graph.remove(&uri);
 
         if let Err(e) = index_file(
-            url.clone(),
+            uri.clone(),
             graph,
             stdlib_env,
             eval_ctx,
             prelude_index,
             0, // Reset depth for re-indexing
         ) {
-            eprintln!("LSP: Failed to re-index {}: {}", url, e);
+            eprintln!("LSP: Failed to re-index {}: {}", uri.as_str(), e);
             continue;
         }
 
         // Add its dependents to the queue
-        if let Some(node) = graph.get(&url) {
-            for dependent_url in &node.included_by {
-                queue.push_back(dependent_url.clone());
+        if let Some(node) = graph.get(&uri) {
+            for dependent_uri in &node.included_by {
+                queue.push_back(dependent_uri.clone());
             }
         }
     }
@@ -474,17 +471,17 @@ pub fn build_prelude_index() -> PreludeIndex {
 pub struct IncludeNode {
     /// Parsed and analyzed state of this file.
     pub state: DocumentState,
-    /// URLs of files this file includes (forward edges).
-    pub includes: Vec<Url>,
-    /// URLs of files that include this file (reverse edges).
-    pub included_by: Vec<Url>,
+    /// URIs of files this file includes (forward edges).
+    pub includes: Vec<Uri>,
+    /// URIs of files that include this file (reverse edges).
+    pub included_by: Vec<Uri>,
 }
 
 /// Include dependency graph for cross-file resolution.
 ///
 /// Tracks all files reachable via `$include` from open documents.
 /// Enables go-to-definition and hover across file boundaries.
-pub type IncludeGraph = HashMap<Url, IncludeNode>;
+pub type IncludeGraph = HashMap<Uri, IncludeNode>;
 
 /// Storage for all open documents.
 ///
@@ -492,7 +489,7 @@ pub type IncludeGraph = HashMap<Url, IncludeNode>;
 /// all document evaluations, avoiding the cost of re-parsing and evaluating
 /// the 500+ line stdlib prelude on every keystroke.
 pub struct DocumentStore {
-    docs: HashMap<Url, DocumentState>,
+    docs: HashMap<Uri, DocumentState>,
     /// Cached stdlib environment, created once on construction.
     stdlib_env: Rc<RefCell<Environment>>,
     /// Base evaluation context (with "." as base_dir).
@@ -546,12 +543,10 @@ impl DocumentStore {
     }
 
     /// Update or insert a document, re-parsing and re-analyzing the text.
-    pub fn update_document(&mut self, url: Url, text: String) {
+    pub fn update_document(&mut self, uri: Uri, text: String) {
         // Create evaluation context with document's directory as base_dir.
         // $include paths should resolve against the document's directory, not editor cwd.
-        let base_path = url
-            .to_file_path()
-            .ok()
+        let base_path = crate::lsp::convert::uri_to_file_path(&uri)
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         // Fallback chain: try document's directory first, then ".", then base_eval_ctx's Dir.
@@ -579,7 +574,7 @@ impl DocumentStore {
         let new_includes = if let Ok(ref file) = state.ast {
             crate::lsp::analysis::collect_include_paths(&file.node)
                 .into_iter()
-                .filter_map(|(path, _span)| resolve_include_url(&url, &path))
+                .filter_map(|(path, _span)| resolve_include_uri(&uri, &path))
                 .collect::<Vec<_>>()
         } else {
             vec![]
@@ -588,23 +583,23 @@ impl DocumentStore {
         // Get old includes to detect changes
         let old_includes = self
             .include_graph
-            .get(&url)
+            .get(&uri)
             .map(|node| node.includes.clone())
             .unwrap_or_default();
 
         // Index new includes
-        for include_url in &new_includes {
-            if !old_includes.contains(include_url) {
+        for include_uri in &new_includes {
+            if !old_includes.contains(include_uri) {
                 // New include detected — index it
                 if let Err(e) = index_file(
-                    include_url.clone(),
+                    include_uri.clone(),
                     &mut self.include_graph,
                     &self.stdlib_env,
                     &eval_ctx,
                     &self.prelude_index,
                     0,
                 ) {
-                    eprintln!("LSP: Failed to index {}: {}", include_url, e);
+                    eprintln!("LSP: Failed to index {}: {}", include_uri.as_str(), e);
                 }
             }
         }
@@ -613,40 +608,40 @@ impl DocumentStore {
         for old_include in &old_includes {
             if !new_includes.contains(old_include) {
                 if let Some(node) = self.include_graph.get_mut(old_include) {
-                    node.included_by.retain(|u| u != &url);
+                    node.included_by.retain(|u| u != &uri);
                 }
             }
         }
 
         // Update or insert this document's node in the include graph
         self.include_graph.insert(
-            url.clone(),
+            uri.clone(),
             IncludeNode {
                 state: state.clone(),
                 includes: new_includes.clone(),
                 included_by: self
                     .include_graph
-                    .get(&url)
+                    .get(&uri)
                     .map(|n| n.included_by.clone())
                     .unwrap_or_default(),
             },
         );
 
         // Add forward edges (reverse edges on included files)
-        for include_url in &new_includes {
-            if let Some(node) = self.include_graph.get_mut(include_url) {
-                if !node.included_by.contains(&url) {
-                    node.included_by.push(url.clone());
+        for include_uri in &new_includes {
+            if let Some(node) = self.include_graph.get_mut(include_uri) {
+                if !node.included_by.contains(&uri) {
+                    node.included_by.push(uri.clone());
                 }
             }
         }
 
         // Store in docs as well for backward compatibility
-        self.docs.insert(url.clone(), state);
+        self.docs.insert(uri.clone(), state);
 
         // Invalidate and re-index dependents
         invalidate_dependents(
-            &url,
+            &uri,
             &mut self.include_graph,
             &self.stdlib_env,
             &eval_ctx,
@@ -655,13 +650,13 @@ impl DocumentStore {
     }
 
     /// Remove a document from the store.
-    pub fn remove_document(&mut self, url: &Url) {
-        self.docs.remove(url);
+    pub fn remove_document(&mut self, uri: &Uri) {
+        self.docs.remove(uri);
     }
 
     /// Get a document's state, if it exists.
-    pub fn get(&self, url: &Url) -> Option<&DocumentState> {
-        self.docs.get(url)
+    pub fn get(&self, uri: &Uri) -> Option<&DocumentState> {
+        self.docs.get(uri)
     }
 }
 
@@ -751,7 +746,7 @@ mod tests {
     #[test]
     fn test_document_store_insert_get() {
         let mut store = DocumentStore::new();
-        let url = Url::parse("file:///test.llt").unwrap();
+        let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
         let doc = store.get(&url).unwrap();
@@ -762,7 +757,7 @@ mod tests {
     #[test]
     fn test_document_store_update_replaces() {
         let mut store = DocumentStore::new();
-        let url = Url::parse("file:///test.llt").unwrap();
+        let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
         store.update_document(url.clone(), "[x: 2]".to_string());
@@ -774,7 +769,7 @@ mod tests {
     #[test]
     fn test_document_store_remove() {
         let mut store = DocumentStore::new();
-        let url = Url::parse("file:///test.llt").unwrap();
+        let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
         assert!(store.get(&url).is_some());
@@ -802,8 +797,8 @@ mod tests {
     #[test]
     fn test_document_store_multiple_docs() {
         let mut store = DocumentStore::new();
-        let url1 = Url::parse("file:///a.llt").unwrap();
-        let url2 = Url::parse("file:///b.llt").unwrap();
+        let url1 = "file:///a.llt".parse::<Uri>().unwrap();
+        let url2 = "file:///b.llt".parse::<Uri>().unwrap();
 
         store.update_document(url1.clone(), "[a: 1]".to_string());
         store.update_document(url2.clone(), "[b: 2]".to_string());
@@ -877,13 +872,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_include_url_relative_path() {
-        let base_url = Url::parse("file:///home/user/project/main.llt").unwrap();
+    fn test_resolve_include_uri_relative_path() {
+        let base_url = "file:///home/user/project/main.llt".parse::<Uri>().unwrap();
         let include_path = "lib/utils.llt";
-        // resolve_include_url calls canonicalize, which requires the file to exist
+        // resolve_include_uri calls canonicalize, which requires the file to exist
         // So this test can't verify the exact URL without creating real files.
         // We can only test that it doesn't panic and returns None for non-existent paths.
-        let result = resolve_include_url(&base_url, include_path);
+        let result = resolve_include_uri(&base_url, include_path);
         // Result is None because the path doesn't exist (canonicalize fails)
         assert!(
             result.is_none(),
@@ -892,10 +887,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_include_url_absolute_path() {
-        let base_url = Url::parse("file:///home/user/project/main.llt").unwrap();
+    fn test_resolve_include_uri_absolute_path() {
+        let base_url = "file:///home/user/project/main.llt".parse::<Uri>().unwrap();
         let include_path = "/etc/hosts"; // absolute path to a file that usually exists
-        let result = resolve_include_url(&base_url, include_path);
+        let result = resolve_include_uri(&base_url, include_path);
         // On systems where /etc/hosts exists, this should succeed
         // On systems where it doesn't, it should return None
         // We can't make strong assertions without knowing the test environment
@@ -904,10 +899,12 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_include_url_parent_directory() {
-        let base_url = Url::parse("file:///home/user/project/src/main.llt").unwrap();
+    fn test_resolve_include_uri_parent_directory() {
+        let base_url = "file:///home/user/project/src/main.llt"
+            .parse::<Uri>()
+            .unwrap();
         let include_path = "../lib/utils.llt";
-        let result = resolve_include_url(&base_url, include_path);
+        let result = resolve_include_uri(&base_url, include_path);
         // Should attempt to resolve to /home/user/project/lib/utils.llt
         // Returns None because the path doesn't exist
         assert!(
@@ -917,10 +914,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_include_url_non_file_scheme() {
-        let base_url = Url::parse("http://example.com/main.llt").unwrap();
+    fn test_resolve_include_uri_non_file_scheme() {
+        let base_url = "http://example.com/main.llt".parse::<Uri>().unwrap();
         let include_path = "lib/utils.llt";
-        let result = resolve_include_url(&base_url, include_path);
+        let result = resolve_include_uri(&base_url, include_path);
         assert!(result.is_none(), "should return None for non-file:// URLs");
     }
 }

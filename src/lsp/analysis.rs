@@ -1,6 +1,6 @@
 //! LSP analysis: hover text and diagnostics.
 
-use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Url};
+use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Uri};
 
 use crate::ast::{Expr, Span};
 use crate::error::render_span_snippet;
@@ -18,7 +18,7 @@ use crate::types::TypeError;
 /// Also searches direct includes' type maps for cross-file hover.
 pub fn hover_at(
     doc: &DocumentState,
-    doc_url: &Url,
+    doc_url: &Uri,
     offset: usize,
     prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
@@ -60,7 +60,7 @@ fn type_suffix(
     type_map: &TypeMap,
     prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
-    doc_url: &Url,
+    doc_url: &Uri,
 ) -> String {
     let key = (span.start.offset, span.end.offset);
 
@@ -108,7 +108,7 @@ fn hover_at_expr(
     source: &str,
     prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
-    doc_url: &Url,
+    doc_url: &Uri,
 ) -> Option<String> {
     if !span_contains(span, offset) {
         return None;
@@ -757,11 +757,11 @@ fn find_key_definition(expr: &Expr, _span: Span, name: &str) -> Option<Span> {
 /// - The variable reference has no definition in the document, includes, or prelude.
 pub fn definition_at(
     doc: &DocumentState,
-    doc_url: &Url,
+    doc_url: &Uri,
     offset: usize,
     prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
-) -> Option<(Url, Span)> {
+) -> Option<(Uri, Span)> {
     let file = match &doc.ast {
         Ok(f) => f,
         Err(_) => return None,
@@ -809,8 +809,8 @@ pub fn definition_at(
     // Fall back to the prelude index.
     if let Some(&span) = prelude_index.name_to_key_span().get(&name) {
         if let Some(path) = prelude_index.path() {
-            if let Ok(url) = Url::from_file_path(path) {
-                return Some((url, span));
+            if let Some(uri) = crate::lsp::convert::file_path_to_uri(path) {
+                return Some((uri, span));
             }
         }
     }
@@ -822,7 +822,7 @@ pub fn definition_at(
 ///
 /// `uri` is the document's URI, used to construct `DiagnosticRelatedInformation`
 /// locations that point back into the same file.
-pub fn diagnostics_for(doc: &DocumentState, uri: &Url) -> Vec<Diagnostic> {
+pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
     let source = &doc.text;
     let mut diagnostics = Vec::new();
 
@@ -900,7 +900,7 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str) -> Diagnostic {
     }
 }
 
-fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &Url) -> Diagnostic {
+fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &Uri) -> Diagnostic {
     let range = llt_span_to_lsp_range(&err.definition_span, source);
 
     // Collect related_information from:
@@ -1006,8 +1006,8 @@ mod tests {
     }
 
     /// Canonical test URI for diagnostics_for() calls.
-    fn test_uri() -> Url {
-        Url::parse("file:///test.llt").unwrap()
+    fn test_uri() -> Uri {
+        "file:///test.llt".parse::<Uri>().unwrap()
     }
 
     #[test]
@@ -1609,7 +1609,8 @@ mod tests {
             let (url, _span) = def_result.unwrap();
             assert!(
                 url.as_str().contains("prelude.llt"),
-                "definition URL should point to prelude.llt; got: {url}"
+                "definition URL should point to prelude.llt; got: {}",
+                url.as_str()
             );
         }
     }

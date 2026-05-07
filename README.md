@@ -338,6 +338,44 @@ Add a test by creating a `.llt-eval` file in the appropriate directory, then run
 - **[doc/](doc/index.md)** -- Language specification (17 chapters): syntax, data model, functions, type system, evaluation, stdlib, tooling, examples, internals
 - **[TODO.md](TODO.md)** -- Implementation roadmap with current sprint status
 
+## Naming Conventions
+
+### Builtin and stdlib function names
+
+Two-word names use a hyphen. The convention depends on the relationship
+between the two words:
+
+**Domain-first** — when operating on an existing value of a known type,
+the domain/type/protocol comes first, the verb second:
+
+```
+str-find      str-length    str-chars     str-repeat
+bytes-find    bytes-of      bytes-equal?
+timestamp-add timestamp-diff timestamp-year
+http-get      https-get     tls-connect
+dir-cap       net-cap       tag-of        type-of
+```
+
+**Verb-first** — when constructing or converting *to* a domain type
+(the input is not yet that type), the verb comes first:
+
+```
+parse-timestamp   format-timestamp
+load-tz           from-json
+write-atomic
+```
+
+The dividing line: if the primary input *is already* the domain type,
+domain-first. If the function *produces* that type from something else,
+verb-first.
+
+Single-word builtins are always verbs: `map`, `filter`, `open`, `slurp`,
+`connect`, `emit`, `reverse`, `sort`.
+
+### File and module names
+
+stdlib files use `kebab-case.llt`. Source files use `snake_case.rs`.
+
 ## Development Workflow
 
 Features move through these stages in order:

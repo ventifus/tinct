@@ -12,7 +12,7 @@ use lsp_types::{
     Diagnostic, DiagnosticSeverity, GotoDefinitionParams, GotoDefinitionResponse, HoverContents,
     HoverParams, InitializeParams, InitializeResult, Location, MarkedString,
     PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Url,
+    TextDocumentSyncKind, Uri,
 };
 
 use crate::lsp::analysis::{definition_at, diagnostics_for, hover_at};
@@ -178,7 +178,7 @@ fn handle_request(
                             } else if store
                                 .prelude_index
                                 .path()
-                                .and_then(|p| Url::from_file_path(p).ok())
+                                .and_then(|p| crate::lsp::convert::file_path_to_uri(p))
                                 == Some(target_uri.clone())
                             {
                                 // Prelude definition
@@ -315,7 +315,7 @@ fn handle_notification(
 
 fn publish_too_large_diagnostic(
     connection: &Connection,
-    uri: &Url,
+    uri: &Uri,
     size: usize,
 ) -> Result<(), Box<dyn Error>> {
     let params = PublishDiagnosticsParams {
@@ -346,7 +346,7 @@ fn publish_too_large_diagnostic(
 fn publish_diagnostics(
     connection: &Connection,
     store: &DocumentStore,
-    uri: &Url,
+    uri: &Uri,
 ) -> Result<(), Box<dyn Error>> {
     let diagnostics = store
         .get(uri)
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_hover_request_serialization() {
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri },
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_did_open_notification_serialization() {
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = lsp_types::DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri,
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_did_change_notification_serialization() {
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = lsp_types::DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier { uri, version: 2 },
             content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_publish_diagnostics_serialization() {
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics: vec![],
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn test_handle_hover_returns_value() {
         let mut store = DocumentStore::new();
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
         let hover = hover_at(doc, &uri, 4, &store.prelude_index, &store.include_graph); // on '42'
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn test_handle_hover_no_document() {
         let store = DocumentStore::new();
-        let uri = Url::parse("file:///missing.llt").unwrap();
+        let uri = "file:///missing.llt".parse::<Uri>().unwrap();
         // If document doesn't exist, hover should return None.
         assert!(store.get(&uri).is_none());
     }
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn test_diagnostics_published_on_parse_error() {
         let mut store = DocumentStore::new();
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
         let diags = diagnostics_for(doc, &uri);
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn test_diagnostics_empty_for_valid_doc() {
         let mut store = DocumentStore::new();
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
         let diags = diagnostics_for(doc, &uri);
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn test_document_update_replaces_content() {
         let mut store = DocumentStore::new();
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         store.update_document(uri.clone(), "[x: 2]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn test_document_close_removes() {
         let mut store = DocumentStore::new();
-        let uri = Url::parse("file:///test.llt").unwrap();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         store.remove_document(&uri);
         assert!(store.get(&uri).is_none());

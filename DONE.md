@@ -4408,3 +4408,18 @@ Break up oversized Rust modules. All files currently compile and pass tests; eac
 - [x] types.rs (9,408 → 977 non-test lines): split into type_env.rs, type_unify.rs
 - [x] eval.rs (9,347 → 8,317 lines): split into eval_pipeline.rs, eval_dict.rs
 - [x] parser.rs split deferred — type parsing interleaved with parse2() monolith
+
+## Infrastructure
+
+### `dependency-upgrades`
+
+Upgrade Rust toolchain 1.86 → 1.95 and four outdated crates.
+
+- [x] rust_version 1.86 → 1.95 in justfile; deleted downgrade-deps recipe
+- [x] seccompiler 0.4 → 0.5 (Cargo.toml)
+- [x] rustyline 14 → 18 (Cargo.toml)
+- [x] cap-std 3 → 4 (Cargo.toml)
+- [x] lsp-types 0.95 → 0.97 (Url → Uri across 4 LSP files; new src/lsp/convert.rs helpers)
+- [x] url = "2" added as lsp-feature-gated dep
+- [x] Rust 1.95 compat: TestFile<'_> lifetime, SIGALRM cast, BuiltinDef::PartialEq by name
+- [x] Integration: just update, all 1918 tests pass

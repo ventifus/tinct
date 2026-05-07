@@ -1,4 +1,5 @@
-//! Coordinate system conversion between LLT spans and LSP positions.
+//! Coordinate system conversion between LLT spans and LSP positions,
+//! and between filesystem paths and LSP URIs.
 //!
 //! - **LLT Position**: 1-indexed line and column, byte offsets
 //! - **LSP Position**: 0-indexed line and column, UTF-16 code units
@@ -92,6 +93,25 @@ fn compute_line_start(source: &str, target_line: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Convert a filesystem path to an LSP URI.
+///
+/// Returns `None` if the path is not absolute (required by `url::Url::from_file_path`),
+/// or if the resulting URL string cannot be parsed as an `lsp_types::Uri`.
+/// URI-invalid characters in the path are automatically percent-encoded.
+pub fn file_path_to_uri(path: &std::path::Path) -> Option<lsp_types::Uri> {
+    let url = url::Url::from_file_path(path).ok()?;
+    url.as_str().parse::<lsp_types::Uri>().ok()
+}
+
+/// Convert an LSP URI to a filesystem path.
+///
+/// Returns `None` if the URI is not a `file://` URL or if the path component
+/// cannot be decoded into a valid `PathBuf`.
+pub fn uri_to_file_path(uri: &lsp_types::Uri) -> Option<std::path::PathBuf> {
+    let url = url::Url::parse(uri.as_str()).ok()?;
+    url.to_file_path().ok()
 }
 
 #[cfg(test)]
@@ -304,5 +324,49 @@ mod tests {
         let offset_end = lsp_position_to_offset(&range.end, source).unwrap();
 
         assert_eq!(&source[offset_start..offset_end], "hello");
+    }
+
+    #[test]
+    fn test_file_path_round_trip() {
+        // An absolute path must survive file_path_to_uri → uri_to_file_path intact.
+        let path = std::path::Path::new("/tmp/test_file.llt");
+        let uri = file_path_to_uri(path).expect("absolute path should produce a URI");
+        let recovered = uri_to_file_path(&uri).expect("file:// URI should convert back to a path");
+        assert_eq!(recovered, path);
+    }
+
+    #[test]
+    fn test_uri_to_file_path_non_file_scheme_returns_none() {
+        // Non-file URIs (https://, etc.) must return None; they have no filesystem path.
+        let uri: lsp_types::Uri = "https://example.com".parse().expect("valid URI string");
+        assert!(uri_to_file_path(&uri).is_none());
+    }
+
+    #[test]
+    fn test_file_path_to_uri_relative_path_returns_none() {
+        // url::Url::from_file_path requires an absolute path; relative paths return None.
+        let path = std::path::Path::new("relative/path.llt");
+        assert!(file_path_to_uri(path).is_none());
+    }
+
+    #[test]
+    fn test_file_path_round_trip_with_spaces() {
+        // Paths containing spaces must survive file_path_to_uri → uri_to_file_path intact.
+        // Spaces are percent-encoded as %20 in the URI; the round-trip must decode them back.
+        let path = std::path::Path::new("/tmp/test file with spaces.llt");
+        let uri = file_path_to_uri(path).expect("absolute path with spaces should produce a URI");
+        // Verify the URI contains percent-encoded spaces.
+        assert!(
+            uri.as_str().contains("%20"),
+            "URI should percent-encode spaces as %20, got: {}",
+            uri.as_str()
+        );
+        // Verify round-trip fidelity.
+        let recovered =
+            uri_to_file_path(&uri).expect("file:// URI with %20 should convert back to a path");
+        assert_eq!(
+            recovered, path,
+            "round-trip should recover the original path"
+        );
     }
 }

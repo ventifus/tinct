@@ -846,6 +846,7 @@ impl Default for TypeVarBounds {
 /// Provenance for a subtyping constraint — tracks why the constraint was generated.
 /// Used for error messages when bounds are unsatisfiable.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // Scaffolding for algebraic subtyping — wired in a future sprint
 pub struct ConstraintSource {
     pub span: Span,
     pub reason: String,

@@ -6,54 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Infrastructure
 
-### `dependency-upgrades`
-
-Upgrade Rust toolchain 1.86 → 1.95 and four outdated crates. The `downgrade-deps` justfile recipe was introduced solely to paper over 1.86 compatibility pins; moving to 1.95 removes that constraint entirely.
-
-**lsp-types is the only dep with source changes** (4 LSP files). The other three crate bumps and the Rust bump are mechanical edits with zero expected source changes.
-
-**justfile — Rust version bump:**
-
-- [ ] Change `rust_version := "1.86"` to `"1.95"` (`justfile`)
-- [ ] Delete the `downgrade-deps` recipe — the `home 0.5.5`, `url 2.5.3`, `idna_adapter 1.2.0` pins are no longer needed at 1.87+ (`justfile`)
-- [ ] Run `just update` to let pinned transitive deps float; confirm build passes before any crate bumps (`Cargo.lock`)
-
-**seccompiler 0.4 → 0.5 — zero source changes:**
-
-Only change: RISC-V 64-bit arch support added; existing `x86_64`/`aarch64` API unchanged. tinct's `setup_seccomp()` graceful-degrade path already handles unknown arches.
-
-- [ ] Change `seccompiler = "0.4"` to `"0.5"` in `[target.'cfg(target_os = "linux")'.dependencies]` (`Cargo.toml`)
-
-**rustyline 14 → 18 — zero source changes:**
-
-The `readline()` signature changed to `readline<P: Prompt + ?Sized>(prompt: &P)` in v18, but `&str` implements `Prompt` via blanket impl so existing calls in `src/repl.rs` with `&str` constants compile unchanged.
-
-- [ ] Change `rustyline = { version = "14.0", optional = true }` to `"18.0"` (`Cargo.toml`)
-
-**cap-std 3 → 4 — zero source changes:**
-
-Key internal change is `rustix ^0.38` → `^1.0`, which is fully encapsulated inside cap-std. The public `Dir` API (`open_ambient_dir`, `open_dir`, `open`, `try_clone`, `MetadataExt`) is unchanged. MSRV for cap-std 4 is 1.70.
-
-- [ ] Change `cap-std = "3"` to `"4"` (`Cargo.toml`)
-
-**lsp-types 0.95 → 0.97 — `Url` → `Uri` across 4 LSP files:**
-
-`url::Url` (re-exported as `lsp_types::Url`) was replaced by a newtype `lsp_types::Uri` wrapping `fluent_uri`. The methods `Url::from_file_path()` and `.to_file_path()` do not exist on `Uri`. All other LSP types tinct uses (`Diagnostic`, `HoverContents`, `ServerCapabilities`, `Range`, `Position`, etc.) are unchanged.
-
-- [ ] Change `lsp-types = { version = "0.95", optional = true }` to `"0.97"` (`Cargo.toml`)
-- [ ] Add `url = "2"` under the `lsp` feature (or as a non-optional dep) so the conversion helpers can use `url::Url::from_file_path` / `to_file_path` internally while exposing `lsp_types::Uri` at the API boundary (`Cargo.toml`)
-- [ ] Add `pub fn file_path_to_uri(path: &Path) -> Option<Uri>` and `pub fn uri_to_file_path(uri: &Uri) -> Option<PathBuf>` to `src/lsp/convert.rs`, implemented via `url::Url` internally (`src/lsp/convert.rs`)
-- [ ] `src/lsp/document.rs`: replace `use lsp_types::Url` with `Uri`; replace all `Url::from_file_path(…)` with `file_path_to_uri(…)`; replace all `.to_file_path()` with `uri_to_file_path(…)`; replace `Url::parse("file:///…")` with `"file:///…".parse::<Uri>().unwrap()` in tests (`src/lsp/document.rs`)
-- [ ] `src/lsp/analysis.rs`: replace `Url` import with `Uri`; replace `Url::from_file_path(path)` with `file_path_to_uri(path)`; replace `Url::parse(…)` with `.parse::<Uri>()` (`src/lsp/analysis.rs`)
-- [ ] `src/lsp/server.rs`: replace `Url` import with `Uri`; replace all `Url::parse("file:///…")` with `"file:///…".parse::<Uri>().unwrap()` in test sites (`src/lsp/server.rs`)
-- [ ] Run `just test-lsp` to confirm LSP corpus tests pass
-
-**Integration:**
-
-- [ ] Run `just update` after all `Cargo.toml` bumps to pull latest compatible patch releases (`Cargo.lock`)
-- [ ] Run `just ci` — check + test + lint + fmt-check + audit (`justfile`)
-- [ ] Run `just versions` to confirm all ← markers are gone
-
 ### `rust-modernize`
 
 Adopt new Rust 1.87–1.95 language and stdlib features available at the new MSRV. These are independent follow-on refactors; each is a quality-of-life improvement, not a correctness fix.
