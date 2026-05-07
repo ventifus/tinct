@@ -780,13 +780,14 @@ fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
-// String builtins: str, split, replace, upper, lower, trim.
+// String builtins: str, split, replace, upper, lower, trim, str-length.
 // Implementations live in builtins_string.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 #[cfg(test)]
 pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 pub(crate) use crate::builtins_string::{
-    builtin_lower, builtin_replace, builtin_split, builtin_str, builtin_trim, builtin_upper,
+    builtin_lower, builtin_replace, builtin_split, builtin_str, builtin_str_length, builtin_trim,
+    builtin_upper,
 };
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -3127,6 +3128,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("upper", builtin_upper, [Strictness::Seq]),
         builtin!("lower", builtin_lower, [Strictness::Seq]),
         builtin!("trim", builtin_trim, [Strictness::Seq]),
+        builtin!("str-length", builtin_str_length, [Strictness::Seq]),
         // Numeric
         builtin!("floor", builtin_floor, [Strictness::Seq]),
         builtin!("round", builtin_round, [Strictness::Seq]),
@@ -8219,7 +8221,8 @@ mod tests {
         // Update this count when standard_builtins() changes.
         assert!(names.contains(&"eval-ast"), "missing eval-ast");
         assert!(names.contains(&"gensym"), "missing gensym");
-        assert_eq!(names.len(), 78, "expected 78 builtins, got {}", names.len());
+        assert!(names.contains(&"str-length"), "missing str-length");
+        assert_eq!(names.len(), 79, "expected 79 builtins, got {}", names.len());
     }
 
     #[test]
