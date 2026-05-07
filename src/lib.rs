@@ -238,6 +238,7 @@ pub trait ValueVisitor {
     fn visit_proxy(&self) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> Self::Output;
+    fn visit_bigint(&self, v: &num_bigint::BigInt) -> Self::Output;
     /// Return `Some(output)` if the depth limit has been reached, `None` to continue.
     fn depth_limit_output(
         &self,
@@ -324,6 +325,7 @@ pub fn visit_value<V: ValueVisitor>(
             Ok(visitor.visit_variant(tag.clone(), payload_output))
         }
         value::Value::Decimal(d) => Ok(visitor.visit_decimal(*d)),
+        value::Value::BigInt(n) => Ok(visitor.visit_bigint(n)),
     }
 }
 
@@ -419,6 +421,14 @@ impl ValueVisitor for JsonVisitor {
                 .unwrap_or_else(|_| serde_json::Number::from(0)),
         )
     }
+    fn visit_bigint(&self, v: &num_bigint::BigInt) -> serde_json::Value {
+        // BigInt serializes as JSON number string. May exceed JSON receiver's i64 range.
+        use std::str::FromStr;
+        serde_json::Value::Number(
+            serde_json::Number::from_str(&v.to_string())
+                .unwrap_or_else(|_| serde_json::Number::from(0)),
+        )
+    }
     fn depth_limit_output(
         &self,
         depth: usize,
@@ -496,6 +506,9 @@ impl ValueVisitor for DisplayVisitor {
     }
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> String {
         format!("Decimal({v})")
+    }
+    fn visit_bigint(&self, v: &num_bigint::BigInt) -> String {
+        format!("BigInt({v})")
     }
     fn depth_limit_output(&self, depth: usize) -> Option<Result<String, Box<error::EvalError>>> {
         if depth > eval::MAX_EVAL_DEPTH {

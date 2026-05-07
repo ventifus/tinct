@@ -180,6 +180,9 @@ pub enum Value {
     /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
     /// Created via `decimal` builtin. No lossy cross-type with Float.
     Decimal(rust_decimal::Decimal),
+    /// Arbitrary-precision integer (num_bigint::BigInt).
+    /// Created via `big-int` builtin or arithmetic overflow promotion.
+    BigInt(num_bigint::BigInt),
 }
 
 impl Value {
@@ -202,6 +205,7 @@ impl Value {
             Value::RevocableDirCap { .. } => "DirCap",
             Value::Variant { .. } => "Variant",
             Value::Decimal(_) => "Decimal",
+            Value::BigInt(_) => "BigInt",
         }
     }
 }
@@ -243,6 +247,7 @@ impl fmt::Debug for Value {
                 }
             }
             Value::Decimal(d) => write!(f, "Decimal({d})"),
+            Value::BigInt(n) => write!(f, "BigInt({n})"),
         }
     }
 }
@@ -296,6 +301,7 @@ impl fmt::Display for Value {
                 }
             }
             Value::Decimal(d) => write!(f, "{d}"),
+            Value::BigInt(n) => write!(f, "{n}"),
         }
     }
 }
@@ -339,6 +345,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
+            (Value::BigInt(a), Value::BigInt(b)) => a == b,
             // Dict, Function, Builtin, Seq, Proxy, and Overlay are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
             _ => false,
