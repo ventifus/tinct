@@ -1,0 +1,16 @@
+# Nested macro expansion: one macro's output feeds into another.
+[defmacro id [fn [macro-args]
+  [get 0 macro-args]
+]]
+
+[defmacro add-ten [fn [macro-args]
+  [type: "call"
+   fn: [type: "var"  name: "+"]
+   args: [[get 0 macro-args]  [type: "literal"  kind: "int"  value: 10]]
+   named-args: []
+   implied: true]
+]]
+
+[add-ten [id 5]]
+===
+Int(15)

@@ -428,6 +428,15 @@ fn expand_expr(
             ))
         }
 
+        Expr::Sequential(exprs) => {
+            let mut expanded_exprs = Vec::new();
+            for seq_expr in exprs {
+                let expanded = expand_expr(seq_expr.as_ref().clone(), env, ctx, stdlib_env)?;
+                expanded_exprs.push(Rc::new(expanded));
+            }
+            Ok(Spanned::new(Expr::Sequential(expanded_exprs), expr.span))
+        }
+
         Expr::Dict(entries) => {
             let mut expanded_entries = Vec::new();
             for entry in entries {
@@ -796,6 +805,13 @@ fn collect_and_rename_bindings(
         Expr::DotAccess { expr: target, .. } => {
             collect_and_rename_bindings(&mut target.node, scope_id, renames);
         }
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                if let Some(seq_expr_mut) = Rc::get_mut(seq_expr) {
+                    collect_and_rename_bindings(&mut seq_expr_mut.node, scope_id, renames);
+                }
+            }
+        }
         Expr::Pipe { lhs, rhs } => {
             collect_and_rename_bindings(&mut lhs.node, scope_id, renames);
             collect_and_rename_bindings(&mut rhs.node, scope_id, renames);
@@ -861,6 +877,13 @@ fn rename_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
         }
         Expr::DotAccess { expr: target, .. } => {
             rename_refs(&mut target.node, renames);
+        }
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                if let Some(seq_expr_mut) = Rc::get_mut(seq_expr) {
+                    rename_refs(&mut seq_expr_mut.node, renames);
+                }
+            }
         }
         Expr::Pipe { lhs, rhs } => {
             rename_refs(&mut lhs.node, renames);

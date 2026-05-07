@@ -1751,6 +1751,12 @@ pub(crate) fn eval_step(
         Expr::Pipe { .. } => {
             unreachable!("Pipe should be desugared before evaluation")
         }
+        Expr::Sequential(_) => {
+            // Sequential expressions are handled by eval_recursive, not the iterative evaluator.
+            // They require full sequential environment chaining which is not yet integrated
+            // into the CEK machine. Fall back to eval_recursive for now.
+            unreachable!("Sequential should be handled by eval_recursive (not yet in CEK machine)")
+        }
     }
 }
 

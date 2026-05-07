@@ -6,18 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase A: Foundations
 
-### `let-binding`
-
-**Depends on:** None
-**Spec chapters:** `doc/04-functions.md` (§Let Binding — multi-expression fn bodies, sequential scoping)
-
-1. Parser: `fn` body accepts expression sequence until closing `]`
-2. Desugar: multi-expression body to nested `Expr::Sequential`
-3. Type checker: if desugared, no change; verify `infer_sequential`
-   handles nested case
-4. Tests: 6+ corpus tests (single-body unchanged, multi-body with
-   intermediate bindings, shadowing, lazy intermediate thunks)
-
 ### `pattern-matching-basic`
 
 **Depends on:** Type predicates (DONE)

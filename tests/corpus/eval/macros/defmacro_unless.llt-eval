@@ -1,14 +1,19 @@
-# Custom unless macro (stub expansion returns first arg)
-# Full transformer invocation is Phase 2; stub returns args[0].
-[defmacro my-unless [fn [args]
-  [quote
-    [if [unquote [get 0 args]]
-      []
-      [unquote [get 1 args]]
-    ]
-  ]
+# Custom unless macro using manual AST dict construction.
+# Transforms [my-unless cond body] into [if cond [] body].
+# Note: param is named `macro-args` to avoid shadowing by the `args` key
+# in the generated AST dict (dict keys create letrec bindings).
+[defmacro my-unless [fn [macro-args]
+  [type: "call"
+   fn: [type: "var"  name: "if"]
+   args: [
+     [get 0 macro-args]
+     [type: "dict"  entries: []]
+     [get 1 macro-args]
+   ]
+   named-args: []
+   implied: true]
 ]]
 
 [my-unless false 42]
 ===
-Bool(false)
+Int(42)

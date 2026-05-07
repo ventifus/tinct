@@ -28,24 +28,21 @@ pub fn format_source_compact(
     Ok(formatter.output)
 }
 
-/// Format source using the tinct-hosted compact formatter.
+/// Format source using the tinct-hosted formatter.
 ///
-/// This evaluates `stdlib/formatter/compact.llt` with the AST dict as `%`.
-/// The formatter returns a compact source string (oneline mode with semicolons).
-pub fn format_source_tinct(input: &str) -> Result<String, String> {
+/// When `compact` is true, uses `stdlib/formatter/compact.llt` (oneline/minimize mode).
+/// When `compact` is false, uses `stdlib/formatter/pretty.llt` (full pretty-printing with comments).
+pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String> {
     use crate::ast_dict::{ast_to_dict, AstToDictOpts};
     use crate::builtins::create_stdlib_env;
     use crate::desugar;
     use crate::eval::{self, EvalContext};
-    use crate::parser::parse;
+    use crate::parser::{parse, parse2};
     use crate::resolve;
     use crate::typecheck;
     use crate::value::Value;
 
-    // Parse the input
-    let file = parse(input).map_err(|e| format!("{e}"))?;
-
-    // Convert AST to dict (minimal mode: no source info, no comments)
+    // Set up evaluation context
     let base_dir_path = std::env::current_dir()
         .ok()
         .and_then(|d| d.canonicalize().ok())
@@ -56,11 +53,34 @@ pub fn format_source_tinct(input: &str) -> Result<String, String> {
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
     let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
 
-    let opts = AstToDictOpts::default(); // Minimal mode (no source, no comments)
-    let ast_thunk = ast_to_dict(&file.node, &opts, &ctx).map_err(|e| format!("{e}"))?;
+    // Parse the source - always use parse2 to get comments
+    use crate::ast_dict::CommentMaps;
+    let parse_output = parse2(input).map_err(|e| format!("{e}"))?;
 
-    // Load and evaluate the formatter
-    let formatter_source = include_str!("../stdlib/formatter/compact.llt");
+    // Convert AST to dict
+    // Compact mode: minimal (no source, no comments)
+    // Pretty mode: full (with source info and comments)
+    let opts = if compact {
+        AstToDictOpts::default()
+    } else {
+        AstToDictOpts {
+            source: Some(input),
+            comments: Some(CommentMaps {
+                leading_comments: &parse_output.leading_comments,
+                trailing_comments: &parse_output.trailing_comments,
+                blank_before: &parse_output.blank_before,
+            }),
+        }
+    };
+    let ast_thunk =
+        ast_to_dict(&parse_output.file.node, &opts, &ctx).map_err(|e| format!("{e}"))?;
+
+    // Load the appropriate formatter
+    let formatter_source = if compact {
+        include_str!("../stdlib/formatter/compact.llt")
+    } else {
+        include_str!("../stdlib/formatter/pretty.llt")
+    };
     let mut formatter_file =
         parse(formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
 
@@ -204,6 +224,7 @@ impl<'a> Formatter<'a> {
             | Expr::Call { .. }
             | Expr::Fn { .. }
             | Expr::TypeAlias(_)
+            | Expr::Sequential(_)
             | Expr::Quote(_)
             | Expr::Unquote(_)
             | Expr::UnquoteSplice(_)
@@ -342,6 +363,17 @@ impl<'a> Formatter<'a> {
                 self.output.push('|');
                 self.push_space_before_expr(rhs);
                 self.format_expr(rhs, false);
+            }
+            Expr::Sequential(exprs) => {
+                // Format sequential expressions as a pseudo-list.
+                // This is a synthetic node created by let-binding, not user-written syntax.
+                // Display as (seq expr1 expr2 ...) for debugging.
+                self.output.push_str("(seq");
+                for seq_expr in exprs {
+                    self.push_space(None);
+                    self.format_expr(seq_expr, false);
+                }
+                self.output.push(')');
             }
             Expr::Dict(entries) => self.format_dict(entries),
             Expr::Call {
@@ -540,6 +572,14 @@ impl<'a> Formatter<'a> {
             }
             Expr::Pipe { lhs, rhs } => {
                 self.measure_expr_width(lhs) + 3 + self.measure_expr_width(rhs) // lhs | rhs
+            }
+            Expr::Sequential(exprs) => {
+                // Measure as (seq expr1 expr2 ...)
+                let mut width = 4; // "(seq"
+                for seq_expr in exprs {
+                    width += 1 + self.measure_expr_width(seq_expr);
+                }
+                width + 1 // closing ")"
             }
             Expr::Dict(entries) => self.measure_dict_width(entries),
             Expr::Call {
@@ -927,6 +967,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::DotAccess { .. } => Some('a'), // starts with whatever the base expr is
             Expr::Pipe { .. } => Some('a'),      // starts with lhs
+            Expr::Sequential(_) => Some('('),    // starts with (seq
             Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias(_) => Some('['),
             Expr::TypeAssert { .. } => Some('['),
             Expr::Quote(_) | Expr::Unquote(_) | Expr::UnquoteSplice(_) | Expr::DefMacro { .. } => {
@@ -1600,5 +1641,50 @@ mod tests {
         let once = format_source_compact(input, true, true).unwrap();
         let twice = format_source_compact(&once, true, true).unwrap();
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn test_format_quote() {
+        let input = "[quote [+ 1 2]]";
+        let formatted = format_source_compact(input, false, false).unwrap();
+        assert_eq!(formatted, "[quote [+ 1 2]]\n");
+    }
+
+    #[test]
+    fn test_format_unquote() {
+        let input = "[quote [+ [unquote x] 2]]";
+        let formatted = format_source_compact(input, false, false).unwrap();
+        assert_eq!(formatted, "[quote [+ [unquote x] 2]]\n");
+    }
+
+    #[test]
+    fn test_format_unquote_splice() {
+        let input = "[quote [call f [unquote-splice args]]]";
+        let formatted = format_source_compact(input, false, false).unwrap();
+        assert_eq!(formatted, "[quote [call f [unquote-splice args]]]\n");
+    }
+
+    #[test]
+    fn test_format_defmacro() {
+        let input = "[defmacro my-macro [fn [x] x]]";
+        let formatted = format_source_compact(input, false, false).unwrap();
+        assert_eq!(formatted, "[defmacro my-macro [fn [x] x]]\n");
+    }
+
+    #[test]
+    fn test_format_nested_quote() {
+        let input = "[quote [quote [unquote x]]]";
+        let formatted = format_source_compact(input, false, false).unwrap();
+        assert_eq!(formatted, "[quote [quote [unquote x]]]\n");
+    }
+
+    #[test]
+    fn test_format_macro_with_complex_transformer() {
+        let input = "[defmacro unless [fn [args] [if [get 0 args] [get 2 args] [get 1 args]]]]";
+        let formatted = format_source_compact(input, false, false).unwrap();
+        assert_eq!(
+            formatted,
+            "[defmacro unless [fn [args] [if [get 0 args] [get 2 args] [get 1 args]]]]\n"
+        );
     }
 }

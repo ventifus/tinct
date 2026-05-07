@@ -735,6 +735,11 @@ pub struct EvalError {
     /// Optional secondary span with a label, e.g. "evaluated to Bool" pointing at a value site.
     /// Displayed after the primary error line when present.
     pub secondary_span: Option<(Span, String)>,
+    /// Optional macro expansion provenance: (macro_name, call_site_span).
+    /// When set, the error Display shows "in expansion of `<name>` at line:col".
+    /// Populated by the error propagation path when errors occur in macro-expanded code.
+    /// See Pombrio & Krishnamurthi (2015) for the "honest tags" approach to expansion provenance.
+    pub macro_expansion: Option<(String, Span)>,
 }
 
 impl EvalError {
@@ -753,6 +758,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -785,6 +791,13 @@ impl EvalError {
         self
     }
 
+    /// Builder for attaching macro expansion provenance.
+    /// Shows "in expansion of `<name>` at line:col" in the error output.
+    pub fn with_macro_expansion(mut self, macro_name: String, call_site: Span) -> Self {
+        self.macro_expansion = Some((macro_name, call_site));
+        self
+    }
+
     pub fn key_not_found(key: &str, available_keys: Vec<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::KeyNotFound {
@@ -795,6 +808,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -809,6 +823,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -822,6 +837,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -832,6 +848,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -849,6 +866,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -859,6 +877,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -869,6 +888,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -879,6 +899,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -889,6 +910,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -908,6 +930,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -918,6 +941,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -928,6 +952,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -938,6 +963,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -948,6 +974,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -958,6 +985,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -968,6 +996,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -981,6 +1010,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -991,6 +1021,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1005,6 +1036,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1017,6 +1049,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1027,6 +1060,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1037,6 +1071,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1049,6 +1084,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1059,6 +1095,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1069,6 +1106,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1079,6 +1117,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1089,6 +1128,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1104,6 +1144,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1123,6 +1164,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1133,6 +1175,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1143,6 +1186,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1162,6 +1206,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1172,6 +1217,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1182,6 +1228,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 
@@ -1194,6 +1241,7 @@ impl EvalError {
             materialization_span: None,
             stack: SmallVec::new(),
             secondary_span: None,
+            macro_expansion: None,
         }
     }
 }
@@ -1364,6 +1412,18 @@ impl fmt::Display for EvalError {
                 write!(f, "\n  in {} at {}", frame.label, frame.span)?;
             }
         }
+
+        // Macro expansion provenance: shows "in expansion of `<name>` at line:col"
+        // when the error occurred in macro-generated code. This is dual-span reporting
+        // per Pombrio & Krishnamurthi (2015).
+        if let Some((ref macro_name, ref call_site)) = self.macro_expansion {
+            write!(
+                f,
+                "\n  in expansion of `{}` at {}:{}",
+                macro_name, call_site.start.line, call_site.start.column
+            )?;
+        }
+
         Ok(())
     }
 }
@@ -2741,6 +2801,7 @@ mod tests {
                     materialization_span: None,
                     stack: SmallVec::new(),
                     secondary_span: None,
+                    macro_expansion: None,
                 },
                 "[E002]",
             ),

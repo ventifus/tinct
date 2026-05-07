@@ -1,0 +1,8 @@
+# Macro returns invalid AST dict (missing required type field)
+[defmacro bad-macro [fn [macro-args]
+  [value: 42]
+]]
+
+[bad-macro 1]
+===
+ERROR: invalid AST dict

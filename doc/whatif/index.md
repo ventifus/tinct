@@ -84,6 +84,10 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [General I/O](completed/io.md) | Capability-based I/O: `DirCap`, `NetCap`, `Handle`; `open`, `slurp`, `write`, `lines` | 2026-05-05 — all phases done: `io-phase1` through `io-phase4` + `io-include-cap` |
 | [tinct as a Templating Language](completed/templating.md) | `emit`, multi-file pipelines, formatters, string interpolation, literate mode | 2026-05-05 — all phases done: `templating-phase1` through `templating-phase4` |
 | [String Interpolation](completed/string-interpolation.md) | `i"Hello $name"` — desugars to `[str ...]`; formatter ergonomics | 2026-05-05 — implemented as `templating-phase3`: `i"..."` + `${expr}` + formatter roundtrip |
+| [AST Dict Schema](completed/ast-schema.md) | Canonical `Expr` → tinct dict mapping; `ast_to_dict` / `dict_to_ast`; shared by formatter, quasiquoting, macros | 2026-05-06 — `ast-dict-core` complete; `ast-dict-source`, `dict-to-ast` in progress |
+| [Tinct-Hosted Formatter](completed/tinct-hosted-formatter.md) | `tinct fmt --oneline/--nospaces/--minimize` compact modes; full layout formatter with comment preservation | 2026-05-06 — `formatter-compact` complete; `formatter-full` pending typing-cluster A1+A2 |
+| [Quasiquoting](completed/quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros | 2026-05-06 — `quote`, `unquote` in progress |
+| [Desugaring as Macros](completed/macros.md) | Procedural AST macros via `[defmacro]`; user-defined syntactic transformations | 2026-05-06 — `defmacro`, `macro-hygiene`, `macro-integration` in progress |
 
 ### Accepted
 
@@ -92,10 +96,6 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
 | [Unified Access and Generator Pipeline](access-pipeline.md) | Remove bracket access; add `\|` desugar-only pipe; `DotKey::Int` for `list.0`; `get`, `each`, `collect-kv` builtins | 2026-05-05 |
-| [AST Dict Schema](ast-schema.md) | Canonical `Expr` → tinct dict mapping; `ast_to_dict` / `dict_to_ast`; shared by formatter, quasiquoting, macros | 2026-05-05 |
-| [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros | 2026-05-05 |
-| [Desugaring as Macros](macros.md) | Procedural AST macros via `[defmacro]`; user-defined syntactic transformations | 2026-05-05 |
-| [Tinct-Hosted Formatter](tinct-hosted-formatter.md) | `tinct fmt` delegated to `stdlib/formatter/`; speculative rendering; shared `ast_to_dict` infrastructure | 2026-05-05 |
 | [`let` Binding Form](let-binding.md) | Sequential expressions inside `[fn ...]` bodies — no new keywords | 2026-05-05 |
 | [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption | 2026-05-05 |
 | [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) | 2026-05-05 |

@@ -48,18 +48,22 @@ make-entry: [fn [k v] [$k: v]]
 # Main entry point: dispatch on node.type
 format-node: [fn [node]
   [cond [
-    [[= [get "type" node] "literal"]     [format-literal node]]
-    [[= [get "type" node] "var"]         [get "name" node]]
-    [[= [get "type" node] "dot-access"]  [format-dot-access node]]
-    [[= [get "type" node] "pipe"]        [format-pipe node]]
-    [[= [get "type" node] "dict"]        [format-dict node]]
-    [[= [get "type" node] "call"]        [format-call node]]
-    [[= [get "type" node] "fn"]          [format-fn node]]
-    [[= [get "type" node] "type-alias"]  [format-type-alias node]]
-    [[= [get "type" node] "type-assert"] [format-type-assert node]]
-    [[= [get "type" node] "annotated"]   [format-annotated node]]
-    [[= [get "type" node] "rest"]        [format-rest node]]
-    [[= [get "type" node] "error"]       "<error>"]
+    [[= [get "type" node] "literal"]        [format-literal node]]
+    [[= [get "type" node] "var"]            [get "name" node]]
+    [[= [get "type" node] "dot-access"]     [format-dot-access node]]
+    [[= [get "type" node] "pipe"]           [format-pipe node]]
+    [[= [get "type" node] "dict"]           [format-dict node]]
+    [[= [get "type" node] "call"]           [format-call node]]
+    [[= [get "type" node] "fn"]             [format-fn node]]
+    [[= [get "type" node] "type-alias"]     [format-type-alias node]]
+    [[= [get "type" node] "type-assert"]    [format-type-assert node]]
+    [[= [get "type" node] "annotated"]      [format-annotated node]]
+    [[= [get "type" node] "rest"]           [format-rest node]]
+    [[= [get "type" node] "quote"]          [format-quote node]]
+    [[= [get "type" node] "unquote"]        [format-unquote node]]
+    [[= [get "type" node] "unquote-splice"] [format-unquote-splice node]]
+    [[= [get "type" node] "defmacro"]       [format-defmacro node]]
+    [[= [get "type" node] "error"]          "<error>"]
     [true [error [str "unknown node type: " [get "type" node]]]]
   ]]]
 
@@ -201,6 +205,22 @@ format-rest: [fn [node]
   [if [empty? [get "name" node]]
     "..."
     [str "..." [get "name" node]]]]
+
+# Format quote: [quote expr]
+format-quote: [fn [node]
+  [str "[quote " [format-node [get "expr" node]] "]"]]
+
+# Format unquote: [unquote expr]
+format-unquote: [fn [node]
+  [str "[unquote " [format-node [get "expr" node]] "]"]]
+
+# Format unquote-splice: [unquote-splice expr]
+format-unquote-splice: [fn [node]
+  [str "[unquote-splice " [format-node [get "expr" node]] "]"]]
+
+# Format defmacro: [defmacro name transformer]
+format-defmacro: [fn [node]
+  [str "[defmacro " [get "name" node] " " [format-node [get "transformer" node]] "]"]]
 
 # ============================================================================
 # Document & File Formatters

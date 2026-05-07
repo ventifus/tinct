@@ -1,0 +1,26 @@
+# Scope isolation: two macros using the same parameter name don't interfere.
+#
+# Both `add-one` and `double` macros accept one argument.
+# They each produce different transformations. When composed,
+# [add-one [double 3]] should produce 7 (3*2 + 1), not any
+# confused cross-macro value.
+
+[defmacro double [fn [macro-args]
+  [type: "call"
+   fn: [type: "var"  name: "*"]
+   args: [[get 0 macro-args]  [type: "literal"  kind: "int"  value: 2]]
+   named-args: []
+   implied: true]
+]]
+
+[defmacro add-one [fn [macro-args]
+  [type: "call"
+   fn: [type: "var"  name: "+"]
+   args: [[get 0 macro-args]  [type: "literal"  kind: "int"  value: 1]]
+   named-args: []
+   implied: true]
+]]
+
+[add-one [double 3]]
+===
+Int(7)

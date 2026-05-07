@@ -1,0 +1,13 @@
+# Macro expansion error: runtime error in macro-generated code.
+# The macro produces code that will fail at runtime (dividing by zero).
+[defmacro div-zero [fn [macro-args]
+  [type: "call"
+   fn: [type: "var"  name: "/"]
+   args: [[get 0 macro-args]  [type: "literal"  kind: "int"  value: 0]]
+   named-args: []
+   implied: true]
+]]
+
+[div-zero 42]
+===
+ERROR: division by zero

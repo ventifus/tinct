@@ -1,0 +1,5 @@
+# Intermediate bindings are lazy (not forced unless used)
+[test: [fn [x] [unused: [error "should not be evaluated"]] [+ x 1]]]
+[test 41]
+===
+Int(42)

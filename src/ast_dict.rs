@@ -403,6 +403,26 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::Sequential(exprs) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("sequential".into()),
+                    span,
+                ))),
+            );
+
+            let expr_ids = exprs
+                .iter()
+                .map(|e| expr_to_thunk_id(&e.node, e.span, opts, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+
+            dict.insert(
+                Key::String("exprs".into()),
+                list_to_thunk_id(expr_ids, span, ctx)?,
+            );
+        }
+
         Expr::Dict(entries) => {
             dict.insert(
                 Key::String("type".into()),
@@ -1118,6 +1138,17 @@ pub fn dict_to_ast(
                 lhs: Box::new(dict_to_ast(&lhs_val, ctx)?),
                 rhs: Box::new(dict_to_ast(&rhs_val, ctx)?),
             }
+        }
+
+        "sequential" => {
+            let exprs_val = get_dict_field(dict, "exprs", &["type"], ctx)?;
+            let exprs_list = extract_list(&exprs_val, &["exprs"], ctx)?;
+            let mut exprs = Vec::new();
+            for (_i, expr_val) in exprs_list.into_iter().enumerate() {
+                let expr = dict_to_ast(&expr_val, ctx)?;
+                exprs.push(Rc::new(expr));
+            }
+            Expr::Sequential(exprs)
         }
 
         "dict" => {

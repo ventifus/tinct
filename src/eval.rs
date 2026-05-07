@@ -559,6 +559,71 @@ pub(crate) fn eval_recursive(
         Expr::Pipe { .. } => {
             unreachable!("Pipe should be desugared before evaluation")
         }
+        Expr::Sequential(exprs) => {
+            // Multi-expression sequential evaluation (let-binding semantics).
+            // Each expression's result dict extends the environment for the next.
+            // The last expression's value is the overall result.
+            if exprs.is_empty() {
+                return Ok(Rc::new(Thunk::new_materialized(
+                    Value::Dict(IndexMap::new()),
+                    expr.span,
+                )));
+            }
+
+            let mut current_env = Rc::clone(&env);
+
+            for (i, seq_expr) in exprs.iter().enumerate() {
+                let is_last = i == exprs.len() - 1;
+
+                if is_last {
+                    // Last expression: return its thunk as-is (lazy, any type)
+                    return eval(Rc::clone(seq_expr), current_env, ctx, depth);
+                }
+
+                // Intermediate expression: materialize and extract dict bindings
+                let thunk = eval(Rc::clone(seq_expr), Rc::clone(&current_env), ctx, depth)?;
+                let value = materialize(&thunk, Some(&seq_expr.span), ctx, depth + 1)?;
+
+                // Flatten Overlay to Dict for scope chain binding.
+                let map = match value {
+                    Value::Dict(map) => map,
+                    Value::Overlay(l, r) => crate::builtins::flatten_overlay(
+                        &l,
+                        &r,
+                        "sequential expression",
+                        ctx,
+                        depth + 1,
+                        seq_expr.span,
+                    )?,
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "sequential expression".to_string(),
+                            "Dict",
+                            value.type_name(),
+                            seq_expr.span,
+                        )
+                        .into());
+                    }
+                };
+
+                // Create child environment with bindings from intermediate expression
+                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                    &current_env,
+                ))));
+                for (key, val_thunk_id) in map {
+                    // Only string keys become scope bindings; int keys are positional, not named.
+                    if let Key::String(name) = key {
+                        let val_thunk = ctx.get_thunk(val_thunk_id);
+                        child_env.borrow_mut().insert(name, val_thunk);
+                    }
+                }
+                current_env = child_env;
+            }
+
+            unreachable!(
+                "eval Sequential: loop did not return — exprs was non-empty but is_last never triggered"
+            )
+        }
         Expr::TypeAssert {
             expr: inner,
             annotation,

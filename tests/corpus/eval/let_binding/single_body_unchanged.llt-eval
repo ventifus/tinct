@@ -1,0 +1,5 @@
+# Single-expression function body works as before (backward compatible)
+[double: [fn [x] [* x 2]]]
+[double 21]
+===
+Int(42)

@@ -6,7 +6,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 **Vision:** One language where structured data is the native citizen. No impedance mismatch between your data model and your transformation logic — no shell pipelines to glue things together, no separate query language, no JSON-in-strings. Lazy evaluation keeps large structures efficient, Hindley-Milner types catch shape errors before they reach production, and generator-native pipelines (think jq, but typed and composable) make data flow a first-class concern.
 
-**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter, LSP server with diagnostics and hover, comprehensive test suite.
+**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter with tinct-hosted compact modes, AST dict schema (`ast_to_dict`), LSP server with diagnostics and hover, comprehensive test suite.
 
 ## Syntax at a Glance
 
@@ -130,6 +130,12 @@ A standard library written in Tinct itself (`stdlib/prelude.llt`), covering coll
 ### Source formatter
 
 `tinct fmt` — idempotent formatter that canonicalizes whitespace and layout. `--check` mode for CI, `--in-place` for editor integration.
+
+`tinct fmt --oneline` / `--nospaces` / `--minimize` — tinct-hosted compact formatter modes via `stdlib/formatter/compact.llt`. Produces minified output for diffing, embedding, and tooling pipelines.
+
+### AST dict schema
+
+`ast_to_dict` — canonical serialization of any tinct program as a tinct dict. Shared infrastructure for the formatter, quasiquoting, and macros. Every `Expr` variant maps to a `[type: "..." span: [...] ...]` dict node, enabling tinct programs to inspect and transform tinct programs.
 
 ### LSP server
 

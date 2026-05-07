@@ -131,6 +131,12 @@ pub enum Expr {
         rhs: Box<Spanned<Expr>>,
     },
 
+    /// Sequential expressions for multi-expression function bodies and match arms.
+    /// Each expression's result dict extends the environment for subsequent expressions.
+    /// The last expression's value is the overall result.
+    /// Implements let* semantics (non-recursive, sequential bindings).
+    Sequential(Vec<Rc<Spanned<Expr>>>),
+
     /// Dict/list literal with keyed and/or auto-indexed entries
     Dict(Vec<Spanned<Entry>>),
 
@@ -301,6 +307,13 @@ impl fmt::Display for Expr {
                 DotKey::Int(n) => write!(f, "{}.{n}", expr.node),
             },
             Expr::Pipe { lhs, rhs } => write!(f, "{} | {}", lhs.node, rhs.node),
+            Expr::Sequential(exprs) => {
+                write!(f, "(seq")?;
+                for expr in exprs {
+                    write!(f, " {}", expr.node)?;
+                }
+                write!(f, ")")
+            }
             Expr::Dict(entries) => {
                 write!(f, "[")?;
                 for (i, entry) in entries.iter().enumerate() {

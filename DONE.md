@@ -4146,3 +4146,12 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] D4 Greenman et al. venue correction: the §References section lists "ICFP '19" for Greenman, Felleisen & Dimoulas (2019). The correct venue is OOPSLA '19 (Proc. ACM Program. Lang. 3, OOPSLA, Article 122, doi:10.1145/3360548). Fixed in typing-cluster.md, gradual-typing.md, and doc/17-references.md. (`doc/whatif/plans/typing-cluster.md` §References) [Nit, computer-scientist train]
 - [x] Occurrence typing tasks missing: narrowing added as proposal #12 to typing-cluster plan with two sprints: B5a `narrowing-basic` (8 tasks: `if` as type-level special form, `Narrowing` enum, `extract_narrowings`, environment forking, branch type join, conjunction, type map, tests) and B5b `narrowing-predicates` (5 tasks: `int?`/`str?`/etc. direct narrowing, `num?` supertype, `cond` narrowing, tests). Wired into dependency graph, implementation calendar (weeks 7-8), and cross-cutting concerns (§5 items 6-7). (`doc/whatif/plans/typing-cluster.md` B5a, B5b) [Minor, computer-scientist train]
 - [x] B4 constraint duplication during instantiation: proof obligation now stated in typing-cluster.md §5 Cross-Cutting Concerns item 4 — each fresh variable carries exactly the constraints from the generalized scheme (Jones 1995, §8.3), not accumulated constraints from the current inference state. (`doc/whatif/plans/typing-cluster.md` B4) [Minor, computer-scientist train]
+
+## Phase A: Foundations
+
+### let-binding
+
+- [x] Parser: fn body accepts expression sequence until closing ]
+- [x] Expr::Sequential variant + evaluator: intermediate dicts extend scope sequentially
+- [x] Type checker: Sequential inference with intermediate Record field extension
+- [x] 7 corpus tests: backward compat, multi-step, shadowing, lazy thunks, nested, multiple bindings

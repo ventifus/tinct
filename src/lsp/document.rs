@@ -74,7 +74,7 @@ impl DocumentState {
             // Expand macros before desugar: rewrites [defmacro ...] and macro calls.
             // This matches the pipeline used by all other entry points (main.rs, lib.rs).
             let mut file = match crate::expand::expand_macros(file, eval_ctx.config.no_fs) {
-                Ok(f) => f,
+                Ok(result) => result.file,
                 Err(e) => {
                     // Macro expansion error — convert to parse error
                     ast = Err(crate::parser::ParseError {
@@ -424,7 +424,7 @@ pub fn build_prelude_index() -> PreludeIndex {
 
     // Expand macros (pre-desugar AST transformation)
     let mut file = match crate::expand::expand_macros(file, false) {
-        Ok(f) => f.node,
+        Ok(result) => result.file.node,
         Err(e) => {
             eprintln!("LSP: failed to expand macros in prelude: {}", e);
             return PreludeIndex::empty();

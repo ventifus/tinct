@@ -1832,9 +1832,24 @@ fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     })?;
 
     // Parse.
-    let mut file = crate::parser::parse(&source).map_err(|e| {
+    let file = crate::parser::parse(&source).map_err(|e| {
         EvalError::include_parse_failed(file_path_str.clone(), e.to_string(), call_span)
     })?;
+
+    // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> eval.
+    // Macro expansion runs first so that DefMacro nodes are registered and macro calls
+    // are expanded before the underscore desugar pass and evaluation.
+    // This matches the pipeline in main.rs, lib.rs, and LSP.
+    let expand_result = crate::expand::expand_macros(file, ctx.config.no_fs).map_err(|e| {
+        EvalError::include_parse_failed(
+            file_path_str.clone(),
+            format!("macro expansion error: {}", e),
+            call_span,
+        )
+    })?;
+    let mut file = expand_result.file;
+    // Note: expand_result.provenance is discarded here. Included files' macro provenance
+    // is not threaded back to the includer's provenance map. This is a known limitation.
 
     // Desugar $_ implicit lambdas (pre-typecheck and pre-eval AST transformation).
     crate::desugar::desugar_file(&mut file.node);

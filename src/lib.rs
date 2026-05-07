@@ -125,7 +125,38 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
     // See also: src/main.rs:234-240 (run_eval pipeline)
     // Expand macros (pre-desugar AST transformation).
-    let mut file = expand::expand_macros(file, no_fs).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(file, no_fs).map_err(|e| format!("{e}"))?;
+    let mut file = expand_result.file;
+    let provenance = expand_result.provenance;
+
+    // Helper: attach macro expansion provenance to errors before formatting.
+    // Checks if the error's definition span, materialization span, or any stack
+    // frame span matches a provenance entry from macro expansion.
+    let attach_provenance = |mut e: Box<error::EvalError>| -> String {
+        if e.macro_expansion.is_none() {
+            // Check definition span
+            let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
+            // Check materialization span
+            if found.is_none() {
+                if let Some(mat_span) = e.materialization_span {
+                    found = provenance.get(&expand::SpanKey::from(mat_span));
+                }
+            }
+            // Check stack frame spans
+            if found.is_none() {
+                for frame in &e.stack {
+                    if let Some(prov) = provenance.get(&expand::SpanKey::from(frame.span)) {
+                        found = Some(prov);
+                        break;
+                    }
+                }
+            }
+            if let Some(prov) = found {
+                e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
+            }
+        }
+        format!("{e}")
+    };
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -143,10 +174,10 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
     let thunk =
-        eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(|e| format!("{e}"))?;
-    let val = eval::materialize(&thunk, None, &ctx, 0).map_err(|e| format!("{e}"))?;
-    let forced = eval::deep_materialize(&val, &ctx, 0, None).map_err(|e| format!("{e}"))?;
-    value_to_display_string(&forced, &ctx, 0).map_err(|e| format!("{e}"))
+        eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(&attach_provenance)?;
+    let val = eval::materialize(&thunk, None, &ctx, 0).map_err(&attach_provenance)?;
+    let forced = eval::deep_materialize(&val, &ctx, 0, None).map_err(&attach_provenance)?;
+    value_to_display_string(&forced, &ctx, 0).map_err(&attach_provenance)
 }
 
 /// Parse and type-check LLT source code.
