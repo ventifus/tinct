@@ -4,38 +4,70 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Source Organization
+## Infrastructure
 
-### `file-split`
+### `dependency-upgrades`
 
-Break up oversized Rust modules. All files currently compile and pass tests; each split is a pure move of code with no semantic change. Split one file at a time, `cargo test` after each.
+Upgrade Rust toolchain 1.86 → 1.95 and four outdated crates. The `downgrade-deps` justfile recipe was introduced solely to paper over 1.86 compatibility pins; moving to 1.95 removes that constraint entirely.
 
-- [ ] Enable warnings-as-errors: add `RUSTFLAGS="-D warnings"` to the `just test` and `just ci` recipes so compiler warnings become build failures (`justfile`)
+**lsp-types is the only dep with source changes** (4 LSP files). The other three crate bumps and the Rust bump are mechanical edits with zero expected source changes.
 
-**`src/builtins.rs` (13,641 lines) — already partially split, finish the job:**
-- [ ] Extract IO builtins (`open`, `slurp`, `write`, `write-atomic`, `lines`, `connect`, `fetch`, `send`, `recv`) into `src/builtins_io.rs`; update `mod.rs`/`lib.rs` re-exports (`src/builtins.rs`, `src/builtins_io.rs`)
-- [ ] Extract dict/access builtins (`builtin-get`, `each`, `each-key`, `each-kv`, `keys`, `length`, `merge`, `append`, `has?`, `remove`, `set`, `update`) into `src/builtins_dict.rs` (`src/builtins.rs`, `src/builtins_dict.rs`)
-- [ ] Extract type/eval/meta builtins (`type-of`, `eval-ast`, `include`, `error`, `try`, `apply`, `gensym`, `assert`) into `src/builtins_meta.rs` (`src/builtins.rs`, `src/builtins_meta.rs`)
-- [ ] What remains in `builtins.rs` should be only: `standard_builtins()` registration, `BuiltinArgs` struct, shared helpers, and the `IncludeContext` cache; target < 2,000 lines
+**justfile — Rust version bump:**
 
-**`src/typecheck.rs` (10,691 lines):**
-- [ ] Extract type annotation resolution (`resolve_annotation`, `resolve_type_name`, `resolve_type_dict`, `TypeAssert` elaboration) into `src/typecheck_annot.rs`
-- [ ] Extract builtin signature registration (`register_builtin_types`, the large table of builtin function types) into `src/typecheck_builtins.rs`
-- [ ] Extract the five-pass dict inference (`infer_dict`, Pass 0–4 helpers) into `src/typecheck_dict.rs`
-- [ ] What remains in `typecheck.rs`: `typecheck_file`, `infer_expr`, `check_call`, `check_expr`, top-level driver; target < 3,000 lines
+- [ ] Change `rust_version := "1.86"` to `"1.95"` (`justfile`)
+- [ ] Delete the `downgrade-deps` recipe — the `home 0.5.5`, `url 2.5.3`, `idna_adapter 1.2.0` pins are no longer needed at 1.87+ (`justfile`)
+- [ ] Run `just update` to let pinned transitive deps float; confirm build passes before any crate bumps (`Cargo.lock`)
 
-**`src/types.rs` (9,408 lines):**
-- [ ] Extract `TypeEnv` and `TypeScheme` (environment management, `with_builtins`, `generalize`, `instantiate`) into `src/type_env.rs`
-- [ ] Extract `Substitution` and row unification (`unify_remainders`, four-case algorithm, `unify`) into `src/type_unify.rs`
-- [ ] What remains in `types.rs`: `Type` enum, `Row`, `RowTail`, `is_subtype`, `is_consistent`, normalization helpers, `TypeError`; target < 3,000 lines
+**seccompiler 0.4 → 0.5 — zero source changes:**
 
-**`src/eval.rs` (9,347 lines) — already partially split, finish:**
-- [ ] Extract document/pipeline evaluation (`eval_file`, `eval_file_with_input`, `eval_document`, `%` threading, `---` boundary handling) into `src/eval_pipeline.rs`
-- [ ] Extract dict construction and letrec scoping (`eval_dict`, Pass 1–4 dict eval) into `src/eval_dict.rs`
-- [ ] What remains in `eval.rs`: `eval()` dispatch on `Expr` variants, `EvalContext`, `EvalConfig`, `EvalState`, shared thunk helpers; target < 3,000 lines
+Only change: RISC-V 64-bit arch support added; existing `x86_64`/`aarch64` API unchanged. tinct's `setup_seccomp()` graceful-degrade path already handles unknown arches.
 
-**`src/parser.rs` (6,763 lines) — optional, lower priority:**
-- [ ] Extract type expression parsing (`parse_type_expr`, `parse_annotation`, `parse_type_dict`) into `src/parser_types.rs` if it reduces `parser.rs` below 4,000 lines; otherwise defer
+- [ ] Change `seccompiler = "0.4"` to `"0.5"` in `[target.'cfg(target_os = "linux")'.dependencies]` (`Cargo.toml`)
+
+**rustyline 14 → 18 — zero source changes:**
+
+The `readline()` signature changed to `readline<P: Prompt + ?Sized>(prompt: &P)` in v18, but `&str` implements `Prompt` via blanket impl so existing calls in `src/repl.rs` with `&str` constants compile unchanged.
+
+- [ ] Change `rustyline = { version = "14.0", optional = true }` to `"18.0"` (`Cargo.toml`)
+
+**cap-std 3 → 4 — zero source changes:**
+
+Key internal change is `rustix ^0.38` → `^1.0`, which is fully encapsulated inside cap-std. The public `Dir` API (`open_ambient_dir`, `open_dir`, `open`, `try_clone`, `MetadataExt`) is unchanged. MSRV for cap-std 4 is 1.70.
+
+- [ ] Change `cap-std = "3"` to `"4"` (`Cargo.toml`)
+
+**lsp-types 0.95 → 0.97 — `Url` → `Uri` across 4 LSP files:**
+
+`url::Url` (re-exported as `lsp_types::Url`) was replaced by a newtype `lsp_types::Uri` wrapping `fluent_uri`. The methods `Url::from_file_path()` and `.to_file_path()` do not exist on `Uri`. All other LSP types tinct uses (`Diagnostic`, `HoverContents`, `ServerCapabilities`, `Range`, `Position`, etc.) are unchanged.
+
+- [ ] Change `lsp-types = { version = "0.95", optional = true }` to `"0.97"` (`Cargo.toml`)
+- [ ] Add `url = "2"` under the `lsp` feature (or as a non-optional dep) so the conversion helpers can use `url::Url::from_file_path` / `to_file_path` internally while exposing `lsp_types::Uri` at the API boundary (`Cargo.toml`)
+- [ ] Add `pub fn file_path_to_uri(path: &Path) -> Option<Uri>` and `pub fn uri_to_file_path(uri: &Uri) -> Option<PathBuf>` to `src/lsp/convert.rs`, implemented via `url::Url` internally (`src/lsp/convert.rs`)
+- [ ] `src/lsp/document.rs`: replace `use lsp_types::Url` with `Uri`; replace all `Url::from_file_path(…)` with `file_path_to_uri(…)`; replace all `.to_file_path()` with `uri_to_file_path(…)`; replace `Url::parse("file:///…")` with `"file:///…".parse::<Uri>().unwrap()` in tests (`src/lsp/document.rs`)
+- [ ] `src/lsp/analysis.rs`: replace `Url` import with `Uri`; replace `Url::from_file_path(path)` with `file_path_to_uri(path)`; replace `Url::parse(…)` with `.parse::<Uri>()` (`src/lsp/analysis.rs`)
+- [ ] `src/lsp/server.rs`: replace `Url` import with `Uri`; replace all `Url::parse("file:///…")` with `"file:///…".parse::<Uri>().unwrap()` in test sites (`src/lsp/server.rs`)
+- [ ] Run `just test-lsp` to confirm LSP corpus tests pass
+
+**Integration:**
+
+- [ ] Run `just update` after all `Cargo.toml` bumps to pull latest compatible patch releases (`Cargo.lock`)
+- [ ] Run `just ci` — check + test + lint + fmt-check + audit (`justfile`)
+- [ ] Run `just versions` to confirm all ← markers are gone
+
+### `rust-modernize`
+
+Adopt new Rust 1.87–1.95 language and stdlib features available at the new MSRV. These are independent follow-on refactors; each is a quality-of-life improvement, not a correctness fix.
+
+- [ ] **Let-chains** (stable 1.88, edition 2021): replace `if let Some(x) = foo { if cond { … } }` patterns with `if let Some(x) = foo && cond { … }` throughout `src/eval.rs` and `src/typecheck.rs` (`src/eval.rs`, `src/typecheck.rs`)
+- [ ] **`Result::flatten()`** (stable 1.89): replace `match { Ok(Ok(x)) => …, Ok(Err(e)) => … }` and `.map(…).unwrap_or_else(…)` double-result patterns in `src/eval.rs` and `src/builtins.rs` (`src/eval.rs`, `src/builtins.rs`)
+- [ ] **`File::lock()` / `try_lock()`** (stable 1.89): add advisory file locking in `builtin_write_atomic` in `src/builtins_io.rs` as an optional stronger-exclusion hint alongside the existing temp+rename strategy (`src/builtins_io.rs`)
+- [ ] **`str::ceil_char_boundary` / `floor_char_boundary`** (stable 1.91): replace manual `.char_indices()` + `.next_back()` UTF-8 boundary calculations in `src/lexer.rs` and `src/parser.rs` (`src/lexer.rs`, `src/parser.rs`)
+- [ ] **`Path::file_prefix()`** (stable 1.91): replace manual `file_stem()` + extension-stripping in `find_libdir_path()` in `src/main.rs` (`src/main.rs`)
+- [ ] **`HashMap::extract_if`** (stable 1.88): replace `retain`+`remove` two-pass patterns where they appear in dict evaluation and builtin helpers (`src/eval_dict.rs`, `src/builtins_dict.rs`)
+- [ ] **`Peekable::next_if_map()`** (stable 1.94): replace peek-then-advance patterns in `src/lexer.rs` and `src/parser.rs` (`src/lexer.rs`, `src/parser.rs`)
+- [ ] **`cfg_select!` macro** (stable 1.95): simplify the `#[cfg(target_arch)]` chain in `setup_seccomp()` in `src/main.rs` (`src/main.rs`)
+- [ ] **`OsStr::display()`** (stable 1.87): replace `.to_string_lossy()` calls on path components in error messages in `src/main.rs` (`src/main.rs`)
+- [ ] **`LazyLock` for stdlib env cache**: when implementing `typecheck-import-env`, prefer `LazyLock<Rc<TypeEnv>>` over `OnceLock` for the prelude env cache in `src/imports.rs` if the closure form is cleaner; note that `LazyLock::get()` / `force_mut()` are stable at 1.94 (`src/imports.rs`)
 
 ## Type Checking Infrastructure
 
@@ -273,7 +305,7 @@ Apply to: `format-node` and `format-literal` in `compact.llt` and analogous disp
 
 ## Testing & Quality
 
-### `corpus-fix`: Corpus Test Fixes
+### `corpus-cleanup`: Corpus Test Cleanup
 
 Audit findings from 2026-05-07. One category of test failures (macro `=== warn` stale expectations) and two categories of dead annotation (valid/ warn sections, errors/ missing `=== error`).
 
@@ -283,57 +315,62 @@ The macro expansion pass now runs before typechecking (`typecheck_source` calls 
 
 Fix: remove the `=== warn` sections from all 7 files (typecheck now cleanly handles expanded macro code).
 
-- [ ] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_simple.llt-eval`
-- [ ] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_unless.llt-eval`
-- [ ] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/hygiene_no_capture.llt-eval`
-- [ ] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_integration_full.llt-eval`
-- [ ] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_with_underscore.llt-eval`
-- [ ] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/nested_expansion.llt-eval`
-- [ ] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/scope_isolation.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_simple.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_unless.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/hygiene_no_capture.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_integration_full.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_with_underscore.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/nested_expansion.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/scope_isolation.llt-eval`
 
-**Dead annotations in `tests/corpus/valid/` (29 files):**
+**Unenforced `=== warn` annotations in `tests/corpus/valid/` (29 files):**
 
-`test_valid_corpus` only runs `parse()` / `parse_expression()` — it never calls `typecheck_source`. The `=== warn` sections in valid/ files are ignored by the test runner. These 29 files carry warn annotations that provide zero regression coverage. Options: (a) delete the `=== warn` sections from valid/ files (warnings aren't enforced there), or (b) migrate these files to `tests/corpus/eval/` where `test_eval_corpus` enforces warn sections. Most of these files are parse-only tests that would need `=== out` eval output added before they could move.
-
-- [ ] Decide policy: either enforce that valid/ files have no `=== warn` sections (linter rule in `test_corpus_structure`), or migrate the 29 affected files to eval/ with proper `=== out` + `=== warn` sections (`tests/corpus/valid/`, `tests/corpus/eval/`)
+`test_valid_corpus` only runs `parse()` / `parse_expression()` — it never calls `typecheck_source`. The `=== warn` sections in valid/ files are currently ignored. Fixed by `corpus-section-consistency` below, which extends the valid/ runner to enforce them.
 
 **`=== error` section — clarification:**
 
-The `strict-mode` sprint wired up `=== error` in `test_eval_corpus()`. The section is now live: a test with `=== error` asserts that eval fails and the error message contains the expected substring. Files using `=== error` must produce an eval failure; files using `=== out` assert eval success. The two are mutually exclusive. Note: `tests/corpus/eval/errors/` files historically use `=== out` for error substrings (established convention predating labeled sections); they do not use `=== error`.
+The `strict-mode` sprint wired up `=== error` in `test_eval_corpus()`. The section is now live. `tests/corpus/eval/errors/` files historically use `=== out` for error substrings (established convention predating labeled sections); migration to `=== error` is tracked in `corpus-section-consistency` below.
 
 - [x] Document `=== error` live behavior in `doc/12-tooling.md §Corpus Test Format`; clarify coexistence with `eval/errors/` convention of using `=== out` (`doc/12-tooling.md`)
 
-### `strict-mode-deferred`: Deferred cleanup from strict-mode sprint
+**Deferred cleanup from strict-mode sprint:**
 
-Low-priority follow-up items deferred from the strict-mode sprint panel review.
-
-**`=== warn` brittleness — prelude type signatures:**
-
-250+ corpus files pin `undefined variable: <name>` warnings because the prelude functions currently have no type signatures registered in the type checker. When prelude type signatures are added (planned in a future typing sprint), those warnings will disappear and all 250+ `=== warn` sections will become stale — requiring a mass corpus update.
-
-- [ ] Before adding prelude type signatures: audit which corpus files have `=== warn: undefined variable` sections (likely all files that call prelude functions), document the count, and prepare a migration plan or scripted update (`tests/corpus/`)
-
-**`eval/errors/` migration to `=== error`:**
-
-`tests/corpus/eval/errors/` tests use `=== out` for error substrings (historical convention). The `=== error` label now exists in the corpus runner and is semantically cleaner for error tests. Migration is purely mechanical but touches ~100 files.
-
-- [ ] Migrate `tests/corpus/eval/errors/` files from `=== out` to `=== error` (change the label, verify the runner still handles `[EXXX]` error code assertions correctly) (`tests/corpus/eval/errors/`)
-
-**LSP corpus split_test_file duplication:**
-
-`lsp_corpus_tests::split_test_file` is a duplicate of the `corpus_tests::split_test_file` implementation. The LSP version allocates `String` whereas the corpus_tests version borrows `&str`. They should share one implementation.
-
-- [ ] Extract `split_test_file` into a shared crate/module (e.g. `tests/test_helpers.rs`) so both `corpus_tests.rs` and `lsp_corpus_tests.rs` use the same parser (`tests/corpus_tests.rs`, `tests/lsp_corpus_tests.rs`)
-
-**lib.rs test helpers skip `expand_macros` (pipeline invariant violation):**
-
-The `eval_source` and `typecheck_source` test helpers in `src/lib.rs` call the full pipeline including `expand_macros`. However, some internal unit test helpers that construct ASTs directly and pass them to `eval` or `typecheck` bypass the `expand_macros` step, violating the pipeline invariant `expand_macros -> desugar -> typecheck -> eval`.
-
-- [ ] Audit unit test helpers in `src/lib.rs` and `src/typecheck.rs` that call `eval` or `typecheck` directly on hand-constructed ASTs; add `expand_macros` calls where needed to preserve the pipeline invariant (`src/lib.rs`, `src/typecheck.rs`)
-
-**`run_fmt --strict` double-parse:**
-
-`tinct fmt --strict` re-parses the source file twice: once in `run_fmt` to format, and once to typecheck for the `--strict` check. This is a minor performance nit (formatter is fast for typical config files) but wastes work.
-
+- [x] Audit unit test helpers in `src/lib.rs` and `src/typecheck.rs` that call `eval` or `typecheck` directly on hand-constructed ASTs; add `expand_macros` calls where needed to preserve the pipeline invariant (`src/lib.rs`, `src/typecheck.rs`)
 - [ ] Refactor `run_fmt` to parse once and pass the AST to both the formatter and the type checker when `--strict` is active (`src/main.rs`)
+
+### `corpus-section-consistency`
+
+Enforce one semantic per labeled section and unify all corpus runners behind a single shared enforcement engine. The canonical contract after this sprint:
+
+- `=== out` — eval succeeds; output matches substring. Never used for error messages.
+- `=== error` — eval fails; message matches substring. Must be non-empty. Every `=== error` file must also produce a runtime error message containing `[EXXX]`.
+- `=== warn` — type warnings match substring. Orthogonal to `out`/`error`. Absent section asserts zero warnings. Enforced uniformly by the shared runner regardless of pipeline.
+
+The `valid/` and `eval/` directory distinction is load-bearing: `valid/` = parse-only tests (some files reference undefined vars that parse legally but would fail eval); `eval/` = full evaluation tests. The runner is unified; the pipeline passed to it differs.
+
+**Shared runner infrastructure (`tests/test_helpers.rs`):**
+
+- [ ] Extract `split_test_file` into `tests/test_helpers.rs`; reconcile `String`-vs-`&str` return type (favor owned `String`); re-export for use by `corpus_tests.rs` and `lsp_corpus_tests.rs` (`tests/test_helpers.rs`)
+- [ ] Add `run_corpus_dir(dir: &Path, pipeline: impl Fn(&TestFile) -> CorpusOutcome) -> Vec<Failure>` to `tests/test_helpers.rs`; `CorpusOutcome { output: Option<String>, warnings: Vec<String>, error: Option<String> }`; the function handles: find files, split, mutual-exclusivity guard (`=== out` + `=== error` rejected), call pipeline, compare each channel against expectations, collect failures (`tests/test_helpers.rs`)
+- [ ] Add runner guard inside `run_corpus_dir`: `=== error` section must be non-empty; `=== warn` section must be non-empty; blank labeled sections are a test-file authoring error (`tests/test_helpers.rs`)
+- [ ] Add `[EXXX]` runtime check inside `run_corpus_dir`: when `CorpusOutcome.error` is `Some`, assert it contains an `[EXXX]` prefix — preserves the check currently in `test_eval_error_corpus:721` and applies it universally (`tests/test_helpers.rs`)
+
+**Rewrite `test_eval_corpus` using shared runner:**
+
+- [ ] Replace the inline enforcement logic in `test_eval_corpus` with a call to `run_corpus_dir`; the eval pipeline closure calls `eval_source_with_config` and `typecheck_source`, returning `CorpusOutcome { output, warnings, error }` (`tests/corpus_tests.rs`)
+- [ ] Remove the `errors_dir` exclusion filter — `eval/errors/` runs through the unified runner once its files use `=== error` (`tests/corpus_tests.rs`)
+- [ ] Delete `test_eval_error_corpus` and `test_eval_error_corpus_has_error_codes` — fully superseded (`tests/corpus_tests.rs`)
+
+**Rewrite `test_valid_corpus` using shared runner:**
+
+- [ ] Replace `test_valid_corpus` with a call to `run_corpus_dir` using a parse-only pipeline: `parse()` + `typecheck_source()`, returning `CorpusOutcome { output: None, warnings, error: None }`; parse failure maps to a `Failure` directly; `=== out` and `=== error` sections in `valid/` files are rejected as authoring errors (`tests/corpus_tests.rs`)
+- [ ] This gives `valid/` files full `=== warn` enforcement for free — the shared runner applies the same warn-channel logic regardless of pipeline
+
+**`=== error` migration — `eval/errors/` (113 files):**
+
+- [ ] Rename `=== out` → `=== error` in all 113 files under `tests/corpus/eval/errors/` (scripted: `sed -i 's/^=== out$/=== error/' tests/corpus/eval/errors/**/*.llt-eval`); verify with `cargo test` (`tests/corpus/eval/errors/`)
+
+**LSP runner:**
+
+- [ ] Update `lsp_corpus_tests.rs` to use `split_test_file` from `tests/test_helpers.rs` — the LSP runner has its own enforcement logic and keeps it, but shares the file parsing step (`tests/lsp_corpus_tests.rs`)
 

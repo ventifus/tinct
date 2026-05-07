@@ -2738,7 +2738,7 @@ fn expr_flag_chained() {
 #[test]
 fn input_flag_json() {
     // Skip if stdlib/in/json.llt doesn't exist (created by another agent)
-    let libdir = match std::env::current_exe()
+    let _libdir = match std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
         .filter(|p| p.is_dir())
@@ -2802,7 +2802,7 @@ fn input_flag_unknown_format() {
 #[test]
 fn output_flag_raw() {
     // Skip if stdlib/out/raw.llt doesn't exist (created by another agent)
-    let libdir = match std::env::current_exe()
+    let _libdir = match std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
         .filter(|p| p.is_dir())
@@ -2866,7 +2866,7 @@ fn output_flag_unknown_format() {
 #[test]
 fn input_output_expr_pipeline() {
     // Skip if formatters don't exist (created by another agent)
-    let libdir = match std::env::current_exe()
+    let _libdir = match std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
         .filter(|p| p.is_dir())
