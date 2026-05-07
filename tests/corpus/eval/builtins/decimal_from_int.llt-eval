@@ -1,0 +1,4 @@
+# decimal: create from integer
+[decimal 42]
+===
+Decimal(42)

@@ -177,6 +177,9 @@ pub enum Value {
         tag: String,
         payload: Option<ThunkId>,
     },
+    /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
+    /// Created via `decimal` builtin. No lossy cross-type with Float.
+    Decimal(rust_decimal::Decimal),
 }
 
 impl Value {
@@ -198,6 +201,7 @@ impl Value {
             Value::Handle(_) => "Handle",
             Value::RevocableDirCap { .. } => "DirCap",
             Value::Variant { .. } => "Variant",
+            Value::Decimal(_) => "Decimal",
         }
     }
 }
@@ -238,6 +242,7 @@ impl fmt::Debug for Value {
                     write!(f, "Variant({tag})")
                 }
             }
+            Value::Decimal(d) => write!(f, "Decimal({d})"),
         }
     }
 }
@@ -290,6 +295,7 @@ impl fmt::Display for Value {
                     write!(f, "{tag}")
                 }
             }
+            Value::Decimal(d) => write!(f, "{d}"),
         }
     }
 }
@@ -332,6 +338,7 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Decimal(a), Value::Decimal(b)) => a == b,
             // Dict, Function, Builtin, Seq, Proxy, and Overlay are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
             _ => false,
@@ -392,11 +399,13 @@ pub enum ThunkState {
     /// Wraps an inner thunk and validates its materialized value against an expected type.
     /// Carries no `ctx` field because it does not evaluate AST directly; it forces the
     /// inner thunk (which carries its own `ctx`) and then validates the result.
+    /// `blame_label` tracks the typed/untyped boundary for gradual typing (co-natural strategy).
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
         field_path: Box<Vec<String>>,
         guard_span: Span,
+        blame_label: Option<crate::error::BlameLabel>,
     },
     InProgress,
     Materialized(Value),
@@ -506,12 +515,23 @@ impl Thunk {
         field_path: Vec<String>,
         guard_span: Span,
     ) -> Self {
+        Self::new_guarded_with_blame(inner, expected, field_path, guard_span, None)
+    }
+
+    pub fn new_guarded_with_blame(
+        inner: Rc<Thunk>,
+        expected: Type,
+        field_path: Vec<String>,
+        guard_span: Span,
+        blame_label: Option<crate::error::BlameLabel>,
+    ) -> Self {
         Self {
             state: RefCell::new(ThunkState::Guarded {
                 inner,
                 expected,
                 field_path: Box::new(field_path),
                 guard_span,
+                blame_label,
             }),
             span: guard_span,
             origin: Some(Rc::from("type guard")),
@@ -654,7 +674,15 @@ impl Thunk {
     /// - If the thunk is NOT Guarded, the state is restored unchanged and None is returned.
     ///
     /// The InProgress transition prevents re-entrance during guard materialization.
-    pub fn take_guarded(&self) -> Option<(Rc<Thunk>, Type, Vec<String>, Span)> {
+    pub fn take_guarded(
+        &self,
+    ) -> Option<(
+        Rc<Thunk>,
+        Type,
+        Vec<String>,
+        Span,
+        Option<crate::error::BlameLabel>,
+    )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Guarded {
@@ -662,7 +690,8 @@ impl Thunk {
                 expected,
                 field_path,
                 guard_span,
-            } => Some((inner, expected, *field_path, guard_span)),
+                blame_label,
+            } => Some((inner, expected, *field_path, guard_span, blame_label)),
             other => {
                 *state = other;
                 None
@@ -1484,7 +1513,7 @@ mod tests {
             "take_guarded should succeed on Guarded thunk"
         );
 
-        let (taken_inner, taken_expected, taken_path, _taken_span) = result.unwrap();
+        let (taken_inner, taken_expected, taken_path, _taken_span, _blame) = result.unwrap();
         assert!(
             Rc::ptr_eq(&taken_inner, &inner),
             "inner thunk should be the same Rc"
@@ -1531,7 +1560,7 @@ mod tests {
         ));
         let result = thunk.take_guarded();
         assert!(result.is_some());
-        let (got_inner, got_type, got_path, _got_span) = result.unwrap();
+        let (got_inner, got_type, got_path, _got_span, _blame) = result.unwrap();
         assert_eq!(got_path, vec!["foo".to_string()]);
         assert!(matches!(got_type, Type::Int));
         assert!(Rc::ptr_eq(&got_inner, &inner));

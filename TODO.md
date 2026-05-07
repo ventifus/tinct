@@ -76,18 +76,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
 
-### `numeric-decimal`
-
-See doc/03-data-model.md §Decimal Type, doc/whatif/numeric-types.md Phase 2. **Depends on:** Independent.
-
-- [ ] Resolve `rust_decimal::Decimal` vs `d128` (IEEE 754 decimal128) before implementation: `rust_decimal` is 96-bit software decimal (common in financial Rust), `d128` is true IEEE 754 — pick one, document precision/serialization implications (`Cargo.toml`)
-- [ ] `Value::Decimal(chosen_type)` variant; adding this triggers compile errors at ALL exhaustive `Value` match sites — audit with `cargo check` before PR merges (`src/value.rs`, `Cargo.toml`)
-- [ ] `Type::Decimal` variant; subtype of `Number`; added to `is_subtype` and `unify`/`constrain` (`src/types.rs`)
-- [ ] `decimal: Str → Decimal` builtin — parses exact base-10 string; error on invalid format (`src/builtins.rs`)
-- [ ] Arithmetic: `Int + Decimal → Decimal`, `Decimal + Decimal → Decimal`, `Float + Decimal → error` (no lossy cross-type); update all arithmetic builtins (`src/builtins.rs`)
-- [ ] Add `Value::Decimal` arms to `value_to_json` and `value_to_display_string` in `src/lib.rs`; `Decimal` → JSON number (exact string representation); `Decimal` → display as `Decimal(9.99)` (`src/lib.rs`)
-- [ ] Tests: `9.99 + 1.00 = 10.99` exact; `0.1 + 0.2 ≠ 0.30000000000000004` (no IEEE 754 error); cross-type error; JSON round-trip; `value_to_display_string` correctness (`tests/corpus/eval/builtins/`)
-
 ### `numeric-bigint`
 
 See doc/03-data-model.md §BigInt, doc/whatif/numeric-types.md Phase 3. **Depends on:** `numeric-decimal` (Ph2).
