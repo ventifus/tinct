@@ -19,6 +19,7 @@
 pub(crate) mod arena;
 pub mod ast;
 pub mod ast_dict;
+pub(crate) mod coverage;
 pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod eval_access;

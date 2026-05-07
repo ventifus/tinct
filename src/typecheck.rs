@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
+use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, lower_row_var_levels_pub,
     row_var_occurs_pub, unify, InferState, Row, RowTail, Substitution, Type, TypeAlias, TypeEnv,
@@ -1330,12 +1331,11 @@ fn infer_expr(
         }
 
         Expr::Match { scrutinee, arms } => {
-            // Basic match support: infer scrutinee type, guards, and all arm body types.
-            // Type the match expression as Any for now (full type narrowing comes in later phases).
-            let _scrutinee_ty = infer_expr(scrutinee, env, state, type_map)?;
+            // Infer scrutinee type — needed for exhaustiveness checking.
+            let scrutinee_ty = infer_expr(scrutinee, env, state, type_map)?;
+            let scrutinee_ty = state.subst.apply(&scrutinee_ty);
 
-            // Infer each arm's guard (if present) and body type
-            // (patterns don't affect types in this basic implementation)
+            // Infer each arm's guard (if present) and body type.
             for arm in arms {
                 if let Some(guard) = &arm.guard {
                     let _guard_ty = infer_expr(guard, env, state, type_map)?;
@@ -1343,8 +1343,59 @@ fn infer_expr(
                 let _arm_ty = infer_expr(&arm.body, env, state, type_map)?;
             }
 
-            // Return Any for now — full union result typing and exhaustiveness checking
-            // comes with narrowing-basic and exhaustiveness sprints
+            // Exhaustiveness checking: when scrutinee type is a union, run the
+            // Maranget (2007) usefulness algorithm over the pattern matrix.
+            //
+            // Coverage is checked only when the scrutinee's type is known to be
+            // a Type::Union — either via TypeAssert annotation or inference.
+            // Without a union type, the match is dynamically correct but
+            // statically unverified (consistent with Karachalias et al. 2015).
+            if let Type::Union(ref members) = scrutinee_ty {
+                let sig = coverage::ConstructorSignature::from_union(members);
+
+                // Convert AST patterns to coverage patterns
+                let coverage_patterns: Vec<coverage::CoveragePattern> = arms
+                    .iter()
+                    .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern.node))
+                    .collect();
+
+                // Build guard flags: arms with guards are opaque to coverage
+                let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
+
+                let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
+
+                // Collect type errors (non-fatal: report all, don't short-circuit)
+                let mut match_errors: Vec<TypeError> = Vec::new();
+
+                if !result.exhaustive {
+                    let witnesses = coverage::format_witnesses(&result.uncovered);
+                    match_errors.push(TypeError::new(
+                        format!("non-exhaustive match: missing coverage for {}", witnesses),
+                        expr.span,
+                    ));
+                }
+
+                for &idx in &result.redundant {
+                    match_errors.push(TypeError::new(
+                        "unreachable match arm: this pattern is already covered by prior arms",
+                        arms[idx].pattern.span,
+                    ));
+                }
+
+                for &idx in &result.inaccessible {
+                    match_errors.push(TypeError::new(
+                        "inaccessible match arm: reachable only via diverging (bottom) values",
+                        arms[idx].pattern.span,
+                    ));
+                }
+
+                if !match_errors.is_empty() {
+                    return Err(match_errors);
+                }
+            }
+
+            // Return Unknown for now — full union result typing (per-arm
+            // narrowing + precise union result types) deferred to narrowing sprint.
             Ok(Type::Unknown)
         }
 
@@ -9971,5 +10022,160 @@ mod tests {
             },
             None => panic!("f2 not found"),
         }
+    }
+
+    // ========== Exhaustiveness Checking Tests (C5 sprint) ==========
+
+    #[test]
+    fn test_exhaustive_match_int_string_complete() {
+        // Complete coverage: Int and String arms cover the union
+        let result = check("[match [@[Int String] 42] Int \"int\" String \"str\"]");
+        assert!(
+            result.is_ok(),
+            "Int+String should be exhaustive: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_exhaustive_match_wildcard_covers_all() {
+        // Wildcard covers all variants
+        let result = check("[match [@[Int String] 42] _ \"any\"]");
+        assert!(result.is_ok(), "wildcard should cover all: {:?}", result);
+    }
+
+    #[test]
+    fn test_non_exhaustive_match_missing_variant() {
+        // Missing String variant
+        let result = check("[match [@[Int String] 42] Int \"int\"]");
+        assert!(
+            result.is_err(),
+            "should fail typecheck for missing variant, but got Ok"
+        );
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("non-exhaustive")),
+            "should report non-exhaustive match, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn test_redundant_arm_detected() {
+        // Third arm (Int) is redundant — already covered
+        let result =
+            check("[match [@[Int String] 42] Int \"int\" String \"str\" Int \"int-again\"]");
+        assert!(
+            result.is_err(),
+            "should fail typecheck for redundant arm, but got Ok"
+        );
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("unreachable")),
+            "should report unreachable arm, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn test_inaccessible_arm_after_complete_coverage() {
+        // Wildcard after complete Int+String coverage — inaccessible via ⊥
+        let result = check("[match [@[Int String] 42] Int \"int\" String \"str\" _ \"catch\"]");
+        assert!(
+            result.is_err(),
+            "should fail typecheck for inaccessible arm, but got Ok"
+        );
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("inaccessible")),
+            "should report inaccessible arm, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn test_exhaustive_match_dict_variants() {
+        // Structural variants: [ok: _] | [err: _]
+        // Use positional syntax @[[ok: Int] [err: String]] for inline union.
+        // Bodies use literals (not pattern variables) since pattern bindings
+        // aren't yet added to the type environment in the basic match checker.
+        let result = check(
+            "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
+                 [ok: _]    \"ok\"\n\
+                 [err: _]   \"err\"]",
+        );
+        assert!(
+            result.is_ok(),
+            "dict variants should be exhaustive: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_non_exhaustive_match_dict_missing_variant() {
+        // Missing [err: _] variant
+        let result = check(
+            "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
+                 [ok: _] \"ok\"]",
+        );
+        assert!(
+            result.is_err(),
+            "should fail typecheck for missing dict variant, but got Ok"
+        );
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("non-exhaustive")),
+            "should report non-exhaustive match for dict variants, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn test_exhaustive_match_string_literal_variants() {
+        // String literal variants: "ok" | "err" | "pending"
+        let result = check(
+            "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
+                 \"ok\"      \"is-ok\"\n\
+                 \"err\"     \"is-err\"\n\
+                 \"pending\" \"is-pending\"]",
+        );
+        assert!(
+            result.is_ok(),
+            "string literal variants should be exhaustive: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_non_exhaustive_string_literal_missing() {
+        // Missing "pending" variant
+        let result = check(
+            "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
+                 \"ok\"  \"is-ok\"\n\
+                 \"err\" \"is-err\"]",
+        );
+        assert!(
+            result.is_err(),
+            "should fail typecheck for missing string literal, but got Ok"
+        );
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("non-exhaustive")),
+            "should report non-exhaustive match for string literal variants, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn test_exhaustive_match_non_union_no_check() {
+        // Non-union scrutinee — match is not checked for exhaustiveness.
+        // This match has only Int arm with no wildcard, but since 42 doesn't
+        // have a union type, no exhaustiveness error is raised.
+        let result = check("[match 42 Int \"int\"]");
+        assert!(
+            result.is_ok(),
+            "non-union scrutinee should not trigger exhaustiveness: {:?}",
+            result
+        );
     }
 }
