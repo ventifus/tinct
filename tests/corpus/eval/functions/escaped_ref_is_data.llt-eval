@@ -1,4 +1,4 @@
 # $x in head position forces data sequence (no implied call)
 [x: 99  result: [$x "hello"]]
-===
+=== out
 Dict({"x": Int(99), "result": Dict({0: Int(99), 1: String("hello")})})

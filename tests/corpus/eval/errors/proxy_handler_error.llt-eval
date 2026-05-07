@@ -16,5 +16,5 @@
 # This placeholder test demonstrates proxy behavior but does NOT test E035.
 # It tests E080 (UserError from $error builtin) instead.
 [p: [proxy [fn [key] [error "handler called"]]]  result: p.test]
-===
+=== out
 [E080] handler called

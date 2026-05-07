@@ -1,5 +1,5 @@
 [outer: 10  f: [fn [] outer]]
 
 [f]
-===
+=== out
 Int(10)

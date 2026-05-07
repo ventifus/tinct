@@ -1,4 +1,4 @@
 # collect: materialize a mapped Seq into a Dict
 [collect [map [fn [x] [* x 2]] [range 0 5]]]
-===
+=== out
 Dict({0: Int(0), 1: Int(2), 2: Int(4), 3: Int(6), 4: Int(8)})

@@ -1,4 +1,4 @@
 # double-colon: second key:value wins, first key silently dropped (new-parser behavior)
 [hello: world: "extra"]
-===
+=== out
 ["world": "extra"]

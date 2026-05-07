@@ -8,7 +8,7 @@ Subtyping (BAS), eliminating row variables and closing the soundness gap in D2?
 ## Current State
 
 tinct's record model uses Rémy-style row polymorphism (Rémy 1994): open records carry
-a `RowTail::RowVar(u32)` that unifies with additional fields at call sites. The
+a `RowTail::RowVar(String, u32)` (name + level) that unifies with additional fields at call sites. The
 four-case `unify_remainders` algorithm handles row variable binding by partitioning
 fields between two rows. This gives structural open-record typing:
 
@@ -284,7 +284,7 @@ produced. At `Any` scrutinee type both styles compile without error.
 
 ### Type Representation (`src/types.rs`) — Fundamental
 
-`RowTail::RowVar(u32)` is removed. The four-case `unify_remainders` algorithm is
+`RowTail::RowVar(String, u32)` is removed. The four-case `unify_remainders` algorithm is
 removed. In their place:
 
 - `Type::Negation(Box<Type>)` is added as a first-class type variant
@@ -763,30 +763,35 @@ make discriminated unions expressible again.
 
 ## Prerequisites and Trigger
 
-**Prerequisites:** D2 (`algebraic-subtyping` sprint) complete. BAS requires the
-algebraic subtyping infrastructure D2 delivers: bisubstitution, bounds-carrying type
-variables, `Type::Union`, `Type::Intersection`. C2/C3 (nominal variant sprints) should
-also be complete or in progress — BAS adoption formalizes their encoding as the standard
-ADT model.
+**Prerequisites — all met (2026-05-07):**
+
+| Prerequisite | Sprint | Status |
+|---|---|---|
+| D2 `algebraic-subtyping` (Simple-sub, `Type::Intersection`) | `algebraic-subtyping` | ✓ Done |
+| `Type::Union` | `union-types` | ✓ Done |
+| C2/C3 nominal variants (`Value::Variant`, constructor patterns) | `nominal-variants-full` | ✓ Done |
+| Gradual typing split (`Unknown` + `Top`) | `gradual-typing-split` | ✓ Done |
 
 BAS does not stack on D2's Marques et al. row-extension mechanism — it replaces it.
-D2 delivers the bisubstitution infrastructure and union/intersection types; BAS reuses
-these and supersedes the conjectured-soundness row-variable component. Implementors
-should treat BAS adoption as completing and redirecting D2's row mechanism, not
-extending it. The `RowTail::RowVar` infrastructure introduced by D2 is removed.
+D2 delivers the Simple-sub constraint infrastructure and union/intersection types; BAS
+reuses these and supersedes the conjectured-soundness row-variable component.
+Implementors should treat BAS adoption as completing and redirecting D2's row
+mechanism, not extending it. The `RowTail::RowVar(String, u32)` infrastructure remains
+until BAS is adopted; adoption removes it.
 
 BAS adopts equi-recursive types (μα.A), matching MLstruct's proof foundation. Tinct's
 current depth-limit guard becomes a performance heuristic rather than a correctness
 mechanism; the C-Hyp hypothesis caching in the constraint solver handles termination
 for recursive subtyping.
 
-**Trigger — any one of:**
+**Trigger — any one of (prerequisites now met; evaluate these):**
 - Narrowing Phase 4 (false-branch narrowing) becomes a concrete need — it is only
   achievable via BAS, not via D2/Simple-sub
 - The inferred-`Any` problem for `if`/`match` branch types becomes a measurable source
-  of annotation burden in real tinct programs
-- The nominal-variant adoption (C2/C3) reaches the point where nominal-tag ADTs are
-  the default and structural-key discrimination is already deprecated in practice
+  of annotation burden in real tinct programs (now evaluatable — `[if cond [ok: v] [err: e]]`
+  infers `Unknown` in branches today)
+- The nominal-variant adoption (C2/C3) has reached the point where nominal-tag ADTs
+  are the default — **this trigger is met**
 - Phase 1 evaluation confirms worst-case subtyping paths are rare on real tinct programs
 
 ## References

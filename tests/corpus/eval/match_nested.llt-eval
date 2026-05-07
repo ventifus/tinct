@@ -2,5 +2,5 @@
     "int"    "matched-int"
     "other"  "matched-other"
     _        "unknown"]
-===
+=== out
 String("matched-int")

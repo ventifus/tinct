@@ -1,4 +1,6 @@
 # count: zero matches returns 0
 [count [fn [x] [> x 100]] [1 2 3]]
-===
+=== out
 Int(0)
+=== warn
+undefined variable: count at 1:2-1:7

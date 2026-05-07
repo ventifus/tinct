@@ -2,5 +2,5 @@
 # In new syntax, bare identifiers in head position are call targets.
 # [mycall f x] is a call to mycall(f, x).
 [mycall f x]
-===
+=== out
 [mycall f x]

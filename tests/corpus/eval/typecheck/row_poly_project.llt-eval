@@ -4,5 +4,7 @@
 [get-name: [fn [r@[name: String ...]] [get "name" r]]
  r1: [get-name [name: "alice"  age: 30]]
  r2: [get-name [name: "bob"  city: "NYC"]]]
-===
+=== out
 Dict({"get-name": Function(r), "r1": String("alice"), "r2": String("bob")})
+=== warn
+undefined variable: get at 3:40-3:43

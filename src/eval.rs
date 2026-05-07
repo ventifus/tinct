@@ -823,14 +823,12 @@ pub(crate) fn eval_recursive(
                                         .with_materialization_span(expr.span)
                                         .into())
                                     }
-                                    _ => {
-                                        Err(EvalError::type_mismatch(
-                                            "Bool (is: predicate return type)",
-                                            &result_val.type_name(),
-                                            expr.span,
-                                        )
-                                        .into())
-                                    }
+                                    _ => Err(EvalError::type_mismatch(
+                                        "Bool (is: predicate return type)",
+                                        &result_val.type_name(),
+                                        expr.span,
+                                    )
+                                    .into()),
                                 }
                             } else {
                                 Ok(Rc::new(Thunk::new_materialized(value, expr.span)))

@@ -6,5 +6,5 @@
 [id: [fn [x@a] x]
  int_result: [id 42]
  str_result: [id "hello"]]
-===
+=== out
 Dict({"id": Function(x), "int_result": Int(42), "str_result": String("hello")})

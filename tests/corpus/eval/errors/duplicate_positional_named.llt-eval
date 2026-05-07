@@ -1,5 +1,5 @@
 [f: [fn [x  y@[default: 10]] y]]
 
 [f 1 2 y: 42]
-===
+=== out
 [E021] parameter 'y' received both positional and named argument

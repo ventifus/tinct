@@ -1,5 +1,5 @@
 # $call is an EscapedRef in head position — prevents implied call interpretation.
 # This is a data sequence (not a call expression).
 [$call f x]
-===
+=== out
 [call  f  x]

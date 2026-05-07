@@ -1,4 +1,6 @@
 # and: both true
 [and true true]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: and at 1:2-1:5

@@ -1,4 +1,6 @@
 # replace : replace substring
 [replace "world" "LLT" "hello world"]
-===
+=== out
 String("hello LLT")
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-1:38

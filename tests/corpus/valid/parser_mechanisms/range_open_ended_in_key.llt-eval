@@ -1,5 +1,5 @@
 # Open-ended range migrated to drop function
 # drop 2 data — skip first 2 elements, return the rest.
 [tail: [drop 2 data]]
-===
+=== out
 ["tail": [drop 2 data]]

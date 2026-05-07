@@ -1,5 +1,5 @@
 [expensive: [+ [+ [+ 1 2] 3] 4]]
 ---
 [result: [* %.expensive 2]]
-===
+=== out
 Dict({"result": Int(20)})

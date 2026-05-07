@@ -1,4 +1,4 @@
 # collect: error on infinite sequence (resource limit exceeded)
 [collect [range 0]]
-===
+=== out
 [E043] collect: exceeded maximum collection size

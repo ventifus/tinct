@@ -2,5 +2,7 @@
 [f: [fn [x y] [+ x y]]]
 
 [apply f [0: 3  1: 4]]
-===
+=== out
 Int(7)
+=== warn
+arity mismatch: expected 1 arguments, got 2 at 3:1-3:23

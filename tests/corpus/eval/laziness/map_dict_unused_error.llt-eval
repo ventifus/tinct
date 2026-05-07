@@ -2,5 +2,5 @@
 [mapped: [map [fn [x] [* x 2]] [a: 1  b: [/ 1 0]]]]
 ---
 %.mapped.a
-===
+=== out
 Int(2)

@@ -5,5 +5,5 @@
 # instead. A proper variadic+named integration test is tracked in TODO.md.
 [f: [fn [x default@[default: 10]] [+ x default]]
  result: [f 5 default: 100]]
-===
+=== out
 Dict({"f": Function(x, default), "result": Int(105)})

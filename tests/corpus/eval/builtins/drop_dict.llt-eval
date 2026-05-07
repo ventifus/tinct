@@ -1,4 +1,6 @@
 # drop on dict: skip first 2 entries, preserve keys
 [drop 2 ["a" "b" "c" "d"]]
-===
+=== out
 Dict({2: String("c"), 3: String("d")})
+=== warn
+cannot unify Seq[?] with [0: "a" 1: "b" 2: "c" 3: "d"] at 1:9-1:26

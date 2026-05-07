@@ -15,7 +15,7 @@ You are an LLT language expert who writes standard library functions in LLT itse
 - **LLT syntax**: `[key: value]` dicts, `[f args]` function calls, `[fn [params] body]` function definitions, bare variable references, `%` pipeline, `---` document separators
 - **Rust-native builtins**: read `standard_builtins()` in `src/builtins.rs` for the current list (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences)
 - **Stdlib patterns**: recursive list processing, accumulator-based folds, higher-order functions, guard clauses with `$if`
-- **`$_` implicit lambda**: `[call $map [call $+ $_ 1] $list]` desugars to `[call $map [fn [_] [call $+ $_ 1]] $list]`
+- **`_` implicit lambda**: `[map [+ _ 1] list]` desugars to `[map [fn [_] [+ _ 1]] list]` — `_` in argument position creates an implicit single-argument lambda
 - **Letrec semantics**: dict entries can reference each other, enabling mutual recursion in stdlib definitions
 - **Lazy evaluation constraints**: stdlib functions must work correctly under lazy evaluation — be careful about evaluation order
 
@@ -31,19 +31,20 @@ You are an LLT language expert who writes standard library functions in LLT itse
 
 Read `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories:
 
-**Arithmetic**: `$+`, `$-`, `$*`, `$/` (auto-promotion: Int+Int=Int, mixed=Float)
-**Comparison**: `$<`, `$=` (cross-type, dict equality always false)
-**Control**: `$if` (selective materialization: only chosen branch evaluated)
-**Dict**: `$keys`, `$length`, `$merge` (right-biased), `$append`
-**String**: `$str` (concat/toString), `$split`, `$replace`, `$upper`, `$lower`, `$trim`
-**Numeric**: `$floor`, `$round`
-**Parsing**: `$to-int`, `$to-float` (string-to-number only)
-**Eval control**: `$eval`, `$error`, `$try`, `$apply`
-**Type**: `$type-of`
-**I/O**: `$from-json`, `$include`
-**Sequences**: `$seq`, `$head`, `$tail`, `$collect`, `$seq?`, `$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`, `$take`, `$drop`, `$map`, `$filter`, `$reduce`, `$join`, `$concat`
+**Arithmetic**: `+`, `-`, `*`, `/` (auto-promotion: Int+Int=Int, mixed=Float); also `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` (stable aliases used inside prelude to allow shadowing)
+**Comparison**: `<`, `=` (cross-type, dict equality always false); also `builtin-lt`, `builtin-eq`
+**Control**: `if` (selective materialization: only chosen branch evaluated); also `builtin-if`
+**Dict**: `keys`, `length`, `merge` (right-biased), `append`
+**String**: `str` (concat/toString), `split`, `replace`, `upper`, `lower`, `trim`
+**Numeric**: `floor`, `round`
+**Parsing**: `to-int`, `to-float` (string-to-number only)
+**Eval control**: `eval`, `error`, `try`, `apply`
+**Type predicates**: `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `type-of`
+**I/O**: `from-json`, `include`
+**Sequences**: `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `drop`, `map`, `filter`, `reduce`, `join`, `concat`
+**ADTs/variants**: `tag-of` (returns tag string from a `Value::Variant`)
 
-Note: `$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`, `$concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). For the authoritative Rust builtin count, consult `src/builtins.rs:standard_builtins()`.
+Note: `map`, `filter`, `take`, `drop`, `reduce`, `join`, `concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). For the authoritative Rust builtin count, consult `src/builtins.rs:standard_builtins()`.
 
 ## Stdlib Function Categories
 
@@ -67,6 +68,35 @@ The prelude provides LLT-implemented functions (count grows with each sprint; co
 
 Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append` materializing and cloning the growing accumulator `IndexMap` on every iteration. This is a known limitation tracked in TODO.md. Don't optimize prematurely — correctness first.
 
+## Encapsulation Pattern (Two-Dict Documents)
+
+All stdlib files with internal helpers must use the **two-dict document pattern** for encapsulation. A document is a sequence of dict expressions; only the **last** dict is the document's return value. Earlier dicts are visible within the document (as parent scope) but not exported to callers.
+
+```tinct
+# First dict — internal helpers: in scope below, NOT exported
+[
+    make-entry: [fn@Dict [k v] [$k: v]]
+    any?-impl:  [fn@Bool [pred@Fn xs@Dict ks i@Int len@Int] ...]
+    # ... all -impl / -step / -check helper functions
+]
+
+# Second (final) dict — public API: the only value returned by include
+[
+    any?: [fn@Bool [pred@Fn xs@Dict]
+        [any?-impl pred xs [keys xs] 0 [length xs]]]
+    # ... public functions; helpers referenced by plain name via parent scope
+]
+```
+
+Why this works: `eval_document` materializes each intermediate dict, inserts its string-keyed entries into a child environment, then evaluates the next expression in that child environment. Only the last expression's value is returned. See `doc/09-documents.md §Module-Style Encapsulation` and `doc/14-patterns.md §Library Module` for full explanation and examples.
+
+**Naming conventions for helpers** (grouped in the first dict):
+- `-impl` — recursive internal implementation with extra state args
+- `-step` — per-element callback passed to a Rust builtin
+- `-check` — predicate helper that inspects an intermediate result
+
+**Files with no internal helpers** (e.g., `stdlib/numeric.llt`) stay as a single flat dict — no split needed.
+
 ## LLT-First Principle
 
 **Stdlib functions MUST be implemented in LLT whenever possible.** The stdlib exists to prove that LLT is expressive enough to build its own ecosystem. A function implemented in Rust is a missed opportunity; a function implemented in LLT validates the language design.
@@ -86,9 +116,9 @@ When you encounter a function that *cannot* be implemented in LLT due to a langu
 1. Read `stdlib/prelude.llt` to understand existing patterns and naming conventions
 2. Use only the Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) and other prelude functions as building blocks
 3. Follow existing naming conventions: `kebab-case`, `?` suffix for predicates, no `$` prefix in definitions
-4. Write corpus tests in `tests/corpus/eval/stdlib/` — one `.txt` file per function or feature
+4. Write corpus tests in `tests/corpus/eval/stdlib/` — one `.llt-eval` file per function or feature
 5. Test edge cases: empty dicts, single-element dicts, nested structures, type variations
-6. Use `===` as the delimiter between input and expected output in test files
+6. Use labeled section delimiters: `=== out` for expected output, `=== warn` if a warning is expected, `=== error` for error cases. Bare `===` is a parse error.
 7. Run `just test-corpus` to verify
 
 ## Codebase Review Protocol
@@ -197,15 +227,15 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 
 ## Known Traps and Gotchas
 
-- **`$or` returns literal `true`** (not first truthy value) — unusable as default-value combinator. Design decision pending (TODO.md:565). Use `[call $if $a $a $b]` for pass-through semantics.
-- **`until` hits depth limit at ~230 iterations** — recursive LLT function; use `$iterate`+`$take`+`$collect` for larger convergence loops.
-- **`has?` materializes the value** — `[call $try [fn [] $xs[$k]]]` forces `$xs[$k]` to check existence; expensive for large nested values. A future `$has?` Rust primitive would check `contains_key()` without forcing.
-- **`->` threading requires explicit lambdas** — `[call $filter $pred $_]` or `[fn [d] [call $filter $pred $d]]` syntax is needed; partial application idiom `[call $filter $pred]` does NOT work (exact arity enforced).
-- **Test file extension**: eval tests use `.llt-eval` (in `tests/corpus/eval/`); parser tests use `.txt` (in `tests/corpus/valid/` and `tests/corpus/invalid/`). Stdlib tests are under `tests/corpus/eval/stdlib/` and use `.llt-eval`.
-- **`$deep-eq` does NOT exist** — doc/11-stdlib.md:106 falsely claims it does. Use `$=` (shallow) or implement deep comparison manually.
-- **`sort`/`sort-by` crash on Seq input** — missing Seq guard (tracked TODO.md:576). Always collect Seqs before sorting.
-- **`zip-seq`/`zip-dict` are internal** — don't call them directly; use `zip`. They should be renamed to `zip-seq-impl`/`zip-dict-impl` but haven't been yet (TODO.md:562).
-- **Corpus test count**: consult `tests/corpus/eval/stdlib/` directly — counts grow with each sprint and hardcoded numbers go stale quickly.
+- **`or` returns the truthy value, not `true`** — `[or a b]` returns `a` if truthy, else `b`. This is pass-through semantics (useful for defaults). `[if a a b]` is equivalent.
+- **`until` hits depth limit at ~230 iterations** — recursive LLT function; use `iterate`+`take`+`collect` for larger convergence loops.
+- **`has?` materializes the value** — `[try [fn [] [get k xs]]]` forces the value to check existence; expensive for large nested values.
+- **`->` threading requires exact arity** — `[filter pred _]` (implicit lambda) or `[fn [d] [filter pred d]]`; partial application `[filter pred]` does NOT work (exact arity enforced).
+- **Test file extension**: all corpus tests use `.llt-eval`. Stdlib tests are under `tests/corpus/eval/stdlib/`.
+- **Corpus test count**: consult `tests/corpus/eval/stdlib/` directly — counts grow with each sprint.
+- **Encapsulation pattern**: stdlib files use two dicts in the same document — internal helpers (`-impl`, `-step`, `-check`) in the first dict, public API in the second (final) dict. Only the final dict is exported. Helpers are visible by plain name inside the public dict via the parent scope chain.
+- **Pattern matching available**: `[match x ...]` is now implemented. Use it instead of nested `[if ...]` chains for type/value dispatch.
+- **Union type annotations**: dual-dispatch parameters (accepting both Dict and Seq) should be annotated `@[Dict Seq]`.
 
 ## Mempalace
 

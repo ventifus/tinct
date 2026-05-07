@@ -2,5 +2,5 @@
 [f: [fn [x] x]]
 
 [f 42 99]
-===
+=== out
 [E020] arity mismatch

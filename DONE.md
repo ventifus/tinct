@@ -2862,6 +2862,34 @@ Linux 5.13+ Landlock enforcement with graceful degradation.
 - [x] Add substitution size check to unify_tails RowVar-to-RowVar binding — `src/types.rs:717` missing `subst.check_size(span)?` after row_map insert, unlike the RowVar-to-Empty binding at lines 728-731 [Minor, type-theorist C91]
 - [x] Fix doc/16-architecture.md CEK status — says "Phase 4 (structural cleanup) complete via iterative-eval-b3" but Phase 4 (eval_step conversion) is only partially done: TypeAssertCheck Cont added (b4 tasks 2+4), $apply deferred (task 5 above), DictEntries/DocumentPipeline/DictBuildKey/BindArgDefault not yet added; update §Iterative Evaluator status note to reflect partial b4 completion (`doc/16-architecture.md:43`) [Minor, integration-verifier C91]
 
+## CLI and Test Infrastructure
+
+### `strict-mode`
+
+`--strict` CLI flag, labeled corpus sections (`=== out` / `=== warn` / `=== error`), and LSP stdlib validation. See doc/12-tooling.md §Strict Mode.
+
+**Corpus format extension — labeled sections:**
+
+- [x] Replace `split_test_file` with a new parser for labeled section delimiters: `=== out`, `=== warn`, `=== error`; bare `===` is now a parse error — the runner panics with "bare `===` is no longer valid; use `=== out`, `=== warn`, or `=== error`"; return `TestExpectations { out: Option<String>, warn: Option<String>, error: Option<String> }` (`tests/corpus_tests.rs`)
+- [x] Migrate all existing corpus test files: rewrite every bare `===` to `=== out`; script this with `sed -E 's/^===$/=== out/'` across `tests/corpus/`; verify no bare `===` remains (`tests/corpus/`)
+- [x] Update corpus test runner to collect three outputs per test run: (1) eval output via `eval_source`, (2) type warnings via `typecheck_source`, (3) parse/eval error messages; compare each against its labeled section — absent section means assert empty (`tests/corpus_tests.rs`)
+- [x] Semantics: a test with no `=== warn` section asserts zero type warnings; a test with `=== warn` asserts the warnings match exactly — no external flag needed to enforce warning-cleanliness (`tests/corpus_tests.rs`)
+- [x] Seed one corpus test per distinct warning category using `=== warn`: `type_mismatch.llt-eval`, `constraint_not_satisfied.llt-eval`, `record_field_missing.llt-eval`, `function_arity.llt-eval` — each has `=== out` (empty or value) and `=== warn` (expected message) (`tests/corpus/typecheck/warnings/`)
+- [x] Audit existing corpus files after migration: run the full suite; any file that currently produces type warnings will now fail on its empty `=== warn` expectation; fix each warning or add an explicit `=== warn` section (`tests/corpus/`)
+
+**CLI `--strict` flag (for end-user CI use, independent of corpus format):**
+
+- [x] `--strict` flag on `tinct eval`: type errors become fatal — collect all `TypeError` from `typecheck_file`, print to stderr with the existing error format, exit code 1; without `--strict`, current advisory behavior unchanged (`src/main.rs`)
+- [x] `EvalConfig.strict: bool` threaded through the eval pipeline so `eval_source` and `eval_file` callers can also opt in (`src/lib.rs`, `src/eval.rs`)
+- [x] `tinct fmt --strict`: exits 1 if the file has type errors; useful for CI pre-commit hooks (`src/main.rs`)
+
+**LSP validation — reusing the existing corpus:**
+
+- [x] LSP corpus runner: spawn `tinct lsp`, send `initialize` + `textDocument/didOpen` with the source extracted from each `.llt-eval` file (content before the first `=== ` section), collect `publishDiagnostics`; map `DiagnosticSeverity::WARNING` → compare against `=== warn` section, `DiagnosticSeverity::ERROR` → compare against `=== error` section; a file with no `=== warn` / `=== error` sections must produce zero diagnostics (`tests/lsp_tests.rs` — new file, reads same `tests/corpus/` files as the eval runner)
+- [x] LSP stdlib validation: for each `.llt` file under `stdlib/`, open via the LSP runner; stdlib files have no `=== warn` or `=== error` sections so the assertion is zero diagnostics of any severity — ensures stdlib is both warning-free and error-free in the LSP view (`tests/lsp_tests.rs`)
+- [x] The `tests/lsp_corpus/` directory and its `.expected.json` format (described in `README.md`) are superseded by the labeled-section approach; update `README.md` to describe the new design; the directory is kept for any future LSP-specific tests (hover, completion, definition) that have no eval-corpus equivalent (`tests/lsp_corpus/README.md`)
+- [x] Document `--strict` and the `=== out` / `=== warn` / `=== error` corpus format in doc/12-tooling.md §Strict Mode and §Corpus Test Format (`doc/12-tooling.md`)
+
 ### misc-nits-c-code: Code Behavior Fixes
 
 Code behavior changes, refactors, performance fixes, and span fixes.

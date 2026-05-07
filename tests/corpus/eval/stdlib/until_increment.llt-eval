@@ -1,4 +1,6 @@
 # until with increment
 [until [fn [x] [>= x 10]] [fn [x] [+ x 1]] 0]
-===
+=== out
 Int(10)
+=== warn
+undefined variable: >= at 1:17-1:19

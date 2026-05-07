@@ -1,4 +1,6 @@
 # filter: keep elements where predicate is true (returns Seq for Dict input)
 [filter [fn [x] [> x 2]] [1 2 3 4 5]]
-===
+=== out
 Seq(Int(3), ...)
+=== warn
+undefined variable: > at 1:18-1:19

@@ -1,4 +1,4 @@
 # join: error when separator is not a string
 [join 42 [1 2 3]]
-===
+=== out
 [E010] join: expected String, got Int

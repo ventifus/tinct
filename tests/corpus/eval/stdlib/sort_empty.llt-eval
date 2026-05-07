@@ -1,4 +1,4 @@
 # sort on empty dict returns empty dict
 [sort []]
-===
+=== out
 Dict({})

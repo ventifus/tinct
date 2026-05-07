@@ -1,3 +1,5 @@
 [unzip [[1 10] [2 20] [3 30]]]
-===
+=== out
 Dict({"a": Dict({0: Int(1), 1: Int(2), 2: Int(3)}), "b": Dict({0: Int(10), 1: Int(20), 2: Int(30)})})
+=== warn
+undefined variable: unzip at 1:2-1:7

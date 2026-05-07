@@ -2,5 +2,5 @@
 # A function with @String return annotation but @Int param — the body $x returns Int,
 # but the @String annotation declares it should return String. Type error.
 [[fn@String [x@Int] x] 1]
-===
+=== out
 cannot unify

@@ -1,4 +1,6 @@
 # >= : greater-than-or-equal on Bool (derived from <)
 [>= true true]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: >= at 1:2-1:4

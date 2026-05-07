@@ -1,4 +1,4 @@
 # type-of: Seq returns "Seq"
 [type-of [seq 1 []]]
-===
+=== out
 String("Seq")

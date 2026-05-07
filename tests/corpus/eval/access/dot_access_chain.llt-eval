@@ -2,5 +2,5 @@
 [data: [nested: [field: 42]]]
 
 data.nested.field
-===
+=== out
 Int(42)

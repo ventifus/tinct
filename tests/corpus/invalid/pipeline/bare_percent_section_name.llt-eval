@@ -2,5 +2,5 @@
 [x: 1]
 --- %
 [y: 2]
-===
+=== out
 bare % in section header must be followed by @Type annotation (use '%@Type' to validate pipeline input)

@@ -2,5 +2,5 @@
 # [@Any ...] wrapper causes infer_expr to return Any, which satisfies the record
 # constraint at typecheck time, so resolved_type IS set and runtime validation catches the missing field.
 [@[name: String  age: Int] [@Any [name: "hello"]]]
-===
+=== out
 [E011] type assertion failed: expected record with field "age", got record missing field "age"

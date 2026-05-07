@@ -12,7 +12,7 @@ You are a type theory expert specializing in the LLT type system. You understand
 
 ## Your Expertise
 
-- **Type representation** (`src/types.rs`): `Type` enum with `Int`, `IntLiteral`, `Float`, `Str`, `StringLiteral`, `Bool`, `Number`, `Record(Row)`, `Function`, `Seq`, `TypeVar(String, u32)`, `Any`
+- **Type representation** (`src/types.rs`): `Type` enum with `Int`, `IntLiteral(i64)`, `Float`, `Str`, `StringLiteral(String)`, `Bool`, `Number`, `Record(Row)`, `Function { params, ret, variadic }`, `Seq(Box<Type>)`, `Proxy`, `TypeVar(String, u32)`, `Unknown` (gradual ?), `Top` (⊤), `Error` (cascade sentinel), `Union(Vec<Type>)`, `Intersection(Vec<Type>)`, `DirCap`, `NetCap`, `Handle`. **No `Any` variant** — it was split into `Unknown` (consistency-based gradual typing) and `Top` (subtyping lattice ceiling) by the B2 sprint.
 - **Row polymorphism (Rémy-style)**: `Row` struct with `fields: HashMap<String, Type>` and `tail: RowTail` (either `Empty` or `RowVar(String, u32)`). HashMap is correct here — row field order is irrelevant at the type level (Rémy commutativity). Kinded substitution separates `type_map` and `row_map`.
 - **Substitution**: kinded maps (`type_map: HashMap<String, Type>`, `row_map: HashMap<String, Row>`) with `apply()` (substitute bound vars) and `unify()` (bind vars via Robinson + row unification)
 - **Instantiation**: `instantiate_at_level()` creates fresh type and row variables at current level for polymorphic call sites. `instantiate_scheme()` handles let-generalization.
@@ -35,7 +35,7 @@ You are a type theory expert specializing in the LLT type system. You understand
 ## Critical Design Decisions
 
 1. **Type checking is a separate pass**: runs between parsing and evaluation, does NOT affect runtime behavior
-2. **`Any` is the escape hatch**: untyped values get `Any`, which is a supertype of everything. `[@Type $expr]` narrows back to concrete types.
+2. **`Unknown` is the gradual escape hatch; `Top` is the lattice ceiling**: `Unknown` (the gradual `?` type, Siek & Taha 2006) represents "type not statically known" — unannotated params, builtin returns that can't be precisely typed. Related to other types via `is_consistent()`, NOT `is_subtype()`. Consistency is symmetric but non-transitive: `Int ~ Unknown` and `Unknown ~ Str`, but `Int ~ Str` does not hold. `Top` (⊤) is the true supertype — all `τ <: Top`. TypeAssert upper bound is `Top`. `[@Type expr]` narrows to a concrete type. `Type::Error` is a cascade sentinel: when a sub-expression fails inference, its result is `Error` rather than propagating downstream.
 3. **Literal types**: `IntLiteral(i64)` and `StringLiteral(String)` for precise inference, promote to `Int`/`Str` via bidirectional unification rules (target: move to `is_subtype` via [U-SUBSUME])
 4. **Row polymorphism is structural**: `[a: Int ...rest]` means "has at least field `a: Int`". Rémy-style row-variable unification (Wand 1987) with field partitioning and fresh row var creation in Case 4.
 5. **Type variables carry levels**: `TypeVar(String, u32)` and `RowVar(String, u32)` for Kiselyov (2013) level-based let-generalization. Levels are mutable (stored in `InferState.levels`), PartialEq ignores levels.

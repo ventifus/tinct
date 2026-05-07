@@ -1,4 +1,4 @@
 # sort: Seq input produces descriptive error
 [sort [range 0 10]]
-===
+=== out
 [E010] sort: expected Dict, got Seq

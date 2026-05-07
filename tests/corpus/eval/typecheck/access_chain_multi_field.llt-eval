@@ -5,5 +5,7 @@
  last_name: data.last
  age_plus_one: [+ data.age 1]
  data: [first: "Alice"  last: "Smith"  age: 30]]
-===
+=== out
 Dict({"first_name": String("Alice"), "last_name": String("Smith"), "age_plus_one": Int(31), "data": Dict({"first": String("Alice"), "last": String("Smith"), "age": Int(30)})})
+=== warn
+type _t9 does not satisfy constraint Numeric at 5:16-5:30

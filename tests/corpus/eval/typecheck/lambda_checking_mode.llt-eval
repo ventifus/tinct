@@ -5,5 +5,5 @@
 # Here, [@[Fn@Int [Int]] [fn [x] $x]] checks the identity lambda against
 # Fn(Int -> Int), propagating Int to the unannotated param x.
 [@[Fn@Int [Int]] [fn [x] x]]
-===
+=== out
 Function(x)

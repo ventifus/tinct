@@ -5,5 +5,5 @@
   [a: [error "replaced value, should not force"]  c: 3]]
 ---
 %.b
-===
+=== out
 Int(2)

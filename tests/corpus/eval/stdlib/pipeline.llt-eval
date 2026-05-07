@@ -1,4 +1,6 @@
 # pipeline: thread a value through a series of functions (5*2+1=11)
 [-> 5 [fn [x] [* x 2]] [fn [x] [+ x 1]]]
-===
+=== out
 Int(11)
+=== warn
+undefined variable: -> at 1:2-1:4

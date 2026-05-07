@@ -4024,10 +4024,27 @@ impl TypeEnv {
             },
         );
 
+        // builtin-get: registered directly. 'get' is a prelude wrapper (not a Rust builtin
+        // type), so it is absent from this env when the alias loop below runs. Registering
+        // builtin-get here gives the type checker enough information to avoid false
+        // "undefined variable" errors in stdlib/prelude.llt.
+        env.insert_scheme(
+            "builtin-get".to_string(),
+            TypeScheme {
+                type_vars: vec![],
+                row_vars: vec![],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![Type::Unknown, Type::Unknown],
+                    ret: Box::new(Type::Unknown),
+                    variadic: false,
+                },
+            },
+        );
+
         // builtin-* aliases: same types as canonical counterparts.
         // Used by stdlib/prelude to call builtins when canonical names may be shadowed.
         for (alias, canonical) in [
-            ("builtin-get", "get"),
             ("builtin-lt", "<"),
             ("builtin-eq", "="),
             ("builtin-add", "+"),

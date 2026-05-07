@@ -1,4 +1,4 @@
 # Interpolated string with $$ escape
 [price: 42  msg: i"Price: $$$price"]
-===
+=== out
 Dict({"price": Int(42), "msg": String("Price: $42")})

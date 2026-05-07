@@ -1,4 +1,4 @@
 # seq: construct + collect to dict
 [collect [seq 1 [seq 2 [seq 3 []]]]]
-===
+=== out
 Dict({0: Int(1), 1: Int(2), 2: Int(3)})

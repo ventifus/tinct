@@ -2,5 +2,5 @@
     Number  "numeric"
     Str     "text"
     _       "other"]
-===
+=== out
 String("numeric")

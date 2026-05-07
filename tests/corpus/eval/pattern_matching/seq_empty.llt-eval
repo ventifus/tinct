@@ -2,5 +2,7 @@
 [match []
     [seq h t]  h
     _          99]
-===
+=== out
 Int(99)
+=== warn
+undefined variable: h at 2:16-2:17

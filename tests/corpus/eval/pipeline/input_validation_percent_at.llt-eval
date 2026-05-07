@@ -7,5 +7,5 @@
 
 [merged: [port: %.port  host: %.hostname]]
 
-===
+=== out
 Dict({"merged": Dict({"port": Int(8080), "host": String("example.com")})})

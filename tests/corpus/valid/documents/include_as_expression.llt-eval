@@ -1,5 +1,5 @@
 [include "lib/utils.llt"]
 
 [result: [double 21]]
-===
+=== out
 [include "lib/utils.llt"]

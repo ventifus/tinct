@@ -3,5 +3,7 @@
   f: [fn [a@[default: 1] b c@[default: 3]] [+ a [+ b c]]]
   result: [f b: 10]
 ]
-===
+=== out
 Dict({"f": Function(a, b, c), "result": Int(14)})
+=== warn
+type _t3 does not satisfy constraint Numeric at 2:44-2:57

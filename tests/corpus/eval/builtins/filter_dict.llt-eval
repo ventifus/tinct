@@ -1,4 +1,6 @@
 # filter on dict: returns seq of values passing predicate
 [collect [filter [fn [x] [> x 2]] [a: 1 b: 3 c: 5]]]
-===
+=== out
 Dict({0: Int(3), 1: Int(5)})
+=== warn
+undefined variable: > at 1:27-1:28

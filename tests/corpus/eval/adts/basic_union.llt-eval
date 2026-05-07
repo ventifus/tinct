@@ -2,5 +2,5 @@
 [Result: [type [ok: a] [err: String]]]
 ---
 [ok: 42]
-===
+=== out
 Dict({"ok": Int(42)})

@@ -1,4 +1,6 @@
 # quot: exact division
 [quot 10 2]
-===
+=== out
 Int(5)
+=== warn
+undefined variable: quot at 1:2-1:6

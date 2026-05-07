@@ -1,4 +1,6 @@
 # positive: zero is not positive
 [positive 0]
-===
+=== out
 Bool(false)
+=== warn
+undefined variable: positive at 1:2-1:10

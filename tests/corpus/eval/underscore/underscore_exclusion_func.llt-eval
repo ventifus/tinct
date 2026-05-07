@@ -2,5 +2,5 @@
 # [call $_ $_] wraps to [fn [_] [call $_ $_]] (both bind to same param)
 # This creates \f -> f(f), which when called with identity fn gives identity
 [call [_ _] [fn [x] x]]
-===
+=== out
 Function(x)

@@ -1,4 +1,6 @@
 # each-key on empty dict returns empty dict (end-of-Seq sentinel)
 [each-key []]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: each-key at 1:2-1:10

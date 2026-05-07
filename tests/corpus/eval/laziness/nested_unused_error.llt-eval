@@ -2,5 +2,5 @@
 [data: [inner: [boom: [error "nested error"]  safe: 99]]  result: 42]
 ---
 %.result
-===
+=== out
 Int(42)

@@ -355,7 +355,10 @@ Row type annotations on functions that process SQL sources enable the type check
 
 ### Prerequisites
 
-- Phase 1: `overridable-ops` sprint complete; `EvalConfig` refactor complete
+- Phase 1: ~~`overridable-ops` sprint~~ ✓ Done (`stdlib/prelude.llt` has
+  stable `builtin-*` aliases and overridable operator wrappers); `proxy` builtin
+  ✓ Done (`Value::Proxy { handler }` in `src/value.rs`, registered in
+  `standard_builtins()`). `EvalConfig` refactor: still needed if not done.
 - Phase 2: Phase 1 stable; async runtime integration decided
 - Phase 3: `row-unification` sprints complete
 - Phase 4: Phase 2 stable; `emit` side-effect model established as precedent

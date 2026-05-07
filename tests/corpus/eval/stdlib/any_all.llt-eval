@@ -1,4 +1,6 @@
 # any? - all elements match
 [any? [fn [x] [> x 0]] [1 3 7 2]]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: any? at 1:2-1:6

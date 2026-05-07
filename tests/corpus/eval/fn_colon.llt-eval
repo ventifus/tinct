@@ -1,4 +1,4 @@
 # "fn:" is a dict key, not a function definition
 [fn: "hello"]
-===
+=== out
 Dict({"fn": String("hello")})

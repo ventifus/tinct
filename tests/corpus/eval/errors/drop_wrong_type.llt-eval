@@ -1,4 +1,4 @@
 # drop: error when n is not an Int
 [drop "not-a-number" [range 0 10]]
-===
+=== out
 [E010] drop: expected Int, got String

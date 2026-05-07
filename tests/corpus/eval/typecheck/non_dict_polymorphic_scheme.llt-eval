@@ -11,5 +11,5 @@
 [call %.make-record]
 ---
 [result: [call %.id 42]]
-===
+=== out
 Dict({"result": Int(42)})

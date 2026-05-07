@@ -1,4 +1,4 @@
 # all?: Seq input produces clear error message
 [all? [fn [x] true] [range 0 3]]
-===
+=== out
 [E080] all?: expected Dict, got Seq -- collect the Seq first

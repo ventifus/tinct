@@ -1,4 +1,4 @@
 # Annotation bracket restriction - call special form in annotation
 x@[call f]
-===
+=== out
 property dict annotation must be a dict expression

@@ -2,5 +2,5 @@
 [first: [fn [a b] a]]
 
 [first 42 [error "should not fire"]]
-===
+=== out
 Int(42)

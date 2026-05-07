@@ -1,4 +1,0 @@
-[
-  x: 42
-  y: [call $+ $x $z]  # $z is undefined
-]

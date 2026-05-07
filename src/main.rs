@@ -52,6 +52,10 @@ enum Commands {
         #[arg(long)]
         require_integrity: bool,
 
+        /// Type errors are fatal (exit with code 1). Without --strict, type checking is advisory.
+        #[arg(long)]
+        strict: bool,
+
         /// Wall-clock timeout (e.g. "5s", "500ms", "2m"). Exit code 2 on expiry.
         #[arg(long)]
         timeout: Option<String>,
@@ -170,6 +174,10 @@ enum Commands {
         #[arg(long)]
         tinct_fmt: bool,
 
+        /// Type errors are fatal (exit with code 1). Without --strict, formatting proceeds regardless of type errors.
+        #[arg(long)]
+        strict: bool,
+
         /// Input LLT file. Use `-` to read from stdin.
         file: String,
     },
@@ -243,6 +251,7 @@ fn main() {
             eval,
             no_fs,
             require_integrity,
+            strict,
             timeout,
             allow_path,
             no_landlock,
@@ -266,6 +275,7 @@ fn main() {
             eval,
             no_fs,
             require_integrity,
+            strict,
             timeout.as_deref(),
             allow_path,
             no_landlock,
@@ -291,9 +301,10 @@ fn main() {
             nospaces,
             minimize,
             tinct_fmt,
+            strict,
             file,
         } => run_fmt(
-            &file, check, in_place, oneline, nospaces, minimize, tinct_fmt,
+            &file, check, in_place, oneline, nospaces, minimize, tinct_fmt, strict,
         ),
         #[cfg(feature = "repl")]
         Commands::Repl => tinct::repl::run_repl(),
@@ -702,6 +713,7 @@ fn run_eval(
     force_eval: bool,
     no_fs: bool,
     require_integrity: bool,
+    strict: bool,
     timeout: Option<&str>,
     allow_path: Vec<PathBuf>,
     no_landlock: bool,
@@ -1051,8 +1063,20 @@ fn run_eval(
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         tinct::resolve::resolve_file(&ast.node);
 
-        // Type errors are advisory; evaluation proceeds regardless.
-        let _ = tinct::typecheck::typecheck_file(&ast.node);
+        // Type errors are advisory unless --strict is set.
+        if let Err(type_errors) = tinct::typecheck::typecheck_file(&ast.node) {
+            if strict {
+                // In strict mode, type errors are fatal — print them and exit.
+                for err in &type_errors {
+                    eprintln!("{}", err);
+                }
+                return Err(format!(
+                    "type checking failed with {} error(s) (--strict mode)",
+                    type_errors.len()
+                ));
+            }
+            // Non-strict mode: type errors are advisory, continue with eval.
+        }
 
         // Determine base directory for $include resolution
         let file_base_dir_path = match stage {
@@ -1377,12 +1401,20 @@ fn run_fmt(
     nospaces: bool,
     minimize: bool,
     tinct_fmt: bool,
+    strict: bool,
 ) -> Result<(), String> {
     // --minimize is shorthand for both --oneline and --nospaces
     let oneline = oneline || minimize;
     let nospaces = nospaces || minimize;
 
     let source = read_source(file_path)?;
+
+    // If --strict is set, typecheck the file first and fail if type errors exist
+    if strict {
+        if let Err(type_error_msg) = tinct::typecheck_source(&source) {
+            return Err(type_error_msg);
+        }
+    }
     let formatted = if tinct_fmt {
         // Use tinct-hosted formatter
         // Compact mode if oneline or nospaces is specified, pretty mode otherwise

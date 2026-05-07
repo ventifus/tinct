@@ -1,5 +1,7 @@
 # foldr: right fold (fold over reversed list)
 # f receives (accumulator, element) just like reduce
 [foldr [fn [acc x] [append acc x]] [] [1 2 3]]
-===
+=== out
 Dict({0: Int(3), 1: Int(2), 2: Int(1)})
+=== warn
+undefined variable: foldr at 2:2-2:7

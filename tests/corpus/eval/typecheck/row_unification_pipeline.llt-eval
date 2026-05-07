@@ -3,5 +3,5 @@
 [get-name: [fn [r] r.name]]
 ---
 [result: [call %.get-name [name: "Alice"  age: 30]]]
-===
+=== out
 Dict({"result": String("Alice")})

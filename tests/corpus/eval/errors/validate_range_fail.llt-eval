@@ -1,4 +1,4 @@
 # validate: range constraint violation
 [validate [type: "Int" min: 1 max: 65535] 100000]
-===
-ERROR: must be <= 65535
+=== out
+must be <= 65535

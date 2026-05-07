@@ -11,5 +11,5 @@
 # (2) retry produces DepthExceeded again (not CircularDependency).
 [f: [fn [x] [f [+ x 1]]]
  result: [f 0]]
-===
+=== out
 [E040]

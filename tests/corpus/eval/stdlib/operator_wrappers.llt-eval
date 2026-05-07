@@ -25,5 +25,5 @@
   take-result: [collect [take 2 [seq 10 [seq 20 [seq 30 []]]]]]
   drop-result: [collect [drop 1 [seq 10 [seq 20 [seq 30 []]]]]]
 ]
-===
+=== out
 Dict({"lt-result": Bool(true), "lt-false": Bool(false), "eq-result": Bool(true), "eq-false": Bool(false), "add-result": Int(5), "sub-result": Int(7), "mul-result": Int(12), "div-result": Float(5), "if-true": String("yes"), "if-false": String("no"), "filter-result": Dict({0: Int(1), 1: Int(2)}), "map-result": Dict({0: Int(2), 1: Int(4), 2: Int(6)}), "reduce-result": Int(6), "take-result": Dict({0: Int(10), 1: Int(20)}), "drop-result": Dict({0: Int(20), 1: Int(30)})})

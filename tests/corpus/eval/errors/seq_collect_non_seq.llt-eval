@@ -1,4 +1,4 @@
 # collect: error on non-Seq (assuming collect requires Seq, not just any dict)
 [collect 42]
-===
+=== out
 [E010] collect: expected Seq, got Int

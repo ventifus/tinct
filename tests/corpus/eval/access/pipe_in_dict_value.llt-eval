@@ -6,5 +6,5 @@
 ]
 
 result.value
-===
+=== out
 Int(20)

@@ -1,3 +1,5 @@
 [list? [a: 1 b: 2]]
-===
+=== out
 Bool(false)
+=== warn
+undefined variable: list? at 1:2-1:7

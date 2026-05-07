@@ -1,4 +1,4 @@
 # cycle: error when called with non-Dict argument
 [cycle 42]
-===
+=== out
 [E010] cycle: expected Dict, got Int

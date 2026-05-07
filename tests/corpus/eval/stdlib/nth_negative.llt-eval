@@ -1,4 +1,6 @@
 # nth: get element by negative index (-1 is last)
 [nth ["a" "b" "c"] -1]
-===
+=== out
 String("c")
+=== warn
+undefined variable: nth at 1:2-1:5

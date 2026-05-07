@@ -2,5 +2,5 @@
 [x: [error "custom message"]]
 ---
 %.x
-===
+=== out
 [E080] custom message

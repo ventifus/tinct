@@ -1,4 +1,6 @@
 # Basic $_ wrapping - call arg with $_ wraps to function, calling it returns the arg
 [call [identity _] 42]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: identity at 1:8-1:16

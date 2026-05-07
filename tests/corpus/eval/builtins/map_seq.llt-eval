@@ -1,4 +1,4 @@
 # map on seq: returns lazy seq
 [head [map [fn [x] [+ x 10]] [seq 1 [seq 2 []]]]]
-===
+=== out
 Int(11)

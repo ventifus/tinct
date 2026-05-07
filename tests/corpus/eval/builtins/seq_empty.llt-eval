@@ -1,4 +1,6 @@
 # collect: empty seq produces empty dict
 [collect []]
-===
+=== out
 Dict({})
+=== warn
+cannot unify Seq[?] with [] at 1:1-1:13

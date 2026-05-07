@@ -2,5 +2,5 @@
 [include "stdlib/out/json.llt"]
 ---
 [call %.json [fn [x] x]]
-===
+=== out
 [E080] cannot serialize Function to JSON

@@ -1,4 +1,4 @@
 # filter on empty dict returns empty dict
 [filter [fn [x] true] []]
-===
+=== out
 Dict({})

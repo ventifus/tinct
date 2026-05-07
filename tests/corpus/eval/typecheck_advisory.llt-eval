@@ -4,5 +4,5 @@
 # should still succeed and return the string value.
 [f: [fn [x@Int] x]
  result: [f "hello"]]
-===
+=== out
 Dict({"f": Function(x), "result": String("hello")})

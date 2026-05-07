@@ -3,5 +3,5 @@
 # This documents the asymmetry: arg-only wraps, func-only does NOT wrap
 # Wrap in explicit function to provide $_ as bound variable, pass identity fn
 [call [fn [_] [_ 42]] [fn [x] x]]
-===
+=== out
 Int(42)

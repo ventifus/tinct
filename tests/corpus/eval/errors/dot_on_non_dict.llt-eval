@@ -1,5 +1,5 @@
 [x: 42]
 
 x.foo
-===
+=== out
 [E010] dot access: expected Dict or Proxy, got Int

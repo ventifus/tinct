@@ -2,5 +2,5 @@
 [include "stdlib/out/json.llt"]
 ---
 [call %.json [1 2 3]]
-===
+=== out
 String("[1,2,3]")

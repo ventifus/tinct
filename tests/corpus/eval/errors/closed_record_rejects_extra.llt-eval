@@ -2,5 +2,5 @@
 # [@Any ...] wrapper causes infer_expr to return Any, which satisfies the closed record
 # constraint at typecheck time, so resolved_type IS set and runtime validation catches the extra field.
 [@[name: String] [@Any [name: "hello"  extra: "world"]]]
-===
+=== out
 [E011] type assertion failed: expected closed record (no extra fields), got record with unexpected field "extra"

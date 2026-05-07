@@ -44,10 +44,10 @@ You are a lazy evaluation expert and laziness auditor for the LLT language runti
 2. **Letrec requires shared env**: all dict entries must see each other's thunks for mutual recursion to work. Single dict_env created before any value thunks allocated.
 3. **PendingBuiltin/PendingCall preserve laziness**: args stay as thunks. Builtin decides which to materialize. Result is thunk, not value.
 4. **InProgress is the cycle breaker**: `take_*` methods atomically transition to InProgress via `mem::replace` BEFORE extracting data. Re-encountering InProgress is a cycle (eval.rs:1154).
-5. **Non-cacheable errors restore state**: Only DepthExceeded is non-cacheable. All error recovery paths must check `is_cacheable()` and restore original state when false. **CRITICAL BUG**: Guarded error recovery at eval.rs:1482-1489 fails to restore state on non-cacheable errors, leaving thunk stuck in InProgress.
+5. **Non-cacheable errors restore state**: Only DepthExceeded is non-cacheable. All error recovery paths must check `is_cacheable()` and restore original state when false.
 6. **Span attachment at materialization**: `attach_materialization_context` adds mat_span on first access, subsequent accesses add stack frames.
-7. **`%` passes lazily**: document output becomes `%` for the next document without materialization at the `---` boundary (eval.rs:301).
-8. **deep_materialize cache cleanup**: `deep_materialize_thunk` inserts None sentinel before materializing (line 1581). **CRITICAL BUG**: materialize failure at line 1582 propagates via `?` without cleaning up sentinel.
+7. **`%` passes lazily**: document output becomes `%` for the next document without materialization at the `---` boundary.
+8. **deep_materialize cache cleanup**: `deep_materialize_thunk` inserts None sentinel before materializing. On error, sentinel must be cleaned up before propagating.
 
 ## Laziness Red Flags
 

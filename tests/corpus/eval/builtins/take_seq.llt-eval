@@ -1,4 +1,4 @@
 # take: take from finite Seq returns finite Seq (collected to dict)
 [collect [take 2 [range 0 5]]]
-===
+=== out
 Dict({0: Int(0), 1: Int(1)})

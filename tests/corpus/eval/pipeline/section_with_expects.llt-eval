@@ -2,5 +2,5 @@
 [a: 1]
 --- %out expects: @Dict
 %.a
-===
+=== out
 Int(1)

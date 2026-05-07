@@ -4,5 +4,5 @@
 [y: [+ %.x 10]]
 ---
 [result: [+ %.y 100]]
-===
+=== out
 Dict({"result": Int(111)})

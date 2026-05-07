@@ -1,4 +1,4 @@
 # take: error when xs is not a Dict or Seq
 [take 3 "hello"]
-===
+=== out
 [E010] take: expected Dict or Seq, got String

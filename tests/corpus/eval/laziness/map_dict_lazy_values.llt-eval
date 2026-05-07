@@ -3,5 +3,5 @@
 [map [fn [x] [+ x 10]] [a: 1  b: [error "should not evaluate"]]]
 ---
 %.a
-===
+=== out
 Int(11)

@@ -1,4 +1,6 @@
 # from-entries with empty list
 [from-entries []]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: from-entries at 1:2-1:14

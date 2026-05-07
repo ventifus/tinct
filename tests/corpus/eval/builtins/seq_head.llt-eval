@@ -1,4 +1,4 @@
 # head: extract first element from seq
 [head [seq 42 []]]
-===
+=== out
 Int(42)

@@ -1,4 +1,4 @@
 # Annotated bare word evaluates to the name as a String
 [t: Fn@Number]
-===
+=== out
 Dict({"t": String("Fn")})

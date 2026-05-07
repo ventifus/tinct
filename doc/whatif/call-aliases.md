@@ -59,8 +59,8 @@ pipe:  [fn [x f] [f x]]
 ## Design
 
 Custom call forms are implemented as procedural AST macros, not as
-parser-level aliases. The `call` keyword remains the only built-in
-application form; macros expand to `call` at compile time.
+parser-level aliases. The macro expander rewrites them to standard
+implied call form (`[f x]`) before type checking and evaluation.
 
 ### Macro-Based Call Forms
 
@@ -83,19 +83,16 @@ define custom call forms as macros:
 
 ### Why Macros, Not Parser Aliases
 
-Principle 3 is load-bearing: `call` is what makes tinct's bracket
-syntax unambiguous. Every `[call ...]` is a function call; every
-other `[...]` is data (a dict or list). Parser-level aliases would
-break this invariant — the parser would need to know which
-identifiers are call aliases to determine whether a bracket expression
-is a call or data. This couples parsing to the environment, which
-PEG parsers (Ford, 2004) cannot express (PEGs are context-free over
-the input string).
+tinct's bracket syntax is unambiguous: the parser sees `[timed
+process data]` as a dict/list bracket expression. Parser-level aliases
+would require the parser to know which identifiers are aliases in order
+to determine whether a bracket expression is a call or data, coupling
+parsing to the environment — something PEG parsers (Ford, 2004) cannot
+express.
 
-Macros preserve the invariant differently: macro expansion happens
-after parsing, on the AST. The parser sees `[timed process data]`
-as a bracket expression (data). The macro expander recognizes `timed`
-as a macro name and rewrites the AST to implied call form before
+Macros preserve the invariant cleanly: macro expansion happens after
+parsing, on the AST. The expander recognizes `timed` as a macro name
+and rewrites the bracket expression to implied call form `[f x]` before
 type checking and evaluation. This is exactly how Lisp macros work —
 the reader produces S-expressions, the macro expander rewrites them,
 and the evaluator sees only core forms.
@@ -145,11 +142,10 @@ propagation.
 
 ### Parser (src/parser.rs)
 
-**Current:** The parser recognizes `call` as the only application
-keyword. Bracket expressions without `call` are parsed as data
-(dicts/lists).
-**Proposed:** No change to the parser. Macro forms parse as regular
-bracket expressions (data). Macro expansion is a separate pass.
+**Current:** `[f x]` bracket expressions are parsed as implied calls
+when the first element is a bareword resolving to a function. Macro
+forms parse as regular bracket expressions.
+**Proposed:** No change to the parser. Macro expansion is a separate pass.
 **Impact:** None — this is the key advantage of the macro approach.
 
 ### AST / Macro Expander (new: src/macros.rs)
@@ -218,10 +214,10 @@ own call forms.
 
 ### Trigger
 
-- When the macro system is implemented.
-- When users request domain-specific call forms with custom semantics
-  (logging, retry, tracing).
-- When a DSL built on tinct needs application syntax beyond `call`.
+**Trigger is met.** The macro system (`defmacro`, hygiene, expansion loop)
+is fully implemented (`macro-integration` sprint, 2026-05-05). Custom call
+forms can be defined now. The remaining work is writing the example macros
+in Phase 2 (`stdlib/macros/`) to demonstrate the pattern.
 
 ## References
 

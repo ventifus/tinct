@@ -6,5 +6,7 @@
   a: p.zero
   b: p.one
 ]
-===
+=== out
 Dict({"handler": Function(key), "p": Proxy, "a": String("got-str"), "b": String("got-str")})
+=== warn
+cannot unify Fn@? [String] with _t0 at 4:13-4:20

@@ -2,5 +2,5 @@
 # When the main expression type doesn't match but default: is provided,
 # the default value should be used instead of raising an error.
 [@[type: Number  default: 42] "hello"]
-===
+=== out
 Int(42)

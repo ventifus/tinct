@@ -1,4 +1,6 @@
 # between: predicate factory — value out of range returns false
 [call [between 0 255] 256]
-===
+=== out
 Bool(false)
+=== warn
+undefined variable: between at 1:8-1:15

@@ -4,5 +4,5 @@
 [map [fn [x] [error "lazy-error"]] [a: 1 b: 2]]
 ---
 %.a
-===
+=== out
 [E080] lazy-error

@@ -3,6 +3,6 @@
 [f: [fn [x@a] x]
  r1: [f 42]
  r2: [f "hello"]]
-===
+=== out
 Dict({"f": Function(x), "r1": Int(42), "r2": String("hello")})
 

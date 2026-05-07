@@ -1,4 +1,4 @@
 # Interpolated string with multiple variables
 [name: "Bob"  age: 30  msg: i"$name is $age years old"]
-===
+=== out
 Dict({"name": String("Bob"), "age": Int(30), "msg": String("Bob is 30 years old")})

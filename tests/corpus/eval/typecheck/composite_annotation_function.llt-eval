@@ -4,5 +4,5 @@
 # the parameter type to Function(Int -> Number) via resolve_type_expr_value.
 [apply: [fn [f@[type: [Fn@Number [Int]] default: [fn [x] 0]]] [f 1]]
  result: [apply [fn [x] 2]]]
-===
+=== out
 Dict({"apply": Function(f), "result": Int(2)})

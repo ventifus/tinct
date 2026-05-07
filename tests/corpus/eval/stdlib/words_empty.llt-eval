@@ -1,4 +1,6 @@
 # words: empty string returns empty Dict (filter on empty returns Dict)
 [words ""]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: words at 1:2-1:7

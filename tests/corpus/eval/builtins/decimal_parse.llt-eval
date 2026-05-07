@@ -1,4 +1,6 @@
 # decimal: parse exact base-10 string
 [decimal "9.99"]
-===
+=== out
 Decimal(9.99)
+=== warn
+undefined variable: decimal at 1:2-1:9

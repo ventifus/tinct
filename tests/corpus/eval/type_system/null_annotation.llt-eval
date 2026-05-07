@@ -2,5 +2,5 @@
 # [@Null []] checks an empty dict against the closed empty-record type.
 # Null is not a new type variant — it is an alias for the closed empty record.
 [@Null []]
-===
+=== out
 Dict({})

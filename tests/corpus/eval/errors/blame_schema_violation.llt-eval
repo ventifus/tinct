@@ -3,5 +3,5 @@
 [x: 1]
 ---
 [@Int %]
-===
+=== out
 [E011] type assertion failed: expected Int, got Dict

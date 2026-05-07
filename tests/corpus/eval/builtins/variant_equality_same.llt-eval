@@ -1,5 +1,5 @@
 # Variants with the same tag are equal
 [Red: [variant "Red"]]
 [= Red Red]
-===
+=== out
 Bool(true)

@@ -1,4 +1,4 @@
 # type-of : returns the type name of a value
 [type-of 42]
-===
+=== out
 String("Int")

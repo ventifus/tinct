@@ -1,4 +1,6 @@
 # decimal: create from integer
 [decimal 42]
-===
+=== out
 Decimal(42)
+=== warn
+undefined variable: decimal at 1:2-1:9

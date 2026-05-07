@@ -1,4 +1,6 @@
 # validate: pattern matching
 [validate [type: "String" pattern: "^[a-z0-9.-]+$"] "example.com"]
-===
+=== out
 String("example.com")
+=== warn
+undefined variable: validate at 1:2-1:10

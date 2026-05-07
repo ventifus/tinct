@@ -1,5 +1,5 @@
 # Strictness dispatch: $+ forces arguments at dispatch time
 # Division by zero in arg[0] is caught before builtin executes
 [+ [/ 1 0] 2]
-===
+=== out
 [E031] /: division by zero

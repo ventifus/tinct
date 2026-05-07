@@ -1,4 +1,6 @@
 # words: leading and trailing spaces are stripped (shows first element only)
 [words "  hello world  "]
-===
+=== out
 Seq(String("hello"), ...)
+=== warn
+undefined variable: words at 1:2-1:7

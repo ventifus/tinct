@@ -1,4 +1,4 @@
 # tail: returns empty dict for single-element seq
 [collect [tail [seq 1 []]]]
-===
+=== out
 Dict({})

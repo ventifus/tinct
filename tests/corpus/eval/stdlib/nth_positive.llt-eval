@@ -1,4 +1,6 @@
 # nth: get element by positive index
 [nth ["a" "b" "c"] 1]
-===
+=== out
 String("b")
+=== warn
+undefined variable: nth at 1:2-1:5

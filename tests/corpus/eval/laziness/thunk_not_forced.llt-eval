@@ -1,5 +1,5 @@
 # Laziness: thunk containing error is not forced when unused
 [unused: [error "not forced"]  used: 42]
 [result: used]
-===
+=== out
 Dict({"result": Int(42)})

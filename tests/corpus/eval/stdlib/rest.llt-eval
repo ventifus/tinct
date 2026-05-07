@@ -1,4 +1,4 @@
 # rest: all elements except the first, reindexed from 0
 [rest [10 20 30]]
-===
+=== out
 Dict({0: Int(20), 1: Int(30)})

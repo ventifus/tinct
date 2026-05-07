@@ -2,5 +2,7 @@
 [match [type: "click"  target: [id: "button1"  class: "primary"]]
     [type: "click"  target: [id: id]]  id
     _                                   "unknown"]
-===
+=== out
 String("button1")
+=== warn
+undefined variable: id at 2:40-2:42

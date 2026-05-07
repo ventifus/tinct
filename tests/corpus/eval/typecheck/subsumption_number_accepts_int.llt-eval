@@ -1,5 +1,5 @@
 # Bidirectional typing: subsumption — Number accepts Int literal
 # TypeAssert [@Number 42] demonstrates literal promotion: IntLiteral(42) <: Number
 [@Number 42]
-===
+=== out
 Int(42)

@@ -2,5 +2,5 @@
 # $take 0 returns nothing — if map were eager the $error would fire, but it's lazy so
 # the function is never called and the result is an empty dict.
 [take 0 [map [fn [x] [error "forced eagerly"]] [range 0 3]]]
-===
+=== out
 Dict({})

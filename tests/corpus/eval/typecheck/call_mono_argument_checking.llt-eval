@@ -4,5 +4,5 @@
 # allowing IntLiteral(42) <: Int subsumption to succeed.
 [f: [fn [x@Int] x]
  result: [f 42]]
-===
+=== out
 Dict({"f": Function(x), "result": Int(42)})

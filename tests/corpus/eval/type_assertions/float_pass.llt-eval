@@ -1,4 +1,4 @@
 # Structural TypeAssert: Float annotation with Float value passes
 [@Float 3.14]
-===
+=== out
 Float(3.14)

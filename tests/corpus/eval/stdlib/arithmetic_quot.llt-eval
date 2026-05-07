@@ -1,4 +1,6 @@
 # quot: integer quotient (truncates toward zero)
 [quot 10 3]
-===
+=== out
 Int(3)
+=== warn
+undefined variable: quot at 1:2-1:6

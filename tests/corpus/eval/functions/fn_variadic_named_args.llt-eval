@@ -3,5 +3,5 @@
 # Calling with a named arg for x (no excess positional) produces an empty variadic dict.
 [f: [fn [x ...rest] rest]
  result: [f x: 42]]
-===
+=== out
 Dict({"f": Function(x, rest), "result": Dict({})})

@@ -1,5 +1,7 @@
 # Lazy evaluation: $or short-circuits when first argument is true
 # If $or were eager, the $error would fire. Since it's lazy, true is returned.
 [or true [error "should not evaluate"]]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: or at 2:2-2:4

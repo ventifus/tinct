@@ -45,14 +45,15 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 ### Step 1: Sprint Planning
 
 1. Read `TODO.md` to find the target sprint (first unchecked sprint, or the specified sprint-slug). Sprints are `###` headings only — skip `##` design sections entirely when scanning for the next sprint.
-2. Read relevant chapters of `doc/*.md` for design context
-3. **Design readiness check**: scan the sprint's tasks for unchecked design items — lines matching `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Document ... design`. Also check whether the sprint introduces new language constructs, runtime concepts, or user-facing semantics that lack corresponding coverage in doc/*.md. If any unresolved design work exists, **stop immediately** and report: `"NEEDS_DESIGN: [slug] — [list of unresolved design items]"`. Do not proceed to implementation.
-4. **Validate sprint scope**: is this sprint appropriately sized? If > 25 tasks (nits and docs don't count), consider splitting by updating TODO.md with new sprints and proceeding with the first one
+2. Read relevant chapters of `doc/*.md` for design context. If the sprint has a `Spec chapters:` line, read those specific chapters first — they are the authoritative design source for this sprint.
+3. **Design readiness check**: scan the sprint's tasks for unchecked design items — lines matching `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Document ... design`. Also check whether the sprint introduces new language constructs, runtime concepts, or user-facing semantics that lack corresponding coverage in doc/*.md. If the sprint has a `Spec chapters:` reference, verify those sections exist and cover the sprint's scope — a missing section is a design gap. If any unresolved design work exists, **stop immediately** and report: `"NEEDS_DESIGN: [slug] — [list of unresolved design items]"`. Do not proceed to implementation.
+4. **Validate sprint scope**: is this sprint appropriately sized? Target is ~25 non-nit, non-doc implementation tasks. If > 30 such tasks exist, split by updating TODO.md with two new sprints (keeping phase-dependency ordering) and proceeding with the first one.
 5. **Check dependencies**: are all prerequisites for this sprint actually complete? Are inter-sprint dependencies accurate?
 6. **Scan for scope gaps**: does the TODO.md sprint capture all work needed? Look for missing tasks implied by doc/*.md that aren't tracked
 7. Break the sprint's tasks into work items
 8. Identify which agents are needed for each task and which files they'll touch
-9. **Create `.tmp/sprint-{slug}.md`** (substituting the actual sprint slug, e.g. `.tmp/sprint-seq-core.md`). Multiple sprint teams may run in parallel — never read or modify another sprint's `.tmp/sprint-*.md` file. Create the file fresh:
+9. **Pre-sprint test plan**: dispatch a `test-crafter` agent to produce a test plan *before* implementation begins. Brief it with: the sprint slug, the sprint's task list, and the relevant doc/*.md spec chapters. It should return a compact test plan: acceptance criteria per task, edge cases to cover, non-functional checks (exit codes, idempotency, etc.), and stale test risk. **The agent returns this plan to you — do not ask it to write files.** You will include it in the sprint file you create in step 10. This plan is then referenced by implementation agents so they write correct tests alongside their code changes.
+10. **Create `.tmp/sprint-{slug}.md`** including the test plan from step 9: (substituting the actual sprint slug, e.g. `.tmp/sprint-seq-core.md`). Multiple sprint teams may run in parallel — never read or modify another sprint's `.tmp/sprint-*.md` file. Create the file fresh:
 
 ```markdown
 # Sprint: [slug] — [description]

@@ -1316,9 +1316,7 @@ fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into()),
             }
         }
-        Value::Int(n) => {
-            ok_val(Value::Decimal(rust_decimal::Decimal::from(n)), call_span)
-        }
+        Value::Int(n) => ok_val(Value::Decimal(rust_decimal::Decimal::from(n)), call_span),
         _ => Err(EvalError::type_mismatch("String or Int", &type_name(&val), call_span).into()),
     }
 }
@@ -1335,16 +1333,12 @@ fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("big-int", args, named, &ctx, depth, call_span)?;
     match val {
         Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
-        Value::String(ref s) => {
-            match s.parse::<num_bigint::BigInt>() {
-                Ok(n) => ok_val(Value::BigInt(n), call_span),
-                Err(e) => Err(EvalError::new(
-                    format!("big-int: cannot parse \"{s}\": {e}"),
-                    call_span,
-                )
-                .into()),
+        Value::String(ref s) => match s.parse::<num_bigint::BigInt>() {
+            Ok(n) => ok_val(Value::BigInt(n), call_span),
+            Err(e) => {
+                Err(EvalError::new(format!("big-int: cannot parse \"{s}\": {e}"), call_span).into())
             }
-        }
+        },
         _ => Err(EvalError::type_mismatch("Int or String", &type_name(&val), call_span).into()),
     }
 }

@@ -3,5 +3,5 @@
 # the duplicate is only detected when $k is evaluated to "x" at runtime.
 [k: "x"
  result: [$k: 1  "x": 2]]
-===
+=== out
 [E030] duplicate key: x

@@ -1,4 +1,6 @@
 # unless: returns empty dict when predicate is true
 [unless true 42]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: unless at 1:2-1:8

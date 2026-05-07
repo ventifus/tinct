@@ -1,4 +1,6 @@
 # find-first-or: found - returns matching element
 [find-first-or [fn [x] [> x 3]] 99 [1 2 3 4 5]]
-===
+=== out
 Int(4)
+=== warn
+undefined variable: find-first-or at 1:2-1:15

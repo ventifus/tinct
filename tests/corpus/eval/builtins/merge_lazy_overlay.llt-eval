@@ -7,5 +7,5 @@
   y-val: merged.y
   z-val: merged.z
 ]
-===
+=== out
 Dict({"merged": Dict({"x": Int(10), "y": Int(99), "z": Int(30)}), "x-val": Int(10), "y-val": Int(99), "z-val": Int(30)})

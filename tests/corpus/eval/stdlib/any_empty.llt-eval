@@ -1,4 +1,6 @@
 # any? - empty list
 [any? [fn [x] [> x 5]] []]
-===
+=== out
 Bool(false)
+=== warn
+undefined variable: any? at 1:2-1:6

@@ -1,4 +1,6 @@
 # has?: key exists
 [has? [x: 1 y: 2] "x"]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: has? at 1:2-1:6

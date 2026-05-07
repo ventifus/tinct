@@ -1,4 +1,4 @@
 # iterate: error when step argument is not a function (forced by collecting 2 elements)
 [collect [take 2 [iterate 42 0]]]
-===
-ERROR: [E010]
+=== out
+[E010]

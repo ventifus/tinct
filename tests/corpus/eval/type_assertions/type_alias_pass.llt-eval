@@ -4,5 +4,5 @@
 [MyType: [type Int]]
 ---
 [@MyType 42]
-===
+=== out
 Int(42)

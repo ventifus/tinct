@@ -1,5 +1,5 @@
 [f: [fn [x] x]]
 
 [f 1 2 3]
-===
+=== out
 [E020] arity mismatch

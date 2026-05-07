@@ -1,4 +1,6 @@
 # contains?: returns true when element is present
 [contains? [1 2 3 4 5] 3]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: contains? at 1:2-1:11

@@ -1,4 +1,4 @@
 # seq: tail is not evaluated when only head is accessed
 [head [seq 1 [error "tail should not be evaluated"]]]
-===
+=== out
 Int(1)

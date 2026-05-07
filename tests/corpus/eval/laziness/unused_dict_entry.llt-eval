@@ -2,5 +2,5 @@
 [x: [error "boom"]  y: 42]
 ---
 %.y
-===
+=== out
 Int(42)

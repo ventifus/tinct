@@ -1,4 +1,4 @@
 # Laziness: $if does not force the true branch when condition is false
 [if false [/ 1 0] 2]
-===
+=== out
 Int(2)

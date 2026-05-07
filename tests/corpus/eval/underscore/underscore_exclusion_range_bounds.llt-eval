@@ -4,5 +4,7 @@
 [data: [0 10 20 30 40 50]]
 
 [call [fn [_] [slice data _ 3]] 1]
-===
+=== out
 Dict({1: Int(10), 2: Int(20)})
+=== warn
+undefined variable: slice at 5:16-5:21

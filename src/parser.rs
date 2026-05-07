@@ -2969,14 +2969,52 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             break;
                         }
                         Token::Identifier(s) if s.starts_with('%') => {
-                            // Section name: %name
+                            // Section name: %name or bare %@Type for input validation
                             let name_after_percent = &s[1..];
+
+                            // Check if this is bare % with @Type annotation (input validation)
                             if name_after_percent.is_empty() {
-                                return Err(ParseError {
-                                    message: "bare % with no identifier is not allowed in section headers".to_string(),
-                                    span: Some(token_vec[i].span),
-                                });
+                                // Bare % must be followed by @Type to be valid
+                                if i + 1 < token_vec.len()
+                                    && matches!(
+                                        &token_vec[i + 1].node,
+                                        Token::ImmediateAt | Token::At
+                                    )
+                                {
+                                    // %@Type syntax - equivalent to expects: @Type
+                                    if next_doc_expects.is_some() {
+                                        return Err(ParseError {
+                                            message: "duplicate input type annotation (both %@Type and expects: @Type)".to_string(),
+                                            span: Some(token_vec[i].span),
+                                        });
+                                    }
+                                    i += 1; // Move to @ token
+                                    match parse_annotation(
+                                        &token_vec,
+                                        i,
+                                        &mut leading_comments,
+                                        &mut blank_before,
+                                        input,
+                                        Some(&mut recovered_errors),
+                                    ) {
+                                        Ok((annotation, next_i)) => {
+                                            next_doc_expects = Some(annotation);
+                                            i = next_i;
+                                            continue;
+                                        }
+                                        Err(ann_err) => {
+                                            return Err(ann_err);
+                                        }
+                                    }
+                                } else {
+                                    return Err(ParseError {
+                                        message: "bare % in section header must be followed by @Type annotation (use '%@Type' to validate pipeline input)".to_string(),
+                                        span: Some(token_vec[i].span),
+                                    });
+                                }
                             }
+
+                            // Named section: %name or %name@Type
                             if next_doc_name.is_some() {
                                 return Err(ParseError {
                                     message: "duplicate section name in header".to_string(),
@@ -2986,7 +3024,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             next_doc_name_span = Some(token_vec[i].span);
                             next_doc_name = Some(name_after_percent.to_string());
 
-                            // Check for @Type annotation on the name
+                            // Check for @Type annotation on the name (%name@Type - output type)
                             if i + 1 < token_vec.len()
                                 && matches!(&token_vec[i + 1].node, Token::ImmediateAt | Token::At)
                             {

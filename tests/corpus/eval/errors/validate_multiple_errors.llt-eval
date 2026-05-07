@@ -15,5 +15,5 @@
   ]
   result: [validate $schema [port: 100000 hostname: "ab"]]
 ].result
-===
-ERROR: schema validation failed
+=== out
+schema validation failed

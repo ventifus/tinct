@@ -1,4 +1,4 @@
 # TypeAssert is: predicate — value out of range fails assertion
 [@[type: Int  is: [between 0 255]] 300]
-===
+=== out
 [E011] type assertion failed: expected Int (is: predicate failed), got Int

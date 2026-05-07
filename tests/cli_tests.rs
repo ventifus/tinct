@@ -2951,8 +2951,7 @@ fn describe_json_no_contract() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
     assert_eq!(json, serde_json::json!({}));
 }
 
@@ -2984,10 +2983,7 @@ fn describe_schema_dict_detection() {
         "expected contracts array in JSON output, got: {json}"
     );
     let contracts = contracts.unwrap();
-    assert!(
-        !contracts.is_empty(),
-        "expected non-empty contracts array"
-    );
+    assert!(!contracts.is_empty(), "expected non-empty contracts array");
     // Check that schema was detected with port and host entries
     let first = &contracts[0];
     let schema = first.get("schema").and_then(|s| s.as_object());

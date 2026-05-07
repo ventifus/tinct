@@ -1,4 +1,6 @@
 # until - iterate function until predicate holds
 [until [fn [x] [>= x 100]] [fn [x] [* x 2]] 1]
-===
+=== out
 Int(128)
+=== warn
+undefined variable: >= at 1:17-1:19

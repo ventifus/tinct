@@ -2,5 +2,5 @@
 [x: 1  y: [error "unused"]]
 ---
 %.x
-===
+=== out
 Int(1)

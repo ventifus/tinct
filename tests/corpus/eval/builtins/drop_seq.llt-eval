@@ -1,4 +1,4 @@
 # drop on seq: skip first 3 elements
 [head [drop 3 [range 0 10]]]
-===
+=== out
 Int(3)

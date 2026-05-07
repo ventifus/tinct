@@ -1,4 +1,4 @@
 # Lazy evaluation: $if does not evaluate unused branch
 [if true 1 [error "should not run"]]
-===
+=== out
 Int(1)

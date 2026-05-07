@@ -1,4 +1,4 @@
 # complex-expression dict key is a parse error (new-parser; pest parser accepted [[k]: v])
 [[complex key]: value]
-===
+=== out
 without a key

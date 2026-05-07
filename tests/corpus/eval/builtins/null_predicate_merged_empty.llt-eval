@@ -1,3 +1,3 @@
 [null? [merge [] []]]
-===
+=== out
 Bool(true)

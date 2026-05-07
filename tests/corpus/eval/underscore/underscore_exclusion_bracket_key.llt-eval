@@ -4,5 +4,7 @@
 [data: [name: "Alice" age: 30]]
 
 [call [fn [_] [get _ data]] "name"]
-===
+=== out
 String("Alice")
+=== warn
+undefined variable: get at 5:16-5:19

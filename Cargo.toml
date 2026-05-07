@@ -43,6 +43,10 @@ rustyline = { version = "14.0", optional = true }
 serde_json = "1.0"
 strsim = "0.11"
 
+[dev-dependencies]
+walkdir = "2"
+serde = { version = "1.0", features = ["derive"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"  # Kernel-level filesystem ACL enforcement (Linux 5.13+)
 seccompiler = "0.4"  # seccomp-bpf network and process sandbox

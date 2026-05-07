@@ -3,5 +3,5 @@
   name: "Alice"
   greeting: i"Hello $name"
 ]
-===
+=== out
 Dict({"name": String("Alice"), "greeting": String("Hello Alice")})

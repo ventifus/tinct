@@ -2,5 +2,5 @@
 # a.b (no gap) = dot access; a\n.b = call a (head) then Dot+b (parser may error or handle unexpectedly)
 # With bracket access removed, a[0] and a [0] are identical: both parse as a call to a with dict arg [0].
 [a [0]]
-===
+=== out
 [a [0]]

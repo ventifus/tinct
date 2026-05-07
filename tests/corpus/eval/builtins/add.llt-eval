@@ -1,4 +1,4 @@
 # + : integer addition
 [+ 3 4]
-===
+=== out
 Int(7)

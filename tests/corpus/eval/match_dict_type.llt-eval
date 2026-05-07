@@ -2,5 +2,5 @@
     Dict  "is-dict"
     Seq   "is-seq"
     _     "other"]
-===
+=== out
 String("is-dict")

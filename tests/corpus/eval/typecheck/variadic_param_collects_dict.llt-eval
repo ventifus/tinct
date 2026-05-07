@@ -5,5 +5,5 @@
 # At runtime, excess positional args are collected into an int-keyed Dict.
 [f: [fn [x ...rest] rest]
  result: [f 10 20 30]]
-===
+=== out
 Dict({"f": Function(x, rest), "result": Dict({0: Int(20), 1: Int(30)})})

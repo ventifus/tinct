@@ -2,5 +2,5 @@
     transform: [fn [x] [uppercase x]]
     filter: [fn [item] item.active?]
 ]
-===
+=== out
 ["transform": [fn [x] [uppercase x]]  "filter": [fn [item] item.active?]]

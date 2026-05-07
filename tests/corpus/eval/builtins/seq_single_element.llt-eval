@@ -1,4 +1,4 @@
 # seq: single element
 [collect [seq 99 []]]
-===
+=== out
 Dict({0: Int(99)})
