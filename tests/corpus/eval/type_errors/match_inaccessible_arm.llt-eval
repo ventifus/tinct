@@ -1,0 +1,6 @@
+[match [@[Int String] 42]
+    Int     "int"
+    String  "str"
+    _       "catch-all"]
+===
+inaccessible match arm

@@ -1,0 +1,4 @@
+[match [@[Int String] 42]
+    Int "int"]
+===
+non-exhaustive match

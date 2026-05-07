@@ -4258,3 +4258,14 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Pattern::Or infrastructure (AST + eval, parser deferred due to | conflict with Pipe)
 - [x] Or-pattern variable binding consistency check infrastructure
 - [x] 3 corpus tests: guard accept, guard reject, guard with pattern variables
+
+### exhaustiveness
+
+- [x] src/coverage.rs: Maranget (2007) usefulness algorithm with lazy ⊥ extension
+- [x] CoveragePattern, ConstructorSignature, specialize/default_matrix/useful
+- [x] Three-way partition: Covered/Divergent/Uncovered (Karachalias 2015)
+- [x] infer_match() integration: union scrutinee → coverage check → type errors
+- [x] Non-exhaustive errors with uncovered pattern witnesses
+- [x] Redundancy + inaccessible RHS warnings
+- [x] Guard opacity (guards don't contribute to coverage)
+- [x] 52 tests: 39 coverage algorithm unit tests + 10 typecheck integration + 3 corpus
