@@ -1,0 +1,4 @@
+# positive: zero is not positive
+[positive 0]
+===
+Bool(false)

@@ -1,0 +1,4 @@
+# between: predicate factory — value in range returns true
+[call [between 0 255] 42]
+===
+Bool(true)

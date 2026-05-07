@@ -4333,3 +4333,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Hints in error messages for TypeAssertFailed, TypeMismatch, SchemaViolation
 - [x] blame_map recording at pipeline boundaries in multi-file CLI pipeline
 - [x] 2 corpus tests: blame_type_violation, blame_schema_violation
+
+### numeric-range
+
+- [x] `between`, `non-negative`, `positive` predicate factories in stdlib/prelude.llt
+- [x] Named width type aliases (UInt8, Int8, UInt16, Int16, UInt32, Int32) in stdlib/numeric.llt
+- [x] TypeAssert runtime `is:` predicate evaluation — calls predicate on value after type check passes
+- [x] `is:` and `repr:` added to ANNOTATION_META_KEYS
+- [x] 6 corpus tests: between in/out/negative range, non-negative, positive, is: predicate failure

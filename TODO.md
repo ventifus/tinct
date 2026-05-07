@@ -76,16 +76,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
 
-### `numeric-range`
-
-See doc/05-type-annotations.md §Range Annotations, doc/whatif/numeric-types.md Phase 1. **Depends on:** None (stdlib-only).
-
-- [ ] `between: [fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]` predicate factory in stdlib (`stdlib/prelude.llt`)
-- [ ] Helper predicates: `non-negative: [fn [v] [>= v 0]]`, `positive: [fn [v] [> v 0]]` (`stdlib/prelude.llt`)
-- [ ] Named width type aliases: `UInt8: [type Int@[is: [between 0 255]]]`, `Int8: [type Int@[is: [between -128 127]]]`, `UInt16`, `Int16`, `UInt32`, `Int32` (`stdlib/numeric.llt` — new file)
-- [ ] Verify TypeAssert runtime calls `is:` predicates for range validation — audit existing TypeAssert `default:` handling to ensure `is:` predicate path is exercised (`src/builtins.rs`)
-- [ ] Tests: range constraint validation; out-of-range value errors; arithmetic on range-annotated values passes without propagating constraint; `UInt8` alias used in annotation (`tests/corpus/eval/stdlib/`)
-
 ### `numeric-decimal`
 
 See doc/03-data-model.md §Decimal Type, doc/whatif/numeric-types.md Phase 2. **Depends on:** Independent.

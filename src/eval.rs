@@ -45,7 +45,7 @@ pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 /// is metadata-only and has no type to validate. A PropertyDict with at least one
 /// non-meta-key entry (e.g., `[@[name: String age: Int] $x]`) is a structural record
 /// annotation that should enforce at minimum a Dict tag check when `resolved_type` is `None`.
-const ANNOTATION_META_KEYS: &[&str] = &["type", "default"];
+const ANNOTATION_META_KEYS: &[&str] = &["type", "default", "is", "repr"];
 
 /// Formats a field path for TypeAssert error display. Each segment is separately
 /// backtick-quoted: `user`.`address`.`zip`. Not for reconstruction — display only.
@@ -743,7 +743,98 @@ pub(crate) fn eval_recursive(
                         // TODO(iterative-eval): This is a laziness violation — defer to CEK machine once migration is complete.
                         let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
                         if value_matches_type(&value, &expected) {
-                            Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                            // Type check passed — now check `is:` predicate if present
+                            if let Some(is_expr) = annotation.node.get_property("is") {
+                                let pred_thunk = eval_recursive(
+                                    Rc::new(is_expr.clone()),
+                                    Rc::clone(&env),
+                                    ctx,
+                                    depth + 1,
+                                )?;
+                                let pred_val =
+                                    materialize(&pred_thunk, Some(&expr.span), ctx, depth + 1)?;
+                                // Call the predicate with the value
+                                let val_thunk =
+                                    Rc::new(Thunk::new_materialized(value.clone(), thunk.span));
+                                let result = match &pred_val {
+                                    Value::Function {
+                                        params,
+                                        body,
+                                        env: fn_env,
+                                    } => {
+                                        let call_ctx = crate::eval_call::CallContext {
+                                            params: params,
+                                            body: body,
+                                            closure_env: fn_env,
+                                            positional: &[val_thunk],
+                                            named: None,
+                                            default_env: fn_env,
+                                            call_span: expr.span,
+                                            depth: depth + 1,
+                                            origin: Some("is: predicate".into()),
+                                            ctx: ctx,
+                                        };
+                                        crate::eval_call::invoke_function(&call_ctx)?
+                                    }
+                                    Value::Builtin(def) => {
+                                        let builtin_args = crate::value::BuiltinArgs {
+                                            args: &[val_thunk],
+                                            named: None,
+                                            depth: depth + 1,
+                                            call_span: expr.span,
+                                            ctx: Rc::clone(ctx),
+                                        };
+                                        (def.func)(builtin_args)?
+                                    }
+                                    _ => {
+                                        return Err(EvalError::type_mismatch(
+                                            "Function (is: predicate)",
+                                            &pred_val.type_name(),
+                                            expr.span,
+                                        )
+                                        .into());
+                                    }
+                                };
+                                let result_val =
+                                    materialize(&result, Some(&expr.span), ctx, depth + 1)?;
+                                match result_val {
+                                    Value::Bool(true) => {
+                                        Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                                    }
+                                    Value::Bool(false) => {
+                                        if let Some(default_expr) =
+                                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                                        {
+                                            return eval_recursive(
+                                                Rc::new(default_expr.clone()),
+                                                env,
+                                                ctx,
+                                                depth + 1,
+                                            );
+                                        }
+                                        Err(EvalError::type_assert_failed(
+                                            &format!(
+                                                "{} (is: predicate failed)",
+                                                format_type_for_assert(&expected)
+                                            ),
+                                            &value.type_name(),
+                                            thunk.span,
+                                        )
+                                        .with_materialization_span(expr.span)
+                                        .into())
+                                    }
+                                    _ => {
+                                        Err(EvalError::type_mismatch(
+                                            "Bool (is: predicate return type)",
+                                            &result_val.type_name(),
+                                            expr.span,
+                                        )
+                                        .into())
+                                    }
+                                }
+                            } else {
+                                Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                            }
                         } else {
                             if let Some(default_expr) =
                                 annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
