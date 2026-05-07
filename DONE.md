@@ -4294,3 +4294,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Equi-recursive unfolding in type alias expansion
 - [x] doc/05-type-annotations.md §Recursive Type Aliases
 - [x] 6 unit tests: recursive, nested, mutual recursion, depth limit
+
+### blame-tracking
+
+- [x] BlameLabel { origin_span, boundary_span, polarity } + BlameParity enum
+- [x] ThunkState::Guarded blame_label field with co-natural strategy (innermost preserved)
+- [x] EvalError.blame field + Display shows blame provenance in error messages
+- [x] Blame propagation through CEK materialize continuation stack
+- [x] 5 unit tests for blame labels, co-natural strategy, error display

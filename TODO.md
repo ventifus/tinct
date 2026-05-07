@@ -47,20 +47,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 **Spec:**
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
-### `blame-tracking`
-
-See doc/10-errors.md §Blame, doc/08-evaluation.md §Blame Labels. **Depends on:** `gradual-typing-split` (B2).
-
-- [ ] `BlameLabel { origin_span: Span, boundary_span: Span, polarity: BlameParity }` struct; `BlameParity::Positive | Negative` (`src/error.rs`)
-- [ ] Extend `ThunkState::Guarded` with `blame_label: Option<BlameLabel>` — co-natural strategy (Greenman et al. 2019): promote inner label, discard new outer label when chaining (innermost boundary is blamed); blast radius: update `new_guarded()` in `src/value.rs` AND the state-restoration reconstruction at `src/eval_materialize.rs:693-698` AND all call sites in `src/eval.rs` (`src/value.rs`, `src/eval_materialize.rs`, `src/eval.rs`)
-- [ ] TypeAssert guard construction: populate `BlameLabel` from the `[@Type expr]` annotation site; `Positive` polarity (value must conform to type) (`src/typecheck.rs`)
-- [ ] Blame propagation across function calls: annotated parameter acts as a contract boundary; `Negative` polarity for expected type at call site (`src/eval.rs`)
-- [ ] `---` pipeline boundary blame: design decision required before implementation — recommend `blame_map: RefCell<HashMap<ThunkId, String>>` field in `EvalContext` as a side-channel (avoids `Value::Tagged` variant which would touch all exhaustive `Value` matches); populate at each `---` boundary with the producing stage's file path/index (`src/eval.rs`, `src/lib.rs`)
-- [ ] Error message enrichment: "type assertion failed at line 5; value originated from unannotated expression at line 3" with positive party and negative party named (`src/error.rs`)
-- [ ] Automatic guard insertion — design required: `src/typecheck.rs` cannot create thunks; two options: (A) insert synthetic `Expr::TypeAssert` nodes at `Unknown → Concrete` call sites during a new elaboration pass, or (B) new `Expr::ImplicitGuard` variant consumed by evaluator; pick one and add to spec before implementing (`src/typecheck.rs` + design doc)
-- [ ] Update `doc/08-evaluation.md` §Forcing Rules: extend `[FORCE-GUARD]` and `[FORCE-GUARD-ERR]` to include `blame_label` propagation into `EvalError`; show positive/negative party naming in `[FORCE-GUARD-ERR]` (`doc/08-evaluation.md`)
-- [ ] Tests: blame attribution on TypeAssert failure; pipeline boundary blame pointing to producing stage; co-natural strategy O(1) heap (verify `blame_label`-carrying `Guarded` thunk stays in `Guarded` state after construction — not forced until accessed); `Unknown` boundary blame (`tests/corpus/eval/errors/`, `tests/corpus/eval/type_system/`)
-
 ### `structural-contracts-input`
 
 See doc/05-type-annotations.md §Pipeline Input Types, doc/whatif/structural-contracts.md Phase 1. **Depends on:** None.
