@@ -47,17 +47,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 **Spec:**
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
-### `recursive-adts`
-
-See doc/05-type-annotations.md §Recursive Type Aliases, doc/07-type-extensions.md. **Depends on:** `param-type-aliases` (B3), `adts` (C1).
-
-- [ ] Decide alias expansion architecture before implementing: Strategy B recommended — pre-expand aliases in `typecheck.rs` before dispatching to `is_subtype`/`unify` (avoids threading `&TypeEnv` into `types.rs` functions and changing all call sites) (`src/typecheck.rs`)
-- [ ] `RecursiveTypeGuard`: a `HashSet<String>` passed by mutable reference through each recursive alias-expansion call; a **fresh set is constructed per top-level expansion entry point** — it is NOT stored in `InferState` (which would cause cross-comparison contamination) (`src/typecheck.rs`)
-- [ ] Alias expansion in `typecheck.rs` (pre-expansion strategy): when `is_subtype` or `unify` is about to be called with a `TypeAlias`, call `env.get_type_alias(name)` first and unfold one layer; recurse with the guard set updated; guard prevents infinite unfolding (`src/typecheck.rs`)
-- [ ] Error: "recursive type `Tree` exceeds maximum unfolding depth" with the alias chain path (`src/error.rs`)
-- [ ] Add §Recursive Type Aliases to `doc/05-type-annotations.md` — document equi-recursive semantics: aliases are transparent (equi-recursive), not opaque (iso-recursive); folding/unfolding is automatic (`doc/05-type-annotations.md`)
-- [ ] Tests: `Tree: [type Leaf [node: a left: [Tree a] right: [Tree a]]]`; structural subtyping between recursive types; depth limit detection; mutual recursion `A = [B] B = [A]` — each uses a fresh guard set (`tests/corpus/eval/type_system/`)
-
 ### `blame-tracking`
 
 See doc/10-errors.md §Blame, doc/08-evaluation.md §Blame Labels. **Depends on:** `gradual-typing-split` (B2).
