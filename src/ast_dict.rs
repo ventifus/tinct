@@ -722,6 +722,12 @@ fn expr_to_thunk_id(
                         Key::String("pattern".into()),
                         pattern_to_thunk_id(&arm.pattern.node, arm.pattern.span, ctx)?,
                     );
+                    if let Some(guard) = &arm.guard {
+                        arm_dict.insert(
+                            Key::String("guard".into()),
+                            expr_to_thunk_id(&guard.node, guard.span, opts, ctx)?,
+                        );
+                    }
                     arm_dict.insert(
                         Key::String("body".into()),
                         expr_to_thunk_id(&arm.body.node, arm.body.span, opts, ctx)?,
@@ -939,6 +945,31 @@ fn pattern_to_thunk_id(
                     pattern_to_thunk_id(&pat.node, pat.span, ctx)?,
                 );
             }
+        }
+        Pattern::Or(patterns) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("or".into()),
+                    span,
+                ))),
+            );
+            let pattern_thunks: Vec<_> = patterns
+                .iter()
+                .map(|pat| pattern_to_thunk_id(&pat.node, pat.span, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+            let patterns_dict: IndexMap<Key, ThunkId> = pattern_thunks
+                .into_iter()
+                .enumerate()
+                .map(|(i, thunk_id)| (Key::Int(i as i64), thunk_id))
+                .collect();
+            dict.insert(
+                Key::String("patterns".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(patterns_dict),
+                    span,
+                ))),
+            );
         }
     }
 

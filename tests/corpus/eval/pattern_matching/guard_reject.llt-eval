@@ -1,0 +1,5 @@
+[match -5
+    n@[is: [> n 0]]   "positive"
+    _                  "other"]
+===
+String("other")

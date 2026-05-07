@@ -540,10 +540,21 @@ fn expand_expr(
             let expanded_arms = arms
                 .iter()
                 .map(|arm| {
+                    let expanded_guard = if let Some(guard) = &arm.guard {
+                        Some(Box::new(expand_expr(
+                            guard.as_ref().clone(),
+                            env,
+                            ctx,
+                            stdlib_env,
+                        )?))
+                    } else {
+                        None
+                    };
                     let expanded_body =
                         expand_expr(arm.body.as_ref().clone(), env, ctx, stdlib_env)?;
                     Ok(MatchArm {
                         pattern: arm.pattern.clone(),
+                        guard: expanded_guard,
                         body: Box::new(expanded_body),
                     })
                 })
@@ -859,6 +870,9 @@ fn collect_and_rename_bindings(
         Expr::Match { scrutinee, arms } => {
             collect_and_rename_bindings(&mut scrutinee.node, scope_id, renames);
             for arm in arms.iter_mut() {
+                if let Some(guard) = &mut arm.guard {
+                    collect_and_rename_bindings(&mut guard.node, scope_id, renames);
+                }
                 collect_and_rename_bindings(&mut arm.body.node, scope_id, renames);
             }
         }
@@ -938,6 +952,9 @@ fn rename_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
         Expr::Match { scrutinee, arms } => {
             rename_refs(&mut scrutinee.node, renames);
             for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    rename_refs(&mut guard.node, renames);
+                }
                 rename_refs(&mut arm.body.node, renames);
             }
         }

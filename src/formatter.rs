@@ -756,6 +756,16 @@ impl<'a> Formatter<'a> {
                     tag.len() // "Tag"
                 }
             }
+            Pattern::Or(patterns) => {
+                let mut width = 0;
+                for (i, pat) in patterns.iter().enumerate() {
+                    if i > 0 {
+                        width += 3; // " | "
+                    }
+                    width += self.measure_pattern_width(&pat.node);
+                }
+                width
+            }
         }
     }
 
@@ -1029,6 +1039,14 @@ impl<'a> Formatter<'a> {
                     self.output.push(']');
                 } else {
                     self.output.push_str(tag);
+                }
+            }
+            Pattern::Or(patterns) => {
+                for (i, pat) in patterns.iter().enumerate() {
+                    if i > 0 {
+                        self.output.push_str(" | ");
+                    }
+                    self.format_pattern(pat);
                 }
             }
         }

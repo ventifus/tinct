@@ -4251,3 +4251,10 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Predicate-to-type mapping: int?→Int, str?→Str, dict?→Record(Open), null?→Record(Empty), etc.
 - [x] num? → Number supertype narrowing
 - [x] 11 unit tests for all predicate narrowing patterns
+
+### pattern-matching-guards
+
+- [x] MatchArm.guard field: is: annotation extracts guard expression
+- [x] Pattern::Or infrastructure (AST + eval, parser deferred due to | conflict with Pipe)
+- [x] Or-pattern variable binding consistency check infrastructure
+- [x] 3 corpus tests: guard accept, guard reject, guard with pattern variables

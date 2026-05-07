@@ -393,6 +393,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                         span: adjust_span(arm.pattern.span, base),
                         node: arm.pattern.node,
                     },
+                    guard: arm.guard.map(|g| Box::new(adjust_spanned_expr(*g, base))),
                     body: Box::new(adjust_spanned_expr(*arm.body, base)),
                 })
                 .collect(),
@@ -952,8 +953,8 @@ enum StackFrame {
     Match {
         scrutinee: Option<Spanned<Expr>>,
         arms: Vec<MatchArm>,
-        /// Pending pattern or body for the current arm
-        pending_pattern: Option<Spanned<Pattern>>,
+        /// Pending pattern (with optional guard) for the current arm
+        pending_pattern: Option<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>)>,
         span_start: Position,
     },
     /// Pipe operator: `lhs | rhs`
@@ -3439,9 +3440,9 @@ fn pop_last_value_from_frame(
                     span: Some(span),
                 })
             } else if !arms.is_empty() {
-                // Pop the last arm, restore its pattern as pending, return body
+                // Pop the last arm, restore its pattern+guard as pending, return body
                 let last_arm = arms.pop().unwrap();
-                *pending_pattern = Some(last_arm.pattern);
+                *pending_pattern = Some((last_arm.pattern, last_arm.guard));
                 Ok(*last_arm.body)
             } else if let Some(s) = scrutinee.take() {
                 Ok(s)
@@ -3479,15 +3480,159 @@ fn pop_last_value_from_frame(
 /// TODO: Pin patterns (`$name`) require tracking whether the VarRef came from
 /// Token::EscapedRef or Token::Identifier, which is lost after expr parsing.
 /// Either parse patterns directly from tokens or add escaped flag to VarRef.
+/// Extract all variable names bound by a pattern
+fn pattern_variables(pattern: &Pattern) -> std::collections::HashSet<String> {
+    let mut vars = std::collections::HashSet::new();
+    collect_pattern_variables(pattern, &mut vars);
+    vars
+}
+
+/// Recursively collect all variable bindings from a pattern
+fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::HashSet<String>) {
+    match pattern {
+        Pattern::Variable(name) => {
+            vars.insert(name.clone());
+        }
+        Pattern::Dict { fields, .. } => {
+            for (_, field_pattern) in fields {
+                collect_pattern_variables(&field_pattern.node, vars);
+            }
+        }
+        Pattern::Seq { head, tail } => {
+            collect_pattern_variables(&head.node, vars);
+            collect_pattern_variables(&tail.node, vars);
+        }
+        Pattern::Constructor { binding, .. } => {
+            if let Some(binding_pattern) = binding {
+                collect_pattern_variables(&binding_pattern.node, vars);
+            }
+        }
+        Pattern::Or(patterns) => {
+            // For or-patterns, we only collect from the first branch
+            // (all branches must bind the same variables, verified separately)
+            if let Some(first) = patterns.first() {
+                collect_pattern_variables(&first.node, vars);
+            }
+        }
+        Pattern::Wildcard | Pattern::TypeTag(_) | Pattern::Literal(_) | Pattern::Pin(_) => {
+            // These don't bind variables
+        }
+    }
+}
+
+/// Extract guard expression from annotation if present
+fn extract_guard(annotation: &Spanned<Annotation>) -> Option<Box<Spanned<Expr>>> {
+    match &annotation.node {
+        Annotation::PropertyDict(props) => {
+            for entry in props {
+                if let Some(ref key_expr) = entry.node.key {
+                    match &key_expr.node {
+                        Expr::VarRef { name, .. } if name == "is" => {
+                            return Some(Box::new((*entry.node.value).clone()));
+                        }
+                        Expr::Str(s) if s == "is" => {
+                            return Some(Box::new((*entry.node.value).clone()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> {
+    expr_to_pattern_with_guard(expr).map(|(pat, _)| pat)
+}
+
+/// Convert expression to pattern, extracting guard if present
+fn expr_to_pattern_with_guard(
+    expr: Spanned<Expr>,
+) -> Result<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>), ParseError> {
     let span = expr.span;
-    let pattern = match expr.node {
-        Expr::VarRef { name, .. } if name == "_" => Pattern::Wildcard,
+    let (pattern, guard) = match expr.node {
+        // Handle Pipe as or-pattern separator
+        Expr::Pipe { lhs, rhs } => {
+            let (left_pat, left_guard) = expr_to_pattern_with_guard((*lhs).clone())?;
+            let (right_pat, right_guard) = expr_to_pattern_with_guard((*rhs).clone())?;
+
+            // Or-patterns can't have guards on individual branches
+            if left_guard.is_some() || right_guard.is_some() {
+                return Err(ParseError {
+                    message:
+                        "or-pattern branches cannot have guards (use guard on the whole pattern)"
+                            .to_string(),
+                    span: Some(span),
+                });
+            }
+
+            // Check that both branches bind the same set of variables
+            let left_vars = pattern_variables(&left_pat.node);
+            let right_vars = pattern_variables(&right_pat.node);
+            if left_vars != right_vars {
+                let missing_left: Vec<_> = right_vars.difference(&left_vars).collect();
+                let missing_right: Vec<_> = left_vars.difference(&right_vars).collect();
+                let mut msg = "or-pattern branches must bind the same variables".to_string();
+                if !missing_left.is_empty() {
+                    msg.push_str(&format!(
+                        " (left branch missing: {})",
+                        missing_left
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !missing_right.is_empty() {
+                    msg.push_str(&format!(
+                        " (right branch missing: {})",
+                        missing_right
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                return Err(ParseError {
+                    message: msg,
+                    span: Some(span),
+                });
+            }
+
+            (Pattern::Or(vec![left_pat, right_pat]), None)
+        }
+        // Handle annotated patterns (e.g., n@Int, n@[is: pred])
+        Expr::Annotated { name, annotation } => {
+            // Extract guard from `is:` annotation
+            let guard = extract_guard(&annotation);
+
+            // Determine the base pattern
+            let base_pattern = if name == "_" {
+                Pattern::Wildcard
+            } else if name.chars().next().map_or(false, |c| c.is_lowercase()) {
+                Pattern::Variable(name.clone())
+            } else if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                Pattern::TypeTag(name.clone())
+            } else {
+                return Err(ParseError {
+                    message: format!(
+                        "invalid pattern: '{}' (must start with lowercase, uppercase, or be '_')",
+                        name
+                    ),
+                    span: Some(span),
+                });
+            };
+
+            (base_pattern, guard)
+        }
+        Expr::VarRef { name, .. } if name == "_" => (Pattern::Wildcard, None),
         Expr::VarRef { name, .. } if name.chars().next().map_or(false, |c| c.is_lowercase()) => {
-            Pattern::Variable(name)
+            (Pattern::Variable(name), None)
         }
         Expr::VarRef { name, .. } if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
-            Pattern::TypeTag(name)
+            (Pattern::TypeTag(name), None)
         }
         Expr::VarRef { name, .. } => {
             // Other cases (e.g., names starting with special chars like %)
@@ -3499,10 +3644,10 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
                 span: Some(span),
             });
         }
-        Expr::Int(n) => Pattern::Literal(LiteralPattern::Int(n)),
-        Expr::Float(f) => Pattern::Literal(LiteralPattern::Float(f)),
-        Expr::Bool(b) => Pattern::Literal(LiteralPattern::Bool(b)),
-        Expr::Str(s) => Pattern::Literal(LiteralPattern::Str(s)),
+        Expr::Int(n) => (Pattern::Literal(LiteralPattern::Int(n)), None),
+        Expr::Float(f) => (Pattern::Literal(LiteralPattern::Float(f)), None),
+        Expr::Bool(b) => (Pattern::Literal(LiteralPattern::Bool(b)), None),
+        Expr::Str(s) => (Pattern::Literal(LiteralPattern::Str(s)), None),
         Expr::Dict(entries) => {
             // Dict pattern: [key1: pat1  key2: pat2] or [key: pat ...]
             // Check for `seq` keyword for seq patterns: [seq h t]
@@ -3520,12 +3665,15 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
                                             expr_to_pattern((*second_entry.node.value).clone())?;
                                         let tail_pat =
                                             expr_to_pattern((*third_entry.node.value).clone())?;
-                                        return Ok(Spanned::new(
-                                            Pattern::Seq {
-                                                head: Box::new(head_pat),
-                                                tail: Box::new(tail_pat),
-                                            },
-                                            span,
+                                        return Ok((
+                                            Spanned::new(
+                                                Pattern::Seq {
+                                                    head: Box::new(head_pat),
+                                                    tail: Box::new(tail_pat),
+                                                },
+                                                span,
+                                            ),
+                                            None,
                                         ));
                                     }
                                 }
@@ -3569,10 +3717,13 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
                 fields.push((key_str, value_pattern));
             }
 
-            Pattern::Dict {
-                fields,
-                rest: has_rest,
-            }
+            (
+                Pattern::Dict {
+                    fields,
+                    rest: has_rest,
+                },
+                None,
+            )
         }
         Expr::Call {
             func,
@@ -3587,18 +3738,24 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
                         // [seq h t] — seq pattern
                         let head_pat = expr_to_pattern((*args[0]).clone())?;
                         let tail_pat = expr_to_pattern((*args[1]).clone())?;
-                        Pattern::Seq {
-                            head: Box::new(head_pat),
-                            tail: Box::new(tail_pat),
-                        }
+                        (
+                            Pattern::Seq {
+                                head: Box::new(head_pat),
+                                tail: Box::new(tail_pat),
+                            },
+                            None,
+                        )
                     }
                     (_, 1) if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
                         // [Constructor payload] — nominal variant payload pattern
                         let payload_pat = expr_to_pattern((*args[0]).clone())?;
-                        Pattern::Constructor {
-                            tag: name.clone(),
-                            binding: Some(Box::new(payload_pat)),
-                        }
+                        (
+                            Pattern::Constructor {
+                                tag: name.clone(),
+                                binding: Some(Box::new(payload_pat)),
+                            },
+                            None,
+                        )
                     }
                     _ => {
                         return Err(ParseError {
@@ -3623,7 +3780,7 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
             });
         }
     };
-    Ok(Spanned::new(pattern, span))
+    Ok((Spanned::new(pattern, span), guard))
 }
 
 fn push_expr_to_parent(
@@ -3812,18 +3969,19 @@ fn push_expr_to_parent(
                     Ok(())
                 } else if pending_pattern.is_none() {
                     // This is a pattern — convert expression to pattern
-                    match expr_to_pattern(expr) {
-                        Ok(pattern) => {
-                            *pending_pattern = Some(pattern);
+                    match expr_to_pattern_with_guard(expr) {
+                        Ok((pattern, guard)) => {
+                            *pending_pattern = Some((pattern, guard));
                             Ok(())
                         }
                         Err(e) => Err(e),
                     }
                 } else {
                     // This is a body — complete the arm
-                    let pattern = pending_pattern.take().unwrap();
+                    let (pattern, guard) = pending_pattern.take().unwrap();
                     arms.push(MatchArm {
                         pattern,
+                        guard,
                         body: Box::new(expr),
                     });
                     Ok(())

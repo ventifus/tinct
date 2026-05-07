@@ -6,17 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase C: Algebraic Types
 
-### `pattern-matching-guards`
-
-**Depends on:** `pattern-matching-destructure` (A3)
-**Spec chapters:** `doc/02-syntax.md` (§Pattern Guards — `when` syntax, or-patterns), `doc/08-evaluation.md` (§Guard Evaluation)
-
-1. `MatchArm.guard: Option<Box<Spanned<Expr>>>` field
-2. `Pattern::Or(Vec<Spanned<Pattern>>)` variant
-3. Or-pattern variable binding consistency check
-4. Tests: 6+ (guards, or-patterns, mixed guard+or, variable
-   binding errors)
-
 ### `exhaustiveness`
 
 **Depends on:** `union-types` (B1), `adts` (C1), `pattern-matching-destructure` (A3). Nominal exhaustiveness additionally depends on `nominal-variants-full` (C3).

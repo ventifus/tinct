@@ -933,7 +933,26 @@ pub(crate) fn eval_recursive(
                     &scrutinee.span,
                     ctx,
                 )? {
-                    // Pattern matched — evaluate the body in the extended environment
+                    // Pattern matched — check guard if present
+                    if let Some(guard_expr) = &arm.guard {
+                        // Evaluate the guard in the pattern-extended environment
+                        let guard_thunk = eval(
+                            Rc::new(guard_expr.as_ref().clone()),
+                            Rc::clone(&bound_env),
+                            ctx,
+                            depth + 1,
+                        )?;
+                        let guard_value =
+                            materialize(&guard_thunk, Some(&guard_expr.span), ctx, depth + 1)?;
+
+                        // Check if guard is truthy
+                        if !is_truthy(&guard_value) {
+                            // Guard failed — try next arm
+                            continue;
+                        }
+                    }
+
+                    // Pattern matched and guard passed (or no guard) — evaluate the body
                     return eval(
                         Rc::new(arm.body.as_ref().clone()),
                         bound_env,
@@ -1953,6 +1972,12 @@ pub fn materialize(
 // Re-export deep_materialize from eval_deep module
 pub use crate::eval_deep::deep_materialize;
 
+/// Check if a value is truthy (for guard evaluation).
+/// Only `false` is falsy; all other values (including empty dict `[]`) are truthy.
+fn is_truthy(value: &Value) -> bool {
+    !matches!(value, Value::Bool(false))
+}
+
 /// Match a pattern against a value, returning the extended environment if the pattern matches.
 ///
 /// Returns Ok(Some(env)) if the pattern matches (env contains any bindings from the pattern).
@@ -2171,6 +2196,19 @@ fn match_pattern(
                     Ok(None)
                 }
             }
+        }
+        Pattern::Or(patterns) => {
+            // Or-pattern: try each sub-pattern in order
+            // The first one that matches determines the bindings
+            for sub_pattern in patterns {
+                if let Some(bound_env) =
+                    match_pattern(&sub_pattern.node, value, env, value_span, ctx)?
+                {
+                    return Ok(Some(bound_env));
+                }
+            }
+            // None of the sub-patterns matched
+            Ok(None)
         }
     }
 }
