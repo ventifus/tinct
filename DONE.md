@@ -4155,3 +4155,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Expr::Sequential variant + evaluator: intermediate dicts extend scope sequentially
 - [x] Type checker: Sequential inference with intermediate Record field extension
 - [x] 7 corpus tests: backward compat, multi-step, shadowing, lazy thunks, nested, multiple bindings
+
+### pattern-matching-basic
+
+- [x] match keyword + Expr::Match, MatchArm, Pattern, LiteralPattern AST types
+- [x] Parser: [match scrutinee pattern body ...] with expr_to_pattern conversion
+- [x] Evaluator: materialize scrutinee, try arms top-to-bottom, TypeTag/Literal/Variable/Wildcard
+- [x] Type checker: typed as Any initially; formatter round-trip
+- [x] All exhaustive matches updated; 11 corpus tests

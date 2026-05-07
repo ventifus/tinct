@@ -6,22 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase A: Foundations
 
-### `pattern-matching-basic`
-
-**Depends on:** Type predicates (DONE)
-**Spec chapters:** `doc/02-syntax.md` (§Match Expression — syntax, arm forms, pin operator), `doc/08-evaluation.md` (§Pattern Matching — arm testing, scrutinee materialization)
-
-1. `match` added to keyword denylist
-2. `Expr::Match`, `MatchArm`, `Pattern`, `LiteralPattern` AST types
-3. Parser: `[match scrutinee arm1 arm2 ...]` parsing
-4. Pattern parsing mode (bare names as bindings, capitalized words as
-   type tags)
-5. Evaluator: materialize scrutinee, try arms top-to-bottom
-6. Type checker: typed as `Any` initially
-7. Formatter: round-trip `Expr::Match`
-8. Tests: 10+ corpus tests (type patterns, literal patterns, wildcard,
-   variable binding, nested match, no-match error)
-
 ### `pattern-matching-destructure`
 
 **Depends on:** `pattern-matching-basic` (A2), `let-binding` (A1) for multi-expression arm bodies

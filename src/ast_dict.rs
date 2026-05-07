@@ -684,6 +684,52 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::Match { scrutinee, arms } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("match".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("scrutinee".into()),
+                expr_to_thunk_id(&scrutinee.node, scrutinee.span, opts, ctx)?,
+            );
+            // Serialize arms as a list
+            let arms_thunks: Vec<ThunkId> = arms
+                .iter()
+                .enumerate()
+                .map(|(_i, arm)| {
+                    let mut arm_dict = IndexMap::new();
+                    arm_dict.insert(
+                        Key::String("pattern".into()),
+                        pattern_to_thunk_id(&arm.pattern.node, arm.pattern.span, ctx)?,
+                    );
+                    arm_dict.insert(
+                        Key::String("body".into()),
+                        expr_to_thunk_id(&arm.body.node, arm.body.span, opts, ctx)?,
+                    );
+                    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        Value::Dict(arm_dict),
+                        arm.pattern.span, // Use arm pattern span for the arm dict
+                    ))))
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            let arms_dict: IndexMap<Key, ThunkId> = arms_thunks
+                .into_iter()
+                .enumerate()
+                .map(|(i, thunk_id)| (Key::Int(i as i64), thunk_id))
+                .collect();
+            dict.insert(
+                Key::String("arms".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(arms_dict),
+                    span,
+                ))),
+            );
+        }
+
         Expr::Error(error_span) => {
             dict.insert(
                 Key::String("type".into()),
@@ -706,6 +752,97 @@ fn expr_to_thunk_id(
 
     // Add span to every node (unless it's Error which handles its own span)
     dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
+
+    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+}
+
+/// Convert a pattern to a ThunkId containing a dict representation.
+fn pattern_to_thunk_id(
+    pattern: &crate::ast::Pattern,
+    span: Span,
+    ctx: &Rc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    use crate::ast::{LiteralPattern, Pattern};
+    let mut dict = IndexMap::new();
+
+    match pattern {
+        Pattern::Wildcard => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("wildcard".into()),
+                    span,
+                ))),
+            );
+        }
+        Pattern::Variable(name) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("variable".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(name.clone()),
+                    span,
+                ))),
+            );
+        }
+        Pattern::TypeTag(tag) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("type_tag".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("tag".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(tag.clone()),
+                    span,
+                ))),
+            );
+        }
+        Pattern::Pin(name) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("pin".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(name.clone()),
+                    span,
+                ))),
+            );
+        }
+        Pattern::Literal(lit) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("literal".into()),
+                    span,
+                ))),
+            );
+            let value = match lit {
+                LiteralPattern::Int(n) => Value::Int(*n),
+                LiteralPattern::Float(f) => Value::Float(*f),
+                LiteralPattern::Bool(b) => Value::Bool(*b),
+                LiteralPattern::Str(s) => Value::String(s.clone()),
+            };
+            dict.insert(
+                Key::String("value".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(value, span))),
+            );
+        }
+    }
 
     Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }

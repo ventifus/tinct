@@ -1,0 +1,5 @@
+[match 42
+    "text"   "matched-text"
+    false    "matched-false"]
+===
+[E099] non-exhaustive match: no pattern matched the scrutinee
