@@ -4,6 +4,34 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## CLI and Test Infrastructure
+
+### `strict-mode`
+
+`--strict` CLI flag, labeled corpus sections (`=== out` / `=== warn` / `=== error`), and LSP stdlib validation. See doc/12-tooling.md §Strict Mode.
+
+**Corpus format extension — labeled sections:**
+
+- [ ] Replace `split_test_file` with a new parser for labeled section delimiters: `=== out`, `=== warn`, `=== error`; bare `===` is now a parse error — the runner panics with "bare `===` is no longer valid; use `=== out`, `=== warn`, or `=== error`"; return `TestExpectations { out: Option<String>, warn: Option<String>, error: Option<String> }` (`tests/corpus_tests.rs`)
+- [ ] Migrate all existing corpus test files: rewrite every bare `===` to `=== out`; script this with `sed -E 's/^===$/=== out/'` across `tests/corpus/`; verify no bare `===` remains (`tests/corpus/`)
+- [ ] Update corpus test runner to collect three outputs per test run: (1) eval output via `eval_source`, (2) type warnings via `typecheck_source`, (3) parse/eval error messages; compare each against its labeled section — absent section means assert empty (`tests/corpus_tests.rs`)
+- [ ] Semantics: a test with no `=== warn` section asserts zero type warnings; a test with `=== warn` asserts the warnings match exactly — no external flag needed to enforce warning-cleanliness (`tests/corpus_tests.rs`)
+- [ ] Seed one corpus test per distinct warning category using `=== warn`: `type_mismatch.llt-eval`, `unresolved_type_var.llt-eval`, `record_field_missing.llt-eval`, `function_arity.llt-eval` — each has `=== out` (empty or value) and `=== warn` (expected message) (`tests/corpus/typecheck/warnings/`)
+- [ ] Audit existing corpus files after migration: run the full suite; any file that currently produces type warnings will now fail on its empty `=== warn` expectation; fix each warning or add an explicit `=== warn` section (`tests/corpus/`)
+
+**CLI `--strict` flag (for end-user CI use, independent of corpus format):**
+
+- [ ] `--strict` flag on `tinct eval`: type errors become fatal — collect all `TypeError` from `typecheck_file`, print to stderr with the existing error format, exit code 1; without `--strict`, current advisory behavior unchanged (`src/main.rs`)
+- [ ] `EvalConfig.strict: bool` threaded through the eval pipeline so `eval_source` and `eval_file` callers can also opt in (`src/lib.rs`, `src/eval.rs`)
+- [ ] `tinct fmt --strict`: exits 1 if the file has type errors; useful for CI pre-commit hooks (`src/main.rs`)
+
+**LSP validation — reusing the existing corpus:**
+
+- [ ] LSP corpus runner: spawn `tinct lsp`, send `initialize` + `textDocument/didOpen` with the source extracted from each `.llt-eval` file (content before the first `=== ` section), collect `publishDiagnostics`; map `DiagnosticSeverity::WARNING` → compare against `=== warn` section, `DiagnosticSeverity::ERROR` → compare against `=== error` section; a file with no `=== warn` / `=== error` sections must produce zero diagnostics (`tests/lsp_tests.rs` — new file, reads same `tests/corpus/` files as the eval runner)
+- [ ] LSP stdlib validation: for each `.llt` file under `stdlib/`, open via the LSP runner; stdlib files have no `=== warn` or `=== error` sections so the assertion is zero diagnostics of any severity — ensures stdlib is both warning-free and error-free in the LSP view (`tests/lsp_tests.rs`)
+- [ ] The `tests/lsp_corpus/` directory and its `.expected.json` format (described in `README.md`) are superseded by the labeled-section approach; update `README.md` to describe the new design; the directory is kept for any future LSP-specific tests (hover, completion, definition) that have no eval-corpus equivalent (`tests/lsp_corpus/README.md`)
+- [ ] Document `--strict` and the `=== out` / `=== warn` / `=== error` corpus format in doc/12-tooling.md §Strict Mode and §Corpus Test Format (`doc/12-tooling.md`)
+
 ## Phase D: Advanced Typing
 
 ### `type-classes-full`
@@ -46,17 +74,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 
 **Spec:**
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
-
-### `structural-contracts-validate`
-
-See doc/11a-builtins.md §validate, doc/whatif/structural-contracts.md Phase 2. **Depends on:** `structural-contracts-input` (SC Ph1).
-
-- [ ] `validate` builtin: `Dict → Any → Any` (schema first, data second — `[validate nginx-schema %]`); walks schema and data in parallel, collects ALL violations (not fail-fast), returns data unchanged on success (`src/builtins.rs`)
-- [ ] Schema key dispatch: `type`, `min`, `max`, `min-length`, `max-length`, `pattern`, `required`, `default`, `items`, `fields`, `enum` — each key applies the corresponding constraint (`src/builtins.rs`)
-- [ ] `ErrorKind::SchemaViolation { violations: Vec<(String, String)> }` in `src/error.rs` with error code E090; `pub fn schema_violation(...)` constructor; add E090 to `run_explain` in `src/main.rs` (`src/error.rs`, `src/main.rs`)
-- [ ] Violation accumulation: `violations: Vec<[field: Str message: Str]>` where `field` is a dot-path string (note: ambiguous for keys containing `.`; document this limitation); error thrown via `ErrorKind::SchemaViolation` (`src/builtins.rs`, `src/error.rs`)
-- [ ] Ensure `validate` materializes `Overlay` values before structural traversal (`$merge` result is lazy overlay); add test with `[validate schema [merge a b]]` input (`src/builtins.rs`)
-- [ ] Tests: range validation; pattern matching; required/optional fields; nested schema; `items:` sequence element validation; all violations reported (not first only); Overlay input; pass-through on success (`tests/corpus/eval/stdlib/`, `tests/corpus/eval/errors/`)
 
 ### `structural-contracts-describe`
 

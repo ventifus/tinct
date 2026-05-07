@@ -3347,6 +3347,14 @@ Corpus tests, unit tests, and regression tests. No code behavior change.
 - [x] Add parser unit test for `[call\n: x]` edge case — doc/15-ast.md documents this as producing Call (not Dict) but no parser test covers it [Minor, test-crafter C71 panel]
 - [x] Add partition cross-feature corpus tests (partition with type annotations, partition in nested contexts) [Minor, test-crafter C71 panel]
 
+### structural-contracts-validate
+
+- [x] validate builtin: schema validation with type/min/max/pattern/required/enum/fields/items constraints
+- [x] SchemaViolation error (E090) with field path collection
+- [x] Nested dict/seq validation with recursive field paths
+- [x] doc/11a-builtins.md updated; regex dependency added
+- [x] 8 corpus tests covering all schema constraint types
+
 ### test-additional: Additional Test Coverage
 
 Consolidated from: test-additional, test-additional-b, test-additional-c

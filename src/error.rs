@@ -37,6 +37,31 @@ impl fmt::Display for ArityBound {
     }
 }
 
+/// Blame polarity for gradual typing boundaries.
+/// Determines which side of a typed/untyped boundary is responsible for a type error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlameParity {
+    /// Positive polarity: the typed side is blamed (value must conform to the declared type).
+    /// Example: `[@Int x]` where `x` doesn't match — the TypeAssert annotation is responsible.
+    Positive,
+    /// Negative polarity: the untyped side is blamed (producer violated the contract).
+    /// Example: function parameter receives wrong type — the call site is responsible.
+    Negative,
+}
+
+/// Blame label for tracking typed/untyped boundaries in gradual typing.
+/// Uses the co-natural strategy (Greenman et al. 2019): O(1) space per thunk,
+/// innermost boundary label is preserved when values cross multiple boundaries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlameLabel {
+    /// Where the value originated (e.g., unannotated parameter, from-json result).
+    pub origin_span: Span,
+    /// Where the typed/untyped boundary was established (e.g., TypeAssert annotation site).
+    pub boundary_span: Span,
+    /// Which side of the boundary is responsible for conformance.
+    pub polarity: BlameParity,
+}
+
 /// Structured error kind with domain-specific data.
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
@@ -202,7 +227,15 @@ pub enum ErrorKind {
         message: String,
     },
 
-    // --- Escape hatch (E090-E099) ---
+    // --- Schema validation (E090-E094) ---
+    SchemaViolation {
+        /// List of (field_path, error_message) tuples for each violation.
+        /// Field paths use dot notation: "user.address.zip"
+        /// Note: ambiguous for keys containing `.` — documented limitation.
+        violations: Vec<(String, String)>,
+    },
+
+    // --- Escape hatch (E095-E099) ---
     Internal {
         message: String,
     },
@@ -245,6 +278,7 @@ impl ErrorKind {
             Self::JsonRange => "E062",
             Self::CircularDependency { .. } => "E070",
             Self::UserError { .. } => "E080",
+            Self::SchemaViolation { .. } => "E090",
             Self::Internal { .. } => "E099",
         }
     }
@@ -532,6 +566,17 @@ impl fmt::Display for ErrorKind {
                 Ok(())
             }
             Self::UserError { message } => write!(f, "{message}"),
+            Self::SchemaViolation { violations } => {
+                writeln!(
+                    f,
+                    "schema validation failed with {} error(s):",
+                    violations.len()
+                )?;
+                for (field, msg) in violations {
+                    writeln!(f, "  {}: {}", field, msg)?;
+                }
+                Ok(())
+            }
             Self::Internal { message } => write!(f, "{message}"),
         }
     }
@@ -705,6 +750,10 @@ impl PartialEq for ErrorKind {
                 },
             ) => n1 == n2 && p1 == p2,
             (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
+            (
+                Self::SchemaViolation { violations: v1 },
+                Self::SchemaViolation { violations: v2 },
+            ) => v1 == v2,
             (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
             // This wildcard correctly returns false for cross-variant comparisons
             // (e.g., Timeout vs IoError). When adding a new ErrorKind variant, add a
@@ -740,6 +789,9 @@ pub struct EvalError {
     /// Populated by the error propagation path when errors occur in macro-expanded code.
     /// See Pombrio & Krishnamurthi (2015) for the "honest tags" approach to expansion provenance.
     pub macro_expansion: Option<(String, Span)>,
+    /// Optional blame label for gradual typing boundaries.
+    /// When present, identifies the typed/untyped boundary responsible for a type error.
+    pub blame: Option<BlameLabel>,
 }
 
 impl EvalError {
@@ -759,6 +811,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -798,6 +851,17 @@ impl EvalError {
         self
     }
 
+    /// Attach a blame label for gradual typing boundary errors.
+    /// Uses co-natural strategy: innermost blame label is preserved, outer labels discarded.
+    pub fn with_blame(mut self, label: BlameLabel) -> Self {
+        // Co-natural strategy: if we already have a blame label (innermost boundary),
+        // keep it and discard the new outer label.
+        if self.blame.is_none() {
+            self.blame = Some(label);
+        }
+        self
+    }
+
     pub fn key_not_found(key: &str, available_keys: Vec<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::KeyNotFound {
@@ -809,6 +873,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -824,6 +889,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -838,6 +904,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -849,6 +916,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -867,6 +935,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -878,6 +947,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -889,6 +959,19 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
+        }
+    }
+
+    pub fn schema_violation(violations: Vec<(String, String)>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::SchemaViolation { violations },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -900,6 +983,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -911,6 +995,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -931,6 +1016,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -942,6 +1028,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -953,6 +1040,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -964,6 +1052,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -975,6 +1064,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -986,6 +1076,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -997,6 +1088,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1011,6 +1103,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1022,6 +1115,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1037,6 +1131,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1050,6 +1145,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1061,6 +1157,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1072,6 +1169,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1085,6 +1183,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1096,6 +1195,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1107,6 +1207,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1118,6 +1219,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1129,6 +1231,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1145,6 +1248,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1165,6 +1269,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1176,6 +1281,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1187,6 +1293,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1207,6 +1314,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1218,6 +1326,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1229,6 +1338,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 
@@ -1242,6 +1352,7 @@ impl EvalError {
             stack: SmallVec::new(),
             secondary_span: None,
             macro_expansion: None,
+            blame: None,
         }
     }
 }
@@ -1421,6 +1532,19 @@ impl fmt::Display for EvalError {
                 f,
                 "\n  in expansion of `{}` at {}:{}",
                 macro_name, call_site.start.line, call_site.start.column
+            )?;
+        }
+
+        // Blame label: gradual typing boundary provenance
+        if let Some(ref blame) = self.blame {
+            let party = match blame.polarity {
+                BlameParity::Positive => "typed side (annotation)",
+                BlameParity::Negative => "untyped side (producer)",
+            };
+            write!(
+                f,
+                "\n  blame: value from {} crossed boundary at {} ({} responsible)",
+                blame.origin_span, blame.boundary_span, party
             )?;
         }
 
@@ -2802,6 +2926,7 @@ mod tests {
                     stack: SmallVec::new(),
                     secondary_span: None,
                     macro_expansion: None,
+                    blame: None,
                 },
                 "[E002]",
             ),
@@ -3900,6 +4025,7 @@ mod tests {
                 ErrorKind::JsonRange => "E062",
                 ErrorKind::CircularDependency { .. } => "E070",
                 ErrorKind::UserError { .. } => "E080",
+                ErrorKind::SchemaViolation { .. } => "E090",
                 ErrorKind::Internal { .. } => "E099",
             }
         }
@@ -3917,5 +4043,103 @@ mod tests {
             message: "test".to_string(),
         };
         assert!(a == a);
+    }
+
+    #[test]
+    fn test_blame_label_positive_polarity() {
+        let origin_span = test_span(3, 5, 3, 10);
+        let boundary_span = test_span(5, 1, 5, 15);
+        let label = BlameLabel {
+            origin_span,
+            boundary_span,
+            polarity: BlameParity::Positive,
+        };
+        assert_eq!(label.polarity, BlameParity::Positive);
+        assert_eq!(label.origin_span, origin_span);
+        assert_eq!(label.boundary_span, boundary_span);
+    }
+
+    #[test]
+    fn test_blame_label_negative_polarity() {
+        let origin_span = test_span(7, 1, 7, 5);
+        let boundary_span = test_span(12, 3, 12, 20);
+        let label = BlameLabel {
+            origin_span,
+            boundary_span,
+            polarity: BlameParity::Negative,
+        };
+        assert_eq!(label.polarity, BlameParity::Negative);
+    }
+
+    #[test]
+    fn test_eval_error_with_blame() {
+        let def_span = test_span(7, 1, 7, 5);
+        let err = EvalError::type_assert_failed("Int", "String", def_span);
+
+        let origin_span = test_span(3, 5, 3, 10);
+        let boundary_span = test_span(7, 1, 7, 15);
+        let label = BlameLabel {
+            origin_span,
+            boundary_span,
+            polarity: BlameParity::Positive,
+        };
+
+        let err_with_blame = err.with_blame(label.clone());
+        assert_eq!(err_with_blame.blame, Some(label));
+
+        // Verify display includes blame information
+        let display = format!("{}", err_with_blame);
+        assert!(display.contains("blame:"));
+        assert!(display.contains("typed side (annotation)"));
+    }
+
+    #[test]
+    fn test_eval_error_with_blame_negative() {
+        let def_span = test_span(10, 1, 10, 5);
+        let err = EvalError::type_mismatch("Int", "String", def_span);
+
+        let origin_span = test_span(5, 1, 5, 10);
+        let boundary_span = test_span(10, 1, 10, 15);
+        let label = BlameLabel {
+            origin_span,
+            boundary_span,
+            polarity: BlameParity::Negative,
+        };
+
+        let err_with_blame = err.with_blame(label);
+
+        // Verify display shows negative polarity
+        let display = format!("{}", err_with_blame);
+        assert!(display.contains("blame:"));
+        assert!(display.contains("untyped side (producer)"));
+    }
+
+    #[test]
+    fn test_blame_co_natural_strategy() {
+        // Co-natural strategy: innermost blame label is preserved, outer labels discarded
+        let def_span = test_span(10, 1, 10, 5);
+        let err = EvalError::type_assert_failed("Int", "String", def_span);
+
+        // First (innermost) blame label
+        let inner_label = BlameLabel {
+            origin_span: test_span(5, 1, 5, 10),
+            boundary_span: test_span(8, 1, 8, 15),
+            polarity: BlameParity::Positive,
+        };
+
+        // Second (outer) blame label
+        let outer_label = BlameLabel {
+            origin_span: test_span(1, 1, 1, 5),
+            boundary_span: test_span(12, 1, 12, 20),
+            polarity: BlameParity::Negative,
+        };
+
+        // Apply inner label first
+        let err = err.with_blame(inner_label.clone());
+        // Apply outer label (should be discarded)
+        let err = err.with_blame(outer_label);
+
+        // Should still have the inner label
+        assert_eq!(err.blame, Some(inner_label));
     }
 }

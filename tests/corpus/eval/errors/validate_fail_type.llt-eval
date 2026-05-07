@@ -1,0 +1,4 @@
+# validate: type mismatch produces error
+[validate [type: "Int"] "not an int"]
+===
+ERROR: expected type Int, got String
