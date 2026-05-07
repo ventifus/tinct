@@ -63,7 +63,17 @@ pub enum Type {
     Proxy,
     #[allow(clippy::enum_variant_names)]
     TypeVar(String, u32),
-    Any,
+    /// Unknown type — the gradual typing "?" type. Represents "I don't know the type"
+    /// (unannotated params, inference defaults, builtin returns that can't be precisely typed).
+    /// Related to other types via CONSISTENCY (~), not subtyping (<:).
+    /// Consistency is symmetric but NOT transitive: Int ~ Unknown, Unknown ~ Str, but NOT Int ~ Str.
+    /// This prevents the lattice collapse that Any-as-top-and-bottom caused.
+    /// See Siek & Taha (2006), Garcia et al. (2016) AGT framework.
+    Unknown,
+    /// Top type — ⊤, the true supertype of everything. Represents "any type is allowed here"
+    /// (TypeAssert upper bound, explicit "accept anything" positions).
+    /// All types τ satisfy τ <: Top.
+    Top,
     /// Sentinel for failed sub-expression inference. Prevents cascade errors: when a
     /// sub-expression fails type inference, its result is `Error` rather than propagating
     /// the failure to parent expressions. `unify(Error, T)` is a no-op for all T (silent
@@ -114,7 +124,8 @@ impl PartialEq for Type {
             (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
-            (Type::Any, Type::Any) => true,
+            (Type::Unknown, Type::Unknown) => true,
+            (Type::Top, Type::Top) => true,
             (Type::Error, Type::Error) => true,
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
@@ -131,19 +142,23 @@ impl Type {
     /// occurs-check invariant (Robinson 1965) additionally ensures that substitution-applied types
     /// are acyclic.
     ///
-    /// Note: `Any` acts as both top and bottom of the subtype lattice (see [S-ANY-TOP] and
-    /// [S-ANY-BOT] in doc/06). The `Any` short-circuit fires at every recursive call site,
-    /// including nested positions, so `Seq[Any] <: Seq[τ]` holds for all τ. This is intentional
-    /// for gradual typing.
+    /// Post gradual-typing-split (B2): Top is the true supertype (τ <: Top for all τ). Unknown
+    /// is NOT in the subtype lattice — Unknown relates to other types via consistency (~), not
+    /// subtyping (<:). See is_consistent() for the consistency relation.
     pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
         // Error is not a subtype of anything (not even itself), and nothing is a subtype of Error.
         // It is a sentinel for failed inference and should not satisfy any constraint.
-        // This check must come BEFORE the Any check to prevent Error <: Any returning true.
         if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
             return false;
         }
-        if matches!(sub, Type::Any) || matches!(sup, Type::Any) {
+        // [S-TOP]: τ <: Top for all τ (Top is the supertype of everything)
+        if matches!(sup, Type::Top) {
             return true;
+        }
+        // Unknown is NOT a subtype of anything (except Top, handled above), and no type is a
+        // subtype of Unknown. Unknown uses consistency, not subtyping. See is_consistent().
+        if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
+            return false;
         }
         match (sub, sup) {
             (a, b) if a == b => true,
@@ -224,6 +239,98 @@ impl Type {
                         .all(|(sp, pp)| Type::is_subtype(pp, sp))
                     && Type::is_subtype(sub_r, sup_r)
             }
+            _ => false,
+        }
+    }
+
+    /// Consistency relation for gradual typing (Siek & Taha 2006, Garcia et al. 2016 AGT).
+    ///
+    /// The consistency relation (~) is used for Unknown types. Key properties:
+    /// - Reflexive: τ ~ τ for all τ
+    /// - Symmetric: τ₁ ~ τ₂ ⟺ τ₂ ~ τ₁
+    /// - NOT transitive: Int ~ Unknown and Unknown ~ Str, but NOT Int ~ Str
+    ///
+    /// This non-transitivity prevents Unknown from collapsing all types into equivalence,
+    /// which was the problem with Any-as-top-and-bottom.
+    ///
+    /// Consistency decomposes structurally: Fn(τ₁ → τ₂) ~ Fn(σ₁ → σ₂) iff τ₁ ~ σ₁ and τ₂ ~ σ₂.
+    /// Records require shared fields to be consistent; differing field sets are consistent
+    /// (no width restriction).
+    pub fn is_consistent(a: &Type, b: &Type) -> bool {
+        // Unknown is consistent with everything
+        if matches!(a, Type::Unknown) || matches!(b, Type::Unknown) {
+            return true;
+        }
+        // Reflexive: τ ~ τ for all concrete types
+        if a == b {
+            return true;
+        }
+        // Error is not consistent with anything (sentinel for failed inference)
+        if matches!(a, Type::Error) || matches!(b, Type::Error) {
+            return false;
+        }
+        // Structural decomposition
+        match (a, b) {
+            (Type::Seq(e1), Type::Seq(e2)) => Type::is_consistent(e1, e2),
+            (
+                Type::Function {
+                    params: p1,
+                    ret: r1,
+                    variadic: v1,
+                },
+                Type::Function {
+                    params: p2,
+                    ret: r2,
+                    variadic: v2,
+                },
+            ) => {
+                v1 == v2
+                    && p1.len() == p2.len()
+                    && p1
+                        .iter()
+                        .zip(p2.iter())
+                        .all(|(a, b)| Type::is_consistent(a, b))
+                    && Type::is_consistent(r1, r2)
+            }
+            (Type::Record(row1), Type::Record(row2)) => {
+                // Shared fields must be consistent
+                for (k, ty1) in &row1.fields {
+                    if let Some(ty2) = row2.fields.get(k) {
+                        if !Type::is_consistent(ty1, ty2) {
+                            return false;
+                        }
+                    }
+                }
+                // Differing fields are OK (width subtyping-like, but symmetric)
+                // Row tails consistency: both Empty, both RowVar, or either Unknown
+                match (&row1.tail, &row2.tail) {
+                    (RowTail::Empty, RowTail::Empty) => true,
+                    (RowTail::RowVar(_, _), RowTail::RowVar(_, _)) => true,
+                    // If either side is open, they're consistent (row var can unify to match)
+                    _ => true,
+                }
+            }
+            (Type::Union(members1), Type::Union(members2)) => {
+                // Union ~ Union iff for each member in one, there's a consistent member in the other
+                // This is symmetric and handles partial overlap
+                members1
+                    .iter()
+                    .all(|m1| members2.iter().any(|m2| Type::is_consistent(m1, m2)))
+                    && members2
+                        .iter()
+                        .all(|m2| members1.iter().any(|m1| Type::is_consistent(m1, m2)))
+            }
+            // Literal types are consistent with their parent types (similar to subtyping)
+            (Type::IntLiteral(_), Type::Int | Type::Number)
+            | (Type::Int | Type::Number, Type::IntLiteral(_)) => true,
+            (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => true,
+            (Type::Int | Type::Float, Type::Number) | (Type::Number, Type::Int | Type::Float) => {
+                true
+            }
+            // Top is consistent with everything (τ ~ Top for all τ)
+            (Type::Top, _) | (_, Type::Top) => true,
+            // Capability types, Proxy: consistent only if equal (handled by a == b above)
+            // All other combinations are inconsistent
             _ => false,
         }
     }
@@ -504,12 +611,13 @@ fn type_order(ty: &Type) -> u8 {
         Type::Seq(_) => 9,
         Type::Proxy => 10,
         Type::TypeVar(_, _) => 11,
-        Type::Any => 12,
-        Type::Error => 13,
-        Type::DirCap => 14,
-        Type::NetCap => 15,
-        Type::Handle => 16,
-        Type::Union(_) => 17, // Should not appear after flattening, but included for completeness
+        Type::Unknown => 12,
+        Type::Top => 13,
+        Type::Error => 14,
+        Type::DirCap => 15,
+        Type::NetCap => 16,
+        Type::Handle => 17,
+        Type::Union(_) => 18, // Should not appear after flattening, but included for completeness
     }
 }
 
@@ -683,7 +791,8 @@ impl Substitution {
             | Type::Bool
             | Type::Str
             | Type::Number
-            | Type::Any
+            | Type::Unknown
+            | Type::Top
             | Type::Proxy
             | Type::Error
             | Type::DirCap
@@ -1574,19 +1683,41 @@ pub fn unify(
         // Error carries no information that should propagate to type variables.
         (Type::Error, _) | (_, Type::Error) => Ok(()),
 
-        // Any-unification with level zeroing: prevent generalization of Any-touched vars
-        (Type::Any, Type::TypeVar(name, _)) => {
+        // Unknown-consistency with level zeroing: prevent generalization of Unknown-touched vars.
+        // Unknown relates to other types via consistency, not unification. When Unknown meets
+        // a type variable, we zero the variable's level to prevent generalization (Siek & Taha 2006).
+        (Type::Unknown, Type::TypeVar(name, _)) => {
             state.levels.insert(name.clone(), 0);
             Ok(())
         }
-        (Type::TypeVar(name, _), Type::Any) => {
+        (Type::TypeVar(name, _), Type::Unknown) => {
             state.levels.insert(name.clone(), 0);
             Ok(())
         }
-        (Type::Any, other) | (other, Type::Any) => {
-            // Zero levels of all type/row vars in the non-Any side to prevent
-            // over-generalization. E.g., unify(Any, Fn(TypeVar("b",3) → Int))
+        (Type::Unknown, other) | (other, Type::Unknown) => {
+            // Zero levels of all type/row vars in the non-Unknown side to prevent
+            // over-generalization. E.g., unify(Unknown, Fn(TypeVar("b",3) → Int))
             // must zero b's level so it won't be generalized.
+            let mut type_vars = HashSet::new();
+            let mut row_vars = HashSet::new();
+            other.collect_all_vars(&mut type_vars, &mut row_vars);
+            for var in type_vars.iter().chain(row_vars.iter()) {
+                state.levels.insert(var.clone(), 0);
+            }
+            Ok(())
+        }
+
+        // Top unification: Top should not appear in unification positions (it's for checking only).
+        // If it does appear, treat it like Unknown for now (accepting unification with anything).
+        (Type::Top, Type::TypeVar(name, _)) => {
+            state.levels.insert(name.clone(), 0);
+            Ok(())
+        }
+        (Type::TypeVar(name, _), Type::Top) => {
+            state.levels.insert(name.clone(), 0);
+            Ok(())
+        }
+        (Type::Top, other) | (other, Type::Top) => {
             let mut type_vars = HashSet::new();
             let mut row_vars = HashSet::new();
             other.collect_all_vars(&mut type_vars, &mut row_vars);
@@ -1994,7 +2125,8 @@ impl fmt::Display for Type {
             Type::StringLiteral(s) => write!(f, "\"{s}\""),
             Type::Bool => write!(f, "Bool"),
             Type::Number => write!(f, "Number"),
-            Type::Any => write!(f, "Any"),
+            Type::Unknown => write!(f, "?"),
+            Type::Top => write!(f, "⊤"),
             Type::TypeVar(name, _level) => write!(f, "{name}"),
             Type::Record(row) => {
                 write!(f, "[")?;
@@ -2186,7 +2318,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Any, Type::Any],
+                    params: vec![Type::Unknown, Type::Unknown],
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
@@ -2197,8 +2329,8 @@ impl TypeEnv {
         env.insert(
             "if".to_string(),
             Type::Function {
-                params: vec![Type::Bool, Type::Any, Type::Any],
-                ret: Box::new(Type::Any),
+                params: vec![Type::Bool, Type::Unknown, Type::Unknown],
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2254,7 +2386,7 @@ impl TypeEnv {
                         fields: HashMap::new(),
                         tail: RowTail::RowVar("_append_a".to_string(), 0),
                     }),
-                    Type::Any,
+                    Type::Unknown,
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2268,7 +2400,7 @@ impl TypeEnv {
         env.insert(
             "str".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Str),
                 variadic: true,
             },
@@ -2332,8 +2464,8 @@ impl TypeEnv {
         env.insert(
             "eval".to_string(),
             Type::Function {
-                params: vec![Type::Any],
-                ret: Box::new(Type::Any),
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2341,15 +2473,15 @@ impl TypeEnv {
             "error".to_string(),
             Type::Function {
                 params: vec![Type::Str],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
         env.insert(
             "try".to_string(),
             Type::Function {
-                params: vec![Type::Any, Type::Any],
-                ret: Box::new(Type::Any),
+                params: vec![Type::Unknown, Type::Unknown],
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2358,8 +2490,8 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     Type::Function {
-                        params: vec![Type::Any],
-                        ret: Box::new(Type::Any),
+                        params: vec![Type::Unknown],
+                        ret: Box::new(Type::Unknown),
                         variadic: false,
                     },
                     Type::Record(Row {
@@ -2367,7 +2499,7 @@ impl TypeEnv {
                         tail: RowTail::RowVar("_dict".to_string(), 0),
                     }),
                 ],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2378,18 +2510,18 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     Type::Function {
-                        params: vec![Type::Any],
+                        params: vec![Type::Unknown],
                         ret: Box::new(Type::Bool),
                         variadic: false,
                     },
                     Type::Function {
-                        params: vec![Type::Any],
-                        ret: Box::new(Type::Any),
+                        params: vec![Type::Unknown],
+                        ret: Box::new(Type::Unknown),
                         variadic: false,
                     },
-                    Type::Any,
+                    Type::Unknown,
                 ],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2398,7 +2530,7 @@ impl TypeEnv {
         env.insert(
             "type-of".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -2406,7 +2538,7 @@ impl TypeEnv {
         env.insert(
             "int?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2414,7 +2546,7 @@ impl TypeEnv {
         env.insert(
             "float?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2422,7 +2554,7 @@ impl TypeEnv {
         env.insert(
             "num?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2430,7 +2562,7 @@ impl TypeEnv {
         env.insert(
             "str?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2438,7 +2570,7 @@ impl TypeEnv {
         env.insert(
             "bool?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2446,7 +2578,7 @@ impl TypeEnv {
         env.insert(
             "null?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2454,7 +2586,7 @@ impl TypeEnv {
         env.insert(
             "dict?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2462,7 +2594,7 @@ impl TypeEnv {
         env.insert(
             "fn?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2485,7 +2617,7 @@ impl TypeEnv {
             "env".to_string(),
             Type::Function {
                 params: vec![Type::Str],
-                ret: Box::new(Type::Any), // returns Str or Null
+                ret: Box::new(Type::Unknown), // returns Str or Null
                 variadic: false,
             },
         );
@@ -2557,7 +2689,7 @@ impl TypeEnv {
             "revocable".to_string(),
             Type::Function {
                 params: vec![Type::DirCap],
-                ret: Box::new(Type::Any), // returns dict with cap and revoke fields
+                ret: Box::new(Type::Unknown), // returns dict with cap and revoke fields
                 variadic: false,
             },
         );
@@ -2576,7 +2708,7 @@ impl TypeEnv {
         env.insert(
             "net-cap".to_string(),
             Type::Function {
-                params: vec![Type::Any], // accepts Seq/Dict/Str of allowlist entries
+                params: vec![Type::Unknown], // accepts Seq/Dict/Str of allowlist entries
                 ret: Box::new(Type::NetCap),
                 variadic: false,
             },
@@ -2593,7 +2725,7 @@ impl TypeEnv {
             "from-json".to_string(),
             Type::Function {
                 params: vec![Type::Str],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2601,7 +2733,7 @@ impl TypeEnv {
             "include".to_string(),
             Type::Function {
                 params: vec![Type::Str],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2610,31 +2742,31 @@ impl TypeEnv {
         env.insert(
             "seq".to_string(),
             Type::Function {
-                params: vec![Type::Any, Type::Any],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                params: vec![Type::Unknown, Type::Unknown],
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "head".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Any))],
-                ret: Box::new(Type::Any),
+                params: vec![Type::Seq(Box::new(Type::Unknown))],
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
         env.insert(
             "tail".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Any))],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                params: vec![Type::Seq(Box::new(Type::Unknown))],
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "collect".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Any))],
+                params: vec![Type::Seq(Box::new(Type::Unknown))],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_dict".to_string(), 0),
@@ -2645,7 +2777,7 @@ impl TypeEnv {
         env.insert(
             "seq?".to_string(),
             Type::Function {
-                params: vec![Type::Any],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2663,16 +2795,16 @@ impl TypeEnv {
         env.insert(
             "repeat".to_string(),
             Type::Function {
-                params: vec![Type::Any],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "cycle".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Any))],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                params: vec![Type::Seq(Box::new(Type::Unknown))],
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
@@ -2681,13 +2813,13 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     Type::Function {
-                        params: vec![Type::Any],
-                        ret: Box::new(Type::Any),
+                        params: vec![Type::Unknown],
+                        ret: Box::new(Type::Unknown),
                         variadic: false,
                     },
-                    Type::Any,
+                    Type::Unknown,
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
@@ -2696,13 +2828,13 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     Type::Function {
-                        params: vec![Type::Any],
-                        ret: Box::new(Type::Any),
+                        params: vec![Type::Unknown],
+                        ret: Box::new(Type::Unknown),
                         variadic: false,
                     },
-                    Type::Any,
+                    Type::Unknown,
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
@@ -2713,13 +2845,13 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     Type::Function {
-                        params: vec![Type::Any],
-                        ret: Box::new(Type::Any),
+                        params: vec![Type::Unknown],
+                        ret: Box::new(Type::Unknown),
                         variadic: false,
                     },
-                    Type::Any,
+                    Type::Unknown,
                 ],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2728,29 +2860,29 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     Type::Function {
-                        params: vec![Type::Any],
+                        params: vec![Type::Unknown],
                         ret: Box::new(Type::Bool),
                         variadic: false,
                     },
-                    Type::Any,
+                    Type::Unknown,
                 ],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
         env.insert(
             "take".to_string(),
             Type::Function {
-                params: vec![Type::Int, Type::Seq(Box::new(Type::Any))],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                params: vec![Type::Int, Type::Seq(Box::new(Type::Unknown))],
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "drop".to_string(),
             Type::Function {
-                params: vec![Type::Int, Type::Seq(Box::new(Type::Any))],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                params: vec![Type::Int, Type::Seq(Box::new(Type::Unknown))],
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
@@ -2761,21 +2893,21 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     Type::Function {
-                        params: vec![Type::Any, Type::Any],
-                        ret: Box::new(Type::Any),
+                        params: vec![Type::Unknown, Type::Unknown],
+                        ret: Box::new(Type::Unknown),
                         variadic: false,
                     },
-                    Type::Any,
-                    Type::Seq(Box::new(Type::Any)),
+                    Type::Unknown,
+                    Type::Seq(Box::new(Type::Unknown)),
                 ],
-                ret: Box::new(Type::Any),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
         env.insert(
             "join".to_string(),
             Type::Function {
-                params: vec![Type::Str, Type::Seq(Box::new(Type::Any))],
+                params: vec![Type::Str, Type::Seq(Box::new(Type::Unknown))],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -2783,8 +2915,8 @@ impl TypeEnv {
         env.insert(
             "concat".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Seq(Box::new(Type::Any))))],
-                ret: Box::new(Type::Seq(Box::new(Type::Any))),
+                params: vec![Type::Seq(Box::new(Type::Seq(Box::new(Type::Unknown))))],
+                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
@@ -2810,7 +2942,7 @@ impl TypeEnv {
             "cons".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Any,
+                    Type::Unknown,
                     Type::Record(Row {
                         fields: HashMap::new(),
                         tail: RowTail::RowVar("_cons_a".to_string(), 0),
@@ -2860,7 +2992,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Function {
                     params: vec![Type::Str],
-                    ret: Box::new(Type::Any),
+                    ret: Box::new(Type::Unknown),
                     variadic: false,
                 }],
                 ret: Box::new(Type::Proxy),
@@ -2906,7 +3038,7 @@ impl TypeEnv {
     /// environment is loaded at runtime.
     ///
     /// Takes a TypeMap from the prelude index and extracts types for top-level
-    /// bindings. Falls back to Type::Any for names without type information.
+    /// bindings. Falls back to Type::Unknown for names without type information.
     pub fn with_prelude_types(
         &self,
         name_to_span: &std::collections::HashMap<String, crate::ast::Span>,
@@ -2915,7 +3047,7 @@ impl TypeEnv {
         let mut env = self.clone();
         for (name, span) in name_to_span {
             let key = (span.start.offset, span.end.offset);
-            let ty = type_map.get(&key).cloned().unwrap_or(Type::Any);
+            let ty = type_map.get(&key).cloned().unwrap_or(Type::Unknown);
             env.insert(name.clone(), ty);
         }
         env
@@ -3004,7 +3136,8 @@ mod tests {
         assert_eq!(format!("{}", Type::Str), "String");
         assert_eq!(format!("{}", Type::Bool), "Bool");
         assert_eq!(format!("{}", Type::Number), "Number");
-        assert_eq!(format!("{}", Type::Any), "Any");
+        assert_eq!(format!("{}", Type::Unknown), "?");
+        assert_eq!(format!("{}", Type::Top), "⊤");
     }
 
     #[test]
@@ -3097,10 +3230,17 @@ mod tests {
     }
 
     #[test]
-    fn test_subtype_any_bypass() {
-        assert!(Type::is_subtype(&Type::Any, &Type::Int));
-        assert!(Type::is_subtype(&Type::Int, &Type::Any));
-        assert!(Type::is_subtype(&Type::Any, &Type::Any));
+    fn test_subtype_top_and_unknown() {
+        // Top is the supertype of everything (τ <: Top for all τ)
+        assert!(Type::is_subtype(&Type::Int, &Type::Top));
+        assert!(Type::is_subtype(&Type::Str, &Type::Top));
+        assert!(Type::is_subtype(&Type::Unknown, &Type::Top));
+        assert!(Type::is_subtype(&Type::Top, &Type::Top));
+        // Unknown is NOT in the subtype lattice (uses consistency instead)
+        assert!(!Type::is_subtype(&Type::Unknown, &Type::Int));
+        assert!(!Type::is_subtype(&Type::Int, &Type::Unknown));
+        // Unknown <: Unknown is false (Unknown uses consistency, not subtyping)
+        assert!(!Type::is_subtype(&Type::Unknown, &Type::Unknown));
     }
 
     #[test]
@@ -3564,7 +3704,7 @@ mod tests {
     fn test_has_inference_vars_primitive() {
         assert!(!Type::Int.has_inference_vars());
         assert!(!Type::Str.has_inference_vars());
-        assert!(!Type::Any.has_inference_vars());
+        assert!(!Type::Unknown.has_inference_vars());
     }
 
     #[test]
@@ -3665,7 +3805,7 @@ mod tests {
             Type::Bool,
             Type::Float,
             Type::Number,
-            Type::Any,
+            Type::Unknown,
         ] {
             let mut type_vars = HashSet::new();
             let mut row_vars = HashSet::new();
@@ -3812,8 +3952,8 @@ mod tests {
                 variadic: _,
             } => {
                 assert_eq!(params.len(), 2);
-                assert_eq!(params[0], Type::Any);
-                assert_eq!(params[1], Type::Any);
+                assert_eq!(params[0], Type::Unknown);
+                assert_eq!(params[1], Type::Unknown);
                 assert_eq!(&**ret, &Type::Bool);
             }
             other => panic!("expected Function type for =, got {other}"),
@@ -4209,8 +4349,8 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
-        assert!(unify(&Type::Any, &Type::Int, &mut subst, &mut state, span).is_ok());
-        assert!(unify(&Type::Str, &Type::Any, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Unknown, &Type::Int, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Str, &Type::Unknown, &mut subst, &mut state, span).is_ok());
     }
 
     #[test]
@@ -5402,7 +5542,7 @@ mod tests {
 
         let mut subst = Substitution::new();
         unify(
-            &Type::Any,
+            &Type::Unknown,
             &Type::TypeVar("a".into(), 3),
             &mut subst,
             &mut state,
@@ -5423,7 +5563,7 @@ mod tests {
         let mut subst = Substitution::new();
         unify(
             &Type::TypeVar("a".into(), 2),
-            &Type::Any,
+            &Type::Unknown,
             &mut subst,
             &mut state,
             span,
@@ -5448,7 +5588,7 @@ mod tests {
         };
 
         let mut subst = Substitution::new();
-        unify(&Type::Any, &fn_ty, &mut subst, &mut state, span).unwrap();
+        unify(&Type::Unknown, &fn_ty, &mut subst, &mut state, span).unwrap();
 
         assert_eq!(
             state.levels.get("b"),
@@ -5473,7 +5613,7 @@ mod tests {
         });
 
         let mut subst = Substitution::new();
-        unify(&Type::Any, &rec_ty, &mut subst, &mut state, span).unwrap();
+        unify(&Type::Unknown, &rec_ty, &mut subst, &mut state, span).unwrap();
 
         assert_eq!(
             state.levels.get("c"),
@@ -5502,7 +5642,7 @@ mod tests {
         };
 
         let mut subst = Substitution::new();
-        unify(&fn_ty, &Type::Any, &mut subst, &mut state, span).unwrap();
+        unify(&fn_ty, &Type::Unknown, &mut subst, &mut state, span).unwrap();
 
         assert_eq!(
             state.levels.get("d"),
@@ -7326,17 +7466,17 @@ mod tests {
     fn test_error_eq() {
         assert_eq!(Type::Error, Type::Error);
         assert_ne!(Type::Error, Type::Int);
-        assert_ne!(Type::Error, Type::Any);
+        assert_ne!(Type::Error, Type::Unknown);
     }
 
     #[test]
     fn test_error_is_not_subtype_of_anything() {
         assert!(!Type::is_subtype(&Type::Error, &Type::Int));
         assert!(!Type::is_subtype(&Type::Error, &Type::Str));
-        assert!(!Type::is_subtype(&Type::Error, &Type::Any));
+        assert!(!Type::is_subtype(&Type::Error, &Type::Unknown));
         assert!(!Type::is_subtype(&Type::Error, &Type::Error));
         assert!(!Type::is_subtype(&Type::Int, &Type::Error));
-        assert!(!Type::is_subtype(&Type::Any, &Type::Error));
+        assert!(!Type::is_subtype(&Type::Unknown, &Type::Error));
     }
 
     #[test]
@@ -7365,8 +7505,8 @@ mod tests {
         assert!(unify(&Type::Int, &Type::Error, &mut subst, &mut state, span).is_ok());
         assert!(unify(&Type::Error, &Type::Str, &mut subst, &mut state, span).is_ok());
         assert!(unify(&Type::Error, &Type::Bool, &mut subst, &mut state, span).is_ok());
-        assert!(unify(&Type::Error, &Type::Any, &mut subst, &mut state, span).is_ok());
-        assert!(unify(&Type::Any, &Type::Error, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Error, &Type::Unknown, &mut subst, &mut state, span).is_ok());
+        assert!(unify(&Type::Unknown, &Type::Error, &mut subst, &mut state, span).is_ok());
         assert!(unify(&Type::Error, &Type::Error, &mut subst, &mut state, span).is_ok());
 
         // Substitution must not be modified — Error carries no binding information

@@ -4182,3 +4182,12 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Annotation resolver: positional entries in @[...] collected into union type
 - [x] Runtime: value_matches_type for Union (matches if any member matches)
 - [x] 27 unit tests for normalization, subtyping, annotation resolution
+
+### gradual-typing-split
+
+- [x] Type::Any split into Type::Unknown (gradual ?) + Type::Top (⊤ supertype)
+- [x] is_consistent() function: symmetric, not transitive consistency relation
+- [x] is_subtype updated: τ <: Top; Unknown removed from subtype lattice
+- [x] All ~73 Type::Any uses reclassified (Unknown for inference, Top for explicit accept-all)
+- [x] unify() updated for Unknown consistency with level zeroing
+- [x] Tests updated for new type display and semantics

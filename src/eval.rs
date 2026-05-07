@@ -309,7 +309,7 @@ impl EvalContext {
 /// - Record: always true (structural validation deferred to proxy contract wrapping)
 pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
     match expected {
-        Type::Any => true,
+        Type::Unknown | Type::Top => true,
         Type::Int => matches!(value, Value::Int(_)),
         Type::Float => matches!(value, Value::Float(_)),
         Type::Number => matches!(value, Value::Int(_) | Value::Float(_)),
@@ -7385,11 +7385,11 @@ mod tests {
 
     #[test]
     fn test_typeassert_structural_any() {
-        // Structural path: resolved_type = Some(Type::Any), any value passes
+        // Structural path: resolved_type = Some(Type::Top), any value passes
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Any".into())),
             expr: Box::new(sp(Expr::Str("anything".into()))),
-            resolved_type: RefCell::new(Some(Type::Any)),
+            resolved_type: RefCell::new(Some(Type::Top)),
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -7398,11 +7398,11 @@ mod tests {
 
     #[test]
     fn test_typeassert_structural_any_accepts_int() {
-        // Type::Any accepts Int as well (covers any-value branch)
+        // Type::Top accepts Int as well (covers any-value branch)
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Any".into())),
             expr: Box::new(sp(Expr::Int(99))),
-            resolved_type: RefCell::new(Some(Type::Any)),
+            resolved_type: RefCell::new(Some(Type::Top)),
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
@@ -7852,14 +7852,14 @@ mod tests {
 
     #[test]
     fn test_value_matches_type_any() {
-        // Type::Any accepts all value kinds
-        assert!(value_matches_type(&Value::Int(1), &Type::Any));
-        assert!(value_matches_type(&Value::Float(1.0), &Type::Any));
-        assert!(value_matches_type(&Value::String("s".into()), &Type::Any));
-        assert!(value_matches_type(&Value::Bool(true), &Type::Any));
+        // Type::Top accepts all value kinds
+        assert!(value_matches_type(&Value::Int(1), &Type::Top));
+        assert!(value_matches_type(&Value::Float(1.0), &Type::Top));
+        assert!(value_matches_type(&Value::String("s".into()), &Type::Top));
+        assert!(value_matches_type(&Value::Bool(true), &Type::Top));
         assert!(value_matches_type(
             &Value::Dict(IndexMap::new()),
-            &Type::Any
+            &Type::Top
         ));
     }
 
@@ -7937,7 +7937,7 @@ mod tests {
 
         assert!(value_matches_type(&proxy_val, &Type::Proxy));
         assert!(!value_matches_type(&proxy_val, &Type::Int));
-        assert!(value_matches_type(&proxy_val, &Type::Any));
+        assert!(value_matches_type(&proxy_val, &Type::Top));
     }
 
     // ── validate_and_wrap_record unit tests ──────────────────────────────────

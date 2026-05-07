@@ -6,25 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase B: Type System Primitives
 
-### `gradual-typing-split`
-
-**Depends on:** `union-types` (B1) — ships after B1 so union subtyping immediately uses the proper lattice
-**Spec chapters:** `doc/06-type-inference.md` (§Gradual Typing — `Unknown` vs `Top`, consistency relation), `doc/07-type-extensions.md` (§Gradual Typing extension roadmap), `doc/17-references.md` (Siek & Taha 2006, Garcia et al. 2016)
-
-1. Document: catalog all `Type::Any` uses with reclassification
-2. `Type::Unknown` replaces `Type::Any` (gradual)
-3. `Type::Top` added (true supertype)
-4. `is_consistent()` function (~30 lines)
-5. `is_subtype`: remove `[S-ANY-TOP]` and `[S-ANY-BOT]`; add
-   `tau <: Top`
-6. Audit and update every `match` on `Type::Any` in `types.rs`
-7. Audit and update every `Any` default in `typecheck.rs`
-8. Update `unify()` to use consistency for `Unknown`
-9. Update doc/06-type-inference.md
-10. Tests: full corpus regression + 8 targeted tests (Unknown
-    consistency, Top subtyping, non-transitivity of consistency,
-    TypeAssert with Top)
-
 ### `param-type-aliases`
 
 **Depends on:** None

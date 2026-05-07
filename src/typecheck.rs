@@ -410,7 +410,11 @@ fn typecheck_document(
             &mut None,
         ) {
             Ok(expected_type) => {
-                if !Type::is_subtype(pipeline_type, &expected_type) {
+                let passes = Type::is_subtype(pipeline_type, &expected_type)
+                    || ((contains_unknown_or_top(pipeline_type)
+                        || contains_unknown_or_top(&expected_type))
+                        && Type::is_consistent(pipeline_type, &expected_type));
+                if !passes {
                     advisory_errors.push(TypeError::new(
                         format!(
                             "Pipeline input type {} does not satisfy expects contract {}",
@@ -443,7 +447,11 @@ fn typecheck_document(
                 &mut None,
             ) {
                 Ok(expected_output) => {
-                    if !Type::is_subtype(&result_type, &expected_output) {
+                    let passes = Type::is_subtype(&result_type, &expected_output)
+                        || ((contains_unknown_or_top(&result_type)
+                            || contains_unknown_or_top(&expected_output))
+                            && Type::is_consistent(&result_type, &expected_output));
+                    if !passes {
                         advisory_errors.push(TypeError::new(
                             format!(
                                 "Document output type {} does not match annotation {}",
@@ -570,7 +578,7 @@ fn typecheck_document(
                                 errors.append(&mut alias_errs);
                                 env = Rc::new(new_env);
                             }
-                            Type::Any => {}
+                            Type::Unknown => {}
                             _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
                         }
                     }
@@ -632,7 +640,11 @@ fn typecheck_document(
             &mut None,
         ) {
             Ok(expected_output) => {
-                if !Type::is_subtype(&result_type, &expected_output) {
+                let passes = Type::is_subtype(&result_type, &expected_output)
+                    || ((contains_unknown_or_top(&result_type)
+                        || contains_unknown_or_top(&expected_output))
+                        && Type::is_consistent(&result_type, &expected_output));
+                if !passes {
                     advisory_errors.push(TypeError::new(
                         format!(
                             "Document output type {} does not match annotation {}",
@@ -922,7 +934,7 @@ fn infer_expr(
 
             // Return Any for now — full union result typing and exhaustiveness checking
             // comes with narrowing-basic and exhaustiveness sprints
-            Ok(Type::Any)
+            Ok(Type::Unknown)
         }
 
         Expr::DefMacro { .. } => {
@@ -978,6 +990,22 @@ fn infer_expr(
 /// against an expected function type, propagate the expected parameter types into the
 /// lambda's parameter inference (Pierce & Turner 2000 lambda checking mode).
 ///
+/// Check if a type contains Unknown or Top anywhere in its structure.
+/// Used for the gradual typing fallback: when Unknown/Top appears anywhere in a type,
+/// subsumption uses `is_consistent` instead of `is_subtype` to maintain the gradual guarantee.
+fn contains_unknown_or_top(ty: &Type) -> bool {
+    match ty {
+        Type::Unknown | Type::Top => true,
+        Type::Function { params, ret, .. } => {
+            params.iter().any(contains_unknown_or_top) || contains_unknown_or_top(ret)
+        }
+        Type::Seq(elem) => contains_unknown_or_top(elem),
+        Type::Record(row) => row.fields.values().any(contains_unknown_or_top),
+        Type::Union(members) => members.iter().any(contains_unknown_or_top),
+        _ => false,
+    }
+}
+
 /// This function is used at checking positions where the expected type is fully concrete
 /// (no type variables): CALL-MONO arguments, concrete return annotations (no TypeVars), and TypeAssert.
 fn check_expr(
@@ -1082,7 +1110,11 @@ fn check_expr(
                                         )
                                     })?;
                                 } else {
-                                    if !Type::is_subtype(expected_ty, &resolved) {
+                                    let sub_passes = Type::is_subtype(expected_ty, &resolved)
+                                        || ((contains_unknown_or_top(expected_ty)
+                                            || contains_unknown_or_top(&resolved))
+                                            && Type::is_consistent(expected_ty, &resolved));
+                                    if !sub_passes {
                                         return Err(TypeError::new(
                                             format!("parameter annotation {resolved} is more restrictive than required type {expected_ty}"),
                                             ann.span
@@ -1100,7 +1132,7 @@ fn check_expr(
                     let mut fn_env = TypeEnv::with_parent(env);
                     for (param, ty) in params.iter().zip(param_types.iter()) {
                         if param.node.variadic {
-                            fn_env.insert(param.node.name.clone(), Type::Any);
+                            fn_env.insert(param.node.name.clone(), Type::Unknown);
                         } else {
                             fn_env.insert(param.node.name.clone(), ty.clone());
                         }
@@ -1135,7 +1167,11 @@ fn check_expr(
                                     )]
                                 })?;
                             } else {
-                                if !Type::is_subtype(&declared, expected_ret) {
+                                let sub_passes = Type::is_subtype(&declared, expected_ret)
+                                    || ((contains_unknown_or_top(&declared)
+                                        || contains_unknown_or_top(expected_ret))
+                                        && Type::is_consistent(&declared, expected_ret));
+                                if !sub_passes {
                                     return Err(vec![TypeError::type_mismatch(
                                         expected_ret,
                                         &declared,
@@ -1197,7 +1233,17 @@ fn check_expr(
     } else {
         (state.subst.apply(&actual), state.subst.apply(expected))
     };
-    if !Type::is_subtype(&actual, &expected_resolved) {
+    // Subsumption check with gradual typing fallback.
+    // Use is_subtype for standard HM subsumption. When is_subtype fails and either type
+    // contains Unknown (gradual ?) anywhere in its structure, fall back to is_consistent.
+    // The gradual guarantee requires that making types less precise (adding ?) never
+    // causes new type errors (Siek & Taha 2006). We only use the consistency fallback
+    // when Unknown is present, because is_consistent is symmetric (Number ~ Int) while
+    // is_subtype is directional (Int <: Number but NOT Number <: Int).
+    let passes = Type::is_subtype(&actual, &expected_resolved)
+        || ((contains_unknown_or_top(&actual) || contains_unknown_or_top(&expected_resolved))
+            && Type::is_consistent(&actual, &expected_resolved));
+    if !passes {
         Err(vec![TypeError::type_mismatch(
             &expected_resolved,
             &actual,
@@ -1304,7 +1350,7 @@ fn infer_dict(
                             entry.node.value.span,
                         ) {
                             errors.push(e);
-                            field_types.insert(name.clone(), Type::Any);
+                            field_types.insert(name.clone(), Type::Unknown);
                         } else {
                             field_types.insert(name.clone(), value_ty);
                         }
@@ -1314,14 +1360,14 @@ fn infer_dict(
                 }
                 Err(mut errs) => {
                     errors.append(&mut errs);
-                    field_types.insert(name.clone(), Type::Any);
+                    field_types.insert(name.clone(), Type::Unknown);
                     // Populate type_map with Any for LSP hover on failed dict value expressions
                     if let Some(ref mut map) = type_map {
                         let key = (
                             entry.node.value.span.start.offset,
                             entry.node.value.span.end.offset,
                         );
-                        map.insert(key, Type::Any);
+                        map.insert(key, Type::Unknown);
                     }
                 }
             }
@@ -1599,8 +1645,8 @@ fn check_dot_access(
 
             Ok(beta)
         }
-        Type::Any => Ok(Type::Any),
-        Type::Proxy => Ok(Type::Any),
+        Type::Unknown => Ok(Type::Unknown),
+        Type::Proxy => Ok(Type::Unknown),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -1687,8 +1733,8 @@ fn check_dot_access_int(
             result.map_err(|e| vec![e])?;
             Ok(beta)
         }
-        Type::Any => Ok(Type::Any),
-        Type::Proxy => Ok(Type::Any),
+        Type::Unknown => Ok(Type::Unknown),
+        Type::Proxy => Ok(Type::Unknown),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -1861,7 +1907,7 @@ fn check_call_with_scheme(
                 }
             }
         }
-        Type::Any => {
+        Type::Unknown => {
             // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
             // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
             // already inferred exactly once in CALL-POLY (infer_expr at line 934).
@@ -1871,7 +1917,7 @@ fn check_call_with_scheme(
             for arg in args {
                 let _ = infer_expr(arg, env, state, type_map);
             }
-            Ok(Type::Any)
+            Ok(Type::Unknown)
         }
         _ => Err(vec![TypeError::not_a_function(&func_ty, func_span)]),
     }
@@ -2129,9 +2175,9 @@ fn check_call(
             for arg in args {
                 let _ = infer_expr(arg, env, state, type_map);
             }
-            Ok(Type::Any)
+            Ok(Type::Unknown)
         }
-        Type::Any => {
+        Type::Unknown => {
             // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
             // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
             // already inferred exactly once in CALL-MONO (check_expr at line 1011) or CALL-POLY (infer_expr).
@@ -2141,7 +2187,7 @@ fn check_call(
             for arg in args {
                 let _ = infer_expr(arg, env, state, type_map);
             }
-            Ok(Type::Any)
+            Ok(Type::Unknown)
         }
         _ => Err(vec![TypeError::not_a_function(&func_ty, span)]),
     }
@@ -2160,7 +2206,7 @@ fn infer_fn(
     // cross-contamination of type variables.
     // Only allocate if any param has an annotation or there's a return annotation.
     // This guard is a performance optimization only: if there are no annotations,
-    // resolve_annotation is never called (it receives Type::Any directly), so an empty
+    // resolve_annotation is never called (it receives Type::Unknown directly), so an empty
     // HashMap would never be consulted. Skipping allocation has no behavior impact.
     let has_annotations =
         params.iter().any(|p| p.node.annotation.is_some()) || return_ann.is_some();
@@ -2191,7 +2237,7 @@ fn infer_fn(
                 &mut ann_mapping_opt,
                 &mut row_ann_mapping_opt,
             ),
-            None => Ok(Type::Any),
+            None => Ok(Type::Unknown),
         })
         .collect::<Result<_, _>>()
         .map_err(|e| vec![e])?;
@@ -2199,7 +2245,7 @@ fn infer_fn(
     let mut fn_env = TypeEnv::with_parent(env);
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
-            let variadic_ty = Type::Any;
+            let variadic_ty = Type::Unknown;
             // Variadic params accept arbitrary fields, typed as Any.
             // Update param_types[i] to match the env binding so the function signature is accurate.
             param_types[i] = variadic_ty.clone();
@@ -2278,7 +2324,7 @@ fn expand_type_alias(
         &mut Some(&mut alias_ann_map),
         &mut Some(&mut alias_row_map),
     )?;
-    Ok(Type::Any)
+    Ok(Type::Unknown)
 }
 
 fn resolve_type_assert(
@@ -2334,7 +2380,11 @@ fn resolve_type_assert(
                 } else {
                     (state.subst.apply(&default_ty), state.subst.apply(&expected))
                 };
-                if !Type::is_subtype(&default_ty, &expected_resolved) {
+                let passes = Type::is_subtype(&default_ty, &expected_resolved)
+                    || ((contains_unknown_or_top(&default_ty)
+                        || contains_unknown_or_top(&expected_resolved))
+                        && Type::is_consistent(&default_ty, &expected_resolved));
+                if !passes {
                     return Err(vec![TypeError::new(
                         format!(
                             "default value type mismatch: default has type {default_ty}, \
@@ -2530,7 +2580,7 @@ fn resolve_property_dict_as_record(
         if entries_look_like_type_dict(entries) {
             Err(e)
         } else {
-            Ok(Type::Any)
+            Ok(Type::Unknown)
         }
     })
 }
@@ -2590,8 +2640,8 @@ fn resolve_type_name(
         "String" => Ok(Type::Str),
         "Bool" => Ok(Type::Bool),
         "Number" => Ok(Type::Number),
-        "Any" => Ok(Type::Any),
-        "Seq" => Ok(Type::Seq(Box::new(Type::Any))),
+        "Any" => Ok(Type::Top),
+        "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
         "Null" => Ok(Type::Record(Row {
             fields: HashMap::new(),
             tail: RowTail::Empty,
@@ -2608,16 +2658,16 @@ fn resolve_type_name(
             }))
         }
         "Fn" => {
-            // Return Type::Any to represent "any callable". The previous encoding
+            // Return Type::Unknown to represent "any callable". The previous encoding
             // (Function { params: vec![], ret: Any, variadic: true }) could not unify
             // with ANY concrete function type because unification requires exact param
             // count and variadic flag match, producing false type errors for ~50 prelude
-            // functions annotated with @Fn. Type::Any accepts all values at both
+            // functions annotated with @Fn. Type::Unknown accepts all values at both
             // type-check time and runtime TypeAssert — no callability check is performed
             // at the annotation site. Callability is enforced at the call site
             // (NotAFunction error), not here. This trades static @Fn enforcement for
             // eliminating false type errors in prelude functions.
-            Ok(Type::Any)
+            Ok(Type::Unknown)
         }
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
@@ -3662,7 +3712,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Any]);
+                assert_eq!(params, vec![Type::Unknown]);
                 assert_eq!(*ret, Type::IntLiteral(42));
             }
             other => panic!("expected Function, got {other}"),
@@ -3725,7 +3775,7 @@ mod tests {
         //
         // check_call_with_scheme is only reached for polymorphic schemes (non-empty
         // type_vars or row_vars). The `_` arm fires when the instantiated body is
-        // neither Type::Function nor Type::Any. We construct such a scheme directly:
+        // neither Type::Function nor Type::Unknown. We construct such a scheme directly:
         // ∀a. Int — polymorphic (has type_vars) but body is Int (not a function).
         // After instantiate_scheme, the body is still Int (no substitution to apply),
         // so the `_` arm fires and produces "expected function type".
@@ -3864,12 +3914,12 @@ mod tests {
 
     #[test]
     fn test_seq_annotation_bare() {
-        // Bare @Seq resolves to Type::Seq(Type::Any) in resolve_type_name
+        // Bare @Seq resolves to Type::Seq(Type::Unknown) in resolve_type_name
         // Test via parameter annotation which uses resolve_annotation
         let ty = infer("[fn [xs@Seq] $xs]");
         match ty {
             Type::Function { params, .. } => {
-                assert_eq!(params[0], Type::Seq(Box::new(Type::Any)));
+                assert_eq!(params[0], Type::Seq(Box::new(Type::Unknown)));
             }
             other => panic!("expected Function, got {other}"),
         }
@@ -4331,7 +4381,7 @@ mod tests {
                 &mut None
             )
             .unwrap(),
-            Type::Any
+            Type::Unknown
         );
     }
 
@@ -4411,7 +4461,7 @@ mod tests {
                 &mut None
             )
             .unwrap(),
-            Type::Any
+            Type::Unknown
         );
     }
 
@@ -4909,19 +4959,19 @@ mod tests {
 
     #[test]
     fn test_bare_fn_annotation_resolves_to_any() {
-        // `@Fn` in parameter position resolves to Type::Any (not a concrete Function
+        // `@Fn` in parameter position resolves to Type::Unknown (not a concrete Function
         // type), so that higher-order functions annotated with @Fn don't produce false
         // type errors when unified with concrete function types.
         // [fn [f@Fn] $f] should infer without type errors.
         let ty = infer("[fn [f@Fn] $f]");
-        // The outer lambda infers as a Function type whose first parameter is Type::Any
+        // The outer lambda infers as a Function type whose first parameter is Type::Unknown
         // (the @Fn annotation must resolve to Any, not a pseudo-Function type).
         match ty {
             Type::Function { params, .. } => {
                 assert_eq!(
                     params,
-                    vec![Type::Any],
-                    "@Fn param must resolve to Type::Any, not a pseudo-Function type"
+                    vec![Type::Unknown],
+                    "@Fn param must resolve to Type::Unknown, not a pseudo-Function type"
                 );
             }
             other => panic!("expected Function, got {other}"),
@@ -4931,7 +4981,7 @@ mod tests {
     #[test]
     fn test_bare_fn_annotation_no_false_type_error() {
         // Passing a concrete function to an @Fn-annotated parameter must not produce
-        // spurious type errors from attempting to unify Type::Any with a concrete
+        // spurious type errors from attempting to unify Type::Unknown with a concrete
         // Function type — the two are compatible under Any semantics.
         // [fn [pred@Fn] [pred 42]] applied with a concrete function for pred.
         let result = check("[result: [[fn [pred@Fn] [pred 42]] [fn [x@Number] $x]]]");
@@ -5895,7 +5945,7 @@ mod tests {
                             "mutually recursive a and b should have same level"
                         );
                     }
-                    (Type::Any, Type::Any) => {
+                    (Type::Unknown, Type::Unknown) => {
                         // Both Any is also valid (error recovery path)
                     }
                     _ => panic!(
@@ -5922,7 +5972,7 @@ mod tests {
                 // Pass 3b constraint unification resolves β through the γ_data collision.
                 let result_ty = fields.get("result").expect("field 'result' should exist");
                 assert!(
-                    !matches!(result_ty, Type::Any),
+                    !matches!(result_ty, Type::Unknown),
                     "expected resolved type for constrained dot access field, got Any"
                 );
                 assert!(
@@ -6479,7 +6529,7 @@ mod tests {
         // This was fixed in the bidirectional-typing-b sprint.
         //
         // Practically, zero-arity polymorphic functions in LLT are rare:
-        //   - Unannotated params get Type::Any (monomorphic path, no type vars).
+        //   - Unannotated params get Type::Unknown (monomorphic path, no type vars).
         //   - Annotated type-var params require at least one param (by definition).
         //   - [fn@a [] body] fails to type-check because body type ≮ TypeVar a.
         //
@@ -6567,7 +6617,7 @@ mod tests {
     #[test]
     fn test_lambda_param_inference_from_context() {
         // When checking lambda against Fn(Int → Int), unannotated param gets Int
-        // Uses Fn@ReturnType [params] syntax to get a real function type, not Type::Any
+        // Uses Fn@ReturnType [params] syntax to get a real function type, not Type::Unknown
         assert!(check("[result: [@[Fn@Int [Int]] [fn [x] $x]]]").is_ok());
     }
 
@@ -6928,22 +6978,22 @@ mod tests {
         );
     }
 
-    // -- Type::Any callee positional arg type_map population --
+    // -- Type::Unknown callee positional arg type_map population --
 
     #[test]
     fn test_call_any_callee_populates_type_map_for_positional_args() {
-        // Regression test for the Type::Any arm in check_call and check_call_with_scheme.
+        // Regression test for the Type::Unknown arm in check_call and check_call_with_scheme.
         //
-        // When the callee resolves to Type::Any (e.g., a variable bound to Any in the env),
+        // When the callee resolves to Type::Unknown (e.g., a variable bound to Any in the env),
         // positional arguments must still be inferred and recorded in type_map — otherwise
         // LSP hover over argument expressions in Any-typed calls produces no type information.
         //
         // The fix (typecheck.rs check_call ~1050, check_call_with_scheme ~900) added an
-        // `infer_expr` loop inside the Type::Any arm only. This test guards that loop:
+        // `infer_expr` loop inside the Type::Unknown arm only. This test guards that loop:
         // if it were removed, the span of `42` would not appear in type_map and the assertion
         // below would fail.
         //
-        // SETUP: `f` is bound to TypeScheme::mono(Type::Any) in the parent env, simulating
+        // SETUP: `f` is bound to TypeScheme::mono(Type::Unknown) in the parent env, simulating
         // any runtime-typed or externally-typed callable (e.g., a function loaded from JSON,
         // an FFI binding, or a value whose type cannot be statically determined). The call
         // `[call $f 42]` exercises check_call via the monomorphic (empty type_vars) path.
@@ -6953,7 +7003,7 @@ mod tests {
 
         // Build a parent env with `f: Any` — monomorphic scheme, empty type_vars.
         let mut parent_env = TypeEnv::new();
-        parent_env.insert_scheme("f".to_string(), TypeScheme::mono(Type::Any));
+        parent_env.insert_scheme("f".to_string(), TypeScheme::mono(Type::Unknown));
         let parent_env = Rc::new(parent_env);
 
         let mut state = InferState::new();
@@ -6965,8 +7015,8 @@ mod tests {
         // The call to an Any-typed function returns Any.
         assert_eq!(
             result,
-            Ok(Type::Any),
-            "calling Any-typed callee should return Type::Any, got: {result:?}"
+            Ok(Type::Unknown),
+            "calling Any-typed callee should return Type::Unknown, got: {result:?}"
         );
 
         // Extract the span of the `42` argument from the parsed AST to look it up in type_map.
@@ -6981,7 +7031,7 @@ mod tests {
             other => panic!("expected Expr::Call, got {other:?}"),
         };
 
-        // The span of `42` must appear in type_map: the Type::Any arm must have inferred it.
+        // The span of `42` must appear in type_map: the Type::Unknown arm must have inferred it.
         assert!(
             type_map.contains_key(&arg_span),
             "type_map should contain the span of `42` (span {arg_span:?}) after calling an Any-typed function, \
@@ -7061,7 +7111,7 @@ mod tests {
             Type::Function { params, .. } => {
                 assert_eq!(params.len(), 1, "variadic function should have 1 param");
                 assert!(
-                    matches!(&params[0], Type::Any),
+                    matches!(&params[0], Type::Unknown),
                     "variadic param should have type Any, got: {:?}",
                     params[0]
                 );
@@ -7083,7 +7133,7 @@ mod tests {
                 );
                 // Third param (variadic) must be Any
                 assert!(
-                    matches!(&params[2], Type::Any),
+                    matches!(&params[2], Type::Unknown),
                     "variadic param 'rest' should have type Any, got: {:?}",
                     params[2]
                 );
@@ -7103,7 +7153,7 @@ mod tests {
         match ty {
             Type::Function { ret, .. } => {
                 assert!(
-                    matches!(ret.as_ref(), Type::Any),
+                    matches!(ret.as_ref(), Type::Unknown),
                     "function returning variadic param should have Any return type, got: {ret:?}"
                 );
             }
@@ -7549,7 +7599,7 @@ mod tests {
         // The result of calling a forward-referenced function is Any (conservative).
         let ty = result_field("[result: [call $f 42]  f: [fn [x] $x]]", "result");
         // result is Any because $f was a TypeVar when check_call ran
-        assert_eq!(ty, Type::Any);
+        assert_eq!(ty, Type::Unknown);
     }
 
     #[test]
@@ -7567,7 +7617,7 @@ mod tests {
         let ty = result_field("[f: [fn [x] $x]  result: [call $f 42]]", "result");
         assert_eq!(
             ty,
-            Type::Any,
+            Type::Unknown,
             "call to forward-referenced function in same letrec returns Any (TypeVar arm)"
         );
     }
