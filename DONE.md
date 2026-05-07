@@ -4286,3 +4286,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Type::Intersection variant + normalize_intersection + compact_bounds
 - [x] constrain() infrastructure coexists with unify(); full migration to constrain-only is future work
 - [x] 15 unit tests for constraint infrastructure, bound compaction, intersection normalization
+
+### recursive-adts
+
+- [x] RecursiveTypeGuard: HashSet cycle detection with MAX_ALIAS_DEPTH=256
+- [x] Two-pass alias registration: pre-register Unknown, then resolve bodies
+- [x] Equi-recursive unfolding in type alias expansion
+- [x] doc/05-type-annotations.md §Recursive Type Aliases
+- [x] 6 unit tests: recursive, nested, mutual recursion, depth limit

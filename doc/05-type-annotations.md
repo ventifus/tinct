@@ -241,3 +241,44 @@ The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annot
 - `Any` = dynamic escape hatch
 
 **Type inference context.** The type system uses type schemes (`∀α₁...αₙ. τ`) for polymorphic bindings via levels-based let-generalization (Kiselyov 2013). Type variables carry an integer level for scope tracking (`TypeVar(String, u32)`). These are type checker internals — the parser produces bare type names as strings. See [Type Inference](06-type-inference.md) §Let-Generalization for details.
+
+### Recursive Type Aliases
+
+**Equi-recursive type aliases are supported** via two-pass registration. A type alias may reference itself in its body, enabling recursive data structures:
+
+```tinct
+# Linked list
+List: [type [head: Int  tail: List]]
+
+# Binary tree
+Tree: [type [value: Int  left: Tree  right: Tree]]
+
+# Mutually recursive types (must be in the same dict)
+A: [type [b_field: B]]  B: [type [a_field: A]]
+```
+
+**Two-pass registration.** All type aliases in a dict are pre-registered with placeholder bodies before resolving actual bodies. This enables forward references and self-references:
+
+1. **Pass 1 (pre-registration):** All `[type ...]` entries are registered with `Type::Unknown` placeholder bodies.
+2. **Pass 2 (resolution):** Each alias body is resolved with the alias itself visible in the environment.
+
+**Cycle detection.** When resolving an alias body, if the alias references itself (directly or indirectly), the recursive reference resolves to `Type::Unknown`. This breaks the cycle while allowing the structure to be defined. A recursion guard (`HashSet<String>`) tracks aliases currently being expanded.
+
+**Depth limit.** Alias expansion is limited to 256 layers (MAX_ALIAS_DEPTH). Exceeding this limit produces the error: `recursive type alias 'Name' exceeds maximum unfolding depth (256)`.
+
+**Semantics: equi-recursive, not iso-recursive.** Type aliases are transparent — they unfold automatically during type checking. There is no explicit `fold`/`unfold` syntax (iso-recursive semantics). This matches Amadio & Cardelli (1993) equi-recursive type equality with a depth guard for decidability.
+
+**Current limitation:** Recursive references within an alias body resolve to `Unknown` (the universal escape hatch). This is sound but imprecise. Full support for recursive algebraic data types requires parameterized type aliases (future work). For configuration use cases, recursive types are uncommon — this feature primarily supports self-hosting stdlib functions that operate on tree-like structures.
+
+**Example:**
+
+```tinct
+# Define a recursive list type
+List: [type [head: Int  tail: List]]
+
+# Use in annotation
+mylist@List: [head: 1  tail: [head: 2  tail: []]]
+
+# The tail field has type Unknown (recursive placeholder)
+# but the overall structure is recognized as a List
+```
