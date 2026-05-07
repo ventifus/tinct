@@ -194,6 +194,9 @@ fn reset_expr(expr: &Spanned<Expr>) {
         Expr::Match { scrutinee, arms } => {
             reset_expr(scrutinee);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    reset_expr(guard);
+                }
                 reset_expr(&arm.body);
             }
         }
@@ -1327,12 +1330,16 @@ fn infer_expr(
         }
 
         Expr::Match { scrutinee, arms } => {
-            // Basic match support: infer scrutinee type and all arm body types.
+            // Basic match support: infer scrutinee type, guards, and all arm body types.
             // Type the match expression as Any for now (full type narrowing comes in later phases).
             let _scrutinee_ty = infer_expr(scrutinee, env, state, type_map)?;
 
-            // Infer each arm body's type (patterns don't affect types in this basic implementation)
+            // Infer each arm's guard (if present) and body type
+            // (patterns don't affect types in this basic implementation)
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    let _guard_ty = infer_expr(guard, env, state, type_map)?;
+                }
                 let _arm_ty = infer_expr(&arm.body, env, state, type_map)?;
             }
 

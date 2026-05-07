@@ -252,6 +252,9 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Spanned<Pattern>,
+    /// Optional guard expression — evaluated after pattern matching succeeds.
+    /// If the guard returns a falsy value, try the next arm.
+    pub guard: Option<Box<Spanned<Expr>>>,
     pub body: Box<Spanned<Expr>>,
 }
 
@@ -288,6 +291,9 @@ pub enum Pattern {
         tag: String,
         binding: Option<Box<Spanned<Pattern>>>,
     },
+    /// Or-pattern — matches if any sub-pattern matches
+    /// Both branches must bind the same set of variables
+    Or(Vec<Spanned<Pattern>>),
 }
 
 /// Literal pattern values
@@ -522,6 +528,15 @@ impl fmt::Display for Pattern {
                 } else {
                     write!(f, "{}", tag)
                 }
+            }
+            Pattern::Or(patterns) => {
+                for (i, pat) in patterns.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}", pat.node)?;
+                }
+                Ok(())
             }
         }
     }

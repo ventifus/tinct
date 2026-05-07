@@ -1,0 +1,5 @@
+[match 10
+    n@[is: [and [> n 5] [< n 15]]]   i"in range: $n"
+    _                                 "out of range"]
+===
+String("in range: 10")
