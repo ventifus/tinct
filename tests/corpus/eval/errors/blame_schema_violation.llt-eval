@@ -1,0 +1,7 @@
+# Pipeline blame: type assertion failure at pipeline boundary
+# Second stage expects Int via TypeAssert but receives a Dict
+[x: 1]
+---
+[@Int %]
+===
+[E011] type assertion failed: expected Int, got Dict

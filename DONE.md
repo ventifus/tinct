@@ -4324,3 +4324,12 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Human-readable output: one line per field with merged constraints
 - [x] JSON output mode: `tinct describe --json file.llt` emits machine-readable contract
 - [x] 4 CLI tests: no contract, JSON no contract, schema dict detection, human-readable output
+
+### structural-contracts-blame
+
+- [x] Pipeline stage tagging: blame_map: RefCell<HashMap<ThunkId, String>> on EvalContext
+- [x] Contract violation enrichment: PipelineBlame struct with producer/consumer identification
+- [x] Positive/negative party identification per Findler & Felleisen (2002) in error Display
+- [x] Hints in error messages for TypeAssertFailed, TypeMismatch, SchemaViolation
+- [x] blame_map recording at pipeline boundaries in multi-file CLI pipeline
+- [x] 2 corpus tests: blame_type_violation, blame_schema_violation

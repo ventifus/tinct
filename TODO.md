@@ -76,16 +76,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
 
-### `structural-contracts-blame`
-
-See doc/10-errors.md §Pipeline Blame. **Depends on:** `structural-contracts-describe` (SC Ph3), `blame-tracking` (D4).
-
-- [ ] Pipeline stage tagging: add `blame_map: RefCell<HashMap<ThunkId, String>>` to `EvalContext`; at each `---` boundary, record the producing stage's file path/index keyed on the `%` thunk's ID (avoids `Value::Tagged` variant which would require updating all exhaustive `Value` matches) (`src/eval.rs`, `src/lib.rs`)
-- [ ] Contract violation enrichment: when `validate` or `%@Type` check fails, include stage label in error: "Produced by: data.llt, line 3" (`src/error.rs`)
-- [ ] Positive/negative party identification per Findler & Felleisen (2002): producing stage is positive party (blamed for wrong output shape), consuming stage is negative party (blamed for wrong contract) (`src/error.rs`)
-- [ ] Hints in error messages: suggest `[@Int %.port]` cast or "fix the producing stage" based on mismatch direction (`src/error.rs`)
-- [ ] Tests: blame attribution for type violations at `---` boundary; schema constraint violations; multi-stage pipeline chain; hints accurate to the mismatch (`tests/corpus/eval/errors/`)
-
 ### `numeric-range`
 
 See doc/05-type-annotations.md §Range Annotations, doc/whatif/numeric-types.md Phase 1. **Depends on:** None (stdlib-only).

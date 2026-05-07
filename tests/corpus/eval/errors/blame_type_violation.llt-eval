@@ -1,0 +1,7 @@
+# Pipeline blame: type violation at --- boundary
+# First stage produces a string, second stage expects Int
+"not-a-number"
+---
+[@Int %]
+===
+[E011] type assertion failed: expected Int, got String
