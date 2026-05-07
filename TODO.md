@@ -4,23 +4,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Infrastructure
-
-### `rust-modernize`
-
-Adopt new Rust 1.87–1.95 language and stdlib features available at the new MSRV. These are independent follow-on refactors; each is a quality-of-life improvement, not a correctness fix.
-
-- [ ] **Let-chains** (stable 1.88, edition 2021): replace `if let Some(x) = foo { if cond { … } }` patterns with `if let Some(x) = foo && cond { … }` throughout `src/eval.rs` and `src/typecheck.rs` (`src/eval.rs`, `src/typecheck.rs`)
-- [ ] **`Result::flatten()`** (stable 1.89): replace `match { Ok(Ok(x)) => …, Ok(Err(e)) => … }` and `.map(…).unwrap_or_else(…)` double-result patterns in `src/eval.rs` and `src/builtins.rs` (`src/eval.rs`, `src/builtins.rs`)
-- [ ] **`File::lock()` / `try_lock()`** (stable 1.89): add advisory file locking in `builtin_write_atomic` in `src/builtins_io.rs` as an optional stronger-exclusion hint alongside the existing temp+rename strategy (`src/builtins_io.rs`)
-- [ ] **`str::ceil_char_boundary` / `floor_char_boundary`** (stable 1.91): replace manual `.char_indices()` + `.next_back()` UTF-8 boundary calculations in `src/lexer.rs` and `src/parser.rs` (`src/lexer.rs`, `src/parser.rs`)
-- [ ] **`Path::file_prefix()`** (stable 1.91): replace manual `file_stem()` + extension-stripping in `find_libdir_path()` in `src/main.rs` (`src/main.rs`)
-- [ ] **`HashMap::extract_if`** (stable 1.88): replace `retain`+`remove` two-pass patterns where they appear in dict evaluation and builtin helpers (`src/eval_dict.rs`, `src/builtins_dict.rs`)
-- [ ] **`Peekable::next_if_map()`** (stable 1.94): replace peek-then-advance patterns in `src/lexer.rs` and `src/parser.rs` (`src/lexer.rs`, `src/parser.rs`)
-- [ ] **`cfg_select!` macro** (stable 1.95): simplify the `#[cfg(target_arch)]` chain in `setup_seccomp()` in `src/main.rs` (`src/main.rs`)
-- [ ] **`OsStr::display()`** (stable 1.87): replace `.to_string_lossy()` calls on path components in error messages in `src/main.rs` (`src/main.rs`)
-- [ ] **`LazyLock` for stdlib env cache**: when implementing `typecheck-import-env`, prefer `LazyLock<Rc<TypeEnv>>` over `OnceLock` for the prelude env cache in `src/imports.rs` if the closure form is cleaner; note that `LazyLock::get()` / `force_mut()` are stable at 1.94 (`src/imports.rs`)
-
 ## Type Checking Infrastructure
 
 ### `typecheck-import-env`
@@ -35,6 +18,7 @@ All import resolution logic lives in a new `src/imports.rs`. The LSP replaces it
 
 - [ ] Add `src/imports.rs` with `pub fn build_prelude_env() -> Rc<TypeEnv>`: parse the embedded `include_str!("../stdlib/prelude.llt")` source, run `expand_macros` + `desugar_file`, then `typecheck_file_with_types_and_env` seeded with `TypeEnv::with_builtins()`; walk the resulting `TypeMap` to extract top-level binding names and their inferred types; extend `TypeEnv::with_builtins()` with those bindings; cache the result in a `std::sync::OnceLock<Rc<TypeEnv>>` so it is built once per process (`src/imports.rs`)
 - [ ] `build_prelude_env()` must tolerate prelude-internal type warnings without failing — it returns the best available env even if some prelude functions have unresolved type vars; log nothing to stderr (callers don't want noise) (`src/imports.rs`)
+- [ ] **`LazyLock` for stdlib env cache** (from `rust-modernize`): prefer `LazyLock<Rc<TypeEnv>>` over `OnceLock` for the prelude env cache in `src/imports.rs` if the closure form is cleaner; note that `LazyLock::get()` / `force_mut()` are stable at 1.94 (`src/imports.rs`)
 
 **Include path collection (moved from LSP):**
 
