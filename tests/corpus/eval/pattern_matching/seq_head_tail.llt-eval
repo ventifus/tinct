@@ -1,0 +1,6 @@
+# Seq pattern: match head and tail
+[match [seq 1 [seq 2 [seq 3 []]]]
+    [seq h t]  h
+    _          0]
+===
+Int(1)

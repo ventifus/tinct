@@ -253,6 +253,15 @@ impl Resolver {
             Expr::DefMacro { transformer, .. } => {
                 self.walk_expr(transformer);
             }
+            // Match: resolve variables in scrutinee and arm bodies.
+            // Patterns don't contain runtime variable references (except Pin patterns,
+            // which we don't support yet).
+            Expr::Match { scrutinee, arms } => {
+                self.walk_expr(scrutinee);
+                for arm in arms {
+                    self.walk_expr(&arm.body);
+                }
+            }
             // Literals have no child expressions
             Expr::Int(_)
             | Expr::Float(_)

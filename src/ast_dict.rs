@@ -842,6 +842,66 @@ fn pattern_to_thunk_id(
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(value, span))),
             );
         }
+        Pattern::Dict { fields, rest } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("dict".into()),
+                    span,
+                ))),
+            );
+            // Convert fields to a dict
+            let mut fields_dict = IndexMap::new();
+            for (i, (key, pat)) in fields.iter().enumerate() {
+                let mut field_dict = IndexMap::new();
+                field_dict.insert(
+                    Key::String("key".into()),
+                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        Value::String(key.clone()),
+                        pat.span,
+                    ))),
+                );
+                field_dict.insert(
+                    Key::String("pattern".into()),
+                    pattern_to_thunk_id(&pat.node, pat.span, ctx)?,
+                );
+                fields_dict.insert(
+                    Key::String(i.to_string()),
+                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        Value::Dict(field_dict),
+                        pat.span,
+                    ))),
+                );
+            }
+            dict.insert(
+                Key::String("fields".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(fields_dict),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("rest".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(*rest), span))),
+            );
+        }
+        Pattern::Seq { head, tail } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("seq".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("head".into()),
+                pattern_to_thunk_id(&head.node, head.span, ctx)?,
+            );
+            dict.insert(
+                Key::String("tail".into()),
+                pattern_to_thunk_id(&tail.node, tail.span, ctx)?,
+            );
+        }
     }
 
     Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))

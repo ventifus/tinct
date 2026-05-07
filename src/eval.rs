@@ -854,7 +854,12 @@ pub(crate) fn eval_recursive(
         .into()),
         Expr::Match { scrutinee, arms } => {
             // Evaluate the scrutinee and materialize it
-            let scrutinee_thunk = eval(Rc::new(scrutinee.as_ref().clone()), Rc::clone(&env), ctx, depth + 1)?;
+            let scrutinee_thunk = eval(
+                Rc::new(scrutinee.as_ref().clone()),
+                Rc::clone(&env),
+                ctx,
+                depth + 1,
+            )?;
             let scrutinee_value =
                 materialize(&scrutinee_thunk, Some(&scrutinee.span), ctx, depth + 1)?;
 
@@ -1914,6 +1919,108 @@ fn match_pattern(
                 Ok(Some(Rc::clone(env)))
             } else {
                 Ok(None)
+            }
+        }
+        Pattern::Dict { fields, rest } => {
+            // Dict pattern: match dict by keys, bind values to pattern variables
+            // Only force the fields that are matched — other fields stay as thunks
+            match value {
+                Value::Dict(dict_thunk_ids) => {
+                    // Start with the current environment
+                    let mut result_env =
+                        Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+
+                    // Check each pattern field
+                    for (key, field_pattern) in fields {
+                        // Look up the field in the dict
+                        if let Some(field_thunk_id) = dict_thunk_ids.get(&Key::String(key.clone()))
+                        {
+                            // Force the field value
+                            let field_thunk = ctx.get_thunk(*field_thunk_id);
+                            let field_value = materialize(&field_thunk, Some(value_span), ctx, 0)?;
+
+                            // Recursively match the field pattern
+                            match match_pattern(
+                                &field_pattern.node,
+                                &field_value,
+                                &result_env,
+                                &field_pattern.span,
+                                ctx,
+                            )? {
+                                Some(new_env) => {
+                                    result_env = new_env;
+                                }
+                                None => {
+                                    // Field pattern didn't match
+                                    return Ok(None);
+                                }
+                            }
+                        } else {
+                            // Required field not present in dict
+                            return Ok(None);
+                        }
+                    }
+
+                    // If rest is false (closed matching), check for extra keys
+                    if !rest {
+                        let pattern_keys: std::collections::HashSet<&str> =
+                            fields.iter().map(|(k, _)| k.as_str()).collect();
+                        for dict_key in dict_thunk_ids.keys() {
+                            let key_matches = match dict_key {
+                                Key::String(s) => pattern_keys.contains(s.as_str()),
+                                Key::Int(_) => false,
+                            };
+                            if !key_matches {
+                                // Extra key found in closed matching mode
+                                return Ok(None);
+                            }
+                        }
+                    }
+
+                    Ok(Some(result_env))
+                }
+                _ => {
+                    // Value is not a dict
+                    Ok(None)
+                }
+            }
+        }
+        Pattern::Seq { head, tail } => {
+            // Seq pattern: match Value::Seq, force head, bind tail
+            match value {
+                Value::Seq {
+                    head: head_thunk_id,
+                    tail: tail_thunk_id,
+                } => {
+                    // Force the head value
+                    let head_thunk = ctx.get_thunk(*head_thunk_id);
+                    let head_value = materialize(&head_thunk, Some(value_span), ctx, 0)?;
+
+                    // Match the head pattern
+                    let mut result_env =
+                        Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+                    match match_pattern(&head.node, &head_value, &result_env, &head.span, ctx)? {
+                        Some(new_env) => {
+                            result_env = new_env;
+                        }
+                        None => {
+                            // Head pattern didn't match
+                            return Ok(None);
+                        }
+                    }
+
+                    // Force the tail value and match against the tail pattern
+                    let tail_thunk = ctx.get_thunk(*tail_thunk_id);
+                    let tail_value = materialize(&tail_thunk, Some(value_span), ctx, 0)?;
+                    match match_pattern(&tail.node, &tail_value, &result_env, &tail.span, ctx)? {
+                        Some(new_env) => Ok(Some(new_env)),
+                        None => Ok(None),
+                    }
+                }
+                _ => {
+                    // Value is not a Seq
+                    Ok(None)
+                }
             }
         }
     }

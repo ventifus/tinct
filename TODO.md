@@ -4,25 +4,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Phase A: Foundations
-
-### `pattern-matching-destructure`
-
-**Depends on:** `pattern-matching-basic` (A2), `let-binding` (A1) for multi-expression arm bodies
-**Spec chapters:** `doc/02-syntax.md` (§Structural Patterns — dict/seq/nested patterns, path-key desugar), `doc/08-evaluation.md` (§Structural Pattern Matching — lazy dict forcing, recursive binding)
-
-1. `Pattern::Dict` with field patterns and `rest` flag
-2. `Pattern::Seq` with head/tail patterns
-3. Nested pattern support (patterns inside patterns)
-4. Evaluator: recursive pattern matching with environment extension
-5. Lazy dict matching (only matched keys forced)
-6. Seq matching (force head, bind tail thunk)
-7. Tests: 10+ corpus tests (dict destructure, nested destructure,
-   seq head/tail, open vs closed dict matching, lazy field access,
-   `try` result handling)
-
----
-
 ## Phase B: Type System Primitives
 
 ### `union-types`

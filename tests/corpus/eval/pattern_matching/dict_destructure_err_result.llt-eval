@@ -1,0 +1,6 @@
+[match [err: "failure"]
+    [ok: v]     v
+    [err: msg]  msg
+    _           "unknown"]
+===
+String("failure")

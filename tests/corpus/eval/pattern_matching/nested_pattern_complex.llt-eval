@@ -1,0 +1,6 @@
+# Complex nested pattern
+[match [type: "click"  target: [id: "button1"  class: "primary"]]
+    [type: "click"  target: [id: id]]  id
+    _                                   "unknown"]
+===
+String("button1")
