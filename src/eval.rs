@@ -331,6 +331,12 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
                 .iter()
                 .any(|member| value_matches_type(value, member))
         }
+        Type::Intersection(members) => {
+            // Value matches intersection if it matches ALL member types
+            members
+                .iter()
+                .all(|member| value_matches_type(value, member))
+        }
         // Error is a type-inference sentinel that should never reach runtime validation.
         // Type::Error indicates type inference failed; treating it as a match would mask bugs.
         Type::Error => {

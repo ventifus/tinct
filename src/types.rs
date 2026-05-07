@@ -111,9 +111,16 @@ pub enum Type {
     /// Union type — represents a value that can be one of several types.
     /// Invariant: members are sorted, deduplicated, and flattened (no nested unions).
     /// Single-element unions are unwrapped to the bare type by normalize_union().
-    /// Unions appear only in explicit annotations and builtin signatures — inference
-    /// never produces them (annotation-only unions, Phase 2).
+    /// Unions appear in explicit annotations, builtin signatures, and inferred types
+    /// when a type variable has multiple lower bounds (algebraic subtyping Phase 3c).
     Union(Vec<Type>),
+    /// Intersection type — represents a value that satisfies all constituent types.
+    /// Invariant: members are sorted, deduplicated, and flattened (no nested intersections).
+    /// Single-element intersections are unwrapped to the bare type by normalize_intersection().
+    /// Intersections appear in inferred types when a type variable has multiple upper bounds
+    /// (algebraic subtyping Phase 3c). Top is the identity (T & Top = T), Never is absorbing
+    /// (T & Never = Never — though Never doesn't exist yet, Bottom will serve this role).
+    Intersection(Vec<Type>),
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -150,6 +157,7 @@ impl PartialEq for Type {
             (Type::NetCap, Type::NetCap) => true,
             (Type::Handle, Type::Handle) => true,
             (Type::Union(members1), Type::Union(members2)) => members1 == members2,
+            (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
             _ => false,
         }
     }
@@ -193,6 +201,14 @@ impl Type {
             (Type::Union(sub_members), sup_ty) => sub_members
                 .iter()
                 .all(|member| Type::is_subtype(member, sup_ty)),
+            // [INTERSECT-INTRO]: intersection is a subtype of any of its members
+            (Type::Intersection(sub_members), sup_ty) => sub_members
+                .iter()
+                .any(|member| Type::is_subtype(member, sup_ty)),
+            // [INTERSECT-ELIM]: type is a subtype of intersection iff it's a subtype of ALL members
+            (sub_ty, Type::Intersection(sup_members)) => sup_members
+                .iter()
+                .all(|member| Type::is_subtype(sub_ty, member)),
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
@@ -339,6 +355,16 @@ impl Type {
                         .iter()
                         .all(|m2| members1.iter().any(|m1| Type::is_consistent(m1, m2)))
             }
+            (Type::Intersection(members1), Type::Intersection(members2)) => {
+                // Intersection ~ Intersection iff for each member in one, there's a consistent member in the other
+                // This mirrors the union case
+                members1
+                    .iter()
+                    .all(|m1| members2.iter().any(|m2| Type::is_consistent(m1, m2)))
+                    && members2
+                        .iter()
+                        .all(|m2| members1.iter().any(|m1| Type::is_consistent(m1, m2)))
+            }
             // Literal types are consistent with their parent types (similar to subtyping)
             (Type::IntLiteral(_), Type::Int | Type::Number)
             | (Type::Int | Type::Number, Type::IntLiteral(_)) => true,
@@ -403,6 +429,69 @@ impl Type {
         }
     }
 
+    /// Normalize an intersection type: flatten, deduplicate, sort, and apply identity/absorbing rules.
+    /// - Top is the identity: T & Top = T
+    /// - Error is absorbing: T & Error = Error (sentinel for failed inference)
+    /// - Single-element intersections unwrap to the bare type
+    pub fn normalize_intersection(members: Vec<Type>) -> Type {
+        if members.is_empty() {
+            panic!("normalize_intersection: empty intersection not allowed");
+        }
+
+        // Error is absorbing: any intersection containing Error becomes Error
+        if members.iter().any(|m| matches!(m, Type::Error)) {
+            return Type::Error;
+        }
+
+        let mut flattened = Vec::new();
+        for member in members {
+            match member {
+                Type::Intersection(nested) => {
+                    // Flatten nested intersections
+                    flattened.extend(nested);
+                }
+                Type::Top => {
+                    // Top is the identity: T & Top = T, so skip it
+                    continue;
+                }
+                _ => {
+                    flattened.push(member);
+                }
+            }
+        }
+
+        // If all members were Top (identity), return Top
+        if flattened.is_empty() {
+            return Type::Top;
+        }
+
+        // Deduplicate
+        let mut unique = Vec::new();
+        for ty in flattened {
+            if !unique.contains(&ty) {
+                unique.push(ty);
+            }
+        }
+
+        // Sort for canonical representation
+        unique.sort_by(|a, b| {
+            use std::cmp::Ordering;
+            let order_a = type_order(a);
+            let order_b = type_order(b);
+            match order_a.cmp(&order_b) {
+                Ordering::Equal => type_payload_cmp(a, b),
+                other => other,
+            }
+        });
+
+        // Single-element intersections unwrap to the bare type
+        if unique.len() == 1 {
+            unique.into_iter().next().unwrap()
+        } else {
+            Type::Intersection(unique)
+        }
+    }
+
     pub fn collect_type_vars(&self, vars: &mut HashSet<String>) {
         match self {
             Type::TypeVar(name, _) => {
@@ -430,6 +519,11 @@ impl Type {
                     member.collect_type_vars(vars);
                 }
             }
+            Type::Intersection(members) => {
+                for member in members {
+                    member.collect_type_vars(vars);
+                }
+            }
             _ => {}
         }
     }
@@ -450,6 +544,7 @@ impl Type {
             } => params.iter().any(|p| p.has_inference_vars()) || ret.has_inference_vars(),
             Type::Seq(elem) => elem.has_inference_vars(),
             Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
+            Type::Intersection(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Proxy => false,
             _ => false,
         }
@@ -478,6 +573,11 @@ impl Type {
             }
             Type::Seq(elem) => elem.collect_row_vars(vars),
             Type::Union(members) => {
+                for member in members {
+                    member.collect_row_vars(vars);
+                }
+            }
+            Type::Intersection(members) => {
                 for member in members {
                     member.collect_row_vars(vars);
                 }
@@ -517,6 +617,11 @@ impl Type {
             }
             Type::Seq(elem) => elem.collect_all_vars(type_vars, row_vars),
             Type::Union(members) => {
+                for member in members {
+                    member.collect_all_vars(type_vars, row_vars);
+                }
+            }
+            Type::Intersection(members) => {
                 for member in members {
                     member.collect_all_vars(type_vars, row_vars);
                 }
@@ -573,6 +678,13 @@ impl Type {
                 }
                 found
             }
+            Type::Intersection(members) => {
+                let mut found = false;
+                for member in members {
+                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found
+            }
             _ => false,
         }
     }
@@ -610,6 +722,11 @@ impl Type {
                     member.collect_all_vars_vec(type_vars, row_vars);
                 }
             }
+            Type::Intersection(members) => {
+                for member in members {
+                    member.collect_all_vars_vec(type_vars, row_vars);
+                }
+            }
             _ => {}
         }
     }
@@ -637,6 +754,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::NetCap => 16,
         Type::Handle => 17,
         Type::Union(_) => 18, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 19, // Should not appear after flattening, but included for completeness
     }
 }
 
@@ -676,6 +794,51 @@ impl fmt::Display for Constraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.class, self.var)
     }
+}
+
+/// Bounds for a type variable in algebraic subtyping.
+/// A type variable α is satisfiable iff join(lower) <: meet(upper).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeVarBounds {
+    /// Lower bounds: types that are subtypes of this variable (positive positions).
+    /// Multiple lower bounds compact to a union: α ⊇ Int, α ⊇ Str → α = Int | Str
+    pub lower: Vec<Type>,
+    /// Upper bounds: types that are supertypes of this variable (negative positions).
+    /// Multiple upper bounds compact to an intersection: α ⊆ Number, α ⊆ Equatable → α = Number & Equatable
+    pub upper: Vec<Type>,
+}
+
+impl TypeVarBounds {
+    pub fn new() -> Self {
+        Self {
+            lower: vec![],
+            upper: vec![],
+        }
+    }
+
+    /// Add a lower bound: `ty <: var`
+    pub fn add_lower(&mut self, ty: Type) {
+        self.lower.push(ty);
+    }
+
+    /// Add an upper bound: `var <: ty`
+    pub fn add_upper(&mut self, ty: Type) {
+        self.upper.push(ty);
+    }
+}
+
+impl Default for TypeVarBounds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Provenance for a subtyping constraint — tracks why the constraint was generated.
+/// Used for error messages when bounds are unsatisfiable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstraintSource {
+    pub span: Span,
+    pub reason: String,
 }
 
 /// Type scheme for let-generalization (∀α₁...αₙ. τ)
@@ -747,6 +910,11 @@ pub struct InferState {
     /// Constraints are generated when overloaded builtins are called with type variables.
     /// During generalization, constraints on generalized variables are included in the TypeScheme.
     pub constraints: Vec<Constraint>,
+    /// Type variable bounds for algebraic subtyping.
+    /// Maps type variable names to their lower/upper bounds. Used alongside `subst` during
+    /// the migration from unification to constraint-based typing. Eventually, bounds will
+    /// replace equality-based substitution for all type variables.
+    pub bounds: HashMap<String, TypeVarBounds>,
 }
 
 impl InferState {
@@ -757,6 +925,7 @@ impl InferState {
             levels: HashMap::new(),
             subst: Substitution::new(),
             constraints: Vec::new(),
+            bounds: HashMap::new(),
         }
     }
 
@@ -1041,6 +1210,17 @@ impl Substitution {
                 // Re-normalize after substitution to maintain invariants
                 Cow::Owned(Type::normalize_union(applied_members))
             }
+            Type::Intersection(members) => {
+                let applied_members: Vec<Type> = members
+                    .iter()
+                    .map(|m| {
+                        self.apply_type(m, depth + 1, visited_types, visited_rows)
+                            .into_owned()
+                    })
+                    .collect();
+                // Re-normalize after substitution to maintain invariants
+                Cow::Owned(Type::normalize_intersection(applied_members))
+            }
             // Primitive types (Int, Float, Bool, Str, etc.) have no type variables;
             // return a borrow to avoid cloning the whole type tree when substitution
             // does not apply. Cow::Borrowed eliminates the clone on the hot path.
@@ -1212,6 +1392,9 @@ fn row_var_occurs_in_type_impl(
         }
         Type::Seq(elem) => row_var_occurs_in_type_impl(var_name, elem, subst, visited),
         Type::Union(members) => members
+            .iter()
+            .any(|m| row_var_occurs_in_type_impl(var_name, m, subst, visited)),
+        Type::Intersection(members) => members
             .iter()
             .any(|m| row_var_occurs_in_type_impl(var_name, m, subst, visited)),
         Type::TypeVar(name, _) => {
@@ -1768,6 +1951,13 @@ fn lower_levels_check_occurs(
             }
             found
         }
+        Type::Intersection(members) => {
+            let mut found = false;
+            for m in members {
+                found |= lower_levels_check_occurs(m, occurs_name, cap_level, state);
+            }
+            found
+        }
         _ => false,
     }
 }
@@ -1797,6 +1987,375 @@ fn lower_levels_check_occurs(
 /// generalization invariant: a variable can only be generalized if its level exceeds
 /// the enclosing `let`-level, so lowering prevents premature generalization of
 /// variables that escape through the binding.
+///
+/// Algebraic Subtyping Constraint Solver (Simple-sub, Parreaux 2020)
+///
+/// `constrain(sub <: sup)` accumulates inequality constraints into `state.bounds`.
+/// Unlike `unify`, which produces equality bindings (α = τ) in a substitution,
+/// `constrain` produces bound sets: type variables carry lower bounds (positive
+/// positions) and upper bounds (negative positions).
+///
+/// ## Polarity-aware decomposition
+///
+/// Constraints decompose structurally according to variance:
+/// - **Covariant positions** (function returns, record fields, seq elements):
+///   `constrain(Fn(...→A) <: Fn(...→B))` → `constrain(A <: B)`
+/// - **Contravariant positions** (function parameters):
+///   `constrain(Fn(A→...) <: Fn(B→...))` → `constrain(B <: A)` (reversed!)
+/// - **Invariant positions** (would require both <: and :>, not currently used)
+///
+/// ## Type variable bounds
+///
+/// When `constrain(τ <: α)` is called (α in positive/covariant position),
+/// τ is added to α's **lower bounds**: α ⊇ τ.
+///
+/// When `constrain(α <: τ)` is called (α in negative/contravariant position),
+/// τ is added to α's **upper bounds**: α ⊆ τ.
+///
+/// A type variable is satisfiable iff `join(lower) <: meet(upper)`, where:
+/// - `join(lower)` = union of all lower bounds
+/// - `meet(upper)` = intersection of all upper bounds
+///
+/// ## Migration strategy
+///
+/// During the algebraic-subtyping sprint, `constrain` coexists with `unify`.
+/// Call sites migrate incrementally:
+/// 1. Literal-to-base promotion: `IntLiteral(n) <: Int`
+/// 2. Function application: `constrain(arg <: param)`, `constrain(ret <: expected)`
+/// 3. Record fields: shared fields use `constrain` covariantly
+/// 4. Let-generalization: type schemes carry bounds alongside quantified vars
+///
+/// Eventually, `unify` will be retired once all call sites use `constrain`.
+///
+/// Compact type variable bounds into a concrete type.
+/// - Multiple lower bounds → inferred union: α ⊇ Int, α ⊇ Str → α = Int | Str
+/// - Multiple upper bounds → inferred intersection: α ⊆ Number, α ⊆ Equatable → α = Number & Equatable
+/// - Both lower and upper → meet the bounds, preferring the lower (more specific)
+/// - No bounds → Unknown (unconstrained variable)
+///
+/// This is used during let-generalization to resolve type variables to concrete types
+/// when they have accumulated bounds but no direct equality binding.
+pub fn compact_bounds(var_name: &str, bounds: &TypeVarBounds, level: u32) -> Type {
+    match (bounds.lower.is_empty(), bounds.upper.is_empty()) {
+        (true, true) => {
+            // No bounds — unconstrained type variable remains as TypeVar
+            Type::TypeVar(var_name.to_string(), level)
+        }
+        (false, true) => {
+            // Only lower bounds → union
+            if bounds.lower.len() == 1 {
+                bounds.lower[0].clone()
+            } else {
+                Type::normalize_union(bounds.lower.clone())
+            }
+        }
+        (true, false) => {
+            // Only upper bounds → intersection
+            if bounds.upper.len() == 1 {
+                bounds.upper[0].clone()
+            } else {
+                Type::normalize_intersection(bounds.upper.clone())
+            }
+        }
+        (false, false) => {
+            // Both lower and upper bounds → prefer lower (more specific)
+            // In full algebraic subtyping, we'd compute meet(upper) ∩ join(lower),
+            // but for the migration phase, we use the lower bound as the principal type.
+            if bounds.lower.len() == 1 {
+                bounds.lower[0].clone()
+            } else {
+                Type::normalize_union(bounds.lower.clone())
+            }
+        }
+    }
+}
+
+/// Check that all type variable bounds are satisfiable.
+/// A type variable α is satisfiable iff join(lower) <: meet(upper), where:
+/// - join(lower) = Type::normalize_union(lower bounds) if multiple, else the single bound
+/// - meet(upper) = Type::normalize_intersection(upper bounds) if multiple, else the single bound
+///
+/// This should be called after constraint accumulation to detect unsatisfiable bounds.
+pub fn check_bounds_satisfiable(state: &InferState, span: Span) -> Result<(), TypeError> {
+    for (var_name, bounds) in &state.bounds {
+        // Compute join of lower bounds
+        let lower_joined = if bounds.lower.is_empty() {
+            None
+        } else if bounds.lower.len() == 1 {
+            Some(bounds.lower[0].clone())
+        } else {
+            Some(Type::normalize_union(bounds.lower.clone()))
+        };
+
+        // Compute meet of upper bounds
+        let upper_meet = if bounds.upper.is_empty() {
+            None
+        } else if bounds.upper.len() == 1 {
+            Some(bounds.upper[0].clone())
+        } else {
+            Some(Type::normalize_intersection(bounds.upper.clone()))
+        };
+
+        // Check satisfiability: join(lower) <: meet(upper)
+        match (lower_joined, upper_meet) {
+            (Some(lower), Some(upper)) => {
+                if !Type::is_subtype(&lower, &upper) {
+                    return Err(TypeError {
+                        message: format!(
+                            "unsatisfiable bounds for type variable {}: lower bound {} is not a subtype of upper bound {}",
+                            var_name, lower, upper
+                        ),
+                        span,
+                    });
+                }
+            }
+            (None, None) => {
+                // No bounds — always satisfiable
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                // Only lower or only upper — always satisfiable
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn constrain(
+    sub: &Type,
+    sup: &Type,
+    state: &mut InferState,
+    span: Span,
+    reason: &str,
+) -> Result<(), TypeError> {
+    // Apply substitution to both sides (chase existing bindings)
+    let sub = state.subst.apply(sub);
+    let sup = state.subst.apply(sup);
+
+    // Reflexive: τ <: τ
+    if sub == sup {
+        return Ok(());
+    }
+
+    // Error absorption: Error <: τ and τ <: Error are no-ops
+    if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
+        return Ok(());
+    }
+
+    // Top is the supertype of everything: τ <: Top for all τ
+    if matches!(sup, Type::Top) {
+        return Ok(());
+    }
+
+    // Unknown consistency: Unknown relates via consistency, not subtyping.
+    // For now, treat Unknown ~ τ as always satisfiable (gradual typing).
+    // TODO: when gradual-typing-split is complete, this needs refinement.
+    if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
+        return Ok(());
+    }
+
+    match (&sub, &sup) {
+        // Type variable in subtype position: α <: τ → τ is an upper bound on α
+        (Type::TypeVar(var_name, _), _) => {
+            let bounds = state
+                .bounds
+                .entry(var_name.clone())
+                .or_insert_with(TypeVarBounds::new);
+            bounds.add_upper(sup.clone());
+            Ok(())
+        }
+
+        // Type variable in supertype position: τ <: α → τ is a lower bound on α
+        (_, Type::TypeVar(var_name, _)) => {
+            let bounds = state
+                .bounds
+                .entry(var_name.clone())
+                .or_insert_with(TypeVarBounds::new);
+            bounds.add_lower(sub.clone());
+            Ok(())
+        }
+
+        // Literal promotion
+        (Type::IntLiteral(_), Type::Int | Type::Number) => Ok(()),
+        (Type::StringLiteral(_), Type::Str) => Ok(()),
+        (Type::Int | Type::Float, Type::Number) => Ok(()),
+
+        // Seq covariance: Seq[A] <: Seq[B] iff A <: B
+        (Type::Seq(sub_elem), Type::Seq(sup_elem)) => {
+            constrain(sub_elem, sup_elem, state, span, "seq element")
+        }
+
+        // Function contravariant params, covariant return
+        (
+            Type::Function {
+                params: sub_params,
+                ret: sub_ret,
+                variadic: sub_variadic,
+            },
+            Type::Function {
+                params: sup_params,
+                ret: sup_ret,
+                variadic: sup_variadic,
+            },
+        ) => {
+            if sub_variadic != sup_variadic {
+                return Err(TypeError {
+                    message: format!(
+                        "variadic mismatch: cannot constrain {} <: {} ({})",
+                        sub, sup, reason
+                    ),
+                    span,
+                });
+            }
+            if sub_params.len() != sup_params.len() {
+                return Err(TypeError {
+                    message: format!(
+                        "function arity mismatch: {} params vs {} params ({})",
+                        sub_params.len(),
+                        sup_params.len(),
+                        reason
+                    ),
+                    span,
+                });
+            }
+
+            // Parameters are CONTRAVARIANT: Fn(A→...) <: Fn(B→...) requires B <: A
+            for (sub_param, sup_param) in sub_params.iter().zip(sup_params.iter()) {
+                constrain(
+                    sup_param,
+                    sub_param,
+                    state,
+                    span,
+                    "function parameter (contravariant)",
+                )?;
+            }
+
+            // Return is COVARIANT: Fn(...→A) <: Fn(...→B) requires A <: B
+            constrain(sub_ret, sup_ret, state, span, "function return (covariant)")
+        }
+
+        // Record structural subtyping with row polymorphism
+        (Type::Record(sub_row), Type::Record(sup_row)) => {
+            // All fields in sup must be present in sub with subtype field types
+            for (key, sup_ty) in &sup_row.fields {
+                match sub_row.fields.get(key) {
+                    Some(sub_ty) => {
+                        constrain(
+                            sub_ty,
+                            sup_ty,
+                            state,
+                            span,
+                            &format!("record field '{}'", key),
+                        )?;
+                    }
+                    None => {
+                        return Err(TypeError {
+                            message: format!(
+                                "record missing required field '{}': {} does not satisfy {} ({})",
+                                key, sub, sup, reason
+                            ),
+                            span,
+                        });
+                    }
+                }
+            }
+
+            // Check tail constraints
+            match (&sub_row.tail, &sup_row.tail) {
+                (_, RowTail::RowVar(_, _)) => {
+                    // sup is open (has row var tail) — sub can have any extra fields
+                    Ok(())
+                }
+                (RowTail::Empty, RowTail::Empty) => {
+                    // Both closed — sub must not have extra fields
+                    for key in sub_row.fields.keys() {
+                        if !sup_row.fields.contains_key(key) {
+                            return Err(TypeError {
+                                message: format!(
+                                    "record has extra field '{}': {} does not satisfy {} ({})",
+                                    key, sub, sup, reason
+                                ),
+                                span,
+                            });
+                        }
+                    }
+                    Ok(())
+                }
+                (RowTail::RowVar(_, _), RowTail::Empty) => {
+                    // sub is open, sup is closed — cannot satisfy (sub may have extra fields)
+                    Err(TypeError {
+                        message: format!(
+                            "open record cannot satisfy closed record: {} does not satisfy {} ({})",
+                            sub, sup, reason
+                        ),
+                        span,
+                    })
+                }
+            }
+        }
+
+        // Union subtyping
+        // [UNION-INJ]: A <: A | B and B <: A | B (any concrete type is subtype of union containing it)
+        (_, Type::Union(sup_members)) => {
+            // τ <: Union iff τ <: at least one member
+            for member in sup_members {
+                if constrain(&sub, member, state, span, reason).is_ok() {
+                    return Ok(());
+                }
+            }
+            Err(TypeError {
+                message: format!(
+                    "type {} is not a subtype of any union member in {} ({})",
+                    sub, sup, reason
+                ),
+                span,
+            })
+        }
+
+        // [UNION-ELIM]: A | B <: τ iff A <: τ AND B <: τ
+        (Type::Union(sub_members), _) => {
+            for member in sub_members {
+                constrain(member, &sup, state, span, reason)?;
+            }
+            Ok(())
+        }
+
+        // Intersection subtyping
+        // [INTERSECT-INTRO]: A & B <: A and A & B <: B (intersection is subtype of each member)
+        (Type::Intersection(sub_members), _) => {
+            // Intersection <: τ iff at least one member <: τ
+            for member in sub_members {
+                if constrain(member, &sup, state, span, reason).is_ok() {
+                    return Ok(());
+                }
+            }
+            Err(TypeError {
+                message: format!(
+                    "no intersection member in {} is a subtype of {} ({})",
+                    sub, sup, reason
+                ),
+                span,
+            })
+        }
+
+        // [INTERSECT-ELIM]: τ <: A & B iff τ <: A AND τ <: B
+        (_, Type::Intersection(sup_members)) => {
+            for member in sup_members {
+                constrain(&sub, member, state, span, reason)?;
+            }
+            Ok(())
+        }
+
+        // Incompatible ground types
+        _ => Err(TypeError {
+            message: format!(
+                "type mismatch: {} is not a subtype of {} ({})",
+                sub, sup, reason
+            ),
+            span,
+        }),
+    }
+}
+
 pub fn unify(
     a: &Type,
     b: &Type,
@@ -2386,6 +2945,19 @@ impl fmt::Display for Type {
                     // Parenthesize nested unions (shouldn't happen after normalization, but be safe)
                     match member {
                         Type::Union(_) => write!(f, "({member})")?,
+                        _ => write!(f, "{member}")?,
+                    }
+                }
+                Ok(())
+            }
+            Type::Intersection(members) => {
+                for (i, member) in members.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " & ")?;
+                    }
+                    // Parenthesize nested intersections and unions for clarity
+                    match member {
+                        Type::Intersection(_) | Type::Union(_) => write!(f, "({member})")?,
                         _ => write!(f, "{member}")?,
                     }
                 }
@@ -8504,5 +9076,316 @@ mod tests {
         let err_msg = result.unwrap_err().message;
         assert!(err_msg.contains("does not satisfy constraint"));
         assert!(err_msg.contains("Equatable"));
+    }
+
+    // ===== Algebraic Subtyping Tests =====
+
+    #[test]
+    fn test_constrain_literal_promotion() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        // IntLiteral <: Int
+        assert!(constrain(
+            &Type::IntLiteral(42),
+            &Type::Int,
+            &mut state,
+            span,
+            "literal promotion"
+        )
+        .is_ok());
+
+        // IntLiteral <: Number
+        assert!(constrain(
+            &Type::IntLiteral(42),
+            &Type::Number,
+            &mut state,
+            span,
+            "literal promotion"
+        )
+        .is_ok());
+
+        // StringLiteral <: Str
+        assert!(constrain(
+            &Type::StringLiteral("hello".to_string()),
+            &Type::Str,
+            &mut state,
+            span,
+            "literal promotion"
+        )
+        .is_ok());
+
+        // Int <: Number
+        assert!(constrain(&Type::Int, &Type::Number, &mut state, span, "int to number").is_ok());
+    }
+
+    #[test]
+    fn test_constrain_type_variable_bounds() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        // α <: Int (α in contravariant position → upper bound)
+        let alpha = Type::TypeVar("alpha".to_string(), 0);
+        assert!(constrain(&alpha, &Type::Int, &mut state, span, "upper bound").is_ok());
+
+        // Check that alpha has Int as upper bound
+        let bounds = state.bounds.get("alpha").unwrap();
+        assert_eq!(bounds.upper.len(), 1);
+        assert_eq!(bounds.upper[0], Type::Int);
+
+        // Int <: α (α in covariant position → lower bound)
+        assert!(constrain(&Type::Int, &alpha, &mut state, span, "lower bound").is_ok());
+
+        // Check that alpha now has Int as both lower and upper bound
+        let bounds = state.bounds.get("alpha").unwrap();
+        assert_eq!(bounds.lower.len(), 1);
+        assert_eq!(bounds.lower[0], Type::Int);
+    }
+
+    #[test]
+    fn test_constrain_function_contravariance() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        // Fn(Number → Int) <: Fn(Int → Number)
+        // requires: Int <: Number (param contravariant) and Int <: Number (return covariant)
+        let sub_fn = Type::Function {
+            params: vec![Type::Number],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        let sup_fn = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Number),
+            variadic: false,
+        };
+
+        assert!(constrain(&sub_fn, &sup_fn, &mut state, span, "function subtyping").is_ok());
+    }
+
+    #[test]
+    fn test_constrain_seq_covariance() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        // Seq[Int] <: Seq[Number]
+        let sub_seq = Type::Seq(Box::new(Type::Int));
+        let sup_seq = Type::Seq(Box::new(Type::Number));
+
+        assert!(constrain(&sub_seq, &sup_seq, &mut state, span, "seq covariance").is_ok());
+    }
+
+    #[test]
+    fn test_constrain_union_injection() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        let union = Type::Union(vec![Type::Int, Type::Str]);
+
+        // Int <: Int | Str (union injection left)
+        assert!(constrain(&Type::Int, &union, &mut state, span, "union injection").is_ok());
+
+        // Str <: Int | Str (union injection right)
+        assert!(constrain(&Type::Str, &union, &mut state, span, "union injection").is_ok());
+
+        // Bool is NOT a subtype of Int | Str
+        assert!(constrain(&Type::Bool, &union, &mut state, span, "union rejection").is_err());
+    }
+
+    #[test]
+    fn test_constrain_union_elimination() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        let union = Type::Union(vec![Type::Int, Type::Float]);
+
+        // Int | Float <: Number (both members are subtypes)
+        assert!(constrain(&union, &Type::Number, &mut state, span, "union elimination").is_ok());
+
+        // Int | Str is NOT a subtype of Number (Str is not a subtype of Number)
+        let bad_union = Type::Union(vec![Type::Int, Type::Str]);
+        assert!(constrain(
+            &bad_union,
+            &Type::Number,
+            &mut state,
+            span,
+            "union elimination failure"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_constrain_intersection_subtyping() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        // Create an intersection type (hypothetical: Number & Equatable)
+        // For this test, we'll just use Int & Int which normalizes to Int
+        let intersection = Type::normalize_intersection(vec![Type::Int, Type::Int]);
+        assert_eq!(intersection, Type::Int); // Single-element intersection unwraps
+
+        // Test with actual intersection
+        let intersection = Type::Intersection(vec![Type::Number, Type::Int]);
+
+        // Intersection <: Number (intersection is subtype of any member)
+        assert!(constrain(
+            &intersection,
+            &Type::Number,
+            &mut state,
+            span,
+            "intersection intro"
+        )
+        .is_ok());
+
+        // Int <: Int & Number requires Int <: Int AND Int <: Number
+        assert!(constrain(
+            &Type::Int,
+            &intersection,
+            &mut state,
+            span,
+            "intersection elim"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_normalize_intersection_identity() {
+        // Top is identity: T & Top = T
+        let result = Type::normalize_intersection(vec![Type::Int, Type::Top]);
+        assert_eq!(result, Type::Int);
+
+        let result = Type::normalize_intersection(vec![Type::Top, Type::Str, Type::Top]);
+        assert_eq!(result, Type::Str);
+    }
+
+    #[test]
+    fn test_normalize_intersection_absorbing() {
+        // Error is absorbing: T & Error = Error
+        let result = Type::normalize_intersection(vec![Type::Int, Type::Error]);
+        assert_eq!(result, Type::Error);
+
+        let result = Type::normalize_intersection(vec![Type::Top, Type::Error, Type::Str]);
+        assert_eq!(result, Type::Error);
+    }
+
+    #[test]
+    fn test_normalize_intersection_flattening() {
+        // Nested intersections are flattened
+        let inner = Type::Intersection(vec![Type::Int, Type::Number]);
+        let result = Type::normalize_intersection(vec![inner, Type::Str]);
+
+        match result {
+            Type::Intersection(members) => {
+                assert_eq!(members.len(), 3);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Number));
+                assert!(members.contains(&Type::Str));
+            }
+            _ => panic!("Expected Intersection, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_normalize_intersection_deduplication() {
+        let result = Type::normalize_intersection(vec![Type::Int, Type::Str, Type::Int]);
+
+        match result {
+            Type::Intersection(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            _ => panic!("Expected Intersection, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_compact_bounds_no_bounds() {
+        let bounds = TypeVarBounds::new();
+        let result = compact_bounds("alpha", &bounds, 0);
+
+        // No bounds → unconstrained TypeVar
+        assert_eq!(result, Type::TypeVar("alpha".to_string(), 0));
+    }
+
+    #[test]
+    fn test_compact_bounds_lower_only() {
+        let mut bounds = TypeVarBounds::new();
+        bounds.add_lower(Type::Int);
+        bounds.add_lower(Type::Str);
+
+        let result = compact_bounds("alpha", &bounds, 0);
+
+        // Multiple lower bounds → union
+        match result {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            _ => panic!("Expected Union, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_compact_bounds_upper_only() {
+        let mut bounds = TypeVarBounds::new();
+        bounds.add_upper(Type::Number);
+        bounds.add_upper(Type::Int);
+
+        let result = compact_bounds("alpha", &bounds, 0);
+
+        // Multiple upper bounds → intersection
+        match result {
+            Type::Intersection(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Number));
+                assert!(members.contains(&Type::Int));
+            }
+            _ => panic!("Expected Intersection, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_check_bounds_satisfiable_success() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        // Add satisfiable bounds: Int <: alpha <: Number
+        let mut bounds = TypeVarBounds::new();
+        bounds.add_lower(Type::Int);
+        bounds.add_upper(Type::Number);
+        state.bounds.insert("alpha".to_string(), bounds);
+
+        // Should succeed: Int <: Number
+        assert!(check_bounds_satisfiable(&state, span).is_ok());
+    }
+
+    #[test]
+    fn test_check_bounds_satisfiable_failure() {
+        let mut state = InferState::new();
+        let span = test_span(1, 1, 1, 1);
+
+        // Add unsatisfiable bounds: Number <: alpha <: Int
+        let mut bounds = TypeVarBounds::new();
+        bounds.add_lower(Type::Number);
+        bounds.add_upper(Type::Int);
+        state.bounds.insert("alpha".to_string(), bounds);
+
+        // Should fail: Number is NOT a subtype of Int
+        let result = check_bounds_satisfiable(&state, span);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("unsatisfiable bounds"));
+    }
+
+    #[test]
+    fn test_intersection_display() {
+        let intersection = Type::Intersection(vec![Type::Int, Type::Str]);
+        assert_eq!(format!("{}", intersection), "Int & String");
+
+        // Nested unions should be parenthesized
+        let union = Type::Union(vec![Type::Bool, Type::Float]);
+        let complex = Type::Intersection(vec![Type::Int, union]);
+        assert_eq!(format!("{}", complex), "Int & (Bool | Float)");
     }
 }

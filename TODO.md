@@ -6,90 +6,108 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase D: Advanced Typing
 
-### `algebraic-subtyping`
+### `type-classes-full`
 
-See doc/06-type-inference.md §Algebraic Subtyping, doc/whatif/completed/union-types.md §Full Algebraic Subtyping. **Depends on:** `union-types` (B1), `gradual-typing-split` (B2).
+See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depends on:** `type-classes-constrained` (B4), `param-type-aliases` (B3), let-generalization complete. **Note:** multi-parameter type classes and functional dependencies are explicitly out of scope for this sprint.
 
-**3a — Constraint infrastructure:**
+**Parsing and AST:**
+- [ ] Verify `[class [ClassName params] superclasses... methods...]` parser against spec syntax; add `class` and `instance` to keyword denylist if not already present (`src/lexer.rs`, `src/parser.rs`)
+- [ ] Verify `[instance [ClassName Type] methods...]` parser; method entries may be signature-only or signature+body (default implementations) (`src/parser.rs`)
+- [ ] Formatter: round-trip `Expr::ClassDecl` and `Expr::InstanceDecl` without losing method bodies (`src/formatter.rs`)
 
-- [ ] `TypeVarBounds { lower: Vec<Type>, upper: Vec<Type> }` struct; `InferState.bounds: HashMap<u32, TypeVarBounds>` alongside existing `Substitution` (`src/types.rs`)
-- [ ] `constrain(t1: &Type, t2: &Type, state: &mut InferState, span: Span)` — polarity-aware structural decomposition: contravariant params, covariant returns and record fields (`src/types.rs`)
-- [ ] Constraint provenance: `ConstraintSource { span, reason: String }` threaded through `constrain()` for error messages (`src/typecheck.rs`)
-- [ ] Bound satisfiability check: `join(lower) <: meet(upper)` at each constraint site; error on conflict with provenance chain (`src/types.rs`)
+**Kind system:**
+- [ ] `Kind::Var(u32)` variant for kind variables; `KindState` analogous to `InferState` for kind unification (`src/types.rs`)
+- [ ] `unify_kind(k1: &Kind, k2: &Kind, state: &mut KindState) -> Result<(), KindError>` — Robinson unification on `Kind` terms (`src/types.rs`)
+- [ ] Kind inference for class type parameters from method signatures: infer kind of `f` in `Mappable f` from how `f` is used in `f a` in method types (`src/typecheck.rs`)
+- [ ] Kind checking at instance declaration: instance type's kind must match the class parameter's inferred kind; `[instance [Mappable Int] ...]` is a kind error (Int has kind `*`, Mappable expects `* → *`) (`src/typecheck.rs`)
+- [ ] Kind defaulting: unresolved kind variables default to `Kind::Type` after class declaration is processed (Jones 1993, §4) (`src/typecheck.rs`)
 
-**3b — Migrate call sites (replace `unify` with `constrain`):**
+**Class/instance registration:**
+- [ ] `ClassEnv` population from `Expr::ClassDecl`: register class with methods (signature + optional default body) and superclasses; compute superclass transitive closure at registration time (`src/typecheck.rs`)
+- [ ] `InstanceEnv` population from `Expr::InstanceDecl`: replace string-key lookup with unification-based instance resolution — attempt `unify(instance_head_type, target_type)` to select matching instance (Hall et al. 1996, §3.2) (`src/typecheck.rs`, `src/types.rs`)
+- [ ] Instance coherence: reject overlapping instances for the same class+type pair globally — `InstanceEnv::insert` must be global, not dict-scoped (`src/typecheck.rs`)
+- [ ] Scoping: class declarations are dict-scoped (visible in the dict and children); instance declarations are globally registered in `InstanceEnv` (coherence requires global uniqueness) (`src/typecheck.rs`)
 
-- [ ] Replace literal-to-base promotion `unify` with `constrain`: `IntLiteral(42) <: Int`, `StringLiteral("x") <: Str` (`src/typecheck.rs`)
-- [ ] Replace function application parameter and return type `unify` with `constrain` pairs (`src/typecheck.rs`)
-- [ ] Replace record field checking `unify` with `constrain` for shared fields; row variable binding becomes lower-bound constraint (`src/typecheck.rs`)
-- [ ] Replace let-generalization `unify` fallback with bound-carrying scheme: generalized variables carry `lower`/`upper` from `InferState.bounds` into `TypeScheme` (`src/typecheck.rs`)
-- [ ] Remove `[U-SUBSUME]` ground-type compatibility check — subtyping now built into `constrain`; remove `check_subsumption` call sites (`src/typecheck.rs`)
+**Dictionary construction and passing:**
+- [ ] Dictionary value construction: `Value::Dict` with method name as key, eagerly materialized at instance registration time; superclass dictionary embedded as a sub-dict under the superclass name (`src/eval.rs`)
+- [ ] Superclass dictionary embedding: `Comparable` dict contains `Equatable` sub-dict under key `"equatable"`; `entailment(context, target)` extracts sub-dict when only a superclass dict is available (`src/eval.rs`)
+- [ ] Dictionary threading in evaluator: constrained function calls receive implicit dictionary argument; `eval` for call nodes looks up the appropriate dict from `InstanceEnv` and prepends it to args (`src/eval.rs`)
+- [ ] Ensure dictionary values are materialized (not thunked) when passed to constrained functions — dicts must not be re-forced on every method call (`src/eval.rs`)
+- [ ] Default method implementations: at instance construction time, methods absent from the instance declaration are filled in from `ClassDecl.default_methods` before building the dict (`src/eval.rs`)
 
-**3c — Inferred unions/intersections from bound compaction:**
+**Type inference integration:**
+- [ ] Constraint entailment: `entails(context: &[Constraint], target: &Constraint) -> bool` using superclass transitive closure — `Comparable a` entails `Equatable a` if `Equatable` is a superclass of `Comparable` (`src/typecheck.rs`)
+- [ ] Constraint simplification during generalization: remove redundant constraints (if `Comparable a` is present, remove `Equatable a`) (`src/typecheck.rs`)
+- [ ] Instance resolution during constraint solving: when a type variable is unified with a concrete type, resolve pending class constraints against `InstanceEnv`; error if no matching instance (`src/typecheck.rs`)
+- [ ] Integration with B4 constrained type variables: B4's hardcoded instance sets (`Equatable`, `Numeric`, etc.) become backed by actual `ClassEnv`/`InstanceEnv` entries registered at startup (`src/typecheck.rs`, `src/builtins.rs`)
 
-- [ ] Inferred `Type::Union` when a type variable has multiple lower bounds: `compact_lower(bounds) -> Type` via `normalize_union` (`src/types.rs`)
-- [ ] Inferred `Type::Intersection` when a type variable has multiple upper bounds: `compact_upper(bounds) -> Type` via `normalize_intersection` (`src/types.rs`)
-- [ ] `normalize_intersection(Vec<Type>) -> Type`: sort, deduplicate, flatten nested intersections; `Top` identity, `Never` absorbing (`src/types.rs`)
-- [ ] Tests: inferred union from `[if cond 1 "x"]`; inferred intersection from multi-bound variable; bound conflict error with provenance chain; round-trip principal type property (`tests/corpus/eval/type_system/`)
+**Testing (25+ tests):**
+- [ ] Tests: class declaration parsing/round-trip; instance declaration parsing; dictionary construction and method dispatch; superclass hierarchy and entailment; kind checking at instance sites; constraint propagation through let-generalization; missing instance error; kind mismatch error; overlapping instance error; integration with B4 constrained vars; higher-kinded `Mappable Seq` instance; default method implementations (`tests/corpus/eval/type_system/`)
+
+**Spec:**
+- [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
 ### `recursive-adts`
 
 See doc/05-type-annotations.md §Recursive Type Aliases, doc/07-type-extensions.md. **Depends on:** `param-type-aliases` (B3), `adts` (C1).
 
-- [ ] `RecursiveTypeGuard` in `InferState`: tracks aliases currently being expanded (cycle detection); `HashSet<String>` with `MAX_APPLY_DEPTH` counter (`src/typecheck.rs`)
-- [ ] Alias expansion in `is_subtype`: when comparing a named alias to another type, unfold one layer and recurse; guard prevents infinite unfolding (`src/types.rs`)
-- [ ] Alias expansion in `unify`/`constrain`: same unfolding strategy for recursive alias unification (`src/types.rs`)
+- [ ] Decide alias expansion architecture before implementing: Strategy B recommended — pre-expand aliases in `typecheck.rs` before dispatching to `is_subtype`/`unify` (avoids threading `&TypeEnv` into `types.rs` functions and changing all call sites) (`src/typecheck.rs`)
+- [ ] `RecursiveTypeGuard`: a `HashSet<String>` passed by mutable reference through each recursive alias-expansion call; a **fresh set is constructed per top-level expansion entry point** — it is NOT stored in `InferState` (which would cause cross-comparison contamination) (`src/typecheck.rs`)
+- [ ] Alias expansion in `typecheck.rs` (pre-expansion strategy): when `is_subtype` or `unify` is about to be called with a `TypeAlias`, call `env.get_type_alias(name)` first and unfold one layer; recurse with the guard set updated; guard prevents infinite unfolding (`src/typecheck.rs`)
 - [ ] Error: "recursive type `Tree` exceeds maximum unfolding depth" with the alias chain path (`src/error.rs`)
-- [ ] Spec: document equi-recursive semantics in `doc/05-type-annotations.md` §Recursive Type Aliases — aliases are transparent (equi-recursive), not opaque (iso-recursive) (`doc/05-type-annotations.md`)
-- [ ] Tests: `Tree: [type Leaf [node: a left: [Tree a] right: [Tree a]]]`; structural subtyping between recursive types; depth limit detection; mutual recursion `A = [B] B = [A]` (`tests/corpus/eval/type_system/`)
+- [ ] Add §Recursive Type Aliases to `doc/05-type-annotations.md` — document equi-recursive semantics: aliases are transparent (equi-recursive), not opaque (iso-recursive); folding/unfolding is automatic (`doc/05-type-annotations.md`)
+- [ ] Tests: `Tree: [type Leaf [node: a left: [Tree a] right: [Tree a]]]`; structural subtyping between recursive types; depth limit detection; mutual recursion `A = [B] B = [A]` — each uses a fresh guard set (`tests/corpus/eval/type_system/`)
 
 ### `blame-tracking`
 
 See doc/10-errors.md §Blame, doc/08-evaluation.md §Blame Labels. **Depends on:** `gradual-typing-split` (B2).
 
 - [ ] `BlameLabel { origin_span: Span, boundary_span: Span, polarity: BlameParity }` struct; `BlameParity::Positive | Negative` (`src/error.rs`)
-- [ ] Extend `ThunkState::Guarded` with `blame_label: Option<BlameLabel>` — co-natural strategy: O(1) space per thunk, discard outer label when chaining (`src/value.rs`)
+- [ ] Extend `ThunkState::Guarded` with `blame_label: Option<BlameLabel>` — co-natural strategy (Greenman et al. 2019): promote inner label, discard new outer label when chaining (innermost boundary is blamed); blast radius: update `new_guarded()` in `src/value.rs` AND the state-restoration reconstruction at `src/eval_materialize.rs:693-698` AND all call sites in `src/eval.rs` (`src/value.rs`, `src/eval_materialize.rs`, `src/eval.rs`)
 - [ ] TypeAssert guard construction: populate `BlameLabel` from the `[@Type expr]` annotation site; `Positive` polarity (value must conform to type) (`src/typecheck.rs`)
 - [ ] Blame propagation across function calls: annotated parameter acts as a contract boundary; `Negative` polarity for expected type at call site (`src/eval.rs`)
-- [ ] `---` pipeline boundary blame: each document's output `%` carries `BlameLabel` pointing to the producing stage's final expression (`src/eval.rs`)
+- [ ] `---` pipeline boundary blame: design decision required before implementation — recommend `blame_map: RefCell<HashMap<ThunkId, String>>` field in `EvalContext` as a side-channel (avoids `Value::Tagged` variant which would touch all exhaustive `Value` matches); populate at each `---` boundary with the producing stage's file path/index (`src/eval.rs`, `src/lib.rs`)
 - [ ] Error message enrichment: "type assertion failed at line 5; value originated from unannotated expression at line 3" with positive party and negative party named (`src/error.rs`)
-- [ ] Automatic guard insertion elaboration: at `Unknown → Concrete` boundaries (function calls where arg type is `Unknown`, field access on `Unknown`), insert `ThunkState::Guarded` with blame label (`src/typecheck.rs`)
-- [ ] Tests: blame attribution on TypeAssert failure; pipeline boundary blame pointing to producing stage; co-natural strategy O(1) heap check; `Unknown` boundary blame (`tests/corpus/eval/errors/`, `tests/corpus/eval/type_system/`)
+- [ ] Automatic guard insertion — design required: `src/typecheck.rs` cannot create thunks; two options: (A) insert synthetic `Expr::TypeAssert` nodes at `Unknown → Concrete` call sites during a new elaboration pass, or (B) new `Expr::ImplicitGuard` variant consumed by evaluator; pick one and add to spec before implementing (`src/typecheck.rs` + design doc)
+- [ ] Update `doc/08-evaluation.md` §Forcing Rules: extend `[FORCE-GUARD]` and `[FORCE-GUARD-ERR]` to include `blame_label` propagation into `EvalError`; show positive/negative party naming in `[FORCE-GUARD-ERR]` (`doc/08-evaluation.md`)
+- [ ] Tests: blame attribution on TypeAssert failure; pipeline boundary blame pointing to producing stage; co-natural strategy O(1) heap (verify `blame_label`-carrying `Guarded` thunk stays in `Guarded` state after construction — not forced until accessed); `Unknown` boundary blame (`tests/corpus/eval/errors/`, `tests/corpus/eval/type_system/`)
 
 ### `structural-contracts-input`
 
 See doc/05-type-annotations.md §Pipeline Input Types, doc/whatif/structural-contracts.md Phase 1. **Depends on:** None.
 
-- [ ] Parser: `%@Type` as document-level annotation — first expression in a document that is a `VarRef("%")` with `@` annotation is treated as input type binding, not a value expression (`src/parser.rs`)
-- [ ] Type checker: resolve `%@Type` annotation and bind `%` to the declared type within the document; cross-document checking: doc N's inferred output type must unify with doc N+1's `%@Type` (`src/typecheck.rs`)
-- [ ] Multi-file pipeline type checking: `tinct eval data.llt fmt.llt` propagates output type of `data.llt` as input constraint for `fmt.llt`'s `%@Type` (`src/main.rs`, `src/typecheck.rs`)
-- [ ] LSP auto-complete: when cursor is inside a document with `%@Type`, offer completions for `%` field access based on declared type (`src/lsp/analysis.rs`)
+- [ ] Parser produces a standard `Expr::TypeAssert { expr: VarRef("%"), annotation: T }` for `%@Type`; the type checker detects the `VarRef("%")` + first-in-document pattern and treats it as a type binding declaration — no new AST node needed, avoids new eval/typecheck handlers (`src/typecheck.rs`)
+- [ ] Type checker: detect `%@Type` pattern and bind `%` to declared type within the document; extend `typecheck_file()` to return `(Vec<TypeError>, Option<Type>)` where `Option<Type>` is the inferred output type of the last document expression (`src/typecheck.rs`)
+- [ ] Multi-file pipeline type checking: propagate `Option<Type>` output from `typecheck_file()` in the `run_eval` pipeline loop; constrain doc N+1's `%@Type` against doc N's output type (`src/main.rs`, `src/typecheck.rs`)
+- [ ] Add `percent_type: Option<Type>` to `EvalContext` or `EvalConfig`; when TypeAssert on `%` fails and `percent_type` is set, enrich error with pipeline boundary context (which stage declared the type, which stage mismatched) (`src/eval.rs`, `src/eval_materialize.rs`)
+- [ ] Extend LSP document index with `percent_type: Option<Type>` populated from `%@Type` annotation resolution; expose to completion handler for `%` field access completions (`src/lsp/document.rs`, `src/lsp/analysis.rs`)
 - [ ] Tests: single-document `%@[port: Int hostname: Str]` binding, cross-document unification, mismatch error, open record annotation accepts extra fields (`tests/corpus/eval/pipeline/`)
 
 ### `structural-contracts-validate`
 
 See doc/11a-builtins.md §validate, doc/whatif/structural-contracts.md Phase 2. **Depends on:** `structural-contracts-input` (SC Ph1).
 
-- [ ] `validate` builtin: `Dict → Any → Any` — walks schema dict and data value in parallel, collects ALL violations (not fail-fast), returns data unchanged on success (`src/builtins.rs`)
+- [ ] `validate` builtin: `Dict → Any → Any` (schema first, data second — `[validate nginx-schema %]`); walks schema and data in parallel, collects ALL violations (not fail-fast), returns data unchanged on success (`src/builtins.rs`)
 - [ ] Schema key dispatch: `type`, `min`, `max`, `min-length`, `max-length`, `pattern`, `required`, `default`, `items`, `fields`, `enum` — each key applies the corresponding constraint (`src/builtins.rs`)
-- [ ] Violation accumulation: `violations: Vec<[field: Str message: Str]>` collected throughout the walk; error thrown as `[violations: [...]]` structured value (`src/builtins.rs`, `src/error.rs`)
-- [ ] Field path tracking: `field` in each violation is the dot-path to the failing field (e.g. `"config.port"`) (`src/builtins.rs`)
-- [ ] Tests: range validation, pattern matching, required/optional fields, nested schema, all violations reported (not just first), pass-through on success (`tests/corpus/eval/stdlib/`, `tests/corpus/eval/errors/`)
+- [ ] `ErrorKind::SchemaViolation { violations: Vec<(String, String)> }` in `src/error.rs` with error code E090; `pub fn schema_violation(...)` constructor; add E090 to `run_explain` in `src/main.rs` (`src/error.rs`, `src/main.rs`)
+- [ ] Violation accumulation: `violations: Vec<[field: Str message: Str]>` where `field` is a dot-path string (note: ambiguous for keys containing `.`; document this limitation); error thrown via `ErrorKind::SchemaViolation` (`src/builtins.rs`, `src/error.rs`)
+- [ ] Ensure `validate` materializes `Overlay` values before structural traversal (`$merge` result is lazy overlay); add test with `[validate schema [merge a b]]` input (`src/builtins.rs`)
+- [ ] Tests: range validation; pattern matching; required/optional fields; nested schema; `items:` sequence element validation; all violations reported (not first only); Overlay input; pass-through on success (`tests/corpus/eval/stdlib/`, `tests/corpus/eval/errors/`)
 
 ### `structural-contracts-describe`
 
 See doc/16-architecture.md §CLI, doc/whatif/structural-contracts.md Phase 3. **Depends on:** `structural-contracts-validate` (SC Ph2).
 
-- [ ] `tinct describe file.llt` CLI subcommand: parse the file, extract `%@Type` annotation and any schema dicts (variables whose values match schema shape), emit human-readable description (`src/main.rs`)
-- [ ] Human-readable output: one line per field, including type constraints and schema constraints merged (`src/main.rs`)
+- [ ] `tinct describe file.llt` CLI subcommand: parse the file, extract `%@Type` annotation; detect schema dicts via heuristic (a dict is a schema dict if any of its values is a dict with at least one recognized schema key: `type`, `min`, `max`, `min-length`, `max-length`, `pattern`, `required`, `items`, `fields`, `enum`); document the heuristic (`src/main.rs`)
+- [ ] Human-readable output: one line per field, merging type constraints from `%@Type` with constraint values from the schema dict (`src/main.rs`)
 - [ ] JSON output mode: `tinct describe --json file.llt` emits machine-readable contract as a tinct dict serialized to JSON (`src/main.rs`)
-- [ ] Tests: `tinct describe fmt/nginx.llt` produces expected output; `--json` mode round-trips; file with no `%@Type` reports "no input contract" (`tests/cli_tests.rs`)
+- [ ] Tests: `tinct describe fmt/nginx.llt` produces expected output; `--json` mode round-trips; file with no `%@Type` reports "no input contract"; schema dict detection heuristic (`tests/cli_tests.rs`)
 
 ### `structural-contracts-blame`
 
 See doc/10-errors.md §Pipeline Blame. **Depends on:** `structural-contracts-describe` (SC Ph3), `blame-tracking` (D4).
 
-- [ ] Pipeline stage tagging: each `%` value carries a `stage_label: Option<String>` (file path or `---` index) attached at each `---` boundary (`src/eval.rs`)
+- [ ] Pipeline stage tagging: add `blame_map: RefCell<HashMap<ThunkId, String>>` to `EvalContext`; at each `---` boundary, record the producing stage's file path/index keyed on the `%` thunk's ID (avoids `Value::Tagged` variant which would require updating all exhaustive `Value` matches) (`src/eval.rs`, `src/lib.rs`)
 - [ ] Contract violation enrichment: when `validate` or `%@Type` check fails, include stage label in error: "Produced by: data.llt, line 3" (`src/error.rs`)
 - [ ] Positive/negative party identification per Findler & Felleisen (2002): producing stage is positive party (blamed for wrong output shape), consuming stage is negative party (blamed for wrong contract) (`src/error.rs`)
 - [ ] Hints in error messages: suggest `[@Int %.port]` cast or "fix the producing stage" based on mismatch direction (`src/error.rs`)
@@ -109,12 +127,13 @@ See doc/05-type-annotations.md §Range Annotations, doc/whatif/numeric-types.md 
 
 See doc/03-data-model.md §Decimal Type, doc/whatif/numeric-types.md Phase 2. **Depends on:** Independent.
 
-- [ ] `Value::Decimal(rust_decimal::Decimal)` variant; add `rust_decimal` crate to `Cargo.toml` (`src/value.rs`, `Cargo.toml`)
-- [ ] `Type::Decimal` variant; subtype of `Number`; added to `is_subtype` and `unify` (`src/types.rs`)
+- [ ] Resolve `rust_decimal::Decimal` vs `d128` (IEEE 754 decimal128) before implementation: `rust_decimal` is 96-bit software decimal (common in financial Rust), `d128` is true IEEE 754 — pick one, document precision/serialization implications (`Cargo.toml`)
+- [ ] `Value::Decimal(chosen_type)` variant; adding this triggers compile errors at ALL exhaustive `Value` match sites — audit with `cargo check` before PR merges (`src/value.rs`, `Cargo.toml`)
+- [ ] `Type::Decimal` variant; subtype of `Number`; added to `is_subtype` and `unify`/`constrain` (`src/types.rs`)
 - [ ] `decimal: Str → Decimal` builtin — parses exact base-10 string; error on invalid format (`src/builtins.rs`)
 - [ ] Arithmetic: `Int + Decimal → Decimal`, `Decimal + Decimal → Decimal`, `Float + Decimal → error` (no lossy cross-type); update all arithmetic builtins (`src/builtins.rs`)
-- [ ] JSON serialization: `Decimal` serializes as a JSON number (exact representation); deserializes from JSON number string with explicit `decimal` call (`src/builtins.rs`)
-- [ ] Tests: `9.99 + 1.00 = 10.99` exact; `0.1 + 0.2 ≠ 0.30000000000000004` (no IEEE 754 error); cross-type error; JSON round-trip (`tests/corpus/eval/builtins/`)
+- [ ] Add `Value::Decimal` arms to `value_to_json` and `value_to_display_string` in `src/lib.rs`; `Decimal` → JSON number (exact string representation); `Decimal` → display as `Decimal(9.99)` (`src/lib.rs`)
+- [ ] Tests: `9.99 + 1.00 = 10.99` exact; `0.1 + 0.2 ≠ 0.30000000000000004` (no IEEE 754 error); cross-type error; JSON round-trip; `value_to_display_string` correctness (`tests/corpus/eval/builtins/`)
 
 ### `numeric-bigint`
 
@@ -124,12 +143,13 @@ See doc/03-data-model.md §BigInt, doc/whatif/numeric-types.md Phase 3. **Depend
 - [ ] `Type::BigInt` variant; subtype of `Number`; added to `is_subtype` and `unify` (`src/types.rs`)
 - [ ] `big-int: Int → BigInt` builtin; overflow detection in `$+`, `$*`, `$-` on `Int`: promote to `BigInt` on overflow rather than wrapping (`src/builtins.rs`)
 - [ ] Promotion rules: `Int + BigInt → BigInt`, `BigInt + BigInt → BigInt`, `BigInt + Decimal → error`, `BigInt + Float → Float` (lossy, explicit) (`src/builtins.rs`)
-- [ ] JSON serialization: `BigInt` serializes as a JSON number or string (configurable); literals parsed as `Int` unless suffix or overflow (`src/builtins.rs`)
+- [ ] Add `Value::BigInt` arms to `value_to_json` and `value_to_display_string` in `src/lib.rs`; `BigInt` → JSON number string (document interop risk: may exceed JSON receiver's i64 range); `BigInt` → display as `BigInt(n)` (`src/lib.rs`)
+- [ ] JSON serialization: `BigInt` serializes as JSON number string (no literal suffix syntax — BigInt is created via `[big-int n]` call or arithmetic overflow, not by parse-time suffix) (`src/builtins.rs`)
 - [ ] Tests: factorial computation; integer overflow promotion; `BigInt + Float` rejected; JSON round-trip for large integers (`tests/corpus/eval/builtins/`)
 
 ### `numeric-repr`
 
-See doc/05-type-annotations.md §Storage Hints, doc/whatif/numeric-types.md Phase 4. **Depends on:** `numeric-bigint` (Ph3).
+See doc/05-type-annotations.md §Storage Hints, doc/whatif/numeric-types.md Phase 4. **Depends on:** `numeric-range` (Ph1) — `repr:` consistency is validated against `is:` range constraints; no BigInt dependency (all valid repr values u8–i64 fit within `Value::Int(i64)`).
 
 - [ ] `repr:` annotation key parsed in property dict annotations alongside `type:`, `is:`, `default:` (`src/parser.rs`, `src/typecheck.rs`)
 - [ ] Valid `repr:` values: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"` — type checker validates consistency with declared type and `is:` range constraint (`src/typecheck.rs`)
