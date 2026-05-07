@@ -6,24 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase B: Type System Primitives
 
-### `type-classes-constrained`
-
-**Depends on:** `gradual-typing-split` (B2), let-generalization complete
-**Spec chapters:** `doc/06-type-inference.md` (§Constrained Type Variables — `Equatable a =>`, fixed instance sets), `doc/07-type-extensions.md` (§Dual-Dispatch Builtins — update with constrained signatures), `doc/17-references.md` (Wadler & Blott 1989, Jones 1995)
-
-1. `Constraint` type: `Class(String, String)` pairs
-2. `TypeScheme.constraints: Vec<Constraint>` field
-3. Fixed instance sets: `Equatable`, `Comparable`, `Numeric`,
-   `Showable`, `Mappable`, `Foldable`, `Filterable`, `Appendable`
-4. Constraint generation during inference for overloaded builtins
-5. Constraint checking during instantiation
-6. Builtin signatures updated with constrained type schemes
-7. Display: `Equatable a => Fn(a, a -> Bool)` format
-8. Error messages: "type X does not satisfy constraint Equatable"
-9. doc/06-type-inference.md: constrained type variables section
-10. Tests: 10+ (constraint generation, satisfaction, violation errors,
-    overloaded builtins, let-generalization with constraints)
-
 ### `narrowing-basic`
 
 **Depends on:** Scheduled after `pattern-matching-destructure` (A3). Result type precision improves when `union-types` (B1) lands.

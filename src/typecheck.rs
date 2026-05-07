@@ -4074,6 +4074,7 @@ mod tests {
             TypeScheme {
                 type_vars: vec!["a".to_string()],
                 row_vars: vec![],
+                constraints: vec![],
                 body: Type::Int,
             },
         );
@@ -4158,8 +4159,9 @@ mod tests {
 
     #[test]
     fn test_builtin_plus_does_not_return_seq() {
-        // Negative test: $+ returns Number, not Seq.
-        // TypeEnv::with_builtins() registers + as Fn(Number, Number) -> Number.
+        // Negative test: $+ returns Int (via constrained Numeric a => a -> a -> a), not Seq.
+        // TypeEnv::with_builtins() registers + as Numeric a => a -> a -> a.
+        // With IntLiteral args, the type variable binds to Int (promoted from IntLiteral).
         let input = "[result: [call $+ 1 2]]";
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
@@ -4178,8 +4180,8 @@ mod tests {
 
         assert_eq!(
             result_ty,
-            Type::Number,
-            "+ should return Number, not Seq; got: {result_ty}"
+            Type::Int,
+            "+ with IntLiteral args should return Int (promoted); got: {result_ty}"
         );
 
         // Explicitly verify it's NOT a Seq
@@ -8602,7 +8604,8 @@ mod tests {
 
     #[test]
     fn test_pipeline_percent_pipeline_multi_field() {
-        // Test that the inferred type of z ([+ %.x %.y]) is Number (the + return type).
+        // Test that the inferred type of z ([+ %.x %.y]) is Int (via Numeric a => a -> a -> a).
+        // IntLiteral args are promoted to Int when binding constrained type variables.
         // Uses file_env_with_builtins because + is a stdlib builtin (not in TypeEnv::new()).
         let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
         let env = file_env_with_builtins(input);
@@ -8614,8 +8617,8 @@ mod tests {
                     .expect("field 'z' should exist in second doc");
                 assert_eq!(
                     *z,
-                    Type::Number,
-                    "expected [+ %.x %.y] to have type Number, got {z}"
+                    Type::Int,
+                    "expected [+ %.x %.y] to have type Int (promoted from IntLiteral), got {z}"
                 );
             }
             other => panic!("expected Record result for second doc, got {other}"),
