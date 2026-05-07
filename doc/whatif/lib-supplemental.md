@@ -3,8 +3,9 @@
 **State:** Proposal
 
 What would it take to ship standard library modules beyond the core
-prelude, covering extended strings, math, and bitwise encoding for
-common configuration and serialization tasks?
+prelude, covering extended strings, math, bitwise encoding, TOML
+parsing, streaming file I/O, and string-as-sequence operations for
+common configuration and scripting tasks?
 
 ## Current State
 
@@ -56,18 +57,31 @@ With `str-contains?` this is terser; with the regex engine from
 
 ### What's Missing
 
-1. **Extended string utilities** — no `str-contains?`, `str-starts-with?`,
-   `str-ends-with?`, character-indexed slicing, or string repetition.
+1. **Extended string utilities** — no `str-contains?`, `starts-with?`,
+   `ends-with?`, character-indexed slicing, string padding, or string repetition.
 2. **Extended math** — no `pow`, `sqrt`, `log`, `exp`, or trigonometric
    functions; tinct's math coverage stops at floor/round/abs.
 3. **Encoding** — no base64, hex, or bitwise operations; blocks binary
    data handling and HTTP configuration generation.
-4. **Path manipulation** — no `basename`, `dirname`, `path-join`, or
+4. **Binary data** — no native type for byte sequences; TLS certificates,
+   SSH keys, cryptographic hashes, and arbitrary binary payloads must
+   be stored as strings (violating UTF-8 invariants) or as Dicts of
+   integers (correct but expensive and awkward).
+5. **TOML parsing** — no way to read TOML files from within tinct scripts;
+   blocks self-hosted tooling that reads Cargo.toml, Cargo.lock, or
+   other TOML configuration feeds.
+6. **Streaming file writes** — `write-file` is atomic (full content at
+   once); no way to open a file and write to it incrementally. Blocks
+   scripts that build output line by line before closing.
+7. **Strings as sequences** — strings cannot be passed directly to `map`,
+   `filter`, `reduce`, etc.; you must split to a collection first. Blocks
+   natural character-level string processing.
+8. **Path manipulation** — no `basename`, `dirname`, `path-join`, or
    `path-extension`; blocks file-path-heavy configuration.
 
 Pattern matching and regex are addressed separately in
 `doc/whatif/lib-regex.md`, which depends on the bitwise primitives
-(Phase 3 of this doc).
+from §Bitwise Primitives.
 
 ## Why Supplemental Stdlib Matters for tinct
 
@@ -83,8 +97,12 @@ calibration curves (exp, pow). None are expressible today.
 
 **Encoding round-trips.** Base64 is the lingua franca for embedding
 binary data in config files — TLS certificates, SSH keys, container
-image digests. The bitwise primitives in Phase 3 enable `base64-encode`
+image digests. The bitwise primitives enable `base64-encode`
 and `hex-encode` as pure-tinct library functions.
+
+**Self-hosted tooling.** tinct scripts that read TOML configuration
+files (Cargo.toml, Cargo.lock, channel manifests) need a TOML parser
+accessible from within tinct itself.
 
 **Completeness relative to peers.** Jsonnet's `std` has base64 and
 math. Nickel's `std.number` has trig. CUE has `math`, `encoding/base64`,
@@ -99,10 +117,8 @@ Supplemental modules ship in two categories:
 |----------|----------------|-----------------|
 | Pure-tinct | `stdlib/*.llt` | None |
 | New Rust builtin | `src/builtins.rs` | None |
-| Deferred | — | — |
 
-Functions are delivered in three phases ordered by blocking value and
-implementation cost. No new crates are introduced.
+No new crates are introduced by any of the proposals in this document.
 
 ### Module Survey
 
@@ -111,85 +127,111 @@ standard libraries:
 
 | Feature | Jsonnet | Nickel | Nix | CUE | tinct |
 |---------|---------|--------|-----|-----|-------|
-| String search (`contains`, `starts-with`) | ✓ | ✓ | ✓ | ✓ | ✗ |
+| String search (`contains`, `starts-with`) | ✓ | ✓ | ✓ | ✓ | proposed |
 | Regex | `std.native()` | ✓ | ✓ | ✓ | see lib-regex.md |
 | Math (`pow`, `sqrt`, trig) | ✓ | ✓ | partial | ✓ full | partial |
-| Base64 / encoding | ✓ | ✓ | ✗ | ✓ | ✗ |
-| Path utilities | ✗ | ✗ | ✓ `lib` | ✓ `path` | ✗ |
+| Base64 / encoding | ✓ | ✓ | ✗ | ✓ | proposed |
+| Path utilities | ✗ | ✗ | ✓ `lib` | ✓ `path` | proposed |
 | Date/time | ✗ | ✗ | ✗ | ✓ `time` | ✗ |
 
-### Phase 1: Extended String Utilities (stdlib/strings.llt)
+### Extended String Utilities
 
-String search predicates are implementable in pure-tinct using the
-existing `split` builtin: `split haystack needle` returns an array
-with one more element than there are occurrences, so length > 1
-indicates containment.
+**New Rust builtins moving to prelude:**
+
+`starts-with?` and `ends-with?` generalize to any sequence — they are
+not string-specific. A string's character-Seq participates via
+dual-dispatch, so `[starts-with? "he" "hello"]` and
+`[starts-with? [1 2] [1 2 3 4]]` both work through the same builtin.
+They belong alongside `contains?` in the prelude, not in a string
+module.
+
+| Function | Signature | Notes |
+|----------|-----------|-------|
+| `starts-with?` | `Seq\|String → Seq\|String → Bool` | `starts-with? prefix haystack`; moves to prelude |
+| `ends-with?` | `Seq\|String → Seq\|String → Bool` | `ends-with? suffix haystack`; moves to prelude |
+
+**New Rust builtin staying in string domain:**
+
+| Function | Signature | Notes |
+|----------|-----------|-------|
+| `str-slice` | `Int → Int → String → String` | O(1) `String` construction; `str-slice from to s` |
+
+`str-slice` promotes from pure-tinct (which went through `str-chars` +
+`take`/`drop` + `join`) to a Rust builtin that directly constructs
+`String { source: Rc::clone(&source), start: byte_of(start), end: byte_of(end) }` — constant time, zero allocation.
+
+**`str-chars` — internal implementation primitive.** With strings
+participating directly in `map`/`filter`/`first`/`nth` via
+dual-dispatch, `str-chars` is no longer a recommended user-facing
+function. It remains as a Rust builtin used internally by `str-find`
+but is not exported from `stdlib/strings.llt`. Users who want a Seq of
+characters write `[map [fn [c] c] s]` or simply use string operations
+directly.
+
+`str-chars` takes a `String { source, start, end }` and produces a
+lazy `Seq` of `String` slices by walking `source[start..end].char_indices()`,
+yielding `String { source: Rc::clone(&source), start: start+off, end: start+off+ch.len_utf8() }` per codepoint. One `Rc::clone` (pointer bump) per step; no string data copied.
+
+**Pure-tinct additions to `stdlib/strings.llt`:**
 
 ```tinct
 # stdlib/strings.llt
 
 # str-contains? — true if needle appears anywhere in haystack
-str-contains?: [fn [needle haystack]
+str-contains?: [fn@Bool [needle@String haystack@String]
   [> [length [split haystack needle]] 1]]
 
-# str-starts-with? — true if haystack begins with prefix
-str-starts-with?: [fn [prefix haystack]
-  [= "" [get 0 [split haystack prefix]]]]
-
-# str-ends-with? — true if haystack ends with suffix
-str-ends-with?: [fn [suffix haystack]
-  [= "" [last [split haystack suffix]]]]
-
-# str-chars — split string into individual characters
-str-chars: [fn [s] [split s ""]]
-
-# str-pad-left — left-pad s to width using fill character
-str-pad-left: [fn [fill width s]
+# pad-left — left-pad s to width with spaces
+pad-left: [fn@String [width@Int s@String]
   [str
-    [join "" [take
-      [max 0 [- width [length s]]]
-      [repeat fill]]]
+    [join "" [take [max 0 [- width [str-length s]]] [repeat " "]]]
     s]]
 
-# str-pad-right — right-pad s to width using fill character
-str-pad-right: [fn [fill width s]
+# pad-right — right-pad s to width with spaces
+pad-right: [fn@String [width@Int s@String]
   [str s
-    [join "" [take
-      [max 0 [- width [length s]]]
-      [repeat fill]]]]]
+    [join "" [take [max 0 [- width [str-length s]]] [repeat " "]]]]]
 
 # str-repeat — repeat s n times
-str-repeat: [fn [n s] [join "" [take n [repeat s]]]]
+str-repeat: [fn@String [n@Int s@String] [join "" [take n [repeat s]]]]
 
 # str-find — character index of first occurrence of needle, or -1
-str-find: [fn [needle haystack]
+str-find: [fn@Int [needle@String haystack@String]
   [if [str-contains? needle haystack]
-    [length [get 0 [split haystack needle]]]
+    [str-length [first [split haystack needle]]]
     -1]]
 
-# str-slice — substring by character index (half-open range)
-str-slice: [fn [from to s]
-  [join "" [drop from [take to [str-chars s]]]]]
+# These become natural with String dual-dispatch:
+
+# str-reverse — reverse a string character by character
+str-reverse: [fn@String [s@String]
+  [join "" [reverse s]]]
+
+# str-take — first n characters
+str-take: [fn@String [n@Int s@String]
+  [join "" [take n s]]]
+
+# str-drop — drop first n characters
+str-drop: [fn@String [n@Int s@String]
+  [join "" [drop n s]]]
+
+# str-count — count characters matching predicate
+str-count: [fn@Int [pred@Fn s@String]
+  [count [filter pred s]]]
 ```
 
-Edge cases: `str-contains?` returns false when needle is empty
-(splitting on `""` gives individual characters, never an empty-first
-split). `str-starts-with?` and `str-ends-with?` behave analogously.
+`pad-left` and `pad-right` use a single space as the fill character,
+covering the column-alignment use case.
+
 `str-find` returns a character offset — correct for ASCII; for
-multi-byte Unicode it returns the character count of the part before
-the split, not the byte offset.
+multi-byte Unicode it returns the character count of the prefix before
+the match, not the byte offset.
 
-**One potential Rust builtin: `str-chars`**
+**Adds 3 Rust builtins:** `starts-with?` (to prelude), `ends-with?`
+(to prelude), `str-slice`. `str-chars` stays as an internal builtin,
+not exported.
 
-`str-chars`, `str-slice`, and `str-find` depend on `split s ""`
-producing clean individual characters. Rust's `str::split("")` yields
-`["", c₁, c₂, …, cₙ, ""]` with boundary empty strings. If tinct
-passes through that raw output, a single `str-chars` Rust builtin
-(`s.chars().map(|c| c.to_string()).collect()`) gives a clean
-0-indexed character list. Phase 1 requires at most one new Rust
-builtin.
-
-### Phase 2: Extended Math Builtins (src/builtins.rs)
+### Extended Math Builtins (stdlib/math.llt)
 
 tinct's current math coverage ends at `floor`, `round`, and the
 pure-tinct derivatives in prelude. Missing functions are all trivial
@@ -229,15 +271,15 @@ log-base:  [fn [b x] [/ [log x] [log b]]]
 functions operate in radians, consistent with every other language
 surveyed. Degree conversion is a pure-tinct helper.
 
-### Phase 3: Bitwise Primitives (src/builtins.rs, no new crate)
+**Adds 13 Rust builtins.** No new crates.
 
-Rather than shipping specific encoding builtins, Phase 3 provides the
-primitive bitwise operations from which users can implement base64, hex,
+### Bitwise Primitives (stdlib/encoding.llt)
+
+Rather than shipping specific encoding builtins, this section provides
+the primitive bitwise operations from which users can implement base64, hex,
 subnet masks, permission flags, or any other bit-level algorithm in
 pure-tinct. The Rust builtins are the smallest useful layer; derived
-operations live in `stdlib/encoding.llt`. Phase 3 is also a prerequisite
-for `doc/whatif/lib-regex.md`, which needs `char-code` for character
-class range comparisons.
+operations live in `stdlib/encoding.llt`.
 
 **New Rust builtins:**
 
@@ -304,16 +346,304 @@ The nine Rust builtins — five bitwise ops, two char↔code conversions,
 two string↔bytes conversions — are each independently useful and compose
 freely.
 
-No new crate dependency is introduced in Phase 3.
+**`char-code` is also required by `doc/whatif/lib-regex.md`** for
+character class range comparisons.
 
-### Deferred: Path Utilities (stdlib/path.llt)
+**Adds 9 Rust builtins.** No new crates.
 
-Path manipulation is entirely implementable in pure-tinct using `split`
-and `join`. Deferred because it is not blocking any known use case and
-the semantics (POSIX vs Windows paths) need a decision.
+### TOML Parsing Lite (stdlib/toml-lite.llt)
+
+A pure-tinct TOML subset parser for reading configuration files common
+in Rust projects — Cargo.toml, Cargo.lock, and TOML-format channel
+manifests. The design follows the same two-file pattern as
+`from-json` / `in/json.llt`:
+
+- `stdlib/toml-lite.llt` — exports `parse-toml-lite: [fn [s@String] → Dict]`
+- `stdlib/in/toml-lite.llt` — pipeline wrapper: `[parse-toml-lite [slurp stdin]]`
+
+Scripts that obtain TOML strings via `read-file` or HTTP fetch call
+`parse-toml-lite` directly. `stdlib/in/toml.llt` is intentionally
+left unwritten to reserve the slot for a future full Rust-builtin-backed
+parser (e.g. wrapping the `toml` crate).
+
+**Supported subset:**
+
+| Feature | Supported | Notes |
+|---------|-----------|-------|
+| `[section]` standard tables | ✓ | |
+| `[[array-table]]` | ✓ | Returns list of dicts under that key |
+| `key = "string-value"` | ✓ | Double-quoted strings only |
+| `key = 'literal'` | ✗ | |
+| Comments (`# ...`) | ✓ | |
+| Blank lines | ✓ | Skipped |
+| Multi-line strings | ✗ | |
+| Dotted keys (`a.b = 1`) | ✗ | |
+| Inline tables (`{a = 1}`) | ✗ | |
+| Integer / float / bool values | ✗ | String values only |
+| Datetime | ✗ | No datetime type in tinct |
+
+**Implementation:** fold over `split content "\n"`, carrying
+`{section: Str, tables: Dict}` accumulator state. Uses `starts-with?`
+for line-prefix matching.
+
+**Depends on:** `starts-with?`, `ends-with?`, `trim` from §Extended
+String Utilities. **Adds 0 Rust builtins.** No new crates.
+
+### Streaming File I/O (WriteHandle)
+
+The archived `io.md` specifies `write-file` and `write-file-atomic` as
+atomic operations: the full content string is passed at once. This is
+the right default for configuration output. But scripts that build
+output incrementally — writing lines one at a time to a log or report
+file — need a split open/write/close model.
+
+**The current `Handle` is read-only.** `Value::Handle` is
+`Box<dyn BufRead>`; `open cap path "r"` gives you a readable handle
+and nothing else. Writing to a file handle requires a new value type.
+
+**New value type: `Value::WriteHandle`** — wraps `Box<dyn Write>` (a
+`BufWriter<File>`). Returned by `open` when mode is `"w"` (truncate)
+or `"a"` (append). The type system exposes this as `WriteHandle`.
+
+**New Rust builtins:**
+
+**`write wh str`** — writes `str` to the `WriteHandle`, returns the
+`WriteHandle` for chaining. Does not flush.
+
+**`flush wh`** — flushes the `WriteHandle`'s buffer to the OS, returns
+`wh`. Use before reading the file in the same script.
+
+**`close wh`** — flushes and closes the `WriteHandle`, returns `null`.
+After `close`, the `WriteHandle` is invalid; further writes are errors.
+
+**`open`** already exists and returns `Handle` for `"r"` mode. It is
+extended to return `WriteHandle` for `"w"` and `"a"` modes. The
+returned type differs by mode — the type checker can enforce this
+statically once `Type::WriteHandle` is added.
+
+**`stdlib/io.llt` additions:**
 
 ```tinct
-# Future stdlib/path.llt — all pure-tinct
+# Open a file for writing (truncates existing content).
+open-write: [fn@WriteHandle [cap@DirCap path@String]
+  [open cap path "w"]]
+
+# Open a file for appending.
+open-append: [fn@WriteHandle [cap@DirCap path@String]
+  [open cap path "a"]]
+
+# Write a string followed by a newline.
+write-line: [fn@WriteHandle [wh@WriteHandle s@String]
+  [write wh [str s "\n"]]]
+
+# Write all elements of a Seq or Dict, one per line.
+write-lines: [fn@WriteHandle [wh@WriteHandle xs]
+  [each xs [fn [x] [write wh [str x "\n"]]]]
+  wh]
+```
+
+Example — a script that builds a report incrementally:
+
+```tinct
+[include "stdlib/io.llt"]
+
+# tinct run --cap-fs fs=. report.llt
+[out: [open-write fs "report.txt"]]
+[write-line out "=== Dependency Report ==="]
+[each deps [fn [d]
+  [write-line out [str d.name ": " d.version]]]]
+[close out]
+```
+
+**Adds 3 Rust builtins:** `write`, `flush`, `close`. `open` is extended
+for write modes. No new crates.
+
+### Strings as Character Sequences (`Value::String`)
+
+**The representation change:** replace `Value::String(String)` with
+`Value::String { source: Rc<str>, start: usize, end: usize }` — a
+shared, zero-copy slice into a reference-counted string buffer.
+
+```rust
+// Before
+String(String),
+
+// After
+String { source: Rc<str>, start: usize, end: usize },
+```
+
+Every string in the system is a `(source, start, end)` triple. No
+`Value::String(String)` variant remains. When a new string is
+constructed (by `str`, `upper`, `split`, etc.), it is allocated once
+as a `Rc<str>` and all references into it are zero-copy `String`
+slices. The `Rc` is cloned (pointer bump only) each time a slice is
+created; the underlying bytes are never copied.
+
+**Character iteration — zero string-data copies.** `[str-chars s]`
+produces a lazy `Seq` of `String` slices, each spanning one
+Unicode codepoint in the original buffer:
+
+```
+"hello" → String { source: Rc("hello"), start: 0, end: 5 }
+
+str-chars "hello" →
+  Seq(
+    head: String { source: Rc("hello"), start: 0, end: 1 },  # "h"
+    tail: Seq(
+      head: String { source: Rc("hello"), start: 1, end: 2 }, # "e"
+      ...
+    )
+  )
+```
+
+Each tail step is one `Rc::clone` (pointer bump) + one arena thunk
+slot. Zero bytes of string data are copied at any step.
+
+**All collection operations work on strings directly:**
+
+```tinct
+[map [fn [c] [upper c]] "hello"]      # → Seq of Strings
+[filter [fn [c] [= c "l"]] "hello"]   # → Seq("l" "l")
+[first "hello"]                        # → "h"
+[nth 2 "hello"]                        # → "l"
+[contains? "hello" "l"]                # → true
+[length "hello"]                       # → 5  (character count)
+```
+
+Result of mapping/filtering a string is a `Seq` of values. To
+reassemble a string: `[join "" [map f "hello"]]`.
+
+**Zero-copy `split`.** Because `split` can return `String` slices
+into the original `source`, splitting `"a:b:c"` on `":"` yields three
+`String` values all sharing the same `Rc<str>` — no new string
+allocations for the parts.
+
+**String builtins operate on `&source[start..end]`.** `upper`,
+`lower`, `trim`, `replace`, `starts-with?`, `ends-with?` all deref the
+`String` to a `&str` slice — same cost as today's `&String` deref.
+No reconstruction overhead.
+
+**`str-chars` return type: `Seq` of `String` slices** (not `Dict`,
+not `Seq` of new `String`s). `str-slice` and `str-find` are
+implemented in terms of `str-chars` and inherit zero-copy behavior.
+
+**Codebase impact.** This replaces every `Value::String` match arm
+throughout `src/eval.rs`, `src/builtins.rs`, `src/lib.rs`,
+`src/typecheck.rs`, and `src/value.rs`. The skeptic agent confirmed
+(reading the actual source) that `Value::String` is the current variant
+at `src/value.rs:144` and that a new variant requires explicit match
+arms — there is no free ride via existing `Seq` dispatch. This is a
+real refactor, not a trivial addition.
+
+**Memory comparison for a 20-char string:**
+- Current `Value::String`: 44 bytes, 1 allocation
+- `Value::String`: 36-byte `Rc<str>` (header + data) + 16 bytes
+  for `(start, end)` in the `Value` enum ≈ same order of magnitude,
+  with the benefit that all substrings and character slices share the
+  backing allocation
+
+**Type system:** `Type::String` remains unchanged. `String` is a
+runtime representation detail; the static type is still `String`.
+`str?` returns true for `String`. JSON serialization: `String`
+is a string — serializes as a JSON string, not an array.
+
+**Depends on:** `Value::Seq` and `ThunkId` arena infrastructure
+(already present). Adds 0 new builtins. No new crates. Requires
+replacing all `Value::String` match sites.
+
+### Bytes Type (`Value::Bytes`)
+
+A native binary-data type for byte sequences that have no character
+representation: TLS certificates, SSH keys, cryptographic hashes,
+serialized protobuf payloads, arbitrary binary file content. Storing
+these as strings is wrong — strings carry a UTF-8 validity invariant
+that binary data violates. Storing them as `Dict` of `Int` (0–255) is
+semantically correct but expensive and awkward to work with.
+
+**New value type: `Value::Bytes { source: Rc<[u8]>, start: usize, end: usize }`**
+
+The same `(source, start, end)` triple pattern as `Value::String`,
+backed by `Rc<[u8]>` — a fat pointer (pointer + length) with one
+allocation (header + data), no double indirection. Every `Bytes` value
+is already a view; there is no separate `BytesView` variant. A whole
+buffer is `start=0, end=source.len()`. `bytes-slice` returns
+`Bytes { source: Rc::clone(&source), start, end }` — one pointer bump,
+zero bytes copied. `Bytes` values are immutable.
+
+**New Rust builtins:**
+
+| Function | Signature | Notes |
+|----------|-----------|-------|
+| `bytes-length b` | `Bytes → Int` | Number of bytes (not characters) |
+| `bytes-get b i` | `Bytes → Int → Int` | Byte at index `i` as Int (0–255) |
+| `bytes-slice b start end` | `Bytes → Int → Int → Bytes` | Zero-copy subslice |
+| `bytes-concat b1 b2` | `Bytes → Bytes → Bytes` | Concatenate two byte sequences |
+| `bytes-equal? b1 b2` | `Bytes → Bytes → Bool` | Constant-time comparison |
+
+**Revised builtins from §Bitwise Primitives:**
+
+`str-bytes` and `bytes-str` now return/accept `Bytes` instead of `Dict`:
+
+| Function | Old signature | New signature |
+|----------|--------------|---------------|
+| `str-bytes s` | `String → Dict` | `String → Bytes` — UTF-8 encode string to bytes |
+| `bytes-str b` | `Dict → String` | `Bytes → String` — UTF-8 decode bytes to string; errors on invalid UTF-8 |
+
+**`stdlib/encoding.llt` revised:**
+
+`base64-encode` and `hex-encode` take `Bytes`, not `String`. To
+encode a string's UTF-8 bytes as base64, use `[base64-encode [str-bytes s]]`:
+
+```tinct
+# stdlib/encoding.llt (revised)
+
+# base64-encode — encode Bytes as base64 String
+base64-encode: [fn [b@Bytes] ...]
+
+# base64-decode — decode base64 String to Bytes; errors on invalid input
+base64-decode: [fn [s@String] ...]
+
+# hex-encode — encode Bytes as lowercase hex String
+hex-encode: [fn [b@Bytes]
+  [join "" [map hex-byte [seq b]]]]   # seq b iterates bytes as Ints
+
+# hex-decode — decode hex String to Bytes; errors on odd length or non-hex chars
+hex-decode: [fn [s@String] ...]
+```
+
+**Sequence operations.** `Bytes` participates in dual-dispatch for
+collection operations — `map`, `filter`, `reduce`, `first`, `last`,
+`nth`, `length` — iterating over byte values as `Int` (0–255). This
+mirrors how `String` iterates over `String` character slices. The
+result of mapping over `Bytes` is a `Seq`, not `Bytes`; to reassemble,
+use `bytes-concat` or collect via `bytes-str`.
+
+**JSON serialization.** `Bytes` serializes as a base64-encoded string
+(the convention used by Kubernetes, protobuf JSON encoding, and JOSE/JWT).
+A `Bytes` value with content `[0xDE 0xAD 0xBE 0xEF]` serializes as
+`"3q2+7w=="`. This is reversible via `base64-decode`.
+
+**No literal syntax.** Bytes values are created via conversion:
+- `[str-bytes s]` — from a UTF-8 string  
+- `[base64-decode s]` — from a base64 string
+- `[hex-decode s]` — from a hex string
+- `[bytes-slice b start end]` — from an existing Bytes value
+
+**Type system:** `Type::Bytes` — a new type. `bytes?` predicate. Not
+a subtype of `String` or `Dict`; not interchangeable without explicit
+conversion. `str-bytes`/`bytes-str` are the explicit bridges.
+
+**Adds 5 Rust builtins:** `bytes-length`, `bytes-get`, `bytes-slice`,
+`bytes-concat`, `bytes-equal?`. Updates `str-bytes`/`bytes-str`
+signatures. No new crates.
+
+### Path Utilities (stdlib/path.llt)
+
+Path manipulation is entirely implementable in pure-tinct using `split`
+and `join`. POSIX path semantics assumed; Windows paths are out of scope.
+
+```tinct
+# stdlib/path.llt — all pure-tinct
 path-parts:   [fn [p] [split p "/"]]
 basename:     [fn [p] [last [path-parts p]]]
 dirname:      [fn [p] [join "/" [rest [reverse [path-parts p]]]]]
@@ -321,84 +651,79 @@ extension:    [fn [p] [last [split [basename p] "."]]]
 path-join:    [fn [...parts] [join "/" parts]]
 ```
 
-### Deferred: Date/Time
-
-Date/time handling requires the `chrono` crate and substantial design
-work (RFC 3339 subset, duration representation, timezone handling).
-Deferred until a concrete use case emerges.
+**Adds 0 Rust builtins.** No new crates.
 
 ## What Would Change
 
 ### Dependencies (`Cargo.toml`)
 
-**Current:** No new crates required.
-
-**Proposed:** No new crates across all three phases. All builtins use
-only Rust standard library; derived encoding and regex operations are
-pure-tinct.
-
-**Impact:** None — zero new dependencies.
+No new crates. All builtins use only the Rust standard library; derived
+encoding and regex operations are pure-tinct.
 
 ### Evaluator Builtins (`src/builtins.rs`)
 
-**Current:** 46 Rust builtins registered in `standard_builtins()`.
+33 new Rust builtins total: 3 string (`starts-with?`, `ends-with?`,
+`str-chars`), 13 math (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`,
+`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`; `pi` and `e`
+are Float literals in stdlib), 9 bitwise (`band`, `bor`, `bxor`, `shl`,
+`shr`, `char-code`, `chr`, `str-bytes`, `bytes-str`), 3 I/O
+(`write`, `flush`, `close`), 5 bytes (`bytes-length`, `bytes-get`,
+`bytes-slice`, `bytes-concat`, `bytes-equal?`). `open` is extended for
+write modes. `str-bytes`/`bytes-str` signatures change from `Dict` to
+`Bytes`. The `Value::String` change replaces `Value::String`
+throughout — no new builtins, but a pervasive refactor of existing
+match sites.
 
-**Proposed:** Phase 1 adds at most 1 Rust builtin (`str-chars`, only
-if `split s ""` edge case requires it — otherwise 0). Phase 2 adds
-13 math builtins (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`,
-`cos`, `tan`, `asin`, `acos`, `atan`, `atan2`; `pi` and `e` are Float
-literals). Phase 3 adds 9 bitwise primitive builtins (`band`, `bor`,
-`bxor`, `shl`, `shr`, `char-code`, `chr`, `str-bytes`, `bytes-str`).
-Total: 13–14 new Rust builtins across three phases.
-
-All new builtins follow the existing registration pattern in
-`standard_builtins()` and the `builtin_*` naming convention.
-
-**Impact:** Moderate — each phase is an incremental addition.
+All follow the existing registration pattern in `standard_builtins()`
+and the `builtin_*` naming convention.
 
 ### Standard Library Files
 
-**Current:** Single `stdlib/prelude.llt`.
+New files added alongside `prelude.llt`:
 
-**Proposed:** New files added alongside prelude:
-
-- `stdlib/strings.llt` — `str-contains?`, `str-starts-with?`,
-  `str-ends-with?`, `str-chars`, `str-pad-left`, `str-pad-right`,
-  `str-repeat`, `str-find`, `str-slice` (Phase 1)
+- `stdlib/strings.llt` — `str-contains?`, `starts-with?` (builtin),
+  `ends-with?` (builtin), `str-chars` (builtin), `pad-left`,
+  `pad-right`, `str-repeat`, `str-find`, `str-slice`
 - `stdlib/math.llt` — `pi`, `e` (Float literals), `hypot`, `deg->rad`,
-  `rad->deg`, `log-base` (Phase 2)
+  `rad->deg`, `log-base`
 - `stdlib/encoding.llt` — `base64-encode`, `base64-decode`,
-  `hex-encode`, `hex-decode`, `mask-apply` and other bit-level
-  utilities (Phase 3, pure-tinct on top of bitwise primitives)
-- `stdlib/regex.llt` — Thompson NFA regex engine (separate doc:
-  `doc/whatif/lib-regex.md`; depends on Phase 1 + Phase 3 of this doc)
+  `hex-encode`, `hex-decode`, `mask-apply` and other bit-level utilities
+  (pure-tinct on top of bitwise primitives)
+- `stdlib/toml-lite.llt` — `parse-toml-lite` (pure-tinct)
+- `stdlib/in/toml-lite.llt` — pipeline wrapper: `[parse-toml-lite [slurp stdin]]`
+- `stdlib/io.llt` extended — `open-write`, `open-append`, `write-line`,
+  `write-lines` (pure-tinct wrappers over new `write`/`flush`/`close` builtins)
+- `stdlib/encoding.llt` revised — `base64-encode`/`hex-encode` accept `Bytes`;
+  `base64-decode`/`hex-decode` return `Bytes`
 - `stdlib/path.llt` — `basename`, `dirname`, `extension`, `path-join`,
-  `path-parts` (deferred)
+  `path-parts`
+- `stdlib/regex.llt` — Thompson NFA regex engine (separate doc:
+  `doc/whatif/lib-regex.md`; depends on `str-chars` and `char-code`)
 
-**Loading:** Additional stdlib files are loaded by `llt eval` and
-`llt format` at startup alongside `prelude.llt`. No user-facing import
-syntax is needed — all stdlib functions are in scope by default.
-
-**Impact:** Minor — the stdlib loading mechanism already handles
-multiple files.
+`strings.llt`, `math.llt`, and `encoding.llt` are loaded by `tinct run`
+at startup alongside `prelude.llt` — all their functions are in scope
+by default. `toml-lite.llt` is an opt-in library: scripts `$include` it
+explicitly and call `parse-toml-lite` directly. `stdlib/in/toml-lite.llt`
+is available as `-i toml-lite` for pipeline use.
 
 ### Type Checker (`src/typecheck.rs`)
 
-**Proposed:** Register new builtins in `TypeEnv::with_builtins()` with
-precise signatures:
+Register new builtins in `TypeEnv::with_builtins()` with precise signatures:
 
 ```
-# Phase 1 (optional — only if split s "" is unreliable)
-str-chars : String → Dict   -- 0-indexed list of single-char strings
+# String builtins
+starts-with? : String → String → Bool   -- starts-with? prefix haystack
+ends-with?   : String → String → Bool   -- ends-with? suffix haystack
+str-chars    : String → Seq             -- lazy Seq of single-codepoint String slices
 
-# Phase 2
+# Math builtins
 pow : Float → Float → Float
 sqrt : Float → Float
 sin : Float → Float   (and cos, tan, asin, acos, atan)
 atan2 : Float → Float → Float
 # pi and e are Float literals in stdlib/math.llt, not registered builtins
 
-# Phase 3 — bitwise primitives
+# Bitwise primitives
 band : Int → Int → Int
 bor : Int → Int → Int
 bxor : Int → Int → Int
@@ -406,72 +731,37 @@ shl : Int → Int → Int
 shr : Int → Int → Int
 char-code : String → Int
 chr : Int → String
-str-bytes : String → Dict   -- 0-indexed list of Int (0-255)
-bytes-str : Dict → String   -- inverse of str-bytes
+str-bytes : String → Bytes  -- UTF-8 encode string to Bytes
+bytes-str : Bytes → String  -- UTF-8 decode Bytes to string; errors on invalid UTF-8
+
+# Bytes builtins
+bytes-length : Bytes → Int
+bytes-get    : Bytes → Int → Int
+bytes-slice  : Bytes → Int → Int → Bytes
+bytes-concat : Bytes → Bytes → Bytes
+bytes-equal? : Bytes → Bytes → Bool
 ```
 
-**Impact:** Minor — follows the `TypeEnv::with_builtins()` pattern
-established in the `type-extensions` sprint.
+## Dependencies
 
-## Phased Adoption
-
-### Phase 1: Extended String Utilities
-
-**What:** `stdlib/strings.llt` with all string utilities as pure-tinct:
-`str-contains?`, `str-starts-with?`, `str-ends-with?`, `str-chars`,
-`str-pad-left`, `str-pad-right`, `str-repeat`, `str-find`, `str-slice`.
-At most one Rust builtin (`str-chars`) if `split s ""` edge-case
-behavior is unreliable; otherwise zero.
-
-**What it enables:** String predicates for conditional config generation,
-character-indexed access, string construction with padding. Also
-prerequisite for the regex engine (`doc/whatif/lib-regex.md`).
-
-**No new crates.**
-
-### Phase 2: Extended Math Builtins
-
-**What:** 13 new Rust builtins covering pow, sqrt, log, exp, and
-trigonometric functions. `pi` and `e` are Float literals in
-`stdlib/math.llt`. Pure-tinct helpers: `hypot`, `deg->rad`, `rad->deg`,
-`log-base`.
-
-**What it enables:** Mathematical configuration (network calculations,
-frequency ratios, calibration curves).
-
-**No new crates.** Pure `f64` method wrappers.
-
-### Phase 3: Bitwise Primitives
-
-**What:** 9 new Rust builtins — five bitwise integer operations (`band`,
-`bor`, `bxor`, `shl`, `shr`) and four string↔bytes conversions
-(`char-code`, `chr`, `str-bytes`, `bytes-str`). Derived operations
-(`base64-encode`, `hex-encode`, `hex-decode`, subnet masking, permission
-flags) in pure-tinct `stdlib/encoding.llt`.
-
-**What it enables:** Any bit-level algorithm — base64, hex, subnet mask
-application, Unix permission flags, user-defined bit-packed formats.
-Also prerequisite for `doc/whatif/lib-regex.md` (needs `char-code`).
-
-**No new crates.**
-
-### Prerequisites
-
-- **Phase 1:** No prerequisites. String additions are purely additive.
-- **Phase 2:** No prerequisites. Math builtins are independent.
-- **Phase 3:** No hard prerequisites. Can deliver after Phase 2 or
-  independently. `lib-regex.md` requires Phase 1 + Phase 3 complete.
-
-### Trigger
-
-- **Phase 1:** When the first serialization helper (`yaml-quote-string`,
-  TOML string escaping, Nginx config generation) needs `str-contains?`
-  or `str-starts-with?`.
-- **Phase 2:** When the first mathematical configuration file is
-  attempted (subnetting, audio config, scientific instrumentation).
-- **Phase 3:** When any bit-level configuration task arises — subnet
-  mask calculation, Unix permission flags, base64 or hex encoding, or
-  when `lib-regex.md` adoption is planned (it depends on `char-code`).
+- `stdlib/toml-lite.llt` requires `starts-with?`, `ends-with?`, `trim`
+  from §Extended String Utilities.
+- `doc/whatif/lib-regex.md` requires `str-chars` from §Extended String
+  Utilities and `char-code` from §Bitwise Primitives.
+- §Strings as Character Sequences (`Value::String`) replaces
+  `Value::String(String)` throughout the codebase — requires updating
+  every match site in `src/eval.rs`, `src/builtins.rs`, `src/lib.rs`,
+  `src/typecheck.rs`, and `src/value.rs`. Independent of all other
+  sections except it makes `str-chars` return a `Seq` of `String`
+  slices, which `str-slice` and `str-find` depend on.
+- §Bytes Type requires `Value::Bytes` (new variant) and `Type::Bytes`.
+  `str-bytes`/`bytes-str` signatures change from Dict to Bytes; the
+  encoding.llt functions must be updated accordingly.
+- §Streaming File I/O requires `Value::WriteHandle` (new variant) and
+  extension of `open` to return it for write/append modes.
+- §Extended Math and §Bitwise Primitives are independent of each other
+  and of §Extended String Utilities.
+- §Path Utilities has no dependencies.
 
 ## References
 
@@ -491,5 +781,11 @@ Also prerequisite for `doc/whatif/lib-regex.md` (needs `char-code`).
 - Josefsson, S. (2006). "The Base16, Base32, and Base64 Data
   Encodings." RFC 4648. — Normative reference for the base64 alphabet
   and padding behavior used in `stdlib/encoding.llt`.
-- doc/whatif/lib-regex.md — regex engine that depends on Phase 1
-  (`str-chars`) and Phase 3 (`char-code`) of this doc.
+- Coutts, R., Leshchinskiy, R. & Stewart, D. (2007). "Stream Fusion:
+  From Lists to Streams to Nothing at All." *ICFP 2007*. — The formal
+  model behind `Value::String`: a (ptr, offset, length) triple
+  sharing one buffer, avoiding per-character allocation. GHC's
+  `Data.ByteString` implements this directly; `Value::String` is
+  the same structure adapted to tinct's `Rc<str>` ownership model.
+- doc/whatif/lib-regex.md — regex engine that depends on `str-chars`
+  and `char-code` from this document.

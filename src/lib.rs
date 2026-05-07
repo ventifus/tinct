@@ -37,18 +37,24 @@ pub(crate) mod types;
 pub(crate) mod value;
 // Rust-native builtin functions (stdlib-1 sprint).
 pub(crate) mod builtins;
+// Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
+pub(crate) mod builtins_dict;
+// I/O builtins: dir-cap, open, slurp, write, connect, lines, emit, env.
+pub(crate) mod builtins_io;
+// Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
+pub(crate) mod builtins_math;
+// Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
+pub(crate) mod builtins_meta;
 // Seq primitive builtins: seq, head, tail, collect, seq?.
 pub(crate) mod builtins_seq_prim;
 // Sequence generator builtins: range, repeat, cycle, iterate, unfold.
 pub(crate) mod builtins_seq_gen;
-// Sequence transform builtins: map, filter, take, drop.
-pub(crate) mod builtins_seq_xform;
 // Sequence reduction builtins: reduce, join, concat.
 pub(crate) mod builtins_seq_reduce;
+// Sequence transform builtins: map, filter, take, drop.
+pub(crate) mod builtins_seq_xform;
 // String builtins: str, split, replace, upper, lower, trim.
 pub(crate) mod builtins_string;
-// Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
-pub(crate) mod builtins_math;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // Macro expansion (pre-desugar AST transformation).

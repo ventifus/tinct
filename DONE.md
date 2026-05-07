@@ -4395,3 +4395,16 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] to-bytes stub in stdlib/numeric.llt for binary serialization dispatch
 - [x] Invalid repr value and non-numeric type cause type errors
 - [x] 4 corpus tests: repr_valid_u8, repr_valid_i32, repr_invalid_value, repr_non_numeric
+
+## Source Organization
+
+### `file-split`
+
+Break up oversized Rust modules. All files currently compile and pass tests; each split is a pure move of code with no semantic change.
+
+- [x] Enable warnings-as-errors: RUSTFLAGS="-D warnings" in justfile
+- [x] builtins.rs (13,641 → 1,058 lines): split into builtins_io.rs, builtins_dict.rs, builtins_meta.rs
+- [x] typecheck.rs (10,691 → 2,595 lines): split into typecheck_annot.rs, typecheck_dict.rs
+- [x] types.rs (9,408 → 977 non-test lines): split into type_env.rs, type_unify.rs
+- [x] eval.rs (9,347 → 8,317 lines): split into eval_pipeline.rs, eval_dict.rs
+- [x] parser.rs split deferred — type parsing interleaved with parse2() monolith

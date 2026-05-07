@@ -1,30 +1,23 @@
 # What If: TLS, PKI, and HTTP Protocol Support for tinct (lib-tls)
 
-What would it take to give tinct a complete TLS configuration story — CA roots, client certificates, certificate pinning, and protocol negotiation — while keeping the capability model clean and the design appropriate for a configuration language?
+What would it take to give tinct a complete HTTP and TLS story — plain HTTP GET, CA roots, client certificates, certificate pinning, and protocol negotiation — while keeping the capability model clean and the design appropriate for a configuration language?
 
 ## Current State
 
 `doc/whatif/io.md` defines `tls net-cap host port`, which opens a TLS connection via `rustls` with full chain and hostname verification always enabled. It returns a `Value::Handle` — the same opaque byte-stream type as a file or TCP socket. The Handle IS the authenticated channel in the capability model: the TLS handshake completed at call time, so holding the Handle proves the connection was established against a trusted server.
 
-What `tls` does not yet specify:
+What is not yet specified or implemented:
 
-- Which CA roots to trust (system store? compiled-in Mozilla roots? custom CA?)
-- How to configure mutual TLS (client certificates and keys)
-- Whether certificate pinning is supported and how
-- What ALPN protocols are negotiated
-- How HTTP/2 and HTTP/3 fit into the Handle abstraction (or whether they do)
-- What the `fetch` stdlib function can realistically implement over a raw Handle
-
-The io.md design defers all of this to this document.
-
-### What's Missing
-
-1. **CA configuration** — no mechanism for custom CA bundles (corporate internal CA, Vault PKI, self-signed dev certs)
-2. **Mutual TLS** — no way to present a client certificate to a server that requires it
-3. **Certificate pinning** — no defense against CA compromise or rogue certs for internal services
-4. **HTTP/2 multiplexing** — the Handle byte-stream model is insufficient for HTTP/2 streams
-5. **HTTP/3/QUIC** — UDP-based QUIC connections cannot be modeled as a Handle at all
-6. **TLS identity introspection** — no way to inspect the server's certificate from tinct code
+- **Plain HTTP GET** — `connect` returns a read-only `Handle` (`Box<dyn BufRead>`);
+  the write half of the TCP stream is discarded, so there is no way to send an HTTP
+  request over the connection. `builtin_write` writes files (DirCap + path), not sockets.
+  The `fetch` stub in `stdlib/net.llt` has always been a TODO blocked on this.
+- **CA configuration** — no mechanism for custom CA bundles (corporate internal CA, Vault PKI, self-signed dev certs)
+- **Mutual TLS** — no way to present a client certificate to a server that requires it
+- **Certificate pinning** — no defense against CA compromise or rogue certs for internal services
+- **HTTP/2 multiplexing** — the Handle byte-stream model is insufficient for HTTP/2 streams
+- **HTTP/3/QUIC** — UDP-based QUIC connections cannot be modeled as a Handle at all
+- **TLS identity introspection** — no way to inspect the server's certificate from tinct code
 
 ## Why TLS Configuration Matters for tinct
 
@@ -38,6 +31,64 @@ tinct runs at system boundaries: it reads secrets from Vault, validates Kubernet
 A TLS story that only covers the public web is insufficient. The configuration language that generates infrastructure is exactly where these edge cases matter most.
 
 ## Design
+
+### HTTP GET: `http-get` and `https-get`
+
+**The Handle problem.** `connect` wraps the `TcpStream` in a `BufReader`,
+discarding the write half. `Value::Handle` is `Box<dyn BufRead>` — read-only.
+There is no socket write operation. Redesigning Handle to be bidirectional
+touches every consumer (`slurp`, `lines`, `emit`). The correct fix for the HTTP
+use case is an **atomic Rust builtin** that owns both halves of the socket
+internally and never exposes them as a Handle.
+
+**`http-get`** — plain HTTP/1.0 GET over TCP:
+
+```
+http-get : NetCap → String → Int → String → Dict → Int → String
+           cap      host     port  path      headers timeout-ms
+```
+
+Opens a TCP connection via `TcpStream::connect`, sends an HTTP/1.0 GET request
+with the given headers, reads the full response, strips HTTP response headers,
+and returns the body as a string. The socket is closed before the builtin
+returns. Errors (connection refused, timeout, non-2xx status) are tinct errors.
+No new crates — uses `std::net::TcpStream` only.
+
+**`https-get`** — HTTP/1.0 GET over TLS. Mirrors `http-get` with an added
+`tls-opts` dict:
+
+```
+https-get : NetCap → String → Int → String → Dict → Dict → Int → String
+            cap      host     port  path      headers tls-opts timeout-ms
+```
+
+`tls-opts` accepts the same keys as the `tls` opts dict (see §`tls` Options Dict):
+`ca-bundle`, `system-roots`, `client-cert`, `client-key`, `pin-sha256`, `alpn`.
+
+**`fetch` in `stdlib/net.llt`** wraps both builtins with URL parsing, dispatching
+on scheme:
+
+```tinct
+fetch: [fn [cap@NetCap url@Str]
+  [parsed: [parse-url url]]
+  [if [starts-with? "https://" url]
+    [https-get cap parsed.host parsed.port parsed.path [] [] 5000]
+    [http-get  cap parsed.host parsed.port parsed.path [] 5000]]]
+```
+
+`fetch-opts` passes a TLS configuration through for HTTPS:
+
+```tinct
+fetch-opts: [fn [cap@NetCap url@Str opts@Dict]
+  [parsed:  [parse-url url]]
+  [tls-cfg: [dict-select opts ["ca-bundle" "client-cert" "client-key" "pin-sha256"]]]
+  [if [starts-with? "https://" url]
+    [https-get cap parsed.host parsed.port parsed.path [] tls-cfg 5000]
+    [http-get  cap parsed.host parsed.port parsed.path [] 5000]]]
+```
+
+**Depends on:** `starts-with?` from `doc/whatif/lib-supplemental.md`
+§Extended String Utilities.
 
 ### `tls` Options Dict
 
@@ -109,7 +160,7 @@ In tinct's capability model, a client certificate is an **identity capability**:
 ```tinct
 [include "stdlib/io.llt"]
 
-# llt eval --cap-fs fs=/etc/service-certs --cap-net net=api.internal script.llt
+# tinct run --cap-fs fs=/etc/service-certs --cap-net net=api.internal script.llt
 
 [cert: [open fs "client.pem" "r"]]
 [key:  [open fs "client.key" "r"]]
@@ -182,8 +233,6 @@ ALPN (Application-Layer Protocol Negotiation, RFC 7301) is a TLS extension that 
 
 Default (no `alpn` option): `["http/1.1"]`. This is correct for tinct's stdlib `fetch`, which implements HTTP/1.0 over a raw Handle — HTTP/1.1 negotiated with an HTTP/2-only server would produce a protocol error.
 
-The `alpn` option exposes the negotiation mechanism for programs that know they are talking to a specific protocol. See §HTTP/2 and HTTP/3 below for why tinct's Handle model does not implement higher-level protocol semantics.
-
 ### HTTP/2, HTTP/3, and the Handle Boundary
 
 The `Value::Handle` models a single bidirectional byte stream. This matches HTTP/1.x (send a request, read a response, optionally close). It does not match HTTP/2 or HTTP/3:
@@ -195,7 +244,7 @@ The `Value::Handle` models a single bidirectional byte stream. This matches HTTP
 The correct abstraction boundary for tinct: **Handle = one byte stream; HTTP/2 and HTTP/3 are protocol engines, not byte streams.** For HTTP/2 and HTTP/3 from tinct code, the right answer is a Rust-level `fetch` builtin that returns a response dict, hiding protocol selection, connection pooling, and stream multiplexing entirely.
 
 ```tinct
-# Phase 3: Rust-level fetch with HTTP/1.1 + HTTP/2 + HTTP/3 via reqwest
+# Rust-level fetch with HTTP/1.1 + HTTP/2 + HTTP/3 via reqwest
 # Protocol selected by ALPN; connection pooling managed by Rust
 [resp: [fetch net "https://api.example.com/config"]]
 # resp: [status: 200  headers: [...]  body: "..."]
@@ -205,132 +254,87 @@ This keeps the tinct surface simple and protocol-agnostic. The underlying implem
 
 ### The `fetch` Boundary: stdlib vs Rust
 
-`doc/whatif/io.md` defines `fetch` as tinct code in `stdlib/net.llt`, implemented via `connect`/`tls` + raw bytes (HTTP/1.0 over Handle). This is correct for Phase 1 (simple HTTP/1.0 requests) but cannot scale to HTTP/2 or HTTP/3 without a Rust-level implementation.
-
 The two-tier model:
 
 | Tier | Function | Protocol | Implementation |
 |------|----------|----------|----------------|
 | Low-level | `connect`, `tls` | TCP, TLS | Rust (builtins) |
-| Mid-level | `fetch` (stdlib) | HTTP/1.0 | tinct (stdlib/net.llt) |
-| High-level | `fetch` (Phase 3) | HTTP/1.1+/HTTP/2/HTTP/3 | Rust (builtin, replaces stdlib version) |
+| Mid-level | `http-get` | HTTP/1.0 plain | Rust (atomic builtin) |
+| Mid-level | `https-get` | HTTP/1.0 over TLS | Rust (atomic builtin) |
+| Mid-level | `fetch` (stdlib) | HTTP/1.0, scheme dispatch | tinct (stdlib/net.llt) |
+| High-level | `fetch` (Rust) | HTTP/1.1+/HTTP/2/HTTP/3 | Rust (builtin, replaces stdlib version) |
 
-Phase 1 `fetch` is tinct stdlib code (HTTP/1.0, Connection: close, no redirect following). Phase 3 `fetch` is a Rust builtin that shadows the stdlib version, adding HTTP/2 and HTTP/3 support transparently. User code does not change.
+The stdlib `fetch` (HTTP/1.0, Connection: close, no redirect following) is the
+initial implementation. The Rust `fetch` builtin shadows the stdlib version,
+adding HTTP/2 and HTTP/3 support transparently. User code does not change.
 
 ## What Would Change
 
 ### Rust Builtins (`src/builtins.rs`)
 
-**`tls net-cap host port`** — already specified in io.md. Extended to accept optional fifth argument (TLS opts dict).
+**`http-get cap host port path headers timeout-ms`** — new builtin. Plain HTTP/1.0
+GET over TCP. Returns body string. No new crates.
 
-**`tls-peer-cert handle`** — new builtin. Reads TLS peer certificate info from a Handle that was created by `tls`. Returns dict with `subject`, `issuer`, `sans`, `not-before`, `not-after`, `spki-sha256`. Strict. Returns `Null` for non-TLS Handles.
+**`https-get cap host port path headers tls-opts timeout-ms`** — new builtin.
+HTTP/1.0 GET over TLS with full options dict support.
 
-**`fetch net-cap url` (Phase 3)** — Rust-level HTTP client using `reqwest`. Replaces the tinct-code `fetch` in `stdlib/net.llt`. Returns `[status: Int  headers: Dict  body: Str]`. Handles HTTP/1.1 keepalive, HTTP/2 multiplexing, and HTTP/3 via ALPN negotiation and QUIC. Accepts optional opts dict: `[tls: TLS-opts  follow-redirects: Bool  headers: Dict  method: Str  body: Str]`.
+**`tls net-cap host port`** — already specified in io.md. Extended to accept
+optional fifth argument (TLS opts dict).
 
-**Impact:** Minor extension to existing `tls`; one new builtin (`tls-peer-cert`); one new Rust builtin in Phase 3 (`fetch`).
+**`tls-peer-cert handle`** — new builtin. Reads TLS peer certificate info from a
+Handle created by `tls`. Returns dict with `subject`, `issuer`, `sans`,
+`not-before`, `not-after`, `spki-sha256`. Returns `Null` for non-TLS Handles.
+
+**`fetch net-cap url`** — Rust-level HTTP client using `reqwest`. Replaces the
+tinct-code `fetch` in `stdlib/net.llt`. Returns
+`[status: Int  headers: Dict  body: Str]`. Handles HTTP/1.1 keepalive, HTTP/2
+multiplexing, and HTTP/3 via ALPN negotiation and QUIC. Accepts optional opts
+dict: `[tls: TLS-opts  follow-redirects: Bool  headers: Dict  method: Str  body: Str]`.
 
 ### Evaluator (`src/eval.rs`)
 
-**`Value::Handle` extended:** Handles from `tls` carry an `Option<TlsInfo>` (leaf cert metadata, negotiated ALPN protocol). `tls-peer-cert` reads this field. Handles from `connect` or `open` have `None` and `tls-peer-cert` returns `Null`.
+**`Value::Handle` extended:** Handles from `tls` carry an `Option<TlsInfo>` (leaf
+cert metadata, negotiated ALPN protocol). `tls-peer-cert` reads this field.
+Handles from `connect` or `open` have `None` and `tls-peer-cert` returns `Null`.
 
-**`Value::TlsConfig`:** Transient value type for the opts dict parsed by `tls`. Never exposed to tinct code — consumed internally during connection setup.
-
-**Impact:** Minor — one new optional field on `Value::Handle`; no new thunk states.
+**`Value::TlsConfig`:** Transient value type for the opts dict parsed by `tls`.
+Never exposed to tinct code — consumed internally during connection setup.
 
 ### Dependencies (`Cargo.toml`)
 
-| Phase | Crate | Purpose |
-|-------|-------|---------|
-| Phase 2 | `rustls = "0.23"` | TLS engine |
-| Phase 2 | `rustls-native-certs = "0.7"` | System root loading (`system-roots: true`) |
-| Phase 2 | `webpki-roots = "0.26"` | Compiled-in Mozilla roots (default) |
-| Phase 3 | `reqwest = { version = "0.12", features = ["http2", "brotli"] }` | High-level HTTP with HTTP/2 |
-| Phase 4 | `reqwest = { ..., features = ["http3"] }` | HTTP/3 via QUIC |
+| Crate | Purpose | Required by |
+|-------|---------|-------------|
+| `rustls = "0.23"` | TLS engine | `tls`, `https-get` |
+| `rustls-native-certs = "0.7"` | System root loading (`system-roots: true`) | `tls`, `https-get` |
+| `webpki-roots = "0.26"` | Compiled-in Mozilla roots (default) | `tls`, `https-get` |
+| `reqwest = { version = "0.12", features = ["http2", "brotli"] }` | High-level HTTP with HTTP/2 | Rust `fetch` |
+| `reqwest = { ..., features = ["http3"] }` | HTTP/3 via QUIC | Rust `fetch` (HTTP/3) |
 
-`rustls` and `webpki-roots` are already required by Phase 2 of io.md. This document extends the feature set on top of the same dependencies.
+`rustls` and `webpki-roots` are already required by io.md. This document
+extends the feature set on top of the same dependencies.
 
 ### stdlib (`stdlib/net.llt`)
 
-Phase 2: `fetch` remains tinct code using HTTP/1.0 over Handle. TLS options (CA bundle, client cert, pinning) exposed via `fetch-opts` wrapper:
-
-```tinct
-# stdlib/net.llt — fetch-opts passes TLS config to tls
-# Note: multi-expression fn bodies require doc/whatif/let-binding.md Phase 1
-fetch-opts: [fn [net-cap url opts]
-  [parsed:  [parse-url url]]
-  [tls-cfg: [dict-select opts ["ca-bundle" "client-cert" "client-key" "pin-sha256"]]]
-  [conn: [if [= parsed.scheme "https"]
-    [tls     net-cap parsed.host parsed.port tls-cfg]
-    [connect net-cap parsed.host parsed.port]]]
-  ...]
-```
-
-Phase 3: `fetch` and `fetch-opts` are replaced by the Rust builtin. `stdlib/net.llt` becomes a thin compatibility wrapper.
-
-**Impact:** Minor in Phase 2 (additive). Moderate in Phase 3 (stdlib replaced by Rust builtin; user-visible behavior unchanged).
+`fetch` and `fetch-opts` implemented in tinct over `http-get`/`https-get`.
+When the Rust `fetch` builtin lands, `stdlib/net.llt` becomes a thin
+compatibility wrapper — user-visible behavior is unchanged.
 
 ### Type Checker (`src/typecheck.rs`)
 
-Phase 1/2: TLS opts dict infers as `Any`. The type checker does not validate dict keys.
+TLS opts dict infers as `Any`. The type checker does not validate dict keys.
+Future work: `Type::Handle` with a `tls: bool` tag so `tls-peer-cert` is a
+type error on non-TLS Handles at the static level.
 
-Phase 4 (future): `Type::Handle` with a `tls: bool` tag. `tls-peer-cert` infers as `Fn@Dict [Handle]` and is a type error on non-TLS Handles at the static level.
+## Dependencies
 
-**Impact:** None in Phases 1–3.
-
-## Phased Adoption
-
-### Phase 1 (implicit): Current `tls`
-
-`tls net-cap host port` with compiled-in Mozilla roots and no options. This is already specified in `doc/whatif/io.md`. No new Rust code beyond what io.md Phase 2 requires.
-
-### Phase 2: Full TLS Configuration
-
-`tls` extended with optional opts dict: `ca-bundle`, `system-roots`, `client-cert`, `client-key`, `pin-sha256`, `alpn`. `tls-peer-cert` added. `stdlib/net.llt` `fetch-opts` updated. `rustls-native-certs` and `webpki-roots` added.
-
-```tinct
-[include "stdlib/io.llt"]
-[include "stdlib/net.llt"]
-
-# llt eval --cap-fs certs=/etc/tinct-certs --cap-net net=vault.internal:8200 script.llt
-
-[ca:   [open certs "internal-ca.pem" "r"]]
-[cert: [open certs "service.pem"     "r"]]
-[key:  [open certs "service.key"     "r"]]
-
-[token: [fetch-opts net "https://vault.internal:8200/v1/secret/db" [
-  ca-bundle:    ca
-  client-cert:  cert
-  client-key:   key
-  pin-sha256:   ["sha256//FINGERPRINT="]
-]]]
-```
-
-**Prerequisites:** io.md Phase 2 complete (network caps, `connect`/`tls`); `rustls = "0.23"` in `Cargo.toml`.
-
-### Phase 3: Rust-Level `fetch` (HTTP/2)
-
-Rust `fetch` builtin via `reqwest` with HTTP/1.1 keepalive and HTTP/2 support. Protocol selected automatically via ALPN. TLS opts forwarded to `reqwest`'s TLS configuration. Replaces tinct-code `fetch` transparently.
-
-**Prerequisites:** Phase 2 complete; `reqwest = "0.12"` with `http2` feature.
-
-### Phase 4: HTTP/3 (QUIC)
-
-`reqwest` HTTP/3 feature enabled. QUIC connections via quinn. Protocol selection: `h3` → `h2` → `http/1.1` (ALPN priority order). User code remains unchanged.
-
-**Prerequisites:** Phase 3 stable; `reqwest` HTTP/3 feature matured (currently nightly/experimental in reqwest 0.12).
-
-### Prerequisites
-
-- Phase 2: io.md Phase 2 complete; `rustls`, `webpki-roots`, `rustls-native-certs` in `Cargo.toml`
-- Phase 3: Phase 2 complete; io.md Phase 2 stable; `reqwest` with `http2` feature
-- Phase 4: Phase 3 stable; `reqwest` HTTP/3 feature production-ready
-
-### Trigger
-
-- When a tinct pipeline needs to connect to an internal service with a private CA (corporate root, Vault PKI, service mesh)
-- When a tinct pipeline must present a client certificate for mTLS service authentication
-- When certificate pinning is required for supply-chain security on internal API calls
-- When `stdlib/net.llt` `fetch` is promoted from io.md Phase 2 (this is Phase 2's trigger)
+- `http-get` has no dependencies beyond the existing `NetCap` infrastructure
+  from io.md.
+- `https-get` and `tls` opts dict require `rustls`, `webpki-roots`, and
+  `rustls-native-certs` in `Cargo.toml`, and io.md network caps complete.
+- `fetch` (stdlib) requires `http-get` and `https-get`, and `starts-with?`
+  from `doc/whatif/lib-supplemental.md` §Extended String Utilities.
+- Rust `fetch` requires `reqwest = "0.12"` with `http2` feature; HTTP/3
+  additionally requires the `http3` feature.
 
 ## References
 

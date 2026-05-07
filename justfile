@@ -27,7 +27,7 @@ default:
 
 # Build the project (debug mode)
 build:
-    {{container}} run {{run_flags}} {{rust_image}} cargo build
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo build
 
 # Install release binary to ~/.local/bin/tinct (symlink)
 install: build-release
@@ -43,10 +43,10 @@ build-release:
 # followed by corpus integration tests, CLI integration tests, and LSP corpus tests, in separate containers.
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
-    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib -- --test-threads=1
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
-    {{container}} run {{run_flags}} {{rust_image}} cargo test --test cli_tests
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
 
 # Run tests with output (NOTE: LSP corpus tests require `just test-lsp` — they need --features lsp)
 test-verbose:
@@ -110,7 +110,7 @@ clean:
 
 # Check if the code compiles without building
 check:
-    {{container}} run {{run_flags}} {{rust_image}} cargo check
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo check
 
 # Update dependencies
 update:
@@ -134,7 +134,12 @@ tree:
     {{container}} run {{run_flags}} {{rust_image}} cargo tree
 
 # Run full CI pipeline (check, test, lint, fmt-check, audit)
-ci: check test lint fmt-check audit
+ci:
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo check
+    just test
+    just lint
+    just fmt-check
+    just audit
     @echo "✅ All CI checks passed!"
 
 # Start interactive REPL
@@ -181,6 +186,56 @@ fmt-llt-fix FILE:
 version:
     {{container}} run {{run_flags}} {{rust_image}} rustc --version
     {{container}} run {{run_flags}} {{rust_image}} cargo --version
+
+# Show current vs latest versions of Rust toolchain and all direct dependencies.
+# Reads Cargo.lock for locked versions; queries crates.io for latest.
+# Runs on host (no container overhead) — requires curl and internet access.
+versions:
+    #!/usr/bin/env bash
+    LOCK=Cargo.lock
+
+    echo ""
+    echo "Rust toolchain"
+    printf "  %-10s %s\n" "pinned:" "{{rust_version}}"
+    latest_rust=$(curl -sf --max-time 10 \
+        https://static.rust-lang.org/dist/channel-rust-stable.toml 2>/dev/null \
+        | awk '/^\[pkg\.rust\]/{found=1} found && /^version =/{split($0,a,"\""); print a[2]; exit}')
+    [ -z "$latest_rust" ] && latest_rust="?"
+    if [ "{{rust_version}}" = "$latest_rust" ]; then
+        printf "  %-10s %s  ✓\n" "latest:" "$latest_rust"
+    else
+        printf "  %-10s %s  ←\n" "latest:" "$latest_rust"
+    fi
+
+    echo ""
+    echo "Direct dependencies (Cargo.lock → crates.io latest)"
+    printf "  %-22s  %-12s  %-12s\n" "crate" "locked" "latest"
+    printf "  %-22s  %-12s  %-12s\n" "─────────────────────" "──────────" "──────────"
+
+    # Derive direct dep names from Cargo.toml: any [*dependencies*] section entry.
+    crates=$(awk '
+        /dependencies/ && /^\[/ { in_dep=1; next }
+        /^\[/          { in_dep=0 }
+        in_dep && /^[a-zA-Z]/ { match($0, /^[a-zA-Z0-9_-]+/); print substr($0, RSTART, RLENGTH) }
+    ' Cargo.toml | sort -u)
+
+    for crate in $crates; do
+        locked=$(grep -A2 "^name = \"$crate\"$" "$LOCK" \
+            | awk -F'"' '/^version/{print $2; exit}')
+        latest=$(curl -sf --max-time 5 \
+            "https://crates.io/api/v1/crates/$crate" \
+            -H "User-Agent: tinct-version-check/0.1" \
+            2>/dev/null \
+            | grep -o '"max_stable_version":"[^"]*"' | head -1 | cut -d'"' -f4)
+        [ -z "$locked" ] && locked="—"
+        [ -z "$latest" ] && latest="?"
+        if [ "$locked" = "$latest" ]; then
+            printf "  %-22s  %-12s  %-12s  ✓\n" "$crate" "$locked" "$latest"
+        else
+            printf "  %-22s  %-12s  %-12s  ←\n" "$crate" "$locked" "$latest"
+        fi
+    done
+    echo ""
 
 # Build documentation
 doc:
