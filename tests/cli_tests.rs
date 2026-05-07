@@ -2910,3 +2910,114 @@ fn input_output_expr_pipeline() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "hello");
 }
+
+// ---------------------------------------------------------------------------
+// tinct describe — input contract description
+// ---------------------------------------------------------------------------
+
+#[test]
+fn describe_no_contract() {
+    // A file with no %@Type annotation reports "no input contract".
+    let (path, _dir) = write_temp_llt("describe_no_contract", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["describe", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("no input contract"),
+        "expected 'no input contract', got: {stdout}"
+    );
+}
+
+#[test]
+fn describe_json_no_contract() {
+    // --json mode on a file with no contract outputs empty JSON object.
+    let (path, _dir) = write_temp_llt("describe_json_no_contract", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["describe", "--json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON");
+    assert_eq!(json, serde_json::json!({}));
+}
+
+#[test]
+fn describe_schema_dict_detection() {
+    // A file with a schema dict (dict values containing schema keys) is detected.
+    let source = r#"[
+  port: [type: Int  min: 1  max: 65535]
+  host: [type: String  pattern: "^[a-z]+$"]
+]"#;
+    let (path, _dir) = write_temp_llt("describe_schema_dict", source);
+    let output = Command::new(tinct_bin())
+        .args(["describe", "--json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON from describe --json");
+    // Should have detected schema fields
+    let contracts = json.get("contracts").and_then(|c| c.as_array());
+    assert!(
+        contracts.is_some(),
+        "expected contracts array in JSON output, got: {json}"
+    );
+    let contracts = contracts.unwrap();
+    assert!(
+        !contracts.is_empty(),
+        "expected non-empty contracts array"
+    );
+    // Check that schema was detected with port and host entries
+    let first = &contracts[0];
+    let schema = first.get("schema").and_then(|s| s.as_object());
+    assert!(
+        schema.is_some(),
+        "expected schema object in contract, got: {first}"
+    );
+    let schema = schema.unwrap();
+    assert!(schema.contains_key("port"), "expected port in schema");
+    assert!(schema.contains_key("host"), "expected host in schema");
+}
+
+#[test]
+fn describe_human_readable() {
+    // Human-readable output shows one line per field.
+    let source = r#"[port: [type: Int  min: 1  max: 65535]]"#;
+    let (path, _dir) = write_temp_llt("describe_human", source);
+    let output = Command::new(tinct_bin())
+        .args(["describe", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("port"),
+        "expected 'port' in human-readable output, got: {stdout}"
+    );
+}
