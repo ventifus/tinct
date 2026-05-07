@@ -1,0 +1,4 @@
+# validate: pattern matching
+[validate [type: "String" pattern: "^[a-z0-9.-]+$"] "example.com"]
+===
+String("example.com")

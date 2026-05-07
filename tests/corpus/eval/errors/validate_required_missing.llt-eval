@@ -1,0 +1,14 @@
+# validate: required field missing
+[
+  schema: [
+    fields: [
+      port: [
+        type: "Int"
+        required: true
+      ]
+    ]
+  ]
+  result: [validate $schema [hostname: "localhost"]]
+].result
+===
+ERROR: required field is missing

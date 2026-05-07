@@ -2122,6 +2122,28 @@ Fix: check the conditions under which $error is called and ensure the
 calling code supplies valid input."
         }
 
+        "E090" => {
+            "\
+E090: Schema validation failed
+
+The $validate builtin found one or more constraint violations when checking
+data against a schema. The error message lists each field path and the
+specific constraint that was violated.
+
+Schema constraints include:
+  - type: expected value type (Int, String, Bool, etc.)
+  - min/max: numeric range constraints
+  - min-length/max-length: string or sequence length constraints
+  - pattern: regex pattern for strings
+  - required: field must be present
+  - enum: value must be one of the listed options
+  - items: schema for sequence elements
+  - fields: schema for dict fields
+
+Fix: correct the data to satisfy the schema constraints, or adjust the
+schema to match the actual data structure."
+        }
+
         "E099" => {
             "\
 E099: Internal error
@@ -2138,7 +2160,7 @@ that triggered the error."
                 "unknown error code: {code}\n\
                  Run 'tinct explain <code>' with a valid code, e.g. E001 through E099.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
-                 E040-E043, E050-E057, E060-E062, E070, E080, E099."
+                 E040-E043, E050-E057, E060-E062, E070, E080, E090, E099."
             ));
         }
     };

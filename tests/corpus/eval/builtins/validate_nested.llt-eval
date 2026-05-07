@@ -1,0 +1,23 @@
+# validate: nested dict validation
+[
+  schema: [
+    fields: [
+      port: [
+        type: "Int"
+        min: 1
+        max: 65535
+      ]
+      hostname: [
+        type: "String"
+        min-length: 1
+      ]
+    ]
+  ]
+  data: [
+    port: 8080
+    hostname: "localhost"
+  ]
+  result: [validate $schema $data]
+].result
+===
+Dict({"port": Int(8080), "hostname": String("localhost")})

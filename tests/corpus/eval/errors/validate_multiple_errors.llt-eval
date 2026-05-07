@@ -1,0 +1,19 @@
+# validate: collect multiple errors
+[
+  schema: [
+    fields: [
+      port: [
+        type: "Int"
+        min: 1
+        max: 65535
+      ]
+      hostname: [
+        type: "String"
+        min-length: 3
+      ]
+    ]
+  ]
+  result: [validate $schema [port: 100000 hostname: "ab"]]
+].result
+===
+ERROR: schema validation failed

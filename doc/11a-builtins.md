@@ -167,6 +167,65 @@ Each predicate materializes its argument (forcing the thunk) and checks the `Val
 
 **Error cases:** None.
 
+## Schema Validation
+
+Runtime structural validation with constraint checking. See [Structural Contracts](../whatif/structural-contracts.md) for the full design.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `validate` | 2 | `S × S → V` | Any | Validate data against schema; returns data unchanged on success, throws SchemaViolation on failure |
+
+**Schema keys:**
+
+- `type`: Expected type name (String: `"Int"`, `"String"`, `"Bool"`, `"Dict"`, `"Seq"`, etc.)
+- `min`, `max`: Numeric range constraints (Int or Float)
+- `min-length`, `max-length`: String or collection length constraints (Int)
+- `pattern`: Regex pattern for strings (String)
+- `required`: Whether field is required (Bool; default: false)
+- `default`: Default value if field is missing (Any; not yet enforced)
+- `items`: Schema for sequence/dict elements (Dict)
+- `fields`: Schema for dict fields (Dict mapping field names to field schemas)
+- `enum`: List of allowed values (Seq)
+
+**Behavior:**
+
+`validate` walks the schema dict and data value in parallel, collecting ALL constraint violations (not fail-fast). On success, it returns the data value unchanged (pass-through for pipeline use). On failure, it throws a `SchemaViolation` error with all violations listed as `(field_path, error_message)` pairs.
+
+Field paths use dot notation (e.g., `"user.address.zip"`). **Limitation:** field paths are ambiguous for keys containing `.` — this is a documented trade-off for simplicity.
+
+**Example:**
+
+```tinct
+nginx-schema: [
+  fields: [
+    port: [
+      type: "Int"
+      min: 1
+      max: 65535
+    ]
+    hostname: [
+      type: "String"
+      pattern: "^[a-z0-9.-]+$"
+    ]
+  ]
+]
+
+config: [
+  port: 8080
+  hostname: "example.com"
+]
+
+[validate $nginx-schema $config]
+# Returns config unchanged on success
+# Throws SchemaViolation with all violations on failure
+```
+
+**Error cases:**
+
+- Type mismatch if schema is not Dict
+- SchemaViolation if data violates one or more constraints (error lists all violations with field paths)
+- Invalid regex pattern in `pattern` constraint (reported as a violation)
+
 ## I/O
 
 File loading, JSON parsing, and text output.
@@ -294,7 +353,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 76 Rust-native builtins + 12 stable aliases = 88 registered names.
+**Total:** 77 Rust-native builtins + 12 stable aliases = 89 registered names.
 
 **By category:**
 - Arithmetic: 4 (+, -, *, /)
@@ -307,6 +366,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 - Parsing: 2 (to-int, to-float)
 - Evaluation: 5 (eval, error, try, apply, until)
 - Type introspection: 10 (type-of, int?, float?, num?, str?, bool?, null?, dict?, fn?, seq?)
+- Schema validation: 1 (validate)
 - I/O: 15 (emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, net-cap, connect, lines, write, write-atomic, from-json, include)
 - Sequences: 16 (seq, head, tail, collect, range, repeat, cycle, iterate, unfold, map, filter, take, drop, reduce, join, concat)
 - List operations: 4 (rest, cons, reverse, sort)
