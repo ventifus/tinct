@@ -682,6 +682,137 @@ Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) →
 
 **References:** Kiselyov, O. (2013). "How OCaml type checker works — or what polymorphism and garbage collection have in common." Damas, L. & Milner, R. (1982). "Principal type-schemes for functional programs." Mycroft, A. (1984). "Polymorphic type schemes and recursive definitions." Wright, A. (1995). "Simple imperative polymorphism."
 
+## Constrained Type Variables
+
+Tinct implements **Elm-style constrained type variables** (Phase 2 of the type classes roadmap) to provide precise types for overloaded builtins without requiring full Haskell-style type classes. Constraints restrict which types can instantiate a type variable, enabling static rejection of invalid operations (e.g., `[= [fn [] 1] [fn [] 2]]`) while preserving parametric polymorphism for valid uses.
+
+### Constraint Representation
+
+A **constraint** is a pair `(class, var)` where `class` is the type class name (e.g., `"Equatable"`) and `var` is the type variable name (e.g., `"a"`). Type schemes carry constraints alongside quantified variables:
+
+```
+TypeScheme {
+    type_vars: Vec<String>,
+    row_vars: Vec<String>,
+    constraints: Vec<Constraint>,    // NEW: constraints on type_vars/row_vars
+    body: Type,
+}
+```
+
+**Display format:** Constraints appear before the type body, separated by `=>`:
+
+- `Equatable a => Fn@Bool [a a]` — equality requires Equatable constraint
+- `Numeric a, Showable b => Fn@Str [a b]` — multiple constraints comma-separated
+- `Fn@Int [Int Int]` — monomorphic schemes (no constraints) display as before
+
+### Fixed Instance Sets
+
+Tinct uses **fixed, hardcoded instance sets** — there are no user-extensible class declarations. The following classes are built-in:
+
+| Class | Instances | Example builtins |
+|-------|-----------|-----------------|
+| `Equatable` | Int, IntLiteral, Float, Str, StringLiteral, Bool, Number | `=` |
+| `Comparable` | Int, IntLiteral, Float, Str, StringLiteral, Number | `<`, `>`, `<=`, `>=` |
+| `Numeric` | Int, IntLiteral, Float, Number | `+`, `-`, `*`, `/` |
+| `Showable` | all types except Error | `str` |
+| `Mappable` | Record, Seq | *(requires higher-kinded types; deferred to Phase 3)* |
+| `Appendable` | Str, StringLiteral, Record, Seq | *(planned)* |
+
+**Rationale:** Function, Seq, and Record are excluded from Equatable because structural equality would force lazy thunks, violating lazy evaluation semantics (see `doc/whatif/typeclasses.md` §Equatable for Records).
+
+### Constraint Generation and Checking
+
+1. **Builtin registration** (`TypeEnv::with_builtins`): Overloaded builtins are registered with constrained type schemes:
+
+   ```
+   =  : Equatable a => a → a → Bool
+   <  : Comparable a => a → a → Bool
+   +  : Numeric a => a → a → a
+   str: Showable a => a → Str
+   ```
+
+2. **Instantiation** (`instantiate_scheme`): When a constrained scheme is instantiated, constraints are copied with renamed variables:
+
+   ```
+   scheme: Numeric a => a → a → a
+   instantiate → fresh var _t0, constraint Numeric _t0
+   result: Fn@_t0 [_t0 _t0]
+   state.constraints += Constraint { class: "Numeric", var: "_t0" }
+   ```
+
+3. **Constraint checking** (`unify`): When binding a type variable α to a concrete type τ (U-VAR-LEVEL arm), check all constraints on α:
+
+   ```
+   For each constraint C(α) in state.constraints:
+       if ¬satisfies_constraint(τ, C):
+           error "type τ does not satisfy constraint C"
+   ```
+
+   Example: unifying `_t0` (with `Numeric _t0`) with `Fn@Int [Int]`:
+   ```
+   satisfies_constraint(Fn@Int [Int], "Numeric") → false
+   → TypeError: type Fn@Int [Int] does not satisfy constraint Numeric
+   ```
+
+4. **Generalization** (`generalize`): Constraints on generalized variables are included in the resulting TypeScheme:
+
+   ```
+   state.constraints: [Numeric _t0, Showable _t1]
+   generalizable vars: {_t0, _t2}
+   → scheme.constraints: [Numeric a]    (only _t0 was generalized)
+   ```
+
+### Inference Flow Example
+
+```tinct
+# User code
+result: [+ 1 "hello"]
+
+# Type inference
+1. Look up + → Equatable a => a → a → a
+2. Instantiate → Numeric _t0, Fn@_t0 [_t0 _t0]
+3. Constraint generated: state.constraints += Numeric _t0
+4. Argument 1: infer(1) → IntLiteral(1)
+5. Unify _t0 with IntLiteral(1):
+   - Check: satisfies_constraint(IntLiteral(1), "Numeric") → true
+   - Bind: _t0 ↦ IntLiteral(1)
+6. Argument 2: infer("hello") → StringLiteral("hello")
+7. Unify _t0 with StringLiteral("hello"):
+   - Resolve _t0 via substitution → IntLiteral(1)
+   - Unify IntLiteral(1) with StringLiteral("hello") → type mismatch error
+```
+
+Alternative failing case:
+```tinct
+result: [= [fn [] 1] [fn [] 2]]
+
+# Type inference
+1. Look up = → Equatable a => a → a → Bool
+2. Instantiate → Equatable _t0, Fn@Bool [_t0 _t0]
+3. Argument 1: infer([fn [] 1]) → Fn@Int []
+4. Unify _t0 with Fn@Int []:
+   - Check: satisfies_constraint(Fn@Int [], "Equatable") → false
+   - Error: "type Fn@Int [] does not satisfy constraint Equatable"
+```
+
+### Phase 2 Limitations
+
+1. **No user-extensible classes:** Instance sets are hardcoded. Users cannot declare new classes or add instances to existing classes.
+
+2. **No dictionary passing:** Runtime behavior is unchanged — dual-dispatch builtins still use runtime type inspection. Constraints provide static checking only.
+
+3. **No higher-kinded types:** Mappable requires higher-kinded type variables (`Mappable f => (a → b) → f a → f b`), which is Phase 3 / D1 scope (Jones 1993 constructor classes). `map` and `filter` remain typed as `Unknown → Unknown` until then.
+
+4. **No constrained row variables:** `Equatable [name: a ...]` (requiring all fields in row-rest to satisfy Equatable) is deferred to Phase 3 (Gaster & Jones 1996).
+
+### Forward Work
+
+- **Phase 3 (D1):** Full Haskell-style type classes with class declarations, instance declarations, superclass hierarchy, and dictionary passing (Wadler & Blott 1989; Jones 1995).
+- **Higher-kinded types:** Constructor classes (Jones 1993) for Mappable, Foldable over type constructors.
+- **Constrained row polymorphism:** Row-level constraints (Gaster & Jones 1996; PureScript-style qualified row variables).
+
+**References:** Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." Jones, M.P. (1995). *Qualified types: Theory and practice.*
+
 ## Limitations and Non-Guarantees
 
 1. **Named args not unified.** Named arguments in call expressions are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.

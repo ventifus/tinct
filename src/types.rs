@@ -637,11 +637,34 @@ fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
     }
 }
 
+/// Constraint on a type variable (type class membership)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Constraint {
+    pub class: String,
+    pub var: String,
+}
+
+impl Constraint {
+    pub fn new(class: impl Into<String>, var: impl Into<String>) -> Self {
+        Self {
+            class: class.into(),
+            var: var.into(),
+        }
+    }
+}
+
+impl fmt::Display for Constraint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.class, self.var)
+    }
+}
+
 /// Type scheme for let-generalization (∀α₁...αₙ. τ)
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
     pub type_vars: Vec<String>,
     pub row_vars: Vec<String>,
+    pub constraints: Vec<Constraint>,
     pub body: Type,
 }
 
@@ -651,6 +674,7 @@ impl TypeScheme {
         Self {
             type_vars: vec![],
             row_vars: vec![],
+            constraints: vec![],
             body: ty,
         }
     }
@@ -658,6 +682,17 @@ impl TypeScheme {
 
 impl fmt::Display for TypeScheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Display constraints if present: "Equatable a, Numeric b => "
+        if !self.constraints.is_empty() {
+            for (i, constraint) in self.constraints.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", constraint)?;
+            }
+            write!(f, " => ")?;
+        }
+
         if self.type_vars.is_empty() && self.row_vars.is_empty() {
             write!(f, "{}", self.body)
         } else {
@@ -689,6 +724,10 @@ pub struct InferState {
     /// inference, so that constraints from `$x.field1` are visible when processing
     /// `$x.field2` in the same expression. See doc/07-type-extensions.md Part 5.
     pub subst: Substitution,
+    /// Accumulated type class constraints on type variables.
+    /// Constraints are generated when overloaded builtins are called with type variables.
+    /// During generalization, constraints on generalized variables are included in the TypeScheme.
+    pub constraints: Vec<Constraint>,
 }
 
 impl InferState {
@@ -698,7 +737,14 @@ impl InferState {
             level: 0,
             levels: HashMap::new(),
             subst: Substitution::new(),
+            constraints: Vec::new(),
         }
+    }
+
+    /// Add a type class constraint to the inference state.
+    /// The constraint is checked during instantiation.
+    pub fn add_constraint(&mut self, class: impl Into<String>, var: impl Into<String>) {
+        self.constraints.push(Constraint::new(class, var));
     }
 
     /// Create a fresh type variable at the current level and register it in `state.levels`.
@@ -726,6 +772,90 @@ impl InferState {
 impl Default for InferState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Check if a type satisfies a type class constraint.
+/// Returns true if the type is an instance of the class.
+/// This implements the fixed instance sets for Elm-style constrained type variables.
+pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
+    match class_name {
+        "Equatable" => matches!(
+            ty,
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Float
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Bool
+                | Type::Number
+        ),
+        "Comparable" => matches!(
+            ty,
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Float
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Number
+        ),
+        "Numeric" => matches!(
+            ty,
+            Type::Int | Type::IntLiteral(_) | Type::Float | Type::Number
+        ),
+        "Showable" => {
+            // All types are showable (all have str representations)
+            !matches!(ty, Type::Error)
+        }
+        "Mappable" => matches!(ty, Type::Record(_) | Type::Seq(_)),
+        "Appendable" => matches!(
+            ty,
+            Type::Str | Type::StringLiteral(_) | Type::Record(_) | Type::Seq(_)
+        ),
+        _ => false, // Unknown constraint class
+    }
+}
+
+/// Check all constraints on a type variable when it gets bound to a concrete type.
+/// Returns an error if any constraint is violated.
+fn check_constraints_on_var(
+    var_name: &str,
+    concrete_ty: &Type,
+    state: &InferState,
+    span: Span,
+) -> Result<(), TypeError> {
+    // Find all constraints on this variable
+    for constraint in &state.constraints {
+        if constraint.var == var_name {
+            if !satisfies_constraint(concrete_ty, &constraint.class) {
+                return Err(TypeError::new(
+                    format!(
+                        "type {} does not satisfy constraint {}",
+                        concrete_ty, constraint.class
+                    ),
+                    span,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// When binding a constrained type variable, promote literal types to their parent types.
+/// This prevents `[+ 1 2]` from failing: without promotion, `_t0` (Numeric) would bind
+/// to `IntLiteral(1)`, then unification of `IntLiteral(1)` with `IntLiteral(2)` would fail.
+/// With promotion, `_t0` binds to `Int`, and both `IntLiteral(1)` and `IntLiteral(2)` unify
+/// with `Int` via the literal-to-parent promotion rules.
+fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferState) -> Type {
+    // Only promote if the variable has constraints
+    let has_constraints = state.constraints.iter().any(|c| c.var == var_name);
+    if !has_constraints {
+        return ty;
+    }
+    match ty {
+        Type::IntLiteral(_) => Type::Int,
+        Type::StringLiteral(_) => Type::Str,
+        _ => ty,
     }
 }
 
@@ -1739,6 +1869,12 @@ pub fn unify(
                     span,
                 ));
             }
+            // Promote literal types when binding a constrained type variable.
+            // Without this, `[+ 1 2]` would bind _t0 to IntLiteral(1) and then fail
+            // to unify IntLiteral(1) with IntLiteral(2) for the second argument.
+            let b = promote_literal_for_constrained_var(name, b, state);
+            // Check constraints before binding
+            check_constraints_on_var(name, &b, state, span)?;
             subst.type_map.insert(name.clone(), b);
             subst.check_size(span)?;
             Ok(())
@@ -1753,6 +1889,10 @@ pub fn unify(
                     span,
                 ));
             }
+            // Promote literal types when binding a constrained type variable.
+            let a = promote_literal_for_constrained_var(name, a, state);
+            // Check constraints before binding
+            check_constraints_on_var(name, &a, state, span)?;
             subst.type_map.insert(name.clone(), a);
             subst.check_size(span)?;
             Ok(())
@@ -2017,6 +2157,9 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         return scheme.body.clone();
     }
 
+    // Build variable renaming map (old names -> fresh names)
+    let mut var_renaming: HashMap<String, String> = HashMap::new();
+
     // Fast path: single type variable, no row variables — avoid building Substitution
     // (2 HashMaps) and the apply() HashSet pair. Inline rename is allocation-free
     // aside from the string format for the fresh name.
@@ -2024,6 +2167,15 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
+        var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
+
+        // Copy constraints with renamed variables
+        for constraint in &scheme.constraints {
+            if let Some(fresh_var) = var_renaming.get(&constraint.var) {
+                state.add_constraint(constraint.class.clone(), fresh_var.clone());
+            }
+        }
+
         return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
     }
 
@@ -2037,6 +2189,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
+        var_renaming.insert(var.clone(), fresh_name.clone());
         renaming
             .type_map
             .insert(var.clone(), Type::TypeVar(fresh_name, level));
@@ -2048,6 +2201,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
+        var_renaming.insert(var.clone(), fresh_name.clone());
         renaming.row_map.insert(
             var.clone(),
             Row {
@@ -2055,6 +2209,13 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
                 tail: RowTail::RowVar(fresh_name, level),
             },
         );
+    }
+
+    // Copy constraints with renamed variables
+    for constraint in &scheme.constraints {
+        if let Some(fresh_var) = var_renaming.get(&constraint.var) {
+            state.add_constraint(constraint.class.clone(), fresh_var.clone());
+        }
     }
 
     renaming.apply(&scheme.body)
@@ -2107,9 +2268,24 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
     if generalizable_type_vars.is_empty() && generalizable_row_vars.is_empty() {
         TypeScheme::mono(ty.clone())
     } else {
+        // Filter constraints: keep only those on generalized variables
+        let generalizable_vars: HashSet<String> = generalizable_type_vars
+            .iter()
+            .chain(generalizable_row_vars.iter())
+            .cloned()
+            .collect();
+
+        let generalizable_constraints: Vec<Constraint> = state
+            .constraints
+            .iter()
+            .filter(|c| generalizable_vars.contains(&c.var))
+            .cloned()
+            .collect();
+
         TypeScheme {
             type_vars: generalizable_type_vars,
             row_vars: generalizable_row_vars,
+            constraints: generalizable_constraints,
             body: ty.clone(),
         }
     }
@@ -2306,40 +2482,80 @@ impl TypeEnv {
     pub fn with_builtins() -> Self {
         let mut env = Self::new();
 
-        // Arithmetic: Number → Number → Number (auto-promotion handled at runtime)
-        // We use Number instead of Any to allow the type checker to catch non-numeric arguments
+        // Arithmetic: Numeric a => a → a → a
+        // Constrained polymorphic type variables allow precise typing of overloaded operations.
         for name in ["+", "-", "*"] {
-            env.insert(
+            env.insert_scheme(
                 name.to_string(),
-                Type::Function {
-                    params: vec![Type::Number, Type::Number],
-                    ret: Box::new(Type::Number),
-                    variadic: false,
+                TypeScheme {
+                    type_vars: vec!["a".to_string()],
+                    row_vars: vec![],
+                    constraints: vec![Constraint::new("Numeric", "a")],
+                    body: Type::Function {
+                        params: vec![
+                            Type::TypeVar("a".to_string(), 0),
+                            Type::TypeVar("a".to_string(), 0),
+                        ],
+                        ret: Box::new(Type::TypeVar("a".to_string(), 0)),
+                        variadic: false,
+                    },
                 },
             );
         }
 
-        // Division: always returns Float
-        env.insert(
+        // Division: Numeric a => a → a → Float
+        env.insert_scheme(
             "/".to_string(),
-            Type::Function {
-                params: vec![Type::Number, Type::Number],
-                ret: Box::new(Type::Float),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                row_vars: vec![],
+                constraints: vec![Constraint::new("Numeric", "a")],
+                body: Type::Function {
+                    params: vec![
+                        Type::TypeVar("a".to_string(), 0),
+                        Type::TypeVar("a".to_string(), 0),
+                    ],
+                    ret: Box::new(Type::Float),
+                    variadic: false,
+                },
             },
         );
 
-        // Comparison: Any → Any → Bool (cross-type comparison allowed at runtime)
-        for name in ["=", "<"] {
-            env.insert(
-                name.to_string(),
-                Type::Function {
-                    params: vec![Type::Unknown, Type::Unknown],
+        // Equality: Equatable a => a → a → Bool
+        env.insert_scheme(
+            "=".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                row_vars: vec![],
+                constraints: vec![Constraint::new("Equatable", "a")],
+                body: Type::Function {
+                    params: vec![
+                        Type::TypeVar("a".to_string(), 0),
+                        Type::TypeVar("a".to_string(), 0),
+                    ],
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
-            );
-        }
+            },
+        );
+
+        // Less-than: Comparable a => a → a → Bool
+        env.insert_scheme(
+            "<".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                row_vars: vec![],
+                constraints: vec![Constraint::new("Comparable", "a")],
+                body: Type::Function {
+                    params: vec![
+                        Type::TypeVar("a".to_string(), 0),
+                        Type::TypeVar("a".to_string(), 0),
+                    ],
+                    ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+            },
+        );
 
         // Control flow: if takes Bool, returns Any (type depends on branches)
         env.insert(
@@ -2412,13 +2628,18 @@ impl TypeEnv {
             },
         );
 
-        // String operations
-        env.insert(
+        // String operations: Showable a => a → Str
+        env.insert_scheme(
             "str".to_string(),
-            Type::Function {
-                params: vec![Type::Unknown],
-                ret: Box::new(Type::Str),
-                variadic: true,
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                row_vars: vec![],
+                constraints: vec![Constraint::new("Showable", "a")],
+                body: Type::Function {
+                    params: vec![Type::TypeVar("a".to_string(), 0)],
+                    ret: Box::new(Type::Str),
+                    variadic: true,
+                },
             },
         );
         for name in ["split", "replace"] {
@@ -2856,6 +3077,8 @@ impl TypeEnv {
         );
 
         // Sequences: transforms
+        // Note: Mappable constraint requires higher-kinded types (Phase 3 / D1 scope).
+        // For now, these remain typed as Unknown.
         env.insert(
             "map".to_string(),
             Type::Function {
@@ -3976,8 +4199,15 @@ mod tests {
 
     #[test]
     fn test_with_builtins_arithmetic_signature() {
+        // + is now Numeric a => a -> a -> a (constrained polymorphic)
         let env = TypeEnv::with_builtins();
         let add_scheme = env.get("+").expect("+ should be registered");
+        // Check constraints
+        assert_eq!(add_scheme.constraints.len(), 1);
+        assert_eq!(add_scheme.constraints[0].class, "Numeric");
+        assert_eq!(add_scheme.constraints[0].var, "a");
+        // Check type_vars
+        assert_eq!(add_scheme.type_vars, vec!["a".to_string()]);
         match &add_scheme.body {
             Type::Function {
                 params,
@@ -3985,9 +4215,9 @@ mod tests {
                 variadic: _,
             } => {
                 assert_eq!(params.len(), 2);
-                assert_eq!(params[0], Type::Number);
-                assert_eq!(params[1], Type::Number);
-                assert_eq!(&**ret, &Type::Number);
+                assert_eq!(params[0], Type::TypeVar("a".into(), 0));
+                assert_eq!(params[1], Type::TypeVar("a".into(), 0));
+                assert_eq!(&**ret, &Type::TypeVar("a".into(), 0));
             }
             other => panic!("expected Function type for +, got {other}"),
         }
@@ -3995,10 +4225,16 @@ mod tests {
 
     #[test]
     fn test_with_builtins_division_returns_float() {
+        // / is now Numeric a => a -> a -> Float (constrained polymorphic, always returns Float)
         let env = TypeEnv::with_builtins();
         let div_scheme = env.get("/").expect("/ should be registered");
+        assert_eq!(div_scheme.constraints.len(), 1);
+        assert_eq!(div_scheme.constraints[0].class, "Numeric");
         match &div_scheme.body {
-            Type::Function { ret, .. } => {
+            Type::Function { params, ret, .. } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0], Type::TypeVar("a".into(), 0));
+                assert_eq!(params[1], Type::TypeVar("a".into(), 0));
                 assert_eq!(&**ret, &Type::Float);
             }
             other => panic!("expected Function type for /, got {other}"),
@@ -4007,8 +4243,12 @@ mod tests {
 
     #[test]
     fn test_with_builtins_comparison_signature() {
+        // = is now Equatable a => a -> a -> Bool (constrained polymorphic)
         let env = TypeEnv::with_builtins();
         let eq_scheme = env.get("=").expect("= should be registered");
+        assert_eq!(eq_scheme.constraints.len(), 1);
+        assert_eq!(eq_scheme.constraints[0].class, "Equatable");
+        assert_eq!(eq_scheme.constraints[0].var, "a");
         match &eq_scheme.body {
             Type::Function {
                 params,
@@ -4016,8 +4256,8 @@ mod tests {
                 variadic: _,
             } => {
                 assert_eq!(params.len(), 2);
-                assert_eq!(params[0], Type::Unknown);
-                assert_eq!(params[1], Type::Unknown);
+                assert_eq!(params[0], Type::TypeVar("a".into(), 0));
+                assert_eq!(params[1], Type::TypeVar("a".into(), 0));
                 assert_eq!(&**ret, &Type::Bool);
             }
             other => panic!("expected Function type for =, got {other}"),
@@ -5158,6 +5398,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec!["a".into(), "b".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
@@ -5172,6 +5413,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         assert_eq!(format!("{scheme}"), "∀a. a");
@@ -5182,11 +5424,13 @@ mod tests {
         let s1 = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         let s2 = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         assert_eq!(s1, s2);
@@ -5197,11 +5441,13 @@ mod tests {
         let s1 = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::Int,
         };
         let s2 = TypeScheme {
             type_vars: vec!["b".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::Int,
         };
         assert_ne!(s1, s2);
@@ -5220,6 +5466,7 @@ mod tests {
         let s2 = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         assert_ne!(s1, s2);
@@ -5295,6 +5542,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         env.insert_scheme("f".into(), scheme.clone());
@@ -5312,6 +5560,7 @@ mod tests {
         let child_scheme = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         child.insert_scheme("x".into(), child_scheme.clone());
@@ -5337,6 +5586,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec!["a".into(), "b".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 0)],
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
@@ -5381,6 +5631,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         let mut state = InferState::new();
@@ -5398,6 +5649,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
         };
         let mut state = InferState::new();
@@ -5731,6 +5983,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec![],
             row_vars: vec!["r".into()],
+            constraints: vec![],
             body: row_var_record(fields.clone(), "r", 1),
         };
 
@@ -5783,6 +6036,7 @@ mod tests {
         let scheme = TypeScheme {
             type_vars: vec!["a".into()],
             row_vars: vec![],
+            constraints: vec![],
             body: Type::Function {
                 params: vec![Type::TypeVar("a".into(), 1)],
                 ret: Box::new(Type::TypeVar("b".into(), 1)),
@@ -7928,5 +8182,138 @@ mod tests {
         // Both record types should be subtypes of the union
         assert!(Type::is_subtype(&record1, &union));
         assert!(Type::is_subtype(&record2, &union));
+    }
+
+    // --- Constraint checking tests ---
+
+    #[test]
+    fn test_constraint_equatable_satisfied_by_int() {
+        assert!(satisfies_constraint(&Type::Int, "Equatable"));
+        assert!(satisfies_constraint(&Type::IntLiteral(42), "Equatable"));
+    }
+
+    #[test]
+    fn test_constraint_equatable_not_satisfied_by_function() {
+        let func_ty = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        assert!(!satisfies_constraint(&func_ty, "Equatable"));
+    }
+
+    #[test]
+    fn test_constraint_numeric_satisfied_by_number() {
+        assert!(satisfies_constraint(&Type::Int, "Numeric"));
+        assert!(satisfies_constraint(&Type::Float, "Numeric"));
+        assert!(satisfies_constraint(&Type::Number, "Numeric"));
+        assert!(satisfies_constraint(&Type::IntLiteral(5), "Numeric"));
+    }
+
+    #[test]
+    fn test_constraint_numeric_not_satisfied_by_str() {
+        assert!(!satisfies_constraint(&Type::Str, "Numeric"));
+    }
+
+    #[test]
+    fn test_constraint_showable_satisfied_by_all_types() {
+        assert!(satisfies_constraint(&Type::Int, "Showable"));
+        assert!(satisfies_constraint(&Type::Str, "Showable"));
+        assert!(satisfies_constraint(&Type::Bool, "Showable"));
+        let func_ty = Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        assert!(satisfies_constraint(&func_ty, "Showable"));
+    }
+
+    #[test]
+    fn test_constraint_mappable_satisfied_by_dict_and_seq() {
+        let dict_ty = Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        });
+        let seq_ty = Type::Seq(Box::new(Type::Int));
+        assert!(satisfies_constraint(&dict_ty, "Mappable"));
+        assert!(satisfies_constraint(&seq_ty, "Mappable"));
+        assert!(!satisfies_constraint(&Type::Int, "Mappable"));
+    }
+
+    #[test]
+    fn test_instantiate_scheme_with_constraints() {
+        // Create a scheme with Numeric constraint: Numeric a => a -> a -> a
+        let scheme = TypeScheme {
+            type_vars: vec!["a".into()],
+            row_vars: vec![],
+            constraints: vec![Constraint::new("Numeric", "a")],
+            body: Type::Function {
+                params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("a".into(), 0)],
+                ret: Box::new(Type::TypeVar("a".into(), 0)),
+                variadic: false,
+            },
+        };
+
+        let mut state = InferState::new();
+        state.level = 1;
+        let _inst = instantiate_scheme(&scheme, 1, &mut state);
+
+        // After instantiation, constraints should be copied with renamed variables
+        assert_eq!(state.constraints.len(), 1);
+        assert_eq!(state.constraints[0].class, "Numeric");
+        // The variable should be renamed (e.g., _t0)
+        assert!(state.constraints[0].var.starts_with("_t"));
+    }
+
+    #[test]
+    fn test_unify_with_constraint_success() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Add constraint: Numeric a
+        state.add_constraint("Numeric", "a");
+
+        // Unify a with Int (should succeed - Int satisfies Numeric)
+        unify(
+            &Type::TypeVar("a".into(), 0),
+            &Type::Int,
+            &mut subst,
+            &mut state,
+            span,
+        )
+        .unwrap();
+
+        assert_eq!(subst.type_map.get("a"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn test_unify_with_constraint_failure() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+
+        // Add constraint: Equatable a
+        state.add_constraint("Equatable", "a");
+
+        // Try to unify a with Function (should fail - Function doesn't satisfy Equatable)
+        let func_ty = Type::Function {
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+
+        let result = unify(
+            &Type::TypeVar("a".into(), 0),
+            &func_ty,
+            &mut subst,
+            &mut state,
+            span,
+        );
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().message;
+        assert!(err_msg.contains("does not satisfy constraint"));
+        assert!(err_msg.contains("Equatable"));
     }
 }

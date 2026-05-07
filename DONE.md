@@ -1757,6 +1757,16 @@ Consolidated from: grammar-architect-c66, test-crafter-c66, integration-verifier
 - [x] Fix eval corpus test comment claiming "FIRST document" does not match implementation — comment at `tests/corpus_tests.rs:46` says "expected output is compared against the LAST expression from the FIRST document" but `eval_source()` at line 308 evaluates the full file (all documents) and returns the last value of the last document. Update comment: "Valid corpus: compares first expression's AST. Eval corpus: compares full file evaluation (last expression of last document)." (`tests/corpus_tests.rs:46`) [Nit, test-crafter C65]
 - [x] Fix `doc/06-type-inference.md:256-279` claims "pure Robinson" unification but code implements bidirectional promotion rules — doc says "unification is pure Robinson — it handles type variable binding and structural decomposition only. Subtyping (literal promotion, numeric widening) is handled by `check_expr` via the [SUB] rule." But `src/types.rs` implements bidirectional promotion arms directly in `unify()` plus [U-SUBSUME] fallback. Fix: doc updated to document explicit promotion arms as fast-path optimizations and [U-SUBSUME] as the general fallback. IntLiteral-Float unsound arm removed. (`doc/06-type-inference.md`, `src/types.rs`) [Minor, type-theorist C65]
 
+### type-classes-constrained
+
+- [x] Constraint { class, var } type + TypeScheme.constraints field
+- [x] Fixed instance sets: Equatable, Comparable, Numeric, Showable, Mappable, Appendable
+- [x] Constraint generation during instantiation + checking during unification
+- [x] Builtin signatures: =, <, +, -, *, / updated with constrained schemes
+- [x] Display: "Equatable a => Fn@Bool [a a]" format
+- [x] doc/06-type-inference.md: Constrained Type Variables section
+- [x] 9 unit tests for constraint satisfaction, violation, generalization
+
 ### docs-vs-code-stdlib-misc: doc/11, doc/03, doc/13, doc/15, doc/17, CLAUDE.md, and Code Accuracy
 
 Split from docs-vs-code. Items targeting stdlib docs, data model, examples, AST, references, CLAUDE.md, and 4 code fixes.
