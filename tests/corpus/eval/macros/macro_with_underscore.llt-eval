@@ -1,0 +1,28 @@
+# Test macro that generates a function with explicit params
+[
+  [defmacro make-adder [fn [macro-args]
+    [
+      type: "fn"
+      params: [
+        [name: "a" annotation: [] variadic: false]
+        [name: "b" annotation: [] variadic: false]
+      ]
+      body: [
+        type: "call"
+        implied: true
+        fn: [type: "var" name: "+"]
+        args: [
+          [type: "var" name: "a"]
+          [type: "var" name: "b"]
+        ]
+        named-args: []
+      ]
+      return-ann: []
+      desugared: false
+    ]]]
+
+  add: [make-adder]
+  result: [add 3 5]
+]
+===
+Dict({"add": Function(a, b), "result": Int(8)})
