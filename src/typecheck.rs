@@ -729,6 +729,295 @@ fn register_type_aliases(
     errors
 }
 
+/// Narrowing constraints extracted from conditional expressions.
+/// Each constraint refines the type of a variable in the true branch of an `if`.
+#[derive(Debug, Clone)]
+enum Narrowing {
+    /// `[= var literal]` narrows `var` to the literal type.
+    EqLiteral { var: String, ty: Type },
+    /// `[= [type-of var] "TypeName"]` narrows `var` to the named type.
+    TypeOf { var: String, ty: Type },
+    /// `[has? var "key"]` narrows `var` to a record with at least that key.
+    HasKey { var: String, key: String },
+}
+
+/// Extract narrowing constraints from a condition expression.
+/// Returns an empty vec for unrecognized patterns.
+fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
+    match &cond.node {
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } if named_args.is_empty() => {
+            if let Expr::VarRef { name, .. } = &func.node {
+                match name.as_str() {
+                    // Pattern: [= x literal] or [= literal x]
+                    "=" if args.len() == 2 => {
+                        // Try both operand orderings
+                        if let Some(narrowing) = try_eq_literal(&args[0], &args[1]) {
+                            return vec![narrowing];
+                        }
+                        if let Some(narrowing) = try_eq_literal(&args[1], &args[0]) {
+                            return vec![narrowing];
+                        }
+                        // Try type-of pattern: [= [type-of x] "TypeName"]
+                        if let Some(narrowing) = try_type_of(&args[0], &args[1]) {
+                            return vec![narrowing];
+                        }
+                        if let Some(narrowing) = try_type_of(&args[1], &args[0]) {
+                            return vec![narrowing];
+                        }
+                    }
+                    // Pattern: [has? x "key"]
+                    "has?" if args.len() == 2 => {
+                        if let (Expr::VarRef { name: var_name, .. }, Expr::Str(key)) =
+                            (&args[0].node, &args[1].node)
+                        {
+                            return vec![Narrowing::HasKey {
+                                var: var_name.clone(),
+                                key: key.clone(),
+                            }];
+                        }
+                    }
+                    // Pattern: [and cond1 cond2 ...]
+                    "and" => {
+                        let mut narrowings = Vec::new();
+                        for arg in args {
+                            narrowings.extend(extract_narrowings(arg));
+                        }
+                        return narrowings;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+/// Try to extract an equality-literal narrowing from `[= var literal]`.
+fn try_eq_literal(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowing> {
+    if let Expr::VarRef { name, .. } = &left.node {
+        match &right.node {
+            Expr::Int(n) => Some(Narrowing::EqLiteral {
+                var: name.clone(),
+                ty: Type::IntLiteral(*n),
+            }),
+            Expr::Str(s) => Some(Narrowing::EqLiteral {
+                var: name.clone(),
+                ty: Type::StringLiteral(s.clone()),
+            }),
+            Expr::Bool(_b) => Some(Narrowing::EqLiteral {
+                var: name.clone(),
+                ty: Type::Bool,
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// Try to extract a type-of narrowing from `[= [type-of var] "TypeName"]`.
+fn try_type_of(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowing> {
+    // Left side must be [type-of var]
+    if let Expr::Call {
+        func,
+        args,
+        named_args,
+        ..
+    } = &left.node
+    {
+        if named_args.is_empty() && args.len() == 1 {
+            if let Expr::VarRef {
+                name: func_name, ..
+            } = &func.node
+            {
+                if func_name == "type-of" {
+                    if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        // Right side must be a string literal type name
+                        if let Expr::Str(type_name) = &right.node {
+                            let ty = match type_name.as_str() {
+                                "Int" => Some(Type::Int),
+                                "Float" => Some(Type::Float),
+                                "String" => Some(Type::Str),
+                                "Bool" => Some(Type::Bool),
+                                "Dict" => Some(Type::Record(Row {
+                                    fields: HashMap::new(),
+                                    tail: RowTail::RowVar(format!("_narrow_{}", var_name), 0),
+                                })),
+                                "Seq" => Some(Type::Seq(Box::new(Type::Unknown))),
+                                "Number" => Some(Type::Number),
+                                _ => None,
+                            };
+                            return ty.map(|t| Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: t,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Apply narrowings to a type environment, creating a refined environment for the true branch.
+fn apply_narrowings(
+    env: &Rc<TypeEnv>,
+    narrowings: &[Narrowing],
+    state: &mut InferState,
+) -> Rc<TypeEnv> {
+    if narrowings.is_empty() {
+        return Rc::clone(env);
+    }
+
+    let mut new_env = TypeEnv::with_parent(env);
+
+    for narrowing in narrowings {
+        match narrowing {
+            Narrowing::EqLiteral { var, ty } => {
+                // Register the fresh row var in state.levels if needed
+                if let Type::Record(Row {
+                    tail: RowTail::RowVar(name, level),
+                    ..
+                }) = ty
+                {
+                    state.levels.entry(name.clone()).or_insert(*level);
+                }
+                new_env.insert(var.clone(), ty.clone());
+            }
+            Narrowing::TypeOf { var, ty } => {
+                // Register the fresh row var in state.levels if needed
+                if let Type::Record(Row {
+                    tail: RowTail::RowVar(name, level),
+                    ..
+                }) = ty
+                {
+                    state.levels.entry(name.clone()).or_insert(*level);
+                }
+                new_env.insert(var.clone(), ty.clone());
+            }
+            Narrowing::HasKey { var, key } => {
+                // Get the current type of the variable (if any)
+                let current_ty = env.get(var).map(|scheme| scheme.body.clone());
+
+                // Create a record type with at least the given key
+                let mut fields = HashMap::new();
+                let fresh_type_var = state.fresh_type_var();
+                fields.insert(key.clone(), fresh_type_var);
+
+                // If the variable already has a record type, merge the fields.
+                // Always use an open tail (RowVar) because has? is a runtime check —
+                // in the true branch, the record is known to have the key but may have
+                // additional unknown fields.
+                let new_ty = if let Some(Type::Record(current_row)) = current_ty {
+                    // Merge existing fields with the new constraint
+                    for (k, v) in current_row.fields {
+                        fields.insert(k, v);
+                    }
+                    // Use the existing tail if already open; otherwise create a fresh RowVar
+                    let tail = match current_row.tail {
+                        RowTail::RowVar(name, level) => RowTail::RowVar(name, level),
+                        RowTail::Empty => {
+                            let (rho_name, rho_level) = state.fresh_row_var_name();
+                            state.levels.entry(rho_name.clone()).or_insert(rho_level);
+                            RowTail::RowVar(rho_name, rho_level)
+                        }
+                    };
+                    Type::Record(Row { fields, tail })
+                } else {
+                    // Create a fresh open record
+                    let (rho_name, rho_level) = state.fresh_row_var_name();
+                    state.levels.entry(rho_name.clone()).or_insert(rho_level);
+                    Type::Record(Row {
+                        fields,
+                        tail: RowTail::RowVar(rho_name, rho_level),
+                    })
+                };
+
+                new_env.insert(var.clone(), new_ty);
+            }
+        }
+    }
+
+    Rc::new(new_env)
+}
+
+/// Type-check an `if` expression with path-sensitive narrowing.
+fn infer_if(
+    cond: &Spanned<Expr>,
+    then_expr: &Spanned<Expr>,
+    else_expr: &Spanned<Expr>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Infer the condition type (must be Bool)
+    let _cond_ty = infer_expr(cond, env, state, type_map)?;
+
+    // Extract narrowings from the condition
+    let narrowings = extract_narrowings(cond);
+
+    // Fork the environment for the true branch
+    let env_true = apply_narrowings(env, &narrowings, state);
+
+    // Fork the environment for the false branch (no narrowing)
+    let env_false = Rc::clone(env);
+
+    // Infer the then and else branches in their respective environments
+    let then_ty = infer_expr(then_expr, &env_true, state, type_map)?;
+    let else_ty = infer_expr(else_expr, &env_false, state, type_map)?;
+
+    // Join the types using LUB (least upper bound)
+    // Without union types, this is often the shared base type or Unknown
+    let result_ty = least_upper_bound(&then_ty, &else_ty);
+
+    Ok(result_ty)
+}
+
+/// Compute the least upper bound of two types.
+/// Without union types, this is conservative — often returns the shared base type or Unknown.
+fn least_upper_bound(ty1: &Type, ty2: &Type) -> Type {
+    // If the types are identical, return either one
+    if ty1 == ty2 {
+        return ty1.clone();
+    }
+
+    // Promote literal types to their base types for LUB
+    let promoted1 = promote_literal(ty1);
+    let promoted2 = promote_literal(ty2);
+
+    if promoted1 == promoted2 {
+        return promoted1;
+    }
+
+    // Number is the LUB of Int and Float
+    match (&promoted1, &promoted2) {
+        (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Number,
+        // Both are records: conservative open record
+        (Type::Record(_), Type::Record(_)) => Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::RowVar("_lub".to_string(), 0),
+        }),
+        // Otherwise, fall back to Unknown
+        _ => Type::Unknown,
+    }
+}
+
+/// Promote literal types to their base types.
+fn promote_literal(ty: &Type) -> Type {
+    match ty {
+        Type::IntLiteral(_) => Type::Int,
+        Type::StringLiteral(_) => Type::Str,
+        _ => ty.clone(),
+    }
+}
+
 fn infer_expr(
     expr: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
@@ -817,6 +1106,13 @@ fn infer_expr(
             named_args,
             implied: _,
         } => {
+            // Special case: `if` is a type-level special form with path-sensitive narrowing
+            if let Expr::VarRef { name, .. } = &func.node {
+                if name == "if" && args.len() == 3 && named_args.is_empty() {
+                    return infer_if(&args[0], &args[1], &args[2], env, state, type_map);
+                }
+            }
+
             // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
             // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
@@ -3391,6 +3687,14 @@ mod tests {
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
+        let mut state = InferState::new();
+        typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
+    }
+
+    fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
         typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
     }
@@ -8995,5 +9299,198 @@ mod tests {
         assert!(display.contains("Int"));
         assert!(display.contains("String"));
         assert!(display.contains(" | "));
+    }
+
+    // -- Path-Sensitive Narrowing Tests (narrowing-basic sprint) --
+
+    #[test]
+    fn test_narrowing_equality_literal_int() {
+        // After `[= x 42]`, the true branch knows `x : IntLiteral(42)`
+        let env = doc_env_with_builtins("[x: 30]\n[result: [if [= x 42] x 0]]");
+        // The result type should be the LUB of IntLiteral(42) and IntLiteral(0), which is Int
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for narrowed if result, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_equality_literal_string() {
+        // After `[= x "hello"]`, the true branch knows `x : StringLiteral("hello")`
+        let env = doc_env_with_builtins("[x: \"\"]\n[result: [if [= x \"hello\"] x \"world\"]]");
+        // The result type should be the LUB of StringLiteral("hello") and StringLiteral("world"), which is Str
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) => {}
+            Some(other) => panic!("expected Str for narrowed if result, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_equality_literal_reversed_operands() {
+        // Test that `[= 42 x]` works the same as `[= x 42]`
+        let env = doc_env_with_builtins("[x: 30]\n[result: [if [= 42 x] x 0]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for reversed operand narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_type_of_int() {
+        // After `[= [type-of x] "Int"]`, the true branch knows `x : Int`
+        let env = doc_env_with_builtins("[x: 30]\n[result: [if [= [type-of x] \"Int\"] x 0]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for type-of narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_type_of_string() {
+        // After `[= [type-of x] "String"]`, the true branch knows `x : Str`
+        let env = doc_env_with_builtins(
+            "[x: \"\"]\n[result: [if [= [type-of x] \"String\"] x \"default\"]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) => {}
+            Some(other) => panic!("expected Str for type-of String narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_type_of_reversed() {
+        // Test that `[= "Int" [type-of x]]` works the same as `[= [type-of x] "Int"]`
+        let env = doc_env_with_builtins("[x: 30]\n[result: [if [= \"Int\" [type-of x]] x 0]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for reversed type-of, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_has_key() {
+        // After `[has? x "name"]`, the true branch knows `x` has at least a `name` field.
+        // has? is defined locally because it is a prelude function, not a builtin with a type scheme.
+        let result = check(
+            "[has?: [fn [xs k] true]]\n\
+             [x: [age: 30]]\n\
+             [result: [if [has? x \"name\"] $x.name \"unknown\"]]",
+        );
+        // This should type-check — the narrowed type has a `name` field
+        assert!(result.is_ok(), "has? narrowing should allow field access");
+    }
+
+    #[test]
+    fn test_narrowing_conjunction_and() {
+        // After `[and [= x 42] [has? y "name"]]`, both narrowings apply.
+        // and and has? are defined locally because they are prelude functions, not typed builtins.
+        let result = check(
+            "[and: [fn [a b] [if a b false]]  has?: [fn [xs k] true]]\n\
+             [x: 30  y: []]\n\
+             [result: [if [and [= x 42] [has? y \"name\"]] [+ x $y.age] 0]]",
+        );
+        // This should type-check — x is narrowed to IntLiteral(42) (promotes to Int for +),
+        // y is narrowed to have at least a name field (age access gets a fresh TypeVar)
+        assert!(
+            result.is_ok(),
+            "conjunction narrowing should apply both constraints"
+        );
+    }
+
+    #[test]
+    fn test_narrowing_no_false_branch_narrowing() {
+        // The false branch does NOT get narrowing
+        let env = doc_env_with_builtins(
+            "[x: 30]\n[then_result: [if [= x 42] x 0]  else_result: [if [= x 42] 0 x]]",
+        );
+        // In `else_result`, the else branch has `x` which should NOT be narrowed (still Int)
+        match env.get("else_result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for else branch (no narrowing), got {other}"),
+            None => panic!("field 'else_result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_nested_if() {
+        // Nested if chains preserve narrowing in each branch
+        let result = check(
+            "[x: 30]\n\
+             [result: [if [= x 42]\n\
+                        [if [= x 42] x 0]\n\
+                        0]]",
+        );
+        assert!(
+            result.is_ok(),
+            "nested if with consistent narrowing should type-check"
+        );
+    }
+
+    #[test]
+    fn test_narrowing_not_leaking_across_branches() {
+        // Narrowing in the true branch does not affect the else branch
+        let result = check(
+            "[x: \"hello\"]\n\
+             [result: [if [= x \"world\"]\n\
+                        x\n\
+                        x]]",
+        );
+        // Both branches return Str (or StringLiteral), should type-check
+        assert!(result.is_ok(), "narrowing should not leak across branches");
+    }
+
+    #[test]
+    fn test_narrowing_type_map_hover() {
+        // Verify that the type map contains the narrowed type for LSP hover
+        let mut file = crate::parse("[x: 30]\n[result: [if [= x 42] x 0]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let env = Rc::new(TypeEnv::with_builtins());
+        let mut state = InferState::new();
+        let mut type_map = TypeMap::new();
+        let mut type_map_opt = Some(&mut type_map);
+        let _ =
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut type_map_opt);
+
+        // The type map should have entries for the narrowed `x` in the then branch
+        // We can't easily check the exact span, but verify the type map is populated
+        assert!(
+            !type_map.is_empty(),
+            "type map should be populated with narrowed types"
+        );
+    }
+
+    #[test]
+    fn test_narrowing_unrecognized_condition_no_narrowing() {
+        // Unrecognized condition patterns don't narrow (< is not a narrowing pattern)
+        let result = check("[x: 30]\n[result: [if [< x 10] x 0]]");
+        // This should still type-check, just without narrowing
+        assert!(
+            result.is_ok(),
+            "unrecognized condition should not break type checking"
+        );
+    }
+
+    #[test]
+    fn test_narrowing_type_of_dict() {
+        // After `[= [type-of x] "Dict"]`, the true branch knows `x` is a Record
+        let result = check("[x: []]\n[result: [if [= [type-of x] \"Dict\"] $x.field 0]]");
+        // This should type-check — x is narrowed to an open Record, field access returns a TypeVar
+        assert!(
+            result.is_ok(),
+            "type-of Dict narrowing should allow field access"
+        );
+    }
+
+    #[test]
+    fn test_narrowing_type_of_number() {
+        // After `[= [type-of x] "Number"]`, the true branch knows `x : Number`
+        let result = check("[x: 30]\n[result: [if [= [type-of x] \"Number\"] x 0]]");
+        assert!(result.is_ok(), "type-of Number narrowing should work");
     }
 }

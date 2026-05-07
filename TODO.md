@@ -6,33 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase B: Type System Primitives
 
-### `narrowing-basic`
-
-**Depends on:** Scheduled after `pattern-matching-destructure` (A3). Result type precision improves when `union-types` (B1) lands.
-**Spec chapters:** `doc/06-type-inference.md` (§Path-Sensitive Narrowing — `if` as type-level special form, `narrow()` function, environment forking), `doc/17-references.md` (Tobin-Hochstadt & Felleisen 2010, Dunfield & Pfenning 2004)
-
-1. `if` special form: detect `if` calls in `infer_expr` and dispatch
-   to dedicated `infer_if(cond, then_expr, else_expr, env, state)`
-   instead of generic `check_call` (`src/typecheck.rs`)
-2. `Narrowing` enum: `EqLiteral { var, ty }`, `TypeOf { var, ty }`,
-   `HasKey { var, key }` (`src/typecheck.rs`)
-3. `extract_narrowings(cond: &Expr) -> Vec<Narrowing>`: pattern match
-   on condition AST shape; recognize `[= x lit]`, `[= [type-of x] "Int"]`,
-   `[has? x "key"]` (`src/typecheck.rs`)
-4. Environment forking: clone `env` into `env_true`, apply narrowings;
-   `env_false` = clone `env` unmodified (`src/typecheck.rs`)
-5. Branch type join: infer `then_expr` in `env_true`, `else_expr` in
-   `env_false`; result type is LUB (without B1) or `Union(t1, t2)`
-   (with B1) (`src/typecheck.rs`)
-6. Conjunction support: `[and cond1 cond2]` applies both narrowings
-   to `env_true` (`src/typecheck.rs`)
-7. Update type map with narrowed types for LSP hover precision
-   (`src/typecheck.rs`)
-8. Tests: 10+ (equality narrowing, type-of guard, has? key narrowing,
-   conjunction, both operand orderings for `=`, no false-branch
-   narrowing, nested if chains, narrowing not leaking across branches,
-   type map has narrowed type for LSP hover)
-
 ### `narrowing-predicates`
 
 **Depends on:** `narrowing-basic` (B5a). Type predicates (DONE).
