@@ -76,18 +76,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
 
-### `numeric-bigint`
-
-See doc/03-data-model.md §BigInt, doc/whatif/numeric-types.md Phase 3. **Depends on:** `numeric-decimal` (Ph2).
-
-- [ ] `Value::BigInt(num_bigint::BigInt)` variant; add `num-bigint` crate to `Cargo.toml` (`src/value.rs`, `Cargo.toml`)
-- [ ] `Type::BigInt` variant; subtype of `Number`; added to `is_subtype` and `unify` (`src/types.rs`)
-- [ ] `big-int: Int → BigInt` builtin; overflow detection in `$+`, `$*`, `$-` on `Int`: promote to `BigInt` on overflow rather than wrapping (`src/builtins.rs`)
-- [ ] Promotion rules: `Int + BigInt → BigInt`, `BigInt + BigInt → BigInt`, `BigInt + Decimal → error`, `BigInt + Float → Float` (lossy, explicit) (`src/builtins.rs`)
-- [ ] Add `Value::BigInt` arms to `value_to_json` and `value_to_display_string` in `src/lib.rs`; `BigInt` → JSON number string (document interop risk: may exceed JSON receiver's i64 range); `BigInt` → display as `BigInt(n)` (`src/lib.rs`)
-- [ ] JSON serialization: `BigInt` serializes as JSON number string (no literal suffix syntax — BigInt is created via `[big-int n]` call or arithmetic overflow, not by parse-time suffix) (`src/builtins.rs`)
-- [ ] Tests: factorial computation; integer overflow promotion; `BigInt + Float` rejected; JSON round-trip for large integers (`tests/corpus/eval/builtins/`)
-
 ### `numeric-repr`
 
 See doc/05-type-annotations.md §Storage Hints, doc/whatif/numeric-types.md Phase 4. **Depends on:** `numeric-range` (Ph1) — `repr:` consistency is validated against `is:` range constraints; no BigInt dependency (all valid repr values u8–i64 fit within `Value::Int(i64)`).

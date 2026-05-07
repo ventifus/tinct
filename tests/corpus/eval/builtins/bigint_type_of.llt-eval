@@ -1,0 +1,4 @@
+# type-of BigInt returns "BigInt"
+[type-of [big-int 1]]
+===
+String("BigInt")

@@ -4350,3 +4350,12 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] ValueVisitor visit_decimal: JSON serialization as number, display as Decimal(n)
 - [x] PartialEq for Decimal values
 - [x] 3 corpus tests: decimal_parse, decimal_from_int, decimal_type_of
+
+### numeric-bigint
+
+- [x] Value::BigInt(num_bigint::BigInt) variant with num-bigint 0.4 crate
+- [x] `big-int` builtin: Int/String -> BigInt conversion
+- [x] ValueVisitor visit_bigint: JSON number string serialization, BigInt(n) display
+- [x] PartialEq for BigInt values
+- [x] Exhaustive match coverage across all Value match sites
+- [x] 3 corpus tests: bigint_from_int, bigint_from_string, bigint_type_of

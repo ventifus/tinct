@@ -1323,6 +1323,32 @@ fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
+/// `big-int`: Convert an Int or String to a BigInt (arbitrary-precision integer).
+fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("big-int", args, named, &ctx, depth, call_span)?;
+    match val {
+        Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
+        Value::String(ref s) => {
+            match s.parse::<num_bigint::BigInt>() {
+                Ok(n) => ok_val(Value::BigInt(n), call_span),
+                Err(e) => Err(EvalError::new(
+                    format!("big-int: cannot parse \"{s}\": {e}"),
+                    call_span,
+                )
+                .into()),
+            }
+        }
+        _ => Err(EvalError::type_mismatch("Int or String", &type_name(&val), call_span).into()),
+    }
+}
+
 /// and map-like dicts — the type system does not track key structure at runtime.
 /// Inherently materializing: must inspect value variant to determine type.
 fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -1881,6 +1907,7 @@ fn type_name(val: &Value) -> String {
         Value::Handle(_) => "Handle",
         Value::Variant { tag, .. } => tag.as_str(),
         Value::Decimal(_) => "Decimal",
+        Value::BigInt(_) => "BigInt",
     }
     .to_string()
 }
@@ -3634,8 +3661,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
         builtin!("gensym", builtin_gensym),
         builtin!("until", builtin_until),
-        // Decimal
+        // Decimal and BigInt
         builtin!("decimal", builtin_decimal, [Strictness::Seq]),
+        builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
@@ -8724,7 +8752,7 @@ mod tests {
         assert!(names.contains(&"gensym"), "missing gensym");
         assert!(names.contains(&"str-length"), "missing str-length");
         assert!(names.contains(&"validate"), "missing validate");
-        assert_eq!(names.len(), 83, "expected 83 builtins, got {}", names.len());
+        assert_eq!(names.len(), 84, "expected 84 builtins, got {}", names.len());
     }
 
     #[test]
