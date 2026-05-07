@@ -4100,3 +4100,49 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] Formatter support for Quote, Unquote, UnquoteSplice, DefMacro in compact.llt and pretty.llt
 - [x] 4 corpus tests + 6 formatter unit tests for macro integration
 - [x] doc/08-evaluation.md updated with phase separation documentation
+
+## Template-Polarity Research
+
+- [x] Research template-polarity embedding — see doc/whatif/template-polarity.md
+
+## Error Diagnostics: Source Snippets
+
+Deferred phases from the accepted `source-text-availability` proposal. Phase 1 (REPL + CLI snippet rendering) is complete. See `doc/whatif/source-text-availability.md`.
+
+### source-text-multiline: Multi-Line Span Rendering
+
+Extends `render_span_snippet` to show all lines of a multi-line span. Currently only the first line + `...` is shown. See doc/whatif/source-text-availability.md §Phase 2.
+
+- [x] render_span_snippet: shows all lines (start→EOL, middles, col0→end); consistent gutter width
+- [x] test_render_span_snippet_multiline updated; integration test added (`src/error.rs`, `src/lib.rs`)
+
+### source-text-lsp: LSP DiagnosticRelatedInformation
+
+**Depends on:** `source-text-multiline`
+
+Populates `related_information` on LSP diagnostics with a source snippet. All three diagnostic constructors in `src/lsp/analysis.rs` currently have `related_information: None`; the source string is already in scope at each call site. See doc/whatif/source-text-availability.md §Phase 3.
+
+- [x] eval_error_to_diagnostic populates related_information (mat-span + stack frames)
+- [x] parse/type errors: correctly leave related_information None (no multi-span)
+- [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
+- [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)
+
+## Macros Cluster: Theoretical Gaps
+
+Gaps between the macros-cluster plan (`doc/whatif/plans/macros-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.
+
+- [x] M3c unquote-splice top-level error: specify that `[unquote-splice expr]` at the top level of a `[quote ...]` (not inside a list/call args) is a parse error — Bawden (1999) Appendix A rejects `tag-comma-atsign?` at top level of `qq-expand`. (`doc/whatif/quasiquoting.md`, `doc/whatif/plans/macros-cluster.md` M3c) [Minor, computer-scientist train]
+- [x] M5a scope sets: document the biggest-subset binding resolution rule from Flatt (2016) §3.1 — the current M5a description says "distinct bindings with the same name but different ScopeIds do not capture each other" which is a simplification that may not handle recursive macros or nested macro definitions correctly. Add a note that the full scope-set model uses subset-based resolution, and that tinct's initial implementation is a simplification sufficient for non-recursive macros. (`doc/whatif/plans/macros-cluster.md` M5a, `doc/whatif/macros.md`) [Minor, computer-scientist train]
+- [x] M5a honest tags for Abstraction: Pombrio & Krishnamurthi (2015) Theorem 2 (Abstraction) requires "honest tags" — the expansion side map must record accurate before/after patterns, not just the call-site span. Note this requirement in the dual-span tracking design so that error provenance chains are faithful to the actual expansion. (`doc/whatif/plans/macros-cluster.md` M5a) [Minor, computer-scientist train]
+- [x] M4b blackhole detection for synthetic nodes: the plan uses `HashSet<(file_id, byte_offset)>` to track in-progress call sites, but macro-generating macros can produce NEW call sites with no source position. Specify how synthetic nodes (from `dict_to_ast` with absent `span:`) are tracked — e.g., assign synthetic node IDs or use the parent expansion's call site. (`doc/whatif/plans/macros-cluster.md` M4b task 11) [Minor, computer-scientist train]
+- [x] M5b dynamic include limitation as phase constraint: frame the static-paths-only limitation for `$include` macro ordering as a formal consequence of Flatt's (2002) phase separation model — compile-time imports must be resolved before expansion begins; dynamic paths cannot participate in phase separation. (`doc/whatif/plans/macros-cluster.md` §5 Cross-Cutting Concerns) [Minor, computer-scientist train]
+
+## Typing Cluster: Theoretical Gaps
+
+Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.
+
+- [x] C5 divergent values in coverage analysis: the C5 exhaustiveness sprint now implements the full Maranget (2007) usefulness algorithm with lazy ⊥-as-constructor extension, yielding the Karachalias et al. (2015) three-way partition (Covered/Divergent/Uncovered). Coverage algorithm in Rust (`src/coverage.rs`), exposed as `check-coverage` builtin. Inaccessible-RHS warnings from divergent-useful detection. (`doc/whatif/plans/typing-cluster.md` C5) [Minor, computer-scientist train]
+- [x] D2 Marques et al. soundness unproven: the D2 algebraic subtyping sprint cites Marques et al. (2024) as a "direct implementation template" for row variables under algebraic subtyping. However, the paper explicitly states soundness and completeness proofs "do not have yet done" (§1). Decision: proceed with Marques et al. (Path A), accepting the risk. Risk is documented in typing-cluster.md D2 §Formal model and §Risk. Alternative identified for future research: Chau & Parreaux (POPL 2026) BAS — see §Language Design Research. (`doc/whatif/plans/typing-cluster.md` D2) [Major, computer-scientist train]
+- [x] D4 Greenman et al. venue correction: the §References section lists "ICFP '19" for Greenman, Felleisen & Dimoulas (2019). The correct venue is OOPSLA '19 (Proc. ACM Program. Lang. 3, OOPSLA, Article 122, doi:10.1145/3360548). Fixed in typing-cluster.md, gradual-typing.md, and doc/17-references.md. (`doc/whatif/plans/typing-cluster.md` §References) [Nit, computer-scientist train]
+- [x] Occurrence typing tasks missing: narrowing added as proposal #12 to typing-cluster plan with two sprints: B5a `narrowing-basic` (8 tasks: `if` as type-level special form, `Narrowing` enum, `extract_narrowings`, environment forking, branch type join, conjunction, type map, tests) and B5b `narrowing-predicates` (5 tasks: `int?`/`str?`/etc. direct narrowing, `num?` supertype, `cond` narrowing, tests). Wired into dependency graph, implementation calendar (weeks 7-8), and cross-cutting concerns (§5 items 6-7). (`doc/whatif/plans/typing-cluster.md` B5a, B5b) [Minor, computer-scientist train]
+- [x] B4 constraint duplication during instantiation: proof obligation now stated in typing-cluster.md §5 Cross-Cutting Concerns item 4 — each fresh variable carries exactly the constraints from the generalized scheme (Jones 1995, §8.3), not accumulated constraints from the current inference state. (`doc/whatif/plans/typing-cluster.md` B4) [Minor, computer-scientist train]
