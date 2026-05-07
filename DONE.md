@@ -4278,3 +4278,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] All exhaustive match sites updated (desugar, resolve, formatter, eval, typecheck, lsp, ast_dict, expand)
 - [x] Placeholder evaluation (marker dict); dictionary construction + threading deferred
 - [x] Tests: class and instance declaration parsing and evaluation
+
+### algebraic-subtyping
+
+- [x] TypeVarBounds { lower, upper } + InferState.bounds; constrain(sub, sup) with polarity-aware decomposition
+- [x] Constraint provenance + check_bounds_satisfiable
+- [x] Type::Intersection variant + normalize_intersection + compact_bounds
+- [x] constrain() infrastructure coexists with unify(); full migration to constrain-only is future work
+- [x] 15 unit tests for constraint infrastructure, bound compaction, intersection normalization
