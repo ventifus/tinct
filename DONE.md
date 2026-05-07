@@ -3265,6 +3265,14 @@ Remaining implementation work for TypeAssert structural contract checking.
 - [x] Add error variant to [FORCE-GUARD] rule in doc/08-evaluation.md — every other FORCE-* rule has an error case; [FORCE-GUARD]'s failure paths (guard check fails, inner materialize fails) are described only in prose. [Minor, sprint-reviewer C62 round 6, KNOWN ISSUE]
 - [x] Add InProgress→Guarded edge to formal transition table in doc/08-evaluation.md — the backward restoration edge is documented in the monotonicity exception paragraph but not in the transition table at lines 224-232. [Nit, sprint-reviewer C62 round 6, KNOWN ISSUE]
 
+### nominal-variants-unit
+
+- [x] Value::Variant { tag, payload } with unit constructors (payload: None)
+- [x] tag-of builtin + variant builtin for construction
+- [x] type-of returns "Variant"; equality by tag comparison
+- [x] JSON serialization: {"Tag": null}
+- [x] 6 corpus tests for variant construction, tag-of, type-of, equality, serialization
+
 ### cycle-findings-c71-a: Cycle #71 Major Findings (Code)
 
 - [x] Fix dead filter in `generalize()` type_vars collection — `!all_row_vars.contains(var)` guard on `all_type_vars` iterator is always false; names in the two sets are disjoint by construction (distinct counters). Remove the guard or replace with `debug_assert!(!all_row_vars.contains(var))`. (`src/types.rs:1416-1418`) [Major, type-theorist C71]

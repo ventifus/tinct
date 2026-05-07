@@ -1,0 +1,5 @@
+# tag-of returns the tag of a variant as a string
+[Red: [variant "Red"]]
+[tag-of Red]
+===
+String("Red")
