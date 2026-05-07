@@ -3,4 +3,4 @@
 --- %
 [y: 2]
 ===
-bare % with no identifier is not allowed in section headers
+bare % in section header must be followed by @Type annotation (use '%@Type' to validate pipeline input)

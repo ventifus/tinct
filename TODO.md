@@ -47,17 +47,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 **Spec:**
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
-### `structural-contracts-input`
-
-See doc/05-type-annotations.md §Pipeline Input Types, doc/whatif/structural-contracts.md Phase 1. **Depends on:** None.
-
-- [ ] Parser produces a standard `Expr::TypeAssert { expr: VarRef("%"), annotation: T }` for `%@Type`; the type checker detects the `VarRef("%")` + first-in-document pattern and treats it as a type binding declaration — no new AST node needed, avoids new eval/typecheck handlers (`src/typecheck.rs`)
-- [ ] Type checker: detect `%@Type` pattern and bind `%` to declared type within the document; extend `typecheck_file()` to return `(Vec<TypeError>, Option<Type>)` where `Option<Type>` is the inferred output type of the last document expression (`src/typecheck.rs`)
-- [ ] Multi-file pipeline type checking: propagate `Option<Type>` output from `typecheck_file()` in the `run_eval` pipeline loop; constrain doc N+1's `%@Type` against doc N's output type (`src/main.rs`, `src/typecheck.rs`)
-- [ ] Add `percent_type: Option<Type>` to `EvalContext` or `EvalConfig`; when TypeAssert on `%` fails and `percent_type` is set, enrich error with pipeline boundary context (which stage declared the type, which stage mismatched) (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Extend LSP document index with `percent_type: Option<Type>` populated from `%@Type` annotation resolution; expose to completion handler for `%` field access completions (`src/lsp/document.rs`, `src/lsp/analysis.rs`)
-- [ ] Tests: single-document `%@[port: Int hostname: Str]` binding, cross-document unification, mismatch error, open record annotation accepts extra fields (`tests/corpus/eval/pipeline/`)
-
 ### `structural-contracts-validate`
 
 See doc/11a-builtins.md §validate, doc/whatif/structural-contracts.md Phase 2. **Depends on:** `structural-contracts-input` (SC Ph1).

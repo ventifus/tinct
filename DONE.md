@@ -4302,3 +4302,10 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] EvalError.blame field + Display shows blame provenance in error messages
 - [x] Blame propagation through CEK materialize continuation stack
 - [x] 5 unit tests for blame labels, co-natural strategy, error display
+
+### structural-contracts-input
+
+- [x] %@Type in section headers: runtime validation via synthetic TypeAssert
+- [x] expects: @Type integration with runtime validation
+- [x] Lazy nominal type checking on pipeline % input
+- [x] 4 corpus tests: expects syntax, %@Type syntax, type mismatch error, record type
