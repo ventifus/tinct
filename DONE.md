@@ -3992,6 +3992,14 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] Add pipe + each integration corpus tests — `tests/corpus/eval/cross_feature/pipe_each_collect.llt-eval`, `pipe_each_key_map.llt-eval`, `pipe_each_kv_filter.llt-eval`
 - [x] 1714 tests pass — 35 new laziness tests, 12 pipeline tests, 15+ error tests, PendingCall lifecycle tests, JSON formatter unit tests
 
+### macro-hygiene: Scope Sets + Dual-Span Error Reporting
+
+- [x] ScopeId + ScopeSet types with per-invocation fresh IDs
+- [x] Working macro expansion: quote args → call transformer → dict_to_ast → fixpoint re-expansion
+- [x] Dual-span provenance: MacroProvenance + ProvenanceMap + "in expansion of" error display
+- [x] Phase 2 rename infrastructure (dead code, ready for automatic hygiene)
+- [x] Tests: hygiene no-capture, scope isolation, nested expansion, expansion errors with provenance
+
 ### lsp-goto-definition: Go To Definition
 
 - [x] `key_name()`, `name_at_offset()`, `find_key_definition()`, `definition_at()` in src/lsp/analysis.rs

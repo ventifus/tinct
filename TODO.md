@@ -92,16 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### macro-hygiene: Scope Sets + Dual-Span Error Reporting
-
-See doc/08-evaluation.md §Macro Hygiene. **Depends on:** `defmacro`.
-
-- [ ] `ScopeId(u32)` type; `ScopeMap` threaded through expander; each invocation gets fresh scope; bindings carry definition-site scope; call-site variables carry caller scope (`src/expand.rs`)
-- [ ] Name resolution: same name + different `ScopeId` = distinct (simplified biggest-subset rule, sufficient for non-recursive macros) (`src/expand.rs`)
-- [ ] Dual-span side map: `HashMap<NodeKey, (String, Span, usize)>` — `(macro_name, call_site_span, expansion_rule_index)` for honest tags per Pombrio & Krishnamurthi (2015) (`src/expand.rs`)
-- [ ] Error formatter: shows "in expansion of `<name>` at line N" with provenance chains for nested expansions (`src/`)
-- [ ] Tests: macro binding `x` does not capture caller's `x`; error shows call site; nested provenance chain; existing macros still work (`tests/`)
-
 ### macro-integration: Include Ordering, `_` Port, Formatter Config
 
 See doc/08-evaluation.md §Macro Expansion Pipeline. **Depends on:** `macro-hygiene`, `unquote`, `formatter-full`.
