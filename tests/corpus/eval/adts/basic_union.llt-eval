@@ -1,0 +1,6 @@
+# Test: multi-entry [type ...] declares a union; dict entries type-check normally
+[Result: [type [ok: a] [err: String]]]
+---
+[ok: 42]
+===
+Dict({"ok": Int(42)})

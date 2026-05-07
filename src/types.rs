@@ -2718,7 +2718,26 @@ impl TypeEnv {
             "try".to_string(),
             Type::Function {
                 params: vec![Type::Unknown, Type::Unknown],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::normalize_union(vec![
+                    // [ok: a] variant
+                    Type::Record(Row {
+                        fields: {
+                            let mut f = HashMap::new();
+                            f.insert("ok".to_string(), Type::Unknown);
+                            f
+                        },
+                        tail: RowTail::Empty,
+                    }),
+                    // [err: Str] variant
+                    Type::Record(Row {
+                        fields: {
+                            let mut f = HashMap::new();
+                            f.insert("err".to_string(), Type::Str);
+                            f
+                        },
+                        tail: RowTail::Empty,
+                    }),
+                ])),
                 variadic: false,
             },
         );

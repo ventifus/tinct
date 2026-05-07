@@ -912,10 +912,13 @@ enum StackFrame {
         return_ann: Option<Spanned<Annotation>>,
         span_start: Position,
     },
-    /// Type alias: `[type expr]` or `[type [params] expr]`
+    /// Type alias: `[type expr]` or `[type [params] expr]` or `[type T1 T2 ...]`
     TypeAlias {
         params: Vec<String>,
-        type_expr: Option<Spanned<Expr>>,
+        /// Multiple type expressions for multi-entry union declarations.
+        /// Single-entry `[type T]` has exactly one element.
+        /// Multi-entry `[type T1 T2 ...]` has 2+ elements.
+        type_exprs: Vec<Spanned<Expr>>,
         span_start: Position,
     },
     /// Type assertion: `[@Annotation expr]`
@@ -1503,12 +1506,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Type-alias form: [type expr] or [type [params] expr]
+                        // Type-alias form: [type expr] or [type [params] expr] or [type T1 T2 ...]
                         // (Not a type form if the keyword is followed by colon: [type: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::TypeAlias {
                             params: Vec::new(),
-                            type_expr: None,
+                            type_exprs: Vec::new(),
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -1984,19 +1987,42 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                     StackFrame::TypeAlias {
                         params,
-                        type_expr,
+                        type_exprs,
                         span_start,
-                    } => match type_expr {
-                        None => {
+                    } => {
+                        if type_exprs.is_empty() {
                             close_bracket_recover!(ParseError {
-                                message: "type-alias form requires a type expression".to_string(),
+                                message: "type-alias form requires at least one type expression"
+                                    .to_string(),
                                 span: Some(span),
                             });
-                        }
-                        Some(type_expr) => {
+                        } else {
+                            // Multi-entry union: wrap all entries in a single TypeAlias with Union body.
+                            // The type checker will construct Type::Union from multiple entries.
+                            // Single-entry: remains a simple alias (type checker unwraps single-element unions).
+                            let body = if type_exprs.len() == 1 {
+                                type_exprs.into_iter().next().unwrap()
+                            } else {
+                                // Create a synthetic Dict expression with positional entries.
+                                // The type checker recognizes multiple positional entries as a union.
+                                let entries: Vec<Spanned<Entry>> = type_exprs
+                                    .into_iter()
+                                    .map(|e| {
+                                        let entry_span = e.span;
+                                        Spanned::new(
+                                            Entry {
+                                                key: None,
+                                                value: Rc::new(e),
+                                            },
+                                            entry_span,
+                                        )
+                                    })
+                                    .collect();
+                                Spanned::new(Expr::Dict(entries), dict_span(span_start))
+                            };
                             let alias_expr = Expr::TypeAlias {
                                 params,
-                                body: Box::new(type_expr),
+                                body: Box::new(body),
                             };
                             let spanned_alias = Spanned::new(alias_expr, dict_span(span_start));
                             if let Err(push_err) = push_value(
@@ -2007,7 +2033,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 close_bracket_recover!(push_err);
                             }
                         }
-                    },
+                    }
 
                     StackFrame::TypeAssert {
                         annotation,
@@ -3352,17 +3378,13 @@ fn pop_last_value_from_frame(
                 })
             }
         }
-        Some(StackFrame::TypeAlias {
-            ref mut type_expr, ..
-        }) => {
-            if let Some(expr) = type_expr.take() {
-                Ok(expr)
-            } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                })
-            }
+        Some(StackFrame::TypeAlias { type_exprs: _, .. }) => {
+            // TypeAlias frames don't support dot access in type context.
+            // This case should be unreachable since dot access only applies to value expressions.
+            Err(ParseError {
+                message: "dot access is not valid in type alias expressions".to_string(),
+                span: Some(span),
+            })
         }
         Some(StackFrame::TypeAssert { ref mut expr, .. }) => {
             if let Some(e) = expr.take() {
@@ -3621,11 +3643,11 @@ fn push_expr_to_parent(
             }
             Some(StackFrame::TypeAlias {
                 ref mut params,
-                ref mut type_expr,
+                ref mut type_exprs,
                 ..
             }) => {
                 // First expression: check if it's a parameter list
-                if params.is_empty() && type_expr.is_none() {
+                if params.is_empty() && type_exprs.is_empty() {
                     // Try to parse as parameter list: [a b c]
                     // Case 1: Dict with auto-indexed lowercase identifiers
                     if let Expr::Dict(entries) = &expr.node {
@@ -3676,16 +3698,9 @@ fn push_expr_to_parent(
                     }
                 }
 
-                // Not a parameter list (or already have params) — this is the body
-                if type_expr.is_some() {
-                    return Err(ParseError {
-                        message:
-                            "type-alias form can only have one type expression after parameters"
-                                .to_string(),
-                        span: Some(expr.span),
-                    });
-                }
-                *type_expr = Some(expr);
+                // Not a parameter list (or already have params) — this is a type expression entry.
+                // Multi-entry `[type T1 T2 ...]` accumulates all positional type expressions.
+                type_exprs.push(expr);
                 Ok(())
             }
             Some(StackFrame::TypeAssert {
@@ -4428,19 +4443,35 @@ mod tests {
 
     #[test]
     fn test_type_alias_multiple_exprs() {
-        // [type 1 2] — two expressions in a type-alias form
-        let output = parse2("[type 1 2]").expect("recovery should succeed");
+        // [type 1 2] — multi-entry type-alias form (union declaration)
+        let output = parse2("[type 1 2]").expect("parse should succeed");
         assert!(
-            !output.errors.is_empty(),
-            "expected recovered error for multiple type-alias expressions"
+            output.errors.is_empty(),
+            "multi-entry [type T1 T2 ...] should parse without errors, got: {:?}",
+            output.errors
         );
-        assert!(
-            output.errors[0]
-                .message
-                .contains("type-alias form can only have one type expression"),
-            "expected error about multiple expressions, got: {}",
-            output.errors[0].message
-        );
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::TypeAlias { params, body } => {
+                assert!(params.is_empty());
+                // Multi-entry body is wrapped in a synthetic Dict with positional entries
+                match &body.node {
+                    Expr::Dict(entries) => {
+                        assert_eq!(entries.len(), 2, "expected 2 positional entries");
+                        assert!(
+                            entries[0].node.key.is_none(),
+                            "entries should be auto-indexed"
+                        );
+                        assert!(
+                            entries[1].node.key.is_none(),
+                            "entries should be auto-indexed"
+                        );
+                    }
+                    other => panic!("expected Dict body for multi-entry type alias, got {other:?}"),
+                }
+            }
+            other => panic!("expected TypeAlias, got {other:?}"),
+        }
     }
 
     #[test]

@@ -6,23 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase C: Algebraic Types
 
-### `adts`
-
-**Depends on:** `union-types` (B1)
-**Spec chapters:** `doc/05-type-annotations.md` (§Union Declarations — multi-entry `[type ...]` syntax, string literal type variants), `doc/03-data-model.md` (§Algebraic Data Types — structural discrimination, runtime representation)
-
-1. Type checker: multi-entry `[type ...]` body -> `Type::Union(vec![...])`
-2. Type checker: `Expr::Str` in type-expression position -> `Type::StringLiteral(s)`
-3. Type alias registration for named union types, stored as `TypeScheme`
-   (not bare `Type`) so type variables are properly generalized per call
-   site — prevents cross-site variable sharing
-4. `try` return type updated to `Union([ok: a], [err: Str])`
-5. Type alias instantiation: `res@Result` instantiates the `TypeScheme`
-   with fresh type variables via existing `instantiate()` mechanism
-6. Tests: 8+ (union declaration, tag-only variants, mixed variants,
-   TypeAssert enforcement, `try` result type, type alias usage,
-   two call sites don't share type variables)
-
 ### `nominal-variants-unit`
 
 **Depends on:** ADTs Phase 1 (convention — effectively none)

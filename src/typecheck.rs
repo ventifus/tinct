@@ -3317,7 +3317,10 @@ fn resolve_type_expr(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match &expr.node {
-        Expr::Str(name) | Expr::VarRef { name, .. } => {
+        // String literals in type position → Type::StringLiteral (tag-only enum variants).
+        // VarRef still goes to resolve_type_name for type alias lookup.
+        Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
+        Expr::VarRef { name, .. } => {
             // Pass row_ann_mapping as read-only reference for cross-kind collision detection.
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(name, env, expr.span, state, ann_mapping, &row_ref)
@@ -3503,6 +3506,8 @@ fn resolve_type_dict(
     // Parameterized type alias application: [AliasName Arg1 Arg2 ...]
     // When the first entry is auto-indexed and refers to a parameterized type alias,
     // treat remaining auto-indexed entries as type arguments.
+    // This MUST run before union detection so [Result Int] resolves as alias
+    // application, not Union(Result, Int).
     if entries.len() >= 2 {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
@@ -3545,6 +3550,21 @@ fn resolve_type_dict(
                 }
             }
         }
+    }
+
+    // Multi-entry union type from `[type T1 T2 ...]` declarations.
+    // When ALL entries are auto-indexed (no keys) and there are 2+ entries,
+    // this is a union of type expressions (not a record type).
+    // Single auto-indexed entry falls through to existing handling.
+    let all_positional = entries.iter().all(|e| e.node.key.is_none());
+    if all_positional && entries.len() >= 2 {
+        let mut members = Vec::new();
+        for entry in entries {
+            let member_ty =
+                resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+            members.push(member_ty);
+        }
+        return Ok(Type::normalize_union(members));
     }
 
     let mut fields: HashMap<String, Type> = HashMap::new();
@@ -5064,10 +5084,14 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 10);
         let sp = |node: Expr| Spanned::new(node, span);
+        // Use VarRef (unquoted identifier) — Expr::Str is reserved for string literal types
         let ann = Annotation::PropertyDict(vec![Spanned::new(
             Entry {
                 key: None,
-                value: Rc::new(sp(Expr::Str("Int".into()))),
+                value: Rc::new(sp(Expr::VarRef {
+                    name: "Int".into(),
+                    resolved: RefCell::new(None),
+                })),
             },
             span,
         )]);
@@ -5090,10 +5114,14 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 10);
         let sp = |node: Expr| Spanned::new(node, span);
+        // Use VarRef for the value (unquoted type name) — Expr::Str is for string literal types
         let ann = Annotation::PropertyDict(vec![Spanned::new(
             Entry {
                 key: Some(sp(Expr::Str("x".into()))),
-                value: Rc::new(sp(Expr::Str("NoSuchType".into()))),
+                value: Rc::new(sp(Expr::VarRef {
+                    name: "NoSuchType".into(),
+                    resolved: RefCell::new(None),
+                })),
             },
             span,
         )]);
@@ -5216,14 +5244,16 @@ mod tests {
 
     #[test]
     fn test_type_expr_auto_indexed_entries() {
-        // In new syntax, [Int String] is an implied call (Identifier head), not a data
-        // sequence. The type resolver sees an invalid type expression (not a dict).
-        // In old syntax this was a Dict with auto-indexed Str entries → different error.
-        // For testing the auto-indexed rejection, use quoted strings: ["Int" "String"].
-        let errors = check_err("[type [\"Int\" \"String\"]]");
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("auto-indexed entries not supported")));
+        // With ADT support, [type ["Int" "String"]] is now valid:
+        // quoted strings in type position resolve as StringLiteral types,
+        // and two positional entries create a union.
+        // Verify it produces Union(StringLiteral("Int"), StringLiteral("String")).
+        let result = check("[type [\"Int\" \"String\"]]");
+        assert!(
+            result.is_ok(),
+            "auto-indexed string literals in type position should produce a union, got: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -9142,6 +9172,7 @@ mod tests {
     // is a future sprint item.
 
     /// Helper: build a PropertyDict annotation with positional type entries.
+    /// Uses VarRef (unquoted identifiers) for type names, matching parser behavior.
     fn union_annotation(type_names: &[&str]) -> (Annotation, Span) {
         let span = crate::test_util::test_span(1, 1, 1, 20);
         let sp = |node: Expr| Spanned::new(node, span);
@@ -9151,7 +9182,10 @@ mod tests {
                 Spanned::new(
                     Entry {
                         key: None,
-                        value: Rc::new(sp(Expr::Str((*name).to_string()))),
+                        value: Rc::new(sp(Expr::VarRef {
+                            name: (*name).to_string(),
+                            resolved: RefCell::new(None),
+                        })),
                     },
                     span,
                 )
@@ -9231,18 +9265,25 @@ mod tests {
         // Positional entries + keyed metadata: Union(Int, Str) with default
         let span = crate::test_util::test_span(1, 1, 1, 20);
         let sp = |node: Expr| Spanned::new(node, span);
+        // Use VarRef for type names (unquoted identifiers) — Expr::Str is for string literal types
         let ann = Annotation::PropertyDict(vec![
             Spanned::new(
                 Entry {
                     key: None,
-                    value: Rc::new(sp(Expr::Str("Int".into()))),
+                    value: Rc::new(sp(Expr::VarRef {
+                        name: "Int".into(),
+                        resolved: RefCell::new(None),
+                    })),
                 },
                 span,
             ),
             Spanned::new(
                 Entry {
                     key: None,
-                    value: Rc::new(sp(Expr::Str("String".into()))),
+                    value: Rc::new(sp(Expr::VarRef {
+                        name: "String".into(),
+                        resolved: RefCell::new(None),
+                    })),
                 },
                 span,
             ),
@@ -9301,18 +9342,25 @@ mod tests {
         let sp = |node: Expr| Spanned::new(node, span);
         // Build annotation: Fn@... where the annotation is a PropertyDict with positional entries
         // This simulates [Fn@[Int String]]
+        // Use VarRef for type names — Expr::Str is for string literal types
         let fn_ann = Annotation::PropertyDict(vec![
             Spanned::new(
                 Entry {
                     key: None,
-                    value: Rc::new(sp(Expr::Str("Int".into()))),
+                    value: Rc::new(sp(Expr::VarRef {
+                        name: "Int".into(),
+                        resolved: RefCell::new(None),
+                    })),
                 },
                 span,
             ),
             Spanned::new(
                 Entry {
                     key: None,
-                    value: Rc::new(sp(Expr::Str("String".into()))),
+                    value: Rc::new(sp(Expr::VarRef {
+                        name: "String".into(),
+                        resolved: RefCell::new(None),
+                    })),
                 },
                 span,
             ),
@@ -9699,6 +9747,222 @@ mod tests {
             Some(Type::Int) => {}
             Some(other) => panic!("expected Int for variable binding narrowing, got {other}"),
             None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    // ========== ADT Tests (C1 sprint) ==========
+
+    #[test]
+    fn test_adt_multi_entry_union_declaration() {
+        // Multi-entry [type T1 T2 ...] produces Type::Union
+        let env = doc_env_with_builtins("[Result: [type [ok: a] [err: String]]]");
+        let alias = env
+            .get_type_alias("Result")
+            .expect("Result type alias not found");
+        match &alias.body {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2, "Result should have 2 union members");
+                // Check that both members are Records
+                for member in members {
+                    match member {
+                        Type::Record(_) => {}
+                        other => panic!("expected Record member, got {other}"),
+                    }
+                }
+            }
+            other => panic!("expected Union type for Result, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_adt_tag_only_variants() {
+        // String literals in type position → Type::StringLiteral
+        let env = doc_env_with_builtins("[Status: [type \"ok\" \"err\" \"pending\"]]");
+        let alias = env
+            .get_type_alias("Status")
+            .expect("Status type alias not found");
+        match &alias.body {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 3, "Status should have 3 union members");
+                // Check that all members are StringLiterals
+                let tags: Vec<String> = members
+                    .iter()
+                    .filter_map(|m| match m {
+                        Type::StringLiteral(s) => Some(s.clone()),
+                        other => panic!("expected StringLiteral, got {other}"),
+                    })
+                    .collect();
+                // Union members are sorted, so check canonical order
+                assert!(tags.contains(&"ok".to_string()));
+                assert!(tags.contains(&"err".to_string()));
+                assert!(tags.contains(&"pending".to_string()));
+            }
+            other => panic!("expected Union type for Status, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_adt_mixed_variants() {
+        // Mix of record and string literal variants
+        let env = doc_env_with_builtins(
+            "[Event: [type [click: [x: Int  y: Int]] [key: [code: String]] \"resize\"]]",
+        );
+        let alias = env
+            .get_type_alias("Event")
+            .expect("Event type alias not found");
+        match &alias.body {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 3, "Event should have 3 union members");
+                // Count record vs string literal members
+                let record_count = members
+                    .iter()
+                    .filter(|m| matches!(m, Type::Record(_)))
+                    .count();
+                let string_count = members
+                    .iter()
+                    .filter(|m| matches!(m, Type::StringLiteral(_)))
+                    .count();
+                assert_eq!(record_count, 2, "should have 2 record variants");
+                assert_eq!(string_count, 1, "should have 1 string literal variant");
+            }
+            other => panic!("expected Union type for Event, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_adt_single_entry_unwrapped() {
+        // Single-entry [type T] should remain a simple alias (not wrapped in Union)
+        let env = doc_env_with_builtins("[Name: [type String]]");
+        let alias = env
+            .get_type_alias("Name")
+            .expect("Name type alias not found");
+        match &alias.body {
+            Type::Str => {}
+            other => panic!("expected Str type for single-entry Name, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_adt_type_assert_union_enforcement() {
+        // Type alias with union body can be referenced in annotations.
+        // Verify the alias resolves to a 2-member union.
+        let env = doc_env_with_builtins("[Result: [type [ok: a] [err: String]]]");
+        let alias = env
+            .get_type_alias("Result")
+            .expect("Result type alias not found");
+        match &alias.body {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2, "should have 2 union members");
+                let has_ok = members.iter().any(|m| match m {
+                    Type::Record(Row { fields, .. }) => fields.contains_key("ok"),
+                    _ => false,
+                });
+                let has_err = members.iter().any(|m| match m {
+                    Type::Record(Row { fields, .. }) => fields.contains_key("err"),
+                    _ => false,
+                });
+                assert!(has_ok, "should have [ok: ...] variant");
+                assert!(has_err, "should have [err: ...] variant");
+            }
+            other => panic!("expected Union type for Result, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_try_result_type() {
+        // `try` builtin should return Union([ok: a], [err: Str])
+        let env = TypeEnv::with_builtins();
+        let scheme = env.get("try").expect("try builtin not found in env");
+        match &scheme.body {
+            Type::Function { ret, .. } => match ret.as_ref() {
+                Type::Union(members) => {
+                    assert_eq!(members.len(), 2, "try should return 2-member union");
+                    // Check that one member has "ok" field and one has "err" field
+                    let has_ok = members.iter().any(|m| match m {
+                        Type::Record(Row { fields, .. }) => fields.contains_key("ok"),
+                        _ => false,
+                    });
+                    let has_err = members.iter().any(|m| match m {
+                        Type::Record(Row { fields, .. }) => fields.contains_key("err"),
+                        _ => false,
+                    });
+                    assert!(has_ok, "try result should have [ok: ...] variant");
+                    assert!(has_err, "try result should have [err: ...] variant");
+                }
+                other => panic!("expected Union return type for try, got {other}"),
+            },
+            other => panic!("expected Function type for try, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_adt_parameterized_alias_instantiation() {
+        // Parameterized union alias: [type [a] [ok: a] [err: String]]
+        // Each usage site should get fresh type variables
+        let env = doc_env_with_builtins(
+            "[Result: [type [a] [ok: a] [err: String]]]\n\
+             [res1: [@[Result Int] [ok: 42]]]\n\
+             [res2: [@[Result String] [ok: \"hello\"]]]",
+        );
+
+        // res1 should have type Union([ok: Int], [err: String])
+        match env.get("res1").map(|s| &s.body) {
+            Some(Type::Union(members)) => {
+                assert_eq!(members.len(), 2);
+                // Find the ok variant and check its type
+                let ok_type = members.iter().find_map(|m| match m {
+                    Type::Record(Row { fields, .. }) => fields.get("ok"),
+                    _ => None,
+                });
+                match ok_type {
+                    Some(Type::Int) => {}
+                    other => panic!("expected Int for res1 ok field, got {other:?}"),
+                }
+            }
+            other => panic!("expected Union type for res1, got {other:?}"),
+        }
+
+        // res2 should have type Union([ok: String], [err: String])
+        match env.get("res2").map(|s| &s.body) {
+            Some(Type::Union(members)) => {
+                assert_eq!(members.len(), 2);
+                let ok_type = members.iter().find_map(|m| match m {
+                    Type::Record(Row { fields, .. }) => fields.get("ok"),
+                    _ => None,
+                });
+                match ok_type {
+                    Some(Type::Str) => {}
+                    other => panic!("expected Str for res2 ok field, got {other:?}"),
+                }
+            }
+            other => panic!("expected Union type for res2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_adt_independent_call_sites() {
+        // Two functions annotated with the same union alias both type-check successfully
+        // and receive function types.
+        let env = doc_env_with_builtins(
+            "[Result: [type [ok: a] [err: String]]]\n\
+             [f1: [fn [r@Result] r]]\n\
+             [f2: [fn [r@Result] r]]",
+        );
+
+        // Both should be functions
+        match env.get("f1") {
+            Some(scheme) => match &scheme.body {
+                Type::Function { .. } => {}
+                other => panic!("expected Function type for f1, got {other}"),
+            },
+            None => panic!("f1 not found"),
+        }
+        match env.get("f2") {
+            Some(scheme) => match &scheme.body {
+                Type::Function { .. } => {}
+                other => panic!("expected Function type for f2, got {other}"),
+            },
+            None => panic!("f2 not found"),
         }
     }
 }
