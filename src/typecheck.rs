@@ -165,6 +165,13 @@ fn reset_expr(expr: &Spanned<Expr>) {
             reset_expr(rhs);
         }
 
+        // Sequential: recurse into all expressions
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                reset_expr(seq_expr);
+            }
+        }
+
         // Annotated: annotations don't contain TypeAssert nodes, so nothing to reset
         Expr::Annotated { .. } => {}
 
@@ -710,6 +717,58 @@ fn infer_expr(
 
         Expr::Pipe { .. } => {
             unreachable!("Pipe should be desugared before type checking")
+        }
+
+        Expr::Sequential(exprs) => {
+            // Multi-expression sequential evaluation (let-binding semantics).
+            // Each expression's result dict extends the type environment for the next.
+            // The last expression's type is the overall result type.
+            if exprs.is_empty() {
+                return Ok(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                }));
+            }
+
+            let mut current_env = Rc::clone(env);
+
+            for (i, seq_expr) in exprs.iter().enumerate() {
+                let is_last = i == exprs.len() - 1;
+
+                if is_last {
+                    // Last expression: return its type
+                    return infer_expr(seq_expr, &current_env, state, type_map);
+                }
+
+                // Intermediate expression: infer and extract record bindings
+                let expr_ty = infer_expr(seq_expr, &current_env, state, type_map)?;
+
+                // Extract record fields to extend the type environment
+                if let Type::Record(row) = expr_ty {
+                    // Create child environment with bindings from intermediate expression
+                    let mut child_env = TypeEnv::with_parent(&current_env);
+
+                    // Add field types to environment
+                    for (field_name, field_ty) in &row.fields {
+                        child_env.insert(field_name.clone(), field_ty.clone());
+                    }
+
+                    current_env = Rc::new(child_env);
+                } else {
+                    // Intermediate expression must be a record (dict)
+                    return Err(vec![TypeError::new(
+                        &format!(
+                            "sequential expression requires intermediate expressions to be dicts, got {}",
+                            expr_ty
+                        ),
+                        seq_expr.span,
+                    )]);
+                }
+            }
+
+            unreachable!(
+                "infer Sequential: loop did not return — exprs was non-empty but is_last never triggered"
+            )
         }
 
         Expr::Call {

@@ -1,4 +1,4 @@
-//! String builtins: `str`, `split`, `replace`, `upper`, `lower`, `trim`.
+//! String builtins: `str`, `split`, `replace`, `upper`, `lower`, `trim`, `str-length`.
 //!
 //! These builtins operate on String values. They are all inherently materializing
 //! because they must inspect string content to compute their results.
@@ -270,4 +270,28 @@ pub(crate) fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = expect_one_arg("trim", args, named, &ctx, depth, call_span)?;
     let s = require_string("trim", val, args[0].span)?;
     ok_val(Value::String(s.trim().to_string()), call_span)
+}
+
+/// `str-length`: Return the length of a string in UTF-8 characters (not bytes).
+///
+/// Takes 1 arg (String). Returns an Int.
+/// Inherently materializing: must inspect string content to count characters.
+pub(crate) fn builtin_str_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("str-length", args, named, &ctx, depth, call_span)?;
+    let s = require_string("str-length", val, args[0].span)?;
+    let len = s.chars().count();
+    let len_i64 = i64::try_from(len).map_err(|_| {
+        EvalError::resource_limit_exceeded(
+            "str-length: string length exceeds i64::MAX".to_string(),
+            call_span,
+        )
+    })?;
+    ok_val(Value::Int(len_i64), call_span)
 }

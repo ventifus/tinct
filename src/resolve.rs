@@ -215,6 +215,11 @@ impl Resolver {
                 // If this arm is reached, the pipeline contract has been violated.
                 unreachable!("Expr::Pipe should have been eliminated by desugar before resolve");
             }
+            Expr::Sequential(exprs) => {
+                for seq_expr in exprs {
+                    self.walk_expr(seq_expr);
+                }
+            }
             Expr::Call {
                 func,
                 args,

@@ -1252,7 +1252,7 @@ parse → expand_macros → desugar → resolve → typecheck → eval
 
 **`gensym`:** Produces names of the form `:gensym:N` (colon prefix is forbidden in bare-word identifiers, making user collision structurally impossible). Names are unique but not stable across evaluation orders.
 
-**Include ordering:** Macro definitions from `$include`d files are available to the includer only when the include path is a statically-determinable string literal — a consequence of Flatt (2002) phase separation. Dynamic include paths cannot be resolved during expansion.
+**Include ordering:** The `$include` builtin runs the full pipeline (parse → expand_macros → desugar → resolve → eval) on included files. Macros defined in an included file are expanded within that file's scope, but are **not** propagated to the includer — macro definitions are expansion-time constructs that don't cross the runtime `$include` boundary. Cross-file macro availability would require static include resolution during the expansion phase, which conflicts with tinct's runtime-based include model. This is a consequence of Flatt (2002) phase separation: compile-time imports must be resolved before expansion begins, but tinct's `$include` is a runtime operation.
 
 ## Macro Hygiene
 

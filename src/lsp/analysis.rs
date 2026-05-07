@@ -354,6 +354,25 @@ fn hover_at_expr(
 
         Expr::Rest(name) => Some(format!("Rest marker: {}", name.as_deref().unwrap_or("..."))),
 
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                if let Some(text) = hover_at_expr(
+                    &seq_expr.node,
+                    seq_expr.span,
+                    offset,
+                    type_map,
+                    doc_map,
+                    source,
+                    prelude_index,
+                    include_graph,
+                    doc_url,
+                ) {
+                    return Some(text);
+                }
+            }
+            None
+        }
+
         Expr::Pipe { lhs, rhs } => hover_at_expr(
             &lhs.node,
             lhs.span,
@@ -440,6 +459,11 @@ fn collect_include_paths_expr(expr: &Expr, span: Span, paths: &mut Vec<(String, 
         Expr::DotAccess { expr: target, .. } => {
             collect_include_paths_expr(&target.node, target.span, paths);
         }
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                collect_include_paths_expr(&seq_expr.node, seq_expr.span, paths);
+            }
+        }
         Expr::Pipe { lhs, rhs } => {
             collect_include_paths_expr(&lhs.node, lhs.span, paths);
             collect_include_paths_expr(&rhs.node, rhs.span, paths);
@@ -519,6 +543,10 @@ fn name_at_offset(expr: &Expr, span: Span, offset: usize) -> Option<String> {
 
         Expr::DotAccess { expr: target, .. } => name_at_offset(&target.node, target.span, offset),
 
+        Expr::Sequential(exprs) => exprs
+            .iter()
+            .find_map(|seq_expr| name_at_offset(&seq_expr.node, seq_expr.span, offset)),
+
         Expr::Pipe { lhs, rhs } => name_at_offset(&lhs.node, lhs.span, offset)
             .or_else(|| name_at_offset(&rhs.node, rhs.span, offset)),
 
@@ -581,6 +609,10 @@ fn find_key_definition(expr: &Expr, _span: Span, name: &str) -> Option<Span> {
         Expr::DotAccess { expr: target, .. } => {
             find_key_definition(&target.node, target.span, name)
         }
+
+        Expr::Sequential(exprs) => exprs
+            .iter()
+            .find_map(|seq_expr| find_key_definition(&seq_expr.node, seq_expr.span, name)),
 
         Expr::Pipe { lhs, rhs } => find_key_definition(&lhs.node, lhs.span, name)
             .or_else(|| find_key_definition(&rhs.node, rhs.span, name)),

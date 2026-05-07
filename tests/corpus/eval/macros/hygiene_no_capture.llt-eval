@@ -1,0 +1,14 @@
+# Hygiene test using gensym — macro-introduced param uses gensym
+# to avoid capturing caller's variables.
+[defmacro my-const [fn [macro-args]
+  [type: "fn"
+   params: [[name: [gensym]  variadic: false]]
+   body: [get 0 macro-args]
+   desugared: false]
+]]
+
+# The macro creates [fn [:gensym:N] <arg0>].
+# Calling this with any argument returns the original arg value (42).
+[call [my-const 42] "ignored"]
+===
+Int(42)

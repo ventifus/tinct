@@ -941,4 +941,12 @@ drop: [fn [n@Int xs] [builtin-drop n xs]]
 # assert: [collect-kv [[key: "a" value: 1] [key: "b" value: 2]]] => [a: 1 b: 2]
 collect-kv: [fn@Dict [xs] [builtin-reduce [fn [acc kv] [merge acc [make-entry kv.key kv.value]]] [] xs]]
 
+# Repeat a string n times.
+# str-repeat: Str -> Int -> Str
+# assert: [str-repeat "x" 3] => "xxx"
+# assert: [str-repeat "ab" 2] => "abab"
+# assert: [str-repeat "x" 0] => ""
+str-repeat: [fn@Str [s@Str n@Int]
+  [builtin-reduce [fn [acc _] [str acc s]] "" [range 0 n]]]
+
 ]

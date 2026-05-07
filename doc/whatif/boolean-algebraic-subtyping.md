@@ -20,7 +20,7 @@ greet [name: "Alice"  age: 30]   # ok — extra fields allowed via RowVar
 The typing cluster plan (D2, `algebraic-subtyping` sprint) extends this to full
 algebraic subtyping by citing Marques, Florido & Vasconcelos (2024) as the
 row-variable extension to Simple-sub. The D2 soundness risk is more severe than
-the plan's framing suggests: Marques et al. is a 4-page workshop extended abstract
+the plan's framing suggests: Marques et al. is a 4-page arXiv preprint
 with zero formal theorems and one worked example. Their verbatim statement: "we wish
 to apply our inference algorithm to more elaborate examples and pursue formal proofs
 of soundness and completeness that we believe will hold, but do not have yet done."
@@ -38,10 +38,12 @@ definitely not Int."
 ### What's Missing
 
 1. **Proven soundness for row extension under algebraic subtyping.** Marques et al.
-   provide an implementation template but not a proof.
+   provide an implementation template but without a proof.
 2. **Negation types.** `~A` as a first-class type is absent. The constraint solver
    for union/intersection types requires it internally (not just for user annotations).
-3. **Typed field removal.** There is no `e \ f` operation with a precise static type.
+3. **Typed field removal.** `[remove dict "field"]` exists in stdlib but its return
+   type is the imprecise `Dict` — the type system cannot express "this dict minus the
+   field `debug`."
 4. **Principal types for union-returning expressions.** `[if cond [ok: v] [err: msg]]`
    infers `Any` today, not `[ok: T] | [err: Str]`.
 
@@ -59,7 +61,7 @@ reformulation of the whole type algebra where row extension is a derived propert
 the Boolean lattice rather than a specialized mechanism.
 
 The core observation: field *absence* is a Boolean property of a type. Width subtyping
-— `{name: Str, age: Int} <: {name: Str}` — falls directly out of conjunction
+— `@[name: Str  age: Int]` satisfies `@[name: Str]` — falls directly out of conjunction
 elimination: `{name: Str} ∧ {age: Int} <: {name: Str}` by definition of `∧` as the
 greatest lower bound. No row variable gymnastics.
 
@@ -69,25 +71,41 @@ greatest lower bound. No row variable gymnastics.
 
 The type grammar is a distributive Boolean algebra:
 
-```
-Type ::= A | B          (union — already in D2)
-       | A & B          (intersection — already in D2)
-       | ~A             (negation — new, essential for inference)
-       | ⊤              (top — already planned as Type::Top in B2)
-       | ⊥              (bottom — already planned)
-       | {f: A}         (single-field record — base atom)
-       | μα.A           (equi-recursive)
-       | α              (type variable with lower/upper bounds)
-```
+| Formal | tinct annotation | Notes |
+|--------|-----------------|-------|
+| `A \| B` | `@[A B]` | positional entries = union members — existing |
+| `A & B` | `@[[all A B]]` | `[all ...]` prefix bracket in annotation position; multiple args = intersection of all members |
+| `~A` | `@[[without A]]` | `[without A]` prefix bracket in annotation position; negation of A |
+| `⊤` | `@Top` | true supertype; with B2 `Any` split |
+| `⊥` | `@Never` | true bottom; with B2 |
+| `{f: A}` | `@[f: A]` | single-field record — existing dict annotation |
+| `α` | `@a` | lowercase type variable name — existing |
+| `μα.A` | `@[AliasName ...]` | recursive types are always declared with a name via `[type ...]`; users write the alias name everywhere — the μ form is a compiler-internal representation that never surfaces to users or in error messages |
 
 Multi-field records are not a primitive. `{x: τ₁, y: τ₂}` is syntax sugar for
-`{x: τ₁} ∧ {y: τ₂}` (Parreaux & Chau 2022, §2.2.2, following Reynolds 1997). This
-is the key that eliminates row variables: field-set operations are just conjunction
+`{x: τ₁} ∧ {y: τ₂}` (Parreaux & Chau 2022, §2.2.2, following Reynolds 1997). Under
+BAS, `@[x: τ₁  y: τ₂]` would mean exactly this — a multi-field annotation is
+reinterpreted as an intersection of single-field constraints. The annotation syntax
+requires no change; what changes is the internal type representation (from
+`Type::Record({x:τ₁, y:τ₂}, Open)` to `{x:τ₁} ∧ {y:τ₂}`).
+This is the key that eliminates row variables: field-set operations are just conjunction
 and disjunction over single-field record types, governed by Boolean algebra axioms.
 
-Subtyping: `A <: B` iff `A & ~B` is uninhabited. Complexity: co-NP-hard in the
-worst case — the same class as MLsub (Dolan 2016), so BAS does not worsen the
-landscape relative to D2's existing foundation.
+`[all ...]` and `[without ...]` are valid type expressions wherever a type expression is valid:
+as inline annotations (`v@[[all A B]]`), as the body of a `[type ...]` alias declaration
+(`T: [type [all A B]]`), and in TypeAssert position (`[@[all A B] expr]`). They are not
+infix — the bracket is the expression.
+
+**Disambiguation from union annotation:** positional entries in `@[...]` are union
+members when there are multiple entries (`@[Int Str]` → `Int | Str`). When the
+single positional entry is itself a list whose first token is `all` or `without`, it
+is an intersection or negation type, not a union member. Examples:
+`@[[all Int Num]]` → `Int & Num`; `@[[without Int]]` → `~Int`;
+`@[[all Int Num] Str]` → `(Int & Num) | Str` (intersection entry unioned with Str).
+
+Subtyping: `A <: B` iff `A & ~B` is uninhabited. Subtyping is decidable and always
+terminates on well-formed inputs (Chau & Parreaux 2026, Theorem 7.6); the precise
+worst-case complexity class is not established in the BAS paper.
 
 ### Why Negation Is Not Optional
 
@@ -96,18 +114,48 @@ annotation. The core difficulty with union/intersection types in constraint solv
 constraints of the form:
 
 ```
-τ₁ ≤ τ₂ ∨ α     (union on the right of a subtyping constraint)
-α ∧ τ₁ ≤ τ₂     (intersection on the left)
+τ₁ ≤ τ₂ ∨ α     (union on the right — a type variable α appears in a union)
+α ∧ τ₁ ≤ τ₂     (intersection on the left — type variable α is intersected)
+```
+
+These arise in ordinary tinct programs:
+
+```tinct
+# τ₁ ≤ τ₂ ∨ α — a Str value flowing into a [Int Str] position
+x: "hello"
+[@[Int Str] x]   # @Str satisfies @[Int a]  (where a is fresh, resolves to @Str)
+
+# α ∧ τ₁ ≤ τ₂ — false-branch narrowing
+process: [fn [x@[Int Str]]
+    [if [int? x]
+        [+ x 1]          # x : Int  (true branch)
+        [str-upper x]]]  # x : @[[all [Int Str] [without Int]]] — satisfies @Str
 ```
 
 Without negation, the solver must backtrack or guess which disjunct to pursue. With
 negation, these are rewritten losslessly using Boolean algebra (Parreaux & Chau 2022,
-§3.2.1, C-Var1/2 rules):
+§3.2.1, C-Var1/2 rules — formal notation):
 
 ```
-τ₁ ≤ τ₂ ∨ α   →   τ₁ ∧ ¬τ₂ ≤ α     (move τ₂ to left side as ¬τ₂)
-α ∧ τ₁ ≤ τ₂   →   α ≤ τ₂ ∨ ¬τ₁     (move τ₁ to right side as ¬τ₁)
+τ₁ ≤ τ₂ ∨ α   →   τ₁ & ~τ₂ ≤ α     (move τ₂ to left side as ~τ₂)
+α & τ₁ ≤ τ₂   →   α ≤ τ₂ | ~τ₁     (move τ₁ to right side as ~τ₁)
 ```
+
+For the false-branch example above the solver resolves, in tinct type notation:
+
+```tinct
+# @[[all [Int Str] [without Int]]] satisfies @Str
+#   → @[Int Str] satisfies @[[all Str [without [without Int]]]]
+#   double-negation elimination: [without [without Int]] = Int (Boolean algebra axiom)
+#   → @[Int Str] satisfies @[Str Int]  ✓
+# x in the false branch: @[[all [Int Str] [without Int]]]  — simplifies to @Str
+```
+
+The user writes `@[Int Str]` on the parameter. The narrowed type
+`@[[all [Int Str] [without Int]]]` appears in LSP hover over `x` in the false branch;
+the type simplifier reduces it to `Str` before display. If a user needs to annotate
+with an intersection or negation explicitly, the forms are `x@[[all Int Str]]` and
+`x@[[without Int]]`.
 
 The result is always a constraint with a type variable alone on one side, so bounds
 can be updated directly. The algorithm does not backtrack and yields principal types
@@ -122,14 +170,24 @@ must be designed around the C-Var1/2 rewriting from the start.
 ### Width Subtyping and Open Records
 
 Single-field record types `{f: τ}` are atoms of the Boolean algebra. Multi-field
-records are their intersections. Width subtyping is then a theorem:
+records are their intersections. Width subtyping is then a theorem — a dict with more
+fields is a subtype of one with fewer, because intersection elimination gives `A & B <: A`:
 
 ```
-{name: Str} ∧ {age: Int}  <:  {name: Str}
+{name: Str} & {age: Int}  <:  {name: Str}
 ```
 
-because `A ∧ B <: A` by definition of greatest lower bound. No row variable, no
-unification case, no `unify_remainders`.
+In tinct: any dict satisfying `@[name: Str  age: Int]` also satisfies `@[name: Str]`:
+
+```tinct
+person: [name: "Alice"  age: 30]   # inferred type: @[name: Str  age: Int]
+
+greet: [fn [p@[name: Str]] [str "Hello " p.name]]
+
+[greet person]   # ok — @[name: Str  age: Int] satisfies @[name: Str]
+```
+
+No row variable, no unification case, no `unify_remainders`.
 
 **All structural record annotations are open.** Under BAS, `{name: Str}` means "any
 value with at least a `name: Str` field." There is no structural closed-record type
@@ -165,9 +223,9 @@ Applied to tinct's `[match]`:
 ```tinct
 result: [try risky]
 [match result
-    [ok: v]    v           # arm types with scrutinee ∩ #ok context
-    [err: msg] [error msg]] # arm types with scrutinee ∩ ¬#ok context
-# Inferred result type: T ∨ ⊥ = T   (when all variants are covered)
+    [ok: v]    v           # arm narrows scrutinee to #Ok variant
+    [err: msg] [error msg]] # arm narrows scrutinee to @[[without #Ok]] = #Err variant
+# Inferred result type: @[T Never] = @T   (union with Never simplifies — all variants covered)
 ```
 
 Today the same expression infers `Any` because `unify` cannot represent the union of
@@ -185,19 +243,26 @@ disjoint field sets to the top type:
 ```
 
 This gives `{ok: a} ∨ {err: Str} ≡ ⊤` — the union is indistinguishable from "any
-value at all." S-RcdTop is not a restriction that can be relaxed: it is required for
-RDNF normalization, which is what makes principal type inference work (MLstruct
-extended, Theorem B.88). Key-set discrimination of ADT variants is not expressible
+value at all." S-RcdTop is not a restriction that can be relaxed: it is required for the Boolean
+algebra to remain well-formed, which in turn makes RDNF normalization correct (MLstruct
+extended, Lemma 7.3) and principal type inference work (Theorem 7.7). Theorem B.88 is
+the separate type safety invariant (subtyping consistency — progress and preservation)
+that also depends on S-RcdTop. Key-set discrimination of ADT variants is not expressible
 in BAS's Boolean algebra.
 
-Nominal class tags solve this directly. `#ok` and `#err` are nominal identities that
+Nominal class tags solve this directly. `#Ok` and `#Err` are nominal identities that
 remain disjoint under the Boolean algebra via S-ClsBot:
 
 ```
-#ok ∧ #err ≤ ⊥   (unrelated nominal tags annihilate)
+#Ok & #Err ≤ Never   (unrelated nominal tags annihilate — no value can be both)
 ```
 
-So `(#ok ∧ {v: a}) ∨ (#err ∧ {msg: Str})` is a proper discriminated union —
+In tinct: a value can be `[Ok 42]` or `[Err "oops"]` but never both simultaneously,
+so the union `Ok[a] | Err[Str]` has two genuinely distinct members. In annotation syntax:
+`@[Ok[a] Err[Str]]`. Pattern matching refines the scrutinee's type in each arm using
+the nominal tag (see §`infer_match()` Style Enforcement).
+
+So `(#Ok & {v: a}) | (#Err & {msg: Str})` is a proper discriminated union —
 pattern matching refines each arm type via the nominal tag rather than the key set.
 
 This aligns with what the typing cluster's C2/C3 nominal variant sprints already
@@ -233,6 +298,10 @@ removed. In their place:
 The existing `Type::Union` and (from D2) `Type::Intersection` remain; `Type::Negation`
 joins them as the third Boolean operation, and together they form the complete algebra.
 
+BAS's formal development uses string labels. Tinct's integer-keyed records (`{0: "a",
+1: "b"}`) extend the label set; since integer and string labels are always disjoint,
+S-RcdTop applies across them as expected and the proof obligations carry over naturally.
+
 ### Constraint Solver (`src/typecheck.rs`) — Fundamental
 
 The Robinson unification + row-variable binding approach is replaced by the MLstruct
@@ -265,19 +334,99 @@ union type, but the runtime discrimination model is C2/C3 nominal.
 Structural dicts from `from-json` are not ADT values and do not match nominal union
 arms. Explicit lifting is required.
 
-### `$merge` Type Precision
+### `infer_match()` Style Enforcement (`src/typecheck.rs`) — Major Extension
 
-The disjoint-field-set record union collapse (S-RcdTop) also affects `$merge`. Under
-BAS, the type of `[merge a b]` where `a` and `b` have non-overlapping fields is `⊤`
-at the type level — the same information loss that affects ADT unions. For `$merge`
-to retain type precision, the merged fields would need nominal tags or overlapping
-field sets. This is a known limitation of MLstruct (§6: "row polymorphism preserves
-precision on record unions via row variables, whereas MLstruct collapses unions of
-disjoint-field records to top"). For tinct, `$merge` of two records with non-overlapping
-fields loses type precision under BAS — a known tradeoff. Uses of `$merge` that require
-type-level field-set information should use overlapping field sets or nominal tags on
-the merged result. This matches MLstruct's own position: row polymorphism is better
-at disjoint-field union precision; BAS trades it for everything else.
+The C5 exhaustiveness sprint already plans `infer_match()` to extract the scrutinee's
+`Type::Union`, correlate arms to union members, and check coverage. Under BAS,
+`infer_match()` gains a second responsibility alongside coverage: **pattern style
+enforcement**.
+
+The `Type::Union` members already encode the expected arm style in their variant:
+
+```rust
+// Structural union member → expects Pattern::Dict arms
+Type::Record(fields: {ok: TypeVar(a)}, tail: Open)
+
+// Nominal union member → expects Pattern::Constructor arms
+Type::NominalVariant { tag: "Ok", payload: Some(TypeVar(a)) }
+
+// Literal union member → expects Pattern::StringLiteral arms
+Type::StringLiteral("pending")
+```
+
+For each arm, `infer_match()` calls `find_compatible_member()` to correlate the
+arm's pattern to a union member by style:
+
+```rust
+fn find_compatible_member<'a>(pattern: &Pattern, members: &'a [Type]) -> Option<&'a Type> {
+    members.iter().find(|member| match (pattern, member) {
+        (Pattern::Dict(_),                    Type::Record(..))          => true,
+        (Pattern::Constructor { tag, .. },    Type::NominalVariant { tag: t, .. }) => tag == t,
+        (Pattern::StringLiteral(s),           Type::StringLiteral(t))    => s == t,
+        (Pattern::Wildcard,                   _)                         => true,
+        _                                                                 => false,
+    })
+}
+```
+
+When `find_compatible_member` returns `None`, a style mismatch error is produced with
+a specific correction:
+
+```
+error: pattern style mismatch
+  --> config.llt:5:5
+  |
+5 |     [ok: v]    [process v]
+  |     ^^^^^^^  structural field pattern
+  |
+  Result is a nominal union — use constructor pattern [Ok v], not field pattern [ok: v]
+  note: Result declared as [type [Ok a] [Err Str]] at line 1
+```
+
+The correlation result also drives arm body narrowing: the matched union member
+provides the precise type to narrow into the arm's environment (`v : TypeVar(a)` for
+`[Ok v]`, or `v : TypeVar(a)` for `[ok: v]`). This replaces any "try all members"
+fallback with a precise single-member narrowing.
+
+**Mixed unions** work naturally — each arm's pattern is correlated to whichever member
+has a compatible style, regardless of position:
+
+```tinct
+Mixed: [type [ok: a] [Err Str] "pending"]
+
+[match x
+    [ok: v]    [process v]      # → correlates to Record([ok:a])
+    [Err msg]  [handle msg]     # → correlates to NominalVariant("Err", Str)
+    "pending"  [wait]           # → correlates to StringLiteral("pending")
+    _          [error "???"]]   # → wildcard, compatible with all
+```
+
+**At `Any` scrutinee**: `infer_match()` skips union correlation entirely. Both pattern
+styles compile, no style errors, no exhaustiveness checking, arm bodies typed as the
+join of their body types.
+
+This is an extension of the C5 sprint's `infer_match()`, not a separate sprint. The
+coverage algorithm in `src/coverage.rs` is unchanged; the style check runs in the
+type checker layer that calls it.
+
+### `$merge` Gets a Precise Type
+
+`$merge` produces a value with *all* fields from both inputs combined — its type
+is the *intersection* of the two input types, not their union. Under BAS, `[merge
+{name: "Alice"} {age: 30}]` has type `{name: Str} ∧ {age: Int}` = `{name: Str,
+age: Int}` — a precise multi-field record type. S-RcdTop collapses *union* types over
+disjoint-field records to `⊤`, but `$merge` produces an intersection, which is not
+affected by S-RcdTop.
+
+When the input field sets are type variables (open records), `$merge`'s result type
+is the intersection of the two type variables, which BAS can express directly as
+`T & U`. This is at least as precise as the current row-variable encoding, and
+arguably cleaner — the result type names both input types explicitly rather than
+threaded through a shared row variable.
+
+The S-RcdTop limitation only surfaces if code tries to form a *union* of possible
+`$merge` inputs (e.g. "the result might be either `{x:a}` or `{y:b}`") — which is
+the ADT discrimination scenario, not the merge scenario.
 
 ### NSSE: Polymorphic Signature Checking
 
@@ -311,6 +460,14 @@ non-cyclic bounds, reducing complements. MLstruct (§3.4) does the same — its
 simplifier is approximately 1000 lines of the 5000-line implementation. Without
 simplification, inferred types in error messages and LSP hover would be unreadable.
 
+RDNF normalization is invoked during inference at constraint simplification steps,
+not only at subtyping check time. The normalization is exponential in the number of
+distinct atomic types in the worst case; MLstruct mitigates this by computing RDNF
+lazily and maintaining a cache of currently-processed subtyping relationships (Parreaux
+& Chau 2022, §5.3). Type simplification correctness (simplified type is equivalent to
+original) is empirically validated via MLstruct's 4000+ test suite, not formally proven;
+tinct inherits this status.
+
 ## What Changes for Users
 
 ### Inferred Union Types for `if` and `[match]`
@@ -340,7 +497,7 @@ dict; `[Ok v]` is a nominal ADT value carrying the `#Ok` tag and matching `[matc
 arms on union types:
 
 ```tinct
-# Structural dict (open record, not an ADT value):
+# Structural dict (open record, without an ADT value):
 result: [ok: computed-value]     # type: {ok: T}
 
 # Nominal ADT value (matches union arms):
@@ -351,9 +508,12 @@ raw: [from-json input]           # type: {ok: Int}  — structural, not Ok[Int]
 result: [Ok [get "ok" raw]]      # type: Ok[Int]  — explicit lift
 ```
 
-`[match]` on a declared union type dispatches on nominal tags. `[match]` on an
-open record (not a union type) continues to dispatch on key presence as before.
-The two match modes are distinguished by the scrutinee's type, not by syntax.
+`[match]` dispatch mode is syntactically encoded in each arm: `[ok: v]` is always
+a structural field check; `[Ok v]` is always a nominal tag check. The two can
+coexist in a single `[match]` on a mixed union. When the scrutinee type is a
+declared union, the type checker correlates each arm's pattern to the appropriate
+union member by style — a style mismatch is a type error. See §`infer_match()` Style
+Enforcement below.
 
 ### False-Branch Narrowing
 
@@ -372,13 +532,19 @@ Today the false branch types `x` as `Int | Str` (unchanged). With BAS, `(Int | S
 
 ### Field Removal as a Typed Operation
 
-`e \ f` removes field `f` from a dict, with a precise type: `typeof(e) & ~{f: ⊤}`.
+`[remove dict "field"]` already exists in stdlib, but today its return type is the
+imprecise `Dict`. Under BAS, `remove` gets a precise type: the input type intersected
+with the negation of the removed field.
 
 ```tinct
-config-without-debug: config \ debug
-# Type: typeof(config) & ~{debug: ⊤}
+config-without-debug: [remove config "debug"]
+# Inferred type: @[[all Config [without [debug: Top]]]]
 # Any consumer that expects config-without-debug to lack a debug field is satisfied.
 ```
+
+No new syntax — `remove` is an existing stdlib function. The improvement is purely
+in the inferred return type, which under BAS can express "this dict, minus the `debug`
+field."
 
 ### Record Annotations Are Always Open
 
@@ -472,11 +638,15 @@ The key payoff is **union elimination**: when `x : A | B` and the true branch
 establishes `x : A`, the false branch computes:
 
 ```
-x : (A | B) & ~A  =  B
+x : (A | B) & ~A  =  B    (when A and B are disjoint)
 ```
 
 The intersection with `~A` eliminates the matched variant precisely, leaving just
-`B`. This is direct, exact, and requires no annotation.
+`B`. This holds when A and B are disjoint — nominal tags via S-ClsBot, or unrelated
+type constructors (e.g. `Int` and `Str`). For overlapping types (e.g. `A = Int`,
+`B = Number`), the result is `B & ~A = Number & ~Int`, which does not simplify
+further but is still a valid and expressible type. This is direct, exact, and requires
+no annotation.
 
 #### Concrete Patterns
 
@@ -545,12 +715,65 @@ one framework. As new features are added (numeric refinements, structural contra
 gradual types), they extend a proven foundation rather than an accumulation of
 independent mechanisms.
 
+## What This Reformulation Loses
+
+Every meaningful type system change trades capabilities. BAS is not an exception.
+
+### Closed Structural Record Types
+
+The most concrete loss. Today `[name: Str, age: Int]` (without `...`) is a closed
+record type — it accepts only values with exactly those two fields. Under BAS all
+structural record annotations are open, so the same annotation becomes "at least
+name: Str and age: Int." There is no structural type syntax for exact field sets;
+closing a record in BAS's Boolean algebra would require intersecting with the negation
+of every conceivable absent field name, which is not expressible over an open label set.
+
+Exact field enforcement moves to the runtime `validate` layer with `exact: true` (see
+§Enforcing Closed Dicts via Structural Contracts). For a configuration language this
+is the right tradeoff — accepting extra fields is correct behavior for config that
+evolves — but it is a real semantic change for any code that relied on closed record
+types to reject unexpected fields at type-check time.
+
+### `...` and `...rest` Annotation Syntax
+
+Both retire. `...` was the signal that a record was open — redundant when openness is
+the default. `...rest` was a named row variable for threading extra fields through a
+function explicitly — never used in `stdlib/`, with no concrete use case identified.
+The function-parameter `...name` (variadic argument collector) is a separate feature
+and is unaffected.
+
+### Quantified Annotation Checking (NSSE)
+
+TypeAssert with polymorphic annotations (`f@[Fn@b [a]]`) is checked at the structural
+entailment level only. Verifying that an implementation satisfies a universally
+quantified annotation is undecidable in BAS (NSSE, Parreaux & Chau 2022, §6). In
+practice this means quantified annotations are accepted on a best-effort basis, which
+matches tinct's existing TypeAssert semantics — the behavior is unchanged, but the
+limitation is now formally characterized rather than incidentally permitted.
+
+### Union Precision for Records with Disjoint Field Sets
+
+Rémy-style row variables can express that a value might be *either* a record with
+fields `{x:a}` *or* a record with fields `{y:b}` — the union `{x:a} | {y:b}` is
+meaningful and discriminable via the row variable. Under BAS, this union collapses to
+`⊤` via S-RcdTop. The loss is specific to *union* types over records with disjoint
+fields — the ADT discrimination scenario. Merge and intersection of disjoint-field
+records are unaffected and remain precise. The resolution is nominal class tags, which
+make discriminated unions expressible again.
+
 ## Prerequisites and Trigger
 
-**Prerequisites:** D2 (`algebraic-subtyping` sprint) complete. BAS requires algebraic
-subtyping infrastructure (bisubstitution, bounds-carrying type variables, `Type::Union`,
-`Type::Intersection`). C2/C3 (nominal variant sprints) should also be complete or
-in progress — BAS adoption formalizes their encoding as the standard ADT model.
+**Prerequisites:** D2 (`algebraic-subtyping` sprint) complete. BAS requires the
+algebraic subtyping infrastructure D2 delivers: bisubstitution, bounds-carrying type
+variables, `Type::Union`, `Type::Intersection`. C2/C3 (nominal variant sprints) should
+also be complete or in progress — BAS adoption formalizes their encoding as the standard
+ADT model.
+
+BAS does not stack on D2's Marques et al. row-extension mechanism — it replaces it.
+D2 delivers the bisubstitution infrastructure and union/intersection types; BAS reuses
+these and supersedes the conjectured-soundness row-variable component. Implementors
+should treat BAS adoption as completing and redirecting D2's row mechanism, not
+extending it. The `RowTail::RowVar` infrastructure introduced by D2 is removed.
 
 BAS adopts equi-recursive types (μα.A), matching MLstruct's proof foundation. Tinct's
 current depth-limit guard becomes a performance heuristic rather than a correctness
@@ -564,7 +787,7 @@ for recursive subtyping.
   of annotation burden in real tinct programs
 - The nominal-variant adoption (C2/C3) reaches the point where nominal-tag ADTs are
   the default and structural-key discrimination is already deprecated in practice
-- Phase 1 evaluation confirms co-NP-hard subtyping cases are rare on real tinct programs
+- Phase 1 evaluation confirms worst-case subtyping paths are rare on real tinct programs
 
 ## References
 

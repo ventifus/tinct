@@ -1028,7 +1028,9 @@ fn run_eval(
         // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
         // See also: src/lib.rs:87-91 (eval_source_with_config pipeline)
         // Expand macros (pre-desugar AST transformation).
-        let mut ast = tinct::expand::expand_macros(ast, no_fs).map_err(|e| format!("{e}"))?;
+        let expand_result = tinct::expand::expand_macros(ast, no_fs).map_err(|e| format!("{e}"))?;
+        let mut ast = expand_result.file;
+        let _provenance = expand_result.provenance;
 
         // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
         tinct::desugar::desugar_file(&mut ast.node);
@@ -1350,7 +1352,9 @@ fn run_fmt(
     let source = read_source(file_path)?;
     let formatted = if tinct_fmt {
         // Use tinct-hosted formatter
-        tinct::format_source_tinct(&source)?
+        // Compact mode if oneline or nospaces is specified, pretty mode otherwise
+        let compact = oneline || nospaces;
+        tinct::format_source_tinct(&source, compact)?
     } else if oneline || nospaces {
         // Use Rust compact formatter
         tinct::format_source_compact(&source, oneline, nospaces).map_err(|e| format!("{e}"))?
@@ -1537,7 +1541,8 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
     let ast = parse(tangled).map_err(|e| format!("parse error in tangled tinct source: {e}"))?;
 
     // Expand macros (pre-desugar AST transformation).
-    let mut ast = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    let mut ast = expand_result.file;
 
     tinct::desugar::desugar_file(&mut ast.node);
     tinct::resolve::resolve_file(&ast.node);
@@ -1670,7 +1675,8 @@ fn run_literate_weave(
         let ast = parse(block).map_err(|e| format!("parse error in code block {}: {e}", i + 1))?;
 
         // Expand macros (pre-desugar AST transformation).
-        let mut ast = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+        let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+        let mut ast = expand_result.file;
 
         tinct::desugar::desugar_file(&mut ast.node);
         tinct::resolve::resolve_file(&ast.node);

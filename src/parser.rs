@@ -342,6 +342,17 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             lhs: Box::new(adjust_spanned_expr(*lhs, base)),
             rhs: Box::new(adjust_spanned_expr(*rhs, base)),
         },
+        Expr::Sequential(exprs) => Expr::Sequential(
+            exprs
+                .into_iter()
+                .map(|e| {
+                    Rc::new(adjust_spanned_expr(
+                        Rc::try_unwrap(e).unwrap_or_else(|rc| (*rc).clone()),
+                        base,
+                    ))
+                })
+                .collect(),
+        ),
         Expr::TypeAssert {
             annotation,
             expr,
@@ -838,7 +849,8 @@ enum StackFrame {
     Fn {
         /// Parameter list — parsed from `[fn [x y] body]` syntax
         params: Vec<Spanned<Param>>,
-        body: Option<Spanned<Expr>>,
+        /// Body expressions — for multi-expression bodies (let-binding)
+        body: Vec<Spanned<Expr>>,
         return_ann: Option<Spanned<Annotation>>,
         span_start: Position,
     },
@@ -1411,7 +1423,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                         stack.push(StackFrame::Fn {
                             params,
-                            body: None,
+                            body: Vec::new(),
                             return_ann,
                             span_start: span.start,
                         });
@@ -1841,31 +1853,39 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         body,
                         return_ann,
                         span_start,
-                    } => match body {
-                        None => {
+                    } => {
+                        if body.is_empty() {
                             close_bracket_recover!(ParseError {
                                 message: "fn form requires a body expression".to_string(),
                                 span: Some(span),
                             });
                         }
-                        Some(body) => {
-                            let fn_expr = Expr::Fn {
-                                return_ann,
-                                params,
-                                body: Rc::new(body),
-                                desugared: false,
-                            };
 
-                            let spanned_fn = Spanned::new(fn_expr, dict_span(span_start));
-                            if let Err(push_err) = push_value(
-                                &mut stack,
-                                &mut current_document_expressions,
-                                spanned_fn,
-                            ) {
-                                close_bracket_recover!(push_err);
-                            }
+                        // For single-expression bodies, use the expression directly.
+                        // For multi-expression bodies, wrap in Sequential.
+                        let body_expr = if body.len() == 1 {
+                            Rc::new(body.into_iter().next().unwrap())
+                        } else {
+                            Rc::new(Spanned::new(
+                                Expr::Sequential(body.into_iter().map(Rc::new).collect()),
+                                dict_span(span_start),
+                            ))
+                        };
+
+                        let fn_expr = Expr::Fn {
+                            return_ann,
+                            params,
+                            body: body_expr,
+                            desugared: false,
+                        };
+
+                        let spanned_fn = Spanned::new(fn_expr, dict_span(span_start));
+                        if let Err(push_err) =
+                            push_value(&mut stack, &mut current_document_expressions, spanned_fn)
+                        {
+                            close_bracket_recover!(push_err);
                         }
-                    },
+                    }
 
                     StackFrame::TypeAlias {
                         type_expr,
@@ -3185,7 +3205,7 @@ fn pop_last_value_from_frame(
             }
         }
         Some(StackFrame::Fn { ref mut body, .. }) => {
-            if let Some(b) = body.take() {
+            if let Some(b) = body.pop() {
                 Ok(b)
             } else {
                 Err(ParseError {
@@ -3286,13 +3306,7 @@ fn push_expr_to_parent(
                 Ok(())
             }
             Some(StackFrame::Fn { ref mut body, .. }) => {
-                if body.is_some() {
-                    return Err(ParseError {
-                        message: "fn form can only have one body expression".to_string(),
-                        span: Some(expr.span),
-                    });
-                }
-                *body = Some(expr);
+                body.push(expr);
                 Ok(())
             }
             Some(StackFrame::TypeAlias {
@@ -3991,19 +4005,26 @@ mod tests {
 
     #[test]
     fn test_fn_multiple_bodies() {
-        // [fn 1 2] — two body expressions in an fn form
-        let output = parse2("[fn 1 2]").expect("recovery should succeed");
+        // [fn 1 2] — two body expressions in an fn form (Sequential wrapping)
+        let output = parse2("[fn 1 2]").expect("parse should succeed");
         assert!(
-            !output.errors.is_empty(),
-            "expected recovered error for multiple fn bodies"
+            output.errors.is_empty(),
+            "multi-expression fn bodies should parse successfully via Sequential, got errors: {:?}",
+            output.errors
         );
-        assert!(
-            output.errors[0]
-                .message
-                .contains("fn form can only have one body expression"),
-            "expected error about multiple body expressions, got: {}",
-            output.errors[0].message
-        );
+        // The fn body should be wrapped in Expr::Sequential
+        let file = output.file;
+        let doc = &file.node.documents[0].node;
+        let expr = &doc.expressions[0].node;
+        match expr {
+            Expr::Fn { body, .. } => match &body.node {
+                Expr::Sequential(exprs) => {
+                    assert_eq!(exprs.len(), 2, "expected 2 expressions in Sequential body");
+                }
+                other => panic!("expected Sequential body, got: {other}"),
+            },
+            other => panic!("expected Fn expression, got: {other}"),
+        }
     }
 
     #[test]

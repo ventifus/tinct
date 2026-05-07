@@ -213,6 +213,15 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             desugar_pipe(expr);
         }
 
+        // Sequential: recurse into all expressions
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                if let Some(seq_expr_mut) = Rc::get_mut(seq_expr) {
+                    desugar(seq_expr_mut, depth);
+                }
+            }
+        }
+
         // Dict: recurse into keys and values
         Expr::Dict(entries) => {
             for entry_spanned in entries {

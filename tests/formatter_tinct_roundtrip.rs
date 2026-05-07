@@ -1,10 +1,10 @@
-// Integration test for tinct-hosted compact formatter
+// Integration test for tinct-hosted formatters (compact and pretty)
 // Verifies that formatting is idempotent and parseable
 
 use tinct::{format_source_tinct, parse};
 
 #[test]
-fn test_tinct_formatter_simple_dict() {
+fn test_tinct_formatter_compact_simple_dict() {
     let input = r#"[
   server: [
     port: 8080
@@ -13,8 +13,8 @@ fn test_tinct_formatter_simple_dict() {
   enabled: true
 ]"#;
 
-    // Format with tinct formatter
-    let formatted = format_source_tinct(input).expect("formatter failed");
+    // Format with tinct compact formatter
+    let formatted = format_source_tinct(input, true).expect("formatter failed");
 
     // Should produce output
     assert!(!formatted.is_empty(), "formatter produced empty output");
@@ -23,12 +23,36 @@ fn test_tinct_formatter_simple_dict() {
     parse(&formatted).expect("formatted output is not parseable");
 
     // Formatting should be idempotent (formatting twice gives same result)
-    let formatted_again = format_source_tinct(&formatted).expect("second format failed");
+    let formatted_again = format_source_tinct(&formatted, true).expect("second format failed");
     assert_eq!(formatted, formatted_again, "formatter is not idempotent");
 }
 
 #[test]
-fn test_tinct_formatter_literals() {
+fn test_tinct_formatter_pretty_simple_dict() {
+    let input = r#"[
+  server: [
+    port: 8080
+    host: "localhost"
+  ]
+  enabled: true
+]"#;
+
+    // Format with tinct pretty formatter
+    let formatted = format_source_tinct(input, false).expect("formatter failed");
+
+    // Should produce output
+    assert!(!formatted.is_empty(), "formatter produced empty output");
+
+    // Output should be parseable
+    parse(&formatted).expect("formatted output is not parseable");
+
+    // Formatting should be idempotent
+    let formatted_again = format_source_tinct(&formatted, false).expect("second format failed");
+    assert_eq!(formatted, formatted_again, "formatter is not idempotent");
+}
+
+#[test]
+fn test_tinct_formatter_compact_literals() {
     let input = r#"[
   int: 42
   float: 3.14
@@ -36,7 +60,7 @@ fn test_tinct_formatter_literals() {
   str: "hello"
 ]"#;
 
-    let formatted = format_source_tinct(input).expect("formatter failed");
+    let formatted = format_source_tinct(input, true).expect("formatter failed");
 
     // Should parse
     let parsed = parse(&formatted).expect("formatted output is not parseable");
@@ -47,7 +71,7 @@ fn test_tinct_formatter_literals() {
 }
 
 #[test]
-fn test_tinct_formatter_nested_dict() {
+fn test_tinct_formatter_pretty_nested_dict() {
     let input = r#"[
   outer: [
     inner: [
@@ -56,43 +80,43 @@ fn test_tinct_formatter_nested_dict() {
   ]
 ]"#;
 
-    let formatted = format_source_tinct(input).expect("formatter failed");
+    let formatted = format_source_tinct(input, false).expect("formatter failed");
     parse(&formatted).expect("formatted output is not parseable");
 
     // Idempotent
-    let formatted_again = format_source_tinct(&formatted).expect("second format failed");
+    let formatted_again = format_source_tinct(&formatted, false).expect("second format failed");
     assert_eq!(formatted, formatted_again);
 }
 
 #[test]
-fn test_tinct_formatter_function() {
+fn test_tinct_formatter_compact_function() {
     let input = "[add: [fn [x y] [+ x y]]]";
 
-    let formatted = format_source_tinct(input).expect("formatter failed");
+    let formatted = format_source_tinct(input, true).expect("formatter failed");
     parse(&formatted).expect("formatted output is not parseable");
 
     // Idempotent
-    let formatted_again = format_source_tinct(&formatted).expect("second format failed");
+    let formatted_again = format_source_tinct(&formatted, true).expect("second format failed");
     assert_eq!(formatted, formatted_again);
 }
 
 #[test]
-fn test_tinct_formatter_call() {
+fn test_tinct_formatter_compact_call() {
     let input = "[[fn [x] [+ x 1]] 42]";
 
-    let formatted = format_source_tinct(input).expect("formatter failed");
+    let formatted = format_source_tinct(input, true).expect("formatter failed");
     parse(&formatted).expect("formatted output is not parseable");
 
     // Idempotent
-    let formatted_again = format_source_tinct(&formatted).expect("second format failed");
+    let formatted_again = format_source_tinct(&formatted, true).expect("second format failed");
     assert_eq!(formatted, formatted_again);
 }
 
 #[test]
-fn test_tinct_formatter_empty_dict() {
+fn test_tinct_formatter_compact_empty_dict() {
     let input = "[]";
 
-    let formatted = format_source_tinct(input).expect("formatter failed");
+    let formatted = format_source_tinct(input, true).expect("formatter failed");
     assert_eq!(
         formatted.trim(),
         "[]\n",
@@ -103,13 +127,13 @@ fn test_tinct_formatter_empty_dict() {
 }
 
 #[test]
-fn test_tinct_formatter_auto_indexed() {
+fn test_tinct_formatter_compact_auto_indexed() {
     let input = "[1 2 3]";
 
-    let formatted = format_source_tinct(input).expect("formatter failed");
+    let formatted = format_source_tinct(input, true).expect("formatter failed");
     parse(&formatted).expect("formatted output is not parseable");
 
     // Idempotent
-    let formatted_again = format_source_tinct(&formatted).expect("second format failed");
+    let formatted_again = format_source_tinct(&formatted, true).expect("second format failed");
     assert_eq!(formatted, formatted_again);
 }
