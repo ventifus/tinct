@@ -4171,3 +4171,14 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Evaluator: lazy dict matching (only matched keys forced), seq head/tail binding
 - [x] Parser: expr_to_pattern for dict and seq patterns
 - [x] 13 corpus tests: dict destructure, try/result, nested, seq, open/closed matching
+
+## Phase B: Type System Primitives
+
+### union-types
+
+- [x] Type::Union(Vec<Type>) variant with normalize_union (flatten, dedup, sort, unwrap)
+- [x] is_subtype: UNION-INJ-L/R (member <: union) and UNION-ELIM (union <: T iff all members <: T)
+- [x] apply_substitution, occurs_in, collect_type_vars handle Union
+- [x] Annotation resolver: positional entries in @[...] collected into union type
+- [x] Runtime: value_matches_type for Union (matches if any member matches)
+- [x] 27 unit tests for normalization, subtyping, annotation resolution

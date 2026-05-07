@@ -79,6 +79,12 @@ pub enum Type {
     /// File/stream handle — wraps Box<dyn BufRead>. Created by `open` or `connect`.
     /// Represents authority to read/write a specific open resource.
     Handle,
+    /// Union type — represents a value that can be one of several types.
+    /// Invariant: members are sorted, deduplicated, and flattened (no nested unions).
+    /// Single-element unions are unwrapped to the bare type by normalize_union().
+    /// Unions appear only in explicit annotations and builtin signatures — inference
+    /// never produces them (annotation-only unions, Phase 2).
+    Union(Vec<Type>),
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -113,6 +119,7 @@ impl PartialEq for Type {
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
             (Type::Handle, Type::Handle) => true,
+            (Type::Union(members1), Type::Union(members2)) => members1 == members2,
             _ => false,
         }
     }
@@ -144,6 +151,14 @@ impl Type {
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
+            // [UNION-INJ-L] and [UNION-INJ-R]: any member is a subtype of the union
+            (sub_ty, Type::Union(sup_members)) => sup_members
+                .iter()
+                .any(|member| Type::is_subtype(sub_ty, member)),
+            // [UNION-ELIM]: union is a subtype iff ALL members are subtypes
+            (Type::Union(sub_members), sup_ty) => sub_members
+                .iter()
+                .all(|member| Type::is_subtype(member, sup_ty)),
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
@@ -213,6 +228,55 @@ impl Type {
         }
     }
 
+    /// Normalize a union type: flatten nested unions, deduplicate, and sort.
+    /// Single-element unions are unwrapped to the bare type.
+    /// Empty unions are not supported and will panic (caller must ensure non-empty).
+    pub fn normalize_union(members: Vec<Type>) -> Type {
+        if members.is_empty() {
+            panic!("normalize_union: empty union not allowed");
+        }
+
+        let mut flattened = Vec::new();
+        for member in members {
+            match member {
+                Type::Union(nested) => {
+                    // Flatten nested unions
+                    flattened.extend(nested);
+                }
+                _ => {
+                    flattened.push(member);
+                }
+            }
+        }
+
+        // Deduplicate by collecting into a set and back to a vec
+        let mut unique = Vec::new();
+        for ty in flattened {
+            if !unique.contains(&ty) {
+                unique.push(ty);
+            }
+        }
+
+        // Sort for canonical representation
+        unique.sort_by(|a, b| {
+            use std::cmp::Ordering;
+            // Stable ordering based on type variant discriminant + payload
+            let order_a = type_order(a);
+            let order_b = type_order(b);
+            match order_a.cmp(&order_b) {
+                Ordering::Equal => type_payload_cmp(a, b),
+                other => other,
+            }
+        });
+
+        // Single-element unions unwrap to the bare type
+        if unique.len() == 1 {
+            unique.into_iter().next().unwrap()
+        } else {
+            Type::Union(unique)
+        }
+    }
+
     pub fn collect_type_vars(&self, vars: &mut HashSet<String>) {
         match self {
             Type::TypeVar(name, _) => {
@@ -235,6 +299,11 @@ impl Type {
                 ret.collect_type_vars(vars);
             }
             Type::Seq(elem) => elem.collect_type_vars(vars),
+            Type::Union(members) => {
+                for member in members {
+                    member.collect_type_vars(vars);
+                }
+            }
             _ => {}
         }
     }
@@ -254,6 +323,7 @@ impl Type {
                 variadic: _,
             } => params.iter().any(|p| p.has_inference_vars()) || ret.has_inference_vars(),
             Type::Seq(elem) => elem.has_inference_vars(),
+            Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Proxy => false,
             _ => false,
         }
@@ -281,6 +351,11 @@ impl Type {
                 ret.collect_row_vars(vars);
             }
             Type::Seq(elem) => elem.collect_row_vars(vars),
+            Type::Union(members) => {
+                for member in members {
+                    member.collect_row_vars(vars);
+                }
+            }
             _ => {}
         }
     }
@@ -315,6 +390,11 @@ impl Type {
                 ret.collect_all_vars(type_vars, row_vars);
             }
             Type::Seq(elem) => elem.collect_all_vars(type_vars, row_vars),
+            Type::Union(members) => {
+                for member in members {
+                    member.collect_all_vars(type_vars, row_vars);
+                }
+            }
             _ => {}
         }
     }
@@ -360,6 +440,13 @@ impl Type {
                 found
             }
             Type::Seq(elem) => elem.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars),
+            Type::Union(members) => {
+                let mut found = false;
+                for member in members {
+                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found
+            }
             _ => false,
         }
     }
@@ -392,8 +479,53 @@ impl Type {
                 ret.collect_all_vars_vec(type_vars, row_vars);
             }
             Type::Seq(elem) => elem.collect_all_vars_vec(type_vars, row_vars),
+            Type::Union(members) => {
+                for member in members {
+                    member.collect_all_vars_vec(type_vars, row_vars);
+                }
+            }
             _ => {}
         }
+    }
+}
+
+/// Helper for normalize_union: assign a stable sort order to each Type variant.
+fn type_order(ty: &Type) -> u8 {
+    match ty {
+        Type::Int => 0,
+        Type::IntLiteral(_) => 1,
+        Type::Float => 2,
+        Type::Str => 3,
+        Type::StringLiteral(_) => 4,
+        Type::Bool => 5,
+        Type::Number => 6,
+        Type::Record(_) => 7,
+        Type::Function { .. } => 8,
+        Type::Seq(_) => 9,
+        Type::Proxy => 10,
+        Type::TypeVar(_, _) => 11,
+        Type::Any => 12,
+        Type::Error => 13,
+        Type::DirCap => 14,
+        Type::NetCap => 15,
+        Type::Handle => 16,
+        Type::Union(_) => 17, // Should not appear after flattening, but included for completeness
+    }
+}
+
+/// Helper for normalize_union: compare payloads for types with the same variant.
+fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Type::IntLiteral(n1), Type::IntLiteral(n2)) => n1.cmp(n2),
+        (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1.cmp(s2),
+        (Type::TypeVar(name1, _), Type::TypeVar(name2, _)) => name1.cmp(name2),
+        // For complex types (Record, Function, Seq), use Display representation
+        // This is not ideal but ensures stability
+        (Type::Record(_), Type::Record(_))
+        | (Type::Function { .. }, Type::Function { .. })
+        | (Type::Seq(_), Type::Seq(_)) => a.to_string().cmp(&b.to_string()),
+        _ => Ordering::Equal,
     }
 }
 
@@ -640,6 +772,17 @@ impl Substitution {
                 self.apply_type(elem, depth + 1, visited_types, visited_rows)
                     .into_owned(),
             ))),
+            Type::Union(members) => {
+                let applied_members: Vec<Type> = members
+                    .iter()
+                    .map(|m| {
+                        self.apply_type(m, depth + 1, visited_types, visited_rows)
+                            .into_owned()
+                    })
+                    .collect();
+                // Re-normalize after substitution to maintain invariants
+                Cow::Owned(Type::normalize_union(applied_members))
+            }
             // Primitive types (Int, Float, Bool, Str, etc.) have no type variables;
             // return a borrow to avoid cloning the whole type tree when substitution
             // does not apply. Cow::Borrowed eliminates the clone on the hot path.
@@ -810,6 +953,9 @@ fn row_var_occurs_in_type_impl(
                 || row_var_occurs_in_type_impl(var_name, ret, subst, visited)
         }
         Type::Seq(elem) => row_var_occurs_in_type_impl(var_name, elem, subst, visited),
+        Type::Union(members) => members
+            .iter()
+            .any(|m| row_var_occurs_in_type_impl(var_name, m, subst, visited)),
         Type::TypeVar(name, _) => {
             // Chase TypeVar binding: if α is bound to τ in subst, check τ for ρ
             // Cycle detection: if we've already visited this TypeVar, return false
@@ -1357,6 +1503,13 @@ fn lower_levels_check_occurs(
             found
         }
         Type::Seq(elem) => lower_levels_check_occurs(elem, occurs_name, cap_level, state),
+        Type::Union(members) => {
+            let mut found = false;
+            for m in members {
+                found |= lower_levels_check_occurs(m, occurs_name, cap_level, state);
+            }
+            found
+        }
         _ => false,
     }
 }
@@ -1898,6 +2051,19 @@ impl fmt::Display for Type {
             Type::DirCap => write!(f, "DirCap"),
             Type::NetCap => write!(f, "NetCap"),
             Type::Handle => write!(f, "Handle"),
+            Type::Union(members) => {
+                for (i, member) in members.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    // Parenthesize nested unions (shouldn't happen after normalization, but be safe)
+                    match member {
+                        Type::Union(_) => write!(f, "({member})")?,
+                        _ => write!(f, "{member}")?,
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -7365,5 +7531,198 @@ mod tests {
             !Type::is_subtype(&f_nv, &f_v),
             "non-variadic must not be subtype of variadic"
         );
+    }
+
+    // ===== Union Type Tests =====
+
+    #[test]
+    fn test_normalize_union_single_element() {
+        // Single-element unions unwrap to the bare type
+        let union = Type::normalize_union(vec![Type::Int]);
+        assert_eq!(union, Type::Int);
+    }
+
+    #[test]
+    fn test_normalize_union_deduplication() {
+        // Duplicate types are removed
+        let union = Type::normalize_union(vec![Type::Int, Type::Str, Type::Int]);
+        match union {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            _ => panic!("Expected Union type"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_union_flattening() {
+        // Nested unions are flattened
+        let inner_union = Type::Union(vec![Type::Int, Type::Str]);
+        let outer_union = Type::normalize_union(vec![inner_union, Type::Bool]);
+        match outer_union {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 3);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+                assert!(members.contains(&Type::Bool));
+            }
+            _ => panic!("Expected Union type"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_union_sorting() {
+        // Members are sorted canonically
+        let union = Type::normalize_union(vec![Type::Str, Type::Int, Type::Bool]);
+        match union {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 3);
+                // Int (order 0) < Str (order 3) < Bool (order 5) by type_order
+                assert_eq!(members[0], Type::Int);
+                assert_eq!(members[1], Type::Str);
+                assert_eq!(members[2], Type::Bool);
+            }
+            _ => panic!("Expected Union type"),
+        }
+    }
+
+    #[test]
+    fn test_union_display() {
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert_eq!(format!("{}", union), "Int | String");
+    }
+
+    #[test]
+    fn test_union_display_three_members() {
+        let union = Type::normalize_union(vec![Type::Int, Type::Str, Type::Bool]);
+        // Display should show all members separated by " | "
+        let display = format!("{}", union);
+        assert!(display.contains("Int"));
+        assert!(display.contains("String"));
+        assert!(display.contains("Bool"));
+        assert!(display.contains(" | "));
+    }
+
+    #[test]
+    fn test_union_subtype_injection_left() {
+        // [UNION-INJ-L]: Int <: Int | Str
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(Type::is_subtype(&Type::Int, &union));
+    }
+
+    #[test]
+    fn test_union_subtype_injection_right() {
+        // [UNION-INJ-R]: Str <: Int | Str
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(Type::is_subtype(&Type::Str, &union));
+    }
+
+    #[test]
+    fn test_union_subtype_elimination_success() {
+        // [UNION-ELIM]: Int | Float <: Number (both Int and Float are subtypes of Number)
+        let union = Type::normalize_union(vec![Type::Int, Type::Float]);
+        assert!(Type::is_subtype(&union, &Type::Number));
+    }
+
+    #[test]
+    fn test_union_subtype_elimination_failure() {
+        // [UNION-ELIM] failure: Int | Str is NOT a subtype of Number
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(!Type::is_subtype(&union, &Type::Number));
+    }
+
+    #[test]
+    fn test_union_collect_type_vars() {
+        // Union members' type variables are collected
+        let tv_a = Type::TypeVar("a".into(), 0);
+        let tv_b = Type::TypeVar("b".into(), 0);
+        let union = Type::normalize_union(vec![tv_a, Type::Int, tv_b]);
+        let mut vars = HashSet::new();
+        union.collect_type_vars(&mut vars);
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains("a"));
+        assert!(vars.contains("b"));
+    }
+
+    #[test]
+    fn test_union_has_inference_vars() {
+        // Union with type variables has inference vars
+        let tv = Type::TypeVar("a".into(), 0);
+        let union = Type::normalize_union(vec![tv, Type::Int]);
+        assert!(union.has_inference_vars());
+
+        // Union without type variables doesn't have inference vars
+        let union2 = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(!union2.has_inference_vars());
+    }
+
+    #[test]
+    fn test_union_apply_substitution() {
+        // Substitution is applied to all members and result is re-normalized
+        let tv = Type::TypeVar("a".into(), 0);
+        let union = Type::Union(vec![tv, Type::Str]);
+
+        let mut subst = Substitution::new();
+        subst.type_map.insert("a".into(), Type::Int);
+
+        let result = subst.apply(&union);
+
+        // After substitution, "a" becomes Int, so we have Int | Str
+        match result {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            _ => panic!("Expected Union type after substitution"),
+        }
+    }
+
+    #[test]
+    fn test_union_apply_substitution_collapse() {
+        // Substitution that makes all members equal collapses the union
+        let tv_a = Type::TypeVar("a".into(), 0);
+        let tv_b = Type::TypeVar("b".into(), 0);
+        let union = Type::Union(vec![tv_a, tv_b]);
+
+        let mut subst = Substitution::new();
+        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.insert("b".into(), Type::Int);
+
+        let result = subst.apply(&union);
+
+        // After substitution, both become Int, so the union collapses to Int
+        assert_eq!(result, Type::Int);
+    }
+
+    #[test]
+    fn test_union_literal_subtyping() {
+        // IntLiteral(42) <: Int | Str (via [UNION-INJ-L] and literal promotion)
+        let union = Type::normalize_union(vec![Type::Int, Type::Str]);
+        let literal = Type::IntLiteral(42);
+        assert!(Type::is_subtype(&literal, &union));
+    }
+
+    #[test]
+    fn test_union_record_subtyping() {
+        // Test union with record types
+        let record1 = closed_record({
+            let mut fields = HashMap::new();
+            fields.insert("ok".into(), Type::Int);
+            fields
+        });
+        let record2 = closed_record({
+            let mut fields = HashMap::new();
+            fields.insert("err".into(), Type::Str);
+            fields
+        });
+
+        let union = Type::normalize_union(vec![record1.clone(), record2.clone()]);
+
+        // Both record types should be subtypes of the union
+        assert!(Type::is_subtype(&record1, &union));
+        assert!(Type::is_subtype(&record2, &union));
     }
 }
