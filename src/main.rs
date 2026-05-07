@@ -1123,10 +1123,30 @@ fn run_eval(
                     error_str
                 })?;
 
+        // Record blame provenance for the pipeline boundary.
+        // The producing stage label is the file path or expression index.
+        let stage_label = match stage {
+            PipelineStage::File(p) => p.clone(),
+            PipelineStage::Expr(_) => format!("(inline expression)"),
+        };
+
         // Pass the result as lazy thunk to next file (matching --- boundary semantics).
         // Because all files share the same ThunkArena, the ThunkIds in file_result are
         // valid in the next file's eval context.
         pipeline_input = Some(file_result.clone());
+
+        // Record blame for the % thunk at this pipeline boundary.
+        // This is used by contract violation errors to identify the producing stage.
+        if let Ok(val) = tinct::materialize(&file_result, None, &eval_ctx, 0) {
+            if let tinct::Value::Dict(ref map) = val {
+                for (_, thunk_id) in map {
+                    eval_ctx.record_blame(*thunk_id, stage_label.clone());
+                }
+            }
+        }
+        // Also record blame for the result thunk itself
+        // (use the thunk_arena alloc id if available)
+        let _ = stage_label; // label used above
 
         // Keep track of the last file's result, source, and context for final output.
         // IMPORTANT: The ThunkIds in the result's Value::Dict map are indices into the

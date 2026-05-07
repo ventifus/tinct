@@ -62,6 +62,19 @@ pub struct BlameLabel {
     pub polarity: BlameParity,
 }
 
+/// Pipeline blame provenance for contract violation enrichment.
+/// Identifies the producing stage (positive party) and consuming stage (negative party)
+/// per Findler & Felleisen (2002) contract blame semantics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineBlame {
+    /// The producing stage label (positive party — blamed for wrong output shape).
+    /// E.g., "data.llt" or "stage 0".
+    pub producer: String,
+    /// The consuming stage label (negative party — blamed for wrong contract).
+    /// E.g., "transform.llt" or "stage 1".
+    pub consumer: Option<String>,
+}
+
 /// Structured error kind with domain-specific data.
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
@@ -792,6 +805,9 @@ pub struct EvalError {
     /// Optional blame label for gradual typing boundaries.
     /// When present, identifies the typed/untyped boundary responsible for a type error.
     pub blame: Option<BlameLabel>,
+    /// Optional pipeline blame provenance for contract violation enrichment.
+    /// When present, identifies the producing/consuming stage at a `---` boundary.
+    pub pipeline_stage: Option<PipelineBlame>,
 }
 
 impl EvalError {
@@ -812,6 +828,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -862,6 +879,15 @@ impl EvalError {
         self
     }
 
+    /// Attach pipeline blame provenance for contract violation errors.
+    /// Identifies the producing stage (positive party) and consuming stage (negative party).
+    pub fn with_pipeline_blame(mut self, blame: PipelineBlame) -> Self {
+        if self.pipeline_stage.is_none() {
+            self.pipeline_stage = Some(blame);
+        }
+        self
+    }
+
     pub fn key_not_found(key: &str, available_keys: Vec<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::KeyNotFound {
@@ -874,6 +900,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -890,6 +917,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -905,6 +933,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -917,6 +946,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -936,6 +966,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -948,6 +979,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -960,6 +992,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -972,6 +1005,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -984,6 +1018,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -996,6 +1031,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1017,6 +1053,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1029,6 +1066,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1041,6 +1079,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1053,6 +1092,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1065,6 +1105,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1077,6 +1118,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1089,6 +1131,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1104,6 +1147,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1116,6 +1160,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1132,6 +1177,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1146,6 +1192,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1158,6 +1205,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1170,6 +1218,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1184,6 +1233,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1196,6 +1246,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1208,6 +1259,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1220,6 +1272,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1232,6 +1285,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1249,6 +1303,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1270,6 +1325,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1282,6 +1338,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1294,6 +1351,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1315,6 +1373,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1327,6 +1386,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1339,6 +1399,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 
@@ -1353,6 +1414,7 @@ impl EvalError {
             secondary_span: None,
             macro_expansion: None,
             blame: None,
+            pipeline_stage: None,
         }
     }
 }
@@ -1546,6 +1608,30 @@ impl fmt::Display for EvalError {
                 "\n  blame: value from {} crossed boundary at {} ({} responsible)",
                 blame.origin_span, blame.boundary_span, party
             )?;
+        }
+
+        // Pipeline blame: contract violation provenance at --- boundaries
+        if let Some(ref pb) = self.pipeline_stage {
+            write!(f, "\n  produced by: {}", pb.producer)?;
+            if let Some(ref consumer) = pb.consumer {
+                write!(f, "\n  consumed by: {}", consumer)?;
+            }
+            // Hint based on error kind: suggest fix direction
+            match &self.kind {
+                ErrorKind::TypeAssertFailed { .. } | ErrorKind::TypeMismatch { .. } => {
+                    write!(
+                        f,
+                        "\n  hint: fix the producing stage or add a type cast in the consuming stage"
+                    )?;
+                }
+                ErrorKind::SchemaViolation { .. } => {
+                    write!(
+                        f,
+                        "\n  hint: fix the producing stage to match the schema contract"
+                    )?;
+                }
+                _ => {}
+            }
         }
 
         Ok(())
@@ -2927,6 +3013,7 @@ mod tests {
                     secondary_span: None,
                     macro_expansion: None,
                     blame: None,
+                    pipeline_stage: None,
                 },
                 "[E002]",
             ),

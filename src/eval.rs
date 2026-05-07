@@ -168,6 +168,12 @@ pub struct EvalContext {
     /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
     pub env_allowed: Option<HashSet<String>>,
+    /// Pipeline blame map: records producing stage label for each `%` thunk at `---` boundaries.
+    /// Key is the ThunkId of the `%` pipeline variable, value is the producing stage's file path
+    /// or index. Used by contract violation errors to identify the positive party (producer)
+    /// per Findler & Felleisen (2002). Avoids a `Value::Tagged` variant which would require
+    /// updating all exhaustive `Value` matches.
+    pub blame_map: RefCell<HashMap<ThunkId, String>>,
 }
 
 impl EvalContext {
@@ -244,6 +250,7 @@ impl EvalContext {
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
             emitted: std::cell::Cell::new(false),
             env_allowed,
+            blame_map: RefCell::new(HashMap::new()),
         })
     }
 
@@ -284,6 +291,7 @@ impl EvalContext {
             env_arena: Rc::clone(&self.env_arena),
             emitted: std::cell::Cell::new(false),
             env_allowed: self.env_allowed.clone(),
+            blame_map: RefCell::new(self.blame_map.borrow().clone()),
         })
     }
 
@@ -295,6 +303,17 @@ impl EvalContext {
     /// Get a cloned Rc<Thunk> from the arena by ID.
     pub fn get_thunk(&self, id: ThunkId) -> Rc<Thunk> {
         self.thunk_arena.borrow().get(id).clone()
+    }
+
+    /// Record blame provenance for a pipeline `%` thunk at a `---` boundary.
+    /// The `label` identifies the producing stage (file path or stage index).
+    pub fn record_blame(&self, thunk_id: ThunkId, label: String) {
+        self.blame_map.borrow_mut().insert(thunk_id, label);
+    }
+
+    /// Look up blame provenance for a thunk ID (if recorded at a pipeline boundary).
+    pub fn blame_label(&self, thunk_id: ThunkId) -> Option<String> {
+        self.blame_map.borrow().get(&thunk_id).cloned()
     }
 }
 
@@ -1208,6 +1227,53 @@ pub fn eval_document(
     )
 }
 
+/// Wrap a thunk with nominal type validation for pipeline input contracts.
+///
+/// This creates a synthetic TypeAssert expression that wraps a variable reference to `%_input`.
+/// When evaluated, it will perform the same validation as a regular `[@Type expr]` assertion.
+fn wrap_with_nominal_validation(
+    inner: Rc<Thunk>,
+    annotation: &crate::ast::Spanned<crate::ast::Annotation>,
+    validation_span: Span,
+    ctx: &Rc<EvalContext>,
+) -> Rc<Thunk> {
+    use crate::ast::Expr;
+    use std::cell::RefCell;
+
+    // Create a synthetic TypeAssert expression: [@Annotation %_input]
+    // We use %_input as a temporary variable name that won't conflict with user code
+    let varref_expr = Box::new(crate::ast::Spanned::new(
+        Expr::VarRef {
+            name: "%_input".to_string(),
+            resolved: RefCell::new(None),
+        },
+        validation_span,
+    ));
+
+    let type_assert_expr = Rc::new(crate::ast::Spanned::new(
+        Expr::TypeAssert {
+            annotation: annotation.clone(),
+            expr: varref_expr,
+            resolved_type: RefCell::new(None),
+        },
+        validation_span,
+    ));
+
+    // Create an environment with %_input bound to the inner thunk
+    let validation_env = Rc::new(RefCell::new(Environment::new()));
+    validation_env
+        .borrow_mut()
+        .insert("%_input".to_string(), inner);
+
+    // Return an Unevaluated thunk wrapping the TypeAssert expression
+    Rc::new(Thunk::new_unevaluated(
+        type_assert_expr,
+        validation_env,
+        Rc::clone(ctx),
+        validation_span,
+    ))
+}
+
 /// Evaluate a file: one or more documents separated by `---`.
 ///
 /// Documents are totally isolated -- they share no scope. Data flows between
@@ -1269,9 +1335,17 @@ pub fn eval_file_with_input(
         let doc_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
 
         // Bind % (pipeline variable)
-        doc_env
-            .borrow_mut()
-            .insert("%".to_string(), Rc::clone(&prev_output));
+        // If the document has an expects: annotation, wrap % in a validation thunk
+        let percent_thunk = if let Some(ref expects_ann) = doc.node.expects {
+            // Wrap prev_output in a thunk that validates on materialization.
+            // We use nominal type checking (like --no-typecheck mode) because we don't
+            // have type elaboration here (expects annotations are advisory in typecheck).
+            wrap_with_nominal_validation(Rc::clone(&prev_output), expects_ann, doc.span, ctx)
+        } else {
+            Rc::clone(&prev_output)
+        };
+
+        doc_env.borrow_mut().insert("%".to_string(), percent_thunk);
 
         // Bind all previously named sections as %name
         for (section_name, section_thunk) in &named {
@@ -1879,7 +1953,9 @@ pub fn materialize(
                 Err(decorated)
             }
         }
-    } else if let Some((inner, expected, mut field_path, guard_span)) = thunk.take_guarded() {
+    } else if let Some((inner, expected, mut field_path, guard_span, blame_label)) =
+        thunk.take_guarded()
+    {
         // Check depth limit only for deferred states that require evaluation
         if depth > MAX_EVAL_DEPTH {
             let mut err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
@@ -1892,6 +1968,7 @@ pub fn materialize(
                 expected: expected.clone(),
                 field_path: Box::new(field_path.clone()),
                 guard_span,
+                blame_label: blame_label.clone(),
             });
             return Err(err.into());
         }
@@ -1991,6 +2068,7 @@ pub fn materialize(
                         expected,
                         field_path: Box::new(field_path),
                         guard_span,
+                        blame_label,
                     });
                 }
                 Err(e)
