@@ -86,21 +86,6 @@ Populates `related_information` on LSP diagnostics with a source snippet. All th
 - [x] codespan-reporting: assessed, not adopted (requires Files registry + ANSI output)
 - [x] 2 unit tests for eval_error_to_diagnostic related_information (`src/lsp/analysis.rs`)
 
-## Metaprogramming: AST-as-Data, Quasiquoting, Macros, Formatter
-
-AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. See `doc/whatif/plans/macros-cluster.md` for the full cluster plan, dependency graph, and decision gates.
-
-- [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
-
-### macro-integration: Include Ordering, `_` Port, Formatter Config
-
-See doc/08-evaluation.md §Macro Expansion Pipeline. **Depends on:** `macro-hygiene`, `unquote`, `formatter-full`.
-
-- [ ] Include ordering: `expand_macros` runs on statically-included files first; macro definitions registered in `MacroEnv` before includer expansion; static-path-only constraint documented as Flatt (2002) phase separation consequence; `IncludeContext` cache bypass or `(EvalResult, MacroEnv)` tuples (`src/expand.rs`)
-- [ ] Port `_` desugaring: replace `desugar_underscore()` Rust pass with `[defmacro desugar-underscore ...]`; remove Rust pass atomically; all existing underscore corpus tests pass unchanged (`src/desugar.rs`, `src/expand.rs`)
-- [ ] Formatter config: `max-width:` and `max-entries:` named params; `tinct fmt --width 100 --max-entries 6`; `tinct fmt --formatter path/to/custom.llt` (`src/main.rs`, `stdlib/formatter/format.llt`)
-- [ ] Tests: included file's macros available; `_` macro matches prior Rust output; `--formatter` override works; `--width 100` changes layout (`tests/`)
-
 ## Macros Cluster: Theoretical Gaps
 
 Gaps between the macros-cluster plan (`doc/whatif/plans/macros-cluster.md`) and the theoretical requirements established by the cited papers. Track here; resolve during the relevant sprint.

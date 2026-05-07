@@ -4092,3 +4092,11 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] str-repeat in prelude.llt + str-length builtin in builtins_string.rs
 - [x] CLI: --tinct-fmt routes to pretty.llt by default, compact.llt with --oneline/--nospaces
 - [x] Tests updated for new format_source_tinct signature
+
+### macro-integration: Include Ordering, $_ Port, Formatter Config
+
+- [x] Include ordering: builtin_include runs expand_macros for included files
+- [x] $_ desugaring verified correct with macro-expanded code (pipeline order maintained)
+- [x] Formatter support for Quote, Unquote, UnquoteSplice, DefMacro in compact.llt and pretty.llt
+- [x] 4 corpus tests + 6 formatter unit tests for macro integration
+- [x] doc/08-evaluation.md updated with phase separation documentation
