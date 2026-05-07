@@ -281,6 +281,13 @@ pub enum Pattern {
         head: Box<Spanned<Pattern>>,
         tail: Box<Spanned<Pattern>>,
     },
+    /// Constructor pattern — matches nominal variants by tag, binds payload
+    /// `[Some v]` matches `Variant { tag: "Some", payload }` and binds `v` to the payload
+    /// `None` (handled as TypeTag currently) matches `Variant { tag: "None", payload: None }`
+    Constructor {
+        tag: String,
+        binding: Option<Box<Spanned<Pattern>>>,
+    },
 }
 
 /// Literal pattern values
@@ -508,6 +515,13 @@ impl fmt::Display for Pattern {
             }
             Pattern::Seq { head, tail } => {
                 write!(f, "[seq {} {}]", head.node, tail.node)
+            }
+            Pattern::Constructor { tag, binding } => {
+                if let Some(pat) = binding {
+                    write!(f, "[{} {}]", tag, pat.node)
+                } else {
+                    write!(f, "{}", tag)
+                }
             }
         }
     }

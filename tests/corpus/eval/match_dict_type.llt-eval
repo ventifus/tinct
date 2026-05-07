@@ -1,0 +1,6 @@
+[match [x: 1]
+    Dict  "is-dict"
+    Seq   "is-seq"
+    _     "other"]
+===
+String("is-dict")

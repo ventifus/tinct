@@ -15,7 +15,7 @@ use crate::value::{Environment, Key, Thunk, ThunkId, Value};
 // eval.rs imports invoke_function/CallContext from this module, while
 // this module imports eval/EvalContext from eval.rs. Neither module's
 // initialization depends on the other.
-use crate::eval::{eval, EvalContext};
+use crate::eval::{eval, materialize, EvalContext};
 
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -140,7 +140,61 @@ pub struct CallContext<'a> {
 /// Binds positional and named args to function params (respecting defaults and
 /// variadics), then wraps the body as an unevaluated thunk. This is the shared
 /// call path for both `eval_call` and `builtin_apply`.
+///
+/// Special case: variant constructors (marked by VARIANT_TAG_MARKER in closure env)
+/// wrap their single argument in a Value::Variant instead of normal function invocation.
 pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
+    // Marker for variant constructor functions (defined in eval.rs)
+    const VARIANT_TAG_MARKER: &str = "__variant_tag__";
+
+    // Check if this is a variant constructor
+    if let Some(tag_thunk) = ctx.closure_env.borrow().get(VARIANT_TAG_MARKER) {
+        // Validate: variant constructors take exactly one positional argument, no named args
+        if ctx.positional.len() != 1 {
+            return Err(EvalError::new(
+                format!(
+                    "variant constructor expects exactly 1 argument, got {}",
+                    ctx.positional.len()
+                ),
+                ctx.call_span,
+            )
+            .into());
+        }
+
+        if ctx.named.map_or(false, |n| !n.is_empty()) {
+            return Err(EvalError::new(
+                "variant constructor does not accept named arguments".to_string(),
+                ctx.call_span,
+            )
+            .into());
+        }
+
+        // Extract the tag from the marker
+        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span), ctx.ctx, ctx.depth)?;
+        let tag = match tag_value {
+            Value::String(s) => s,
+            _ => {
+                return Err(EvalError::internal(
+                    "variant constructor tag must be a string".to_string(),
+                    ctx.call_span,
+                )
+                .into());
+            }
+        };
+
+        // Store the payload thunk in arena (keeps it lazy)
+        let payload_id = ctx.ctx.alloc_thunk(Rc::clone(&ctx.positional[0]));
+
+        // Create the variant value
+        let variant = Value::Variant {
+            tag,
+            payload: Some(payload_id),
+        };
+
+        return Ok(Rc::new(Thunk::new_materialized(variant, ctx.call_span)));
+    }
+
+    // Normal function invocation
     let call_env = bind_args_thunks(
         ctx.params,
         ctx.positional,

@@ -749,6 +749,13 @@ impl<'a> Formatter<'a> {
                 6 + self.measure_pattern_width(&head.node) + self.measure_pattern_width(&tail.node)
                 // "[seq h t]"
             }
+            Pattern::Constructor { tag, binding } => {
+                if let Some(pat) = binding {
+                    2 + tag.len() + 1 + self.measure_pattern_width(&pat.node) // "[Tag pat]"
+                } else {
+                    tag.len() // "Tag"
+                }
+            }
         }
     }
 
@@ -1012,6 +1019,17 @@ impl<'a> Formatter<'a> {
                 self.output.push(' ');
                 self.format_pattern(tail);
                 self.output.push(']');
+            }
+            Pattern::Constructor { tag, binding } => {
+                if let Some(pat) = binding {
+                    self.output.push('[');
+                    self.output.push_str(tag);
+                    self.output.push(' ');
+                    self.format_pattern(pat);
+                    self.output.push(']');
+                } else {
+                    self.output.push_str(tag);
+                }
             }
         }
     }

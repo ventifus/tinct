@@ -918,6 +918,28 @@ fn pattern_to_thunk_id(
                 pattern_to_thunk_id(&tail.node, tail.span, ctx)?,
             );
         }
+        Pattern::Constructor { tag, binding } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("constructor".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("tag".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(tag.clone()),
+                    span,
+                ))),
+            );
+            if let Some(pat) = binding {
+                dict.insert(
+                    Key::String("binding".into()),
+                    pattern_to_thunk_id(&pat.node, pat.span, ctx)?,
+                );
+            }
+        }
     }
 
     Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))

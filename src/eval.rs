@@ -833,11 +833,66 @@ pub(crate) fn eval_recursive(
         } => eval_call(func, args, named_args, &env, ctx, &expr.span, depth),
         // Type alias entries are compile-time-only constructs consumed by the type checker.
         // At runtime, they evaluate to an empty dict to maintain dict structure without
-        // contributing runtime values.
-        Expr::TypeAlias { .. } => Ok(Rc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
-            expr.span,
-        ))),
+        // contributing runtime values. However, nominal variant constructors must be
+        // registered in the environment as first-class functions.
+        Expr::TypeAlias { params: _, body } => {
+            // Check if the body is a union with nominal constructors
+            // Multi-entry unions come as Dict with auto-indexed entries
+            let constructors = extract_nominal_constructors(&body.node);
+
+            if !constructors.is_empty() {
+                // Register constructors in the environment
+                for (tag, has_payload) in constructors {
+                    let constructor_value = if has_payload {
+                        // Payload constructor: Function with marker in closure env.
+                        // invoke_function checks for VARIANT_TAG_MARKER and wraps the payload.
+                        let constructor_env =
+                            Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
+                        constructor_env.borrow_mut().insert(
+                            VARIANT_TAG_MARKER.to_string(),
+                            Rc::new(Thunk::new_materialized(
+                                Value::String(tag.clone()),
+                                expr.span,
+                            )),
+                        );
+
+                        let param = Param {
+                            name: "payload".to_string(),
+                            annotation: None,
+                            variadic: false,
+                        };
+                        let body = Rc::new(Spanned::new(
+                            Expr::VarRef {
+                                name: "payload".to_string(),
+                                resolved: RefCell::new(None),
+                            },
+                            expr.span,
+                        ));
+
+                        Value::Function {
+                            params: Rc::new(vec![param]),
+                            body,
+                            env: constructor_env,
+                        }
+                    } else {
+                        // Unit constructor: create the variant value directly
+                        Value::Variant {
+                            tag: tag.clone(),
+                            payload: None,
+                        }
+                    };
+
+                    let constructor_thunk =
+                        Rc::new(Thunk::new_materialized(constructor_value, expr.span));
+                    env.borrow_mut().insert(tag, constructor_thunk);
+                }
+            }
+
+            Ok(Rc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                expr.span,
+            )))
+        }
         Expr::Quote(inner) => {
             // Convert the quoted expression to its AST dict representation.
             // Phase 2: walk the quoted AST and evaluate any Unquote/UnquoteSplice subexpressions.
@@ -908,6 +963,51 @@ pub(crate) fn eval_recursive(
             expr.span,
         )
         .into()),
+    }
+}
+
+/// Marker for variant constructor functions in closure environment.
+const VARIANT_TAG_MARKER: &str = "__variant_tag__";
+
+/// Check if an identifier starts with an uppercase letter.
+fn is_constructor_name(name: &str) -> bool {
+    name.chars().next().map_or(false, |c| c.is_uppercase())
+}
+
+/// Check if an expression is a nominal variant constructor declaration.
+/// Returns (tag, has_payload) if it is, None otherwise.
+fn is_nominal_constructor(expr: &Expr) -> Option<(String, bool)> {
+    match expr {
+        Expr::VarRef { name, .. } if is_constructor_name(name) => Some((name.clone(), false)),
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } if named_args.is_empty() && args.len() == 1 => {
+            if let Expr::VarRef { name, .. } = &func.node {
+                if is_constructor_name(name) {
+                    return Some((name.clone(), true));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Extract nominal variant constructors from a type alias body.
+/// Returns a vector of (tag, has_payload) pairs.
+fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
+    match body {
+        // Multi-entry union: Dict with auto-indexed entries
+        Expr::Dict(entries) => entries
+            .iter()
+            .filter(|e| e.node.key.is_none())
+            .filter_map(|e| is_nominal_constructor(&e.node.value.node))
+            .collect(),
+        // Single-entry: check if it's a nominal constructor
+        other => is_nominal_constructor(other).into_iter().collect(),
     }
 }
 
@@ -2025,6 +2125,49 @@ fn match_pattern(
                 }
                 _ => {
                     // Value is not a Seq
+                    Ok(None)
+                }
+            }
+        }
+        Pattern::Constructor { tag, binding } => {
+            // Constructor pattern: match Value::Variant by tag, bind payload if present
+            match value {
+                Value::Variant {
+                    tag: variant_tag,
+                    payload: variant_payload,
+                } => {
+                    // Check if tags match
+                    if tag != variant_tag {
+                        return Ok(None);
+                    }
+
+                    // If pattern expects a payload, match it
+                    match (binding, variant_payload) {
+                        (Some(pattern), Some(payload_id)) => {
+                            // Force the payload value
+                            let payload_thunk = ctx.get_thunk(*payload_id);
+                            let payload_value =
+                                materialize(&payload_thunk, Some(value_span), ctx, 0)?;
+
+                            // Match the payload pattern
+                            match_pattern(&pattern.node, &payload_value, env, &pattern.span, ctx)
+                        }
+                        (None, None) => {
+                            // Unit constructor - no payload to bind
+                            Ok(Some(Rc::clone(env)))
+                        }
+                        (Some(_), None) => {
+                            // Pattern expects payload but variant has none
+                            Ok(None)
+                        }
+                        (None, Some(_)) => {
+                            // Pattern expects no payload but variant has one
+                            Ok(None)
+                        }
+                    }
+                }
+                _ => {
+                    // Value is not a Variant
                     Ok(None)
                 }
             }

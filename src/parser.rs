@@ -3579,22 +3579,34 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
             args,
             named_args,
             ..
-        } if named_args.is_empty() && args.len() == 2 => {
-            // Check if this is [seq h t] parsed as a call
+        } if named_args.is_empty() => {
+            // Check if this is a special pattern form: [seq h t] or [Constructor payload]
             if let Expr::VarRef { ref name, .. } = func.node {
-                if name == "seq" {
-                    let head_pat = expr_to_pattern((*args[0]).clone())?;
-                    let tail_pat = expr_to_pattern((*args[1]).clone())?;
-                    Pattern::Seq {
-                        head: Box::new(head_pat),
-                        tail: Box::new(tail_pat),
+                match (name.as_str(), args.len()) {
+                    ("seq", 2) => {
+                        // [seq h t] — seq pattern
+                        let head_pat = expr_to_pattern((*args[0]).clone())?;
+                        let tail_pat = expr_to_pattern((*args[1]).clone())?;
+                        Pattern::Seq {
+                            head: Box::new(head_pat),
+                            tail: Box::new(tail_pat),
+                        }
                     }
-                } else {
-                    return Err(ParseError {
-                        message: "invalid pattern: expected identifier, literal, dict, or _"
-                            .to_string(),
-                        span: Some(span),
-                    });
+                    (_, 1) if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
+                        // [Constructor payload] — nominal variant payload pattern
+                        let payload_pat = expr_to_pattern((*args[0]).clone())?;
+                        Pattern::Constructor {
+                            tag: name.clone(),
+                            binding: Some(Box::new(payload_pat)),
+                        }
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            message: "invalid pattern: expected identifier, literal, dict, or _"
+                                .to_string(),
+                            span: Some(span),
+                        });
+                    }
                 }
             } else {
                 return Err(ParseError {
