@@ -1310,6 +1310,52 @@ fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::String(name.to_string()), call_span)
 }
 
+/// `tag-of`: Return the tag of a Variant as a String.
+fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("tag-of", args, named, &ctx, depth, call_span)?;
+    match val {
+        Value::Variant { tag, .. } => ok_val(Value::String(tag.clone()), call_span),
+        _ => Err(Box::new(EvalError::type_mismatch(
+            "Variant",
+            val.type_name(),
+            call_span,
+        ))),
+    }
+}
+
+/// `variant`: Create a unit variant with the given tag.
+fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let tag_val = expect_one_arg("variant", args, named, &ctx, depth, call_span)?;
+    match tag_val {
+        Value::String(tag) => ok_val(
+            Value::Variant {
+                tag: tag.clone(),
+                payload: None,
+            },
+            call_span,
+        ),
+        _ => Err(Box::new(EvalError::type_mismatch(
+            "String",
+            tag_val.type_name(),
+            call_span,
+        ))),
+    }
+}
+
 /// `int?`: Return true if the argument is an Int.
 fn builtin_int_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
@@ -3160,6 +3206,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("until", builtin_until),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
+        builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
+        builtin!("variant", builtin_variant, [Strictness::Seq]),
         builtin!("int?", builtin_int_check, [Strictness::Seq]),
         builtin!("float?", builtin_float_check, [Strictness::Seq]),
         builtin!("num?", builtin_num_check, [Strictness::Seq]),
@@ -8237,7 +8285,7 @@ mod tests {
         assert!(names.contains(&"eval-ast"), "missing eval-ast");
         assert!(names.contains(&"gensym"), "missing gensym");
         assert!(names.contains(&"str-length"), "missing str-length");
-        assert_eq!(names.len(), 79, "expected 79 builtins, got {}", names.len());
+        assert_eq!(names.len(), 81, "expected 81 builtins, got {}", names.len());
     }
 
     #[test]

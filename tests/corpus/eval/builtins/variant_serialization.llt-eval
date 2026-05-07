@@ -1,0 +1,5 @@
+# Variant str coercion returns the tag
+[Red: [variant "Red"]]
+[str Red]
+===
+String("Red")

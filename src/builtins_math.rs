@@ -187,6 +187,19 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         // runtime guard is added — this matches Jsonnet's silent promotion approach.
         (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
         (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
+        // Variant: equal if tags match and payloads match
+        // For Phase 1 (unit constructors), payload is always None
+        // TODO(C3): implement recursive payload equality for payload constructors
+        (
+            Value::Variant {
+                tag: tag_a,
+                payload: payload_a,
+            },
+            Value::Variant {
+                tag: tag_b,
+                payload: payload_b,
+            },
+        ) => tag_a == tag_b && payload_a.is_none() && payload_b.is_none(),
         // Dict, Function, Builtin are never equal
         _ => false,
     };

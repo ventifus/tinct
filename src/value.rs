@@ -172,6 +172,11 @@ pub enum Value {
         inner: Rc<cap_std::fs::Dir>,
         revoked: Rc<std::cell::Cell<bool>>,
     },
+    /// Nominal variant (enum-like value)
+    Variant {
+        tag: String,
+        payload: Option<ThunkId>,
+    },
 }
 
 impl Value {
@@ -192,6 +197,7 @@ impl Value {
             Value::NetCap(_) => "NetCap",
             Value::Handle(_) => "Handle",
             Value::RevocableDirCap { .. } => "DirCap",
+            Value::Variant { .. } => "Variant",
         }
     }
 }
@@ -223,6 +229,13 @@ impl fmt::Debug for Value {
                     write!(f, "DirCap(revoked)")
                 } else {
                     write!(f, "DirCap(revocable)")
+                }
+            }
+            Value::Variant { tag, payload } => {
+                if payload.is_some() {
+                    write!(f, "Variant({tag}, <payload>)")
+                } else {
+                    write!(f, "Variant({tag})")
                 }
             }
         }
@@ -268,6 +281,13 @@ impl fmt::Display for Value {
                     write!(f, "<DirCap (revoked)>")
                 } else {
                     write!(f, "<DirCap (revocable)>")
+                }
+            }
+            Value::Variant { tag, payload } => {
+                if payload.is_some() {
+                    write!(f, "{tag}(<payload>)")
+                } else {
+                    write!(f, "{tag}")
                 }
             }
         }

@@ -1,0 +1,5 @@
+# Nominal variant unit constructor — evaluates to a Variant value
+[Red: [variant "Red"]]
+Red
+===
+Variant(Red, Null)

@@ -6,23 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase C: Algebraic Types
 
-### `nominal-variants-unit`
-
-**Depends on:** ADTs Phase 1 (convention — effectively none)
-**Spec chapters:** `doc/03-data-model.md` (§Nominal Variants — `Value::Variant`, `tag-of`, serialization as `{"Tag": null}`), `doc/05-type-annotations.md` (§Nominal Constructors — uppercase bare words in union declarations)
-
-1. `Value::Variant { tag: String, payload: Option<Rc<Thunk>> }`
-2. `type-of` returns `"Variant"` for nominal values
-3. `tag-of` builtin: `Variant -> Str`
-4. Parser: uppercase bare words in `[type ...]` multi-entry position as nominal
-   constructors
-5. Environment registration: unit constructor names bound to
-   `Value::Variant { tag, payload: None }` (no `Expr::Constructor` —
-   constructors are regular `Expr::VarRef` lookups)
-6. Serialization: `Value::Variant` to JSON as `{"Tag": null}`
-7. Tests: 6+ (unit constructor creation, tag-of, serialization,
-   type-of, equality, constructor as VarRef)
-
 ### `nominal-variants-full`
 
 **Depends on:** `nominal-variants-unit` (C2), `pattern-matching-basic` (A2)

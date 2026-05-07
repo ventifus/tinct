@@ -235,6 +235,7 @@ pub trait ValueVisitor {
     fn visit_function(&self, params: &[ast::Param]) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_builtin(&self, name: &str) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_proxy(&self) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
     /// Return `Some(output)` if the depth limit has been reached, `None` to continue.
     fn depth_limit_output(
         &self,
@@ -309,6 +310,17 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::RevocableDirCap { .. } => Err(Box::new(
             error::EvalError::value_not_serializable("DirCap".to_string(), ast::Span::origin()),
         )),
+        value::Value::Variant { tag, payload } => {
+            let payload_output = match payload {
+                Some(thunk_id) => {
+                    let thunk = ctx.get_thunk(*thunk_id);
+                    let v = eval::materialize(&thunk, None, ctx, depth)?;
+                    visit_value(&v, ctx, depth + 1, visitor)?
+                }
+                None => visitor.visit_null(),
+            };
+            Ok(visitor.visit_variant(tag.clone(), payload_output))
+        }
     }
 }
 
@@ -391,6 +403,11 @@ impl ValueVisitor for JsonVisitor {
                 .into(),
         )
     }
+    fn visit_variant(&self, tag: String, payload: serde_json::Value) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        obj.insert(tag, payload);
+        serde_json::Value::Object(obj)
+    }
     fn depth_limit_output(
         &self,
         depth: usize,
@@ -462,6 +479,9 @@ impl ValueVisitor for DisplayVisitor {
     }
     fn visit_proxy(&self) -> Result<String, Box<error::EvalError>> {
         Ok("Proxy".to_string())
+    }
+    fn visit_variant(&self, tag: String, payload: String) -> String {
+        format!("Variant({tag}, {payload})")
     }
     fn depth_limit_output(&self, depth: usize) -> Option<Result<String, Box<error::EvalError>>> {
         if depth > eval::MAX_EVAL_DEPTH {

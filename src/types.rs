@@ -2792,6 +2792,22 @@ impl TypeEnv {
             },
         );
         env.insert(
+            "tag-of".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "variant".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Unknown), // Returns a Variant, but we don't have Type::Variant yet
+                variadic: false,
+            },
+        );
+        env.insert(
             "int?".to_string(),
             Type::Function {
                 params: vec![Type::Unknown],
