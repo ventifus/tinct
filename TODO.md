@@ -75,14 +75,6 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 **Spec:**
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
-### `structural-contracts-describe`
-
-See doc/16-architecture.md §CLI, doc/whatif/structural-contracts.md Phase 3. **Depends on:** `structural-contracts-validate` (SC Ph2).
-
-- [ ] `tinct describe file.llt` CLI subcommand: parse the file, extract `%@Type` annotation; detect schema dicts via heuristic (a dict is a schema dict if any of its values is a dict with at least one recognized schema key: `type`, `min`, `max`, `min-length`, `max-length`, `pattern`, `required`, `items`, `fields`, `enum`); document the heuristic (`src/main.rs`)
-- [ ] Human-readable output: one line per field, merging type constraints from `%@Type` with constraint values from the schema dict (`src/main.rs`)
-- [ ] JSON output mode: `tinct describe --json file.llt` emits machine-readable contract as a tinct dict serialized to JSON (`src/main.rs`)
-- [ ] Tests: `tinct describe fmt/nginx.llt` produces expected output; `--json` mode round-trips; file with no `%@Type` reports "no input contract"; schema dict detection heuristic (`tests/cli_tests.rs`)
 
 ### `structural-contracts-blame`
 

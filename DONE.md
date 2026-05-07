@@ -4317,3 +4317,10 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] expects: @Type integration with runtime validation
 - [x] Lazy nominal type checking on pipeline % input
 - [x] 4 corpus tests: expects syntax, %@Type syntax, type mismatch error, record type
+
+### structural-contracts-describe
+
+- [x] `tinct describe file.llt` CLI subcommand with %@Type extraction and schema dict heuristic detection
+- [x] Human-readable output: one line per field with merged constraints
+- [x] JSON output mode: `tinct describe --json file.llt` emits machine-readable contract
+- [x] 4 CLI tests: no contract, JSON no contract, schema dict detection, human-readable output

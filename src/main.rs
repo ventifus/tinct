@@ -184,6 +184,18 @@ enum Commands {
     /// Start the LSP server (stdio transport).
     #[cfg(feature = "lsp")]
     Lsp,
+    /// Describe the input contract of an LLT file.
+    ///
+    /// Extracts `%@Type` annotations and schema dicts, printing a human-readable
+    /// summary of the expected input shape. Use `--json` for machine-readable output.
+    Describe {
+        /// Emit machine-readable JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+
+        /// Input LLT file to describe.
+        file: String,
+    },
     /// Show a detailed explanation for an error code (e.g. E001).
     Explain {
         /// Error code to explain (e.g. E001, E010, E070).
@@ -287,6 +299,7 @@ fn main() {
         Commands::Repl => tinct::repl::run_repl(),
         #[cfg(feature = "lsp")]
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
+        Commands::Describe { json, file } => run_describe(&file, json),
         Commands::Explain { code } => run_explain(&code),
         Commands::Literate { mode, file } => run_literate(&file, &mode),
     };
@@ -1745,6 +1758,204 @@ fn run_literate_weave(
 
     print!("{output}");
     Ok(())
+}
+
+/// Schema keys recognized by the `describe` subcommand heuristic.
+/// A dict is considered a "schema dict" if any of its values is a dict containing
+/// at least one of these keys. This mirrors the constraint keys supported by `$validate`.
+const SCHEMA_KEYS: &[&str] = &[
+    "type",
+    "min",
+    "max",
+    "min-length",
+    "max-length",
+    "pattern",
+    "required",
+    "items",
+    "fields",
+    "enum",
+];
+
+/// Describe the input contract of an LLT file.
+///
+/// Parses the file, extracts `%@Type` / `expects:` annotations from each document,
+/// and detects schema dicts by heuristic. Outputs a human-readable summary (default)
+/// or machine-readable JSON (`--json`).
+fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
+    let source = read_source(file_path)?;
+    let ast = parse(&source).map_err(|e| format!("{e}"))?;
+
+    // Collect contract information from each document section.
+    let mut contracts: Vec<serde_json::Value> = Vec::new();
+    let mut has_any_contract = false;
+
+    for (doc_idx, doc) in ast.node.documents.iter().enumerate() {
+        let mut doc_contract = serde_json::Map::new();
+        doc_contract.insert("section".into(), serde_json::json!(doc_idx));
+
+        // Extract expects: / %@Type annotation
+        if let Some(ref ann) = doc.node.expects {
+            has_any_contract = true;
+            match &ann.node {
+                tinct::Annotation::Simple(type_name) => {
+                    doc_contract.insert("type".into(), serde_json::json!(type_name));
+                }
+                tinct::Annotation::PropertyDict(entries) => {
+                    let mut fields = serde_json::Map::new();
+                    for entry in entries {
+                        if let Some(ref key_expr) = entry.node.key {
+                            if let tinct::Expr::Str(ref key_name) = key_expr.node {
+                                fields.insert(
+                                    key_name.clone(),
+                                    describe_annotation_value(&entry.node.value.node),
+                                );
+                            }
+                        }
+                    }
+                    if !fields.is_empty() {
+                        doc_contract.insert("fields".into(), serde_json::Value::Object(fields));
+                    }
+                }
+            }
+        }
+
+        // Detect schema dicts in the document expressions
+        let schema_fields = detect_schema_dict(&doc.node.expressions);
+        if !schema_fields.is_empty() {
+            has_any_contract = true;
+            doc_contract.insert("schema".into(), serde_json::Value::Object(schema_fields));
+        }
+
+        if doc_contract.len() > 1 {
+            // Has more than just "section"
+            contracts.push(serde_json::Value::Object(doc_contract));
+        }
+    }
+
+    if !has_any_contract {
+        if json_mode {
+            println!("{{}}");
+        } else {
+            println!("no input contract");
+        }
+        return Ok(());
+    }
+
+    if json_mode {
+        let output = serde_json::json!({ "contracts": contracts });
+        let pretty =
+            serde_json::to_string_pretty(&output).map_err(|e| format!("JSON error: {e}"))?;
+        println!("{pretty}");
+    } else {
+        // Human-readable output: one line per field
+        for contract in &contracts {
+            if let Some(section) = contract.get("section") {
+                if contracts.len() > 1 {
+                    println!("--- section {} ---", section);
+                }
+            }
+            if let Some(type_name) = contract.get("type") {
+                println!("  expects: @{}", type_name.as_str().unwrap_or("?"));
+            }
+            if let Some(fields) = contract.get("fields").and_then(|f| f.as_object()) {
+                for (name, constraint) in fields {
+                    println!("  {}: {}", name, format_constraint(constraint));
+                }
+            }
+            if let Some(schema) = contract.get("schema").and_then(|s| s.as_object()) {
+                for (name, constraint) in schema {
+                    println!("  {}: {}", name, format_constraint(constraint));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Turn an annotation value expression into a JSON description.
+fn describe_annotation_value(expr: &tinct::Expr) -> serde_json::Value {
+    match expr {
+        tinct::Expr::Str(s) => serde_json::json!(s),
+        tinct::Expr::Int(n) => serde_json::json!(n),
+        tinct::Expr::Float(f) => serde_json::json!(f),
+        tinct::Expr::Bool(b) => serde_json::json!(b),
+        tinct::Expr::VarRef { name, .. } => serde_json::json!(name),
+        _ => serde_json::json!("(complex)"),
+    }
+}
+
+/// Detect schema dicts in a document's expressions.
+///
+/// A dict is a schema dict if any of its values is itself a dict containing
+/// at least one recognized schema key (type, min, max, min-length, max-length,
+/// pattern, required, items, fields, enum).
+fn detect_schema_dict(
+    expressions: &[std::rc::Rc<tinct::Spanned<tinct::Expr>>],
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut result = serde_json::Map::new();
+    for expr in expressions {
+        if let tinct::Expr::Dict(entries) = &expr.node {
+            for entry in entries {
+                if let Some(ref key_expr) = entry.node.key {
+                    if let tinct::Expr::Str(ref field_name) = key_expr.node {
+                        // Check if the value is a dict with schema keys
+                        if let Some(schema_info) = extract_schema_info(&entry.node.value.node) {
+                            result.insert(field_name.clone(), schema_info);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// If `expr` is a dict containing at least one recognized schema key, return
+/// a JSON object describing the constraints. Otherwise return None.
+fn extract_schema_info(expr: &tinct::Expr) -> Option<serde_json::Value> {
+    if let tinct::Expr::Dict(entries) = expr {
+        let mut info = serde_json::Map::new();
+        let mut has_schema_key = false;
+        for entry in entries {
+            if let Some(ref key_expr) = entry.node.key {
+                if let tinct::Expr::Str(ref key_name) = key_expr.node {
+                    if SCHEMA_KEYS.contains(&key_name.as_str()) {
+                        has_schema_key = true;
+                        info.insert(
+                            key_name.clone(),
+                            describe_annotation_value(&entry.node.value.node),
+                        );
+                    }
+                }
+            }
+        }
+        if has_schema_key {
+            return Some(serde_json::Value::Object(info));
+        }
+    }
+    None
+}
+
+/// Format a constraint JSON value as a human-readable string.
+fn format_constraint(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| {
+                    let v_str = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    format!("{k}: {v_str}")
+                })
+                .collect();
+            parts.join(", ")
+        }
+        other => other.to_string(),
+    }
 }
 
 /// Print a detailed explanation for the given error code string (e.g. "E001").
