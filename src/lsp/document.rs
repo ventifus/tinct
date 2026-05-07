@@ -77,11 +77,6 @@ impl DocumentState {
                 Ok(result) => result.file,
                 Err(e) => {
                     // Macro expansion error — convert to parse error
-                    ast = Err(crate::parser::ParseError {
-                        message: format!("macro expansion error: {}", e),
-                        span: None,
-                    });
-                    // Continue with diagnostics
                     return Self {
                         text: text.clone(),
                         ast: Err(crate::parser::ParseError {

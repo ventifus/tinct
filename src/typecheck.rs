@@ -201,6 +201,31 @@ fn reset_expr(expr: &Spanned<Expr>) {
                 reset_expr(&arm.body);
             }
         }
+
+        // ClassDecl: recurse into method signatures
+        Expr::ClassDecl { methods, .. } => {
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    reset_expr(key);
+                }
+                reset_expr(&method.node.value);
+            }
+        }
+
+        // InstanceDecl: recurse into instance type and method implementations
+        Expr::InstanceDecl {
+            instance_type,
+            methods,
+            ..
+        } => {
+            reset_expr(instance_type);
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    reset_expr(key);
+                }
+                reset_expr(&method.node.value);
+            }
+        }
     }
 }
 
@@ -1406,6 +1431,35 @@ fn infer_expr(
                 "defmacro should be removed by expansion pass before typechecking (internal error)",
                 expr.span,
             )])
+        }
+
+        Expr::ClassDecl { methods, .. } => {
+            // TODO: Type-check class methods and register in ClassEnv
+            // For now, infer all method signatures and return Unknown
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    let _ = infer_expr(key, env, state, type_map);
+                }
+                let _ = infer_expr(&method.node.value, env, state, type_map);
+            }
+            Ok(Type::Unknown)
+        }
+
+        Expr::InstanceDecl {
+            instance_type,
+            methods,
+            ..
+        } => {
+            // TODO: Type-check instance and register in InstanceEnv
+            // For now, infer instance type and all method implementations, return Unknown
+            let _ = infer_expr(instance_type, env, state, type_map);
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    let _ = infer_expr(key, env, state, type_map);
+                }
+                let _ = infer_expr(&method.node.value, env, state, type_map);
+            }
+            Ok(Type::Unknown)
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(

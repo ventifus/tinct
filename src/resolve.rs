@@ -265,6 +265,29 @@ impl Resolver {
                     self.walk_expr(&arm.body);
                 }
             }
+            // ClassDecl: resolve variables in method signatures
+            Expr::ClassDecl { methods, .. } => {
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        self.walk_expr(key);
+                    }
+                    self.walk_expr(&method.node.value);
+                }
+            }
+            // InstanceDecl: resolve variables in instance type and method implementations
+            Expr::InstanceDecl {
+                instance_type,
+                methods,
+                ..
+            } => {
+                self.walk_expr(instance_type);
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        self.walk_expr(key);
+                    }
+                    self.walk_expr(&method.node.value);
+                }
+            }
             // Literals have no child expressions
             Expr::Int(_)
             | Expr::Float(_)

@@ -1,4 +1,4 @@
 [type
 : something]
 ===
-ERROR: `:` can only appear in dict or call forms
+ERROR: `:` can only appear in dict, call, class, or instance forms

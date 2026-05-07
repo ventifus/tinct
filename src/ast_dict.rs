@@ -752,6 +752,132 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::ClassDecl {
+            name,
+            params,
+            superclasses: _,
+            methods,
+        } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("class".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(name.clone()),
+                    span,
+                ))),
+            );
+            // Serialize params as a list
+            let params_dict: IndexMap<Key, ThunkId> = params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    (
+                        Key::Int(i as i64),
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            Value::String(p.clone()),
+                            span,
+                        ))),
+                    )
+                })
+                .collect();
+            dict.insert(
+                Key::String("params".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(params_dict),
+                    span,
+                ))),
+            );
+            // Serialize methods as a dict
+            let methods_dict: IndexMap<Key, ThunkId> = methods
+                .iter()
+                .filter_map(|method| {
+                    method.node.key.as_ref().and_then(|key| {
+                        if let Expr::Str(key_str) = &key.node {
+                            Some((
+                                Key::String(key_str.clone()),
+                                expr_to_thunk_id(
+                                    &method.node.value.node,
+                                    method.node.value.span,
+                                    opts,
+                                    ctx,
+                                )
+                                .ok()?,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            dict.insert(
+                Key::String("methods".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(methods_dict),
+                    span,
+                ))),
+            );
+        }
+
+        Expr::InstanceDecl {
+            class_name,
+            instance_type,
+            methods,
+        } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("instance".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("class".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(class_name.clone()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("instance_type".into()),
+                expr_to_thunk_id(&instance_type.node, instance_type.span, opts, ctx)?,
+            );
+            // Serialize methods as a dict
+            let methods_dict: IndexMap<Key, ThunkId> = methods
+                .iter()
+                .filter_map(|method| {
+                    method.node.key.as_ref().and_then(|key| {
+                        if let Expr::Str(key_str) = &key.node {
+                            Some((
+                                Key::String(key_str.clone()),
+                                expr_to_thunk_id(
+                                    &method.node.value.node,
+                                    method.node.value.span,
+                                    opts,
+                                    ctx,
+                                )
+                                .ok()?,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            dict.insert(
+                Key::String("methods".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(methods_dict),
+                    span,
+                ))),
+            );
+        }
+
         Expr::Error(error_span) => {
             dict.insert(
                 Key::String("type".into()),

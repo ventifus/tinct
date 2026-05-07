@@ -4269,3 +4269,12 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] Redundancy + inaccessible RHS warnings
 - [x] Guard opacity (guards don't contribute to coverage)
 - [x] 52 tests: 39 coverage algorithm unit tests + 10 typecheck integration + 3 corpus
+
+### type-classes-full
+
+- [x] class/instance keywords + Expr::ClassDecl, Expr::InstanceDecl AST variants
+- [x] Parser: [class [Name a] method: Type] and [instance [Name Int] method: impl]
+- [x] Kind enum (Kind::Type, Kind::Arrow) + ClassDecl, InstanceDecl, ClassEnv, InstanceEnv
+- [x] All exhaustive match sites updated (desugar, resolve, formatter, eval, typecheck, lsp, ast_dict, expand)
+- [x] Placeholder evaluation (marker dict); dictionary construction + threading deferred
+- [x] Tests: class and instance declaration parsing and evaluation
