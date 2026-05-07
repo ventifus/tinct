@@ -3963,6 +3963,15 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] `eval_dict` contains_key+insert fused; GuardedValidate field_path Box reuse; CALL-POLY redundant double-application removed
 - [x] 3 new unit tests (fn@Null return annotation, named row var scoping shared/independent across TypeAssert annotations)
 
+### narrowing-basic
+
+- [x] if special form: infer_if with environment forking for conditional branches
+- [x] Narrowing enum: EqLiteral, TypeOf, HasKey constraints
+- [x] extract_narrowings: recognizes [= x lit], [= [type-of x] "Type"], [has? x "key"], [and]
+- [x] Environment forking: env_true with narrowings, env_false unmodified
+- [x] Branch type join via least_upper_bound (or Union when available)
+- [x] 14 unit tests for all narrowing patterns
+
 ### prelude-type-annotations: Full Type Annotations for stdlib/prelude.llt
 
 - [x] 80+ prelude functions annotated with @Bool, @Int, @Number, @Dict, @Fn, @Seq, @String parameter and return types; polymorphic functions (identity, map, filter, etc.) correctly left unannotated
