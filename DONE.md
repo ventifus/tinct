@@ -4218,3 +4218,10 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] instantiate_type_alias with arity checking and substitution
 - [x] Backward compat for zero-param aliases; row variables in alias bodies
 - [x] 6 unit tests for parameterized aliases
+
+### narrowing-predicates
+
+- [x] extract_narrowings extended for int?, str?, bool?, float?, num?, dict?, seq?, null?, fn?
+- [x] Predicate-to-type mapping: int?→Int, str?→Str, dict?→Record(Open), null?→Record(Empty), etc.
+- [x] num? → Number supertype narrowing
+- [x] 11 unit tests for all predicate narrowing patterns
