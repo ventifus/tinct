@@ -50,6 +50,8 @@ pub(crate) mod builtins_string;
 pub(crate) mod builtins_math;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
+// Macro expansion (pre-desugar AST transformation).
+pub mod expand;
 // Literate tinct: extract and evaluate tinct code blocks from Markdown files.
 pub mod literate;
 // REPL (Read-Eval-Print Loop).
@@ -119,9 +121,11 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// When `no_fs` is `true`, filesystem operations (like `include`) are disabled.
 /// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
 pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
-    let mut file = parse(input).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: Desugar must run after parse and before typecheck.
+    let file = parse(input).map_err(|e| format!("{e}"))?;
+    // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
     // See also: src/main.rs:234-240 (run_eval pipeline)
+    // Expand macros (pre-desugar AST transformation).
+    let mut file = expand::expand_macros(file, no_fs).map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
     // Variable resolution pass (Phase 1 of arena allocation strategy).

@@ -1023,10 +1023,13 @@ fn run_eval(
         };
 
         // Parse
-        let mut ast = parse(&source).map_err(|e| format!("{e}"))?;
+        let ast = parse(&source).map_err(|e| format!("{e}"))?;
 
-        // PIPELINE INVARIANT: Desugar must run after parse and before typecheck.
+        // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
         // See also: src/lib.rs:87-91 (eval_source_with_config pipeline)
+        // Expand macros (pre-desugar AST transformation).
+        let mut ast = tinct::expand::expand_macros(ast, no_fs).map_err(|e| format!("{e}"))?;
+
         // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
         tinct::desugar::desugar_file(&mut ast.node);
 
@@ -1531,8 +1534,10 @@ fn run_literate(file_path: &str, mode: &LiterateMode) -> Result<(), String> {
 /// The base directory is derived from the Markdown file's parent directory.
 fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
     // Parse the tangled source.
-    let mut ast =
-        parse(tangled).map_err(|e| format!("parse error in tangled tinct source: {e}"))?;
+    let ast = parse(tangled).map_err(|e| format!("parse error in tangled tinct source: {e}"))?;
+
+    // Expand macros (pre-desugar AST transformation).
+    let mut ast = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
 
     tinct::desugar::desugar_file(&mut ast.node);
     tinct::resolve::resolve_file(&ast.node);
@@ -1662,8 +1667,11 @@ fn run_literate_weave(
     let mut block_results: Vec<String> = Vec::with_capacity(blocks.len());
 
     for (i, block) in blocks.iter().enumerate() {
-        let mut ast =
-            parse(block).map_err(|e| format!("parse error in code block {}: {e}", i + 1))?;
+        let ast = parse(block).map_err(|e| format!("parse error in code block {}: {e}", i + 1))?;
+
+        // Expand macros (pre-desugar AST transformation).
+        let mut ast = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+
         tinct::desugar::desugar_file(&mut ast.node);
         tinct::resolve::resolve_file(&ast.node);
         let _ = tinct::typecheck::typecheck_file(&ast.node);

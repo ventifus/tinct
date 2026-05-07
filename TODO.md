@@ -92,20 +92,6 @@ AST dict schema, quasiquoting, procedural macros, and tinct-hosted formatter. Se
 
 - [x] Accept macros cluster — see doc/whatif/plans/macros-cluster.md (State: Accepted — 2026-05-05); covers ast-schema.md, quasiquoting.md, macros.md, tinct-hosted-formatter.md
 
-### defmacro: `[defmacro]` + Expansion Loop
-
-See doc/08-evaluation.md §Macro Expansion Pipeline. **Depends on:** `quote`, `dict-to-ast`.
-
-- [ ] `defmacro` added to denylist; `Expr::DefMacro` AST variant; parser: `[defmacro name [params] body]` (`src/lexer.rs`, `src/parser.rs`, `src/ast.rs`)
-- [ ] New `src/expand.rs`: `expand_macros` top-down walk with `MacroEnv`; quotes args via `ast_to_dict_expr`, calls macro, `dict_to_ast` result, replaces node, re-expands (`src/expand.rs`)
-- [ ] `DefMacro` handling: evaluate body in fresh `EvalContext` (inherits `EvalConfig`); register in `MacroEnv`; remove from AST after registration (`src/expand.rs`)
-- [ ] Termination: depth limit 100 + 100k node-count cap; `HashSet<(file_id, byte_offset)>` for in-progress tracking; `SyntheticId(u64)` for generated nodes (`src/expand.rs`)
-- [ ] `gensym: [] -> Str` builtin — `:gensym:N` names with forbidden-char prefix (`src/builtins.rs`)
-- [ ] Namespace: macros cannot shadow registered Rust builtins — error at registration time (`src/expand.rs`)
-- [ ] Pipeline update in `src/main.rs` **and** `src/lsp/document.rs`: insert `expand_macros` between parse and desugar (`src/main.rs`, `src/lsp/document.rs`)
-- [ ] Handle new variants in `eval_deep.rs`, `eval_materialize.rs`, `lsp/analysis.rs` (`src/`)
-- [ ] Tests: `[defmacro my-when ...]` expands; `gensym` unique; depth limit hit; node-count cap; `DefMacro` absent post-expansion; `[defmacro str ...]` rejected; LSP diagnostics correct (`tests/`)
-
 ### formatter-full: Full Tinct Formatter
 
 See doc/12-tooling.md §Tinct-Hosted Formatter. **Depends on:** `ast-dict-source`, typing-cluster `let-binding`, typing-cluster `pattern-matching-basic`.

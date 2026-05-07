@@ -1,0 +1,4 @@
+# gensym generates unique names
+[a: [gensym] b: [gensym] c: [= a b]]
+===
+Dict({"a": String(":gensym:0"), "b": String(":gensym:1"), "c": Bool(false)})

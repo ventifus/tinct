@@ -1,0 +1,4 @@
+# Macros cannot shadow registered builtins
+[defmacro str [fn [args] [get 0 args]]]
+===
+ERROR: macro name 'str' collides with registered builtin — macros cannot shadow builtins

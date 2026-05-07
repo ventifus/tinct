@@ -306,6 +306,11 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
             desugar(&mut **inner, depth);
         }
+
+        // DefMacro: desugar the transformer expression.
+        Expr::DefMacro { transformer, .. } => {
+            desugar(&mut **transformer, depth);
+        }
     }
 }
 

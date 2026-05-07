@@ -1,0 +1,5 @@
+# Simple identity macro
+[defmacro id [fn [args] [get 0 args]]]
+[id 42]
+===
+Int(42)

@@ -244,6 +244,10 @@ impl Resolver {
             Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
                 self.walk_expr(inner);
             }
+            // DefMacro: resolve variables in the transformer expression.
+            Expr::DefMacro { transformer, .. } => {
+                self.walk_expr(transformer);
+            }
             // Literals have no child expressions
             Expr::Int(_)
             | Expr::Float(_)

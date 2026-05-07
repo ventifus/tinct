@@ -780,6 +780,11 @@ pub(crate) fn eval_recursive(
             expr.span,
         )
         .into()),
+        Expr::DefMacro { .. } => Err(EvalError::internal(
+            "defmacro should be removed by expansion pass before evaluation".to_string(),
+            expr.span,
+        )
+        .into()),
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,

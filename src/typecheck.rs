@@ -177,6 +177,11 @@ fn reset_expr(expr: &Spanned<Expr>) {
         Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
             reset_expr(inner);
         }
+
+        // DefMacro: recurse into the transformer
+        Expr::DefMacro { transformer, .. } => {
+            reset_expr(transformer);
+        }
     }
 }
 
@@ -836,6 +841,15 @@ fn infer_expr(
             // UnquoteSplice itself doesn't have a standalone type — it's only valid
             // in list positions where it splices elements. Return Dict for now.
             Ok(expected_list_ty)
+        }
+
+        Expr::DefMacro { .. } => {
+            // DefMacro should be removed by the expansion pass before typechecking.
+            // If we see it here, it's an internal error.
+            Err(vec![TypeError::new(
+                "defmacro should be removed by expansion pass before typechecking (internal error)",
+                expr.span,
+            )])
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(

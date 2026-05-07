@@ -1259,6 +1259,35 @@ fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     crate::eval::eval(Rc::new(ast), env, &ctx, depth)
 }
 
+/// `gensym`: Generate a unique symbol name for macro hygiene.
+/// Returns a string like ":gensym:0", ":gensym:1", etc.
+/// The `:` prefix ensures these names cannot collide with user-written identifiers
+/// (`:` is not allowed in bare word identifiers).
+fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Global counter for gensym IDs
+    static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+
+    // Reject any arguments
+    if !args.is_empty() || named.is_some() {
+        return Err(
+            EvalError::user_error("gensym takes no arguments".to_string(), call_span).into(),
+        );
+    }
+
+    let id = GENSYM_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let name = format!(":gensym:{}", id);
+    ok_val(Value::String(name), call_span)
+}
+
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
 /// Returns "Dict" for all dicts, with no distinction between list-like (sequential int keys)
@@ -3110,6 +3139,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("try", builtin_try, [Strictness::Id]),
         builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
         builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
+        builtin!("gensym", builtin_gensym),
         builtin!("until", builtin_until),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
@@ -8188,7 +8218,8 @@ mod tests {
         // Total count: Wave 1 sprint added 4 access-pipeline builtins (builtin-get, each, each-key, each-kv).
         // Update this count when standard_builtins() changes.
         assert!(names.contains(&"eval-ast"), "missing eval-ast");
-        assert_eq!(names.len(), 77, "expected 77 builtins, got {}", names.len());
+        assert!(names.contains(&"gensym"), "missing gensym");
+        assert_eq!(names.len(), 78, "expected 78 builtins, got {}", names.len());
     }
 
     #[test]

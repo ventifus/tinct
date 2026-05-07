@@ -366,6 +366,10 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
         Expr::UnquoteSplice(inner) => {
             Expr::UnquoteSplice(Box::new(adjust_spanned_expr(*inner, base)))
         }
+        Expr::DefMacro { name, transformer } => Expr::DefMacro {
+            name,
+            transformer: Box::new(adjust_spanned_expr(*transformer, base)),
+        },
     }
 }
 
@@ -862,6 +866,12 @@ enum StackFrame {
     /// Unquote-splice special form: `[unquote-splice expr]` (only valid in list positions inside quote)
     UnquoteSplice {
         expr: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Macro definition: `[defmacro name transformer]`
+    DefMacro {
+        name: Option<String>,
+        transformer: Option<Spanned<Expr>>,
         span_start: Position,
     },
     /// Pipe operator: `lhs | rhs`
@@ -1531,6 +1541,32 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
                         continue;
                     }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "defmacro"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // DefMacro form: [defmacro name transformer]
+                        // (Not a defmacro form if the keyword is followed by colon: [defmacro: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::DefMacro {
+                            name: None,
+                            transformer: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "defmacro" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
                     Some((Token::At, _)) | Some((Token::ImmediateAt, _)) => {
                         // Type-assert form: [@Annotation expr]
                         // (depth already checked above)
@@ -1962,6 +1998,41 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             }
                         }
                     }
+
+                    StackFrame::DefMacro {
+                        name,
+                        transformer,
+                        span_start,
+                    } => match (name, transformer) {
+                        (None, _) => {
+                            close_bracket_recover!(ParseError {
+                                message: "defmacro form requires a name".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        (Some(_), None) => {
+                            close_bracket_recover!(ParseError {
+                                message: "defmacro form requires a transformer expression"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        (Some(name), Some(transformer)) => {
+                            let defmacro_expr = Expr::DefMacro {
+                                name,
+                                transformer: Box::new(transformer),
+                            };
+                            let spanned_defmacro =
+                                Spanned::new(defmacro_expr, dict_span(span_start));
+                            if let Err(push_err) = push_value(
+                                &mut stack,
+                                &mut current_document_expressions,
+                                spanned_defmacro,
+                            ) {
+                                close_bracket_recover!(push_err);
+                            }
+                        }
+                    },
 
                     StackFrame::Pipe { .. } => {
                         // A Pipe frame is never opened by `[` — pipe is an infix operator
@@ -2955,6 +3026,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Quote { span_start, .. } => *span_start,
             StackFrame::Unquote { span_start, .. } => *span_start,
             StackFrame::UnquoteSplice { span_start, .. } => *span_start,
+            StackFrame::DefMacro { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -3174,6 +3246,10 @@ fn pop_last_value_from_frame(
                 })
             }
         }
+        Some(StackFrame::DefMacro { .. }) => Err(ParseError {
+            message: "dot access is not valid inside defmacro form".to_string(),
+            span: Some(span),
+        }),
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
             message: "pipe operator '|' requires a right-hand expression".to_string(),
             span: Some(span),
@@ -3282,6 +3358,37 @@ fn push_expr_to_parent(
                 }
                 *unquote_splice_expr = Some(expr);
                 Ok(())
+            }
+            Some(StackFrame::DefMacro {
+                ref mut name,
+                ref mut transformer,
+                ..
+            }) => {
+                // DefMacro expects: [defmacro name-identifier transformer-expr]
+                // First expression is the name (must be an identifier), second is the transformer
+                if name.is_none() {
+                    // This is the name — must be an identifier
+                    match &expr.node {
+                        Expr::VarRef { name: n, .. } => {
+                            *name = Some(n.clone());
+                            Ok(())
+                        }
+                        _ => Err(ParseError {
+                            message: "defmacro name must be an identifier".to_string(),
+                            span: Some(expr.span),
+                        }),
+                    }
+                } else if transformer.is_none() {
+                    // This is the transformer expression
+                    *transformer = Some(expr);
+                    Ok(())
+                } else {
+                    Err(ParseError {
+                        message: "defmacro form takes exactly two arguments: name and transformer"
+                            .to_string(),
+                        span: Some(expr.span),
+                    })
+                }
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {
                 // We have the RHS expression; pop the frame and create the Pipe node
