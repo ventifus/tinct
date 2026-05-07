@@ -75,13 +75,3 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 **Spec:**
 - [ ] Write `doc/06-type-inference.md` §Type Classes with formal rules: constraint generation, entailment checking, dictionary elaboration, instance resolution, superclass extraction (`doc/06-type-inference.md`)
 
-
-### `numeric-repr`
-
-See doc/05-type-annotations.md §Storage Hints, doc/whatif/numeric-types.md Phase 4. **Depends on:** `numeric-range` (Ph1) — `repr:` consistency is validated against `is:` range constraints; no BigInt dependency (all valid repr values u8–i64 fit within `Value::Int(i64)`).
-
-- [ ] `repr:` annotation key parsed in property dict annotations alongside `type:`, `is:`, `default:` (`src/parser.rs`, `src/typecheck.rs`)
-- [ ] Valid `repr:` values: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"` — type checker validates consistency with declared type and `is:` range constraint (`src/typecheck.rs`)
-- [ ] `repr:` propagated to binary serialization dispatch: `to-bytes: [fn [v@[repr: "u8"]] ...]` in stdlib (`stdlib/numeric.llt`)
-- [ ] Error: `repr: "u8"` with `is: [between -1 255]` rejected — range exceeds repr capacity (`src/typecheck.rs`)
-- [ ] Tests: `@[type: Int  is: [between 0 255]  repr: "u8"]` accepted; `repr` inconsistent with range rejected; binary encoding dispatch (`tests/corpus/eval/type_system/`)

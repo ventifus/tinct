@@ -1,0 +1,4 @@
+# repr: "u8" with Int type accepted — value passes through
+[@[type: Int  repr: "u8"] 42]
+===
+Int(42)

@@ -4359,3 +4359,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] PartialEq for BigInt values
 - [x] Exhaustive match coverage across all Value match sites
 - [x] 3 corpus tests: bigint_from_int, bigint_from_string, bigint_type_of
+
+### numeric-repr
+
+- [x] repr: annotation key already in ANNOTATION_META_KEYS (from numeric-range sprint)
+- [x] Type checker validation: valid repr values (u8/i8/u16/i16/u32/i32/u64/i64), numeric type consistency
+- [x] to-bytes stub in stdlib/numeric.llt for binary serialization dispatch
+- [x] Invalid repr value and non-numeric type cause type errors
+- [x] 4 corpus tests: repr_valid_u8, repr_valid_i32, repr_invalid_value, repr_non_numeric

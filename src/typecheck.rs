@@ -2963,6 +2963,35 @@ fn resolve_type_assert(
         }
     }
 
+    // Validate repr: storage hint if present.
+    // Valid values: "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64".
+    // Must be consistent with the declared type (must be numeric).
+    if let Some(repr_expr) = annotation.node.get_property("repr") {
+        if let Expr::Str(ref repr_val) = repr_expr.node {
+            const VALID_REPRS: &[&str] = &["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"];
+            if !VALID_REPRS.contains(&repr_val.as_str()) {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "invalid repr: \"{repr_val}\" — must be one of: {}",
+                        VALID_REPRS.join(", ")
+                    ),
+                    repr_expr.span,
+                )]);
+            }
+            // Check consistency: repr requires a numeric type (Int or Number)
+            let is_numeric = matches!(&expected, Type::Int | Type::Number | Type::Float);
+            if !is_numeric {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "repr: \"{repr_val}\" requires a numeric type, but annotation declares {}",
+                        expected
+                    ),
+                    repr_expr.span,
+                )]);
+            }
+        }
+    }
+
     // Apply substitution before returning to ensure bound type variables are resolved.
     // The expected type may contain TypeVars that were bound during checking mode or
     // access-chain inference (e.g., check_dot_access binds row variables).
