@@ -1,4 +1,5 @@
 # What If: Nominal Variants for tinct
+**State:** Accepted — 2026-05-05
 
 What would it take to add nominal (constructor-based) variants to tinct, layered on
 top of the structural ADT system?

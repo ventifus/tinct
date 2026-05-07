@@ -1,4 +1,5 @@
 # What If: Pattern Matching for tinct
+**State:** Accepted — 2026-05-05
 
 What would it take to add pattern matching to tinct's bracket-based lazy
 functional language?

@@ -12,26 +12,11 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Null Semantics](null-semantics.md) | `@Null` annotation = `Type::Record(Row::Empty)`; void-returning builtins typed precisely |
-| [Path-Sensitive Narrowing](narrowing.md) | Refine variable types inside `if` branches from equality/type guards |
-| [Parameterized Type Aliases](parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site, fixing name-collision bugs |
-| [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) |
-| [Type Classes](typeclasses.md) | `Eq a => a → a → Bool` — constrained polymorphism for `=`, `+`, `map` |
-| [Formal Gradual Typing](gradual-typing.md) | Formalize `Any` semantics; split into `Unknown` / `Top`; add consistency relation |
-| [Structural Contracts](structural-contracts.md) | `%@Type` pipeline boundary checking + `validate` schema-as-dict runtime constraints |
-
-## Data Types
-
-| Proposal | Summary |
-|----------|---------|
-| [Algebraic Data Types](algebraic-data-types.md) | `[union [ok: a] [err: Str]]` — structural ADTs discriminated by key set; dicts-are-fundamental means no new Value variant |
-| [Nominal Variants](nominal-variants.md) | `[union [Some a] None]` — opaque constructor-based variants layered on structural ADTs; `Value::Variant { tag, payload }` |
 
 ## Syntax and Ergonomics
 
 | Proposal | Summary |
 |----------|---------|
-| [`let` Binding Form](let-binding.md) | Sequential expressions inside `[fn ...]` bodies — no new keywords |
-| [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption |
 | [Macro-Rewrite](macro-rewrite.md) | Replace `src/desugar.rs` with `[defmacro]` definitions; land `i"..."` as macro (let-binding is parser change, match is `Expr::Match` special form) |
 | [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — user-defined macros can use full-annotated-expression equality for dict keys |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
@@ -42,7 +27,6 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [String Interning for Dict Keys](string-interning.md) | `Key::String(Spur)` via `string-interner` crate; O(1) comparison; profile-gated |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Path-compressed union-find for `Substitution::apply()`; worthwhile only if chain depth ≥4; profile-gated |
-| [Numeric Types](numeric-types.md) | Range-constrained numerics; `@[min: 0 max: 65535]` → auto `u16` internally |
 | [Float Dict Keys](float-dict-keys.md) | Decimal (exact base-10) keys alongside a `Decimal` type |
 
 ## Architecture and Refactoring
@@ -112,6 +96,17 @@ These proposals have been formally accepted: `State: Accepted` marked, spec inte
 | [Quasiquoting](quasiquoting.md) | `[quote ...]` / `[unquote ...]` — AST as data; prerequisite for macros | 2026-05-05 |
 | [Desugaring as Macros](macros.md) | Procedural AST macros via `[defmacro]`; user-defined syntactic transformations | 2026-05-05 |
 | [Tinct-Hosted Formatter](tinct-hosted-formatter.md) | `tinct fmt` delegated to `stdlib/formatter/`; speculative rendering; shared `ast_to_dict` infrastructure | 2026-05-05 |
+| [`let` Binding Form](let-binding.md) | Sequential expressions inside `[fn ...]` bodies — no new keywords | 2026-05-05 |
+| [Pattern Matching](pattern-matching.md) | `[match x ...]` — type dispatch + structural destructuring; 5-phase adoption | 2026-05-05 |
+| [Union Types and Algebraic Subtyping](union-types.md) | `Int \| Str` annotations (Phase 2) → Simple-sub inferred unions/intersections (Phase 3) | 2026-05-05 |
+| [Algebraic Data Types](algebraic-data-types.md) | `[union [ok: a] [err: Str]]` — structural ADTs discriminated by key set | 2026-05-05 |
+| [Nominal Variants](nominal-variants.md) | `[union [Some a] None]` — opaque constructor-based variants layered on structural ADTs | 2026-05-05 |
+| [Type Classes](typeclasses.md) | `Eq a => a → a → Bool` — constrained polymorphism for `=`, `+`, `map` | 2026-05-05 |
+| [Formal Gradual Typing](gradual-typing.md) | Formalize `Any` semantics; split into `Unknown` / `Top`; add consistency relation | 2026-05-05 |
+| [Structural Contracts](structural-contracts.md) | `%@Type` pipeline boundary checking + `validate` schema-as-dict runtime constraints | 2026-05-05 |
+| [Numeric Types](numeric-types.md) | Range annotations + Decimal type + BigInt + storage hints | 2026-05-05 |
+| [Parameterized Type Aliases](parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site, fixing name-collision bugs | 2026-05-05 |
+| [Path-Sensitive Narrowing](narrowing.md) | Refine variable types inside `if` branches from equality/type guards | 2026-05-05 |
 
 ### Adopt Now
 
@@ -119,15 +114,9 @@ These proposals have no gating conditions and deliver standalone value at low co
 
 **[Null Semantics](null-semantics.md) Phase 1** — One arm in `resolve_type_name`: `"Null" => Type::Record(Row::Empty)`. Zero new runtime machinery. `fn@Null` for void-returning builtins. Trigger already met — `type-checker-fixes` sprint asks for it.
 
-**[`let` Binding Form](let-binding.md)** — Removes structural friction in every multi-step function. No new keywords; extends existing sequential scoping model to `[fn ...]` bodies. No dependencies.
-
 **[Supplemental Stdlib Modules](lib-supplemental.md) Phase 1** — Pure-tinct `stdlib/strings.llt`. At most one new Rust builtin. No new crates, no gating. Phases 2 and 3 follow.
 
 **[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental Phases 1 + 3.
-
-**[Structural Contracts](structural-contracts.md) Phase 1** — `%@Type` pipeline boundary annotation. `%` is the pipeline input variable; `%@NginxConfig` annotates it with a type using standard `var@Type` syntax. No new syntax needed.
-
-**[Algebraic Data Types](algebraic-data-types.md) Phase 1** — Convention documentation only. Zero-cost, immediate value.
 
 **[Evaluation Semantics Verification](eval-semantics-verification.md) Phase 1** — Confluence proof sketch to `doc/08-evaluation.md` is done (research + doc complete); core proptest suite (200 lines + `proptest` dev-dep) still pending implementation.
 
@@ -137,16 +126,7 @@ These proposals have accepted designs but explicit gating conditions not yet met
 
 | Proposal | Gating Condition |
 |----------|-----------------|
-| [Gradual Typing](gradual-typing.md) | whatif not yet accepted; required before union types or type classes (`Any`-as-top-and-bottom is incompatible with both). `Type::Any` split (`Unknown`+`Top`) is a standalone sprint independent of this whatif. |
-| [Type Classes](typeclasses.md) | Phase 1 (`deep-eq`/`shallow-eq` builtins) ships now; Phase 2 (constrained type vars) after let-generalization + builtin-type-signatures |
-| [Union Types and Algebraic Subtyping](union-types.md) Phase 2 | Annotation-only unions: adopt after Phase 1 (type classes). Nullable types, tagged unions, and `try` result types all require this. |
-| [Union Types and Algebraic Subtyping](union-types.md) Phase 3 | Inferred unions: adopt after annotation-only unions are established |
-| [Algebraic Data Types](algebraic-data-types.md) Phase 2 | Adopt immediately after `union-types.md` Phase 2 lands |
-| [Nominal Variants](nominal-variants.md) | Phase 1 after ADTs Phase 1; Phase 2 after pattern matching Phase 2 |
-| [Narrowing](narrowing.md) | Scheduled after pattern matching (A3); redundant `[@Type expr]` assertions already common |
 | [Custom Call Aliases](call-aliases.md) | Macro system adoption |
-| [Parameterized Type Aliases](parameterized-type-aliases.md) | Variable name collision is a known problem; arity-checked type constructors are a prerequisite for type classes |
-| [Pattern Matching](pattern-matching.md) Phase 2+ | Phase 1 gate met (type-predicates complete); Phase 2 after Phase 1; Phase 3 after Phase 2 |
 | [String Interning](string-interning.md) | Profiling confirms `String` allocation/comparison is top-5 hotspot on real workloads |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
 | [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
@@ -164,10 +144,7 @@ These proposals open new ground rather than closing existing work. All have acce
 |----------|-----------|
 | [TLS, PKI, and HTTP](lib-tls.md) | mTLS and custom CA for internal-service tinct programs |
 | [SQL Data Sources](lib-sql.md) | Lazy DB reads via `filter`/`map` predicate pushdown |
-| [Numeric Types](numeric-types.md) | Range annotations + Decimal type |
 | [Float Dict Keys](float-dict-keys.md) | Decimal keys; gated on Decimal type adoption |
-| [Pattern Matching](pattern-matching.md) | Full match expression; Phase 1 gate met (type predicates complete); Phase 2+ next |
-| [Nominal Variants](nominal-variants.md) Phase 1 | `tag-of` + unit constructors; independently useful as enum-like values |
 
 ---
 

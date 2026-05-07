@@ -1,4 +1,5 @@
 # Typing Cluster: Implementation Plan
+**State:** Accepted — 2026-05-05
 
 Comprehensive plan for the 12 typing-related whatif proposals and their
 phased implementation. Each proposal is a separate whatif document; this

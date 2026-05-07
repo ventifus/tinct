@@ -1,4 +1,5 @@
 # What If: Parameterized Type Aliases for tinct
+**State:** Accepted — 2026-05-05
 
 What would it take to add parameterized (generic) type aliases to tinct's
 type system?
