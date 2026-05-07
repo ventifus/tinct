@@ -2,5 +2,5 @@
 # slurp expects Handle, but we pass a String
 
 [call $slurp "not a handle"]
-===
+=== out
 cannot unify Handle with

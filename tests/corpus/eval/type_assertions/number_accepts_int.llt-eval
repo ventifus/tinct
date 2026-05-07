@@ -1,4 +1,4 @@
 # Structural TypeAssert: Number annotation with Int value passes (Int <: Number)
 [@Number 42]
-===
+=== out
 Int(42)

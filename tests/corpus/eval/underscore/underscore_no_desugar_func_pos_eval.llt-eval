@@ -3,5 +3,5 @@
 # We verify by calling it: provide $_ as a bound function via explicit fn.
 # [fn [_] [call $_ 99]] passes identity, which calls identity(99) = 99.
 [call [fn [_] [_ 99]] [fn [x] x]]
-===
+=== out
 Int(99)

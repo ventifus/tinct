@@ -2,5 +2,5 @@
 [data: [a: 1  b: 2  c: 3]]
 
 data | [map [fn [x] [* x 10]]]
-===
+=== out
 Dict({"a": Int(10), "b": Int(20), "c": Int(30)})

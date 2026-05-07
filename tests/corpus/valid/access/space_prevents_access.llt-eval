@@ -2,5 +2,5 @@
 # user.name (no space) = dot access on user
 # [user "name"] (no dot at all) = call user with "name" arg
 [user "field"]
-===
+=== out
 [user "field"]

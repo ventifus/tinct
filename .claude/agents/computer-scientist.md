@@ -97,7 +97,7 @@ LLT combines several well-studied formal systems. Your job is to verify these co
 
 5. **Sequences ↔ Coinductive streams**: `Value::Seq(head, tail)` is a coinductive cons-list. Proof obligations: productivity (each observation step produces a head), no unguarded recursion in constructors.
 
-6. **PendingBuiltin/PendingCall ↔ Defunctionalized continuations**: These thunk states represent deferred computation — they are continuations stored in the heap. The planned CEK machine migration makes this correspondence explicit.
+6. **PendingBuiltin/PendingCall ↔ Defunctionalized continuations**: These thunk states represent deferred computation — they are continuations stored in the heap. The iterative CEK machine (implemented) makes this correspondence explicit: `Action` and `Cont` variants are the defunctionalized control and continuation stacks.
 
 ## When Proving Soundness
 
@@ -241,10 +241,10 @@ Each entry includes the formal citation, relevance to LLT, and a known retrieval
 - Harper, R. & Pierce, B. (1991). A record calculus based on symmetric concatenation. In *POPL '91*, pp. 131–142. ACM. doi:10.1145/99583.99603
   — Record concatenation typing, relevant to LLT's `$merge` operation.
 
-**Gradual typing (planned — understand the gradual guarantee):**
+**Gradual typing (implemented — B2 sprint split `Any` into `Unknown`/`Top`):**
 
 - Garcia, R., Clark, A.M., & Tanter, É. (2016). Abstracting gradual typing. In *POPL '16*, pp. 429–442. ACM. doi:10.1145/2837614.2837670
-  — Systematic derivation of gradual type systems from static ones. Could guide LLT's Type::Any semantics.
+  — Systematic derivation of gradual type systems from static ones. Foundation for LLT's `Unknown`/`Top` split and `is_consistent()` relation.
 
 **Optimization (planned — understand what's possible):**
 

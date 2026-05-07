@@ -4,5 +4,5 @@
 # Outer call passes that wrapped function to $map.
 # Result: each value has 10 added: 1+10=11, 2+10=12, 3+10=13
 [map [+ _ 10] [0: 1 1: 2 2: 3]]
-===
+=== out
 Dict({0: Int(11), 1: Int(12), 2: Int(13)})

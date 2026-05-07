@@ -1,4 +1,6 @@
 # all? - empty list
 [all? [fn [x] [> x 5]] []]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: all? at 1:2-1:6

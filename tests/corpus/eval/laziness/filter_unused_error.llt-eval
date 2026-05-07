@@ -5,5 +5,8 @@
 # forced and its division-by-zero error never fires.
 [filtered: [filter [fn [x] [> x 0]] [1 2 [/ 1 0]]]]
 [result: [head filtered]]
-===
+=== out
 Dict({"result": Int(1)})
+=== warn
+undefined variable: > at 5:29-5:30
+undefined variable: filtered at 6:16-6:24

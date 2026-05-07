@@ -22,19 +22,28 @@ fn find_test_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Expected output sections from a test file.
+#[derive(Debug)]
+struct TestExpectations<'a> {
+    /// Expected standard output (from `=== out` section).
+    out: Option<&'a str>,
+    /// Expected warnings (from `=== warn` section).
+    warn: Option<&'a str>,
+    /// Expected error substring (from `=== error` section).
+    error: Option<&'a str>,
+}
+
 /// Parsed test file with optional directives.
 struct TestFile<'a> {
     /// The LLT source code to evaluate (directives stripped).
     input: &'a str,
-    /// Expected output or error substring (if `===` delimiter present).
-    expected: Option<&'a str>,
+    /// Expected outputs for different channels.
+    expectations: TestExpectations<'a>,
     /// Whether to enable `--no-fs` mode (from `# no_fs` directive).
     no_fs: bool,
-    /// Whether this is an error test with substring matching (from `=== ERROR:` prefix).
-    is_error_substring: bool,
 }
 
-/// Split a test file on `===` delimiter. Returns (input, Option<expected>).
+/// Split a test file on labeled section delimiters (`=== out`, `=== warn`, `=== error`).
 /// Uses `===` instead of `---` because `---` is a valid LLT document separator.
 ///
 /// Supports directives on the first line:
@@ -44,15 +53,13 @@ struct TestFile<'a> {
 /// and is STRIPPED from the input before evaluation. This means `#`-prefixed content
 /// on line 1 is never evaluated, even if it's just a comment.
 ///
-/// Note: Expected output (the section after `===`) depends on the test runner:
-/// - Valid corpus: compares first expression's AST (via `parse_expression()`).
-/// - Eval corpus: compares full file evaluation (last expression of last document).
+/// Expected output sections:
+/// - `=== out` — expected standard output (AST Display for valid/, Value Debug for eval/)
+/// - `=== warn` — expected type-warning substring; absent means assert zero type warnings
+/// - `=== error` — expected error substring (must include [EXXX] error code)
+///
+/// A bare `===` (without a label) is a parse error — use `=== out` instead.
 fn split_test_file(content: &str) -> TestFile {
-    const DELIM: &str = "===";
-    const NEWLINE_DELIM_NEWLINE: &str = "\n===\n";
-    const NEWLINE_DELIM: &str = "\n===";
-    const ERROR_PREFIX: &str = "ERROR:";
-
     // Check for directives on the first line
     let (directives_line, rest) = if let Some(newline_pos) = content.find('\n') {
         let (first_line, remainder) = content.split_at(newline_pos);
@@ -73,56 +80,105 @@ fn split_test_file(content: &str) -> TestFile {
         .map_or(false, |s| s == "no_fs");
     let content = rest;
 
-    if let Some(pos) = content.find(NEWLINE_DELIM_NEWLINE) {
-        let (input, rest) = content.split_at(pos + 1); // include trailing newline before delimiter
-        let expected = &rest[DELIM.len() + 1..]; // skip "===\n"
-        let trimmed = expected.trim();
+    // Find all section delimiters
+    let mut sections = Vec::new();
+    let mut search_start = 0;
 
-        // Check if expected output starts with "ERROR:" prefix
-        let (is_error_substring, final_expected) =
-            if let Some(stripped) = trimmed.strip_prefix(ERROR_PREFIX) {
-                (true, stripped.trim())
-            } else {
-                (false, trimmed)
-            };
+    while let Some(pos) = content[search_start..].find("\n===") {
+        let abs_pos = search_start + pos;
+        // Check what comes after "==="
+        let after_delim = &content[abs_pos + 4..]; // skip "\n==="
 
-        TestFile {
-            input,
-            expected: Some(final_expected),
-            no_fs,
-            is_error_substring,
-        }
-    } else if let Some(pos) = content.find(NEWLINE_DELIM) {
-        // === at end of file with no trailing newline
-        let (input, rest) = content.split_at(pos + 1);
-        let expected = &rest[DELIM.len()..];
-        let trimmed = expected.trim();
+        // Extract the label (text between === and the next newline)
+        let label_end = after_delim.find('\n').unwrap_or(after_delim.len());
+        let label = after_delim[..label_end].trim();
 
-        // Check if expected output starts with "ERROR:" prefix
-        let (is_error_substring, final_expected) =
-            if let Some(stripped) = trimmed.strip_prefix(ERROR_PREFIX) {
-                (true, stripped.trim())
-            } else {
-                (false, trimmed)
-            };
+        sections.push((abs_pos, label));
+        search_start = abs_pos + 4 + label_end;
+    }
 
-        TestFile {
-            input,
-            expected: if final_expected.is_empty() {
-                None
-            } else {
-                Some(final_expected)
+    // If no sections found, the entire content is input
+    if sections.is_empty() {
+        return TestFile {
+            input: content,
+            expectations: TestExpectations {
+                out: None,
+                warn: None,
+                error: None,
             },
             no_fs,
-            is_error_substring,
+        };
+    }
+
+    // First section starts at input, ends at first delimiter
+    let input = &content[..sections[0].0 + 1]; // include trailing newline before ===
+
+    // Parse sections
+    let mut out = None;
+    let mut warn = None;
+    let mut error = None;
+
+    for (i, (pos, label)) in sections.iter().enumerate() {
+        // Content starts after "\n=== label\n"
+        let label_line_start = pos + 4; // skip "\n==="
+        let label_line_end = content[label_line_start..]
+            .find('\n')
+            .map(|p| label_line_start + p)
+            .unwrap_or(content.len());
+        let content_start = if label_line_end < content.len() {
+            label_line_end + 1 // skip the newline after label
+        } else {
+            label_line_end
+        };
+
+        // Content ends at next section or EOF
+        let content_end = sections
+            .get(i + 1)
+            .map(|(next_pos, _)| *next_pos + 1) // include trailing newline
+            .unwrap_or(content.len());
+
+        let section_content = &content[content_start..content_end];
+        let trimmed = section_content.trim();
+
+        match *label {
+            "out" => {
+                out = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                };
+            }
+            "warn" => {
+                warn = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                };
+            }
+            "error" => {
+                error = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                };
+            }
+            "" => {
+                // Bare === without label
+                panic!("bare '===' is no longer valid; use '=== out', '=== warn', or '=== error'");
+            }
+            other => {
+                panic!(
+                    "unknown section label '{}'; valid labels are 'out', 'warn', 'error'",
+                    other
+                );
+            }
         }
-    } else {
-        TestFile {
-            input: content,
-            expected: None,
-            no_fs,
-            is_error_substring: false,
-        }
+    }
+
+    TestFile {
+        input,
+        expectations: TestExpectations { out, warn, error },
+        no_fs,
     }
 }
 
@@ -153,10 +209,10 @@ fn test_valid_corpus() {
         // For expected output comparison, use parse_expression (single expr).
         match parse(test.input) {
             Ok(_) => {
-                // Single-section files (no `===`) are parse-only tests: verifying that
+                // Single-section files (no `=== out`) are parse-only tests: verifying that
                 // the file parses without error is sufficient. The corpus README documents
                 // this convention. Skip AST comparison when no expected section is present.
-                let expected_output = match test.expected {
+                let expected_output = match test.expectations.out {
                     Some(e) => e,
                     None => continue,
                 };
@@ -217,12 +273,12 @@ fn test_invalid_corpus() {
 
         let test = split_test_file(&content);
 
-        let expected_substr = match test.expected {
+        let expected_substr = match test.expectations.out {
             Some(e) => e,
             None => {
                 failed.push((
                     relative_path.to_path_buf(),
-                    "invalid corpus test file missing expected error substring after ==="
+                    "invalid corpus test file missing expected error substring after === out"
                         .to_string(),
                 ));
                 continue;
@@ -236,19 +292,12 @@ fn test_invalid_corpus() {
             )),
             Err(e) => {
                 let error_msg = format!("{}", e);
-                // Both ERROR: prefix and non-prefix tests use substring matching.
-                // The is_error_substring field is available for future extensions.
                 if !error_msg.contains(expected_substr) {
-                    let match_type = if test.is_error_substring {
-                        "expected substring (ERROR: prefix)"
-                    } else {
-                        "expected substring"
-                    };
                     failed.push((
                         relative_path.to_path_buf(),
                         format!(
-                            "Error message mismatch\n--- {} ---\n{}\n--- actual error ---\n{}",
-                            match_type, expected_substr, error_msg
+                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                            expected_substr, error_msg
                         ),
                     ));
                 }
@@ -287,6 +336,7 @@ fn test_corpus_structure() {
         "tests/corpus/eval/type_system",
         "tests/corpus/eval/letrec",
         "tests/corpus/eval/underscore",
+        "tests/corpus/eval/documents",
         // Invalid corpus
         "tests/corpus/invalid/pipeline",
         "tests/corpus/invalid/semantic_errors",
@@ -301,6 +351,9 @@ fn test_corpus_structure() {
         "tests/corpus/valid/parser_mechanisms",
         "tests/corpus/valid/simple",
         "tests/corpus/valid/special_forms",
+        // Typecheck warnings corpus — one file per warning category
+        "tests/corpus/typecheck",
+        "tests/corpus/typecheck/warnings",
     ];
 
     for dir in &required_dirs {
@@ -346,6 +399,40 @@ fn test_corpus_structure() {
         errors_count,
         EVAL_ERRORS_MIN
     );
+
+    // No valid/ file may contain a `=== warn` section.
+    // The test_valid_corpus runner only calls parse() and never calls typecheck_source(),
+    // so warn sections in valid/ files look like assertions but enforce nothing.
+    // Typecheck tests belong in tests/corpus/eval/ where the runner checks warnings.
+    let valid_dir = manifest_dir.join("tests/corpus/valid");
+    let valid_files = find_test_files(&valid_dir);
+    let mut warn_violations: Vec<String> = Vec::new();
+    for test_file in &valid_files {
+        let content = fs::read_to_string(test_file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+        if content.contains("\n=== warn") {
+            let relative = test_file
+                .strip_prefix(&manifest_dir)
+                .unwrap_or(test_file)
+                .display()
+                .to_string();
+            warn_violations.push(relative);
+        }
+    }
+    if !warn_violations.is_empty() {
+        eprintln!(
+            "\n{} valid/ corpus file(s) contain === warn sections:",
+            warn_violations.len()
+        );
+        for path in &warn_violations {
+            eprintln!("  - {}", path);
+        }
+        panic!(
+            "valid/ corpus files must not have === warn sections \
+             (valid/ runner never calls typecheck_source; \
+             put typecheck tests in eval/ instead)"
+        );
+    }
 }
 
 #[test]
@@ -386,32 +473,118 @@ fn test_eval_corpus() {
 
                 let test = split_test_file(&content);
 
-                let expected_output = match test.expected {
-                    Some(e) => e,
-                    None => {
-                        failed.push((
-                            relative_path.to_path_buf(),
-                            "eval corpus test file missing expected output after ===".to_string(),
-                        ));
-                        continue;
-                    }
-                };
+                // === out and === error are mutually exclusive (contradictory eval outcome).
+                if test.expectations.out.is_some() && test.expectations.error.is_some() {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        "test file has both === out and === error sections (contradictory: \
+                         === out implies eval success, === error implies eval failure)"
+                            .to_string(),
+                    ));
+                    continue;
+                }
 
+                // --- Channel 1: eval (=== out / === error) ---
                 match eval_source(test.input) {
                     Ok(actual) => {
-                        if actual.trim() != expected_output {
+                        if let Some(expected_error) = test.expectations.error {
+                            // Expected failure but eval succeeded.
                             failed.push((
                                 relative_path.to_path_buf(),
                                 format!(
-                                    "eval output mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
-                                    expected_output,
+                                    "expected eval failure (=== error), but eval succeeded\n\
+                                     --- expected error substring ---\n{}\n\
+                                     --- actual output ---\n{}",
+                                    expected_error,
                                     actual.trim()
                                 ),
                             ));
+                        } else if let Some(expected_output) = test.expectations.out {
+                            // === out present: assert exact output match.
+                            if actual.trim() != expected_output {
+                                failed.push((
+                                    relative_path.to_path_buf(),
+                                    format!(
+                                        "eval output mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
+                                        expected_output,
+                                        actual.trim()
+                                    ),
+                                ));
+                            }
                         }
+                        // === out absent and === error absent: run-only test; no output assertion.
                     }
                     Err(e) => {
-                        failed.push((relative_path.to_path_buf(), format!("eval error: {e}")));
+                        if let Some(expected_error) = test.expectations.error {
+                            // === error present: check message contains expected substring and
+                            // includes an [EXXX] error code.
+                            let error_msg = format!("{}", e);
+                            if !error_msg.contains(expected_error) {
+                                failed.push((
+                                    relative_path.to_path_buf(),
+                                    format!(
+                                        "eval error mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                                        expected_error, error_msg
+                                    ),
+                                ));
+                            }
+                            if !has_error_code_prefix(&error_msg) {
+                                failed.push((
+                                    relative_path.to_path_buf(),
+                                    format!(
+                                        "actual error missing [EXXX] error code prefix\n--- actual error ---\n{}",
+                                        error_msg
+                                    ),
+                                ));
+                            }
+                        } else {
+                            // === error absent: eval must succeed.
+                            failed.push((
+                                relative_path.to_path_buf(),
+                                format!("unexpected eval error (add === error section or fix the bug):\n{e}"),
+                            ));
+                        }
+                    }
+                }
+
+                // --- Channel 2: typecheck (=== warn) — runs independently of eval outcome ---
+                match test.expectations.warn {
+                    Some(expected_warnings) => {
+                        // === warn present: typecheck must produce warnings matching the substring.
+                        match typecheck_source(test.input) {
+                            Ok(()) => {
+                                failed.push((
+                                    relative_path.to_path_buf(),
+                                    format!(
+                                        "typecheck warning mismatch\n--- expected warnings ---\n{}\n--- actual ---\nno warnings (typecheck succeeded)",
+                                        expected_warnings
+                                    ),
+                                ));
+                            }
+                            Err(type_errors) => {
+                                if !type_errors.contains(expected_warnings) {
+                                    failed.push((
+                                        relative_path.to_path_buf(),
+                                        format!(
+                                            "typecheck warning mismatch\n--- expected warnings substring ---\n{}\n--- actual warnings ---\n{}",
+                                            expected_warnings, type_errors
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // === warn absent: assert zero type warnings.
+                        if let Err(type_errors) = typecheck_source(test.input) {
+                            failed.push((
+                                relative_path.to_path_buf(),
+                                format!(
+                                    "typecheck produced unexpected warnings (add === warn section or fix the warning):\n{}",
+                                    type_errors
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -454,12 +627,12 @@ fn test_eval_error_corpus() {
 
         let test = split_test_file(&content);
 
-        let expected_substr = match test.expected {
+        let expected_substr = match test.expectations.out {
             Some(e) => e,
             None => {
                 failed.push((
                     relative_path.to_path_buf(),
-                    "eval error corpus test file missing expected error substring after ==="
+                    "eval error corpus test file missing expected error substring after === out"
                         .to_string(),
                 ));
                 continue;
@@ -500,7 +673,7 @@ fn test_eval_error_corpus() {
         // What would be needed for span assertions:
         // 1. Extend the test file format to carry span expectations, e.g.:
         //      [call $+ 1]
-        //      ===
+        //      === out
         //      [E005] arity mismatch
         //      SPAN: 1:1-1:13
         //
@@ -531,20 +704,12 @@ fn test_eval_error_corpus() {
             }
             Err(e) => {
                 let error_msg = format!("{}", e);
-                // Both ERROR: prefix and non-prefix tests use substring matching.
-                // The is_error_substring field is available for future extensions
-                // (e.g., exact error code validation, span checking).
                 if !error_msg.contains(expected_substr) {
-                    let match_type = if test.is_error_substring {
-                        "expected substring (ERROR: prefix)"
-                    } else {
-                        "expected substring"
-                    };
                     failed.push((
                         relative_path.to_path_buf(),
                         format!(
-                            "Error message mismatch\n--- {} ---\n{}\n--- actual error ---\n{}",
-                            match_type, expected_substr, error_msg
+                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                            expected_substr, error_msg
                         ),
                     ));
                 }
@@ -725,7 +890,7 @@ fn test_typecheck_corpus() {
 ///
 /// Each `.llt-eval` file in this directory must:
 /// 1. Contain LLT source that **fails** type checking (i.e. `typecheck_source()` returns `Err`).
-/// 2. Have an `===` section with an expected error substring.
+/// 2. Have a `=== out` section with an expected error substring.
 ///
 /// Unlike `test_typecheck_error_corpus` (which targets `tests/corpus/invalid/type_errors/`),
 /// this runner exercises type errors in the eval corpus directory. Files may use stdlib
@@ -756,12 +921,12 @@ fn test_typecheck_error_corpus_eval() {
 
         let test = split_test_file(&content);
 
-        let expected_substr = match test.expected {
+        let expected_substr = match test.expectations.out {
             Some(e) => e,
             None => {
                 failed.push((
                     relative_path.to_path_buf(),
-                    "type error corpus test file missing expected error substring after ==="
+                    "type error corpus test file missing expected error substring after === out"
                         .to_string(),
                 ));
                 continue;
@@ -799,6 +964,133 @@ fn test_typecheck_error_corpus_eval() {
     }
 }
 
+/// Typecheck warnings corpus runner — validates that each `.llt-eval` file in
+/// `tests/corpus/typecheck/warnings/` both evaluates successfully AND produces the expected
+/// type warning via `typecheck_source`.
+///
+/// Each file must have:
+/// - `=== out` — the expected `eval_source` output string.
+/// - `=== warn` — a substring that must appear in the `typecheck_source` error message.
+///
+/// This corpus seeds one test per distinct warning category (type_mismatch,
+/// constraint_not_satisfied, record_field_missing, function_arity) so that regressions in
+/// the type checker's diagnostic output are caught end-to-end.
+#[test]
+fn test_typecheck_warnings_corpus() {
+    let corpus_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/typecheck/warnings");
+
+    let test_files = find_test_files(&corpus_dir);
+    assert!(
+        !test_files.is_empty(),
+        "No test files found in tests/corpus/typecheck/warnings/ — \
+         seed files are required (type_mismatch.llt-eval, constraint_not_satisfied.llt-eval, \
+         record_field_missing.llt-eval, function_arity.llt-eval)"
+    );
+
+    // Large stack for stdlib Rc<Environment> drop chain (same rationale as test_eval_corpus).
+    let test_files_clone = test_files.clone();
+    let result = std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024) // 512MB
+        .spawn(move || {
+            let mut failed = Vec::new();
+
+            for test_file in &test_files_clone {
+                let content = fs::read_to_string(test_file)
+                    .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+
+                let relative_path = test_file
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap_or(test_file);
+
+                let test = split_test_file(&content);
+
+                // Both === out and === warn are required in this corpus.
+                let expected_out = match test.expectations.out {
+                    Some(e) => e,
+                    None => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            "typecheck/warnings corpus test missing === out section".to_string(),
+                        ));
+                        continue;
+                    }
+                };
+                let expected_warn = match test.expectations.warn {
+                    Some(e) => e,
+                    None => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            "typecheck/warnings corpus test missing === warn section".to_string(),
+                        ));
+                        continue;
+                    }
+                };
+
+                // 1. Eval must succeed.
+                match eval_source(test.input) {
+                    Ok(actual) => {
+                        if actual.trim() != expected_out {
+                            failed.push((
+                                relative_path.to_path_buf(),
+                                format!(
+                                    "eval output mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
+                                    expected_out,
+                                    actual.trim()
+                                ),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            format!("eval error (expected success): {e}"),
+                        ));
+                        continue;
+                    }
+                }
+
+                // 2. Typecheck must produce a warning containing the expected substring.
+                match typecheck_source(test.input) {
+                    Ok(()) => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            format!(
+                                "typecheck warning missing\n--- expected warning substring ---\n{}\n--- actual ---\nno warnings (typecheck succeeded)",
+                                expected_warn
+                            ),
+                        ));
+                    }
+                    Err(type_errors) => {
+                        if !type_errors.contains(expected_warn) {
+                            failed.push((
+                                relative_path.to_path_buf(),
+                                format!(
+                                    "typecheck warning mismatch\n--- expected substring ---\n{}\n--- actual warnings ---\n{}",
+                                    expected_warn,
+                                    type_errors
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            failed
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+
+    if !result.is_empty() {
+        eprintln!("\n{} typecheck/warnings test(s) failed:", result.len());
+        for (path, error) in &result {
+            eprintln!("  - {}: {}", path.display(), error);
+        }
+        panic!("Typecheck warnings corpus tests failed");
+    }
+}
+
 /// Type error corpus runner — validates that all files in `tests/corpus/invalid/type_errors/`
 /// fail type checking with the expected error substring.
 ///
@@ -833,12 +1125,12 @@ fn test_typecheck_error_corpus() {
 
         let test = split_test_file(&content);
 
-        let expected_substr = match test.expected {
+        let expected_substr = match test.expectations.out {
             Some(e) => e,
             None => {
                 failed.push((
                     relative_path.to_path_buf(),
-                    "type error corpus test file missing expected error substring after ==="
+                    "type error corpus test file missing expected error substring after === out"
                         .to_string(),
                 ));
                 continue;
@@ -883,19 +1175,19 @@ fn test_typecheck_error_corpus() {
 
 #[test]
 fn test_split_test_file_no_fs_directive() {
-    let content = "# no_fs\n[call $include \"file.llt\"]\n===\nfilesystem access is disabled";
+    let content = "# no_fs\n[call $include \"file.llt\"]\n=== out\nfilesystem access is disabled";
     let test = split_test_file(content);
     assert_eq!(test.input, "[call $include \"file.llt\"]\n");
-    assert_eq!(test.expected, Some("filesystem access is disabled"));
+    assert_eq!(test.expectations.out, Some("filesystem access is disabled"));
     assert!(test.no_fs, "no_fs directive should be detected");
 }
 
 #[test]
 fn test_split_test_file_no_fs_substring_false_positive() {
-    let content = "# testing no_fs filesystem semantics\n[x: 1]\n===\n[\"x\": 1]";
+    let content = "# testing no_fs filesystem semantics\n[x: 1]\n=== out\n[\"x\": 1]";
     let test = split_test_file(content);
     assert_eq!(test.input, "[x: 1]\n");
-    assert_eq!(test.expected, Some("[\"x\": 1]"));
+    assert_eq!(test.expectations.out, Some("[\"x\": 1]"));
     assert!(
         !test.no_fs,
         "no_fs should NOT be set for substring match 'no_fs'"
@@ -904,10 +1196,10 @@ fn test_split_test_file_no_fs_substring_false_positive() {
 
 #[test]
 fn test_split_test_file_no_fs_prefix_false_positive() {
-    let content = "# no_fs_path\n[x: 1]\n===\n[\"x\": 1]";
+    let content = "# no_fs_path\n[x: 1]\n=== out\n[\"x\": 1]";
     let test = split_test_file(content);
     assert_eq!(test.input, "[x: 1]\n");
-    assert_eq!(test.expected, Some("[\"x\": 1]"));
+    assert_eq!(test.expectations.out, Some("[\"x\": 1]"));
     assert!(
         !test.no_fs,
         "no_fs should NOT be set for token 'no_fs_path'"
@@ -916,19 +1208,19 @@ fn test_split_test_file_no_fs_prefix_false_positive() {
 
 #[test]
 fn test_split_test_file_no_directive() {
-    let content = "[x: 1 y: 2]\n===\n[\"x\": 1  \"y\": 2]";
+    let content = "[x: 1 y: 2]\n=== out\n[\"x\": 1  \"y\": 2]";
     let test = split_test_file(content);
     assert_eq!(test.input, "[x: 1 y: 2]\n");
-    assert_eq!(test.expected, Some("[\"x\": 1  \"y\": 2]"));
+    assert_eq!(test.expectations.out, Some("[\"x\": 1  \"y\": 2]"));
     assert!(!test.no_fs, "no_fs should default to false");
 }
 
 #[test]
 fn test_split_test_file_eof_without_trailing_newline() {
-    let content = "[x: 1]\n===[\"x\": 1]";
+    let content = "[x: 1]\n=== out\n[\"x\": 1]";
     let test = split_test_file(content);
     assert_eq!(test.input, "[x: 1]\n");
-    assert_eq!(test.expected, Some("[\"x\": 1]"));
+    assert_eq!(test.expectations.out, Some("[\"x\": 1]"));
     assert!(!test.no_fs);
 }
 
@@ -937,36 +1229,37 @@ fn test_split_test_file_missing_delimiter() {
     let content = "[x: 1]";
     let test = split_test_file(content);
     assert_eq!(test.input, "[x: 1]");
-    assert_eq!(test.expected, None);
+    assert_eq!(test.expectations.out, None);
     assert!(!test.no_fs);
 }
 
 #[test]
 fn test_split_test_file_delimiter_in_expected() {
-    let content = "[x: 1]\n===\n[\"x\": 1]  # comment with === in it";
+    let content = "[x: 1]\n=== out\n[\"x\": 1]  # comment with === in it";
     let test = split_test_file(content);
     assert_eq!(test.input, "[x: 1]\n");
-    assert_eq!(test.expected, Some("[\"x\": 1]  # comment with === in it"));
+    assert_eq!(
+        test.expectations.out,
+        Some("[\"x\": 1]  # comment with === in it")
+    );
     assert!(!test.no_fs);
 }
 
 #[test]
-fn test_split_test_file_error_prefix() {
-    let content = "[call $error \"boom\"]\n===\nERROR: [E024]";
+fn test_split_test_file_error_section() {
+    let content = "[call $error \"boom\"]\n=== error\n[E024]";
     let test = split_test_file(content);
     assert_eq!(test.input, "[call $error \"boom\"]\n");
-    assert_eq!(test.expected, Some("[E024]"));
-    assert!(test.is_error_substring, "ERROR: prefix should be detected");
+    assert_eq!(test.expectations.error, Some("[E024]"));
     assert!(!test.no_fs);
 }
 
 #[test]
-fn test_split_test_file_error_prefix_with_whitespace() {
-    let content = "[call $error \"boom\"]\n===\n  ERROR:   [E024] something  ";
+fn test_split_test_file_warn_section() {
+    let content = "[x: 1]\n=== warn\ndeprecated feature used";
     let test = split_test_file(content);
-    assert_eq!(test.input, "[call $error \"boom\"]\n");
-    assert_eq!(test.expected, Some("[E024] something"));
-    assert!(test.is_error_substring, "ERROR: prefix should be detected");
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expectations.warn, Some("deprecated feature used"));
 }
 
 #[test]
@@ -974,21 +1267,25 @@ fn test_split_test_file_empty_content() {
     let content = "";
     let test = split_test_file(content);
     assert_eq!(test.input, "");
-    assert_eq!(test.expected, None);
+    assert_eq!(test.expectations.out, None);
     assert!(!test.no_fs);
-    assert!(!test.is_error_substring);
 }
 
 #[test]
-fn test_split_test_file_whitespace_around_delimiter() {
-    // Delimiter must be exactly "\n===\n" or "\n===" (no surrounding whitespace).
-    // If there's whitespace, the delimiter is not recognized.
-    let content = "[x: 1]  \n  ===  \n  [\"x\": 1]  ";
+fn test_split_test_file_multiple_sections() {
+    let content = "[x: 1]\n=== out\n[\"x\": 1]\n=== warn\ndeprecated\n=== error\nshould not reach";
     let test = split_test_file(content);
-    // Since "  ===" doesn't match "\n===", the entire content is treated as input
-    assert_eq!(test.input, "[x: 1]  \n  ===  \n  [\"x\": 1]  ");
-    assert_eq!(test.expected, None);
-    assert!(!test.no_fs);
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expectations.out, Some("[\"x\": 1]"));
+    assert_eq!(test.expectations.warn, Some("deprecated"));
+    assert_eq!(test.expectations.error, Some("should not reach"));
+}
+
+#[test]
+#[should_panic(expected = "bare '===' is no longer valid")]
+fn test_split_test_file_bare_delimiter_panics() {
+    let content = "[x: 1]\n===\n[\"x\": 1]";
+    let _ = split_test_file(content);
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,7 +1382,7 @@ fn test_has_error_code_prefix_invalid_letters_in_number() {
 ///   [x: 1]
 ///   ---
 ///   %.x
-///   ===
+///   === out
 ///   1
 ///   ---           ← THIS IS THE BUG: should be in the input section
 ///   some_more
@@ -1096,17 +1393,23 @@ fn test_has_error_code_prefix_invalid_letters_in_number() {
 /// Note: `---` is legitimate in the input section (it is valid LLT syntax) and is
 /// allowed there. Only a bare `---` in the EXPECTED section is flagged.
 fn check_no_llt_separator_in_expected(content: &str, path: &std::path::Path) -> Option<String> {
-    // Use the FIRST \n===\n as the split point (same as split_test_file logic)
-    const DELIM: &str = "\n===\n";
-    if let Some(pos) = content.find(DELIM) {
-        let expected_section = &content[pos + DELIM.len()..];
+    // Find the first labeled section delimiter (=== out / === warn / === error).
+    // All corpus files now use the labeled format; bare `===` is a parse error.
+    if let Some(pos) = content.find("\n=== ") {
+        // Skip past the label line (e.g. "=== out\n") to reach the section content.
+        let after_label = &content[pos + 5..];
+        let label_end = after_label
+            .find('\n')
+            .map(|p| p + 1)
+            .unwrap_or(after_label.len());
+        let expected_section = &after_label[label_end..];
         // Check each line in the expected section for a bare "---"
         for line in expected_section.lines() {
             if line == "---" {
                 return Some(format!(
-                    "{}: bare `---` on its own line found in expected section (after `===`). \
+                    "{}: bare `---` on its own line found in expected section (after the first `===` section). \
                      `---` is valid LLT document separator syntax and belongs in the input \
-                     section (before `===`). If this `---` is intentional expected output, \
+                     section (before the first `===` section). If this `---` is intentional expected output, \
                      it cannot be on its own line — it must be part of a longer expected string.",
                     path.display()
                 ));
@@ -1153,8 +1456,8 @@ fn test_no_llt_separator_in_expected_section() {
 /// Unit tests for check_no_llt_separator_in_expected().
 #[test]
 fn test_check_no_llt_separator_dash_in_input_allowed() {
-    // `---` in the INPUT section (before `===`) is valid LLT — allowed.
-    let content = "[x: 1]\n---\n%.x\n===\n1\n";
+    // `---` in the INPUT section (before `=== out`) is valid LLT — allowed.
+    let content = "[x: 1]\n---\n%.x\n=== out\n1\n";
     let path = std::path::Path::new("dummy.llt-eval");
     assert!(
         check_no_llt_separator_in_expected(content, path).is_none(),
@@ -1164,8 +1467,8 @@ fn test_check_no_llt_separator_dash_in_input_allowed() {
 
 #[test]
 fn test_check_no_llt_separator_dash_in_expected_flagged() {
-    // `---` in the EXPECTED section (after `===`) is almost certainly a mistake.
-    let content = "[x: 1]\n===\n1\n---\nmore stuff\n";
+    // `---` in the EXPECTED section (after `=== out`) is almost certainly a mistake.
+    let content = "[x: 1]\n=== out\n1\n---\nmore stuff\n";
     let path = std::path::Path::new("dummy.llt-eval");
     let result = check_no_llt_separator_in_expected(content, path);
     assert!(
@@ -1180,19 +1483,19 @@ fn test_check_no_llt_separator_dash_in_expected_flagged() {
 
 #[test]
 fn test_check_no_llt_separator_no_delim_skipped() {
-    // Files without `===` have no expected section — nothing to flag.
+    // Files without `=== ` labeled sections have no expected section — nothing to flag.
     let content = "[x: 1]\n---\n%.x\n";
     let path = std::path::Path::new("dummy.llt-eval");
     assert!(
         check_no_llt_separator_in_expected(content, path).is_none(),
-        "Files without === delimiter have no expected section"
+        "Files without labeled section delimiter have no expected section"
     );
 }
 
 #[test]
 fn test_check_no_llt_separator_partial_dash_allowed() {
     // `----` or `--- more text` in the expected section is NOT a bare `---` — allowed.
-    let content = "[x: 1]\n===\nexpected output\n---- not a separator\n";
+    let content = "[x: 1]\n=== out\nexpected output\n---- not a separator\n";
     let path = std::path::Path::new("dummy.llt-eval");
     assert!(
         check_no_llt_separator_in_expected(content, path).is_none(),
@@ -1200,28 +1503,9 @@ fn test_check_no_llt_separator_partial_dash_allowed() {
     );
 }
 
-/// Documents the behavior of split_test_file() when `===` appears in expected output.
-///
-/// split_test_file splits at the FIRST `\n===\n` in the file (between input and expected).
-/// Any subsequent `===` lines in the expected section are passed through verbatim — they are
-/// NOT treated as additional delimiters. This means `===` can safely appear in expected output.
-///
-/// The practical limitation is that `\n===\n` in the INPUT section would cause a premature
-/// split before the intended delimiter. In practice this never arises since LLT source doesn't
-/// contain bare `===` lines.
 #[test]
-fn test_split_test_file_delimiter_limitation_documented() {
-    // Construct a file where the expected output itself contains `===` on its own line.
-    // split_test_file splits only at the FIRST `\n===\n` delimiter.
-    let content = "expr\n===\nexpected line 1\n===\nexpected line 2\n";
-    let parsed = split_test_file(content);
-    // split_test_file splits only at the FIRST `===`. The second `===` is passed through
-    // verbatim as part of the expected output — it is NOT treated as a second delimiter.
-    // So the full expected output is "expected line 1\n===\nexpected line 2".
-    assert_eq!(
-        parsed.expected,
-        Some("expected line 1\n===\nexpected line 2"),
-        "split_test_file keeps the second `===` as literal expected content; \
-         if any corpus test had `===` as the ONLY content expected, no special handling is needed"
-    );
+fn test_split_test_file_unknown_label_panics() {
+    let content = "[x: 1]\n=== unknown\nsome content";
+    let result = std::panic::catch_unwind(|| split_test_file(content));
+    assert!(result.is_err(), "Unknown section label should panic");
 }

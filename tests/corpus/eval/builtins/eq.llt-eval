@@ -1,4 +1,4 @@
 # = : equality comparison
 [= 5 5]
-===
+=== out
 Bool(true)

@@ -173,6 +173,7 @@ pub(crate) struct GuardedValidateData {
     /// Materialized/Failed at guard-push time (these states can't produce new Overlays).
     pub(crate) ctx: Option<Rc<EvalContext>>,
     pub(crate) depth: usize,
+    pub(crate) blame_label: Option<crate::error::BlameLabel>,
 }
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -681,7 +682,9 @@ pub(crate) fn force_step(
             mat_span: Some(call_span),
             depth: func_depth,
         }
-    } else if let Some((inner, expected, field_path, guard_span)) = thunk.take_guarded() {
+    } else if let Some((inner, expected, field_path, guard_span, blame_label)) =
+        thunk.take_guarded()
+    {
         if depth > MAX_EVAL_DEPTH {
             let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
             let err = attach_materialization_context(
@@ -695,6 +698,7 @@ pub(crate) fn force_step(
                 expected,
                 field_path: Box::new(field_path),
                 guard_span,
+                blame_label,
             });
             return Action::Continue(Err(err));
         }
@@ -726,6 +730,7 @@ pub(crate) fn force_step(
             mat_span,
             ctx: guard_ctx,
             depth,
+            blame_label,
         })));
         Action::Materialize {
             thunk: Rc::clone(&inner),
@@ -1006,6 +1011,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 mat_span,
                 ctx: guard_ctx,
                 depth: guard_depth,
+                blame_label,
             } = *data;
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
@@ -1097,6 +1103,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             if inner.span != inner_span {
                                 err = err.with_secondary_span(inner.span, "value produced here");
                             }
+                            // Attach blame label if present (gradual typing boundary)
+                            if let Some(ref label) = blame_label {
+                                err = err.with_blame(label.clone());
+                            }
                             let err = decorate(err.into());
                             thunk.cache_failure(&err);
                             Action::Continue(Err(err))
@@ -1126,6 +1136,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             if inner.span != inner_span {
                                 err = err.with_secondary_span(inner.span, "value produced here");
                             }
+                            // Attach blame label if present (gradual typing boundary)
+                            if let Some(ref label) = blame_label {
+                                err = err.with_blame(label.clone());
+                            }
                             let err = decorate(err.into());
                             thunk.cache_failure(&err);
                             Action::Continue(Err(err))
@@ -1143,6 +1157,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             expected,
                             field_path,
                             guard_span,
+                            blame_label,
                         });
                     }
                     Action::Continue(Err(e))

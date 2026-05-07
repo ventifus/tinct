@@ -4,5 +4,5 @@
 ]]
 
 [bad-macro 1]
-===
-ERROR: invalid AST dict
+=== out
+invalid AST dict

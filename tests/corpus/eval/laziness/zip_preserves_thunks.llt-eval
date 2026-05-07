@@ -4,5 +4,7 @@
   [zip
     [seq 1 [seq [error "first seq tail"] []]]
     [seq 10 [seq [error "second seq tail"] []]]]]]
-===
+=== out
 Dict({0: Dict({0: Int(1), 1: Int(10)})})
+=== warn
+undefined variable: zip at 3:4-3:7

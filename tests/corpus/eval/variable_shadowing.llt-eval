@@ -6,5 +6,5 @@
   inner: [x: 20  result: $x]
   outer_x: $x
 ]
-===
+=== out
 Dict({"x": Int(10), "inner": Dict({"x": Int(20), "result": Int(20)}), "outer_x": Int(10)})

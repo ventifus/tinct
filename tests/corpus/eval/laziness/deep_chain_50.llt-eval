@@ -4,5 +4,56 @@
 [a1: 1  a2: [+ a1 1]  a3: [+ a2 1]  a4: [+ a3 1]  a5: [+ a4 1]  a6: [+ a5 1]  a7: [+ a6 1]  a8: [+ a7 1]  a9: [+ a8 1]  a10: [+ a9 1]  a11: [+ a10 1]  a12: [+ a11 1]  a13: [+ a12 1]  a14: [+ a13 1]  a15: [+ a14 1]  a16: [+ a15 1]  a17: [+ a16 1]  a18: [+ a17 1]  a19: [+ a18 1]  a20: [+ a19 1]  a21: [+ a20 1]  a22: [+ a21 1]  a23: [+ a22 1]  a24: [+ a23 1]  a25: [+ a24 1]  a26: [+ a25 1]  a27: [+ a26 1]  a28: [+ a27 1]  a29: [+ a28 1]  a30: [+ a29 1]  a31: [+ a30 1]  a32: [+ a31 1]  a33: [+ a32 1]  a34: [+ a33 1]  a35: [+ a34 1]  a36: [+ a35 1]  a37: [+ a36 1]  a38: [+ a37 1]  a39: [+ a38 1]  a40: [+ a39 1]  a41: [+ a40 1]  a42: [+ a41 1]  a43: [+ a42 1]  a44: [+ a43 1]  a45: [+ a44 1]  a46: [+ a45 1]  a47: [+ a46 1]  a48: [+ a47 1]  a49: [+ a48 1]  a50: [+ a49 1]  result: a50]
 ---
 %.result
-===
+=== out
 Int(50)
+=== warn
+type _t0 does not satisfy constraint Numeric at 3:13-3:21
+type _t1 does not satisfy constraint Numeric at 3:27-3:35
+type _t2 does not satisfy constraint Numeric at 3:41-3:49
+type _t3 does not satisfy constraint Numeric at 3:55-3:63
+type _t4 does not satisfy constraint Numeric at 3:69-3:77
+type _t5 does not satisfy constraint Numeric at 3:83-3:91
+type _t6 does not satisfy constraint Numeric at 3:97-3:105
+type _t7 does not satisfy constraint Numeric at 3:111-3:119
+type _t8 does not satisfy constraint Numeric at 3:126-3:134
+type _t9 does not satisfy constraint Numeric at 3:141-3:150
+type _t10 does not satisfy constraint Numeric at 3:157-3:166
+type _t11 does not satisfy constraint Numeric at 3:173-3:182
+type _t12 does not satisfy constraint Numeric at 3:189-3:198
+type _t13 does not satisfy constraint Numeric at 3:205-3:214
+type _t14 does not satisfy constraint Numeric at 3:221-3:230
+type _t15 does not satisfy constraint Numeric at 3:237-3:246
+type _t16 does not satisfy constraint Numeric at 3:253-3:262
+type _t17 does not satisfy constraint Numeric at 3:269-3:278
+type _t18 does not satisfy constraint Numeric at 3:285-3:294
+type _t19 does not satisfy constraint Numeric at 3:301-3:310
+type _t20 does not satisfy constraint Numeric at 3:317-3:326
+type _t21 does not satisfy constraint Numeric at 3:333-3:342
+type _t22 does not satisfy constraint Numeric at 3:349-3:358
+type _t23 does not satisfy constraint Numeric at 3:365-3:374
+type _t24 does not satisfy constraint Numeric at 3:381-3:390
+type _t25 does not satisfy constraint Numeric at 3:397-3:406
+type _t26 does not satisfy constraint Numeric at 3:413-3:422
+type _t27 does not satisfy constraint Numeric at 3:429-3:438
+type _t28 does not satisfy constraint Numeric at 3:445-3:454
+type _t29 does not satisfy constraint Numeric at 3:461-3:470
+type _t30 does not satisfy constraint Numeric at 3:477-3:486
+type _t31 does not satisfy constraint Numeric at 3:493-3:502
+type _t32 does not satisfy constraint Numeric at 3:509-3:518
+type _t33 does not satisfy constraint Numeric at 3:525-3:534
+type _t34 does not satisfy constraint Numeric at 3:541-3:550
+type _t35 does not satisfy constraint Numeric at 3:557-3:566
+type _t36 does not satisfy constraint Numeric at 3:573-3:582
+type _t37 does not satisfy constraint Numeric at 3:589-3:598
+type _t38 does not satisfy constraint Numeric at 3:605-3:614
+type _t39 does not satisfy constraint Numeric at 3:621-3:630
+type _t40 does not satisfy constraint Numeric at 3:637-3:646
+type _t41 does not satisfy constraint Numeric at 3:653-3:662
+type _t42 does not satisfy constraint Numeric at 3:669-3:678
+type _t43 does not satisfy constraint Numeric at 3:685-3:694
+type _t44 does not satisfy constraint Numeric at 3:701-3:710
+type _t45 does not satisfy constraint Numeric at 3:717-3:726
+type _t46 does not satisfy constraint Numeric at 3:733-3:742
+type _t47 does not satisfy constraint Numeric at 3:749-3:758
+type _t48 does not satisfy constraint Numeric at 3:765-3:774
+field 'result' not found in [] at 5:1-5:9

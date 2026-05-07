@@ -4,5 +4,5 @@
 # This test verifies the parse-level AST is correctly formed
 # (before desugaring applies any transformation).
 [f [g _]]
-===
+=== out
 [f [g _]]

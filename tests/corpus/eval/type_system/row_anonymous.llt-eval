@@ -1,4 +1,4 @@
 # Row polymorphism - anonymous rest (...)
 [f: [fn [r@[name: String ...]] r.name]  result: [call $f [name: "Alice"  age: 30]]]
-===
+=== out
 Dict({"f": Function(r), "result": String("Alice")})

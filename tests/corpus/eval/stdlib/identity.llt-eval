@@ -1,4 +1,6 @@
 # identity: returns argument unchanged
 [identity 42]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: identity at 1:2-1:10

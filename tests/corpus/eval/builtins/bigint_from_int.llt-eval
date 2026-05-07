@@ -1,4 +1,6 @@
 # big-int: create from integer
 [big-int 42]
-===
+=== out
 BigInt(42)
+=== warn
+undefined variable: big-int at 1:2-1:9

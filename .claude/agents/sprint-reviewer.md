@@ -57,7 +57,7 @@ Work through each topic below sequentially. For each topic:
 
 **LLT Best Practices**: Laziness preserved (PendingBuiltin, unevaluated thunks), span propagation (definition-site + materialization-site + stack frames), spec consistency, dict letrec, document isolation, container builds (`just` only).
 
-**Testing**: Tests for real behavior? Consistent structure? False positive/negative checks? Corpus tests in right directory? `===` delimiter? Coverage gaps?
+**Testing**: Tests for real behavior? Consistent structure? False positive/negative checks? Corpus tests in right directory? Labeled `=== out`/`=== warn`/`=== error` sections (bare `===` is a parse error)? Coverage gaps? Overly-loose assertions?
 
 **Security**: User-supplied data validated ($include paths, from-json)? Path traversal risks? Depth limit covers all recursive paths? DoS vectors?
 

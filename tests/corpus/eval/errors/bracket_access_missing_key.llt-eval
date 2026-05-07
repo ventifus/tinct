@@ -1,5 +1,5 @@
 [data: [a: 1]]
 
 data.b
-===
+=== out
 [E001] key not found: b (available keys: a)

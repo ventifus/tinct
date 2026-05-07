@@ -307,13 +307,34 @@ Update the relevant `doc/*.md` chapters:
 
 #### 5e: Create Implementation Sprints
 
-For each phase in the **Phased Adoption** section, create a sprint in TODO.md:
+For each phase in the **Phased Adoption** section, create a sprint in TODO.md. These sprints must be **design-complete** — fully ready for `/sprint` to execute without any additional design work.
 
-1. **Sprint slug**: `[whatif-name]-phase[N]` (e.g., `string-interp-phase1`)
-2. **Description sentence**: reference the relevant `doc/*.md` chapter and section
-3. **Tasks**: derive from the phase description — source file changes, type/struct changes, test coverage, migration steps. ≤12 tasks per sprint.
-4. **Dependencies**: add `**Depends on:** \`other-slug\`` between phases if they must be ordered
-5. Place new `###` sprint headings under the relevant `##` design section in TODO.md. If no matching `##` section exists, create one. If the work spans multiple feature areas, pick the best-fit `##` section or create a new one. Never place sprint headings at `##` level.
+**Sprint readiness checklist** — every sprint must have all of the following before creation:
+- [ ] All Design/Decide/Research items for this phase are checked off (from Steps 5a–5d above)
+- [ ] The relevant `doc/*.md` sections are written in present tense (from Step 5d)
+- [ ] At least one "Spec chapters:" reference pointing to the doc/*.md section(s) that cover this sprint's scope
+- [ ] Implementation tasks derived from the finalized `doc/*.md` content (not from the whatif proposal's phase description — the spec is the authoritative source)
+- [ ] Explicit test tasks: at least one task for corpus tests (per feature, in `tests/corpus/eval/`), one for error cases, and one for edge cases. Mention the labeled-section format (`=== out`, `=== warn`, `=== error`) so agents produce correct test files.
+- [ ] No vague task language: "design", "consider", "decide", "possibly", "if needed" — every task is a concrete implementation step
+
+**Sprint format**:
+
+```
+### sprint-slug: Short Description
+
+See doc/[chapter].md §[Section Name]. **Spec chapters:** `doc/[chapter].md §Section`.
+
+- [ ] Task description (`src/file.rs`, `src/other.rs`)
+- [ ] Task description (`src/file.rs:approx-line`)
+- [ ] Tests: corpus tests in `tests/corpus/eval/[feature]/` using `=== out`/`=== warn`/`=== error` sections; unit tests in `src/[file].rs`
+**Depends on:** `other-slug`
+```
+
+**Sizing**: target ~25 non-nit, non-doc implementation tasks per sprint. If a phase exceeds 30 implementation tasks, split into two sprints with clear boundaries and explicit `**Depends on:**` between them. If a phase has fewer than 10 implementation tasks, combine it with an adjacent phase unless a hard dependency prevents it.
+
+**Ordering constraint**: place `**Depends on:**` between phase sprints explicitly. The `/cycle` grooming step will not merge sprints that have explicit dependency links — these phase boundaries are intentional.
+
+Place new `###` sprint headings under the relevant `##` design section in TODO.md. If no matching `##` section exists, create one. Never place sprint headings at `##` level.
 
 #### 5f: Update Index
 

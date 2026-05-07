@@ -1,4 +1,6 @@
 # join on empty dict returns empty string
 [join ", " []]
-===
+=== out
 String("")
+=== warn
+cannot unify Seq[?] with [] at 1:12-1:14

@@ -2,5 +2,5 @@
 # any value passes, including non-callables. Callability is
 # enforced only at the call site (NotAFunction), not at annotation.
 [@Fn 42]
-===
+=== out
 Int(42)

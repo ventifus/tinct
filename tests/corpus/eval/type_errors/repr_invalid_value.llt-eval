@@ -1,4 +1,4 @@
 # repr: with invalid value should cause type error
 [@[type: Int  repr: "u128"] 42]
-===
+=== out
 invalid repr

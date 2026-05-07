@@ -2,5 +2,5 @@
 # Both `config.host` and `config .host` parse as dot access.
 # This test verifies the standard dot-access case.
 [x: config.host]
-===
+=== out
 ["x": config.host]

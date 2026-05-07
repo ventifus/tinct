@@ -6,5 +6,5 @@
 [@[good: Int  bad: Int] [good: 42  bad: [error "should not fire"]]]
 ---
 %.good
-===
+=== out
 Int(42)

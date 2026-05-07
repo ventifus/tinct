@@ -1,4 +1,6 @@
 # all? - some elements match
 [all? [fn [x] [> x 5]] [1 3 7 2]]
-===
+=== out
 Bool(false)
+=== warn
+undefined variable: all? at 1:2-1:6

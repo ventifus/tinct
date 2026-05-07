@@ -1,5 +1,7 @@
 [match [user: [name: "alice"]]
     [user: [name: n]]  n
     _                   "unknown"]
-===
+=== out
 String("alice")
+=== warn
+undefined variable: n at 2:24-2:25

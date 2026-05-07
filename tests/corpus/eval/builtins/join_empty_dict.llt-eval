@@ -1,4 +1,6 @@
 # join on Dict: no separator applied when only one element (Dict path, singleton)
 [join "-" ["only"]]
-===
+=== out
 String("only")
+=== warn
+cannot unify Seq[?] with [0: "only"] at 1:11-1:19

@@ -2,5 +2,5 @@
   f: [fn [a@[default: 1] b] [+ a b]]
   result: [f b: 10]
 ]
-===
+=== out
 Dict({"f": Function(a, b), "result": Int(11)})

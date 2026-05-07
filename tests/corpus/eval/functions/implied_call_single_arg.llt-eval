@@ -1,4 +1,4 @@
 # Implied call with single argument: [negate 5] calls negate(5)
 [negate: [fn [n] [- 0 n]]  result: [negate 5]]
-===
+=== out
 Dict({"negate": Function(n), "result": Int(-5)})

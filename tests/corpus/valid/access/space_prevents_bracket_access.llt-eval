@@ -1,5 +1,5 @@
 # A bracket expression starting with a space after [ is a call form.
 # [user "field"] calls the function `user` with the argument "field".
 [user "field"]
-===
+=== out
 [user "field"]

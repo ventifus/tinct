@@ -1,4 +1,4 @@
 # Two $_ placeholders in same expression - both reference the same parameter
 [call [+ _ _] 5]
-===
+=== out
 Int(10)

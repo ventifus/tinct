@@ -1,4 +1,4 @@
 # Structural TypeAssert: closed record with exact fields passes
 [@[name: String] [name: "hello"]]
-===
+=== out
 Dict({"name": String("hello")})

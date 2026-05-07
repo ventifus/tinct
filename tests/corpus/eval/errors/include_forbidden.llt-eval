@@ -1,4 +1,4 @@
 # no_fs
 [include "some_file.llt"]
-===
+=== out
 [E042] filesystem access is disabled

@@ -3,5 +3,5 @@
 # Bracket access syntax has been removed; [a [0]] is always a call form.
 [a
 [0]]
-===
+=== out
 [a [0]]

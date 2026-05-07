@@ -1,4 +1,6 @@
 # cycle: infinite cycling through dict entries, take 5 elements
 [collect [take 5 [cycle ["a" "b"]]]]
-===
+=== out
 Dict({0: String("a"), 1: String("b"), 2: String("a"), 3: String("b"), 4: String("a")})
+=== warn
+cannot unify Seq[?] with [0: "a" 1: "b"] at 1:25-1:34

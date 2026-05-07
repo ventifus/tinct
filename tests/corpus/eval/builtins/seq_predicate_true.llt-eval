@@ -1,4 +1,4 @@
 # seq?: returns true for seq
 [seq? [seq 1 []]]
-===
+=== out
 Bool(true)

@@ -1,4 +1,4 @@
 # Interpolated strings - basic variable interpolation
 i"Hello $name"
-===
+=== out
 [call str "Hello " name]

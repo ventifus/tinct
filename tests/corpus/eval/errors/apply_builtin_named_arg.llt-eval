@@ -3,5 +3,5 @@
 # calls reject_named and produces E023 (NamedArgRejected).
 # Note: $+ is a Tinct wrapper function, not the raw builtin.
 [apply builtin-add [named: 1]]
-===
+=== out
 [E023]

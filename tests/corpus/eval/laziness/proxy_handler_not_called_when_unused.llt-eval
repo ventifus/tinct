@@ -2,5 +2,5 @@
   d: [x: [proxy [fn [k] [error "handler should not be called"]]]  y: 42]
   result: d.y
 ]
-===
+=== out
 Dict({"d": Dict({"x": Proxy, "y": Int(42)}), "result": Int(42)})

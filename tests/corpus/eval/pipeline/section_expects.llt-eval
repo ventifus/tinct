@@ -2,5 +2,5 @@
 [input: 42]
 --- expects: @[type: Dict]
 [doubled: [* %.input 2]]
-===
+=== out
 Dict({"doubled": Int(84)})

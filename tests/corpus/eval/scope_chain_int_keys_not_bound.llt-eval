@@ -2,5 +2,7 @@
 [1 2 3]
 ---
 [get 0 %]
-===
+=== out
 Int(1)
+=== warn
+undefined variable: get at 3:2-3:5

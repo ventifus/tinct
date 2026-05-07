@@ -136,8 +136,9 @@ unique decomposition (L1) and subject reduction (L2). □
 
 ### Phase 1: Proof sketch + core proptest suite
 
-- Add confluence proof sketch to `doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties` (Part B, documentation only)
-- Add `tests/proptest_thunk.rs` covering claims 1 and 3 (PendingBuiltin ≡ Unevaluated, memoization) for strict-arg builtins (Part A, ~200 lines + proptest dep)
+**Status 2026-05-07:** Phase 1 is partially complete.
+- ✓ Confluence proof sketch added to `doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties` (Part B complete)
+- **Open:** `tests/proptest_thunk.rs` covering claims 1 and 3 (PendingBuiltin ≡ Unevaluated, memoization) for strict-arg builtins (Part A, ~200 lines + `proptest` dev-dep)
 
 ### Phase 2: PendingCall + error memoization proptest
 

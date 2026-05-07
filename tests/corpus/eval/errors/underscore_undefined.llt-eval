@@ -1,5 +1,5 @@
 # Bare $_ without desugaring context (not bound, not in DIRECT position)
 # Should produce undefined variable error
 _
-===
+=== out
 [E002] undefined variable: _

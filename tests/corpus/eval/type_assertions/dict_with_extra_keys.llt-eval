@@ -1,4 +1,4 @@
 # Open record allows extra keys beyond specified fields
 [@[x: Int  ...] [x: 1  y: 2  z: 3]]
-===
+=== out
 Dict({"x": Int(1), "y": Int(2), "z": Int(3)})

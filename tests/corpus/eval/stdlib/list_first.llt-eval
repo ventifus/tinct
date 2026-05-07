@@ -1,4 +1,6 @@
 # first: get first element
 [first [10 20 30]]
-===
+=== out
 Int(10)
+=== warn
+undefined variable: first at 1:2-1:7

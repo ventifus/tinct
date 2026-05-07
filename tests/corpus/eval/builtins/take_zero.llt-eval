@@ -1,4 +1,6 @@
 # take: taking zero elements returns empty dict
 [collect [take 0 [range 0]]]
-===
+=== out
 Dict({})
+=== warn
+arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 1:18-1:27

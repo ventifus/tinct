@@ -38,7 +38,7 @@ After the review may have added new findings to TODO.md, groom the backlog befor
 4. **Dedup**: merge duplicate or overlapping items that may have been added by different review agents
 5. **Right-size sprints**: target approximately 25 non-nit, non-doc (implementation) items per sprint.
    - **Split** any sprint exceeding 30 non-nit items into smaller sprints (use new kebab-case slugs)
-   - **Combine** adjacent sprints of compatible concern when individually under 10 non-nit items — merge them into one sprint
+   - **Combine** adjacent sprints of compatible concern when individually under 10 non-nit items — merge them into one sprint. **Exception**: do NOT merge sprints that have explicit `**Depends on:**` links — these phase boundaries are intentional (typically created by `/rnd accept`). Do not merge a sprint with its dependency or its dependent.
    - **Tack** nit and doc items onto the first available impl sprint rather than creating separate nit-only or doc-only sprints
    - **Heading level convention**: `##` headings are design/feature sections — they hold design, decide, and research items. `###` headings are implementation sprints. When splitting, creating, or combining, always produce `###` sprint headings nested under the appropriate `##` design section. If no matching `##` section exists, create one. Never place implementation tasks directly under a `##` heading — if you find any, wrap them in a new `###` sub-sprint.
 

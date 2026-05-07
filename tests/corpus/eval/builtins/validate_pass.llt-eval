@@ -1,4 +1,6 @@
 # validate: valid input passes through unchanged
 [validate [type: "Int" min: 1 max: 100] 42]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: validate at 1:2-1:10

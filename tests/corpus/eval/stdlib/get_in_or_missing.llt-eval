@@ -1,4 +1,6 @@
 # get-in-or: returns default when intermediate key missing
 [get-in-or [a: [b: 42]] ["a" "c" "d"] "fallback"]
-===
+=== out
 String("fallback")
+=== warn
+undefined variable: get-in-or at 1:2-1:11

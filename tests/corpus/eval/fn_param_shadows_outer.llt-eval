@@ -6,5 +6,5 @@
   x: 42
   result: [call [fn [x] [* $x 2]] 10]
 ]
-===
+=== out
 Dict({"x": Int(42), "result": Int(20)})

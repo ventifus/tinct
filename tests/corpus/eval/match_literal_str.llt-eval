@@ -2,5 +2,5 @@
     "world"   "greeting-world"
     "hello"   "greeting-hello"
     _         "unknown"]
-===
+=== out
 String("greeting-hello")

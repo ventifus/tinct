@@ -3,5 +3,5 @@
 # The open record annotation `...` allows extra fields (here: age: 30).
 [f: [fn [r@[name: String ...]] [merge r [id: 1]]]
  result: [f [name: "alice"  age: 30]]]
-===
+=== out
 Dict({"f": Function(r), "result": Dict({"name": String("alice"), "age": Int(30), "id": Int(1)})})

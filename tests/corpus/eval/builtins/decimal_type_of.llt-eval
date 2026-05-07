@@ -1,4 +1,6 @@
 # type-of Decimal returns "Decimal"
 [type-of [decimal "1.5"]]
-===
+=== out
 String("Decimal")
+=== warn
+undefined variable: decimal at 1:11-1:18

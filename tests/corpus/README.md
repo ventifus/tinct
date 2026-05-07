@@ -20,23 +20,25 @@ tests/corpus/
 │   ├── pipeline/             # Pipeline syntax errors
 │   ├── semantic_errors/      # Type errors, constraint violations
 │   └── syntax_errors/        # Bracket mismatches, unexpected tokens, depth exceeded
-└── eval/                     # Evaluator tests (input === expected eval output or error)
-    ├── access/               # Access chain evaluation
-    ├── builtins/             # Builtin function evaluation (44+ builtins)
-    ├── cross_feature/        # Multi-feature interaction tests
-    ├── errors/               # Expected eval failures (must include [EXXX] error code)
-    ├── functions/            # Function definition, call, closure tests
-    ├── laziness/             # Laziness proof tests (use $error in unused positions)
-    ├── letrec/               # Letrec scoping and forward references
-    ├── pipeline/             # Pipeline (%) evaluation tests
-    ├── regressions/          # Regression tests for specific bugs
-    ├── stdlib/               # Stdlib function evaluation (51+ stdlib functions)
-    ├── type_assertions/      # TypeAssert structural contract evaluation
-    ├── type_errors/          # Type checker error tests (expected typecheck failures)
-    ├── type_system/          # Type system evaluation tests (row polymorphism, etc.)
-    ├── typeassert/           # TypeAssert edge cases and desugaring
-    ├── typecheck/            # Type inference and checking tests (expected success)
-    └── underscore/           # $_ implicit lambda desugaring
+├── eval/                     # Evaluator tests (input + labeled output sections)
+│   ├── access/               # Access chain evaluation
+│   ├── builtins/             # Builtin function evaluation (44+ builtins)
+│   ├── cross_feature/        # Multi-feature interaction tests
+│   ├── errors/               # Expected eval failures (must include [EXXX] error code)
+│   ├── functions/            # Function definition, call, closure tests
+│   ├── laziness/             # Laziness proof tests (use $error in unused positions)
+│   ├── letrec/               # Letrec scoping and forward references
+│   ├── pipeline/             # Pipeline (%) evaluation tests
+│   ├── regressions/          # Regression tests for specific bugs
+│   ├── stdlib/               # Stdlib function evaluation (51+ stdlib functions)
+│   ├── type_assertions/      # TypeAssert structural contract evaluation
+│   ├── type_errors/          # Type checker error tests (expected typecheck failures)
+│   ├── type_system/          # Type system evaluation tests (row polymorphism, etc.)
+│   ├── typeassert/           # TypeAssert edge cases and desugaring
+│   ├── typecheck/            # Type inference and checking tests (expected success)
+│   └── underscore/           # $_ implicit lambda desugaring
+└── typecheck/                # Typecheck-specific tests
+    └── warnings/             # One seed test per type warning category
 ```
 
 ### Required Directories
@@ -75,80 +77,104 @@ echo "[unclosed: bracket" > tests/corpus/invalid/syntax_errors/my_error.llt-eval
 ## Test File Format
 
 All corpus test files use the `.llt-eval` extension. Test files contain LLT source code
-and use the `===` delimiter to separate input from expected output.
+followed by zero or more **labeled sections** that define expected outputs.
 
-**Format:** `input\n===\nexpected_output`
+**Section format:** `\n=== label\nexpected_content`
 
-(`===` is used instead of `---` because `---` is a valid LLT document separator.)
+Valid labels: `out`, `warn`, `error`. Bare `===` (without a label) is a **parse error** —
+the test runner panics with a clear message. (`===` is used instead of `---` because `---`
+is a valid LLT document separator.)
+
+See `doc/12-tooling.md §Corpus Test Format` for the authoritative reference.
+
+### Labeled Sections
+
+| Section | Content | Assertion |
+|---------|---------|-----------|
+| `=== out` | Expected eval output | Exact match against `eval_source()` result |
+| `=== warn` | Expected type warning substring | `typecheck_source()` must return `Err` containing this |
+| `=== error` | Expected error substring | Eval must fail; error message must contain this |
+
+**Zero-warning enforcement:** A test file with **no `=== warn` section** asserts that
+`typecheck_source()` returns `Ok(())` — zero type warnings. If a file produces unexpected
+type warnings, either add an explicit `=== warn` section or fix the type checker issue.
+
+Sections may appear in any order. Multiple sections are allowed.
 
 ### Valid Corpus Tests
 
-For tests in `tests/corpus/valid/`, the expected output is the AST Display format of
-the parsed first expression:
+For tests in `tests/corpus/valid/`, the `=== out` section is the AST Display format:
 
 ```
 [name: Alice age: 30]
-===
+=== out
 ["name": Alice  "age": 30]
 ```
 
-The test runner parses the input and compares `parse_expression(input).node.to_string()`
-against the expected output.
-
 ### Eval Corpus Tests
 
-For tests in `tests/corpus/eval/` (excluding `errors/` and `type_errors/`), the expected
-output is the evaluated result as a string:
+For tests in `tests/corpus/eval/` (excluding `errors/` and `type_errors/`):
 
 ```
 [call $+ 1 2]
-===
+=== out
 3
 ```
 
-The test runner evaluates the input and compares `eval_source(input)` against the expected output.
+A test that produces a known type warning documents it explicitly:
+
+```
+[call $+ "hello" 42]
+=== out
+[E020] arity mismatch
+=== warn
+cannot unify String with Int
+```
 
 ### Error Tests (eval/errors/ and invalid/)
 
-For tests in `tests/corpus/eval/errors/` or `tests/corpus/invalid/`, the expected output
-is an error substring or error code. **All error tests MUST include the error code `[EXXX]`
-to ensure error code stability.**
+**All error tests MUST include the error code `[EXXX]`** to ensure error code stability:
 
 ```
 [call $+ 1 2 3]
-===
+=== out
 [E020] arity mismatch
 ```
 
-Error tests match on substrings, so you can specify just the error code (`[E020]`), or
-include additional message text for clarity. The test runner verifies that the error
-message contains the expected substring.
-
-**Optional `ERROR:` prefix:** You may prefix the expected output with `ERROR:` for clarity,
-but this is not required. Both formats are equivalent:
+The `ERROR:` prefix (legacy format from before labeled sections) is still supported in
+`=== out` for error corpus tests but is not required:
 
 ```
 [call $error "boom"]
-===
+=== out
 ERROR: [E024]
 ```
 
 ### Type Error Tests (eval/type_errors/)
 
-For tests in `tests/corpus/eval/type_errors/`, the expected output is a type error substring.
-These tests verify that `typecheck_source()` fails with the expected error:
-
 ```
 [call $+ "hello" 42]
-===
+=== out
 type mismatch
+```
+
+### Typecheck Warning Tests (typecheck/warnings/)
+
+These tests deliberately trigger type checker warnings:
+
+```
+[f: [fn@String [x@Int] x]]
+=== out
+{"f": <function>}
+=== warn
+cannot unify Int with String
 ```
 
 ### Directives
 
 Test files may include directives on the first line:
 
-- `# no_fs` — Evaluate with filesystem access disabled (`eval_source_with_config(input, no_fs=true)`)
+- `# no_fs` — Evaluate with filesystem access disabled
 
 Directives MUST be on the first line and start with `#`. The directive line is stripped
 before evaluation.
@@ -156,16 +182,16 @@ before evaluation.
 ```
 # no_fs
 [include "file.llt"]
-===
+=== out
 [E042] filesystem access is disabled
 ```
 
-### No Expected Output
+### No Sections
 
-If no `===` delimiter is present, the test only checks that:
+If no `=== ` section is present, the test only checks that:
 - For `valid/` tests: the input parses without error
 - For `invalid/` tests: the input fails to parse
-- For `eval/` tests: this is an error (expected output is required)
+- For `eval/` tests: this is an error (at least `=== out` is required)
 
 ## Running Tests
 

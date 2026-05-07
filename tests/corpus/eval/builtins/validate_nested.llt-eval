@@ -19,5 +19,7 @@
   ]
   result: [validate $schema $data]
 ].result
-===
+=== out
 Dict({"port": Int(8080), "hostname": String("localhost")})
+=== warn
+undefined variable: validate at 19:12-19:20

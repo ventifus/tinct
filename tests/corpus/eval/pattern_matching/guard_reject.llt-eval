@@ -1,5 +1,7 @@
 [match -5
     n@[is: [> n 0]]   "positive"
     _                  "other"]
-===
+=== out
 String("other")
+=== warn
+undefined variable: > at 2:13-2:14

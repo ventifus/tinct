@@ -1,4 +1,4 @@
 # Lazy evaluation: $if does not materialize the unchosen false branch
 [if true 42 [error "should not trigger"]]
-===
+=== out
 Int(42)

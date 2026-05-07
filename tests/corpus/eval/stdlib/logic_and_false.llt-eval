@@ -1,4 +1,6 @@
 # and: first false short-circuits
 [and false true]
-===
+=== out
 Bool(false)
+=== warn
+undefined variable: and at 1:2-1:5

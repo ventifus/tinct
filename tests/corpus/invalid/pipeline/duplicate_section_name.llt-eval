@@ -3,5 +3,5 @@
 [x: 1]
 --- %foo
 [y: 2]
-===
+=== out
 duplicate section name '%foo' in file

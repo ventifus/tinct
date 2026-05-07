@@ -1,5 +1,5 @@
 # Sequential scope shadows previous bindings
 [test: [fn [x] [y: [+ x 1]] [z: [* y 2]] z]]
 [test 5]
-===
+=== out
 Int(12)

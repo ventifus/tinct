@@ -5,5 +5,5 @@
 ]]
 
 [broken 1]
-===
-ERROR: in expansion of `broken`
+=== out
+in expansion of `broken`

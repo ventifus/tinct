@@ -1,4 +1,6 @@
 # try-or: returns default when function errors
 [try-or [fn [] [error "oops"]] "fallback"]
-===
+=== out
 String("fallback")
+=== warn
+undefined variable: try-or at 1:2-1:8

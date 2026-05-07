@@ -3,5 +3,7 @@
 # Distinct from cond_unused_branch_error: tests the false-then-true path,
 # not that an error in a later branch is skipped.
 [cond [[false [error "first branch is false, value must not be forced"]] [true "second"]]]
-===
+=== out
 String("second")
+=== warn
+undefined variable: cond at 4:2-4:6

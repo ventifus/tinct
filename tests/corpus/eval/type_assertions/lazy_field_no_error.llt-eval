@@ -4,5 +4,5 @@
 [@[accessed: Int  unaccessed: Int] [accessed: 42  unaccessed: [error "should not fire"]]]
 ---
 %.accessed
-===
+=== out
 Int(42)

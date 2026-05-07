@@ -6,5 +6,5 @@
   age: 30
   active: true
 ]]
-===
+=== out
 String("{\n  \"name\": \"Alice\",\n  \"age\": 30,\n  \"active\": true\n}")

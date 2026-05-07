@@ -4,5 +4,5 @@
 [data: [1 2 3]]
 ---
 [result: [reduce + 0 [map [fn [x] [* x 2]] %.data]]]
-===
+=== out
 Dict({"result": Int(12)})

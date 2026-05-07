@@ -1,4 +1,4 @@
 # append : append a value to a dict with next integer key
 [ append [0: 10  1: 20] 30]
-===
+=== out
 Dict({0: Int(10), 1: Int(20), 2: Int(30)})

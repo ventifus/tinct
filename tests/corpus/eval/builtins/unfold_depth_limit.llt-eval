@@ -1,4 +1,4 @@
 # unfold: collect 5 elements from unfold sequence (tests lazy depth)
 [collect [take 5 [unfold [fn [n] [$n [+ n 1]]] 0]]]
-===
+=== out
 Dict({0: Int(0), 1: Int(1), 2: Int(2), 3: Int(3), 4: Int(4)})

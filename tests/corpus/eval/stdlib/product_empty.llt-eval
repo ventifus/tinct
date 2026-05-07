@@ -1,3 +1,5 @@
 [product []]
-===
+=== out
 Int(1)
+=== warn
+undefined variable: product at 1:2-1:9

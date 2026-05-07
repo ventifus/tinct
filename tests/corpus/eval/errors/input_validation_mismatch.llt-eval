@@ -1,0 +1,11 @@
+# Test: Pipeline input type mismatch error
+# First document produces an Int
+42
+
+--- %@Dict
+# Second document expects a Dict, but % is Int - should error
+
+%.foo
+
+=== out
+expected Dict, got Int

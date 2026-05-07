@@ -1,3 +1,3 @@
 [class [Equatable a] eq: [Fn@Bool [a a]]]
-===
+=== out
 [class [Equatable a] "eq": [Fn@Bool  [a a]]]

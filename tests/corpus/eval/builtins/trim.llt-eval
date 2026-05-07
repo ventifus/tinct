@@ -1,4 +1,4 @@
 # trim : remove leading and trailing whitespace
 [trim "  hello  "]
-===
+=== out
 String("hello")

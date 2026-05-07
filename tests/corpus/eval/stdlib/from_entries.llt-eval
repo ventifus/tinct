@@ -1,4 +1,6 @@
 # from-entries - reconstruct dict from entries
 [from-entries [entries [a: 1 b: 2]]]
-===
+=== out
 Dict({"a": Int(1), "b": Int(2)})
+=== warn
+undefined variable: from-entries at 1:2-1:14

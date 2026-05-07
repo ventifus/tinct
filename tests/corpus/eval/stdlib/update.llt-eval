@@ -1,4 +1,6 @@
 # update: apply a function to a key's value in a dict
 [update [x: 1] "x" [fn [v] [+ v 10]]]
-===
+=== out
 Dict({"x": Int(11)})
+=== warn
+undefined variable: update at 1:2-1:8

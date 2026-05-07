@@ -4,5 +4,7 @@
   args: [0: 10 1: 20]
   result: [apply f args]
 ]
-===
+=== out
 Dict({"f": Function(x, y), "args": Dict({0: Int(10), 1: Int(20)}), "result": Int(30)})
+=== warn
+arity mismatch: expected 2 arguments, got 1 at 1:1-5:2

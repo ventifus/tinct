@@ -1,4 +1,4 @@
 # map on empty dict returns empty dict
 [map [fn [x] [+ x 1]] []]
-===
+=== out
 Dict({})

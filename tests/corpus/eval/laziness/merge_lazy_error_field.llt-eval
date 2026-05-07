@@ -3,5 +3,5 @@
 [r: [merge [x: [/ 1 0]] [y: 2]]]
 ---
 [result: %.r.y]
-===
+=== out
 Dict({"result": Int(2)})

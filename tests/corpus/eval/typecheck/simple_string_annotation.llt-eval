@@ -1,4 +1,4 @@
 # Simple type annotation: String value passes String assertion
 [@String "hello"]
-===
+=== out
 String("hello")

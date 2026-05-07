@@ -1,5 +1,5 @@
 # Bidirectional typing: literal promotion via subsumption
 # Test that [@String "hello"] evaluates correctly via StringLiteral("hello") <: String
 [@String "hello"]
-===
+=== out
 String("hello")

@@ -1,4 +1,4 @@
 # tail: extract tail, then head of tail
 [head [tail [seq 1 [seq 2 []]]]]
-===
+=== out
 Int(2)

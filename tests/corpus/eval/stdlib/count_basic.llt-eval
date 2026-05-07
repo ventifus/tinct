@@ -1,4 +1,6 @@
 # count: count elements matching pred
 [count [fn [x] [> x 3]] [1 2 3 4 5 6]]
-===
+=== out
 Int(3)
+=== warn
+undefined variable: count at 1:2-1:7

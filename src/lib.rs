@@ -77,7 +77,9 @@ pub use eval::{
 pub use eval_deep::deep_materialize;
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
-pub use builtins::{create_stdlib_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE};
+pub use builtins::{
+    create_root_env, create_stdlib_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
+};
 
 // Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
 #[cfg(feature = "lsp")]
@@ -195,7 +197,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
 /// type checking regressions are caught. The main `eval_source` function treats
 /// type errors as advisory warnings and continues evaluation regardless.
 pub fn typecheck_source(input: &str) -> Result<(), String> {
-    let mut file = parse(input).map_err(|e| format!("{e}"))?;
+    let file = parse(input).map_err(|e| format!("{e}"))?;
+    // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
+    // Expand macros (pre-desugar AST transformation).
+    let expand_result = expand::expand_macros(file, false).map_err(|e| format!("{e}"))?;
+    let mut file = expand_result.file;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
     // Variable resolution pass (Phase 1 of arena allocation strategy).

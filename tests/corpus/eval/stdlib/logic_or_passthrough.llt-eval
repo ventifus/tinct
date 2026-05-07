@@ -1,4 +1,6 @@
 # or: returns first truthy bool value
 [or true false]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: or at 1:2-1:4

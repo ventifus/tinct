@@ -3,5 +3,5 @@
 [config: [value: [@[type: Int  default: 42] "wrong type"]]]
 ---
 %.config.value
-===
+=== out
 Int(42)

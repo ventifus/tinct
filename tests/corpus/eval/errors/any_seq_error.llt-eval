@@ -1,4 +1,4 @@
 # any?: Seq input produces clear error message
 [any? [fn [x] true] [range 0 3]]
-===
+=== out
 [E080] any?: expected Dict, got Seq -- collect the Seq first

@@ -23,7 +23,7 @@
 #     Numeric:     floor
 #     Runtime:     error  try  type-of
 #     Sequences:   seq  head  tail  collect  concat  each  each-key  each-kv
-#     List ops:    rest  cons  reverse  sort
+#     List ops:    rest  cons  reverse  sort  sorted  sorted-by
 #     Predicates:  int?  float?  num?  str?  bool?  null?  dict?  fn?  seq?
 #
 # Naming conventions:
@@ -480,6 +480,19 @@ sort-merge: [fn@Dict [cmp@Fn left@Dict right@Dict]
             [builtin-if [cmp left.0 right.0]
                 [cons left.0 [sort-merge cmp [rest left] right]]
                 [cons right.0 [sort-merge cmp left [rest right]]]]]]]
+
+# Like Python's sorted() — accepts both Seq and Dict; collects a Seq first.
+# Type: (Seq a | Dict Comparable -> Dict Comparable)
+# Example: [sorted [filter [fn [x] [> x 2]] [1 3 2 4]]] => [3 4]
+# Example: [sorted [3 1 2]] => [1 2 3]
+sorted: [fn@Dict [xs]
+    [sort [builtin-if [seq? xs] [collect xs] xs]]]
+
+# Like sorted, with a custom comparator.
+# Type: ((a -> a -> Bool) -> Seq a | Dict a -> Dict a)
+# Example: [sorted-by [fn [a b] [> a b]] [filter [fn [x] [> x 0]] [-1 3 -2 4]]] => [4 3]
+sorted-by: [fn@Dict [cmp@Fn xs]
+    [sort-by cmp [builtin-if [seq? xs] [collect xs] xs]]]
 
 # ============================================================================
 # Universal Collection Operations (preserve keys)

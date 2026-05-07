@@ -1,4 +1,6 @@
 # last: single element list
 [last [42]]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: last at 1:2-1:6

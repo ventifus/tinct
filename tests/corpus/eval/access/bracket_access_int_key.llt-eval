@@ -2,5 +2,7 @@
 [data: [0: "zero"  1: "one"  2: "two"]]
 
 [get 1 data]
-===
+=== out
 String("one")
+=== warn
+undefined variable: get at 3:2-3:5

@@ -1,4 +1,6 @@
 # get-in-or: returns value when path exists
 [get-in-or [a: [b: [c: 42]]] ["a" "b" "c"] 0]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: get-in-or at 1:2-1:11

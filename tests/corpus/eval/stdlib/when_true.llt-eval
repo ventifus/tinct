@@ -1,4 +1,6 @@
 # when: returns body when predicate is true
 [when true 42]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: when at 1:2-1:6

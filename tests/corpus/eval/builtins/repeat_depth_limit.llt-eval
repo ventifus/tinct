@@ -1,4 +1,4 @@
 # repeat: collect 5 elements from infinite repeat (tests lazy depth)
 [collect [take 5 [repeat 42]]]
-===
+=== out
 Dict({0: Int(42), 1: Int(42), 2: Int(42), 3: Int(42), 4: Int(42)})

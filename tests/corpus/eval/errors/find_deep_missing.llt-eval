@@ -3,5 +3,5 @@
 # dot/bracket access errors show. This is a known inconsistency until stdlib
 # paths are updated to pass available_keys to key_not_found().
 [find-deep [a: 1 b: [c: 2]] "missing"]
-===
+=== out
 [E080] key not found: missing

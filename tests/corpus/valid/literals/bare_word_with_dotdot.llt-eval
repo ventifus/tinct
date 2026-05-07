@@ -1,4 +1,4 @@
 # Strings with .. must be quoted in new syntax (bare words cannot contain dots).
 [x: "config..bak"  y: "a..b"]
-===
+=== out
 ["x": "config..bak"  "y": "a..b"]

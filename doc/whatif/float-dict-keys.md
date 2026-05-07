@@ -44,10 +44,9 @@ have these issues.
 
 1. Fractional numeric keys — data keyed by prices, measurements, or
    coordinates cannot use the natural numeric representation.
-2. Sound non-integer numeric equality — `f64` equality is unsound for
-   key lookup; tinct has no numeric type with exact fractional equality.
-3. Decimal arithmetic — the prerequisite for sound fractional keys
-   does not exist in tinct yet.
+2. `Key::Decimal` — the `Decimal` value type (`Value::Decimal`, via
+   `rust_decimal`) is implemented (numeric-decimal sprint, 2026-05-07),
+   but dict keys have not yet been extended to include a `Decimal` variant.
 
 ## What Float Dict Keys Would Provide
 
@@ -244,12 +243,11 @@ serialization is affected.
 
 ## Phased Adoption
 
-### Phase 1: Decimal Type
+### Phase 1: Decimal Type ✓ Complete (2026-05-07)
 
-Add `Decimal` as a new `Value` variant with explicit conversion
-builtins (`decimal`, `to-decimal`). Decimal arithmetic builtins
-(`+`, `-`, `*`, `/` overloads or dedicated decimal versions).
-See `doc/whatif/numeric-types.md` for full design.
+`Value::Decimal(rust_decimal::Decimal)` is implemented (`numeric-decimal`
+sprint). Arithmetic, comparison, and conversion builtins are in place.
+See `doc/whatif/completed/numeric-types.md`.
 
 ### Phase 2: Decimal Keys
 
@@ -267,20 +265,17 @@ without it.
 
 ### Prerequisites
 
-- `Decimal` type (`doc/whatif/numeric-types.md`) — the `d128`
-  representation, conversion builtins, and arithmetic operations.
+- ~~`Decimal` type~~ ✓ Complete — `Value::Decimal` and `rust_decimal` in place
+  (`numeric-decimal` sprint, 2026-05-07).
 - Decision on decimal literal syntax (whether to add `d` suffix or
   require explicit `decimal` construction).
-- `rust_decimal` or `decNumber` crate evaluation for the `d128`
-  implementation.
 
 ### Trigger
 
-- When the `Decimal` type is implemented.
-- When a use case requires associating data with fractional numeric
-  keys (prices, measurements, scientific calibration data).
-- When JSON interop with decimal-heavy data sources (financial APIs,
-  measurement databases) becomes a concrete need.
+**Phase 1 prerequisite is met.** Adopt when a use case requires associating
+data with fractional numeric keys (prices, measurements, scientific
+calibration data) or when JSON interop with decimal-heavy data sources
+becomes a concrete need.
 
 ## References
 

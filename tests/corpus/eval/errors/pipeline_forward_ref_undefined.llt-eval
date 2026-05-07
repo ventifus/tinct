@@ -1,5 +1,5 @@
 # Forward reference to undefined named section should fail
 # The document references %later which is never defined in this file
 %later.x
-===
+=== out
 [E002] undefined variable: %later

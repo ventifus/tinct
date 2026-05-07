@@ -1,4 +1,6 @@
 # validate: range constraints
 [validate [type: "Int" min: 1 max: 65535] 8080]
-===
+=== out
 Int(8080)
+=== warn
+undefined variable: validate at 1:2-1:10

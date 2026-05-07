@@ -6,8 +6,18 @@ What would it take to break the mutual dependency between `src/eval.rs` and `src
 
 ## Current State
 
-`src/eval.rs` and `src/builtins.rs` have a circular dependency:
-- `builtins.rs` imports from `eval.rs`: `materialize`, `eval_call`, `invoke_function`, `EvalContext`, `EvalResult`
+The evaluator and builtins have been split across multiple files but retain a
+circular dependency at the module level:
+
+**Evaluator files:** `src/eval.rs` (core), `src/eval_call.rs`, `src/eval_materialize.rs`,
+`src/eval_access.rs`, `src/eval_deep.rs`
+
+**Builtin files:** `src/builtins.rs` (core registry + I/O + misc),
+`src/builtins_math.rs`, `src/builtins_string.rs`, `src/builtins_seq_prim.rs`,
+`src/builtins_seq_xform.rs`, `src/builtins_seq_gen.rs`, `src/builtins_seq_reduce.rs`
+
+The circular dependency:
+- `builtins*.rs` imports from `eval*.rs`: `materialize`, `eval_call`, `invoke_function`, `EvalContext`, `EvalResult`
 - `eval.rs` imports from `builtins.rs`: `standard_builtins`, `create_root_env`
 
 This is documented in `doc/16-architecture.md §Cross-module coupling` as "safe because dependency is at function-call level, not module init." Safe in Rust — but prevents independent testing of builtins (they require the full evaluator to link) and makes the architecture harder to understand.
@@ -38,23 +48,26 @@ This is documented in `doc/16-architecture.md §Cross-module coupling` as "safe 
 
 ### Approach A: `src/eval_core.rs` interface module (recommended)
 
-Extract the subset of eval.rs that builtins need into a thin `eval_core.rs`:
+Extract the subset of eval that builtins need into a thin `eval_core.rs`:
 
 ```
 src/eval_core.rs:
   - EvalContext
   - EvalResult<T>  
-  - fn materialize(...)
-  - fn invoke_function(...)
+  - fn materialize(...)   (currently in eval_materialize.rs)
+  - fn invoke_function(...)  (currently in eval_call.rs)
   - trait Callable (implemented by Value::Function and Value::Builtin)
 
-src/eval.rs: imports eval_core.rs
-src/builtins.rs: imports eval_core.rs (NOT eval.rs)
+src/eval.rs + eval_call.rs + eval_materialize.rs: import eval_core.rs
+src/builtins.rs + builtins_*.rs: import eval_core.rs (NOT eval_materialize.rs)
 ```
 
-`eval.rs` would import from `builtins.rs` (for `standard_builtins`), but `builtins.rs` would no longer import from `eval.rs` — it imports from `eval_core.rs` which `eval.rs` also imports from. No cycle.
+`eval.rs` would still import from `builtins.rs` (for `standard_builtins`), but
+the builtins cluster would no longer import from the evaluator cluster — they import
+from `eval_core.rs` which both clusters share. No cycle.
 
-**Cost:** Medium. `EvalContext`, `materialize`, `invoke_function` are non-trivial to extract without pulling in most of eval.rs.
+**Cost:** Medium. The split across 5 eval files and 7 builtin files makes the
+audit harder, but the dependency surface is the same narrow set.
 
 ### Approach B: Trait object for eval operations
 

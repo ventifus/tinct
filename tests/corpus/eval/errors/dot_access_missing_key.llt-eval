@@ -4,5 +4,5 @@
 [data: [a: 1  b: 2]]
 
 data.missing
-===
+=== out
 [E001] key not found: missing (available keys: a, b)

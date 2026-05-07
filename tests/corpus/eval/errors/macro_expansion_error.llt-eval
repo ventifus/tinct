@@ -9,5 +9,5 @@
 ]]
 
 [div-zero 42]
-===
-ERROR: division by zero
+=== out
+division by zero

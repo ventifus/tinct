@@ -1,4 +1,4 @@
 # Structural TypeAssert: Int annotation with String value fails
 [@Int "hello"]
-===
+=== out
 [E011] type assertion failed: expected Int, got String

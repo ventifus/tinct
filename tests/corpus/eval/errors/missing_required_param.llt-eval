@@ -2,5 +2,5 @@
 [f: [fn [x y] [+ x y]]]
 
 [f 10]
-===
+=== out
 [E024] missing argument for required parameter 'y'

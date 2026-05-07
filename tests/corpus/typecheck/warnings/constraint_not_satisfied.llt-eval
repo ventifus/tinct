@@ -1,0 +1,10 @@
+# Constraint violation warning: a function body applies $+ to a string argument.
+# The type variable for parameter x is constrained to Numeric (from $+), but "hello"
+# is a String which does not satisfy the Numeric constraint.
+# The type checker reports "does not satisfy constraint Numeric".
+# Eval proceeds — the function body is never invoked so no runtime error occurs.
+[f: [fn [x] [call $+ x "hello"]]]
+=== out
+Dict({"f": Function(x)})
+=== warn
+does not satisfy constraint Numeric

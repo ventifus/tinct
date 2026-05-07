@@ -2,5 +2,5 @@
 [apply-fn: [fn [f x] [f x]]]
 
 [apply-fn [fn [x] x] 42]
-===
+=== out
 Int(42)

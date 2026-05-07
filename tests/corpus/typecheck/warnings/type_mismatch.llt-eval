@@ -1,0 +1,10 @@
+# Type mismatch warning: function with @String return annotation but @Int param.
+# The body $x has type Int (from the @Int parameter annotation), but the @String
+# return annotation declares the return type should be String. The type checker
+# reports "cannot unify Int with String". Eval proceeds regardless (type errors are
+# advisory) and returns the function definition without calling it.
+[f: [fn@String [x@Int] x]]
+=== out
+Dict({"f": Function(x)})
+=== warn
+cannot unify String with Int

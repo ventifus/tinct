@@ -3,5 +3,5 @@
 # Note: filter with an infinite seq and always-false predicate loops indefinitely
 # (the internal loop skips without depth accumulation). Using a bounded input here.
 [head [filter [fn [n] false] [take 100 [range 0]]]]
-===
+=== out
 [E034]

@@ -1,5 +1,7 @@
 # compose: multi-step chain (compose f g)(x) = f(g(x))
 # double then add 10
 [call [compose [fn [x] [+ x 10]] [fn [x] [* x 2]]] 5]
-===
+=== out
 Int(20)
+=== warn
+undefined variable: compose at 2:8-2:15

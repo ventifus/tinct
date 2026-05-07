@@ -16,10 +16,10 @@
 #   4. Read response via $slurp
 #   5. Parse response to extract body
 
-fetch: [fn [cap url]
+[fetch: [fn [cap url]
   # TODO(io-phase1): requires $write builtin to send HTTP request
   [error "fetch: requires $write builtin from io-phase1 (not yet implemented)"]
-]
+]]
 
 # When io-phase1 is complete, fetch will be implemented as:
 #

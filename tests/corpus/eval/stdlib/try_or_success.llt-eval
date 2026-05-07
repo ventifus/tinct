@@ -1,4 +1,6 @@
 # try-or: successful computation returns result
 [try-or [fn [] 42] 0]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: try-or at 1:2-1:8

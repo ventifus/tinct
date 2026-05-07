@@ -1,4 +1,6 @@
 # rest on Seq returns O(1) tail
 [collect [take 3 [rest [iterate [fn [x] [+ x 1]] 0]]]]
-===
+=== out
 Dict({0: Int(1), 1: Int(2), 2: Int(3)})
+=== warn
+cannot unify [...] with Seq[?] at 1:18-1:53

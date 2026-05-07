@@ -4,7 +4,9 @@ This directory contains file-based tests for the Tinct LSP server.
 
 ## Status
 
-Stub — no tests yet. See TODO.md (test-tooling section) for tracking.
+**Superseded for diagnostics:** The labeled-section approach in `tests/corpus/` (using `=== out`, `=== warn`, `=== error` sections) is the primary testing mechanism for diagnostics. LSP diagnostics are validated via the same corpus files that drive eval tests.
+
+**Active for LSP-specific features:** This directory is retained for future LSP-specific tests that have no eval-corpus equivalent: hover content, completion suggestions, go-to-definition targets. See TODO.md (`lsp-include-prelude` sprint) for tracking.
 
 ## Format
 

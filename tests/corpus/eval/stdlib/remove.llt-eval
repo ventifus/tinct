@@ -1,4 +1,6 @@
 # remove: remove a key from a dict
 [remove [a: 1 b: 2 c: 3] "b"]
-===
+=== out
 Dict({"a": Int(1), "c": Int(3)})
+=== warn
+undefined variable: remove at 1:2-1:8

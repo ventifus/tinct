@@ -2,5 +2,5 @@
 # narrow expects DirCap, but we pass a Handle
 
 [call $narrow [call $open [call $dir-cap "."] "test.llt" "r"] "subdir"]
-===
+=== out
 cannot unify DirCap with Handle

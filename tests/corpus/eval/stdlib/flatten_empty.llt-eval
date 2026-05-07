@@ -1,4 +1,6 @@
 # flatten on empty dict returns empty dict
 [flatten []]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: flatten at 1:2-1:9

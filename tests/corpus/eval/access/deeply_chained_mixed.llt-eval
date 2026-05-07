@@ -13,5 +13,5 @@
   ]
   result: data.level1.level2.level3.level4.level5
 ]
-===
+=== out
 Dict({"data": Dict({"level1": Dict({"level2": ...})}), "result": String("deep value")})

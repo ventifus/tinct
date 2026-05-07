@@ -1,4 +1,4 @@
 # tail: error on non-Seq
 [tail 42]
-===
+=== out
 [E010] tail: expected Seq, got Int

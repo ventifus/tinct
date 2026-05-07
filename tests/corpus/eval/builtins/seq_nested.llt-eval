@@ -1,4 +1,4 @@
 # seq: nested values in seq
 [collect [seq [x: 1] [seq [y: 2] []]]]
-===
+=== out
 Dict({0: Dict({"x": Int(1)}), 1: Dict({"y": Int(2)})})

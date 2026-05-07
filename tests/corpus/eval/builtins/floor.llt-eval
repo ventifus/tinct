@@ -1,4 +1,4 @@
 # floor : floor a float to integer
 [floor 3.7]
-===
+=== out
 Int(3)

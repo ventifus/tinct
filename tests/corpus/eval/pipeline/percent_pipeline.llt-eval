@@ -1,5 +1,5 @@
 [x: 1]
 ---
 [prev_x: %.x]
-===
+=== out
 Dict({"prev_x": Int(1)})

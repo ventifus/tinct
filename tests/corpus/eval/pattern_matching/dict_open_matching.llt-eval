@@ -2,5 +2,7 @@
 [match [ok: 42  extra: "data"]
     [ok: v ...]  v
     _             0]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: v at 2:18-2:19

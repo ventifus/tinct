@@ -1,4 +1,4 @@
 # / : float division
 [/ 10 4]
-===
+=== out
 Float(2.5)

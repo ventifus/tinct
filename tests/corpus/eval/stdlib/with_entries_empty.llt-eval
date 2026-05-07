@@ -1,4 +1,6 @@
 # with-entries: empty dict returns empty dict
 [with-entries [] [fn [e] [key: e.key  value: e.value]]]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: with-entries at 1:2-1:14

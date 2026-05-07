@@ -73,6 +73,42 @@
     [sort-by last-name _]]
 ```
 
+### Library Module (Private Helpers, Public API)
+
+Within a single document, each dict expression's bindings become the parent scope for the next expression, but **only the last expression is returned**. Earlier dicts are private: visible inside the document but not exported to callers.
+
+```tinct
+# Private helpers — in scope below, not exported
+[
+    clamp-impl: [fn@Number [lo@Number hi@Number x@Number]
+        [if [< x lo] lo [if [> x hi] hi x]]]
+
+    lerp-impl: [fn@Number [a@Number b@Number t@Number]
+        [+ a [* [- b a] t]]]
+]
+
+# Public API — only this dict is returned by include / create_stdlib_env
+[
+    clamp: [fn@Number [lo@Number hi@Number x@Number]
+        [clamp-impl lo hi x]]
+
+    lerp: [fn@Number [a@Number b@Number t@Number]
+        [clamp-impl 0.0 1.0 [lerp-impl a b t]]]
+]
+```
+
+Callers see `clamp` and `lerp`; `clamp-impl` and `lerp-impl` are unreachable. This is the pattern used throughout the standard library to keep `-impl`, `-step`, and `-check` helpers out of the public namespace.
+
+The same principle applies when merging an included file into scope via sequential expressions:
+
+```tinct
+[include "lib/math.llt"]   # math helpers become parent scope
+
+[
+    result: [lerp 0 100 0.5]   # lerp visible via parent — math internals are not
+]
+```
+
 ---
 
 ## Comparison with Other Languages

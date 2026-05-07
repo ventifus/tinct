@@ -5,5 +5,7 @@
 # The [call $identity $_.age] wrapper scopes the WRAP-CALL to the inner call,
 # producing a lambda that $map receives as its function argument.
 [map [identity _.age] [0: [age: 30] 1: [age: 25]]]
-===
+=== out
 Dict({0: Int(30), 1: Int(25)})
+=== warn
+undefined variable: identity at 6:7-6:15

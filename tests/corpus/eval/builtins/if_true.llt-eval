@@ -1,4 +1,4 @@
 # if : selects true branch
 [if true 1 2]
-===
+=== out
 Int(1)

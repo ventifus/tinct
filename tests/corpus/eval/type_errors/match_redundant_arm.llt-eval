@@ -2,5 +2,5 @@
     Int     "int"
     String  "str"
     Int     "int-again"]
-===
+=== out
 unreachable match arm

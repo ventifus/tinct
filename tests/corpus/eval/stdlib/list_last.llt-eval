@@ -1,4 +1,6 @@
 # last: get last element
 [last [10 20 30]]
-===
+=== out
 Int(30)
+=== warn
+undefined variable: last at 1:2-1:6

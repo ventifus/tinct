@@ -66,9 +66,9 @@ You are a parser, grammar, and specification expert for the tinct language (file
 
 ## Testing Patterns
 
-- Corpus tests: `.txt` files with `===` delimiter between input and expected output
-- Valid inputs go in `tests/corpus/valid/<category>/`
-- Invalid inputs go in `tests/corpus/invalid/<category>/`
+- Corpus tests use labeled section delimiters — bare `===` is a parse error (runner panics). Use `=== out` / `=== warn` / `=== error` sections.
+- Valid parse tests use `.llt-eval` extension and live in `tests/corpus/valid/<category>/`; each requires `=== out` + expected AST Display output
+- Invalid parse tests use `.llt-eval` extension and live in `tests/corpus/invalid/<category>/`; each requires `=== error` + expected error substring including `[EXXX]` error code
 - Parser unit tests are in `src/parser.rs` (test module at bottom)
 - Always test edge cases: whitespace variations, interaction with access chains, keyword-like bare words
 

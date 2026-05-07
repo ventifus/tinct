@@ -1,4 +1,4 @@
 # head: error on empty seq
 [head []]
-===
+=== out
 [E034] head on empty collection

@@ -5,5 +5,5 @@
 # handler invocation (e.g., handler not callable), not to errors raised inside the body.
 [p: [proxy [fn [key] [error "proxy-error"]]]
  result: p.test]
-===
-ERROR: proxy field access
+=== out
+proxy field access

@@ -3,5 +3,5 @@
 "not-a-number"
 ---
 [@Int %]
-===
+=== out
 [E011] type assertion failed: expected Int, got String

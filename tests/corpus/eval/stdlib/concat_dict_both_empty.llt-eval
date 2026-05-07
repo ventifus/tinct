@@ -1,4 +1,6 @@
 # concat: two empty dicts
 [concat [] []]
-===
+=== out
 Dict({})
+=== warn
+arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:1-1:15

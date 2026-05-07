@@ -3,5 +3,5 @@
   f: [fn [a b@[default: 2] c@[default: 3]] [str a [str b c]]]
   result: [f a: 5]
 ]
-===
+=== out
 Dict({"f": Function(a, b, c), "result": String("523")})

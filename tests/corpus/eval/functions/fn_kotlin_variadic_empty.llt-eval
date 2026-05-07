@@ -3,5 +3,5 @@
   f: [fn [a ...rest] rest]
   result: [f 42]
 ]
-===
+=== out
 Dict({"f": Function(a, rest), "result": Dict({})})

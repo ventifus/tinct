@@ -1,4 +1,6 @@
 # empty?: empty dict
 [empty? []]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: empty? at 1:2-1:8

@@ -1,4 +1,4 @@
 # str : convert value to string
 [str 42]
-===
+=== out
 String("42")

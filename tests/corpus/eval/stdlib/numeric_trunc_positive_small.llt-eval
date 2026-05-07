@@ -1,4 +1,6 @@
 # trunc: truncate small positive float
 [trunc 0.9]
-===
+=== out
 Int(0)
+=== warn
+undefined variable: trunc at 1:2-1:7

@@ -6,7 +6,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 **Vision:** One language where structured data is the native citizen. No impedance mismatch between your data model and your transformation logic — no shell pipelines to glue things together, no separate query language, no JSON-in-strings. Lazy evaluation keeps large structures efficient, Hindley-Milner types catch shape errors before they reach production, and generator-native pipelines (think jq, but typed and composable) make data flow a first-class concern.
 
-**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter with tinct-hosted compact modes, AST dict schema (`ast_to_dict`), LSP server with diagnostics and hover, comprehensive test suite.
+**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, union types, algebraic data types, nominal variants, type classes, gradual typing (`Unknown`/`Top`), parameterized type aliases, path-sensitive narrowing, pattern matching with exhaustiveness checking, structural contracts, Decimal/BigInt/range numeric types, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter with tinct-hosted compact modes, AST dict schema (`ast_to_dict`), LSP server with diagnostics and hover, comprehensive test suite.
 
 ## Syntax at a Glance
 
@@ -88,6 +88,38 @@ Hindley-Milner inference with row polymorphism. Annotate where you want precisio
     double: [fn@Number [x@Number] [* x 2]]
     result: [double 21]   # inferred: Int
 ]
+```
+
+### Union types and algebraic data types
+
+`x@[Int Null]` annotates a nullable value. Multi-entry `[type ...]` declarations define structural ADTs; `[match]` destructures them with exhaustiveness checking.
+
+```tinct
+Result: [type [ok: a] [err: Str]]
+
+parse: [fn@Result [input@Str]
+    [match [try [json-parse input]]
+        [ok: v]    [ok: v]
+        [err: msg] [err: [str "parse failed: " msg]]]]
+```
+
+### Pattern matching
+
+`[match x ...]` dispatches on type, literal value, or structure. Dict and seq patterns bind fields. Guards and or-patterns extend arms.
+
+```tinct
+[match event
+    [click: [x: cx  y: cy]]  [handle-click cx cy]
+    [key:   [code: k]]        [handle-key k]
+    _                         [ignore]]
+```
+
+### Type classes
+
+Constrained polymorphism for overloaded builtins. `Eq a => a → a → Bool` statically rejects `[= fn1 fn2]`. Full Haskell-style class and instance declarations.
+
+```tinct
+sorted: [sort items key: [fn [x] x.priority]]   # Comparable constraint enforced
 ```
 
 ### Named arguments
@@ -194,7 +226,7 @@ No Rust installation required. All commands run in containers:
 just build          # Build debug version
 just test           # Run all tests (unit + corpus)
 just test-corpus    # Run only corpus tests
-just run            # Eval test_input.llt, output JSON
+just run            # Eval samples/basic.llt (the demo program), output JSON
 just repl           # Start interactive REPL
 just ci             # Run full CI pipeline
 just --list         # See all commands
@@ -207,14 +239,14 @@ If you have Rust installed:
 ```bash
 cargo build --release
 cargo test
-cargo run -- eval test_input.llt
-cargo run -- eval --format llt test_input.llt  # Tinct display format
-cargo run -- eval --eval test_input.llt         # Deep-force all thunks
+cargo run -- eval samples/basic.llt
+cargo run -- eval --format llt samples/basic.llt  # Tinct display format
+cargo run -- eval --eval samples/basic.llt         # Deep-force all thunks
 echo '{"x": 1}' | cargo run -- eval -           # Read Tinct from stdin
 echo '{"x": 1}' | cargo run -- eval file.llt    # Inject JSON as %
-cargo run -- fmt test_input.llt                 # Format source file (stdout)
-cargo run -- fmt --in-place test_input.llt      # Format source file in place
-cargo run -- fmt --check test_input.llt         # Check formatting without writing
+cargo run -- fmt samples/basic.llt                 # Format source file (stdout)
+cargo run -- fmt --in-place samples/basic.llt      # Format source file in place
+cargo run -- fmt --check samples/basic.llt         # Check formatting without writing
 cargo run --features repl -- repl               # Start interactive REPL
 cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 ```
@@ -243,7 +275,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `tests/cli_tests.rs` | CLI integration tests: file eval, format flags, stdin JSON, error handling |
-| `test_input.llt` | Example input demonstrating syntax |
+| `samples/` | Sample tinct programs (`basic.llt` — the canonical demo) |
 | `Cargo.toml` | Dependencies: indexmap, serde_json, clap, rustyline (optional) |
 | `justfile` | Containerized build commands |
 

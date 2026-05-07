@@ -1,4 +1,6 @@
 # min: find minimum element
 [min [3 1 4 1 5 9 2 6]]
-===
+=== out
 Int(1)
+=== warn
+undefined variable: min at 1:2-1:5

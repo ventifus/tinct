@@ -2,5 +2,5 @@
     Int   "number"
     Str   "string"
     _     "other"]
-===
+=== out
 String("number")

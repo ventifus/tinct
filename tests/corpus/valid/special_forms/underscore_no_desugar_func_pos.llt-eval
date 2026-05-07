@@ -3,5 +3,5 @@
 # is NOT wrapped in a lambda. This test verifies the parse-level AST
 # (before desugaring) when $_ appears only in func position.
 [_ x]
-===
+=== out
 [_ x]

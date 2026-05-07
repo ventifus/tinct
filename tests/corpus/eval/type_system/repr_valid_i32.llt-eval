@@ -1,4 +1,4 @@
 # repr: "i32" with Int type accepted
 [@[type: Int  repr: "i32"] -100]
-===
+=== out
 Int(-100)

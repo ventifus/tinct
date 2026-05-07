@@ -1,4 +1,6 @@
 # ceil: negative float rounds toward zero
 [ceil -2.7]
-===
+=== out
 Int(-2)
+=== warn
+undefined variable: ceil at 1:2-1:6

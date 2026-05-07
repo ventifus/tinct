@@ -1,5 +1,5 @@
 [x: 42]
 
 [slice x 0 2]
-===
+=== out
 [E010] keys: expected Dict, got Int

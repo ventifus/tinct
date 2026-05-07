@@ -2,5 +2,5 @@
 # doc_separator = "---" NOT followed by a bare_word_char.
 # "---foo" has "f" after the three dashes, so it is a bare identifier (VarRef).
 [x: "---foo"]
-===
+=== out
 ["x": "---foo"]

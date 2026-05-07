@@ -1,4 +1,4 @@
 # range: error when start argument is a non-Int (quoted string)
 [range "not a number" 10]
-===
-ERROR: [E010]
+=== out
+[E010]

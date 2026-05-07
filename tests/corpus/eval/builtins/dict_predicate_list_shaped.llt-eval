@@ -1,3 +1,3 @@
 [dict? [1 2 3]]
-===
+=== out
 Bool(true)

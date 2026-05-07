@@ -1,4 +1,4 @@
 # cycle: error when called with empty collection
 [cycle []]
-===
+=== out
 [E034] cycle on empty collection

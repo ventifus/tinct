@@ -285,6 +285,183 @@ The extension lives in `editors/vscode/`:
 | `src/extension.ts` | Extension entry point — LSP client wiring |
 | `tsconfig.json` | TypeScript build configuration |
 
+## Strict Mode
+
+The `--strict` flag makes type errors fatal instead of advisory. Useful for CI pipelines and pre-commit hooks where type errors should block builds.
+
+**`tinct eval --strict`**
+
+Type errors from `typecheck_file()` are collected, printed to stderr, and cause the command to exit with code 1. Without `--strict`, type checking remains advisory — type errors are silently ignored and evaluation proceeds.
+
+```bash
+# Type errors are fatal in strict mode
+tinct eval --strict config.llt
+# If config.llt has type errors, exits with code 1 and prints errors to stderr
+
+# Without --strict (default), type errors are advisory
+tinct eval config.llt
+# Evaluation proceeds even if type errors exist
+```
+
+**`tinct fmt --strict`**
+
+Format checking fails if the file has type errors. Exits with code 1 before formatting is applied. Without `--strict`, formatting proceeds regardless of type errors.
+
+```bash
+# CI pre-commit hook: reject unformatted or type-unsafe code
+tinct fmt --strict --check *.llt
+```
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success — no type errors |
+| 1 | Type errors detected (strict mode) or other error |
+
+**When strict mode is active:**
+- All type errors are printed to stderr in the same format as advisory warnings
+- The error count is reported: `type checking failed with N error(s) (--strict mode)`
+- Evaluation or formatting does not proceed
+
+## Corpus Test Format
+
+Tinct's corpus tests use a labeled-section format to validate parsing, evaluation, and type checking in a single test file.
+
+### File Extension
+
+Test files use the `.llt-eval` extension to distinguish them from regular `.llt` source files.
+
+### Structure
+
+A test file consists of:
+1. Optional directives (first line only, starting with `#`)
+2. Tinct source code (the input to test)
+3. Labeled sections (delimited by `=== <label>`)
+
+```
+# no_fs
+[x: 1  y: 2]
+=== out
+{"x": 1, "y": 2}
+=== warn
+unused variable: z
+```
+
+### Labeled Sections
+
+Tests use `===` (three equals signs) as the delimiter between source code and expected output. The delimiter must be followed by a label.
+
+**Valid labels:**
+
+| Label | Meaning | Assertion when absent |
+|-------|---------|----------------------|
+| `=== out` | Expected eval output (or AST for `tests/corpus/valid/`) | Test is parse-only (no output check) |
+| `=== warn` | Expected type warnings | Assert zero type warnings |
+| `=== error` | Expected error substring (for error tests) | Assert zero errors |
+
+**Important:** A bare `===` (without a label) is a parse error. The test runner will panic with the message: `bare '===' is no longer valid; use '=== out', '=== warn', or '=== error'`.
+
+**Convention note:** `tests/corpus/eval/errors/` tests use `=== out` for their expected error substrings — this is a historical convention that predates labeled sections. The `=== error` label is for eval tests *outside* the `errors/` subdirectory that want to assert eval failure (and check an error substring) without using `=== out`. The two conventions coexist: `=== out` in `errors/` tests means "eval fails and output contains this substring"; `=== error` in any test means "eval fails and the error message contains this substring"; `=== out` outside `errors/` means "eval succeeds and output equals this string".
+
+### Output Format
+
+- **`tests/corpus/valid/`**: `=== out` contains the expected AST in Display format (`Expr::fmt`)
+- **`tests/corpus/eval/`**: `=== out` contains the expected value in Debug format (`Value::fmt` with `#?`)
+- **`tests/corpus/eval/errors/`**: `=== out` contains an expected error substring that must include an `[EXXX]` error code
+- **`tests/corpus/invalid/`**: `=== out` contains an expected parse error substring
+
+### Directives
+
+Directives appear on the first line only, starting with `#`. The directive line is stripped from the input before parsing.
+
+**`# no_fs`** — Disable filesystem access for this test. Equivalent to `eval_source_with_config(input, no_fs: true)`. Used for tests that verify `$include` is blocked in sandboxed mode.
+
+**Important:** If the first line starts with `#`, it is treated as a directive line and stripped from the input, even if it's just a comment. To include a comment in the input, place it on line 2 or later.
+
+### Section Order
+
+Sections can appear in any order. The test runner extracts all sections regardless of order.
+
+```
+[x: 1]
+=== warn
+unused variable: y
+=== out
+{"x": 1}
+```
+
+### Zero-Warning Assertion
+
+A test file without a `=== warn` section asserts that type checking produces zero warnings. This is the default expectation for clean code.
+
+To assert that a test *should* produce warnings, include a `=== warn` section with the expected warning substring:
+
+```
+[x@Int: "hello"]
+=== out
+{"x": "hello"}
+=== warn
+expected Int, found Str
+```
+
+### Error Substring Matching
+
+The `=== error` section enables substring matching for error tests. The test passes if the actual error message contains the expected substring.
+
+For `tests/corpus/eval/errors/`, the expected substring must include an `[EXXX]` error code (e.g., `[E001]`, `[E042]`). This ensures error codes are stable across refactoring.
+
+```
+[call $error "boom"]
+=== out
+[E024]
+```
+
+The actual error message might be `[E024] explicit error: boom`, but the test only checks for the presence of `[E024]`.
+
+### Example: Multi-Section Test
+
+```
+# Test: dict with type error
+[
+  x@Int: 42
+  y@Str: 99
+]
+=== out
+{"x": 42, "y": 99}
+=== warn
+expected Str, found Int
+```
+
+This test:
+- Parses successfully
+- Evaluates to `{"x": 42, "y": 99}` (output matches `=== out`)
+- Produces a type warning about `y` (warning substring matches `=== warn`)
+
+### Migration from Bare `===`
+
+Older corpus tests used a bare `===` delimiter. This is no longer valid. To migrate:
+
+```bash
+# Replace bare === with === out
+sed -E 's/^===$/=== out/' tests/corpus/**/*.llt-eval
+```
+
+### Test Discovery
+
+The corpus test runner recursively finds all `.llt-eval` files under `tests/corpus/` and runs them according to their directory:
+
+| Directory | Test Type | Runner |
+|-----------|-----------|--------|
+| `tests/corpus/valid/` | Parse-only or AST validation | `test_valid_corpus()` |
+| `tests/corpus/invalid/` | Parse error validation | `test_invalid_corpus()` |
+| `tests/corpus/eval/` | Eval output validation | `test_eval_corpus()` |
+| `tests/corpus/eval/errors/` | Eval error validation | `test_eval_error_corpus()` |
+| `tests/corpus/eval/type_errors/` | Type error validation | `test_typecheck_error_corpus_eval()` |
+| `tests/corpus/typecheck/warnings/` | Typecheck warning validation | `test_typecheck_warnings_corpus()` |
+
+All runners are in `tests/corpus_tests.rs`.
+
 ## Sandboxing & Security
 
 Tinct provides multiple unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags.

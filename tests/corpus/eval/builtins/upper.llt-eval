@@ -1,4 +1,4 @@
 # upper : convert string to uppercase
 [upper "hello"]
-===
+=== out
 String("HELLO")

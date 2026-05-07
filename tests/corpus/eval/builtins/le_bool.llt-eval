@@ -1,4 +1,6 @@
 # <= : less-than-or-equal on Bool (derived from <)
 [<= false false]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: <= at 1:2-1:4

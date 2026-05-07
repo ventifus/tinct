@@ -7,5 +7,5 @@
 # At eval time, $f is the identity function, so the result is "hello" (a string).
 [f: [fn [x] x]
  result: [f "hello"]]
-===
+=== out
 Dict({"f": Function(x), "result": String("hello")})

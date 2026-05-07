@@ -1,4 +1,4 @@
 # Hyphenated bare word should suggest using quotes for strings (heuristic covers a-z and -)
 [result: my-key]
-===
+=== out
 [E002] undefined variable: my-key (did you mean the string "my-key"? Use quotes.)

@@ -12,7 +12,7 @@ Data flows through stages. Within a file, `---` separates independent documents.
     ├── ---
     └── document 3 (output)       → final value, serialized by CLI
 
-Within a document, sequential expressions form a scope chain — each expression's bindings are visible to the next.
+Within a document, sequential expressions form a scope chain — each expression's bindings are visible to the next. Only the **last** expression is the document's return value; earlier expressions exist only as scope.
 
 ## Multi-File Pipeline
 
@@ -151,6 +151,26 @@ All entries share one environment. Order of definition does not matter -- `y` ca
 
 Expression 2 creates a fresh letrec environment with Expression 1's environment as its parent. Within Expression 2, `x` resolves to the local binding (20), not Expression 1's binding (10). `double` is found by walking up to the parent.
 
+**Module-style encapsulation:**
+
+Because only the last expression is returned, earlier dicts act as private scope. This is the standard pattern for separating internal helpers from a public API within a single file:
+
+```tinct
+# Expression 1 — private helpers: in scope below, never exported
+[
+    clamp-impl: [fn@Number [lo@Number hi@Number x@Number]
+        [if [< x lo] lo [if [> x hi] hi x]]]
+]
+
+# Expression 2 — public API: only value returned by eval_document
+[
+    clamp: [fn@Number [lo@Number hi@Number x@Number]
+        [clamp-impl lo hi x]]   # clamp-impl reachable via parent scope
+]
+```
+
+`include "math.llt"` returns only `[clamp: ...]`. `clamp-impl` is unreachable from outside the file. The standard library uses this pattern to keep `-impl`, `-step`, and `-check` helpers out of the user namespace.
+
 **Nested dicts (lexical scope):**
 
 Inner dicts see enclosing dicts' bindings by walking the parent chain. Siblings in a parent dict share one environment (letrec), so lateral access is free:
@@ -266,6 +286,8 @@ Recursive case:
 ```
 
 When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_document([e₁], ρ_input, d) ⇒ eval(e₁, ρ_input, d)` — a single expression is evaluated lazily with no scope chain construction.
+
+**Return value:** Only `θₙ` (the last expression's thunk) is returned. Intermediate expressions `e₁..eₙ₋₁` contribute bindings to the scope chain but are not part of the document's value. This is the formal basis for module-style encapsulation: helpers placed in earlier expressions are lexically visible within the document but are excluded from the returned value and therefore not accessible to callers.
 
 **Intermediate materialization:** Expressions `e₁..eₙ₋₁` are forced to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Note that the thunks `θ` extracted from `mapᵢ` are inserted into `ρᵢ` *without further materialization* — only the dict structure is forced, not the individual entry values. Those values remain lazy and are forced only when accessed via `$name` in subsequent expressions. The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-by-need semantics.
 

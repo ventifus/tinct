@@ -2,5 +2,5 @@
 # [$_: value] does NOT wrap - only value position triggers WRAP-DICT
 # Wrap in explicit function to provide $_ as bound variable
 [call [fn [_] [$_: 42]] "result"]
-===
+=== out
 Dict({"result": Int(42)})

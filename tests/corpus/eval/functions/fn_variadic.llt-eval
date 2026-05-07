@@ -1,5 +1,5 @@
 [f: [fn [x ...rest] rest]]
 
 [f 1 2 3]
-===
+=== out
 Dict({0: Int(2), 1: Int(3)})

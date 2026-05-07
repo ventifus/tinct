@@ -25,15 +25,15 @@ String interpolation (`i"Hello $name"`) is desugared in the **parser** itself �
 `desugar_interpolated_string()` in `src/parser.rs` converts the `InterpolatedString`
 token to a `[str "Hello " name]` call at parse time.
 
-The typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) currently
-schedules these features as Rust changes:
+The typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) scheduled
+these features as Rust changes; all are now complete (2026-05-07):
 
-| Sprint | Rust surface area added |
-|--------|------------------------|
-| `let-binding` (A1) | Parser change to `fn` body; new `Expr::Sequential` or similar |
-| `pattern-matching-basic` (A2) | `Expr::Match` + `eval::eval_match()` + `typecheck::infer_match()` + `formatter::format_match()` + arms in resolve.rs, desugar.rs |
-| `pattern-matching-destructure` (A3) | `Pattern::Dict`, `Pattern::Seq`, evaluator + formatter extensions |
-| `adts` (C1) | `[type ...]` multi-entry extension to type checker; `Type::Union` from B1 |
+| Sprint | Implementation | Status |
+|--------|----------------|--------|
+| `let-binding` (A1) | Parser change to `fn` body; sequential scoping | ✓ Done |
+| `pattern-matching-basic` (A2) | `Expr::Match` + `eval::eval_match()` + `typecheck::infer_match()` | ✓ Done |
+| `pattern-matching-destructure` (A3) | `Pattern::Dict`, `Pattern::Seq`, evaluator extensions | ✓ Done |
+| `adts` (C1) | `[type ...]` multi-entry; `Type::Union` | ✓ Done |
 
 **Decision:** `Expr::Match` (A2, A3) is implemented as a Rust special form,
 not as a macro. The type checker benefits of first-class `Expr::Match` —
@@ -45,8 +45,9 @@ proposal's scope. See `doc/whatif/pattern-matching.md` §Why a Special Form.
 
 1. **No user-extensible desugar** — every new piece of syntax requires a Rust
    change to desugar.rs or the parser.
-2. **Typing-cluster features balloon the AST** — `Expr::Match`, `Pattern::*`
-   and `Expr::Sequential` propagate through the entire codebase.
+2. **`i"..."` string interpolation lives in the parser** — `desugar_interpolated_string()`
+   is in `src/parser.rs`; moving it to `[defmacro tmpl]` makes it corpus-testable
+   and modifiable without recompilation.
 3. **Tests live in the wrong place** — desugar transformations are tested via
    Rust unit tests, not tinct corpus tests that can be read and understood without
    Rust knowledge.
@@ -171,15 +172,18 @@ required, but the implementation is more than "two lines":
 
 ### Impact on the Typing-Cluster Plan
 
-Updated sprint status after macro-rewrite:
+All typing-cluster sprints are complete (2026-05-07). They were implemented
+as Rust special forms as originally designed — macro-rewrite did not change
+those decisions. The remaining work is specific to desugar.rs consolidation
+and `i"..."` migration:
 
-| Sprint | Before | After |
-|--------|--------|-------|
-| `let-binding` (A1) | Parser change + desugar | `[defmacro let]` in `stdlib/macros.llt` — no Rust |
-| `pattern-matching-basic` (A2) | `Expr::Match` + evaluator | `Expr::Match` — Rust special form (excluded from macro-rewrite) |
-| `pattern-matching-destructure` (A3) | Pattern variants + evaluator | Extends `Expr::Match` — Rust special form (excluded from macro-rewrite) |
-| `adts` (C1) | Parser + type alias registration | Multi-entry `[type ...]` — type checker extension (union body + StringLiteral + TypeScheme storage), no macro |
-| `tmpl` string interpolation | In `src/parser.rs` | `[defmacro tmpl]` in `stdlib/macros.llt` |
+| Sprint | Implementation | Status |
+|--------|----------------|--------|
+| `let-binding` (A1) | Parser change to multi-expr fn bodies | ✓ Done (Rust special form) |
+| `pattern-matching-basic` (A2) | `Expr::Match` special form | ✓ Done (Rust special form) |
+| `pattern-matching-destructure` (A3) | `Pattern::Dict`, `Pattern::Seq` | ✓ Done (Rust special form) |
+| `adts` (C1) | Multi-entry `[type ...]`, `Type::Union` | ✓ Done (type checker extension) |
+| `tmpl` string interpolation | In `src/parser.rs` | **Open** — migrate to `[defmacro tmpl]` |
 
 Rust that is **eliminated** by macro-rewrite:
 - `desugar_interpolated_string()` in `src/parser.rs`
@@ -257,16 +261,15 @@ infrastructure on a real existing feature.
 
 ### Prerequisites
 
-- **Macros Phase 2** (`[defmacro]` and expansion loop) — required for Phase 1
-- **Quasiquoting Phase 2** (`[quote]`/`[unquote]`) — strongly recommended for ergonomic macro bodies
-- **`ast_to_dict_expr`** (`doc/whatif/ast-schema.md` Phase 1) — required for macro expansion
-- **`Type::Union`** (typing-cluster B1) — required for Phase 2
+All prerequisites are met (2026-05-07):
 
-### Dependencies
+- ~~Macros Phase 2~~ ✓ Complete — `defmacro`, hygiene, expansion loop (`macro-integration` sprint)
+- ~~Quasiquoting Phase 2~~ ✓ Complete — `[quote]`/`[unquote]` implemented
+- ~~`ast_to_dict_expr`~~ ✓ Complete — AST dict schema (`ast-dict-core` sprint)
+- ~~`Type::Union`~~ ✓ Complete — `union-types` sprint
 
-Follows macro-integration (M5b). Phase 2 additionally requires `Type::Union`
-(typing-cluster B1). Let-binding (typing-cluster A1) is a parser change, not
-a macro. Match is `Expr::Match` (Rust special form).
+**Trigger is met.** `[defmacro]` is fully stable. Phase 1 (`[defmacro tmpl]`)
+can be adopted now.
 
 ## References
 

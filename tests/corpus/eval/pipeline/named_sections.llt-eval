@@ -7,5 +7,5 @@
 
 ---
 [merge %defaults %overrides]
-===
+=== out
 Dict({"x": Int(10), "y": Int(2)})

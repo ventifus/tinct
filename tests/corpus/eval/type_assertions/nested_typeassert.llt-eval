@@ -1,4 +1,4 @@
 # Nested TypeAssert: inner assertion with default, outer assertion checks the default value
 [@String [@[type: String  default: "hello"] 42]]
-===
+=== out
 String("hello")

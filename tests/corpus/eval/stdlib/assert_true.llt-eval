@@ -1,4 +1,6 @@
 # assert: returns true when condition passes
 [assert true "should pass"]
-===
+=== out
 Bool(true)
+=== warn
+undefined variable: assert at 1:2-1:8

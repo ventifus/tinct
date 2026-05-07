@@ -1,4 +1,4 @@
 # repr: on non-numeric type should cause type error
 [@[type: String  repr: "u8"] "hello"]
-===
+=== out
 repr: "u8" requires a numeric type

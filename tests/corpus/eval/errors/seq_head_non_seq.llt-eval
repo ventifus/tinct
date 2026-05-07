@@ -1,4 +1,4 @@
 # head: error on non-Seq
 [head 42]
-===
+=== out
 [E010] head: expected Seq, got Int

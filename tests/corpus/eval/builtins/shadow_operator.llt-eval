@@ -4,5 +4,5 @@
   <: [fn [a b] true]
   result: [< 100 1]
 ]
-===
+=== out
 Dict({"<": Function(a, b), "result": Bool(true)})

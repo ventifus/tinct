@@ -1,4 +1,6 @@
 # TypeAlias evaluates to empty dict at runtime
 [type [Foo@String]]
-===
+=== out
 Dict({})
+=== warn
+auto-indexed entries not supported in type expressions at 1:8-1:18

@@ -1,4 +1,6 @@
 # uniq: empty input returns empty
 [uniq []]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: uniq at 1:2-1:6

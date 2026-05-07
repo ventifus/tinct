@@ -4,5 +4,5 @@
   +: [fn [a b] [builtin-mul a b]]
   result: [+ 3 4]
 ]
-===
+=== out
 Dict({"+": Function(a, b), "result": Int(12)})

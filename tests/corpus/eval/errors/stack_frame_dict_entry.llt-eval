@@ -4,5 +4,5 @@
   ]
   result: outer.inner
 ]
-===
+=== out
 [E010] +/-/*//: expected Int or Float, got Int and String

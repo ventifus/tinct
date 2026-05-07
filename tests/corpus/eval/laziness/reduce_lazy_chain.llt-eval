@@ -5,5 +5,8 @@
 [reduce [fn [acc x] [sum: [+ acc.sum x]  error_key: [/ 1 0]]] [sum: 0  error_key: 0] [1 2 3]]
 ---
 %.sum
-===
+=== out
 Int(6)
+=== warn
+cannot unify Seq[?] with [0: 1 1: 2 2: 3] at 4:86-4:93
+field 'sum' not found in [] at 6:1-6:6

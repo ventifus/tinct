@@ -2,5 +2,5 @@
 [
   lib: [include "tests/corpus/eval/macros/macro_lib.llt"]
 ]
-===
+=== out
 Dict({"lib": Dict({"result": Int(3)})})

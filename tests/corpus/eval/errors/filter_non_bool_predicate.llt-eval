@@ -1,4 +1,4 @@
 # filter: predicate returning Int instead of Bool produces a type mismatch error (E010)
 [filter [fn [x] 42] [1: a 2: b]]
-===
+=== out
 [E010] filter: expected Bool, got Int

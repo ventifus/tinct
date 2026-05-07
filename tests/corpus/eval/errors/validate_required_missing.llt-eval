@@ -10,5 +10,5 @@
   ]
   result: [validate $schema [hostname: "localhost"]]
 ].result
-===
-ERROR: required field is missing
+=== out
+required field is missing

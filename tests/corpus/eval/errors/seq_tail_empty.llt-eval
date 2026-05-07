@@ -1,4 +1,4 @@
 # tail: error on empty seq
 [tail []]
-===
+=== out
 [E034] tail on empty collection

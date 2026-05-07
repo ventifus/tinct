@@ -1,5 +1,5 @@
 # $_ inside [fn [_] ...] is NOT double-wrapped (shadowing)
 [f: [fn [_] [+ _ 1]]]
 [f 5]
-===
+=== out
 Int(6)

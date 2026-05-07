@@ -11,9 +11,9 @@
 //! - **Analysis**: hover text generation, diagnostics from parse/type/eval errors
 //! - **Server loop**: handles LSP requests and notifications, publishes diagnostics
 
-pub(crate) mod analysis;
+pub mod analysis;
 pub(crate) mod convert;
-pub(crate) mod document;
+pub mod document;
 pub(crate) mod server;
 
 pub use server::run_lsp;

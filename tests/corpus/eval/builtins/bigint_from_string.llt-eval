@@ -1,4 +1,6 @@
 # big-int: create from string (large number)
 [big-int "99999999999999999999"]
-===
+=== out
 BigInt(99999999999999999999)
+=== warn
+undefined variable: big-int at 1:2-1:9

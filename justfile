@@ -40,14 +40,15 @@ build-release:
     {{container}} run {{run_flags}} {{rust_image}} cargo build --release
 
 # Run all tests: lib tests (single-threaded to prevent parallel 128MB-thread exhaustion)
-# followed by corpus integration tests and CLI integration tests, in separate containers.
+# followed by corpus integration tests, CLI integration tests, and LSP corpus tests, in separate containers.
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
     {{container}} run {{run_flags}} {{rust_image}} cargo test --lib -- --test-threads=1
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
     {{container}} run {{run_flags}} {{rust_image}} cargo test --test cli_tests
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
 
-# Run tests with output
+# Run tests with output (NOTE: LSP corpus tests require `just test-lsp` — they need --features lsp)
 test-verbose:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test -- --nocapture
 
@@ -59,9 +60,13 @@ test-one TEST:
 test-lib:
     {{container}} run {{run_flags}} {{rust_image}} cargo test --lib
 
-# Run only corpus tests
+# Run only corpus tests (NOTE: does not include LSP corpus tests — use `just test-lsp` for those)
 test-corpus:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
+
+# Run only LSP corpus tests (requires --features lsp)
+test-lsp:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
 
 # Run clippy (linter)
 lint:
@@ -79,9 +84,9 @@ fmt-check:
 fmt:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add rustfmt 2>/dev/null; cargo fmt"
 
-# Run the application with test_input.llt (eval, JSON output)
+# Run the application with samples/basic.llt (eval, JSON output)
 run:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval test_input.llt
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval samples/basic.llt
 
 # Run the application with custom input file
 run-file FILE:
@@ -97,7 +102,7 @@ run-json JSON FILE:
 
 # Run the release build
 run-release:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct --release -- eval test_input.llt
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct --release -- eval samples/basic.llt
 
 # Clean build artifacts
 clean:
@@ -266,3 +271,7 @@ volume-info:
     @echo ""
     @echo "Volume disk usage:"
     @{{container}} system df -v 2>/dev/null | grep -E "(VOLUME NAME|{{project_name}})" || true
+
+# Add === warn sections to corpus files that produce type warnings
+add-warn-sections:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --example add_warn_sections

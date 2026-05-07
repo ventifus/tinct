@@ -1,4 +1,6 @@
 # each-key: single entry dict produces one-element Seq
 [collect [each-key [x: 42]]]
-===
+=== out
 Dict({0: String("x")})
+=== warn
+undefined variable: each-key at 1:11-1:19

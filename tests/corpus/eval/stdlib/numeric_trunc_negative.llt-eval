@@ -1,4 +1,6 @@
 # trunc: truncate negative float toward zero
 [trunc -2.9]
-===
+=== out
 Int(-2)
+=== warn
+undefined variable: trunc at 1:2-1:7

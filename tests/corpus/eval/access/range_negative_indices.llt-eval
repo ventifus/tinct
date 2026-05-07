@@ -4,5 +4,7 @@
 [data: [10 20 30 40]]
 
 [slice data -2 -1]
-===
+=== out
 Dict({})
+=== warn
+undefined variable: slice at 5:2-5:7

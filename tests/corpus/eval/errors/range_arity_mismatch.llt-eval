@@ -1,4 +1,4 @@
 # E020: ArityMismatch - range expects 1 to 2 arguments, got 0
 [range]
-===
+=== out
 [E020] arity mismatch: expected 1 to 2 arguments, got 0

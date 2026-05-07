@@ -1,4 +1,6 @@
 # fold: alias for reduce (left fold with accumulator)
 [fold [fn [acc x] [+ acc x]] 0 [1 2 3]]
-===
+=== out
 Int(6)
+=== warn
+undefined variable: fold at 1:2-1:6

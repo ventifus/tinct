@@ -1,4 +1,6 @@
 # find-deep: recursively search for a key in nested dicts
 [find-deep [a: [b: [target: 42]]] "target"]
-===
+=== out
 Int(42)
+=== warn
+undefined variable: find-deep at 1:2-1:11

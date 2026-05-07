@@ -1,5 +1,5 @@
 # "type" followed by ":" is a dict key, not the type special form.
 # The parser only treats "type" as a keyword when it is NOT followed by ":".
 [type: "Int"]
-===
+=== out
 ["type": "Int"]

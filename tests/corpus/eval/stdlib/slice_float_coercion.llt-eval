@@ -2,5 +2,7 @@
 [data: [0: "a" 1: "b" 2: "c"]]
 
 [slice data 1.0 2]
-===
+=== out
 Dict({1: String("b")})
+=== warn
+undefined variable: slice at 3:2-3:7

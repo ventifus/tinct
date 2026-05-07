@@ -1,4 +1,6 @@
 # concat: empty Seq with non-empty Seq (requires collect to materialize)
 [collect [concat [] [seq 1 [seq 2 []]]]]
-===
+=== out
 Dict({0: Int(1), 1: Int(2)})
+=== warn
+arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:10-1:40

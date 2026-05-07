@@ -1,5 +1,7 @@
 [f: [fn [x  y@[default: 99]] y]]
 
 [f 1]
-===
+=== out
 Int(99)
+=== warn
+arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 3:1-3:6
