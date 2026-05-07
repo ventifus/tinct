@@ -1,0 +1,11 @@
+# Test: Pipeline input validation with expects: annotation
+# First document produces a dict
+[port: 8080  hostname: "example.com"]
+
+--- expects: @Dict
+# Second document expects a dict with specific fields (nominal check only at runtime)
+
+[merged: [port: %.port  host: %.hostname]]
+
+===
+Dict({"merged": Dict({"port": Int(8080), "host": String("example.com")})})
