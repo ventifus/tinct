@@ -223,7 +223,7 @@ impl<'a> Formatter<'a> {
             Expr::Dict(_)
             | Expr::Call { .. }
             | Expr::Fn { .. }
-            | Expr::TypeAlias(_)
+            | Expr::TypeAlias { .. }
             | Expr::Sequential(_)
             | Expr::Quote(_)
             | Expr::Unquote(_)
@@ -389,11 +389,21 @@ impl<'a> Formatter<'a> {
                 body,
                 desugared: _,
             } => self.format_fn(return_ann, params, body),
-            Expr::TypeAlias(type_expr) => {
+            Expr::TypeAlias { params, body } => {
                 self.output.push('[');
                 self.output.push_str("type");
-                self.push_space_before_expr(type_expr);
-                self.format_expr(type_expr, true);
+                if !params.is_empty() {
+                    self.output.push_str(" [");
+                    for (i, param) in params.iter().enumerate() {
+                        if i > 0 {
+                            self.output.push(' ');
+                        }
+                        self.output.push_str(param);
+                    }
+                    self.output.push(']');
+                }
+                self.push_space_before_expr(body);
+                self.format_expr(body, true);
                 self.output.push(']');
             }
             Expr::TypeAssert {
@@ -654,7 +664,22 @@ impl<'a> Formatter<'a> {
                 w += self.measure_expr_width(body);
                 w + 1 // ]
             }
-            Expr::TypeAlias(type_expr) => 1 + 4 + 1 + self.measure_expr_width(type_expr) + 1,
+            Expr::TypeAlias { params, body } => {
+                let mut w = 1 + 4; // [type
+                if !params.is_empty() {
+                    w += 2; // " ["
+                    for (i, param) in params.iter().enumerate() {
+                        if i > 0 {
+                            w += 1; // space
+                        }
+                        w += param.len();
+                    }
+                    w += 1; // ]
+                }
+                w += 1; // space
+                w += self.measure_expr_width(body);
+                w + 1 // ]
+            }
             Expr::TypeAssert {
                 annotation, expr, ..
             } => {
@@ -1076,7 +1101,9 @@ impl<'a> Formatter<'a> {
             Expr::DotAccess { .. } => Some('a'), // starts with whatever the base expr is
             Expr::Pipe { .. } => Some('a'),      // starts with lhs
             Expr::Sequential(_) => Some('('),    // starts with (seq
-            Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias(_) => Some('['),
+            Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias { .. } => {
+                Some('[')
+            }
             Expr::TypeAssert { .. } => Some('['),
             Expr::Quote(_)
             | Expr::Unquote(_)

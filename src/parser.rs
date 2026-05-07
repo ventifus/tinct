@@ -337,7 +337,10 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             body: Rc::new(adjust_spanned_expr((*body).clone(), base)),
             desugared,
         },
-        Expr::TypeAlias(inner) => Expr::TypeAlias(Box::new(adjust_spanned_expr(*inner, base))),
+        Expr::TypeAlias { params, body } => Expr::TypeAlias {
+            params: params.clone(),
+            body: Box::new(adjust_spanned_expr(*body, base)),
+        },
         Expr::Pipe { lhs, rhs } => Expr::Pipe {
             lhs: Box::new(adjust_spanned_expr(*lhs, base)),
             rhs: Box::new(adjust_spanned_expr(*rhs, base)),
@@ -569,6 +572,48 @@ fn parse_annotation(
                         let adjusted = adjust_entries(entries.clone(), base);
                         Ok((
                             Spanned::new(Annotation::PropertyDict(adjusted), ann_span),
+                            end_i + 1,
+                        ))
+                    }
+                    // Implied call with uppercase head: @[AliasName Arg1 Arg2] parsed as Call.
+                    // Convert to PropertyDict with auto-indexed entries so the
+                    // type resolver can detect parameterized alias applications.
+                    // Only applies when the func is an uppercase identifier (type name convention).
+                    Expr::Call {
+                        implied: true,
+                        func,
+                        args,
+                        ..
+                    } if matches!(&func.node, Expr::VarRef { name, .. } if name.starts_with(|c: char| c.is_uppercase())) =>
+                    {
+                        let base = bracket_start_span.start;
+                        let mut entries = Vec::new();
+                        // func as first auto-indexed entry
+                        let adjusted_func = adjust_spanned_expr((**func).clone(), base);
+                        let func_span = adjusted_func.span;
+                        let func_entry = Spanned::new(
+                            Entry {
+                                key: None,
+                                value: Rc::new(adjusted_func),
+                            },
+                            func_span,
+                        );
+                        entries.push(func_entry);
+                        // args as subsequent auto-indexed entries
+                        for arg in args {
+                            let adjusted_arg = adjust_spanned_expr(arg.as_ref().clone(), base);
+                            let arg_span = adjusted_arg.span;
+                            let arg_entry = Spanned::new(
+                                Entry {
+                                    key: None,
+                                    value: Rc::new(adjusted_arg),
+                                },
+                                arg_span,
+                            );
+                            entries.push(arg_entry);
+                        }
+                        Ok((
+                            Spanned::new(Annotation::PropertyDict(entries), ann_span),
                             end_i + 1,
                         ))
                     }
@@ -867,8 +912,9 @@ enum StackFrame {
         return_ann: Option<Spanned<Annotation>>,
         span_start: Position,
     },
-    /// Type alias: `[type expr]`
+    /// Type alias: `[type expr]` or `[type [params] expr]`
     TypeAlias {
+        params: Vec<String>,
         type_expr: Option<Spanned<Expr>>,
         span_start: Position,
     },
@@ -1457,10 +1503,11 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Type-alias form: [type expr]
+                        // Type-alias form: [type expr] or [type [params] expr]
                         // (Not a type form if the keyword is followed by colon: [type: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::TypeAlias {
+                            params: Vec::new(),
                             type_expr: None,
                             span_start: span.start,
                         });
@@ -1936,6 +1983,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     }
 
                     StackFrame::TypeAlias {
+                        params,
                         type_expr,
                         span_start,
                     } => match type_expr {
@@ -1946,7 +1994,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             });
                         }
                         Some(type_expr) => {
-                            let alias_expr = Expr::TypeAlias(Box::new(type_expr));
+                            let alias_expr = Expr::TypeAlias {
+                                params,
+                                body: Box::new(type_expr),
+                            };
                             let spanned_alias = Spanned::new(alias_expr, dict_span(span_start));
                             if let Err(push_err) = push_value(
                                 &mut stack,
@@ -3569,11 +3620,68 @@ fn push_expr_to_parent(
                 Ok(())
             }
             Some(StackFrame::TypeAlias {
-                ref mut type_expr, ..
+                ref mut params,
+                ref mut type_expr,
+                ..
             }) => {
+                // First expression: check if it's a parameter list
+                if params.is_empty() && type_expr.is_none() {
+                    // Try to parse as parameter list: [a b c]
+                    // Case 1: Dict with auto-indexed lowercase identifiers
+                    if let Expr::Dict(entries) = &expr.node {
+                        // Check if all entries are auto-indexed identifiers (no colons)
+                        let all_params = entries.iter().all(|entry| {
+                            entry.node.key.is_none()
+                                && matches!(&entry.node.value.node, Expr::VarRef { name, .. } if name.chars().all(|c| c.is_lowercase() || c == '_'))
+                        });
+
+                        if all_params {
+                            // Extract parameter names
+                            for entry in entries {
+                                if let Expr::VarRef { name, .. } = &entry.node.value.node {
+                                    params.push(name.clone());
+                                }
+                            }
+                            return Ok(());
+                        }
+                    }
+                    // Case 2: Implied call [a b c] parsed as Call { func: VarRef("a"), args: [VarRef("b"), ...] }
+                    // When all identifiers are lowercase, this is a parameter list, not a call.
+                    if let Expr::Call {
+                        implied: true,
+                        func,
+                        args,
+                        ..
+                    } = &expr.node
+                    {
+                        if let Expr::VarRef {
+                            name: func_name, ..
+                        } = &func.node
+                        {
+                            if func_name.chars().all(|c| c.is_lowercase() || c == '_') {
+                                let all_lowercase_args = args.iter().all(|arg| {
+                                    matches!(&arg.node, Expr::VarRef { name, .. } if name.chars().all(|c| c.is_lowercase() || c == '_'))
+                                });
+                                if all_lowercase_args {
+                                    params.push(func_name.clone());
+                                    for arg in args {
+                                        if let Expr::VarRef { name, .. } = &arg.node {
+                                            params.push(name.clone());
+                                        }
+                                    }
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Not a parameter list (or already have params) — this is the body
                 if type_expr.is_some() {
                     return Err(ParseError {
-                        message: "type-alias form can only have one type expression".to_string(),
+                        message:
+                            "type-alias form can only have one type expression after parameters"
+                                .to_string(),
                         span: Some(expr.span),
                     });
                 }
@@ -4002,8 +4110,9 @@ mod tests {
         let output = parse2("[type 42]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
-            Expr::TypeAlias(inner) => {
-                assert!(matches!(&inner.node, Expr::Int(42)));
+            Expr::TypeAlias { params, body } => {
+                assert!(params.is_empty());
+                assert!(matches!(&body.node, Expr::Int(42)));
             }
             other => panic!("expected TypeAlias, got {other:?}"),
         }
@@ -5322,7 +5431,7 @@ mod tests {
         let doc = &output.file.node.documents[0].node;
         let type_expr = &doc.expressions[0];
         match &type_expr.node {
-            Expr::TypeAlias(_) => {
+            Expr::TypeAlias { .. } => {
                 assert_eq!(
                     type_expr.span.start.line, 3,
                     "TypeAlias should start on line 3"

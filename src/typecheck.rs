@@ -9,8 +9,8 @@ use std::rc::Rc;
 use crate::ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Span, Spanned};
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, lower_row_var_levels_pub,
-    row_var_occurs_pub, unify, InferState, Row, RowTail, Substitution, Type, TypeEnv, TypeError,
-    TypeScheme,
+    row_var_occurs_pub, unify, InferState, Row, RowTail, Substitution, Type, TypeAlias, TypeEnv,
+    TypeError, TypeScheme,
 };
 
 /// Map from source span `(start_offset, end_offset)` to inferred type. Populated during type
@@ -143,8 +143,8 @@ fn reset_expr(expr: &Spanned<Expr>) {
         }
 
         // TypeAlias: recurse into the aliased expression
-        Expr::TypeAlias(inner) => {
-            reset_expr(inner);
+        Expr::TypeAlias { body, .. } => {
+            reset_expr(body);
         }
 
         // TypeAssert: reset resolved_type and recurse into inner expression
@@ -323,8 +323,8 @@ fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap) {
         Expr::TypeAssert { expr: inner, .. } => {
             extract_doc_from_expr(&inner.node, doc_map);
         }
-        Expr::TypeAlias(inner) => {
-            extract_doc_from_expr(&inner.node, doc_map);
+        Expr::TypeAlias { body, .. } => {
+            extract_doc_from_expr(&body.node, doc_map);
         }
         Expr::Pipe { lhs, rhs } => {
             extract_doc_from_expr(&lhs.node, doc_map);
@@ -682,22 +682,42 @@ fn register_type_aliases(
         for entry in entries {
             if let Some(ref key) = entry.node.key {
                 if let Expr::Str(name) = &key.node {
-                    if let Expr::TypeAlias(inner) = &entry.node.value.node {
+                    if let Expr::TypeAlias { params, body } = &entry.node.value.node {
                         // Use a fresh per-alias mapping so annotation names within one type
                         // alias expression (e.g., `a` in `[Fn@a [a]]`) consistently map to
                         // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
                         // creates a distinct fresh var, breaking identity-function types.
                         let mut alias_ann_map: HashMap<String, String> = HashMap::new();
                         let mut alias_row_map: HashMap<String, String> = HashMap::new();
+                        // Pre-seed param names in BOTH maps so they survive cross-kind
+                        // collision checks (a param can appear as both `a` and `...a`).
+                        for p in params {
+                            let fresh = format!("_t{}", state.name_counter);
+                            state.name_counter += 1;
+                            state.levels.insert(fresh.clone(), state.level);
+                            alias_ann_map.insert(p.clone(), fresh.clone());
+                            alias_row_map.insert(p.clone(), fresh.clone());
+                        }
                         match resolve_type_expr(
-                            inner,
+                            body,
                             resolve_env,
                             state,
                             &mut Some(&mut alias_ann_map),
                             &mut Some(&mut alias_row_map),
                         ) {
                             Ok(alias_ty) => {
-                                target_env.insert_type_alias(name.clone(), alias_ty);
+                                // Use the fresh names assigned to params
+                                let remapped_params: Vec<String> = params
+                                    .iter()
+                                    .map(|p| alias_ann_map.get(p).cloned().unwrap())
+                                    .collect();
+                                target_env.insert_type_alias(
+                                    name.clone(),
+                                    TypeAlias {
+                                        params: remapped_params,
+                                        body: alias_ty,
+                                    },
+                                );
                             }
                             Err(e) => errors.push(e),
                         }
@@ -843,7 +863,7 @@ fn infer_expr(
             ..
         } => infer_fn(return_ann, params, body, env, expr.span, state, type_map),
 
-        Expr::TypeAlias(inner) => expand_type_alias(inner, env, state).map_err(|e| vec![e]),
+        Expr::TypeAlias { body, .. } => expand_type_alias(body, env, state).map_err(|e| vec![e]),
 
         Expr::TypeAssert {
             annotation,
@@ -1272,7 +1292,7 @@ fn infer_dict(
     // Pass 0: Key resolution
     for entry in entries {
         let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map);
-        let is_alias = matches!(&entry.node.value.node, Expr::TypeAlias(_));
+        let is_alias = matches!(&entry.node.value.node, Expr::TypeAlias { .. });
         key_entries.push((key_name, is_alias));
     }
 
@@ -1294,21 +1314,40 @@ fn infer_dict(
     for ((key_name, is_alias), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
             if let Some(name) = key_name {
-                if let Expr::TypeAlias(inner) = &entry.node.value.node {
+                if let Expr::TypeAlias { params, body } = &entry.node.value.node {
                     // Use a fresh per-alias mapping so annotation names within one type
                     // alias expression (e.g., `a` in `[Fn@a [a]]`) consistently map to
                     // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
                     // creates a distinct fresh var, breaking identity-function types.
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
                     let mut alias_row_map: HashMap<String, String> = HashMap::new();
+                    // Pre-seed param names in BOTH maps so they survive cross-kind
+                    // collision checks (a param can appear as both `a` and `...a`).
+                    for p in params {
+                        let fresh = format!("_t{}", state.name_counter);
+                        state.name_counter += 1;
+                        state.levels.insert(fresh.clone(), state.level);
+                        alias_ann_map.insert(p.clone(), fresh.clone());
+                        alias_row_map.insert(p.clone(), fresh.clone());
+                    }
                     if let Ok(alias_ty) = resolve_type_expr(
-                        inner,
+                        body,
                         &dict_env,
                         state,
                         &mut Some(&mut alias_ann_map),
                         &mut Some(&mut alias_row_map),
                     ) {
-                        dict_env.insert_type_alias(name.clone(), alias_ty);
+                        let remapped_params: Vec<String> = params
+                            .iter()
+                            .map(|p| alias_ann_map.get(p).cloned().unwrap())
+                            .collect();
+                        dict_env.insert_type_alias(
+                            name.clone(),
+                            TypeAlias {
+                                params: remapped_params,
+                                body: alias_ty,
+                            },
+                        );
                     }
                 }
             }
@@ -2538,6 +2577,40 @@ fn resolve_annotation(
                 entries.iter().filter(|e| e.node.key.is_none()).collect();
 
             if !positional_entries.is_empty() && !entries_look_like_type_dict(entries) {
+                // Check for parameterized type alias application: @[AliasName Arg1 Arg2]
+                // When the first positional entry is a VarRef referring to a parameterized
+                // type alias, treat remaining entries as type arguments rather than union members.
+                if positional_entries.len() >= 2 {
+                    if let Expr::VarRef { name, .. } = &positional_entries[0].node.value.node {
+                        if let Some(alias) = env.get_type_alias(name) {
+                            if !alias.params.is_empty() {
+                                let mut type_args = Vec::new();
+                                for entry in &positional_entries[1..] {
+                                    type_args.push(resolve_type_expr(
+                                        &entry.node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?);
+                                }
+                                if type_args.len() != alias.params.len() {
+                                    return Err(TypeError::new(
+                                        format!(
+                                            "type alias '{}' expects {} type parameter(s), got {}",
+                                            name,
+                                            alias.params.len(),
+                                            type_args.len()
+                                        ),
+                                        span,
+                                    ));
+                                }
+                                return instantiate_type_alias(alias, &type_args, state);
+                            }
+                        }
+                    }
+                }
+
                 // Positional entries create a union type
                 let mut member_types = Vec::new();
                 for entry in &positional_entries {
@@ -2626,6 +2699,108 @@ fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
     })
 }
 
+/// Instantiate a parameterized type alias by substituting type arguments for parameters.
+///
+/// Given `Pair: [type [a] [first: a second: a]]` and args `[Int]`,
+/// builds substitution `{a -> Int}` and applies to body to get `[first: Int second: Int]`.
+fn instantiate_type_alias(
+    alias: &TypeAlias,
+    type_args: &[Type],
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
+    // Build substitution from parameter names to provided types
+    let mut type_subst: HashMap<String, Type> = HashMap::new();
+    for (param, arg) in alias.params.iter().zip(type_args.iter()) {
+        type_subst.insert(param.clone(), arg.clone());
+    }
+
+    // Apply substitution to the alias body
+    Ok(apply_type_alias_substitution(
+        &alias.body,
+        &type_subst,
+        state,
+    ))
+}
+
+/// Apply a type-level substitution to a type expression.
+///
+/// This is distinct from `Substitution::apply` which operates on unification variables.
+/// Type alias substitution replaces parameter names with concrete types.
+fn apply_type_alias_substitution(
+    ty: &Type,
+    subst: &HashMap<String, Type>,
+    state: &mut InferState,
+) -> Type {
+    match ty {
+        Type::TypeVar(name, _) => {
+            // Check if this is a type alias parameter
+            if let Some(replacement) = subst.get(name) {
+                replacement.clone()
+            } else {
+                // Not a parameter — keep as-is but refresh the level from state
+                let level = *state.levels.get(name).unwrap_or(&state.level);
+                Type::TypeVar(name.clone(), level)
+            }
+        }
+        Type::Record(row) => {
+            let new_fields: HashMap<String, Type> = row
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), apply_type_alias_substitution(v, subst, state)))
+                .collect();
+            let new_tail = match &row.tail {
+                RowTail::Empty => RowTail::Empty,
+                RowTail::RowVar(name, _) => {
+                    // Check if this row variable matches a type alias parameter
+                    if let Some(replacement) = subst.get(name) {
+                        // Parameter used as row variable: if the replacement is a TypeVar,
+                        // convert it to a RowVar (same name, row-kinded).
+                        match replacement {
+                            Type::TypeVar(var_name, level) => {
+                                RowTail::RowVar(var_name.clone(), *level)
+                            }
+                            _ => {
+                                // Non-TypeVar replacement for a row position — keep as-is
+                                let level = *state.levels.get(name).unwrap_or(&state.level);
+                                RowTail::RowVar(name.clone(), level)
+                            }
+                        }
+                    } else {
+                        // Not a parameter — keep as-is but refresh level from state
+                        let level = *state.levels.get(name).unwrap_or(&state.level);
+                        RowTail::RowVar(name.clone(), level)
+                    }
+                }
+            };
+            Type::Record(Row {
+                fields: new_fields,
+                tail: new_tail,
+            })
+        }
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| apply_type_alias_substitution(p, subst, state))
+                .collect(),
+            ret: Box::new(apply_type_alias_substitution(ret, subst, state)),
+            variadic: *variadic,
+        },
+        Type::Seq(elem) => Type::Seq(Box::new(apply_type_alias_substitution(elem, subst, state))),
+        Type::Union(members) => Type::Union(
+            members
+                .iter()
+                .map(|m| apply_type_alias_substitution(m, subst, state))
+                .collect(),
+        ),
+        // All other types are atomic and don't contain substitutable parameters
+        _ => ty.clone(),
+    }
+}
+
 fn resolve_type_name(
     name: &str,
     env: &TypeEnv,
@@ -2676,10 +2851,14 @@ fn resolve_type_name(
                 // as a type variable. This is the symmetric counterpart to the type→row check
                 // in resolve_type_dict (which checks ann_mapping before registering in
                 // row_ann_mapping).
-                let cross_kind_row = row_ann_mapping
+                // Cross-kind collision: a name used as row variable cannot also
+                // be used as a type variable — UNLESS it was pre-seeded in both maps
+                // (parameterized type alias params can appear in either position).
+                let in_row = row_ann_mapping
                     .as_ref()
                     .is_some_and(|m| m.contains_key(name));
-                if cross_kind_row {
+                let in_ann = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
+                if in_row && !in_ann {
                     return Err(TypeError::new(
                         format!(
                             "annotation name '{name}' is already used as a row variable in this function; \
@@ -2723,9 +2902,24 @@ fn resolve_type_name(
                     Ok(state.fresh_type_var())
                 }
             } else {
-                env.get_type_alias(name)
-                    .cloned()
-                    .ok_or_else(|| TypeError::undefined_type(name, span))
+                // Uppercase type name — check for type alias
+                if let Some(alias) = env.get_type_alias(name) {
+                    // Check arity — bare alias name must have zero parameters
+                    if !alias.params.is_empty() {
+                        return Err(TypeError::new(
+                            format!(
+                                "type alias '{}' expects {} type parameter(s), got 0",
+                                name,
+                                alias.params.len()
+                            ),
+                            span,
+                        ));
+                    }
+                    // Zero-parameter alias: return the body directly
+                    Ok(alias.body.clone())
+                } else {
+                    Err(TypeError::undefined_type(name, span))
+                }
             }
         }
     }
@@ -2862,6 +3056,40 @@ fn resolve_type_expr(
                     });
                 }
             }
+
+            // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
+            if let Expr::VarRef { name, .. } = &func.node {
+                if let Some(alias) = env.get_type_alias(name) {
+                    // Resolve all type arguments
+                    let mut type_args = Vec::new();
+                    for arg in args {
+                        type_args.push(resolve_type_expr(
+                            arg,
+                            env,
+                            state,
+                            ann_mapping,
+                            row_ann_mapping,
+                        )?);
+                    }
+
+                    // Check arity
+                    if type_args.len() != alias.params.len() {
+                        return Err(TypeError::new(
+                            format!(
+                                "type alias '{}' expects {} type parameter(s), got {}",
+                                name,
+                                alias.params.len(),
+                                type_args.len()
+                            ),
+                            expr.span,
+                        ));
+                    }
+
+                    // Build substitution and apply to body
+                    return instantiate_type_alias(alias, &type_args, state);
+                }
+            }
+
             Err(TypeError::new(
                 format!("invalid type expression in annotation: {}", expr.node),
                 expr.span,
@@ -2888,6 +3116,53 @@ fn resolve_type_dict(
         return Ok(fn_type);
     }
 
+    // Parameterized type alias application: [AliasName Arg1 Arg2 ...]
+    // When the first entry is auto-indexed and refers to a parameterized type alias,
+    // treat remaining auto-indexed entries as type arguments.
+    if entries.len() >= 2 {
+        if let Some(first) = entries.first() {
+            if first.node.key.is_none() {
+                if let Expr::VarRef { name, .. } = &first.node.value.node {
+                    if let Some(alias) = env.get_type_alias(name) {
+                        if !alias.params.is_empty() {
+                            let mut type_args = Vec::new();
+                            for entry in &entries[1..] {
+                                if entry.node.key.is_some() {
+                                    return Err(TypeError::new(
+                                        format!(
+                                            "unexpected keyed entry in type alias application '{}'",
+                                            name
+                                        ),
+                                        entry.span,
+                                    ));
+                                }
+                                type_args.push(resolve_type_expr(
+                                    &entry.node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?);
+                            }
+                            if type_args.len() != alias.params.len() {
+                                return Err(TypeError::new(
+                                    format!(
+                                        "type alias '{}' expects {} type parameter(s), got {}",
+                                        name,
+                                        alias.params.len(),
+                                        type_args.len()
+                                    ),
+                                    span,
+                                ));
+                            }
+                            return instantiate_type_alias(alias, &type_args, state);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut fields: HashMap<String, Type> = HashMap::new();
     let mut rest = RowTail::Empty;
     for entry in entries {
@@ -2910,10 +3185,14 @@ fn resolve_type_dict(
                     // Cross-kind collision: if the same name appears in both ann_mapping (as a
                     // type variable) and row_ann_mapping (as a row variable), the annotation is
                     // ambiguous and must be rejected.
-                    let cross_kind = ann_mapping.as_ref().is_some_and(|m| m.contains_key(n));
-                    if cross_kind {
-                        // Same name already used as a type variable in this function scope.
-                        // This is a cross-kind collision: reject with a TypeError.
+                    // Cross-kind collision: a name used as type variable cannot also
+                    // be used as a row variable — UNLESS it was pre-seeded in both maps
+                    // (parameterized type alias params can appear in either position).
+                    let in_ann = ann_mapping.as_ref().is_some_and(|m| m.contains_key(n));
+                    let in_row = row_ann_mapping.as_ref().is_some_and(|m| m.contains_key(n));
+                    if in_ann && !in_row {
+                        // Same name already used as a type variable in this function scope
+                        // and NOT pre-seeded as a row variable.
                         return Err(TypeError::new(
                             format!(
                                 "annotation name '{n}' is already used as a type variable in this function; \
@@ -5210,7 +5489,7 @@ mod tests {
         let env = doc_env("[Identity: [type [Fn@a [a]]]]\n[x: 1]");
         let alias = env.get_type_alias("Identity");
         assert!(alias.is_some(), "Identity alias should be registered");
-        match alias.unwrap() {
+        match &alias.unwrap().body {
             Type::Function {
                 params,
                 ret,
@@ -5228,7 +5507,7 @@ mod tests {
                     params[0]
                 );
             }
-            other => panic!("expected Function type alias, got {other}"),
+            other => panic!("expected Function type alias, got {other:?}"),
         }
     }
 
@@ -5239,7 +5518,7 @@ mod tests {
         // TypeVar (same mapping within the alias scope). `a` must be a DIFFERENT TypeVar from `b`.
         let env = doc_env("[Mapper: [type [Fn@b [a b]]]]\n[x: 1]");
         let alias = env.get_type_alias("Mapper").unwrap();
-        match alias {
+        match &alias.body {
             Type::Function {
                 params,
                 ret,
@@ -5265,7 +5544,7 @@ mod tests {
                     "params[0] (a) and params[1] (b) must differ"
                 );
             }
-            other => panic!("expected Function type alias, got {other}"),
+            other => panic!("expected Function type alias, got {other:?}"),
         }
     }
 
@@ -5273,7 +5552,7 @@ mod tests {
     fn test_fn_type_expr_concrete_params() {
         let env = doc_env("[Add: [type [Fn@Number [Number Number]]]]\n[x: 1]");
         let alias = env.get_type_alias("Add").unwrap();
-        match alias {
+        match &alias.body {
             Type::Function {
                 params,
                 ret,
@@ -5282,7 +5561,7 @@ mod tests {
                 assert_eq!(params, &vec![Type::Number, Type::Number]);
                 assert_eq!(**ret, Type::Number);
             }
-            other => panic!("expected Function type alias, got {other}"),
+            other => panic!("expected Function type alias, got {other:?}"),
         }
     }
 
@@ -5292,7 +5571,7 @@ mod tests {
         // After Fix 1: annotation name `a` becomes a fresh internal var. Bool is unchanged.
         let env = doc_env("[Pred: [type [Fn@Bool [a]]]]\n[x: 1]");
         let alias = env.get_type_alias("Pred").unwrap();
-        match alias {
+        match &alias.body {
             Type::Function {
                 params,
                 ret,
@@ -5306,7 +5585,7 @@ mod tests {
                 );
                 assert_eq!(**ret, Type::Bool);
             }
-            other => panic!("expected Function type alias, got {other}"),
+            other => panic!("expected Function type alias, got {other:?}"),
         }
     }
 
@@ -5647,7 +5926,7 @@ mod tests {
 
         // Find the row variable ρ from the Open type alias
         let open_ty = match doc_env.get_type_alias("Open") {
-            Some(ty) => ty,
+            Some(alias) => &alias.body,
             None => panic!("Open type alias not found in doc_env"),
         };
 
@@ -5656,7 +5935,7 @@ mod tests {
                 tail: RowTail::RowVar(name, _),
                 ..
             }) => name.clone(),
-            other => panic!("expected Open to be an open record type, got {other}"),
+            other => panic!("expected Open to be an open record type, got {other:?}"),
         };
 
         // ρ must be bound in state.subst.row_map after dot access on the open record
@@ -7592,6 +7871,139 @@ mod tests {
             "mutual forward-reference calls should typecheck, got: {:?}",
             result.unwrap_err()
         );
+    }
+
+    // -- Parameterized type aliases --
+
+    #[test]
+    fn test_parameterized_type_alias_single_param() {
+        // [type [a] [first: a  second: a]] with [@[Pair Int] ...]
+        // should expand to [first: Int  second: Int]
+        let ty = result_field(
+            "[Pair: [type [a] [first: a  second: a]]
+             pair: [fn@[Pair Int] [] [first: 1  second: 2]]]",
+            "pair",
+        );
+        match ty {
+            Type::Function { ret, .. } => match ret.as_ref() {
+                Type::Record(Row { fields, .. }) => {
+                    assert_eq!(
+                        fields.get("first"),
+                        Some(&Type::Int),
+                        "first should be Int after instantiation"
+                    );
+                    assert_eq!(
+                        fields.get("second"),
+                        Some(&Type::Int),
+                        "second should be Int after instantiation"
+                    );
+                }
+                other => panic!("expected Record return type, got {other:?}"),
+            },
+            other => panic!("expected Function type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_parameterized_type_alias_multiple_params() {
+        // [type [a b] [first: a  second: b]] with [@[Pair Int String] ...]
+        let ty = result_field(
+            "[Pair: [type [a b] [first: a  second: b]]
+             pair: [fn@[Pair Int String] [] [first: 1  second: \"hello\"]]]",
+            "pair",
+        );
+        match ty {
+            Type::Function { ret, .. } => match ret.as_ref() {
+                Type::Record(Row { fields, .. }) => {
+                    assert_eq!(fields.get("first"), Some(&Type::Int));
+                    assert_eq!(fields.get("second"), Some(&Type::Str));
+                }
+                other => panic!("expected Record return type, got {other:?}"),
+            },
+            other => panic!("expected Function type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_parameterized_type_alias_arity_mismatch() {
+        // [Pair Int] when Pair expects 2 params should error
+        let errors = check_err(
+            "[Pair: [type [a b] [first: a  second: b]]
+             pair: [fn@[Pair Int] [] [first: 1  second: 2]]]",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("expects 2 type parameter")
+                    && e.message.contains("got 1")),
+            "expected arity mismatch error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_parameterized_type_alias_zero_params_backward_compat() {
+        // [type [first: Int  second: Int]] without params should work
+        assert!(check(
+            "[Pair: [type [first: Int  second: Int]]
+             pair: [fn@Pair [] [first: 1  second: 2]]]"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_parameterized_type_alias_with_row_variable() {
+        // [type [a] [name: String  ...a]] should allow row variable in tail.
+        // The annotation @[Extensible r] instantiates the alias with a row variable.
+        // After unification with the body [name: "test"  age: 42], the row variable
+        // binds to the extra fields, so the final type has a closed record or a record
+        // with the bound row variable's contents. We verify the type checks without error
+        // and the name field has the correct type.
+        let input = "[Extensible: [type [a] [name: String  ...a]]
+             make: [fn@[Extensible r] [] [name: \"test\"  age: 42]]]";
+        assert!(
+            check(input).is_ok(),
+            "parameterized alias with row variable should typecheck"
+        );
+        let ty = result_field(input, "make");
+        match ty {
+            Type::Function { ret, .. } => match ret.as_ref() {
+                Type::Record(Row { fields, .. }) => {
+                    assert_eq!(fields.get("name"), Some(&Type::Str));
+                }
+                other => panic!("expected Record return type, got {other:?}"),
+            },
+            other => panic!("expected Function type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_parameterized_type_alias_nested_usage() {
+        // Using a parameterized alias inside another parameterized alias
+        let ty = result_field(
+            "[Pair: [type [a] [first: a  second: a]]
+             Nested: [type [b] [inner: [Pair b]  outer: b]]
+             make: [fn@[Nested Int] [] [inner: [first: 1  second: 2]  outer: 3]]]",
+            "make",
+        );
+        match ty {
+            Type::Function { ret, .. } => {
+                match ret.as_ref() {
+                    Type::Record(Row { fields, .. }) => {
+                        // inner should be [first: Int  second: Int]
+                        match fields.get("inner") {
+                            Some(Type::Record(inner_row)) => {
+                                assert_eq!(inner_row.fields.get("first"), Some(&Type::Int));
+                                assert_eq!(inner_row.fields.get("second"), Some(&Type::Int));
+                            }
+                            other => panic!("expected inner to be Record, got {other:?}"),
+                        }
+                        assert_eq!(fields.get("outer"), Some(&Type::Int));
+                    }
+                    other => panic!("expected Record return type, got {other:?}"),
+                }
+            }
+            other => panic!("expected Function type, got {other}"),
+        }
     }
 
     #[test]

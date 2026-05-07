@@ -1723,7 +1723,7 @@ pub(crate) fn eval_step(
         // Type alias entries are compile-time-only constructs consumed by the type checker.
         // At runtime, they evaluate to an empty dict to maintain dict structure without
         // contributing runtime values.
-        Expr::TypeAlias(_inner) => Action::Continue(Ok(Value::Dict(IndexMap::new()))),
+        Expr::TypeAlias { .. } => Action::Continue(Ok(Value::Dict(IndexMap::new()))),
         Expr::Quote(_) => {
             unreachable!("Quote is handled in eval_recursive before reaching eval_expr_step")
         }

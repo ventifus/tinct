@@ -4191,3 +4191,11 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] All ~73 Type::Any uses reclassified (Unknown for inference, Top for explicit accept-all)
 - [x] unify() updated for Unknown consistency with level zeroing
 - [x] Tests updated for new type display and semantics
+
+### param-type-aliases
+
+- [x] TypeAlias { params, body } struct; Expr::TypeAlias with params field
+- [x] Parser: [type [a b] body] parameterized alias detection
+- [x] instantiate_type_alias with arity checking and substitution
+- [x] Backward compat for zero-param aliases; row variables in alias bodies
+- [x] 6 unit tests for parameterized aliases

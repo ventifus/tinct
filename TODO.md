@@ -6,19 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase B: Type System Primitives
 
-### `param-type-aliases`
-
-**Depends on:** None
-**Spec chapters:** `doc/05-type-annotations.md` (§Parameterized Type Aliases — `[type [a] body]` syntax, instantiation semantics)
-
-1. `TypeAlias { params: Vec<String>, body: Type }` in type checker
-2. Parser: detect `[type [lowercase-words] body]` as parameterized
-3. Type checker: resolve `[AliasName Arg1 ...]` with arity check
-4. Substitution: build `{param -> arg}` and apply to body
-5. Error: arity mismatch error with expected/actual counts
-6. Tests: 6+ (parameterized alias, instantiation, arity error,
-   row variable in alias body, backward compat for zero-param)
-
 ### `type-classes-constrained`
 
 **Depends on:** `gradual-typing-split` (B2), let-generalization complete

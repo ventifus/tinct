@@ -164,8 +164,11 @@ pub enum Expr {
         body: Rc<Spanned<Expr>>,
         desugared: bool,
     },
-    /// Type alias declaration via `[type expr]`
-    TypeAlias(Box<Spanned<Expr>>),
+    /// Type alias declaration via `[type expr]` or `[type [params] expr]`
+    TypeAlias {
+        params: Vec<String>,
+        body: Box<Spanned<Expr>>,
+    },
 
     /// Type assertion, e.g. `[@Number $expr]`
     TypeAssert {
@@ -422,7 +425,13 @@ impl fmt::Display for Expr {
                 }
                 write!(f, "] {}]", body.as_ref().node)
             }
-            Expr::TypeAlias(inner) => write!(f, "[type {}]", inner.node),
+            Expr::TypeAlias { params, body } => {
+                if params.is_empty() {
+                    write!(f, "[type {}]", body.node)
+                } else {
+                    write!(f, "[type [{}] {}]", params.join(" "), body.node)
+                }
+            }
             Expr::TypeAssert {
                 annotation, expr, ..
             } => {

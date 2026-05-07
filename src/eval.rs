@@ -834,7 +834,7 @@ pub(crate) fn eval_recursive(
         // Type alias entries are compile-time-only constructs consumed by the type checker.
         // At runtime, they evaluate to an empty dict to maintain dict structure without
         // contributing runtime values.
-        Expr::TypeAlias(_inner) => Ok(Rc::new(Thunk::new_materialized(
+        Expr::TypeAlias { .. } => Ok(Rc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
             expr.span,
         ))),
@@ -3035,9 +3035,10 @@ mod tests {
 
     #[test]
     fn test_type_alias_returns_empty_dict() {
-        let expr = sp(Expr::TypeAlias(Box::new(sp(Expr::var_ref(
-            "MyType".into(),
-        )))));
+        let expr = sp(Expr::TypeAlias {
+            params: vec![],
+            body: Box::new(sp(Expr::var_ref("MyType".into()))),
+        });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
         match val {

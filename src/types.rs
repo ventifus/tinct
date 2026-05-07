@@ -2200,10 +2200,23 @@ impl fmt::Display for Type {
     }
 }
 
+/// Parameterized type alias declaration.
+///
+/// `[type [a b] [first: a second: b]]` stores `params: ["a", "b"]` and
+/// `body: Record({first: TypeVar(a), second: TypeVar(b)})`.
+///
+/// When instantiated (e.g., `[Pair Int String]`), build substitution
+/// `{a -> Int, b -> String}` and apply to body.
+#[derive(Debug, Clone)]
+pub struct TypeAlias {
+    pub params: Vec<String>,
+    pub body: Type,
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeEnv {
     bindings: HashMap<String, TypeScheme>,
-    type_aliases: HashMap<String, Type>,
+    type_aliases: HashMap<String, TypeAlias>,
     parent: Option<Rc<TypeEnv>>,
 }
 
@@ -2228,7 +2241,7 @@ impl TypeEnv {
         self.lookup(|env| env.bindings.get(name))
     }
 
-    pub fn get_type_alias(&self, name: &str) -> Option<&Type> {
+    pub fn get_type_alias(&self, name: &str) -> Option<&TypeAlias> {
         self.lookup_type_alias(|env| env.type_aliases.get(name))
     }
 
@@ -2249,14 +2262,17 @@ impl TypeEnv {
         None
     }
 
-    fn lookup_type_alias(&self, field: impl Fn(&TypeEnv) -> Option<&Type>) -> Option<&Type> {
-        if let Some(ty) = field(self) {
-            return Some(ty);
+    fn lookup_type_alias(
+        &self,
+        field: impl Fn(&TypeEnv) -> Option<&TypeAlias>,
+    ) -> Option<&TypeAlias> {
+        if let Some(alias) = field(self) {
+            return Some(alias);
         }
         let mut current = self.parent.as_deref();
         while let Some(env) = current {
-            if let Some(ty) = field(env) {
-                return Some(ty);
+            if let Some(alias) = field(env) {
+                return Some(alias);
             }
             current = env.parent.as_deref();
         }
@@ -2271,8 +2287,8 @@ impl TypeEnv {
         self.bindings.insert(name, scheme);
     }
 
-    pub fn insert_type_alias(&mut self, name: String, ty: Type) {
-        self.type_aliases.insert(name, ty);
+    pub fn insert_type_alias(&mut self, name: String, alias: TypeAlias) {
+        self.type_aliases.insert(name, alias);
     }
 
     /// Create a `TypeEnv` pre-registered with builtin function type signatures.
@@ -3002,9 +3018,27 @@ impl TypeEnv {
 
         // Capability and handle types: register as type aliases so @DirCap, @NetCap, @Handle
         // are valid in user annotations.
-        env.insert_type_alias("DirCap".to_string(), Type::DirCap);
-        env.insert_type_alias("NetCap".to_string(), Type::NetCap);
-        env.insert_type_alias("Handle".to_string(), Type::Handle);
+        env.insert_type_alias(
+            "DirCap".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::DirCap,
+            },
+        );
+        env.insert_type_alias(
+            "NetCap".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::NetCap,
+            },
+        );
+        env.insert_type_alias(
+            "Handle".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::Handle,
+            },
+        );
 
         // builtin-* aliases: same types as canonical counterparts.
         // Used by stdlib/prelude to call builtins when canonical names may be shadowed.
@@ -3852,27 +3886,57 @@ mod tests {
         let mut env = TypeEnv::new();
         let mut fields = HashMap::new();
         fields.insert("name".into(), Type::Str);
-        env.insert_type_alias("Person".into(), closed_record(fields.clone()));
-        assert_eq!(env.get_type_alias("Person"), Some(&closed_record(fields)));
+        env.insert_type_alias(
+            "Person".into(),
+            TypeAlias {
+                params: vec![],
+                body: closed_record(fields.clone()),
+            },
+        );
+        assert_eq!(
+            env.get_type_alias("Person").map(|a| &a.body),
+            Some(&closed_record(fields))
+        );
     }
 
     #[test]
     fn test_env_type_alias_parent() {
         let mut parent = TypeEnv::new();
-        parent.insert_type_alias("Base".into(), Type::Int);
+        parent.insert_type_alias(
+            "Base".into(),
+            TypeAlias {
+                params: vec![],
+                body: Type::Int,
+            },
+        );
         let parent_rc = Rc::new(parent);
         let child = TypeEnv::with_parent(&parent_rc);
-        assert_eq!(child.get_type_alias("Base"), Some(&Type::Int));
+        assert_eq!(
+            child.get_type_alias("Base").map(|a| &a.body),
+            Some(&Type::Int)
+        );
     }
 
     #[test]
     fn test_env_type_alias_shadow() {
         let mut parent = TypeEnv::new();
-        parent.insert_type_alias("T".into(), Type::Int);
+        parent.insert_type_alias(
+            "T".into(),
+            TypeAlias {
+                params: vec![],
+                body: Type::Int,
+            },
+        );
         let parent_rc = Rc::new(parent);
         let mut child = TypeEnv::with_parent(&parent_rc);
-        child.insert_type_alias("T".into(), Type::Str);
-        assert_eq!(child.get_type_alias("T"), Some(&Type::Str));
+        child.insert_type_alias(
+            "T".into(),
+            TypeAlias {
+                params: vec![],
+                body: Type::Str,
+            },
+        );
+        assert_eq!(child.get_type_alias("T").map(|a| &a.body), Some(&Type::Str));
     }
 
     #[test]
