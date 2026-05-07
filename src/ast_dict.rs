@@ -643,6 +643,27 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::DefMacro { name, transformer } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String("defmacro".into()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::String(name.clone()),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("transformer".into()),
+                expr_to_thunk_id(&transformer.node, transformer.span, opts, ctx)?,
+            );
+        }
+
         Expr::Error(error_span) => {
             dict.insert(
                 Key::String("type".into()),
@@ -1227,6 +1248,15 @@ pub fn dict_to_ast(
         "unquote-splice" => {
             let expr_val = get_dict_field(dict, "expr", &["type"], ctx)?;
             Expr::UnquoteSplice(Box::new(dict_to_ast(&expr_val, ctx)?))
+        }
+
+        "defmacro" => {
+            let name = get_string_field(dict, "name", &["type"], ctx)?;
+            let transformer_val = get_dict_field(dict, "transformer", &["type"], ctx)?;
+            Expr::DefMacro {
+                name,
+                transformer: Box::new(dict_to_ast(&transformer_val, ctx)?),
+            }
         }
 
         "error" => {

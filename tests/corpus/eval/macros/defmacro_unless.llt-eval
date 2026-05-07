@@ -1,0 +1,14 @@
+# Custom unless macro (stub expansion returns first arg)
+# Full transformer invocation is Phase 2; stub returns args[0].
+[defmacro my-unless [fn [args]
+  [quote
+    [if [unquote [get 0 args]]
+      []
+      [unquote [get 1 args]]
+    ]
+  ]
+]]
+
+[my-unless false 42]
+===
+Bool(false)

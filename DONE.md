@@ -4068,3 +4068,12 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 - [x] dict_to_ast(val, ctx) → Result<Spanned<Expr>, AstError> in src/ast_dict.rs
 - [x] eval-ast builtin: takes dict, reconstructs AST, evaluates in stdlib env
 - [x] Corpus test: [eval-ast [quote [+ 1 2]]] → Int(3)
+
+### defmacro: [defmacro] + Expansion Loop
+
+- [x] Expr::DefMacro variant + defmacro keyword + parser support
+- [x] MacroEnv registry in expand.rs with expand_macros pipeline stage
+- [x] Expansion loop with depth/node limits + blackhole detection
+- [x] gensym builtin for unique symbol generation
+- [x] All exhaustive matches updated; pipeline wired (parse→expand→desugar→typecheck→eval)
+- [x] Tests: identity macro, unless macro, gensym, shadow-builtin error

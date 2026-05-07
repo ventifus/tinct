@@ -207,6 +207,7 @@ impl<'a> Formatter<'a> {
             | Expr::Quote(_)
             | Expr::Unquote(_)
             | Expr::UnquoteSplice(_)
+            | Expr::DefMacro { .. }
             | Expr::Error(_) => false,
             _ => true,
         });
@@ -396,6 +397,14 @@ impl<'a> Formatter<'a> {
                 self.output.push_str("unquote-splice");
                 self.push_space_before_expr(inner);
                 self.format_expr(inner, true);
+                self.output.push(']');
+            }
+            Expr::DefMacro { name, transformer } => {
+                self.output.push('[');
+                self.output.push_str("defmacro ");
+                self.output.push_str(name);
+                self.push_space_before_expr(transformer);
+                self.format_expr(transformer, true);
                 self.output.push(']');
             }
             Expr::Rest(name) => {
@@ -607,6 +616,10 @@ impl<'a> Formatter<'a> {
             Expr::Quote(inner) => 1 + 5 + 1 + self.measure_expr_width(inner) + 1, // [quote <expr>]
             Expr::Unquote(inner) => 1 + 7 + 1 + self.measure_expr_width(inner) + 1, // [unquote <expr>]
             Expr::UnquoteSplice(inner) => 1 + 14 + 1 + self.measure_expr_width(inner) + 1, // [unquote-splice <expr>]
+            Expr::DefMacro { name, transformer } => {
+                1 + 8 + 1 + name.len() + 1 + self.measure_expr_width(transformer) + 1
+                // [defmacro <name> <transformer>]
+            }
             Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
             Expr::Error(span) => {
                 // Measure the width of the original source text
@@ -916,7 +929,9 @@ impl<'a> Formatter<'a> {
             Expr::Pipe { .. } => Some('a'),      // starts with lhs
             Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias(_) => Some('['),
             Expr::TypeAssert { .. } => Some('['),
-            Expr::Quote(_) | Expr::Unquote(_) | Expr::UnquoteSplice(_) => Some('['),
+            Expr::Quote(_) | Expr::Unquote(_) | Expr::UnquoteSplice(_) | Expr::DefMacro { .. } => {
+                Some('[')
+            }
             Expr::Annotated { name, .. } => name.chars().next(),
             Expr::Rest(_) => Some('.'),
             Expr::Error(_) => None,

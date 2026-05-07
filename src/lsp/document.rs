@@ -70,7 +70,36 @@ impl DocumentState {
         let mut type_map = TypeMap::new();
         let mut doc_map = DocMap::new();
 
-        if let Ok(ref mut file) = ast {
+        if let Ok(file) = ast {
+            // Expand macros before desugar: rewrites [defmacro ...] and macro calls.
+            // This matches the pipeline used by all other entry points (main.rs, lib.rs).
+            let mut file = match crate::expand::expand_macros(file, eval_ctx.config.no_fs) {
+                Ok(f) => f,
+                Err(e) => {
+                    // Macro expansion error — convert to parse error
+                    ast = Err(crate::parser::ParseError {
+                        message: format!("macro expansion error: {}", e),
+                        span: None,
+                    });
+                    // Continue with diagnostics
+                    return Self {
+                        text: text.clone(),
+                        ast: Err(crate::parser::ParseError {
+                            message: format!("macro expansion error: {}", e),
+                            span: None,
+                        }),
+                        parse_errors: vec![crate::parser::ParseError {
+                            message: format!("macro expansion error: {}", e),
+                            span: None,
+                        }],
+                        type_errors: vec![],
+                        eval_errors: vec![],
+                        type_map: TypeMap::new(),
+                        doc_map: DocMap::new(),
+                    };
+                }
+            };
+
             // Desugar before type check and eval: rewrites $_ implicit lambdas to explicit forms.
             // This matches the pipeline used by all other entry points (main.rs, repl.rs, lib.rs,
             // builtins.rs). Without this pass the type checker sees VarRef("_") instead of Fn nodes,
@@ -104,6 +133,8 @@ impl DocumentState {
                     }
                 }
             }
+
+            ast = Ok(file);
         }
 
         Self {
@@ -389,7 +420,16 @@ pub fn build_prelude_index() -> PreludeIndex {
         }
     };
 
-    let mut file = parse_result.node;
+    let file = parse_result;
+
+    // Expand macros (pre-desugar AST transformation)
+    let mut file = match crate::expand::expand_macros(file, false) {
+        Ok(f) => f.node,
+        Err(e) => {
+            eprintln!("LSP: failed to expand macros in prelude: {}", e);
+            return PreludeIndex::empty();
+        }
+    };
 
     // Desugar before type-checking
     crate::desugar::desugar_file(&mut file);

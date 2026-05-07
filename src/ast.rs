@@ -197,6 +197,14 @@ pub enum Expr {
     /// Only valid in list positions inside `[quote ...]` (not at top level of quote).
     UnquoteSplice(Box<Spanned<Expr>>),
 
+    /// Macro definition, e.g. `[defmacro unless [fn [args] ...]]` — registers a compile-time
+    /// transformer function. The macro expander evaluates `transformer`, registers it under
+    /// `name`, and removes the DefMacro node from the AST before type-checking.
+    DefMacro {
+        name: String,
+        transformer: Box<Spanned<Expr>>,
+    },
+
     /// Parse error — a section of source that couldn't be parsed.
     /// Emitted by bracket-level error recovery (parser-rewrite.md §Phase 4).
     /// The span covers the entire unparseable region.
@@ -365,6 +373,9 @@ impl fmt::Display for Expr {
             Expr::Quote(inner) => write!(f, "[quote {}]", inner.node),
             Expr::Unquote(inner) => write!(f, "[unquote {}]", inner.node),
             Expr::UnquoteSplice(inner) => write!(f, "[unquote-splice {}]", inner.node),
+            Expr::DefMacro { name, transformer } => {
+                write!(f, "[defmacro {} {}]", name, transformer.node)
+            }
             Expr::Error(span) => write!(f, "<error at {span}>"),
         }
     }

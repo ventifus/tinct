@@ -1732,6 +1732,9 @@ pub(crate) fn eval_step(
                 "Unquote/UnquoteSplice are handled in eval_quote before reaching eval_expr_step"
             )
         }
+        Expr::DefMacro { .. } => {
+            unreachable!("DefMacro should be removed by expansion pass before evaluation")
+        }
         Expr::Rest(_) => Action::Continue(Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,

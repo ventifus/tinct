@@ -303,6 +303,22 @@ fn hover_at_expr(
             doc_url,
         ),
 
+        Expr::DefMacro { name, transformer } => {
+            // Check if hover is on the transformer
+            hover_at_expr(
+                &transformer.node,
+                transformer.span,
+                offset,
+                type_map,
+                doc_map,
+                source,
+                prelude_index,
+                include_graph,
+                doc_url,
+            )
+            .or_else(|| Some(format!("Macro definition: {}", name)))
+        }
+
         Expr::TypeAssert {
             expr: inner,
             annotation,
