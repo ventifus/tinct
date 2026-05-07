@@ -1,4 +1,5 @@
 # What If: Formal Gradual Typing for tinct
+**State:** Accepted — 2026-05-05
 
 What would it take to formalize tinct's relationship with gradual typing
 (Siek & Taha 2006, Garcia et al. 2016)?

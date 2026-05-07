@@ -1,4 +1,5 @@
 # What If: Constrained Numeric Types for tinct
+**State:** Accepted — 2026-05-05
 
 What would it take to add predicate-constrained numeric types —
 validated ranges, exact decimal arithmetic, and arbitrary-precision

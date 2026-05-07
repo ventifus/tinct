@@ -1,4 +1,5 @@
 # What If: Union Types and Algebraic Subtyping
+**State:** Accepted — 2026-05-05
 
 What would it take to add union types to tinct, and where does the full endpoint lead?
 

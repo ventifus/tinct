@@ -1,4 +1,5 @@
 # What If: Structural Contracts for tinct
+**State:** Accepted — 2026-05-05
 
 What would it take to let tinct programs declare the shape of data
 they expect — so that pipeline consumers, formatters, and library

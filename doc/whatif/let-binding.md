@@ -1,4 +1,5 @@
 # What If: `let` Binding Form for tinct
+**State:** Accepted — 2026-05-05
 
 What would it take to enable non-recursive local bindings everywhere
 in tinct — including inside function bodies?
