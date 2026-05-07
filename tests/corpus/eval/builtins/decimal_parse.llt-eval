@@ -1,0 +1,4 @@
+# decimal: parse exact base-10 string
+[decimal "9.99"]
+===
+Decimal(9.99)

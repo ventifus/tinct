@@ -4341,3 +4341,12 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 - [x] TypeAssert runtime `is:` predicate evaluation — calls predicate on value after type check passes
 - [x] `is:` and `repr:` added to ANNOTATION_META_KEYS
 - [x] 6 corpus tests: between in/out/negative range, non-negative, positive, is: predicate failure
+
+### numeric-decimal
+
+- [x] rust_decimal::Decimal chosen (96-bit software decimal, common in financial Rust)
+- [x] Value::Decimal variant with exhaustive match coverage across all Value match sites
+- [x] `decimal` builtin: Str/Int -> Decimal parsing
+- [x] ValueVisitor visit_decimal: JSON serialization as number, display as Decimal(n)
+- [x] PartialEq for Decimal values
+- [x] 3 corpus tests: decimal_parse, decimal_from_int, decimal_type_of

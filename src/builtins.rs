@@ -1293,6 +1293,36 @@ fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
 /// Both `Function` and `Builtin` return "Function" (from the user's perspective).
 /// Returns "Dict" for all dicts, with no distinction between list-like (sequential int keys)
+/// `decimal`: Parse a string as an exact base-10 decimal (rust_decimal::Decimal).
+/// Returns Value::Decimal. Error on invalid format.
+fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("decimal", args, named, &ctx, depth, call_span)?;
+    match val {
+        Value::String(ref s) => {
+            use std::str::FromStr;
+            match rust_decimal::Decimal::from_str(s) {
+                Ok(d) => ok_val(Value::Decimal(d), call_span),
+                Err(e) => Err(EvalError::new(
+                    format!("decimal: cannot parse \"{s}\": {e}"),
+                    call_span,
+                )
+                .into()),
+            }
+        }
+        Value::Int(n) => {
+            ok_val(Value::Decimal(rust_decimal::Decimal::from(n)), call_span)
+        }
+        _ => Err(EvalError::type_mismatch("String or Int", &type_name(&val), call_span).into()),
+    }
+}
+
 /// and map-like dicts — the type system does not track key structure at runtime.
 /// Inherently materializing: must inspect value variant to determine type.
 fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -1850,6 +1880,7 @@ fn type_name(val: &Value) -> String {
         Value::NetCap(_) => "NetCap",
         Value::Handle(_) => "Handle",
         Value::Variant { tag, .. } => tag.as_str(),
+        Value::Decimal(_) => "Decimal",
     }
     .to_string()
 }
@@ -3603,6 +3634,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
         builtin!("gensym", builtin_gensym),
         builtin!("until", builtin_until),
+        // Decimal
+        builtin!("decimal", builtin_decimal, [Strictness::Seq]),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
@@ -8691,7 +8724,7 @@ mod tests {
         assert!(names.contains(&"gensym"), "missing gensym");
         assert!(names.contains(&"str-length"), "missing str-length");
         assert!(names.contains(&"validate"), "missing validate");
-        assert_eq!(names.len(), 82, "expected 82 builtins, got {}", names.len());
+        assert_eq!(names.len(), 83, "expected 83 builtins, got {}", names.len());
     }
 
     #[test]
