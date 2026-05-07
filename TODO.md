@@ -6,25 +6,6 @@ See DONE.md for the full history of completed sprints.
 
 ## Phase C: Algebraic Types
 
-### `nominal-variants-full`
-
-**Depends on:** `nominal-variants-unit` (C2), `pattern-matching-basic` (A2)
-**Spec chapters:** `doc/03-data-model.md` (§Nominal Variant Payloads — constructor application, lazy payload, serialization), `doc/08-evaluation.md` (§Constructor Evaluation), `doc/05-type-annotations.md` (§Constructor Types — `Some : a -> Option a`)
-
-1. Payload constructor registration: bind name to closure
-   `fn(x) -> Variant { tag, payload: Some(x) }` in environment +
-   type signature in type environment
-2. Constructor call is regular function application (no special eval
-   path — `[Some 42]` is `Expr::Call(Expr::VarRef("Some"), [42])`)
-3. `Pattern::Constructor { tag, binding }` for match
-4. Type: `Type::NominalVariant { tag, payload }`
-5. Subtype rules: NominalVariant vs Union, never vs Record
-6. Constructor type signatures (`Some : a -> Option a`)
-7. Lazy payload semantics (payload as thunk, not forced)
-8. Tests: 10+ (payload construction, pattern matching, constructor
-   as value for `map`, lazy payload, mixed nominal/structural union,
-   serialization)
-
 ### `pattern-matching-guards`
 
 **Depends on:** `pattern-matching-destructure` (A3)

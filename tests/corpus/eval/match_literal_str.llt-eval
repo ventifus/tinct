@@ -1,0 +1,6 @@
+[match "hello"
+    "world"   "greeting-world"
+    "hello"   "greeting-hello"
+    _         "unknown"]
+===
+String("greeting-hello")

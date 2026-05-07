@@ -1,0 +1,6 @@
+[match [match 42 Int "int" _ "other"]
+    "int"    "matched-int"
+    "other"  "matched-other"
+    _        "unknown"]
+===
+String("matched-int")

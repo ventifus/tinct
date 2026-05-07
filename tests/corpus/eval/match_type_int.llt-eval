@@ -1,0 +1,6 @@
+[match 42
+    Int   "number"
+    Str   "string"
+    _     "other"]
+===
+String("number")

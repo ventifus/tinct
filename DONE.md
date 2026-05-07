@@ -3273,6 +3273,14 @@ Remaining implementation work for TypeAssert structural contract checking.
 - [x] JSON serialization: {"Tag": null}
 - [x] 6 corpus tests for variant construction, tag-of, type-of, equality, serialization
 
+### nominal-variants-full
+
+- [x] Payload constructor registration: fn(x) → Variant { tag, payload: Some(x) }
+- [x] Pattern::Constructor for match: [Some v] matches and binds payload
+- [x] Constructor as regular function call (no special eval path)
+- [x] Lazy payload semantics (thunk, not forced at construction)
+- [x] Tests for payload construction, pattern matching, constructors as values
+
 ### cycle-findings-c71-a: Cycle #71 Major Findings (Code)
 
 - [x] Fix dead filter in `generalize()` type_vars collection — `!all_row_vars.contains(var)` guard on `all_type_vars` iterator is always false; names in the two sets are disjoint by construction (distinct counters). Remove the guard or replace with `debug_assert!(!all_row_vars.contains(var))`. (`src/types.rs:1416-1418`) [Major, type-theorist C71]
