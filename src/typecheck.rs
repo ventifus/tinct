@@ -789,6 +789,90 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                         return narrowings;
                     }
+                    // Pattern: [int? x], [str? x], [dict? x], [bool? x], [float? x],
+                    // [fn? x], [null? x], [seq? x], [num? x]
+                    "int?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Int,
+                            }];
+                        }
+                    }
+                    "str?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Str,
+                            }];
+                        }
+                    }
+                    "dict?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            // dict? narrows to open record with fresh RowVar
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Record(Row {
+                                    fields: HashMap::new(),
+                                    tail: RowTail::RowVar(format!("_narrow_{}", var_name), 0),
+                                }),
+                            }];
+                        }
+                    }
+                    "bool?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Bool,
+                            }];
+                        }
+                    }
+                    "float?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Float,
+                            }];
+                        }
+                    }
+                    "fn?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            // fn? narrows to Unknown (can't express "any function" precisely yet)
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Unknown,
+                            }];
+                        }
+                    }
+                    "null?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            // null? narrows to empty closed record
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Record(Row {
+                                    fields: HashMap::new(),
+                                    tail: RowTail::Empty,
+                                }),
+                            }];
+                        }
+                    }
+                    "seq?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Seq(Box::new(Type::Unknown)),
+                            }];
+                        }
+                    }
+                    "num?" if args.len() == 1 => {
+                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            // num? narrows to Number (supertype of Int | Float)
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Number,
+                            }];
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -996,9 +1080,13 @@ fn least_upper_bound(ty1: &Type, ty2: &Type) -> Type {
         return promoted1;
     }
 
-    // Number is the LUB of Int and Float
+    // Number is the LUB of Int and Float; Number subsumes both
     match (&promoted1, &promoted2) {
         (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Number,
+        (Type::Number, Type::Int)
+        | (Type::Int, Type::Number)
+        | (Type::Number, Type::Float)
+        | (Type::Float, Type::Number) => Type::Number,
         // Both are records: conservative open record
         (Type::Record(_), Type::Record(_)) => Type::Record(Row {
             fields: HashMap::new(),
@@ -9492,5 +9580,125 @@ mod tests {
         // After `[= [type-of x] "Number"]`, the true branch knows `x : Number`
         let result = check("[x: 30]\n[result: [if [= [type-of x] \"Number\"] x 0]]");
         assert!(result.is_ok(), "type-of Number narrowing should work");
+    }
+
+    // === Type Predicate Narrowing Tests (B5b) ===
+
+    #[test]
+    fn test_narrowing_int_predicate() {
+        // After `[int? x]`, the true branch knows `x : Int`
+        let env = doc_env_with_builtins("[x: 30]\n[result: [if [int? x] x 0]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for int? narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_str_predicate() {
+        // After `[str? x]`, the true branch knows `x : Str`
+        let env = doc_env_with_builtins("[x: \"\"]\n[result: [if [str? x] x \"default\"]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) => {}
+            Some(other) => panic!("expected Str for str? narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_bool_predicate() {
+        // After `[bool? x]`, the true branch knows `x : Bool`
+        let env = doc_env_with_builtins("[x: true]\n[result: [if [bool? x] x false]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Bool) => {}
+            Some(other) => panic!("expected Bool for bool? narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_float_predicate() {
+        // After `[float? x]`, the true branch knows `x : Float`
+        let env = doc_env_with_builtins("[x: 3.14]\n[result: [if [float? x] x 0.0]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Float) => {}
+            Some(other) => panic!("expected Float for float? narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_num_predicate() {
+        // After `[num? x]`, the true branch knows `x : Number`
+        let env = doc_env_with_builtins("[x: 30]\n[result: [if [num? x] x 0]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Number) => {}
+            Some(other) => panic!("expected Number for num? narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_dict_predicate() {
+        // After `[dict? x]`, the true branch knows `x : Record(open)`
+        let env = doc_env_with_builtins("[x: [a: 1]]\n[result: [if [dict? x] x []]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Record(_)) => {}
+            Some(other) => panic!("expected Record for dict? narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_seq_predicate() {
+        // After `[seq? x]`, the true branch knows `x : Seq(Unknown)`
+        let result = check("[x: [seq 1 2]]\n[result: [if [seq? x] x [seq 1 2]]]");
+        assert!(result.is_ok(), "seq? narrowing should work");
+    }
+
+    #[test]
+    fn test_narrowing_null_predicate() {
+        // After `[null? x]`, the true branch knows `x : Record(Empty)` (Null = empty closed record)
+        let env = doc_env_with_builtins("[x: []]\n[result: [if [null? x] x []]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Record(row)) if matches!(row.tail, RowTail::Empty) => {}
+            Some(other) => panic!("expected closed Record for null? narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_fn_predicate() {
+        // After `[fn? x]`, the true branch knows `x : Unknown` (can't express "any function" precisely yet)
+        let result = check("[x: [fn [] 1]]\n[result: [if [fn? x] x [fn [] 0]]]");
+        assert!(result.is_ok(), "fn? narrowing should work");
+    }
+
+    #[test]
+    fn test_narrowing_predicate_with_conjunction() {
+        // [and [int? x] [< x 100]] should apply int? narrowing in true branch
+        // `and` and `>` are prelude functions, not builtins, so define `and` locally.
+        let env = doc_env_with_builtins(
+            "[and: [fn [a b] [if a b false]]]\n\
+             [x: 30]\n\
+             [result: [if [and [int? x] [< x 100]] x 0]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for int?+conjunction narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_narrowing_predicate_with_variable_binding() {
+        // Test that narrowing works correctly when variable is bound to another name
+        let env = doc_env_with_builtins("[x: 30]\n[y: x]\n[result: [if [int? y] y 0]]");
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for variable binding narrowing, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
     }
 }

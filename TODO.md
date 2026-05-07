@@ -4,33 +4,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Phase B: Type System Primitives
-
-### `narrowing-predicates`
-
-**Depends on:** `narrowing-basic` (B5a). Type predicates (DONE).
-**Spec chapters:** `doc/06-type-inference.md` (§Type Predicate Narrowing — `int?` as direct narrowing trigger)
-
-1. Extend `extract_narrowings` to recognize `[int? x]`, `[str? x]`,
-   `[dict? x]`, `[bool? x]`, `[float? x]`, `[fn? x]`, `[null? x]`,
-   `[seq? x]` as direct narrowing triggers — map each predicate to its
-   corresponding `Type` (`src/typecheck.rs`)
-2. Predicate-to-type mapping: `int?` -> `Type::Int`, `str?` -> `Type::Str`,
-   `dict?` -> `Type::Record(Row::Open)`, `seq?` -> `Type::Seq(Any)`,
-   `fn?` -> `Type::Any`, `null?` -> `Type::Record(Row::Empty)`,
-   `float?` -> `Type::Float`, `bool?` -> `Type::Bool` (`src/typecheck.rs`)
-3. `num?` narrowing: `num?` -> `Type::Number` (supertype of Int | Float)
-   (`src/typecheck.rs`)
-4. `cond` narrowing: extend narrowing to `cond` — each condition-body
-   pair narrows independently (optional — can defer to `if`-only)
-   (`src/typecheck.rs`)
-5. Tests: 8+ (each predicate narrows correctly, num? supertype narrowing,
-   predicate inside `and`, predicate with variable binding, match
-   desugared to if/int?/str? chain has correct arm body types, LSP
-   hover shows narrowed type in match arm)
-
----
-
 ## Phase C: Algebraic Types
 
 ### `adts`
