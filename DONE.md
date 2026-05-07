@@ -4423,3 +4423,18 @@ Upgrade Rust toolchain 1.86 → 1.95 and four outdated crates.
 - [x] url = "2" added as lsp-feature-gated dep
 - [x] Rust 1.95 compat: TestFile<'_> lifetime, SIGALRM cast, BuiltinDef::PartialEq by name
 - [x] Integration: just update, all 1918 tests pass
+
+### `rust-modernize`
+
+Adopt new Rust 1.87–1.95 language and stdlib features available at the new MSRV. These are independent follow-on refactors; each is a quality-of-life improvement, not a correctness fix.
+
+- [x] **Let-chains** (stable 1.88, edition 2021): applied 5 sites in eval.rs, typecheck.rs, eval_materialize.rs (`src/eval.rs`, `src/typecheck.rs`, `src/eval_materialize.rs`)
+- [x] **`Result::flatten()`** (stable 1.89): no applicable patterns found (`src/eval.rs`, `src/builtins.rs`)
+- [x] **`File::lock()` / `try_lock()`** (stable 1.89): added advisory locking in builtin_write_atomic (`src/builtins_io.rs`)
+- [x] **`str::ceil_char_boundary` / `floor_char_boundary`** (stable 1.91): no applicable patterns found — lexer/parser don't use boundary calculations (`src/lexer.rs`, `src/parser.rs`)
+- [x] **`Path::file_prefix()`** (stable 1.91): no applicable patterns found (`src/main.rs`)
+- [x] **`HashMap::extract_if`** (stable 1.88): no applicable patterns found (`src/eval_dict.rs`, `src/builtins_dict.rs`)
+- [x] **`Peekable::next_if_map()`** (stable 1.94): no applicable patterns found — lexer/parser don't use Peekable (`src/lexer.rs`, `src/parser.rs`)
+- [x] **`cfg_select!` macro** (stable 1.95): applied in setup_seccomp() (`src/main.rs`)
+- [x] **`OsStr::display()`** (stable 1.87): no applicable patterns found (`src/main.rs`)
+- LazyLock item moved to `typecheck-import-env` sprint (depends on that sprint's `src/imports.rs`)

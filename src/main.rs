@@ -509,16 +509,15 @@ fn setup_seccomp() -> Result<(), String> {
 
     // Determine the target architecture for the BPF filter.
     // seccompiler requires this to match the running kernel's architecture.
-    #[cfg(target_arch = "x86_64")]
-    let arch = TargetArch::x86_64;
-    #[cfg(target_arch = "aarch64")]
-    let arch = TargetArch::aarch64;
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        // seccompiler only supports x86_64 and aarch64. On other architectures
-        // (e.g. arm, riscv64, s390x) we degrade gracefully without error.
-        return Ok(());
-    }
+    let arch = std::cfg_select! {
+        target_arch = "x86_64" => TargetArch::x86_64,
+        target_arch = "aarch64" => TargetArch::aarch64,
+        _ => {
+            // seccompiler only supports x86_64 and aarch64. On other architectures
+            // (e.g. arm, riscv64, s390x) we degrade gracefully without error.
+            return Ok(())
+        }
+    };
 
     // Build the syscall blocklist. Each entry maps a syscall number to an empty
     // rule vector, which means "match unconditionally" — the match_action
