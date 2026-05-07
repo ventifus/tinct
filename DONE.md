@@ -3247,6 +3247,16 @@ Remaining implementation work for TypeAssert structural contract checking.
 - [x] Add remaining TypeAssert corpus test coverage — float_pass, number_accepts_int, closed_record_pass, lazy_field_no_error were added in typeassert-structural-a; open_record_pass, type_alias_pass were added in typeassert-structural-b (tests/corpus/eval/type_assertions/); closed_record_rejects_extra, missing_field_error, open_record_requires_fields added in typeassert-structural-b (tests/corpus/eval/errors/). Deferred: field_type_mismatch and missing_required_field require parser support for record type expressions in annotations (property dict annotations don't set resolved_type yet). (`tests/corpus/eval/type_assertions/`, `tests/corpus/eval/errors/`) [Major, test-crafter C52]
 - [x] Fix LSP double-typecheck panic risk — `resolve_type_assert` panics if `resolved_type` is already `Some` (write-once guard at `src/typecheck.rs:957-961`); if the LSP caches a parsed AST and calls `typecheck_file_with_types()` a second time on the same AST (e.g., after an edit), the panic fires. Fix: either (a) always parse fresh before each typecheck call, or (b) add a `reset_elaboration(file: &mut File)` pre-pass in `src/typecheck.rs` that walks the AST and sets all `resolved_type` fields back to `None` before re-typechecking. Option (b) is safer for LSP performance. (`src/typecheck.rs:942-976`) [Major, integration-verifier C49]
 - [x] Fix `validate_and_wrap_record` closed-record cardinality check skipping `Key::Int` entries — the extra-field rejection loop at `src/eval.rs:199-219` only checks `Key::String` keys; integer-keyed entries (auto-indexed dict fields) pass unchecked even against a closed `RowTail::Empty` record type. A dict `[0: "x" name: "y"]` validates against `[@{name: String}]` without error. Fix: extend the cardinality check to also reject `Key::Int` entries not present in `row.fields`. (`src/eval.rs:199-219`) [Minor, computer-scientist C51]
+
+## Phase C: Algebraic Types
+
+### adts
+
+- [x] Multi-entry [type ...] body → Type::Union in type checker
+- [x] Expr::Str in type position → Type::StringLiteral for tag-only variants
+- [x] Type alias registration for union types with TypeScheme instantiation
+- [x] try return type updated to Union([ok: a], [err: Str])
+- [x] 8 unit tests + 3 corpus tests for ADT declarations
 - [x] Fix LSP request handler propagating deserialization errors as fatal — `handle_request()` uses `?` to propagate `serde_json::from_value(req.params)?` and all other errors; any failure kills the LSP server process; notification handlers handle errors gracefully with `eprintln` + `return Ok(())`; apply same pattern to request handler with `ResponseError { code: InvalidParams, ... }` response on bad params. (`src/lsp/server.rs:83`) [Major, security-expert C52]
 - [x] Fix `$filter` on empty Dict — determined NOT a bug; empty Dict IS the correct Seq terminal; existing corpus test `filter_empty.llt-eval` confirms. (`src/builtins.rs:1787-1789`) [Minor, eval-engine C52]
 - [x] Fix `$filter` dict path O(n) `map.clone()` — replaced `Thunk::new_materialized(Value::Dict(map.clone()), call_span)` with `Rc::clone(&args[1])`. (`src/builtins.rs:2086`) [Major, eval-engine C53]

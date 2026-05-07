@@ -1,0 +1,6 @@
+# Test: tag-only [type "a" "b" ...] with string literal variants
+[Status: [type "ok" "err" "pending"]]
+---
+"ok"
+===
+String("ok")

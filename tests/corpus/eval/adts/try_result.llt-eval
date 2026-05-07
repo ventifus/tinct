@@ -1,0 +1,4 @@
+# Test: try builtin returns result dict (duplicates builtins/try_success)
+[try [fn [] 42]]
+===
+Dict({"ok": Int(42)})
