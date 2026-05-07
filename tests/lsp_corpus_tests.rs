@@ -210,7 +210,9 @@ fn get_diagnostics_for_source(source: &str) -> Vec<Diagnostic> {
     let doc = DocumentState::new(source.to_string(), &stdlib_env, &eval_ctx, &prelude_index);
 
     // Generate LSP diagnostics
-    let uri = lsp_types::Url::parse("file:///test.llt").expect("Failed to parse test URI");
+    let uri = "file:///test.llt"
+        .parse::<lsp_types::Uri>()
+        .expect("Failed to parse test URI");
     let lsp_diagnostics = diagnostics_for(&doc, &uri);
 
     // Convert to simplified diagnostic struct

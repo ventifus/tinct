@@ -5,7 +5,7 @@
 //!
 //! ## Architecture
 //!
-//! - **Document store**: maintains parsed AST + type errors + eval errors per URL
+//! - **Document store**: maintains parsed AST + type errors + eval errors per URI
 //! - **Span conversion**: translates between LLT spans (1-indexed, byte offsets)
 //!   and LSP positions (0-indexed, UTF-16 code units)
 //! - **Analysis**: hover text generation, diagnostics from parse/type/eval errors

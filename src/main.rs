@@ -393,7 +393,7 @@ fn install_timeout(duration_str: &str) -> Result<(), String> {
     unsafe {
         // Install signal handler using sigaction (more portable than signal())
         let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = timeout_handler as libc::sighandler_t;
+        sa.sa_sigaction = timeout_handler as *const () as libc::sighandler_t;
         // SA_RESTART: restart syscalls interrupted by this signal (avoid EINTR)
         sa.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa.sa_mask);

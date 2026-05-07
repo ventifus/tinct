@@ -5,7 +5,7 @@
 container := "podman"
 
 # Rust version to use
-rust_version := "1.86"
+rust_version := "1.95"
 
 # Nightly image — required for cargo-fuzz / libfuzzer instrumentation
 nightly_image := "rust:nightly"
@@ -115,15 +115,6 @@ check:
 # Update dependencies
 update:
     {{container}} run {{run_flags}} {{rust_image}} cargo update
-
-# Downgrade dependencies that require Rust 1.87+; pin to last Rust-1.86-compatible versions.
-# Pinned crates and reasons:
-#   home 0.5.5          — newer versions require Rust 1.87+
-#   url 2.5.3           — newer versions depend on idna ≥ 1.0 which requires Rust 1.87+
-#   idna_adapter 1.2.0  — newer versions (via idna 1.x) require Rust 1.87+
-# (icu_* packages are pulled in transitively through idna; pinning idna_adapter is sufficient)
-downgrade-deps:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo update home --precise 0.5.5 && cargo update url --precise 2.5.3 && cargo update idna_adapter --precise 1.2.0"
 
 # Pin a specific dependency version
 update-precise PKG VER:

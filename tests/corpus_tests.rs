@@ -59,7 +59,7 @@ struct TestFile<'a> {
 /// - `=== error` — expected error substring (must include [EXXX] error code)
 ///
 /// A bare `===` (without a label) is a parse error — use `=== out` instead.
-fn split_test_file(content: &str) -> TestFile {
+fn split_test_file(content: &str) -> TestFile<'_> {
     // Check for directives on the first line
     let (directives_line, rest) = if let Some(newline_pos) = content.find('\n') {
         let (first_line, remainder) = content.split_at(newline_pos);
