@@ -949,4 +949,29 @@ collect-kv: [fn@Dict [xs] [builtin-reduce [fn [acc kv] [merge acc [make-entry kv
 str-repeat: [fn@Str [s@Str n@Int]
   [builtin-reduce [fn [acc _] [str acc s]] "" [range 0 n]]]
 
+# ============================================================================
+# Numeric Range Predicates
+# ============================================================================
+
+# between: predicate factory — returns a predicate that checks lo <= v <= hi.
+# between: Int -> Int -> (Int -> Bool)
+# assert: [[between 0 255] 42] => true
+# assert: [[between 0 255] -1] => false
+# assert: [[between 0 255] 256] => false
+between: [fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
+
+# non-negative: predicate — checks v >= 0.
+# non-negative: Int -> Bool
+# assert: [non-negative 0] => true
+# assert: [non-negative 42] => true
+# assert: [non-negative -1] => false
+non-negative: [fn [v] [>= v 0]]
+
+# positive: predicate — checks v > 0.
+# positive: Int -> Bool
+# assert: [positive 1] => true
+# assert: [positive 0] => false
+# assert: [positive -1] => false
+positive: [fn [v] [> v 0]]
+
 ]

@@ -1,0 +1,29 @@
+# ============================================================================
+# Numeric Type Aliases (stdlib/numeric.llt)
+# ============================================================================
+#
+# Named width type aliases with range constraints via `is:` predicates.
+# These define fixed-width integer types using the `between` predicate
+# from the prelude. Values annotated with these types are range-checked
+# at runtime via TypeAssert `is:` predicate evaluation.
+#
+# Usage:
+#   [include libdir "numeric.llt"]
+#   port@UInt16: 8080
+#   offset@Int8: -42
+#
+# ============================================================================
+
+[
+
+# Unsigned integer types
+UInt8:  [type Int@[is: [between 0 255]]]
+UInt16: [type Int@[is: [between 0 65535]]]
+UInt32: [type Int@[is: [between 0 4294967295]]]
+
+# Signed integer types
+Int8:  [type Int@[is: [between -128 127]]]
+Int16: [type Int@[is: [between -32768 32767]]]
+Int32: [type Int@[is: [between -2147483648 2147483647]]]
+
+]
