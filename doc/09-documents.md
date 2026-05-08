@@ -545,6 +545,9 @@ error: %nc@NetCap is required but not provided
 
 error: %data@DirCap is required but not provided
   inject it with:  tinct run --cap-fs data=PATH ...
+
+error: %config@Handle is required but not provided
+  inject it with:  tinct run --cap-file config=PATH:r ...
 ```
 
 Auto-injected caps (`%pwd`, `%libdir`, `%stdin`) produce a different hint if missing:
@@ -555,6 +558,21 @@ error: %pwd@DirCap is required but not provided
 ```
 
 The CLI flag name is derived from the cap name by stripping the `%` prefix: `%nc` → `--cap-net nc=...`.
+
+**Capability type table:**
+
+| `@Type` in `caps:` | Injected by CLI flag | Description |
+|--------------------|---------------------|-------------|
+| `@DirCap`          | `--cap-fs NAME=PATH` | Directory capability (read/write files under PATH) |
+| `@NetCap`          | `--cap-net NAME=ENTRY` | Network capability (connect to allowed hosts) |
+| `@Handle`          | `--cap-file NAME=PATH:MODE` | Pre-opened file handle (pinpoint file access) |
+| `@ClockCap`        | `--cap-clock NAME` | Clock capability (real or fixed timestamp) |
+
+**`@Handle` mode suffixes** for `--cap-file`:
+- `r` — readable text handle (`$slurp` returns a String)
+- `rb` — readable binary handle (`$slurp` returns Bytes)
+- `w` — writable text handle (`$write-handle` writes a String)
+- `wb` — writable binary handle (`$write-handle` writes Bytes)
 
 **`doc_separator`:** Three hyphens `---` not followed by an `ident_char`. This prevents `----` or `---foo` from matching as a separator.
 

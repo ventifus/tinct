@@ -109,6 +109,9 @@ const _: () = {
 /// Error types with source spans and stack traces.
 pub use error::{render_span_snippet, ArityBound, ErrorKind, EvalError, EvalResult, StackFrame};
 
+/// Type error diagnostic formatting.
+pub use types::{format_type_error, TypeError};
+
 /// Formatter: canonical source reformatter.
 pub use formatter::{format_source, format_source_compact, format_source_tinct};
 

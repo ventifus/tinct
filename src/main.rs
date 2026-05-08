@@ -134,6 +134,14 @@ enum Commands {
         #[arg(long, value_name = "RFC3339 NAME", num_args = 2)]
         cap_clock_fixed: Vec<String>,
 
+        /// Inject a named file Handle into the root environment (may be repeated).
+        /// Format: NAME=PATH:MODE — pre-opens PATH and binds %NAME to a Handle.
+        /// MODE: r (readable text), rb (readable binary), w (writable text), wb (writable binary).
+        /// Example: --cap-file config=Cargo.toml:r injects %config as a readable Handle.
+        /// --no-fs also suppresses --cap-file Handles (filesystem access is blocked entirely).
+        #[arg(long, value_name = "NAME=PATH:MODE")]
+        cap_file: Vec<String>,
+
         /// Evaluate an inline tinct expression (may be repeated).
         /// Each -e occurrence inserts a pipeline stage at that position in the command line,
         /// interleaved with file arguments. Each expression receives % from the previous stage.
@@ -264,6 +272,7 @@ fn main() {
             cap_net,
             cap_clock,
             cap_clock_fixed,
+            cap_file,
             expr,
             input,
             output,
@@ -288,6 +297,7 @@ fn main() {
             cap_net,
             cap_clock,
             cap_clock_fixed,
+            cap_file,
             expr,
             input,
             output,
@@ -710,6 +720,7 @@ fn run_eval(
     cap_net: Vec<String>,
     cap_clock: Vec<String>,
     cap_clock_fixed: Vec<String>,
+    cap_file: Vec<String>,
     expr: Vec<String>,
     input: Option<String>,
     output: Option<String>,
@@ -1084,6 +1095,109 @@ fn run_eval(
         }
     }
 
+    // Inject --cap-file NAME=PATH:MODE entries into the root environment as `%NAME`.
+    // --no-fs suppresses all cap-file entries (filesystem access is blocked globally).
+    if !no_fs {
+        use std::collections::HashMap;
+        use std::io::BufReader;
+
+        for cap_file_entry in &cap_file {
+            // Parse NAME=PATH:MODE
+            let (name, rest) = cap_file_entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "--cap-file: expected NAME=PATH:MODE format, got {:?}",
+                    cap_file_entry
+                )
+            })?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "--cap-file: NAME must not be empty in {:?}",
+                    cap_file_entry
+                ));
+            }
+
+            // Split PATH:MODE — mode is the suffix after the last ':'
+            // PATH may contain ':' on Windows (e.g. C:\foo.txt); find the last ':' for the mode.
+            let (path_str, mode_str) = rest.rsplit_once(':').ok_or_else(|| {
+                format!(
+                    "--cap-file: expected NAME=PATH:MODE format (missing mode suffix r/rb/w/wb), got {:?}",
+                    cap_file_entry
+                )
+            })?;
+            let path_str = path_str.trim();
+            let mode_str = mode_str.trim();
+
+            if path_str.is_empty() {
+                return Err(format!(
+                    "--cap-file: PATH must not be empty in {:?}",
+                    cap_file_entry
+                ));
+            }
+
+            // Parse mode: r, rb, w, wb
+            let (readable, _writable, binary) = match mode_str {
+                "r"  => (true, false, false),
+                "rb" => (true, false, true),
+                "w"  => (false, true, false),
+                "wb" => (false, true, true),
+                other => {
+                    return Err(format!(
+                        "--cap-file: invalid mode {:?} in {:?}: must be r, rb, w, or wb",
+                        other, cap_file_entry
+                    ));
+                }
+            };
+
+            let cap_value = if readable {
+                // Open file for reading
+                let file = std::fs::File::open(path_str).map_err(|e| {
+                    format!("--cap-file: cannot open {:?} for reading: {e}", path_str)
+                })?;
+                let buf_reader: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
+                let mut caps: HashMap<String, tinct::Value> = HashMap::new();
+                caps.insert("Readable".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                if binary {
+                    caps.insert("Binary".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                } else {
+                    caps.insert("Text".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                }
+                tinct::Value::Handle {
+                    caps,
+                    inner: Rc::new(std::cell::RefCell::new(buf_reader)),
+                    write_inner: None,
+                    seek_inner: None,
+                }
+            } else {
+                // Open file for writing (create/truncate)
+                let file = std::fs::File::create(path_str).map_err(|e| {
+                    format!("--cap-file: cannot open {:?} for writing: {e}", path_str)
+                })?;
+                let buf_writer: Box<dyn std::io::Write> = Box::new(file);
+                let mut caps: HashMap<String, tinct::Value> = HashMap::new();
+                caps.insert("Writable".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                if binary {
+                    caps.insert("Binary".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                } else {
+                    caps.insert("Text".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                }
+                tinct::Value::WriteHandle {
+                    caps,
+                    inner: Rc::new(std::cell::RefCell::new(buf_writer)),
+                }
+            };
+
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            // Inject as `%NAME` (auto-prefix %).
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
+            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
+        }
+    }
+
     // Determine env_allowed based on CLI flags.
     // --no-env and --allow-env enforcement: the `env` builtin checks this field
     // at runtime (see builtin_env in builtins.rs). Returns Null for disallowed vars.
@@ -1176,8 +1290,12 @@ fn run_eval(
         if !type_errors.is_empty() {
             if strict {
                 // In strict mode, type errors are fatal — print them and exit.
+                let file_name = match stage {
+                    PipelineStage::File(fp) => fp.as_str(),
+                    PipelineStage::Expr(_) => "<expr>",
+                };
                 for err in &type_errors {
-                    eprintln!("{}", err);
+                    eprintln!("{}", tinct::format_type_error(err, &source, file_name));
                 }
                 return Err(format!(
                     "type checking failed with {} error(s) (--strict mode)",
@@ -1432,7 +1550,10 @@ fn run_fmt(
             tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
 
         if !type_errors.is_empty() {
-            let error_msgs: Vec<String> = type_errors.iter().map(|e| format!("{}", e)).collect();
+            let error_msgs: Vec<String> = type_errors
+                .iter()
+                .map(|e| tinct::format_type_error(e, &source, file_path))
+                .collect();
             return Err(error_msgs.join("\n"));
         }
     }
@@ -2531,12 +2652,96 @@ Fix: file a bug report with the full error message and the LLT source file
 that triggered the error."
         }
 
+        // --- Type checker codes (T000-T004) ---
+        "T000" => {
+            "\
+T000: General type error
+
+A type checking constraint was violated that does not fall into one of the
+more specific categories (T001-T004). The error message describes the
+specific constraint that failed.
+
+Fix: read the error message to understand the constraint, then adjust the
+type annotations or expression structure to satisfy it."
+        }
+
+        "T001" => {
+            "\
+T001: Arity mismatch (type checker)
+
+A function was called with the wrong number of arguments according to its
+declared type. For example, calling a Fn@Int [Int String] (which takes 2
+arguments) with only 1.
+
+Note: the type checker counts named arguments toward the arity. If a named
+argument fills one positional slot, the arity check accounts for it.
+
+Fix: supply the correct number of arguments, or update the function's type
+annotation if the arity is intentionally changing."
+        }
+
+        "T002" => {
+            "\
+T002: Undefined variable (type checker)
+
+A variable or type name was referenced in a type expression or value
+expression but could not be found in any enclosing scope visible to the
+type checker.
+
+Common causes:
+  - Sequential bindings are not visible to the type checker by default
+    (only letrec dict bindings are in scope at typecheck time).
+  - A type alias was referenced before it was defined.
+  - A typo in the variable name.
+
+Fix: ensure the variable is defined in the same dict scope (not a
+Sequential binding), or check the name for typos."
+        }
+
+        "T003" => {
+            "\
+T003: Cannot unify (type checker)
+
+Two types that were expected to be compatible turned out to be incompatible.
+For example, a function declared to return String but whose body produces Int,
+or passing a String where an Int parameter is expected.
+
+The error message shows:
+  expected `<type>` — the type required by the context
+  found `<type>`    — the type that was actually inferred
+
+Fix: make the expression's type match the expected type. Common approaches:
+  - Add or remove a type conversion ($to-int, $to-str, etc.)
+  - Update the type annotation to match the actual type
+  - Fix a logic error that causes the wrong type to be produced."
+        }
+
+        "T004" => {
+            "\
+T004: Type assertion or match coverage failure (type checker)
+
+Either:
+  - A match expression does not cover all possible values of its scrutinee
+    type (non-exhaustive match), or
+  - A type assertion annotation disagrees with the inferred type of the
+    annotated expression.
+
+For non-exhaustive match: the error message lists the uncovered patterns.
+For type assertion: the message shows the expected and found types.
+
+Fix for non-exhaustive match: add arms to cover the missing patterns, or
+add a wildcard arm (_) to handle any remaining cases.
+Fix for type assertion: update the annotation to match the runtime type, or
+fix the expression to produce the declared type."
+        }
+
         _ => {
             return Err(format!(
                 "unknown error code: {code}\n\
-                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099.\n\
+                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
-                 E040-E043, E050-E057, E060-E062, E070, E080, E090, E099."
+                 E040-E043, E050-E057, E060-E062, E070, E080, E090, E099, \
+                 T000, T001, T002, T003, T004."
             ));
         }
     };
