@@ -540,6 +540,58 @@ named_arg_key = identifier
 
 Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time. See doc/04-functions.md for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
+#### 3.3.1a Head-Position: Call vs Data
+
+The priority table makes a sharp distinction based on what appears first inside `[...]`:
+
+**Identifier in head → call.** Any bare identifier (not a keyword, not followed by `:`) triggers implied call — `[f x y]` applies `f` to `x` and `y`.
+
+**Bracket expression in head → data.** When the first element is itself a `[...]` expression, the outer bracket is parsed as a data sequence (Priority 7 fallback), **not** a call. This is intentional: it preserves the `[[condition-result] value]` pair pattern used by `cond` and similar constructs:
+
+```tinct
+[cond
+  [[= x 0]  "zero"]     # data pairs: [[call-result] value]
+  [[> x 0]  "positive"]
+  [true     "negative"]]
+```
+
+Each `[[= x 0] "zero"]` is a 2-element data array where `[= x 0]` is a call expression producing a condition result. If bracket-expression heads triggered calls, `cond` would break entirely.
+
+**`$`-prefixed head → data.** `[$f x y]` is always data regardless of what `f` is.
+
+#### 3.3.1b Local Bindings and IIFE Patterns
+
+In other languages, *immediately invoked function expressions* (IIFEs) create a new scope for local variables: `((fn [x] ...) value)`. In tinct this pattern is largely unnecessary because scoping is built into the language at two levels.
+
+**Preferred: fn body Sequential.** Any `fn` body with multiple expressions forms a Sequential scope — each `[name: val]` step extends the environment for all subsequent steps:
+
+```tinct
+[transform: [fn [input]
+  [cleaned:  [trim input]]
+  [parts:    [split ":" cleaned]]
+  [str [get 0 parts] "@" [get 1 parts]]]]
+```
+
+The bindings `cleaned` and `parts` are local to this fn body. This is the idiomatic tinct approach to local variables.
+
+**Also available: document-level Sequential.** At the top level of a document, each `[name: val]` expression extends the environment for all subsequent expressions:
+
+```tinct
+[raw:     [slurp [open %pwd "data.txt" "r"]]]
+[cleaned: [trim raw]]
+[parts:   [split ":" cleaned]]
+[emit [str [get 0 parts] "@" [get 1 parts]]]
+```
+
+**For rare cases: explicit `call`.** When a computed anonymous function truly must be applied inline within a larger expression, use the `call` keyword:
+
+```tinct
+[call [fn [x] [+ x 1]] 42]              # → 43
+[call [fn [a b] [* a b]] width height]  # → area
+```
+
+`[[fn [x] ...] arg]` without `call` is parsed as data (Priority 7), not a function application. The `call` keyword is required whenever the function expression is not a bare identifier.
+
 #### 3.3.2 `fn` — Function Definition
 
 ```ebnf

@@ -826,6 +826,7 @@ mod tests {
                 name: None,
                 output_type: None,
                 expects: None,
+                caps: None,
             })],
         };
 

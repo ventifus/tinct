@@ -207,9 +207,9 @@ pub fn index_file(
         vec![]
     };
 
-    // Resolve include URIs (note: imports module returns (Span, String), not (String, Span))
+    // Resolve include URIs (note: imports module returns (Span, Option<String>, String))
     let mut includes = Vec::new();
-    for (_span, path) in include_paths {
+    for (_span, _cap_name, path) in include_paths {
         if let Some(include_uri) = resolve_include_uri(&uri, &path) {
             includes.push(include_uri);
         }
@@ -398,7 +398,7 @@ impl DocumentStore {
         let new_includes = if let Ok(ref file) = state.ast {
             crate::imports::collect_include_paths(&file.node)
                 .into_iter()
-                .filter_map(|(_span, path)| resolve_include_uri(&uri, &path))
+                .filter_map(|(_span, _cap_name, path)| resolve_include_uri(&uri, &path))
                 .collect::<Vec<_>>()
         } else {
             vec![]

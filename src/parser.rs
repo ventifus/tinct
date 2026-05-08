@@ -1356,6 +1356,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     let mut next_doc_name_span: Option<Span> = None;
     let mut next_doc_output_type: Option<Spanned<Annotation>> = None;
     let mut next_doc_expects: Option<Spanned<Annotation>> = None;
+    let mut next_doc_caps: Option<Spanned<Vec<(String, Annotation)>>> = None;
 
     // Convert to index-based iteration for peeking
     let token_vec = tokens;
@@ -2952,6 +2953,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         name: next_doc_name.take(),
                         output_type: next_doc_output_type.take(),
                         expects: next_doc_expects.take(),
+                        caps: next_doc_caps.take(),
                     },
                     doc_span,
                 ));
@@ -3088,6 +3090,126 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                     return Err(ann_err);
                                 }
                             }
+                        }
+                        Token::Identifier(s) if s == "caps" => {
+                            // caps: pragma
+                            if next_doc_caps.is_some() {
+                                return Err(ParseError {
+                                    message: "duplicate caps: pragma in header".to_string(),
+                                    span: Some(token_vec[i].span),
+                                });
+                            }
+                            let caps_start = token_vec[i].span.start;
+                            i += 1;
+                            // Expect colon
+                            if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
+                                return Err(ParseError {
+                                    message: "expected ':' after 'caps' pragma".to_string(),
+                                    span: Some(if i < token_vec.len() {
+                                        token_vec[i].span
+                                    } else {
+                                        token_vec[i - 1].span
+                                    }),
+                                });
+                            }
+                            i += 1;
+                            // Expect open bracket
+                            if i >= token_vec.len()
+                                || !matches!(&token_vec[i].node, Token::OpenBracket)
+                            {
+                                return Err(ParseError {
+                                    message:
+                                        "expected '[' after 'caps:' — caps must be a dict literal"
+                                            .to_string(),
+                                    span: Some(if i < token_vec.len() {
+                                        token_vec[i].span
+                                    } else {
+                                        token_vec[i - 1].span
+                                    }),
+                                });
+                            }
+                            i += 1; // Skip open bracket
+
+                            // Parse cap entries: %name: @Type
+                            let mut caps_vec: Vec<(String, Annotation)> = Vec::new();
+                            loop {
+                                // Check for close bracket
+                                if i >= token_vec.len() {
+                                    return Err(ParseError {
+                                        message: "unclosed caps dict — expected ']'".to_string(),
+                                        span: Some(token_vec[i - 1].span),
+                                    });
+                                }
+                                if matches!(&token_vec[i].node, Token::CloseBracket) {
+                                    i += 1; // Skip close bracket
+                                    break;
+                                }
+
+                                // Parse capability variable name (must start with %)
+                                // The lexer produces Token::Identifier("%nc") for %nc, not separate tokens
+                                let cap_name = match &token_vec[i].node {
+                                    Token::Identifier(name) if name.starts_with('%') => {
+                                        i += 1;
+                                        // Strip the % prefix to get just the capability name
+                                        name[1..].to_string()
+                                    }
+                                    _ => {
+                                        return Err(ParseError {
+                                            message: "caps entries must start with '%' (e.g., %nc: @NetCap)".to_string(),
+                                            span: Some(token_vec[i].span),
+                                        });
+                                    }
+                                };
+
+                                // Expect colon
+                                if i >= token_vec.len()
+                                    || !matches!(&token_vec[i].node, Token::Colon)
+                                {
+                                    return Err(ParseError {
+                                        message: format!(
+                                            "expected ':' after '%{}' in caps entry",
+                                            cap_name
+                                        ),
+                                        span: Some(if i < token_vec.len() {
+                                            token_vec[i].span
+                                        } else {
+                                            token_vec[i - 1].span
+                                        }),
+                                    });
+                                }
+                                i += 1;
+
+                                // Parse annotation (@Type)
+                                if i >= token_vec.len() {
+                                    return Err(ParseError {
+                                        message: format!(
+                                            "expected annotation after '%{}:' in caps entry",
+                                            cap_name
+                                        ),
+                                        span: Some(token_vec[i - 1].span),
+                                    });
+                                }
+                                match parse_annotation(
+                                    &token_vec,
+                                    i,
+                                    &mut leading_comments,
+                                    &mut blank_before,
+                                    input,
+                                    Some(&mut recovered_errors),
+                                ) {
+                                    Ok((annotation, next_i)) => {
+                                        caps_vec.push((cap_name, annotation.node));
+                                        i = next_i;
+                                    }
+                                    Err(ann_err) => {
+                                        return Err(ann_err);
+                                    }
+                                }
+                            }
+
+                            let caps_end = token_vec[i - 1].span.end;
+                            next_doc_caps =
+                                Some(Spanned::new(caps_vec, Span::new(caps_start, caps_end)));
                         }
                         Token::At | Token::ImmediateAt => {
                             // Standalone @Type annotation (no name)
@@ -3538,6 +3660,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             name: next_doc_name.take(),
             output_type: next_doc_output_type.take(),
             expects: next_doc_expects.take(),
+            caps: next_doc_caps.take(),
         };
         let doc_span = Span {
             start: Position {
@@ -3559,6 +3682,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             name: next_doc_name.take(),
             output_type: next_doc_output_type.take(),
             expects: next_doc_expects.take(),
+            caps: next_doc_caps.take(),
         };
         let doc_span = Span {
             start: Position {

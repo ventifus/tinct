@@ -310,13 +310,15 @@ impl Resolver {
             Expr::Dict(entries) => entries
                 .iter()
                 .filter_map(|entry| {
-                    entry.node.key.as_ref().and_then(|key_expr| {
-                        match &key_expr.node {
+                    entry
+                        .node
+                        .key
+                        .as_ref()
+                        .and_then(|key_expr| match &key_expr.node {
                             Expr::Str(s) => Some(s.clone()),
                             Expr::Annotated { name, .. } => Some(name.clone()),
                             _ => None,
-                        }
-                    })
+                        })
                 })
                 .collect(),
             // Non-dict expressions don't inject any scope bindings.

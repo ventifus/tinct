@@ -106,7 +106,6 @@ pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
-
 /// `open`: Open a file within a DirCap.
 ///
 /// Accepts two calling patterns:
@@ -563,7 +562,6 @@ pub(crate) fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         .into()),
     }
 }
-
 
 /// `connect`: Open a TCP or UDP connection within a NetCap.
 /// Takes a NetCap, hostname String, port Int, and optional Transport variant (default: Tcp).

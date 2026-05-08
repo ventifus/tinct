@@ -1455,7 +1455,7 @@ impl TypeEnv {
         env.insert(
             "http-connect".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],  // Url dict (from url builtin; no dedicated type)
+                params: vec![Type::Unknown], // Url dict (from url builtin; no dedicated type)
                 ret: Box::new(Type::Unknown), // Returns HttpConn
                 variadic: false,
             },

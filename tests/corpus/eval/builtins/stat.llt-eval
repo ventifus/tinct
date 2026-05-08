@@ -1,5 +1,3 @@
 [builtin-get "type" [call $stat %pwd "Cargo.toml"]]
 ---
 "file"
-=== warn
-undefined variable: %pwd

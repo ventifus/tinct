@@ -6,5 +6,3 @@
 [slurp [open [narrow %pwd "target"] "tinct-test-write-atomic-slurp.txt" "r"]]
 === out
 String("atomic write works")
-=== warn
-undefined variable: %pwd

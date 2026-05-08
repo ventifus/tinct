@@ -4,5 +4,3 @@
 
 === out
 Bool(true)
-=== warn
-undefined variable: %pwd

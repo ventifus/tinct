@@ -349,14 +349,13 @@ pub(crate) use crate::builtins_dict::{
 // Implementations live in builtins_io.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
-    builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit,
-    builtin_env, builtin_flush, builtin_has_cap, builtin_http_connect, builtin_http_get,
-    builtin_lines, builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow,
-    builtin_open, builtin_position, builtin_proxy_connect, builtin_read_link,
-    builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
-    builtin_seek_end, builtin_slurp, builtin_socks5_connect, builtin_spki_pin, builtin_stat,
-    builtin_tls_connect, builtin_tls_peer_cert, builtin_write, builtin_write_atomic,
-    builtin_write_handle,
+    builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit, builtin_env,
+    builtin_flush, builtin_has_cap, builtin_http_connect, builtin_http_get, builtin_lines,
+    builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow, builtin_open,
+    builtin_position, builtin_proxy_connect, builtin_read_link, builtin_remove, builtin_rename,
+    builtin_revocable, builtin_revoke_cap, builtin_seek, builtin_seek_end, builtin_slurp,
+    builtin_socks5_connect, builtin_spki_pin, builtin_stat, builtin_tls_connect,
+    builtin_tls_peer_cert, builtin_write, builtin_write_atomic, builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
@@ -6376,13 +6375,19 @@ mod tests {
         // I/O
         assert!(names.contains(&"emit"), "missing emit");
         assert!(names.contains(&"env"), "missing env");
-        assert!(!names.contains(&"dir-cap"), "dir-cap was removed (ambient cap creation)");
+        assert!(
+            !names.contains(&"dir-cap"),
+            "dir-cap was removed (ambient cap creation)"
+        );
         assert!(names.contains(&"open"), "missing open");
         assert!(names.contains(&"slurp"), "missing slurp");
         assert!(names.contains(&"narrow"), "missing narrow");
         assert!(names.contains(&"revocable"), "missing revocable");
         assert!(names.contains(&"revoke-cap"), "missing revoke-cap");
-        assert!(!names.contains(&"net-cap"), "net-cap was removed (ambient cap creation)");
+        assert!(
+            !names.contains(&"net-cap"),
+            "net-cap was removed (ambient cap creation)"
+        );
         assert!(names.contains(&"connect"), "missing connect");
         assert!(names.contains(&"lines"), "missing lines");
         assert!(names.contains(&"write"), "missing write");

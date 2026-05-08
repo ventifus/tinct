@@ -4,5 +4,3 @@
 
 === out
 Dict({})
-=== warn
-undefined variable: %pwd
