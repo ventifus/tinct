@@ -1274,6 +1274,58 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
 /// layers the prelude dict entries as a child scope. User code should
 /// use this as the parent environment.
 // Fatal: stdlib failure is not recoverable — callers should propagate or panic on Err.
+/// Helper function to load a stdlib module from source and insert its bindings
+/// into the environment.
+fn load_stdlib_module(
+    source: &str,
+    module_name: &str,
+    env: &Rc<RefCell<Environment>>,
+    ctx: &Rc<crate::eval::EvalContext>,
+) -> Result<(), Box<crate::error::EvalError>> {
+    let mut file = crate::parser::parse(source).map_err(|e| {
+        crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
+    })?;
+
+    crate::desugar::desugar_file(&mut file.node);
+    crate::resolve::resolve_file(&file.node);
+
+    // Type errors are advisory; evaluation proceeds regardless.
+    let builtins_env = Rc::new(crate::types::TypeEnv::with_builtins());
+    let _ = crate::typecheck::typecheck_file_with_types_and_env(&file.node, builtins_env);
+
+    let thunk = crate::eval::eval_file(&file.node, Rc::clone(env), ctx, 0)?;
+    let val = crate::eval::materialize(&thunk, None, ctx, 0)?;
+
+    let dict = match val {
+        Value::Dict(map) => map,
+        Value::Overlay(l_id, r_id) => {
+            flatten_overlay(&l_id, &r_id, module_name, ctx, 0, Span::origin())?
+        }
+        other => {
+            return Err(crate::error::EvalError::internal(
+                format!(
+                    "{module_name} must evaluate to a Dict, got {}",
+                    other.type_name()
+                ),
+                Span::origin(),
+            )
+            .into())
+        }
+    };
+
+    // Insert the module's bindings into the environment
+    for (key, thunk_id) in dict {
+        let name = match key {
+            Key::String(s) => s,
+            Key::Int(n) => n.to_string(),
+        };
+        let thunk = ctx.get_thunk(thunk_id);
+        env.borrow_mut().insert(name, thunk);
+    }
+
+    Ok(())
+}
+
 pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
     let root_env = create_root_env();
 
@@ -1288,51 +1340,34 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     let bootstrap_ctx =
         crate::eval::EvalContext::new(bootstrap_base_dir, Rc::clone(&root_env), false);
 
-    let prelude_source = include_str!("../stdlib/prelude.llt");
-    let mut file = crate::parser::parse(prelude_source).map_err(|e| {
-        crate::error::EvalError::internal(format!("prelude parse error: {e}"), Span::origin())
-    })?;
-
-    crate::desugar::desugar_file(&mut file.node);
-
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    crate::resolve::resolve_file(&file.node);
-
-    // Type errors are advisory; evaluation proceeds regardless.
-    // Use typecheck_file_with_types_and_env with a builtins-only env to avoid
-    // re-entrancy into build_prelude_env() (which may already hold a RefCell borrow
-    // when create_stdlib_env is called from expand_macros during prelude bootstrap).
-    let builtins_env = Rc::new(crate::types::TypeEnv::with_builtins());
-    let _ = crate::typecheck::typecheck_file_with_types_and_env(&file.node, builtins_env);
-
-    let thunk = crate::eval::eval_file(&file.node, Rc::clone(&root_env), &bootstrap_ctx, 0)?;
-
-    let val = crate::eval::materialize(&thunk, None, &bootstrap_ctx, 0)?;
-
-    let dict = match val {
-        Value::Dict(map) => map,
-        Value::Overlay(l_id, r_id) => {
-            flatten_overlay(&l_id, &r_id, "prelude", &bootstrap_ctx, 0, Span::origin())?
-        }
-        other => {
-            return Err(crate::error::EvalError::internal(
-                format!("prelude must evaluate to a Dict, got {}", other.type_name()),
-                Span::origin(),
-            )
-            .into())
-        }
-    };
-
-    // Create a child env with the prelude entries
+    // Create a child env with stdlib entries
     let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(root_env)));
-    for (key, thunk_id) in dict {
-        let name = match key {
-            Key::String(s) => s,
-            Key::Int(n) => n.to_string(),
-        };
-        let thunk = bootstrap_ctx.get_thunk(thunk_id);
-        stdlib_env.borrow_mut().insert(name, thunk);
-    }
+
+    // Load prelude first (other modules depend on it)
+    let prelude_source = include_str!("../stdlib/prelude.llt");
+    load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
+
+    // Create a new context with the stdlib_env (so additional modules can access prelude)
+    let stdlib_ctx = crate::eval::EvalContext::new(
+        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
+            Box::new(crate::error::EvalError::internal(
+                format!("cannot open stdlib base_dir: {e}"),
+                Span::origin(),
+            ))
+        })?,
+        Rc::clone(&stdlib_env),
+        false,
+    );
+
+    // Load additional stdlib modules
+    let strings_source = include_str!("../stdlib/strings.llt");
+    load_stdlib_module(strings_source, "strings", &stdlib_env, &stdlib_ctx)?;
+
+    let math_source = include_str!("../stdlib/math.llt");
+    load_stdlib_module(math_source, "math", &stdlib_env, &stdlib_ctx)?;
+
+    let encoding_source = include_str!("../stdlib/encoding.llt");
+    load_stdlib_module(encoding_source, "encoding", &stdlib_env, &stdlib_ctx)?;
 
     Ok(stdlib_env)
 }
@@ -7667,6 +7702,30 @@ mod tests {
         assert!(
             env_ref.get("identity").is_some(),
             "missing prelude function identity"
+        );
+        // Should have strings module functions
+        assert!(
+            env_ref.get("pad-left").is_some(),
+            "missing strings function pad-left"
+        );
+        assert!(
+            env_ref.get("str-reverse").is_some(),
+            "missing strings function str-reverse"
+        );
+        // Should have math module constants and functions
+        assert!(env_ref.get("pi").is_some(), "missing math constant pi");
+        assert!(
+            env_ref.get("hypot").is_some(),
+            "missing math function hypot"
+        );
+        // Should have encoding module functions
+        assert!(
+            env_ref.get("hex-encode").is_some(),
+            "missing encoding function hex-encode"
+        );
+        assert!(
+            env_ref.get("base64-encode").is_some(),
+            "missing encoding function base64-encode"
         );
     }
 

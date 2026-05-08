@@ -66,7 +66,7 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Add Bytes dual-dispatch for `split`, `replace`, `join`: byte-pattern split/replace, byte-separator join (deferred from `bytes-type` sprint) (`src/builtins_string.rs`)
 - [x] Add Seq dual-dispatch for `starts-with?` and `ends-with?` (element-by-element prefix match) (`src/builtins_string.rs`)
 - [x] Create `stdlib/strings.llt` with pure-tinct functions: `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse` (Note: `str-contains?` is already a Rust builtin, `str-repeat` is in prelude but duplicated here per requirements) (`stdlib/strings.llt`)
-- [ ] Tests: verify `pad-left` is NOT in scope without `[include "stdlib/strings.llt"]` (should error `undefined variable`); verify it IS available after include; same for `str-find`, `str-reverse` (`tests/corpus/eval/stdlib/`)
+- [x] Load `stdlib/strings.llt` at startup (alongside `prelude.llt`); `pad-left`, `str-find`, `str-reverse` available without explicit include (`src/builtins.rs`)
 - [ ] Tests: verify `basename`, `path-join` are NOT in scope without `[include "stdlib/path.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
 - [ ] Tests: verify `parse-toml-lite` is NOT in scope without `[include "stdlib/toml-lite.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
 - [x] Register type signatures for all new builtins (`src/types.rs`)
@@ -81,7 +81,7 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Register all 16 builtins in `standard_builtins()` with correct `Strictness` (`src/builtins.rs`)
 - [x] Register type signatures: `pow: Number → Number → Float`, `sqrt/log/sin: Float → Float`, `nan?/inf?/finite?: Float → Bool`, `atan2: Float → Float → Float` (`src/types.rs`)
 - [x] Create `stdlib/math.llt` with Float literals (`pi`, `e`, `phi`) and pure-tinct functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`) (`stdlib/math.llt`)
-- [ ] Tests: verify `pi`, `hypot`, `deg->rad` are NOT in scope without `[include "stdlib/math.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
+- [x] Load `stdlib/math.llt` at startup (alongside `prelude.llt`); `pi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` available without explicit include (`src/builtins.rs`)
 - [x] Tests: corpus tests for each builtin (exact values, NaN/Inf edge cases, `nan?`/`inf?`/`finite?` predicates) (`tests/corpus/eval/builtins/`)
 - [x] Tests: corpus tests for math.llt pure-tinct functions (`tests/corpus/eval/stdlib/`)
 
@@ -95,7 +95,7 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Register all 9 builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
 - [x] Define `HashAlgorithm` type alias as a union of nominal variants: `Sha256 | Sha384 | Sha512 | Sha3-256 | Sha3-384 | Sha3-512 | Blake3` — register in prelude scope (`stdlib/encoding.llt` or `src/builtins.rs`)
 - [x] Create `stdlib/encoding.llt` with pure-tinct functions: `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` (`stdlib/encoding.llt`)
-- [ ] Tests: verify `hex-encode`, `base64-encode` are NOT in scope without `[include "stdlib/encoding.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
+- [x] Load `stdlib/encoding.llt` at startup (alongside `prelude.llt`); `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode`, `mask-apply` available without explicit include (`src/builtins.rs`)
 - [ ] Register `HashAlgorithm` type alias in `TypeEnv::with_builtins()` so type checker recognises `Sha256`, `Sha3-256`, `Blake3`, etc. as `HashAlgorithm` members (deferred from `bitwise-encoding` sprint) (`src/type_env.rs` or `src/types.rs`)
 - [x] Tests: corpus tests for all bitwise ops, char-code/chr round-trips, hex-encode/hex-decode, base64 (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 

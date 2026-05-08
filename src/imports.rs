@@ -60,45 +60,60 @@ pub fn build_prelude_env() -> Rc<TypeEnv> {
 /// (expand → desugar → resolve → typecheck), and extracts all top-level binding
 /// types into a new `TypeEnv`. Returns the environment even if type errors occur
 /// (best-effort approach).
-fn build_prelude_env_inner() -> Rc<TypeEnv> {
-    // Embed the prelude source at compile time
-    let prelude_source = include_str!("../stdlib/prelude.llt");
+/// Helper function to type-check a stdlib module and extract its bindings into the given env
+fn typecheck_and_merge_stdlib_module(
+    source: &str,
+    parent_env: &Rc<TypeEnv>,
+    env: &mut TypeEnv,
+) -> Result<(), ()> {
+    // Parse the module source
+    let file = parser::parse(source).map_err(|_| ())?;
 
-    // Parse the prelude source
-    let file = match parser::parse(prelude_source) {
-        Ok(file) => file,
-        Err(_) => {
-            // Parse error: return empty environment seeded with builtins only
-            return Rc::new(TypeEnv::with_builtins());
-        }
-    };
-
-    // Run macro expansion (tolerate errors — return builtins-only env on failure)
-    let expand_result = match expand::expand_macros(file, true) {
-        Ok(result) => result,
-        Err(_) => {
-            return Rc::new(TypeEnv::with_builtins());
-        }
-    };
+    // Run macro expansion
+    let expand_result = expand::expand_macros(file, true).map_err(|_| ())?;
     let mut file = expand_result.file;
 
-    // Desugar $_ implicit lambdas
+    // Desugar and resolve
     desugar::desugar_file(&mut file.node);
-
-    // Variable resolution pass (populates VarRef resolved caches)
     resolve::resolve_file(&file.node);
 
-    // Type-check the prelude with the builtins environment
-    let initial_env = Rc::new(TypeEnv::with_builtins());
+    // Type-check with the parent environment (builtins + prelude)
     let (type_errors, type_map, _doc_map) =
-        typecheck_file_with_types_and_env(&file.node, Rc::clone(&initial_env));
+        typecheck_file_with_types_and_env(&file.node, Rc::clone(parent_env));
 
-    // Silently ignore type errors — we want the best-effort environment
+    // Silently ignore type errors
     let _ = type_errors;
 
-    // Extract top-level binding types from the type map
+    // Extract bindings directly into the provided env
+    extract_bindings_from_file(&file.node, &type_map, env);
+
+    Ok(())
+}
+
+fn build_prelude_env_inner() -> Rc<TypeEnv> {
+    // Start with builtins
     let mut env = TypeEnv::with_builtins();
-    extract_bindings_from_file(&file.node, &type_map, &mut env);
+
+    // Embed stdlib sources at compile time
+    let prelude_source = include_str!("../stdlib/prelude.llt");
+    let strings_source = include_str!("../stdlib/strings.llt");
+    let math_source = include_str!("../stdlib/math.llt");
+    let encoding_source = include_str!("../stdlib/encoding.llt");
+
+    // Type-check prelude first
+    let builtins_env = Rc::new(TypeEnv::with_builtins());
+    if typecheck_and_merge_stdlib_module(prelude_source, &builtins_env, &mut env).is_err() {
+        // Parse/expand error: return builtins-only environment
+        return Rc::new(TypeEnv::with_builtins());
+    }
+
+    // Create an environment with builtins + prelude for the additional modules
+    let prelude_env = Rc::new(env.clone());
+
+    // Type-check additional modules (silently ignore errors - best effort)
+    let _ = typecheck_and_merge_stdlib_module(strings_source, &prelude_env, &mut env);
+    let _ = typecheck_and_merge_stdlib_module(math_source, &prelude_env, &mut env);
+    let _ = typecheck_and_merge_stdlib_module(encoding_source, &prelude_env, &mut env);
 
     Rc::new(env)
 }
@@ -457,6 +472,29 @@ mod tests {
             "expected 'flatten' in prelude env"
         );
         assert!(env.get("zip").is_some(), "expected 'zip' in prelude env");
+
+        // Verify stdlib modules (strings, math, encoding) are also loaded
+        assert!(
+            env.get("pad-left").is_some(),
+            "expected 'pad-left' in prelude env"
+        );
+        assert!(
+            env.get("str-reverse").is_some(),
+            "expected 'str-reverse' in prelude env"
+        );
+        assert!(env.get("pi").is_some(), "expected 'pi' in prelude env");
+        assert!(
+            env.get("hypot").is_some(),
+            "expected 'hypot' in prelude env"
+        );
+        assert!(
+            env.get("hex-encode").is_some(),
+            "expected 'hex-encode' in prelude env"
+        );
+        assert!(
+            env.get("base64-encode").is_some(),
+            "expected 'base64-encode' in prelude env"
+        );
     }
 
     /// Verify that `collect_include_paths` finds `[call $include "path"]` forms.
