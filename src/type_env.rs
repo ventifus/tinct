@@ -229,6 +229,26 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     renaming.apply(&scheme.body)
 }
 
+/// Simplify a set of constraints by removing redundant constraints.
+///
+/// A constraint C is redundant if it is entailed by another constraint in the set.
+/// For example, if both `Comparable a` and `Equatable a` are present, `Equatable a`
+/// is redundant because Comparable has Equatable as a superclass.
+///
+/// This implements the constraint simplification step from Jones (1992)
+/// "Type Classes: Exploring the Design Space".
+pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<Constraint>) {
+    // Snapshot the constraints so retain's closure can read from a separate copy
+    let snapshot = constraints.clone();
+    constraints.retain(|target| {
+        // Keep the target if no other constraint entails it
+        !snapshot.iter().any(|other| {
+            // Don't compare a constraint with itself
+            other != target && entails(class_env, &[other.clone()], target)
+        })
+    });
+}
+
 /// Generalize a type at a binding boundary by quantifying free type variables
 /// whose level is strictly greater than the enclosing scope level.
 /// Used for let-generalization: ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ
@@ -283,12 +303,17 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
             .cloned()
             .collect();
 
-        let generalizable_constraints: Vec<Constraint> = state
+        let mut generalizable_constraints: Vec<Constraint> = state
             .constraints
             .iter()
             .filter(|c| generalizable_vars.contains(&c.var))
             .cloned()
             .collect();
+
+        // Simplify constraints: remove redundant constraints entailed by others
+        // For example, if both `Comparable a` and `Equatable a` are present,
+        // remove `Equatable a` (it's entailed via Comparable's superclass).
+        simplify_constraints(&state.class_env, &mut generalizable_constraints);
 
         TypeScheme {
             type_vars: generalizable_type_vars,
@@ -419,22 +444,26 @@ pub struct TypeAlias {
 /// Type class declaration (Wadler & Blott 1989)
 /// Example: `[class [Equatable a] eq: [Fn@Bool [a a]]]`
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Scaffolding for future type class implementation
 pub struct ClassDecl {
     /// Class name (e.g., "Equatable")
     pub name: String,
     /// Type parameters with their kinds (e.g., [("a", Kind::Type)])
+    #[allow(dead_code)]
+    // Written during registration, read during constraint solving (future work)
     pub params: Vec<(String, Kind)>,
     /// Superclass constraints (e.g., ["Ord"])
+    #[allow(dead_code)]
+    // Written during registration, read during constraint solving (future work)
     pub superclasses: Vec<String>,
     /// Method signatures: method_name -> type scheme
+    #[allow(dead_code)]
+    // Written during registration, read during method type checking (future work)
     pub methods: HashMap<String, TypeScheme>,
 }
 
 /// Type class instance declaration
 /// Example: `[instance [Equatable Int] eq: [fn [x y] [= x y]]]`
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Scaffolding for future type class implementation
 pub struct InstanceDecl {
     /// Class name (e.g., "Equatable")
     pub class_name: String,
@@ -442,15 +471,17 @@ pub struct InstanceDecl {
     pub instance_type: Type,
     /// Method implementations: method_name -> inferred type
     /// (The actual dictionary value is stored in eval::ClassDictionary)
+    #[allow(dead_code)]
+    // Written during registration, read during dictionary construction (future work)
     pub method_types: HashMap<String, Type>,
 }
 
 /// Class environment: global registry of type class declarations
 /// Scoped like TypeEnv (supports shadowing in nested scopes)
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Scaffolding for future type class implementation
 pub struct ClassEnv {
     classes: HashMap<String, ClassDecl>,
+    #[allow(dead_code)] // Scaffolding for scoped class environments (future work)
     parent: Option<Rc<ClassEnv>>,
 }
 
@@ -462,7 +493,7 @@ impl ClassEnv {
         }
     }
 
-    #[allow(dead_code)] // Scaffolding for future type class implementation
+    #[allow(dead_code)] // Scaffolding for scoped class environments (future work)
     pub fn with_parent(parent: &Rc<ClassEnv>) -> Self {
         Self {
             classes: HashMap::new(),
@@ -470,7 +501,7 @@ impl ClassEnv {
         }
     }
 
-    #[allow(dead_code)] // Scaffolding for future type class implementation
+    /// Look up a class declaration by name, checking parent scopes if necessary.
     pub fn get(&self, name: &str) -> Option<&ClassDecl> {
         if let Some(class) = self.classes.get(name) {
             return Some(class);
@@ -485,7 +516,6 @@ impl ClassEnv {
         None
     }
 
-    #[allow(dead_code)] // Scaffolding for future type class implementation
     pub fn insert(&mut self, class_decl: ClassDecl) {
         self.classes.insert(class_decl.name.clone(), class_decl);
     }
@@ -500,9 +530,9 @@ impl Default for ClassEnv {
 /// Instance environment: global registry of type class instances
 /// Key is (class_name, instance_type_string) to allow fast lookup
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Scaffolding for future type class implementation
 pub struct InstanceEnv {
     instances: HashMap<(String, String), InstanceDecl>,
+    #[allow(dead_code)] // Scaffolding for scoped instance environments (future work)
     parent: Option<Rc<InstanceEnv>>,
 }
 
@@ -514,7 +544,7 @@ impl InstanceEnv {
         }
     }
 
-    #[allow(dead_code)] // Scaffolding for future type class implementation
+    #[allow(dead_code)] // Scaffolding for scoped instance environments (future work)
     pub fn with_parent(parent: &Rc<InstanceEnv>) -> Self {
         Self {
             instances: HashMap::new(),
@@ -524,7 +554,7 @@ impl InstanceEnv {
 
     /// Look up an instance by class name and type.
     /// Returns the instance declaration if found.
-    #[allow(dead_code)] // Scaffolding for future type class implementation
+    #[allow(dead_code)] // Instance lookup used during dictionary construction (future work)
     pub fn get(&self, class_name: &str, ty: &Type) -> Option<&InstanceDecl> {
         let key = (class_name.to_string(), ty.to_string());
         if let Some(inst) = self.instances.get(&key) {
@@ -541,7 +571,6 @@ impl InstanceEnv {
     }
 
     /// Insert an instance. Returns an error if an overlapping instance already exists.
-    #[allow(dead_code)] // Scaffolding for future type class implementation
     pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
         let key = (inst.class_name.clone(), inst.instance_type.to_string());
         if self.instances.contains_key(&key) {
@@ -552,6 +581,63 @@ impl InstanceEnv {
         }
         self.instances.insert(key, inst);
         Ok(())
+    }
+
+    /// Resolve an instance for the given class and target type.
+    /// Attempts to unify each registered instance's head type with the target type.
+    /// Returns the matching instance declaration if found, or None if no match.
+    ///
+    /// This is a simple unification-based resolution: it tries each instance in order
+    /// and returns the first that unifies with the target type. More sophisticated
+    /// resolution (with backtracking, overlapping instance detection, or instance
+    /// selection based on specificity) is deferred to future work.
+    pub fn resolve_instance(
+        &self,
+        class_name: &str,
+        target_type: &Type,
+        state: &mut InferState,
+    ) -> Option<&InstanceDecl> {
+        // Collect all instances for this class
+        let mut candidates = Vec::new();
+
+        // Check local instances
+        for ((cname, _), inst) in &self.instances {
+            if cname == class_name {
+                candidates.push(inst);
+            }
+        }
+
+        // Check parent instances
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            for ((cname, _), inst) in &env.instances {
+                if cname == class_name {
+                    candidates.push(inst);
+                }
+            }
+            current = env.parent.as_deref();
+        }
+
+        // Try to unify with each candidate
+        for inst in candidates {
+            // Create a fresh substitution for this unification attempt
+            let mut temp_subst = state.subst.clone();
+
+            // Attempt unification
+            if unify(
+                &inst.instance_type,
+                target_type,
+                &mut temp_subst,
+                state,
+                Span::origin(),
+            )
+            .is_ok()
+            {
+                return Some(inst);
+            }
+        }
+
+        None
     }
 }
 
