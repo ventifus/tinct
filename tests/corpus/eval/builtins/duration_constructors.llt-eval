@@ -1,0 +1,4 @@
+# duration-seconds: 60 seconds converted back via duration->seconds
+[duration->seconds [duration-seconds 60]]
+=== out
+Int(60)

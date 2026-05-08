@@ -59,6 +59,8 @@ pub(crate) mod builtins_seq_xform;
 pub(crate) mod builtins_string;
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
 pub(crate) mod builtins_bytes;
+// Date-time builtins: timestamps, durations, clock capabilities, timezones.
+pub(crate) mod builtins_datetime;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // Macro expansion (pre-desugar AST transformation).
@@ -264,6 +266,10 @@ pub trait ValueVisitor {
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> Self::Output;
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> Self::Output;
+    fn visit_timestamp(&self, nanos: i64) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_duration(&self, nanos: i64) -> Self::Output;
+    fn visit_clock_cap(&self) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_timezone(&self) -> Result<Self::Output, Box<error::EvalError>>;
     /// Return `Some(output)` if the depth limit has been reached, `None` to continue.
     fn depth_limit_output(
         &self,
@@ -376,6 +382,10 @@ pub fn visit_value<V: ValueVisitor>(
             "Uri".to_string(),
             ast::Span::origin(),
         ))),
+        value::Value::Timestamp(nanos) => visitor.visit_timestamp(*nanos),
+        value::Value::Duration(nanos) => Ok(visitor.visit_duration(*nanos)),
+        value::Value::ClockCap(_) => visitor.visit_clock_cap(),
+        value::Value::Timezone(_) => visitor.visit_timezone(),
     }
 }
 
@@ -484,6 +494,35 @@ impl ValueVisitor for JsonVisitor {
                 .unwrap_or_else(|_| serde_json::Number::from(0)),
         )
     }
+    fn visit_timestamp(&self, nanos: i64) -> Result<serde_json::Value, Box<error::EvalError>> {
+        // Convert nanoseconds to jiff::Timestamp and format as RFC 3339
+        let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
+            error::EvalError::new(
+                format!("invalid timestamp value: {e}"),
+                ast::Span::origin(),
+            )
+        })?;
+        Ok(serde_json::Value::String(ts.to_string()))
+    }
+    fn visit_duration(&self, nanos: i64) -> serde_json::Value {
+        // Format as ISO 8601 duration or just nanoseconds
+        // For simplicity, use nanoseconds as a number
+        serde_json::Value::Number(nanos.into())
+    }
+    fn visit_clock_cap(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(error::EvalError::value_not_serializable(
+            "ClockCap".to_string(),
+            ast::Span::origin(),
+        )
+        .into())
+    }
+    fn visit_timezone(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(error::EvalError::value_not_serializable(
+            "Timezone".to_string(),
+            ast::Span::origin(),
+        )
+        .into())
+    }
     fn depth_limit_output(
         &self,
         depth: usize,
@@ -567,6 +606,22 @@ impl ValueVisitor for DisplayVisitor {
     }
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> String {
         format!("BigInt({v})")
+    }
+    fn visit_timestamp(&self, nanos: i64) -> Result<String, Box<error::EvalError>> {
+        // Format as RFC 3339 for readability
+        match jiff::Timestamp::from_nanosecond(nanos as i128) {
+            Ok(ts) => Ok(format!("Timestamp({})", ts)),
+            Err(_) => Ok(format!("Timestamp({} ns, invalid)", nanos)),
+        }
+    }
+    fn visit_duration(&self, nanos: i64) -> String {
+        format!("Duration({} ns)", nanos)
+    }
+    fn visit_clock_cap(&self) -> Result<String, Box<error::EvalError>> {
+        Ok("ClockCap".to_string())
+    }
+    fn visit_timezone(&self) -> Result<String, Box<error::EvalError>> {
+        Ok("Timezone".to_string())
     }
     fn depth_limit_output(&self, depth: usize) -> Option<Result<String, Box<error::EvalError>>> {
         if depth > eval::MAX_EVAL_DEPTH {

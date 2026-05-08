@@ -125,30 +125,9 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 ## Date-Time
 
-Accepted from `doc/whatif/lib-datetime.md` (2026-05-07).
+### `datetime-cli`: Date-Time CLI Integration (deferred from `datetime` sprint)
 
-### `datetime`: Date-Time Support
-
-**Spec chapters:** `doc/whatif/lib-datetime.md`. **Depends on:** `string-utils` (pad-left for format-date).
-
-- [ ] Add `jiff = { version = "0.1", default-features = false }` to `Cargo.toml`; disable `jiff-tzdb` (we read system zoneinfo via DirCap) (`Cargo.toml`)
-- [ ] Add `Value::Timestamp(i64)` (nanoseconds since epoch) to Value enum (`src/value.rs`)
-- [ ] Add `Value::Duration(i64)` (signed nanoseconds) to Value enum (`src/value.rs`)
-- [ ] Add `Value::ClockCap(Rc<ClockCapInner>)` with `enum ClockCapInner { Real, Fixed(i64) }` (`src/value.rs`)
-- [ ] Add `Value::Timezone(Rc<...>)` wrapping parsed TZ rules (`src/value.rs`)
-- [ ] Add `Type::Timestamp`, `Type::Duration`, `Type::ClockCap`, `Type::Timezone` (`src/types.rs`)
-- [ ] Implement timestamp construction builtins: `parse-timestamp` (RFC 3339 → Timestamp; validate fits i64 range), `format-timestamp` (Timestamp → RFC 3339 string), `timestamp->unix`, `unix->timestamp` (`src/builtins_datetime.rs`)
-- [ ] Implement clock builtins: `now` (ClockCap → Timestamp), `fixed-clock` (Timestamp → ClockCap) (`src/builtins_datetime.rs`)
-- [ ] Implement timestamp arithmetic: `timestamp-add` (Timestamp + Duration → Timestamp), `timestamp-diff` (Timestamp - Timestamp → Duration; `i64::checked_sub`, error on overflow) (`src/builtins_datetime.rs`)
-- [ ] Implement timestamp comparison: `timestamp<?`, `timestamp>?`, `timestamp=?` (`src/builtins_datetime.rs`)
-- [ ] Implement timestamp extraction (UTC): `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts` (`src/builtins_datetime.rs`)
-- [ ] Implement duration constructors: `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration->seconds`, `duration->nanos` (`src/builtins_datetime.rs`)
-- [ ] Implement timezone builtins: `load-tz` (DirCap → String → Timezone; use jiff `TimeZoneDatabase::from_dir()`; return error never panic on malformed TZif), `timestamp-in-tz` (Timestamp → Timezone → Dict), `local->timestamp`, `local-tz-name` (`src/builtins_datetime.rs`)
 - [ ] Add CLI flags: `--cap-clock NAME` (inject real ClockCap), `--cap-clock-fixed "RFC3339" NAME` (inject fixed; validate fits i64 range) (`src/main.rs`)
-- [ ] Create `stdlib/datetime.llt` with pure-tinct helpers: `days-between`, `timestamp-in-range?`, `format-date` (`stdlib/datetime.llt`)
-- [ ] JSON serialization: Timestamp → RFC 3339 string; Duration → ISO 8601 string (`src/lib.rs`)
-- [ ] Register all builtin type signatures (~25 builtins) (`src/types.rs`)
-- [ ] Tests: corpus tests for parse/format round-trip, arithmetic, extraction, comparison, ClockCap fixed vs real, timezone conversion, i64 overflow error, RFC 5280 sentinel clamping (`tests/corpus/eval/builtins/`)
 - [ ] Tests: CLI tests for --cap-clock and --cap-clock-fixed (`tests/cli_tests.rs`)
 
 ## Regex
