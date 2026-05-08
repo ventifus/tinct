@@ -309,10 +309,11 @@ pub(crate) fn reject_named(
 // Implementations live in builtins_math.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_math::{
-    builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_cos,
-    builtin_div_float, builtin_eq, builtin_exp, builtin_finite_check, builtin_if,
-    builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_mul,
-    builtin_nan_check, builtin_pow, builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
+    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_exp,
+    builtin_finite_check, builtin_if, builtin_inf_check, builtin_log, builtin_log10, builtin_log2,
+    builtin_lt, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin,
+    builtin_sqrt, builtin_sub, builtin_tan,
 };
 
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
@@ -353,9 +354,10 @@ pub(crate) use crate::builtins_meta::{
 #[cfg(test)]
 pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 pub(crate) use crate::builtins_string::{
-    builtin_ends_with, builtin_lower, builtin_replace, builtin_split, builtin_starts_with,
-    builtin_str, builtin_str_chars, builtin_str_contains, builtin_str_length, builtin_str_slice,
-    builtin_trim, builtin_upper,
+    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_ends_with, builtin_lower,
+    builtin_replace, builtin_split, builtin_starts_with, builtin_str, builtin_str_bytes,
+    builtin_str_chars, builtin_str_contains, builtin_str_length, builtin_str_slice, builtin_trim,
+    builtin_upper,
 };
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -856,6 +858,10 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_ends_with,
             [Strictness::Seq, Strictness::Seq]
         ),
+        builtin!("char-code", builtin_char_code, [Strictness::Seq]),
+        builtin!("chr", builtin_chr, [Strictness::Seq]),
+        builtin!("str-bytes", builtin_str_bytes, [Strictness::Seq]),
+        builtin!("bytes-str", builtin_bytes_str, [Strictness::Seq]),
         // Numeric
         builtin!("floor", builtin_floor, [Strictness::Seq]),
         builtin!("round", builtin_round, [Strictness::Seq]),
@@ -875,6 +881,12 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("nan?", builtin_nan_check, [Strictness::Seq]),
         builtin!("inf?", builtin_inf_check, [Strictness::Seq]),
         builtin!("finite?", builtin_finite_check, [Strictness::Seq]),
+        // Bitwise
+        builtin!("band", builtin_band, [Strictness::Seq, Strictness::Seq]),
+        builtin!("bor", builtin_bor, [Strictness::Seq, Strictness::Seq]),
+        builtin!("bxor", builtin_bxor, [Strictness::Seq, Strictness::Seq]),
+        builtin!("shl", builtin_shl, [Strictness::Seq, Strictness::Seq]),
+        builtin!("shr", builtin_shr, [Strictness::Seq, Strictness::Seq]),
         // Parsing
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
@@ -6022,10 +6034,22 @@ mod tests {
         assert!(names.contains(&"nan?"), "missing nan?");
         assert!(names.contains(&"inf?"), "missing inf?");
         assert!(names.contains(&"finite?"), "missing finite?");
+        // Bitwise builtins
+        assert!(names.contains(&"band"), "missing band");
+        assert!(names.contains(&"bor"), "missing bor");
+        assert!(names.contains(&"bxor"), "missing bxor");
+        assert!(names.contains(&"shl"), "missing shl");
+        assert!(names.contains(&"shr"), "missing shr");
+        // Character builtins
+        assert!(names.contains(&"char-code"), "missing char-code");
+        assert!(names.contains(&"chr"), "missing chr");
+        // Bytes stubs
+        assert!(names.contains(&"str-bytes"), "missing str-bytes");
+        assert!(names.contains(&"bytes-str"), "missing bytes-str");
         assert_eq!(
             names.len(),
-            105,
-            "expected 105 builtins, got {}",
+            114,
+            "expected 114 builtins, got {}",
             names.len()
         );
     }

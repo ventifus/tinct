@@ -2,6 +2,10 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## `bitwise-encoding`: Bitwise Primitives & Encoding
+
+9 Rust builtins: `band`, `bor`, `bxor`, `shl`, `shr` (bitwise ops on i64, with logical right shift via u64 cast) + `char-code` (String -> Int codepoint), `chr` (Int -> String), `str-bytes` and `bytes-str` (stubs pending `bytes-type` sprint). Registered in `standard_builtins()` with type signatures in `type_env.rs`. Pure-tinct `stdlib/encoding.llt`: `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` (RFC 4648), `mask-apply` (XOR repeating-key cipher). Corpus tests for all bitwise builtins, char-code/chr, and encoding functions. **Deferred:** `str-bytes`/`bytes-str` are stubs (error until `Value::Bytes` exists); `stdlib/encoding.llt` not auto-loaded at startup (requires explicit `[include]`); `HashAlgorithm` type alias defined but not yet registered.
+
 ## `math-builtins`: Extended Math Builtins
 
 16 Rust builtins as `f64` method wrappers: `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` (13 math) + `nan?`, `inf?`, `finite?` (3 float predicates). Registered in `standard_builtins()` with type signatures in `type_env.rs`. Pure-tinct `stdlib/math.llt`: constants (`pi`, `e`, `phi`) and functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`). Corpus tests for all builtins and stdlib functions. **Deferred:** `stdlib/math.llt` not auto-loaded at startup (requires explicit `[include]`).

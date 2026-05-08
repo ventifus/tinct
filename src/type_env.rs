@@ -849,6 +849,46 @@ impl TypeEnv {
             },
         );
 
+        // char-code: String → Int
+        env.insert(
+            "char-code".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
+
+        // chr: Int → String
+        env.insert(
+            "chr".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+
+        // str-bytes: String → Bytes (stub for bytes-type sprint)
+        env.insert(
+            "str-bytes".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Unknown),
+                variadic: false,
+            },
+        );
+
+        // bytes-str: Bytes → String (stub for bytes-type sprint)
+        env.insert(
+            "bytes-str".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+
         // str-slice: String → Int → Int → String
         env.insert(
             "str-slice".to_string(),
@@ -914,6 +954,18 @@ impl TypeEnv {
                 Type::Function {
                     params: vec![Type::Float],
                     ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+            );
+        }
+
+        // Bitwise operations (Int -> Int -> Int)
+        for name in ["band", "bor", "bxor", "shl", "shr"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    ret: Box::new(Type::Int),
                     variadic: false,
                 },
             );

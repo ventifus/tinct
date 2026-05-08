@@ -1,0 +1,3 @@
+[call $shl 1 4]
+=== out
+Int(16)

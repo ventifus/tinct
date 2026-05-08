@@ -1,0 +1,6 @@
+[include "stdlib/encoding.llt"]
+---
+# Test empty string
+[call %.hex-encode ""]
+=== out
+String("")

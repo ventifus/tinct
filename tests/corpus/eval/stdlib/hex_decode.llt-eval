@@ -1,0 +1,6 @@
+[include "stdlib/encoding.llt"]
+---
+# Round-trip test
+[call %.hex-decode [call %.hex-encode "hello"]]
+=== out
+String("hello")
