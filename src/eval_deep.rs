@@ -47,7 +47,7 @@ pub fn deep_materialize(
     match val {
         Value::Int(_)
         | Value::Float(_)
-        | Value::String(_)
+        | Value::String { .. }
         | Value::Bool(_)
         | Value::Function { .. }
         | Value::Builtin(_) => return Ok(val.clone()),
@@ -140,7 +140,7 @@ fn deep_materialize_impl(
     match root_val {
         Value::Int(_)
         | Value::Float(_)
-        | Value::String(_)
+        | Value::String { .. }
         | Value::Bool(_)
         | Value::Function { .. }
         | Value::Builtin(_) => return Ok(root_val.clone()),

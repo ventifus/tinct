@@ -20,7 +20,7 @@ use crate::eval::{
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{eval_call, invoke_function, CallContext};
 use crate::types::Type;
-use crate::value::{Environment, Thunk, ThunkState, Value};
+use crate::value::{string_val, Environment, Thunk, ThunkState, Value};
 
 /// Attach materialization span and origin frame to an error.
 /// This function is called at every error site in the CEK machine to ensure
@@ -1364,7 +1364,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             let handler_thunk = ctx.get_thunk(handler);
                             match invoke_proxy_handler(
                                 &handler_thunk,
-                                Value::String(field_str.clone()),
+                                string_val(&field_str),
                                 &ctx,
                                 &access_span,
                                 depth,
@@ -1635,7 +1635,7 @@ pub(crate) fn eval_step(
         Expr::Int(n) => Action::Continue(Ok(Value::Int(*n))),
         Expr::Float(f) => Action::Continue(Ok(Value::Float(*f))),
         Expr::Bool(b) => Action::Continue(Ok(Value::Bool(*b))),
-        Expr::Str(s) => Action::Continue(Ok(Value::String(s.clone()))),
+        Expr::Str(s) => Action::Continue(Ok(string_val(s))),
         Expr::VarRef { name, .. } => {
             let found = env.borrow().get(name);
             match found {
@@ -1717,7 +1717,7 @@ pub(crate) fn eval_step(
         }
         Expr::Annotated { name, .. } => {
             // Evaluate as the bare string; the type checker (typecheck.rs) interprets annotations.
-            Action::Continue(Ok(Value::String(name.clone())))
+            Action::Continue(Ok(string_val(name)))
         }
         Expr::Fn { params, body, .. } => {
             let fn_params: Vec<Param> = params.iter().map(|p| p.node.clone()).collect();
@@ -2025,7 +2025,7 @@ mod tests {
         let args = vec![
             Rc::new(Thunk::new_materialized(Value::Int(1), span)),
             Rc::new(Thunk::new_materialized(Value::Int(2), span)),
-            Rc::new(Thunk::new_materialized(Value::String("test".into()), span)),
+            Rc::new(Thunk::new_materialized(string_val("test"), span)),
         ];
         let mut named = IndexMap::new();
         named.insert(
@@ -2089,7 +2089,7 @@ mod tests {
 
                 assert_eq!(v0, Value::Int(1));
                 assert_eq!(v1, Value::Int(2));
-                assert_eq!(v2, Value::String("test".into()));
+                assert_eq!(v2, string_val("test"));
 
                 // Check named arg count and value
                 let named_map = restored_named.as_ref().expect("Expected Some named args");

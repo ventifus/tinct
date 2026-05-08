@@ -172,7 +172,11 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
         // Extract the tag from the marker
         let tag_value = materialize(&tag_thunk, Some(&ctx.call_span), ctx.ctx, ctx.depth)?;
         let tag = match tag_value {
-            Value::String(s) => s,
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => source[start..end].to_string(),
             _ => {
                 return Err(EvalError::internal(
                     "variant constructor tag must be a string".to_string(),

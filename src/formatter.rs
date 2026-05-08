@@ -104,7 +104,11 @@ pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String>
         .map_err(|e| format!("formatter materialize error: {e}"))?;
 
     match formatted {
-        Value::String(s) => Ok(s.to_string()),
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => Ok(source[start..end].to_string()),
         _ => {
             let display_str = crate::value_to_display_string(&formatted, &ctx, 0)
                 .unwrap_or_else(|_| "<error displaying value>".to_string());

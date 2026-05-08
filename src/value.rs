@@ -149,8 +149,14 @@ pub enum Value {
     Int(i64),
     /// 64-bit IEEE 754 float
     Float(f64),
-    /// UTF-8 string (from bare words or quoted literals)
-    String(String),
+    /// UTF-8 string (from bare words or quoted literals).
+    /// Stored as a shared slice of a source string with byte offsets.
+    /// This enables zero-copy substring operations and shared storage.
+    String {
+        source: Rc<str>,
+        start: usize,
+        end: usize,
+    },
     /// Boolean (`true` or `false`)
     Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
@@ -194,13 +200,23 @@ pub enum Value {
     BigInt(num_bigint::BigInt),
 }
 
+/// Helper function to construct a `Value::String` from a string slice.
+/// Creates a new `Rc<str>` and uses the full range (0..len).
+pub fn string_val(s: &str) -> Value {
+    Value::String {
+        source: Rc::from(s),
+        start: 0,
+        end: s.len(),
+    }
+}
+
 impl Value {
     /// Returns the human-readable type name for error messages.
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Int(_) => "Int",
             Value::Float(_) => "Float",
-            Value::String(_) => "String",
+            Value::String { .. } => "String",
             Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
             Value::Function { .. } => "Function",
@@ -217,6 +233,14 @@ impl Value {
             Value::BigInt(_) => "BigInt",
         }
     }
+
+    /// Extract a string slice from a `Value::String`, or `None` if not a string.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String { source, start, end } => Some(&source[*start..*end]),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Debug for Value {
@@ -224,7 +248,10 @@ impl fmt::Debug for Value {
         match self {
             Value::Int(n) => f.debug_tuple("Int").field(n).finish(),
             Value::Float(n) => f.debug_tuple("Float").field(n).finish(),
-            Value::String(s) => f.debug_tuple("String").field(s).finish(),
+            Value::String { source, start, end } => {
+                let s = &source[*start..*end];
+                f.debug_tuple("String").field(&s).finish()
+            }
             Value::Bool(b) => f.debug_tuple("Bool").field(b).finish(),
             Value::Dict(map) => {
                 let keys: Vec<&Key> = map.keys().collect();
@@ -266,7 +293,10 @@ impl fmt::Display for Value {
         match self {
             Value::Int(n) => write!(f, "{n}"),
             Value::Float(n) => write!(f, "{n}"),
-            Value::String(s) => write!(f, "{s:?}"),
+            Value::String { source, start, end } => {
+                let s = &source[*start..*end];
+                write!(f, "{s:?}")
+            }
             Value::Bool(b) => write!(f, "{b}"),
             Value::Dict(map) => {
                 write!(f, "[")?;
@@ -351,7 +381,18 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
-            (Value::String(a), Value::String(b)) => a == b,
+            (
+                Value::String {
+                    source: src_a,
+                    start: start_a,
+                    end: end_a,
+                },
+                Value::String {
+                    source: src_b,
+                    start: start_b,
+                    end: end_b,
+                },
+            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
@@ -876,8 +917,8 @@ mod tests {
         assert_eq!(Value::Int(1), Value::Int(1));
         assert_ne!(Value::Int(1), Value::Int(2));
         assert_eq!(Value::Float(3.14), Value::Float(3.14));
-        assert_eq!(Value::String("a".into()), Value::String("a".into()));
-        assert_ne!(Value::String("a".into()), Value::String("b".into()));
+        assert_eq!(string_val("a"), string_val("a"));
+        assert_ne!(string_val("a"), string_val("b"));
         assert_eq!(Value::Bool(true), Value::Bool(true));
         assert_ne!(Value::Bool(true), Value::Bool(false));
     }
@@ -886,7 +927,7 @@ mod tests {
     fn test_value_partial_eq_cross_variant() {
         assert_ne!(Value::Int(1), Value::Float(1.0));
         assert_ne!(Value::Int(0), Value::Bool(false));
-        assert_ne!(Value::String("1".into()), Value::Int(1));
+        assert_ne!(string_val("1"), Value::Int(1));
     }
 
     #[test]
@@ -1145,12 +1186,12 @@ mod tests {
 
     #[test]
     fn test_value_display_string() {
-        assert_eq!(format!("{}", Value::String("hello".into())), "\"hello\"");
+        assert_eq!(format!("{}", string_val("hello")), "\"hello\"");
         assert_eq!(
-            format!("{}", Value::String("with \"quotes\"".into())),
+            format!("{}", string_val("with \"quotes\"")),
             "\"with \\\"quotes\\\"\""
         );
-        assert_eq!(format!("{}", Value::String("".into())), "\"\"");
+        assert_eq!(format!("{}", string_val("")), "\"\"");
     }
 
     #[test]
@@ -1231,10 +1272,7 @@ mod tests {
 
     #[test]
     fn test_value_debug_string() {
-        assert_eq!(
-            format!("{:?}", Value::String("test".into())),
-            "String(\"test\")"
-        );
+        assert_eq!(format!("{:?}", string_val("test")), "String(\"test\")");
     }
 
     #[test]
@@ -1760,5 +1798,39 @@ mod tests {
             ThunkState::Failed(e) => assert!(e.message().contains("test error")),
             other => panic!("expected Failed state, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_string_val_helper() {
+        let s = string_val("hello");
+        assert_eq!(s.as_str(), Some("hello"));
+        assert_eq!(format!("{s}"), "\"hello\"");
+        assert_eq!(format!("{s:?}"), "String(\"hello\")");
+    }
+
+    #[test]
+    fn test_string_val_empty() {
+        let s = string_val("");
+        assert_eq!(s.as_str(), Some(""));
+        assert_eq!(format!("{s}"), "\"\"");
+    }
+
+    #[test]
+    fn test_string_equality() {
+        // Same content, different Rc instances
+        let s1 = string_val("test");
+        let s2 = string_val("test");
+        assert_eq!(s1, s2);
+
+        // Different content
+        let s3 = string_val("other");
+        assert_ne!(s1, s3);
+    }
+
+    #[test]
+    fn test_as_str_on_non_string() {
+        assert_eq!(Value::Int(42).as_str(), None);
+        assert_eq!(Value::Bool(true).as_str(), None);
+        assert_eq!(Value::Float(3.14).as_str(), None);
     }
 }

@@ -48,7 +48,7 @@ use crate::builtins::{
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_call::{invoke_function, CallContext};
-use crate::value::{BuiltinArgs, Key, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
 /// `eval`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
@@ -167,7 +167,7 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut map = IndexMap::new();
             map.insert(
                 Key::String("err".to_string()),
-                ctx.alloc_thunk(ok_val(Value::String(e.message()), call_span)?),
+                ctx.alloc_thunk(ok_val(string_val(&e.message()), call_span)?),
             );
             ok_val(Value::Dict(map), call_span)
         }
@@ -412,7 +412,7 @@ pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let id = GENSYM_COUNTER.fetch_add(1, Ordering::SeqCst);
     let name = format!(":gensym:{}", id);
-    ok_val(Value::String(name), call_span)
+    ok_val(string_val(&name), call_span)
 }
 
 /// `decimal`: Parse a string as an exact base-10 decimal (rust_decimal::Decimal).
@@ -427,7 +427,12 @@ pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = crate::builtins::expect_one_arg("decimal", args, named, &ctx, depth, call_span)?;
     match val {
-        Value::String(ref s) => {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = &source[start..end];
             use std::str::FromStr;
             match rust_decimal::Decimal::from_str(s) {
                 Ok(d) => ok_val(Value::Decimal(d), call_span),
@@ -455,12 +460,21 @@ pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = crate::builtins::expect_one_arg("big-int", args, named, &ctx, depth, call_span)?;
     match val {
         Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
-        Value::String(ref s) => match s.parse::<num_bigint::BigInt>() {
-            Ok(n) => ok_val(Value::BigInt(n), call_span),
-            Err(e) => {
-                Err(EvalError::new(format!("big-int: cannot parse \"{s}\": {e}"), call_span).into())
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = &source[start..end];
+            match s.parse::<num_bigint::BigInt>() {
+                Ok(n) => ok_val(Value::BigInt(n), call_span),
+                Err(e) => Err(EvalError::new(
+                    format!("big-int: cannot parse \"{s}\": {e}"),
+                    call_span,
+                )
+                .into()),
             }
-        },
+        }
         _ => Err(EvalError::type_mismatch("Int or String", &type_name(&val), call_span).into()),
     }
 }
@@ -483,7 +497,7 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         "Builtin" => "Function",
         other => other,
     };
-    ok_val(Value::String(name.to_string()), call_span)
+    ok_val(string_val(name), call_span)
 }
 
 /// `tag-of`: Return the tag of a Variant as a String.
@@ -497,7 +511,7 @@ pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = crate::builtins::expect_one_arg("tag-of", args, named, &ctx, depth, call_span)?;
     match val {
-        Value::Variant { tag, .. } => ok_val(Value::String(tag.clone()), call_span),
+        Value::Variant { tag, .. } => ok_val(string_val(&tag), call_span),
         _ => Err(Box::new(EvalError::type_mismatch(
             "Variant",
             val.type_name(),
@@ -517,13 +531,20 @@ pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let tag_val = crate::builtins::expect_one_arg("variant", args, named, &ctx, depth, call_span)?;
     match tag_val {
-        Value::String(tag) => ok_val(
-            Value::Variant {
-                tag: tag.clone(),
-                payload: None,
-            },
-            call_span,
-        ),
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let tag = &source[start..end];
+            ok_val(
+                Value::Variant {
+                    tag: tag.to_string(),
+                    payload: None,
+                },
+                call_span,
+            )
+        }
         _ => Err(Box::new(EvalError::type_mismatch(
             "String",
             tag_val.type_name(),
@@ -584,7 +605,7 @@ pub(crate) fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     let val = crate::builtins::expect_one_arg("str?", args, named, &ctx, depth, call_span)?;
-    ok_val(Value::Bool(matches!(val, Value::String(_))), call_span)
+    ok_val(Value::Bool(matches!(val, Value::String { .. })), call_span)
 }
 
 /// `bool?`: Return true if the argument is a Bool.
@@ -658,7 +679,7 @@ fn type_name(val: &Value) -> String {
     match val {
         Value::Int(_) => "Int",
         Value::Float(_) => "Float",
-        Value::String(_) => "String",
+        Value::String { .. } => "String",
         Value::Bool(_) => "Bool",
         Value::Dict(_) | Value::Overlay(..) => "Dict",
         Value::Seq { .. } => "Seq",
@@ -710,7 +731,7 @@ pub fn json_to_value(
                 Err(EvalError::json_range(span).into())
             }
         }
-        serde_json::Value::String(s) => ok_val(Value::String(s.clone()), span),
+        serde_json::Value::String(s) => ok_val(string_val(s), span),
         serde_json::Value::Array(arr) => {
             if arr.len() > MAX_COLLECT_SIZE {
                 return Err(EvalError::resource_limit_exceeded(
@@ -888,7 +909,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
             (Rc::clone(inner), 1, 2)
         }
-        Value::String(_) => {
+        Value::String { .. } => {
             // Old pattern: [include "path"] or [include "path" "hash"]
             // Use the context's base_dir - need to wrap it in Rc
             // We'll open "." to get a handle we can pass around
@@ -1322,9 +1343,15 @@ fn validate_value(
     if let Some(&type_thunk_id) = schema.get(&Key::String("type".to_string())) {
         let type_thunk = ctx.get_thunk(type_thunk_id);
         let type_val = materialize(&type_thunk, Some(&span), &ctx, depth)?;
-        if let Value::String(ref expected_type) = type_val {
+        if let Value::String {
+            ref source,
+            start,
+            end,
+        } = type_val
+        {
+            let expected_type = &source[start..end];
             let actual_type = type_name(data);
-            if expected_type != &actual_type {
+            if expected_type != actual_type {
                 violations.push((
                     path.to_string(),
                     format!("expected type {}, got {}", expected_type, actual_type),
@@ -1396,7 +1423,11 @@ fn validate_value(
         let min_len_val = materialize(&min_len_thunk, Some(&span), &ctx, depth)?;
         if let Value::Int(min_len) = min_len_val {
             let actual_len = match data {
-                Value::String(s) => Some(s.len() as i64),
+                Value::String {
+                    source: _,
+                    start,
+                    end,
+                } => Some((end - start) as i64),
                 Value::Dict(d) => Some(d.len() as i64),
                 Value::Seq { .. } => {
                     // For Seq, we'd need to walk the spine to count, which is expensive.
@@ -1418,7 +1449,11 @@ fn validate_value(
         let max_len_val = materialize(&max_len_thunk, Some(&span), &ctx, depth)?;
         if let Value::Int(max_len) = max_len_val {
             let actual_len = match data {
-                Value::String(s) => Some(s.len() as i64),
+                Value::String {
+                    source: _,
+                    start,
+                    end,
+                } => Some((end - start) as i64),
                 Value::Dict(d) => Some(d.len() as i64),
                 Value::Seq { .. } => None,
                 _ => None,
@@ -1435,8 +1470,14 @@ fn validate_value(
     if let Some(&pattern_thunk_id) = schema.get(&Key::String("pattern".to_string())) {
         let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
         let pattern_val = materialize(&pattern_thunk, Some(&span), &ctx, depth)?;
-        if let Value::String(ref pattern_str) = pattern_val {
-            if let Value::String(ref data_str) = data {
+        if let Value::String {
+            ref source,
+            start,
+            end,
+        } = pattern_val
+        {
+            let pattern_str = &source[start..end];
+            if let Some(data_str) = data.as_str() {
                 match regex::Regex::new(pattern_str) {
                     Ok(re) => {
                         if !re.is_match(data_str) {
@@ -1575,7 +1616,18 @@ fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => (x - y).abs() < f64::EPSILON,
-        (Value::String(x), Value::String(y)) => x == y,
+        (
+            Value::String {
+                source: s1,
+                start: start1,
+                end: end1,
+            },
+            Value::String {
+                source: s2,
+                start: start2,
+                end: end2,
+            },
+        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Dict(x), Value::Dict(y)) => x.is_empty() && y.is_empty(), // Null check
         _ => false,

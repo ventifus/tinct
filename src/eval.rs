@@ -33,7 +33,7 @@ use crate::types::{Row, RowTail, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::value::{Environment, Key, Thunk, ThunkState, Value};
+use crate::value::{string_val, Environment, Key, Thunk, ThunkState, Value};
 
 /// Maximum evaluation depth (256). Limits nesting of eval/materialize calls to prevent stack overflow.
 pub const MAX_EVAL_DEPTH: usize = 256;
@@ -331,10 +331,10 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Int => matches!(value, Value::Int(_)),
         Type::Float => matches!(value, Value::Float(_)),
         Type::Number => matches!(value, Value::Int(_) | Value::Float(_)),
-        Type::Str => matches!(value, Value::String(_)),
+        Type::Str => matches!(value, Value::String { .. }),
         Type::Bool => matches!(value, Value::Bool(_)),
         Type::IntLiteral(n) => matches!(value, Value::Int(v) if v == n),
-        Type::StringLiteral(s) => matches!(value, Value::String(v) if v == s),
+        Type::StringLiteral(s) => value.as_str().map_or(false, |v| v == s),
         Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin(_)),
         Type::Seq(_) => matches!(value, Value::Seq { .. }),
         Type::TypeVar(_, _) => true,
@@ -558,10 +558,7 @@ pub(crate) fn eval_recursive(
             expr.span,
         ))),
         Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
-        Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(
-            Value::String(s.clone()),
-            expr.span,
-        ))),
+        Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
         Expr::VarRef { name, resolved } => {
             // TODO(arena-phase2): Use resolved (level, slot) for O(1) lookup when FlatEnv is available.
             // The current linked-environment model with stdlib/document scopes doesn't align with
@@ -923,7 +920,7 @@ pub(crate) fn eval_recursive(
         Expr::Annotated { name, .. } => {
             // Evaluate as the bare string; the type checker (typecheck.rs) interprets annotations.
             Ok(Rc::new(Thunk::new_materialized(
-                Value::String(name.clone()),
+                string_val(name),
                 expr.span,
             )))
         }
@@ -963,10 +960,7 @@ pub(crate) fn eval_recursive(
                             Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
                         constructor_env.borrow_mut().insert(
                             VARIANT_TAG_MARKER.to_string(),
-                            Rc::new(Thunk::new_materialized(
-                                Value::String(tag.clone()),
-                                expr.span,
-                            )),
+                            Rc::new(Thunk::new_materialized(string_val(&tag), expr.span)),
                         );
 
                         let param = Param {
@@ -1086,10 +1080,7 @@ pub(crate) fn eval_recursive(
             // TODO: Register the class in a class registry
             // For now, just return a placeholder marker dict
             let mut map = IndexMap::new();
-            let name_thunk = Rc::new(Thunk::new_materialized(
-                Value::String(name.clone()),
-                expr.span,
-            ));
+            let name_thunk = Rc::new(Thunk::new_materialized(string_val(name), expr.span));
             map.insert(Key::String("__class__".into()), ctx.alloc_thunk(name_thunk));
             Ok(Rc::new(Thunk::new_materialized(
                 Value::Dict(map),
@@ -1100,10 +1091,7 @@ pub(crate) fn eval_recursive(
             // TODO: Register the instance in an instance registry
             // For now, just return a placeholder marker dict
             let mut map = IndexMap::new();
-            let name_thunk = Rc::new(Thunk::new_materialized(
-                Value::String(class_name.clone()),
-                expr.span,
-            ));
+            let name_thunk = Rc::new(Thunk::new_materialized(string_val(class_name), expr.span));
             map.insert(
                 Key::String("__instance__".into()),
                 ctx.alloc_thunk(name_thunk),
@@ -1885,7 +1873,14 @@ fn match_pattern(
                 (LiteralPattern::Int(n), Value::Int(v)) => n == v,
                 (LiteralPattern::Float(f), Value::Float(v)) => f == v,
                 (LiteralPattern::Bool(b), Value::Bool(v)) => b == v,
-                (LiteralPattern::Str(s), Value::String(v)) => s == v,
+                (
+                    LiteralPattern::Str(s),
+                    Value::String {
+                        ref source,
+                        start,
+                        end,
+                    },
+                ) => s == &source[*start..*end],
                 _ => false,
             };
             if matches {
@@ -2078,7 +2073,18 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::String(x), Value::String(y)) => x == y,
+        (
+            Value::String {
+                source: s1,
+                start: start1,
+                end: end1,
+            },
+            Value::String {
+                source: s2,
+                start: start2,
+                end: end2,
+            },
+        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
         (Value::Dict(_), Value::Dict(_)) => false, // Dict equality is complex, not supported for now
         _ => false,
     }
@@ -2148,7 +2154,7 @@ mod tests {
         let expr = sp(Expr::Str("hello".into()));
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(val, Value::String("hello".into()));
+        assert_eq!(val, string_val("hello".into()));
     }
 
     #[test]
@@ -2217,7 +2223,7 @@ mod tests {
                 let x_id = map.get(&Key::String("x".into())).unwrap();
                 assert_eq!(mat_id(x_id, &ctx).unwrap(), Value::Int(1));
                 let y_id = map.get(&Key::String("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).unwrap(), Value::String("hello".into()));
+                assert_eq!(mat_id(y_id, &ctx).unwrap(), string_val("hello".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2295,7 +2301,7 @@ mod tests {
                 assert_eq!(map.len(), 4);
                 assert_eq!(
                     mat_id(map.get(&Key::String("name".into())).unwrap(), &ctx).unwrap(),
-                    Value::String("hello".into())
+                    string_val("hello".into())
                 );
                 assert_eq!(
                     mat_id(map.get(&Key::Int(0)).unwrap(), &ctx).unwrap(),
@@ -3230,7 +3236,7 @@ mod tests {
         });
         let result_thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx(), 0).unwrap();
         let result = materialize(&result_thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(result, Value::String("alice".into()));
+        assert_eq!(result, string_val("alice".into()));
     }
 
     #[test]
@@ -3308,7 +3314,11 @@ mod tests {
             .map(|(k, v)| {
                 let value_expr = match v {
                     Value::Int(n) => Expr::Int(n),
-                    Value::String(s) => Expr::Str(s),
+                    Value::String {
+                        ref source,
+                        start,
+                        end,
+                    } => Expr::Str(source[start..end].to_string()),
                     Value::Bool(b) => Expr::Bool(b),
                     Value::Float(f) => Expr::Float(f),
                     _ => panic!("unsupported value type in test helper"),
@@ -3327,7 +3337,7 @@ mod tests {
         // [name: hello].name -> "hello"
         // Use a single ctx — ThunkIds from one ctx are invalid in another.
         let ctx = test_ctx();
-        let dict = dict_with_entries(vec![("name", Value::String("hello".into()))]);
+        let dict = dict_with_entries(vec![("name", string_val("hello".into()))]);
         let env = empty_env();
         let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx, 0).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx, 0).unwrap();
@@ -3344,7 +3354,7 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), env, &ctx, 0).unwrap();
         let val = materialize(&thunk, None, &ctx, 0).unwrap();
-        assert_eq!(val, Value::String("hello".into()));
+        assert_eq!(val, string_val("hello".into()));
     }
 
     #[test]
@@ -3422,7 +3432,7 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(val, Value::String("hello".into()));
+        assert_eq!(val, string_val("hello".into()));
     }
 
     #[test]
@@ -3550,7 +3560,7 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(val, Value::String("hello".into()));
+        assert_eq!(val, string_val("hello".into()));
     }
 
     #[test]
@@ -3703,7 +3713,7 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(val, Value::String("Config".into()));
+        assert_eq!(val, string_val("Config".into()));
     }
 
     #[test]
@@ -4731,7 +4741,7 @@ mod tests {
                 let port_id = map.get(&Key::String("port".into())).unwrap();
                 assert_eq!(mat_id(port_id, &ctx).unwrap(), Value::Int(8080));
                 let host_id = map.get(&Key::String("host".into())).unwrap();
-                assert_eq!(mat_id(host_id, &ctx).unwrap(), Value::String("prod".into()));
+                assert_eq!(mat_id(host_id, &ctx).unwrap(), string_val("prod".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -4830,9 +4840,9 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_string() {
-        let val = Value::String("hello".into());
+        let val = string_val("hello".into());
         let result = deep_materialize(&val, &test_ctx(), 0, None).unwrap();
-        assert_eq!(result, Value::String("hello".into()));
+        assert_eq!(result, string_val("hello".into()));
     }
 
     #[test]
@@ -5016,14 +5026,14 @@ mod tests {
         map.insert(
             Key::Int(0),
             ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                Value::String("zero".into()),
+                string_val("zero".into()),
                 span,
             ))),
         );
         map.insert(
             Key::Int(1),
             ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                Value::String("one".into()),
+                string_val("one".into()),
                 span,
             ))),
         );
@@ -5033,9 +5043,9 @@ mod tests {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 2);
                 let v0 = mat_id(&map[&Key::Int(0)], &ctx).unwrap();
-                assert_eq!(v0, Value::String("zero".into()));
+                assert_eq!(v0, string_val("zero".into()));
                 let v1 = mat_id(&map[&Key::Int(1)], &ctx).unwrap();
-                assert_eq!(v1, Value::String("one".into()));
+                assert_eq!(v1, string_val("one".into()));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -5219,10 +5229,12 @@ mod tests {
 
                 let tail_thunk = get_thunk_rc(&tail, &ctx);
                 let tail_val = &*tail_thunk.state();
-                assert!(matches!(
-                    tail_val,
-                    ThunkState::Materialized(Value::String(s)) if s == "tail"
-                ));
+                match tail_val {
+                    ThunkState::Materialized(Value::String { source, start, end }) => {
+                        assert_eq!(&source[*start..*end], "tail");
+                    }
+                    other => panic!("expected Materialized(String \"tail\"), got {other:?}"),
+                }
             }
             other => panic!("expected Seq, got {other:?}"),
         }
@@ -5333,10 +5345,7 @@ mod tests {
         // (ThunkId equality not guaranteed in the arena model).
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let shared_rc = Rc::new(Thunk::new_materialized(
-            Value::String("shared".into()),
-            span,
-        ));
+        let shared_rc = Rc::new(Thunk::new_materialized(string_val("shared".into()), span));
         let shared_id = ctx.alloc_thunk(shared_rc);
 
         let mut inner_dict: IndexMap<Key, ThunkId> = IndexMap::new();
@@ -5383,14 +5392,10 @@ mod tests {
                 let v_seq = mat_id(&seq_shared, &ctx).unwrap();
                 assert_eq!(
                     v_nested,
-                    Value::String("shared".into()),
+                    string_val("shared".into()),
                     "nested dict shared value"
                 );
-                assert_eq!(
-                    v_seq,
-                    Value::String("shared".into()),
-                    "seq head shared value"
-                );
+                assert_eq!(v_seq, string_val("shared".into()), "seq head shared value");
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -7420,7 +7425,7 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(val, Value::String("hello".into()));
+        assert_eq!(val, string_val("hello".into()));
     }
 
     #[test]
@@ -7433,7 +7438,7 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(val, Value::String("anything".into()));
+        assert_eq!(val, string_val("anything".into()));
     }
 
     #[test]
@@ -7841,7 +7846,7 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx(), 0).unwrap();
         let val = materialize(&thunk, None, &test_ctx(), 0).unwrap();
-        assert_eq!(val, Value::String("hello".into()));
+        assert_eq!(val, string_val("hello".into()));
     }
 
     // ── value_matches_type unit tests ────────────────────────────────────
@@ -7851,16 +7856,13 @@ mod tests {
     #[test]
     fn test_value_matches_type_int() {
         assert!(value_matches_type(&Value::Int(42), &Type::Int));
-        assert!(!value_matches_type(&Value::String("x".into()), &Type::Int));
+        assert!(!value_matches_type(&string_val("x".into()), &Type::Int));
         assert!(!value_matches_type(&Value::Bool(true), &Type::Int));
     }
 
     #[test]
     fn test_value_matches_type_str() {
-        assert!(value_matches_type(
-            &Value::String("hello".into()),
-            &Type::Str
-        ));
+        assert!(value_matches_type(&string_val("hello".into()), &Type::Str));
         assert!(!value_matches_type(&Value::Int(1), &Type::Str));
         assert!(!value_matches_type(&Value::Bool(false), &Type::Str));
     }
@@ -7883,10 +7885,7 @@ mod tests {
         // Type::Number accepts both Int and Float
         assert!(value_matches_type(&Value::Int(42), &Type::Number));
         assert!(value_matches_type(&Value::Float(1.5), &Type::Number));
-        assert!(!value_matches_type(
-            &Value::String("42".into()),
-            &Type::Number
-        ));
+        assert!(!value_matches_type(&string_val("42".into()), &Type::Number));
         assert!(!value_matches_type(&Value::Bool(true), &Type::Number));
     }
 
@@ -7895,7 +7894,7 @@ mod tests {
         // Type::Top accepts all value kinds
         assert!(value_matches_type(&Value::Int(1), &Type::Top));
         assert!(value_matches_type(&Value::Float(1.0), &Type::Top));
-        assert!(value_matches_type(&Value::String("s".into()), &Type::Top));
+        assert!(value_matches_type(&string_val("s".into()), &Type::Top));
         assert!(value_matches_type(&Value::Bool(true), &Type::Top));
         assert!(value_matches_type(
             &Value::Dict(IndexMap::new()),
@@ -7909,7 +7908,7 @@ mod tests {
         assert!(value_matches_type(&Value::Int(5), &Type::IntLiteral(5)));
         assert!(!value_matches_type(&Value::Int(6), &Type::IntLiteral(5)));
         assert!(!value_matches_type(
-            &Value::String("5".into()),
+            &string_val("5".into()),
             &Type::IntLiteral(5)
         ));
     }
@@ -7918,11 +7917,11 @@ mod tests {
     fn test_value_matches_type_string_literal() {
         // Type::StringLiteral("foo") matches only String("foo")
         assert!(value_matches_type(
-            &Value::String("foo".into()),
+            &string_val("foo".into()),
             &Type::StringLiteral("foo".into())
         ));
         assert!(!value_matches_type(
-            &Value::String("bar".into()),
+            &string_val("bar".into()),
             &Type::StringLiteral("foo".into())
         ));
         assert!(!value_matches_type(
@@ -7939,7 +7938,7 @@ mod tests {
             &Type::TypeVar("a".into(), 0)
         ));
         assert!(value_matches_type(
-            &Value::String("x".into()),
+            &string_val("x".into()),
             &Type::TypeVar("a".into(), 0)
         ));
         assert!(value_matches_type(
@@ -8185,14 +8184,14 @@ mod tests {
         entries.insert(
             Key::Int(0),
             ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                Value::String("x".into()),
+                string_val("x".into()),
                 span,
             ))),
         );
         entries.insert(
             Key::String("name".to_string()),
             ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                Value::String("y".into()),
+                string_val("y".into()),
                 span,
             ))),
         );
@@ -8241,14 +8240,14 @@ mod tests {
         entries.insert(
             Key::Int(0),
             ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                Value::String("x".into()),
+                string_val("x".into()),
                 span,
             ))),
         );
         entries.insert(
             Key::String("name".to_string()),
             ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                Value::String("y".into()),
+                string_val("y".into()),
                 span,
             ))),
         );
@@ -8385,7 +8384,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a String value — fails the Int guard.
-        let inner = Rc::new(Thunk::new_materialized(Value::String("hello".into()), span));
+        let inner = Rc::new(Thunk::new_materialized(string_val("hello".into()), span));
 
         // Wrap it in a Guarded thunk expecting Int.
         let guarded = Rc::new(Thunk::new_guarded(

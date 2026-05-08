@@ -104,7 +104,11 @@ impl DocumentState {
             // Seed the type environment with prelude types and resolved includes via the
             // shared imports module to suppress false "undefined variable" errors.
             // Respect no_fs: skip include resolution when filesystem access is disabled.
-            let type_base_dir = if eval_ctx.config.no_fs { None } else { base_dir };
+            let type_base_dir = if eval_ctx.config.no_fs {
+                None
+            } else {
+                base_dir
+            };
             let seeded_env = crate::imports::build_type_env(&file.node, type_base_dir);
             let (errs, map, docs) = typecheck_file_with_types_and_env(&file.node, seeded_env);
             type_errors = errs;

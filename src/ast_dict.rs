@@ -14,7 +14,7 @@ use crate::ast::{
     Annotation, Document, DotKey, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned,
 };
 use crate::error::EvalResult;
-use crate::value::{Key, Thunk, Value};
+use crate::value::{string_val, Key, Thunk, Value};
 
 /// Error type for AST dict validation failures during dict-to-AST conversion.
 #[derive(Debug, Clone)]
@@ -79,10 +79,7 @@ pub fn ast_to_dict(
 
     root.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-            Value::String("file".into()),
-            span,
-        ))),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("file"), span))),
     );
 
     root.insert(
@@ -127,7 +124,7 @@ fn document_to_dict(
     dict.insert(
         Key::String("type".into()),
         ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-            Value::String("document".into()),
+            string_val("document"),
             span,
         ))),
     );
@@ -148,10 +145,7 @@ fn document_to_dict(
     dict.insert(
         Key::String("name".into()),
         match &doc.name {
-            Some(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                Value::String(s.clone()),
-                span,
-            ))),
+            Some(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span))),
             None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
@@ -189,12 +183,7 @@ fn document_to_dict(
             if !comments.is_empty() {
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
-                    .map(|c| {
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String(c.clone()),
-                            span,
-                        )))
-                    })
+                    .map(|c| ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(c), span))))
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
@@ -232,16 +221,13 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("literal".into()),
+                    string_val("literal"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("int".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("int"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
@@ -253,16 +239,13 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("literal".into()),
+                    string_val("literal"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("float".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("float"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
@@ -274,16 +257,13 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("literal".into()),
+                    string_val("literal"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("bool".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("bool"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
@@ -295,23 +275,17 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("literal".into()),
+                    string_val("literal"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("str".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("str"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(s.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span))),
             );
 
             // bare: true if source text at span start is not a quote
@@ -335,17 +309,11 @@ fn expr_to_thunk_id(
         Expr::VarRef { name, .. } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("var".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("var"), span))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(name.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
 
@@ -356,7 +324,7 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("dot-access".into()),
+                    string_val("dot-access"),
                     span,
                 ))),
             );
@@ -370,10 +338,7 @@ fn expr_to_thunk_id(
                 DotKey::Ident(s) => {
                     dict.insert(
                         Key::String("field".into()),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String(s.clone()),
-                            span,
-                        ))),
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span))),
                     );
                 }
                 DotKey::Int(n) => {
@@ -388,10 +353,7 @@ fn expr_to_thunk_id(
         Expr::Pipe { lhs, rhs } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("pipe".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("pipe"), span))),
             );
             dict.insert(
                 Key::String("lhs".into()),
@@ -407,7 +369,7 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("sequential".into()),
+                    string_val("sequential"),
                     span,
                 ))),
             );
@@ -426,10 +388,7 @@ fn expr_to_thunk_id(
         Expr::Dict(entries) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("dict".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("dict"), span))),
             );
 
             let entry_ids = entries
@@ -451,10 +410,7 @@ fn expr_to_thunk_id(
         } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("call".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("call"), span))),
             );
             dict.insert(
                 Key::String("fn".into()),
@@ -499,10 +455,7 @@ fn expr_to_thunk_id(
         } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("fn".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("fn"), span))),
             );
 
             // params: list of param dicts
@@ -545,7 +498,7 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("type-alias".into()),
+                    string_val("type-alias"),
                     span,
                 ))),
             );
@@ -553,12 +506,7 @@ fn expr_to_thunk_id(
                 // Store params as a dict with integer keys (like other lists)
                 let params_thunk_ids: Vec<ThunkId> = params
                     .iter()
-                    .map(|p| {
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String(p.clone()),
-                            span,
-                        )))
-                    })
+                    .map(|p| ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(p), span))))
                     .collect();
                 dict.insert(
                     Key::String("params".into()),
@@ -579,7 +527,7 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("type-assert".into()),
+                    string_val("type-assert"),
                     span,
                 ))),
             );
@@ -597,16 +545,13 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("annotated".into()),
+                    string_val("annotated"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(name.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
             dict.insert(
                 Key::String("annotation".into()),
@@ -617,18 +562,14 @@ fn expr_to_thunk_id(
         Expr::Rest(name_opt) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("rest".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("rest"), span))),
             );
             dict.insert(
                 Key::String("name".into()),
                 match name_opt {
-                    Some(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                        Value::String(s.clone()),
-                        span,
-                    ))),
+                    Some(s) => {
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span)))
+                    }
                     None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                         Value::Dict(IndexMap::new()),
                         span,
@@ -640,10 +581,7 @@ fn expr_to_thunk_id(
         Expr::Quote(inner) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("quote".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("quote"), span))),
             );
             dict.insert(
                 Key::String("expr".into()),
@@ -655,7 +593,7 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("unquote".into()),
+                    string_val("unquote"),
                     span,
                 ))),
             );
@@ -669,7 +607,7 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("unquote-splice".into()),
+                    string_val("unquote-splice"),
                     span,
                 ))),
             );
@@ -683,16 +621,13 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("defmacro".into()),
+                    string_val("defmacro"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(name.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
             dict.insert(
                 Key::String("transformer".into()),
@@ -703,10 +638,7 @@ fn expr_to_thunk_id(
         Expr::Match { scrutinee, arms } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("match".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("match"), span))),
             );
             dict.insert(
                 Key::String("scrutinee".into()),
@@ -760,17 +692,11 @@ fn expr_to_thunk_id(
         } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("class".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("class"), span))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(name.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
             // Serialize params as a list
             let params_dict: IndexMap<Key, ThunkId> = params
@@ -779,10 +705,7 @@ fn expr_to_thunk_id(
                 .map(|(i, p)| {
                     (
                         Key::Int(i as i64),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String(p.clone()),
-                            span,
-                        ))),
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(p), span))),
                     )
                 })
                 .collect();
@@ -832,14 +755,14 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("instance".into()),
+                    string_val("instance"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("class".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(class_name.clone()),
+                    string_val(class_name),
                     span,
                 ))),
             );
@@ -882,7 +805,7 @@ fn expr_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("error".into()),
+                    string_val("error"),
                     *error_span,
                 ))),
             );
@@ -918,7 +841,7 @@ fn pattern_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("wildcard".into()),
+                    string_val("wildcard"),
                     span,
                 ))),
             );
@@ -927,55 +850,43 @@ fn pattern_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("variable".into()),
+                    string_val("variable"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(name.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
         Pattern::TypeTag(tag) => {
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("type_tag".into()),
+                    string_val("type_tag"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("tag".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(tag.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(tag), span))),
             );
         }
         Pattern::Pin(name) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("pin".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("pin"), span))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(name.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
         Pattern::Literal(lit) => {
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("literal".into()),
+                    string_val("literal"),
                     span,
                 ))),
             );
@@ -983,7 +894,7 @@ fn pattern_to_thunk_id(
                 LiteralPattern::Int(n) => Value::Int(*n),
                 LiteralPattern::Float(f) => Value::Float(*f),
                 LiteralPattern::Bool(b) => Value::Bool(*b),
-                LiteralPattern::Str(s) => Value::String(s.clone()),
+                LiteralPattern::Str(s) => string_val(s),
             };
             dict.insert(
                 Key::String("value".into()),
@@ -993,10 +904,7 @@ fn pattern_to_thunk_id(
         Pattern::Dict { fields, rest } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("dict".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("dict"), span))),
             );
             // Convert fields to a dict
             let mut fields_dict = IndexMap::new();
@@ -1004,10 +912,7 @@ fn pattern_to_thunk_id(
                 let mut field_dict = IndexMap::new();
                 field_dict.insert(
                     Key::String("key".into()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                        Value::String(key.clone()),
-                        pat.span,
-                    ))),
+                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(key), pat.span))),
                 );
                 field_dict.insert(
                     Key::String("pattern".into()),
@@ -1036,10 +941,7 @@ fn pattern_to_thunk_id(
         Pattern::Seq { head, tail } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("seq".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("seq"), span))),
             );
             dict.insert(
                 Key::String("head".into()),
@@ -1054,16 +956,13 @@ fn pattern_to_thunk_id(
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("constructor".into()),
+                    string_val("constructor"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("tag".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(tag.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(tag), span))),
             );
             if let Some(pat) = binding {
                 dict.insert(
@@ -1075,10 +974,7 @@ fn pattern_to_thunk_id(
         Pattern::Or(patterns) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("or".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("or"), span))),
             );
             let pattern_thunks: Vec<_> = patterns
                 .iter()
@@ -1113,10 +1009,7 @@ fn entry_to_thunk_id(
 
     dict.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-            Value::String("entry".into()),
-            span,
-        ))),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("entry"), span))),
     );
 
     // key: expression or []
@@ -1160,12 +1053,7 @@ fn entry_to_thunk_id(
             if !comments.is_empty() {
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
-                    .map(|c| {
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String(c.clone()),
-                            span,
-                        )))
-                    })
+                    .map(|c| ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(c), span))))
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
@@ -1178,10 +1066,7 @@ fn entry_to_thunk_id(
         if let Some(comment) = comment_maps.trailing_comments.get(&entry_span.start.offset) {
             dict.insert(
                 Key::String("trailing-comment".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(comment.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(comment), span))),
             );
         }
     }
@@ -1199,7 +1084,7 @@ fn named_arg_to_thunk_id(
     dict.insert(
         Key::String("name".into()),
         ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-            Value::String(named_arg.name.clone()),
+            string_val(&named_arg.name),
             span,
         ))),
     );
@@ -1220,7 +1105,7 @@ fn param_to_thunk_id(
     dict.insert(
         Key::String("name".into()),
         ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-            Value::String(param.name.clone()),
+            string_val(&param.name),
             span,
         ))),
     );
@@ -1258,7 +1143,7 @@ fn annotation_to_thunk_id(
     dict.insert(
         Key::String("type".into()),
         ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-            Value::String("annotation".into()),
+            string_val("annotation"),
             span,
         ))),
     );
@@ -1267,26 +1152,17 @@ fn annotation_to_thunk_id(
         Annotation::Simple(name) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("simple".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("simple"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String(name.clone()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
         Annotation::PropertyDict(entries) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::String("dict".into()),
-                    span,
-                ))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("dict"), span))),
             );
 
             // Convert entries to thunk IDs - these are annotation entries (simpler than regular entries)
@@ -1297,7 +1173,7 @@ fn annotation_to_thunk_id(
                     entry_dict.insert(
                         Key::String("type".into()),
                         ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String("entry".into()),
+                            string_val("entry"),
                             e.span,
                         ))),
                     );
@@ -1306,7 +1182,7 @@ fn annotation_to_thunk_id(
                     let key_id = match &e.node.key {
                         Some(k) => match &k.node {
                             Expr::Str(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                                Value::String(s.clone()),
+                                string_val(s),
                                 k.span,
                             ))),
                             _ => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
@@ -1325,7 +1201,7 @@ fn annotation_to_thunk_id(
                     // Value is also typically a string literal in annotations
                     let value_id = match &e.node.value.node {
                         Expr::Str(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String(s.clone()),
+                            string_val(s),
                             e.node.value.span,
                         ))),
                         Expr::Int(n) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
@@ -1333,7 +1209,7 @@ fn annotation_to_thunk_id(
                             e.node.value.span,
                         ))),
                         _ => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::String(format!("<expr at {}>", e.node.value.span)),
+                            string_val(&format!("<expr at {}>", e.node.value.span)),
                             e.node.value.span,
                         ))),
                     };
@@ -1507,7 +1383,11 @@ pub fn dict_to_ast(
 
             let field_val = get_field(dict, "field", &["type"], ctx)?;
             let field = match field_val {
-                Value::String(s) => DotKey::Ident(s),
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => DotKey::Ident(source[start..end].to_string()),
                 Value::Int(n) => DotKey::Int(n),
                 _ => {
                     return Err(AstError {
@@ -1642,7 +1522,11 @@ pub fn dict_to_ast(
                                                 }
                                             })?;
                                         match val {
-                                            Value::String(s) => param_names.push(s),
+                                            Value::String {
+                                                ref source,
+                                                start,
+                                                end,
+                                            } => param_names.push(source[start..end].to_string()),
                                             _ => {
                                                 return Err(AstError {
                                                     message: format!("param {} must be String", i),
@@ -1703,7 +1587,11 @@ pub fn dict_to_ast(
         "rest" => {
             let name_val = get_field(dict, "name", &["type"], ctx)?;
             let name_opt = match name_val {
-                Value::String(s) => Some(s),
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => Some(source[start..end].to_string()),
                 Value::Dict(d) if d.is_empty() => None,
                 _ => {
                     return Err(AstError {
@@ -1784,7 +1672,11 @@ fn get_string_field(
 ) -> Result<String, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
-        Value::String(s) => Ok(s),
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => Ok(source[start..end].to_string()),
         _ => Err(AstError {
             message: format!("field '{}' must be String", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
@@ -2140,16 +2032,13 @@ mod tests {
                 let type_thunk = ctx.get_thunk(*type_id);
                 assert_eq!(
                     type_thunk.try_get_materialized(),
-                    Some(Value::String("literal".into()))
+                    Some(string_val("literal"))
                 );
 
                 // Check kind field
                 let kind_id = map.get(&Key::String("kind".into())).unwrap();
                 let kind_thunk = ctx.get_thunk(*kind_id);
-                assert_eq!(
-                    kind_thunk.try_get_materialized(),
-                    Some(Value::String("int".into()))
-                );
+                assert_eq!(kind_thunk.try_get_materialized(), Some(string_val("int")));
 
                 // Check value field
                 let value_id = map.get(&Key::String("value".into())).unwrap();
@@ -2171,17 +2060,11 @@ mod tests {
             Some(Value::Dict(map)) => {
                 let type_id = map.get(&Key::String("type".into())).unwrap();
                 let type_thunk = ctx.get_thunk(*type_id);
-                assert_eq!(
-                    type_thunk.try_get_materialized(),
-                    Some(Value::String("var".into()))
-                );
+                assert_eq!(type_thunk.try_get_materialized(), Some(string_val("var")));
 
                 let name_id = map.get(&Key::String("name".into())).unwrap();
                 let name_thunk = ctx.get_thunk(*name_id);
-                assert_eq!(
-                    name_thunk.try_get_materialized(),
-                    Some(Value::String("x".into()))
-                );
+                assert_eq!(name_thunk.try_get_materialized(), Some(string_val("x")));
             }
             _ => panic!("expected Dict"),
         }
@@ -2205,10 +2088,7 @@ mod tests {
             Some(Value::Dict(map)) => {
                 let type_id = map.get(&Key::String("type".into())).unwrap();
                 let type_thunk = ctx.get_thunk(*type_id);
-                assert_eq!(
-                    type_thunk.try_get_materialized(),
-                    Some(Value::String("file".into()))
-                );
+                assert_eq!(type_thunk.try_get_materialized(), Some(string_val("file")));
 
                 let version_id = map.get(&Key::String("schema-version".into())).unwrap();
                 let version_thunk = ctx.get_thunk(*version_id);
@@ -2491,7 +2371,7 @@ mod tests {
                                                                         assert_eq!(
                                                                             comment_thunk
                                                                                 .try_get_materialized(),
-                                                                            Some(Value::String(" comment".into())),
+                                                                            Some(string_val(" comment")),
                                                                             "leading comment should be ' comment'"
                                                                         );
                                                                     }

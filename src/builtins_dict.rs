@@ -29,7 +29,7 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Key, Strictness, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -56,7 +56,7 @@ pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     for (i, (key, _)) in map.iter().enumerate() {
         let key_value = match key {
             Key::Int(n) => Value::Int(*n),
-            Key::String(s) => Value::String(s.clone()),
+            Key::String(s) => string_val(s),
         };
         let thunk = Rc::new(Thunk::new_materialized(key_value, origin));
         let thunk_id = ctx.alloc_thunk(thunk);
@@ -70,8 +70,9 @@ pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::Dict(result), call_span)
 }
 
-/// `length`: Takes 1 arg (a Dict). Returns an Int with the number of entries.
-/// Inherently materializing: must access IndexMap to count entries.
+/// `length`: Takes 1 arg (a Dict or String). Returns an Int with the number of entries/characters.
+/// Dual-dispatch: Dict returns entry count, String returns character count.
+/// Inherently materializing: must access IndexMap to count entries or count UTF-8 characters.
 pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -86,8 +87,24 @@ pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
     let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let map = crate::builtins::require_dict("length", val, args[0].span, &ctx, depth, call_span)?;
-    ok_val(Value::Int(map.len() as i64), call_span)
+    match val {
+        Value::String { source, start, end } => {
+            let s = &source[start..end];
+            let len = s.chars().count();
+            let len_i64 = i64::try_from(len).map_err(|_| {
+                EvalError::resource_limit_exceeded(
+                    "length: string length exceeds i64::MAX".to_string(),
+                    call_span,
+                )
+            })?;
+            ok_val(Value::Int(len_i64), call_span)
+        }
+        _ => {
+            let map =
+                crate::builtins::require_dict("length", val, args[0].span, &ctx, depth, call_span)?;
+            ok_val(Value::Int(map.len() as i64), call_span)
+        }
+    }
 }
 
 /// `merge`: Takes 2 args (both Dicts). Returns a lazy `Value::Overlay(L, R)` — R
@@ -189,7 +206,14 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let key_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
     let key = match key_val {
         Value::Int(n) => Key::Int(n),
-        Value::String(s) => Key::String(s),
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = &source[start..end];
+            Key::String(s.to_string())
+        }
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "builtin-get".to_string(),
@@ -221,13 +245,13 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         None => {
             let key_str = match &key {
                 Key::Int(n) => n.to_string(),
-                Key::String(s) => s.clone(),
+                Key::String(s) => s.to_string(),
             };
             let available_keys = map
                 .keys()
                 .map(|k| match k {
                     Key::Int(n) => n.to_string(),
-                    Key::String(s) => s.clone(),
+                    Key::String(s) => s.to_string(),
                 })
                 .collect();
             Err(EvalError::key_not_found(&key_str, available_keys, call_span).into())
@@ -369,7 +393,7 @@ pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let (head_key, _) = map.get_index(offset).unwrap();
         let head_val = match head_key {
             Key::Int(n) => Value::Int(*n),
-            Key::String(s) => Value::String(s.clone()),
+            Key::String(s) => string_val(s),
         };
         let head = ok_val(head_val, call_span)?;
 
@@ -463,7 +487,7 @@ pub(crate) fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let mut head_dict = IndexMap::new();
         let key_val = match head_key {
             Key::Int(n) => Value::Int(*n),
-            Key::String(s) => Value::String(s.clone()),
+            Key::String(s) => string_val(s),
         };
         head_dict.insert(
             Key::String("key".to_string()),

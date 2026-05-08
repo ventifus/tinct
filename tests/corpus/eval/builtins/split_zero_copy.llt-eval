@@ -1,0 +1,4 @@
+# split : zero-copy split returns string slices
+[split ":" "a:b:c"]
+=== out
+Dict({0: String("a"), 1: String("b"), 2: String("c")})

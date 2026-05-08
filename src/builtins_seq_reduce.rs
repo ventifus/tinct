@@ -23,7 +23,7 @@ use crate::builtins::{
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Key, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
 /// `reduce`: Fold a function over a Dict or Seq.
 /// Inherently materializing: accumulator pattern requires sequential evaluation.
@@ -218,7 +218,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             // Early return for empty collection
             if parts.is_empty() {
-                return ok_val(Value::String(String::new()), call_span);
+                return ok_val(string_val(""), call_span);
             }
 
             // Check output size before joining
@@ -238,7 +238,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into());
             }
 
-            ok_val(Value::String(parts.join(&sep_str)), call_span)
+            ok_val(string_val(&parts.join(&sep_str)), call_span)
         }
         Value::Seq { head, tail } => {
             // Seq path: traverse head/tail chain, collect strings
@@ -285,7 +285,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             // Early return for empty collection
             if parts.is_empty() {
-                return ok_val(Value::String(String::new()), call_span);
+                return ok_val(string_val(""), call_span);
             }
 
             // Check output size before joining
@@ -305,7 +305,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into());
             }
 
-            ok_val(Value::String(parts.join(&sep_str)), call_span)
+            ok_val(string_val(&parts.join(&sep_str)), call_span)
         }
         other => Err(EvalError::type_mismatch_ctx(
             "join".to_string(),

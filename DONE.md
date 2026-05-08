@@ -4453,3 +4453,12 @@ Seed the type checker with a fully-resolved import environment (prelude + user `
 - [x] Delete `PreludeIndex`, `with_prelude_types()`, LSP-local `collect_include_paths` (`src/lsp/document.rs`, `src/types.rs`)
 - [x] Corpus cleanup: removed ~250 stale `=== warn: undefined variable` sections for prelude functions (`tests/corpus/`)
 - [x] Unit + integration tests; corpus suite passes with zero prelude-function warnings (`src/imports.rs`, `src/lib.rs`)
+
+### `string-view`: Value::String Representation Change
+
+- [x] Changed Value::String(String) to Value::String { source: Rc<str>, start, end } across 15+ source files
+- [x] Added string_val() constructor and as_str() helper
+- [x] Zero-copy split (shares Rc<str> source across parts)
+- [x] Dual-dispatch: length, first, last, contains? work on strings
+- [x] New builtins: str-slice, str-contains?
+- [x] 1930 tests pass
