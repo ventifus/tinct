@@ -344,8 +344,8 @@ pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_big_int, builtin_bool_check, builtin_bytes_check, builtin_decimal,
     builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast, builtin_float_check,
     builtin_fn_check, builtin_from_json, builtin_gensym, builtin_include, builtin_int_check,
-    builtin_null_check, builtin_num_check, builtin_str_check, builtin_tag_of, builtin_try,
-    builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_llt_repr, builtin_null_check, builtin_num_check, builtin_str_check, builtin_tag_of,
+    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, upper, lower, trim, str-length, str-contains?,
@@ -928,6 +928,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
+        builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
         builtin!("variant", builtin_variant, [Strictness::Seq]),
         builtin!("int?", builtin_int_check, [Strictness::Seq]),
@@ -5995,6 +5996,7 @@ mod tests {
         assert!(names.contains(&"apply"), "missing apply");
         // Type introspection
         assert!(names.contains(&"type-of"), "missing type-of");
+        assert!(names.contains(&"llt-repr"), "missing llt-repr");
         assert!(names.contains(&"int?"), "missing int?");
         assert!(names.contains(&"float?"), "missing float?");
         assert!(names.contains(&"num?"), "missing num?");
@@ -6103,8 +6105,8 @@ mod tests {
         assert!(names.contains(&"bytes?"), "missing bytes?");
         assert_eq!(
             names.len(),
-            125,
-            "expected 125 builtins, got {}",
+            126,
+            "expected 126 builtins, got {}",
             names.len()
         );
     }

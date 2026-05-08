@@ -125,8 +125,8 @@ All three modes are re-parseable:
 
 ```bash
 # Round-trip via oneline
-$ tinct fmt --oneline file.llt | tinct eval -
-(same output as `tinct eval file.llt`)
+$ tinct fmt --oneline file.llt | tinct run -
+(same output as `tinct run file.llt`)
 
 # Idempotency
 $ tinct fmt --minimize file.llt | tinct fmt --minimize -
@@ -141,9 +141,9 @@ The formatter is currently implemented in Rust (`src/formatter.rs`). A future ti
 
 See `doc/whatif/tinct-hosted-formatter.md` and `doc/whatif/plans/macros-cluster.md` for the full design. The tinct-hosted formatter depends on the `ast-dict-source` sprint (AST dict schema with source info and comments).
 
-## Inline Expressions and I/O Formatters (`tinct eval`)
+## Inline Expressions and I/O Formatters (`tinct run`)
 
-The `tinct eval` command supports inline expressions (`-e`), input formatters (`-i`), and output formatters (`-o`) to enable jq-style JSON processing and flexible pipeline composition.
+The `tinct run` command supports inline expressions (`-e`), input formatters (`-i`), and output formatters (`-o`) to enable jq-style JSON processing and flexible pipeline composition.
 
 ### `-e <expr>` / `--expr <expr>` — Inline Expressions
 
@@ -151,13 +151,13 @@ Evaluate an inline tinct expression as a pipeline stage. Repeatable — each `-e
 
 ```bash
 # Access a field from piped JSON (auto-detection)
-tinct eval -e '%.x' <<< '{"x":42}'                  # → 42
+tinct run -e '%.x' <<< '{"x":42}'                  # → 42
 
 # Chain multiple expressions
-tinct eval -e '[x: 1]' -e '[merge % [y: 2]]'       # → {"x":1,"y":2}
+tinct run -e '[x: 1]' -e '[merge % [y: 2]]'       # → {"x":1,"y":2}
 
 # --- is valid inside a single -e string for multiple stages
-tinct eval -e '[x: 1] --- [y: %.x]'                 # → {"y":1}
+tinct run -e '[x: 1] --- [y: %.x]'                 # → {"y":1}
 ```
 
 Semicolons (`;`) are whitespace-equivalent and compress multi-line syntax but do not create pipeline stages.
@@ -168,7 +168,7 @@ Prepend an input formatter from `stdlib/in/<format>.llt` as the first pipeline s
 
 ```bash
 # Explicit JSON input (equivalent to auto-detection but via formatter)
-tinct eval -i json -e '%.x' <<< '{"x":42}'          # → 42
+tinct run -i json -e '%.x' <<< '{"x":42}'          # → 42
 ```
 
 **Convention:** Input formatters live in `stdlib/in/`. Each formatter reads from the `stdin` Handle and produces a tinct value as `%` for the next stage.
@@ -184,7 +184,7 @@ Append an output formatter from `stdlib/out/<format>.llt` as the final pipeline 
 
 ```bash
 # String output without JSON quotes
-tinct eval -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
+tinct run -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
 ```
 
 **Convention:** Output formatters live in `stdlib/out/`. Each formatter receives `%` and produces formatted output (typically via `$emit` or as the final value).
@@ -204,14 +204,14 @@ stdin → [-i input] → [files/exprs] → [-o output] → stdout
 
 ```bash
 # Extract a field and emit it without quotes
-tinct eval -i json -o raw -e '%.response' < mcp.json
+tinct run -i json -o raw -e '%.response' < mcp.json
 
 # Equivalent to jq -r '.response'
 ```
 
-## Default Output Format (`tinct eval`)
+## Default Output Format (`tinct run`)
 
-When `tinct eval` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/out/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
+When `tinct run` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/out/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
 
 **Key properties:**
 
@@ -222,7 +222,7 @@ When `tinct eval` finishes and no `emit` call was made, the final value is seria
 **Using the formatters directly:**
 
 ```bash
-tinct eval config.llt                  # indented JSON via stdlib/out/json.llt (2-space pretty-printed)
+tinct run config.llt                  # indented JSON via stdlib/out/json.llt (2-space pretty-printed)
 ```
 
 ```tinct
@@ -289,17 +289,17 @@ The extension lives in `editors/vscode/`:
 
 The `--strict` flag makes type errors fatal instead of advisory. Useful for CI pipelines and pre-commit hooks where type errors should block builds.
 
-**`tinct eval --strict`**
+**`tinct run --strict`**
 
 Type errors from `typecheck_file()` are collected, printed to stderr, and cause the command to exit with code 1. Without `--strict`, type checking remains advisory — type errors are silently ignored and evaluation proceeds.
 
 ```bash
 # Type errors are fatal in strict mode
-tinct eval --strict config.llt
+tinct run --strict config.llt
 # If config.llt has type errors, exits with code 1 and prints errors to stderr
 
 # Without --strict (default), type errors are advisory
-tinct eval config.llt
+tinct run config.llt
 # Evaluation proceeds even if type errors exist
 ```
 

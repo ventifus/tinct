@@ -1135,6 +1135,14 @@ impl TypeEnv {
             },
         );
         env.insert(
+            "llt-repr".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+        env.insert(
             "tag-of".to_string(),
             Type::Function {
                 params: vec![Type::Unknown],

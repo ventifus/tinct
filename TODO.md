@@ -234,23 +234,6 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 - [ ] Register all type signatures (`src/types.rs`)
 - [ ] Tests: corpus tests for pure-tinct http-get against a local test HTTP server, fetch URL dispatch, HttpConn connection reuse, proxy tunneling (`tests/corpus/eval/builtins/`, integration tests)
 
-## CLI Modernization
-
-### `cli-run`: Rename eval → run
-
-**Spec chapters:** `doc/12-tooling.md`. Independent of other sprints.
-
-- [ ] Rename `Commands::Eval` to `Commands::Run` in `src/main.rs`; update match arm (`src/main.rs`)
-- [ ] Remove `--format` / `-f` flag and `OutputFormat` enum (`src/main.rs`)
-- [ ] Remove `--no-stdin` flag; stdin bound only when `-i` is present (`src/main.rs`)
-- [ ] Default behavior (no `-o`): skip JSON serialization block — emit-only output (`src/main.rs`)
-- [ ] Add `llt-repr` Rust builtin: calls `value_to_display_string`, returns String (`src/builtins_meta.rs`)
-- [ ] Create `stdlib/out/llt.llt`: `[llt-repr %]` (`stdlib/out/llt.llt`)
-- [ ] Update `tests/cli_tests.rs`: `"eval"` → `"run"` everywhere; `-f json` → `-o json`; `-f llt` → `-o llt` (`tests/cli_tests.rs`)
-- [ ] Update `justfile`: `-- eval` → `-- run` in all recipes (`justfile`)
-- [ ] Register `llt-repr` type signature (`src/types.rs`)
-- [ ] Tests: CLI tests for run subcommand, emit-only default, -o json, -o llt (`tests/cli_tests.rs`)
-
 ---
 
 ## Phase D: Advanced Typing
