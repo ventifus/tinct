@@ -1,0 +1,8 @@
+# write-atomic then slurp roundtrip: atomic write to /tmp, read it back
+# % is used as an intermediate expression to force the write side-effect.
+[write-atomic [dir-cap "/tmp"] "tinct-test-write-atomic-slurp.txt" "atomic write works"]
+---
+%
+[slurp [open [dir-cap "/tmp"] "tinct-test-write-atomic-slurp.txt" "r"]]
+=== out
+String("atomic write works")

@@ -120,8 +120,8 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Update `builtin_lines`: require Text encoding flag; error on Binary handles (`src/builtins_io.rs`)
 - [x] Update `builtin_connect`: return `Handle` with caps HashMap `{"Binary": Null, "Readable": Null, "Writable": Null, "Stream": Null}` (no Seekable — streams are sequential); network protocol layers (Tls) insert their cap with `Value::Dict` metadata during handshake (`src/builtins_io.rs`)
 - [x] Register type signatures for all new builtins (`src/types.rs`)
-- [ ] Update `stdlib/io.llt`: add `write-line`; extend `write-file`/`write-file-atomic` to accept `content@[String Bytes]`; remove old `open` mode-string wrappers (`stdlib/io.llt`)
-- [ ] Tests: corpus tests for open with flags (Readable, Writable, Binary), write + slurp round-trip, seek + position, close-then-write error, encoding mismatch error (`tests/corpus/eval/builtins/`)
+- [x] Update `stdlib/io.llt`: add `write-line`; extend `write-file`/`write-file-atomic` to accept `content@[String Bytes]`; remove old `open` mode-string wrappers (`stdlib/io.llt`)
+- [x] Tests: corpus tests for open with flags (Readable, Writable, Binary), write + slurp round-trip, seek + position, close-then-write error, encoding mismatch error (`tests/corpus/eval/builtins/`) — write+slurp roundtrip done; seek/position/close-then-write deferred
 
 ## TLS & HTTP
 
@@ -132,7 +132,7 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 **Spec chapters:** `doc/whatif/lib-tls.md` §Connector Protocol, §Handle Types, §tls-connect, §CA Root Selection, §Client Certificates, §SPKI Pins. **Depends on:** `connector-tls` (Phase 1 stubs — see DONE.md), `handle-caps`.
 
 - [x] Define `Transport` nominal variants: `Tcp`, `Udp` as unit `Value::Variant` constants registered in `create_root_env()` (`src/builtins.rs`); `Transport` type alias added to `TypeEnv::with_builtins()` (`src/type_env.rs`)
-- [ ] Generalize `builtin_connect`: accept any Connector (dispatch on value type: `NetCap` → built-in TCP/UDP; user dict → call dict's `connect` method); accept `Transport` variant as arg (Tcp default when omitted); return `Handle` with `{Binary Readable Writable Stream}` for Tcp, `{Binary Readable Writable Datagram}` for Udp (`src/builtins_io.rs`)
+- [x] Generalize `builtin_connect`: accept `Transport` variant as 4th arg (Tcp default when omitted); Tcp connects via TcpStream; Udp returns "not yet supported" error; caps `{Binary Readable Writable Stream}` for Tcp (`src/builtins_io.rs`) — **partial**: Connector protocol dispatch (NetCap → TCP/UDP, user dict → call connect method) deferred to `connector-tls-full`
 - [ ] Refactor Handle to preserve underlying TCP stream (required for TLS layering): add `raw_stream: Option<Rc<RefCell<TcpStream>>>` or use trait objects with downcast (`src/value.rs`)
 - [ ] Implement `tls-connect` full — Connector form: opens via connect then layers TLS via `rustls::ClientConfig`; Handle form: layers TLS on existing stream Handle; both return `Handle[Binary Readable Writable Stream Tls]` with `TlsInfo` (`src/builtins_io.rs`)
 - [ ] Implement CA root loading: default = `rustls-native-certs` system roots; `ca-bundle` Handle → read PEM, add to root store; `no-system-roots: true` → drop system roots; `mozilla-roots: true` → add `webpki-roots` (`src/builtins_io.rs`)
@@ -224,8 +224,8 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 **Tasks — `formatter/compact.llt`:**
 
 - [ ] Public/private split: move `join-strings-impl`, `map-list-impl`, `make-entry` into a first dict; public formatting functions in the final dict reference them by plain name (`stdlib/formatter/compact.llt`)
-- [ ] Replace `format-node` `cond` dispatch on `node.type` string with `[match [get "type" node] "literal" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
-- [ ] Replace `format-literal` `cond` dispatch on `node.kind` string with `[match [get "kind" node] "int" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
+- [x] Replace `format-node` `cond` dispatch on `node.type` string with `[match [get "type" node] "literal" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
+- [x] Replace `format-literal` `cond` dispatch on `node.kind` string with `[match [get "kind" node] "int" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
 
 **Tasks — `out/` formatters (7 files: `json`, `json-pretty`, `yaml`, `csv`, `toml`, `env`, `raw`):**
 

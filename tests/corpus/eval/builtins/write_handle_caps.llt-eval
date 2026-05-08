@@ -1,0 +1,9 @@
+# write returns null; verify that slurp reads back the written content
+# and that the read handle has the expected Readable cap
+# % is used as an intermediate expression to force the write side-effect.
+[write [dir-cap "/tmp"] "tinct-test-write-caps.txt" "caps check"]
+---
+%
+[has-cap? [open [dir-cap "/tmp"] "tinct-test-write-caps.txt" "r"] "Readable"]
+=== out
+Bool(true)
