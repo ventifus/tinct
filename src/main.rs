@@ -919,6 +919,7 @@ fn run_eval(
             inner: Rc::new(RefCell::new(
                 Box::new(BufReader::new(std::io::stdin())) as Box<dyn std::io::BufRead>
             )),
+            write_inner: None,
         };
         let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
         env.borrow_mut()

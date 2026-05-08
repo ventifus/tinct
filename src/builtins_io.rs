@@ -224,6 +224,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Handle {
             caps,
             inner: Rc::new(std::cell::RefCell::new(handle)),
+            write_inner: None,
         },
         call_span,
     )
@@ -243,7 +244,7 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Extract Handle
     let (handle, caps) = match val {
-        Value::Handle { inner, caps } => (inner, caps),
+        Value::Handle { inner, caps, .. } => (inner, caps),
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "slurp".to_string(),
@@ -652,7 +653,18 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
     })?;
 
-    // Wrap in BufReader for Handle
+    // Clone stream for write half before consuming the original into BufReader
+    let write_stream = stream.try_clone().map_err(|e| {
+        EvalError::user_error(
+            format!("connect: failed to clone TcpStream for write half: {}", e),
+            call_span,
+        )
+    })?;
+
+    let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
+        Some(Rc::new(RefCell::new(Box::new(write_stream))));
+
+    // Wrap read half in BufReader for Handle
     let buf_reader = std::io::BufReader::new(stream);
     let inner = Rc::new(RefCell::new(
         Box::new(buf_reader) as Box<dyn std::io::BufRead>
@@ -665,7 +677,14 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     caps.insert("Binary".to_string(), Value::Dict(IndexMap::new())); // Null
     caps.insert("Stream".to_string(), Value::Dict(IndexMap::new())); // Null
 
-    ok_val(Value::Handle { caps, inner }, call_span)
+    ok_val(
+        Value::Handle {
+            caps,
+            inner,
+            write_inner,
+        },
+        call_span,
+    )
 }
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
@@ -728,8 +747,12 @@ pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = crate::builtins::expect_one_arg("lines", args, named, &ctx, depth, call_span)?;
 
     // Extract Handle
-    let (handle, caps) = match val {
-        Value::Handle { inner, caps } => (inner, caps),
+    let (handle, write_inner, caps) = match val {
+        Value::Handle {
+            inner,
+            write_inner,
+            caps,
+        } => (inner, write_inner, caps),
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "lines".to_string(),
@@ -753,12 +776,13 @@ pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Wrap the Handle in a new Handle that the step function can use
     // The step function will read one line, then return a Seq with the line as head
     // and a PendingBuiltin thunk for the next line as tail
-    builtin_lines_step(handle, caps, depth, call_span, ctx)
+    builtin_lines_step(handle, write_inner, caps, depth, call_span, ctx)
 }
 
 /// Helper for `lines`: reads one line and returns Seq or null.
 pub(crate) fn builtin_lines_step(
     handle: Rc<RefCell<Box<dyn std::io::BufRead>>>,
+    write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>>,
     caps: HashMap<String, Value>,
     depth: usize,
     call_span: Span,
@@ -792,6 +816,7 @@ pub(crate) fn builtin_lines_step(
                 Value::Handle {
                     caps: caps.clone(),
                     inner: Rc::clone(&handle),
+                    write_inner: write_inner.as_ref().map(Rc::clone),
                 },
                 call_span,
             )?];
@@ -1103,11 +1128,11 @@ pub(crate) fn builtin_has_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::Bool(has_cap), call_span)
 }
 
-/// `write-handle`: Write to a WriteHandle.
-/// Takes a WriteHandle and content (String for Text, Bytes for Binary).
+/// `write-handle`: Write to a WriteHandle or a bidirectional Handle (e.g. TCP socket).
+/// Takes a WriteHandle (or Handle with write_inner) and content (String for Text, Bytes for Binary).
 /// Checks encoding via Binary cap: if present, content must be Bytes; otherwise String.
 /// Uses `inner.borrow_mut().write_all(bytes)`.
-/// Returns the WriteHandle (for chaining).
+/// Returns the original handle (WriteHandle or Handle) for chaining.
 pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1117,7 +1142,7 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
         ctx,
     } = ctx_arg;
 
-    // Expect 2 args: WriteHandle, content
+    // Expect 2 args: WriteHandle or Handle, content
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
@@ -1126,13 +1151,48 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let handle_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
     let content_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
 
-    // Extract WriteHandle
-    let (inner, caps) = match &handle_val {
-        Value::WriteHandle { inner, caps } => (Rc::clone(inner), caps.clone()),
+    // Determine the writer and the return value (preserve original handle type for chaining)
+    enum HandleKind {
+        Write {
+            inner: Rc<RefCell<Box<dyn std::io::Write>>>,
+            caps: HashMap<String, Value>,
+        },
+        Bidirectional {
+            write_inner: Rc<RefCell<Box<dyn std::io::Write>>>,
+            read_inner: Rc<RefCell<Box<dyn std::io::BufRead>>>,
+            caps: HashMap<String, Value>,
+        },
+    }
+
+    let kind = match &handle_val {
+        Value::WriteHandle { inner, caps } => HandleKind::Write {
+            inner: Rc::clone(inner),
+            caps: caps.clone(),
+        },
+        Value::Handle {
+            write_inner: Some(w),
+            inner,
+            caps,
+        } => HandleKind::Bidirectional {
+            write_inner: Rc::clone(w),
+            read_inner: Rc::clone(inner),
+            caps: caps.clone(),
+        },
+        Value::Handle {
+            write_inner: None, ..
+        } => {
+            return Err(EvalError::type_mismatch_ctx(
+                "write-handle".to_string(),
+                "WriteHandle or bidirectional Handle",
+                "read-only Handle",
+                args[0].span,
+            )
+            .into())
+        }
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "write-handle".to_string(),
-                "WriteHandle",
+                "WriteHandle or bidirectional Handle",
                 other.type_name(),
                 args[0].span,
             )
@@ -1140,8 +1200,13 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
         }
     };
 
+    let caps_ref = match &kind {
+        HandleKind::Write { caps, .. } => caps,
+        HandleKind::Bidirectional { caps, .. } => caps,
+    };
+
     // Check encoding
-    let is_binary = caps.contains_key("Binary");
+    let is_binary = caps_ref.contains_key("Binary");
 
     use std::io::Write;
     let bytes: Vec<u8> = if is_binary {
@@ -1165,22 +1230,45 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     };
 
     // Write to handle
-    inner.borrow_mut().write_all(&bytes).map_err(|e| {
-        EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
-    })?;
+    match &kind {
+        HandleKind::Write { inner, .. } => {
+            inner.borrow_mut().write_all(&bytes).map_err(|e| {
+                EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
+            })?;
+        }
+        HandleKind::Bidirectional { write_inner, .. } => {
+            write_inner.borrow_mut().write_all(&bytes).map_err(|e| {
+                EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
+            })?;
+        }
+    }
 
-    // Return the WriteHandle (for chaining)
-    ok_val(
-        Value::WriteHandle {
+    // Return the original handle (preserves type for chaining)
+    match kind {
+        HandleKind::Write { inner, caps } => ok_val(
+            Value::WriteHandle {
+                caps,
+                inner: Rc::clone(&inner),
+            },
+            call_span,
+        ),
+        HandleKind::Bidirectional {
+            write_inner,
+            read_inner,
             caps,
-            inner: Rc::clone(&inner),
-        },
-        call_span,
-    )
+        } => ok_val(
+            Value::Handle {
+                caps,
+                inner: Rc::clone(&read_inner),
+                write_inner: Some(Rc::clone(&write_inner)),
+            },
+            call_span,
+        ),
+    }
 }
 
-/// `flush`: Flush a WriteHandle buffer.
-/// Takes a WriteHandle, calls `inner.borrow_mut().flush()`, returns the WriteHandle.
+/// `flush`: Flush a WriteHandle or bidirectional Handle buffer.
+/// Takes a WriteHandle (or Handle with write_inner), flushes it, returns the same handle.
 pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1192,39 +1280,61 @@ pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let val = crate::builtins::expect_one_arg("flush", args, named, &ctx, depth, call_span)?;
 
-    // Extract WriteHandle
-    let (inner, caps) = match &val {
-        Value::WriteHandle { inner, caps } => (Rc::clone(inner), caps.clone()),
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "flush".to_string(),
-                "WriteHandle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    // Flush
     use std::io::Write;
-    inner
-        .borrow_mut()
-        .flush()
-        .map_err(|e| EvalError::user_error(format!("flush: flush failed: {}", e), call_span))?;
-
-    // Return the WriteHandle
-    ok_val(
+    match val {
         Value::WriteHandle {
-            caps,
-            inner: Rc::clone(&inner),
-        },
-        call_span,
-    )
+            ref inner,
+            ref caps,
+        } => {
+            inner.borrow_mut().flush().map_err(|e| {
+                EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
+            })?;
+            ok_val(
+                Value::WriteHandle {
+                    caps: caps.clone(),
+                    inner: Rc::clone(inner),
+                },
+                call_span,
+            )
+        }
+        Value::Handle {
+            write_inner: Some(ref w),
+            ref inner,
+            ref caps,
+        } => {
+            w.borrow_mut().flush().map_err(|e| {
+                EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
+            })?;
+            ok_val(
+                Value::Handle {
+                    caps: caps.clone(),
+                    inner: Rc::clone(inner),
+                    write_inner: Some(Rc::clone(w)),
+                },
+                call_span,
+            )
+        }
+        Value::Handle {
+            write_inner: None, ..
+        } => Err(EvalError::type_mismatch_ctx(
+            "flush".to_string(),
+            "WriteHandle or bidirectional Handle",
+            "read-only Handle",
+            args[0].span,
+        )
+        .into()),
+        other => Err(EvalError::type_mismatch_ctx(
+            "flush".to_string(),
+            "WriteHandle or bidirectional Handle",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
 }
 
-/// `close`: Close a WriteHandle.
-/// Takes a WriteHandle, flushes it, then returns Null.
+/// `close`: Close a WriteHandle or bidirectional Handle.
+/// Takes a WriteHandle (or Handle with write_inner), flushes and returns Null.
 /// The inner writer is dropped when the last Rc is dropped.
 pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
@@ -1237,26 +1347,42 @@ pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let val = crate::builtins::expect_one_arg("close", args, named, &ctx, depth, call_span)?;
 
-    // Extract WriteHandle
-    let inner = match val {
-        Value::WriteHandle { inner, .. } => inner,
+    use std::io::Write;
+    match val {
+        Value::WriteHandle { inner, .. } => {
+            inner.borrow_mut().flush().map_err(|e| {
+                EvalError::user_error(format!("close: flush failed: {}", e), call_span)
+            })?;
+        }
+        Value::Handle {
+            write_inner: Some(w),
+            ..
+        } => {
+            w.borrow_mut().flush().map_err(|e| {
+                EvalError::user_error(format!("close: flush failed: {}", e), call_span)
+            })?;
+        }
+        Value::Handle {
+            write_inner: None, ..
+        } => {
+            return Err(EvalError::type_mismatch_ctx(
+                "close".to_string(),
+                "WriteHandle or bidirectional Handle",
+                "read-only Handle",
+                args[0].span,
+            )
+            .into())
+        }
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "close".to_string(),
-                "WriteHandle",
+                "WriteHandle or bidirectional Handle",
                 other.type_name(),
                 args[0].span,
             )
             .into())
         }
-    };
-
-    // Flush before closing
-    use std::io::Write;
-    inner
-        .borrow_mut()
-        .flush()
-        .map_err(|e| EvalError::user_error(format!("close: flush failed: {}", e), call_span))?;
+    }
 
     // Return Null (the inner writer is dropped when the Rc goes out of scope)
     ok_val(Value::Dict(IndexMap::new()), call_span)
@@ -1922,7 +2048,7 @@ pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Returns Handle[Binary Readable Writable Stream Tls] with TlsInfo in the Tls capability.
 ///
 /// **Current status:** Stub implementation — validates arguments but does not perform TLS handshake.
-/// Full implementation requires refactoring Handle to preserve underlying TCP stream.
+/// Full implementation deferred to lib-tls sprint (doc/whatif/lib-tls.md).
 pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
