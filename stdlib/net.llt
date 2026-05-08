@@ -95,4 +95,31 @@
           [tls-connect cap Tcp parsed.host [or parsed.port 443] []]
           [str-bytes [build-http-request "GET" [or parsed.path "/"] parsed.host]]]]]]
       [http-get cap parsed.host [or parsed.port 80] [or parsed.path "/"]]]]]
+
+  # Parse query string into a Dict of key-value pairs.
+  # Returns empty dict if query is null.
+  uri-params: [fn@Dict [u]
+    [if [null? u.query]
+      []
+      [pairs: [split u.query "&"]
+      [reduce [fn [acc pair]
+        [kv: [split pair "="]
+        [set acc [get 0 kv] [if [builtin-eq [length kv] 1] "" [get 1 kv]]]]]
+        [] pairs]]]]
+
+  # Return "scheme://host:port" (origin).
+  # Port is omitted if null.
+  uri-origin: [fn@String [u]
+    [if [null? u.port]
+      [str u.scheme "://" u.host]
+      [str u.scheme "://" u.host ":" u.port]]]
+
+  # Reconstruct full URI string from components.
+  uri->string: [fn@String [u]
+    [str u.scheme "://"
+      [if [null? u.host] "" u.host]
+      [if [null? u.port] "" [str ":" u.port]]
+      u.path
+      [if [null? u.query] "" [str "?" u.query]]
+      [if [null? u.fragment] "" [str "#" u.fragment]]]]
 ]

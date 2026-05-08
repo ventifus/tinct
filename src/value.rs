@@ -195,10 +195,12 @@ pub enum Value {
     /// `caps`: capability names → associated data (Null for boolean caps, Dict for protocol caps).
     /// `inner`: the underlying I/O reader (BufRead trait object).
     /// `write_inner`: optional write half for bidirectional connections (e.g. TCP sockets).
+    /// `seek_inner`: optional seek interface for files (None for streams).
     Handle {
         caps: HashMap<String, Value>,
         inner: Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>,
         write_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Write>>>>,
+        seek_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Seek>>>>,
     },
     /// Write-only file/stream handle with capability metadata.
     /// `caps`: capability names → associated data (Null for boolean caps, Dict for protocol caps).

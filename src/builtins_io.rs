@@ -38,6 +38,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::BufReader;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -249,6 +250,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 caps,
                 inner: Rc::new(std::cell::RefCell::new(handle)),
                 write_inner: None,
+                seek_inner: None,
             },
             call_span,
         );
@@ -260,6 +262,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let mut has_writable = false;
     let mut has_binary = false;
     let mut has_text = false;
+    let mut has_seekable = false;
 
     for flag_arg in &args[2..] {
         let flag_val = materialize(flag_arg, Some(&call_span), &ctx, depth)?;
@@ -310,10 +313,14 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     has_text = true;
                     caps.insert("Text".to_string(), Value::Dict(IndexMap::new()));
                 }
+                "Seekable" => {
+                    has_seekable = true;
+                    caps.insert("Seekable".to_string(), Value::Dict(IndexMap::new()));
+                }
                 other => {
                     return Err(EvalError::user_error(
                             format!(
-                                "open: unknown capability flag '{}' (expected Readable, Writable, Binary, or Text)",
+                                "open: unknown capability flag '{}' (expected Readable, Writable, Binary, Text, or Seekable)",
                                 other
                             ),
                             call_span,
@@ -357,6 +364,23 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 call_span,
             )
         })?;
+
+        // If Seekable, clone the file handle for seeking operations
+        // We need two handles: one wrapped in BufReader for reading, one for seeking
+        let seek_inner = if has_seekable {
+            let seek_file = file.try_clone().map_err(|e| {
+                EvalError::user_error(
+                    format!("open: failed to clone file handle for seeking: {}", e),
+                    call_span,
+                )
+            })?;
+            Some(Rc::new(std::cell::RefCell::new(
+                Box::new(BufReader::new(seek_file)) as Box<dyn std::io::Seek>,
+            )))
+        } else {
+            None
+        };
+
         let handle: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
 
         ok_val(
@@ -364,6 +388,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 caps,
                 inner: Rc::new(std::cell::RefCell::new(handle)),
                 write_inner: None,
+                seek_inner,
             },
             call_span,
         )
@@ -829,6 +854,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             caps,
             inner,
             write_inner,
+            seek_inner: None,
         },
         call_span,
     )
@@ -899,6 +925,7 @@ pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             inner,
             write_inner,
             caps,
+            ..
         } => (inner, write_inner, caps),
         other => {
             return Err(EvalError::type_mismatch_ctx(
@@ -964,6 +991,7 @@ pub(crate) fn builtin_lines_step(
                     caps: caps.clone(),
                     inner: Rc::clone(&handle),
                     write_inner: write_inner.as_ref().map(Rc::clone),
+                    seek_inner: None,
                 },
                 call_span,
             )?];
@@ -1320,6 +1348,7 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
             write_inner: Some(w),
             inner,
             caps,
+            ..
         } => HandleKind::Bidirectional {
             write_inner: Rc::clone(w),
             read_inner: Rc::clone(inner),
@@ -1408,6 +1437,7 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
                 caps,
                 inner: Rc::clone(&read_inner),
                 write_inner: Some(Rc::clone(&write_inner)),
+                seek_inner: None,
             },
             call_span,
         ),
@@ -1448,6 +1478,7 @@ pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             write_inner: Some(ref w),
             ref inner,
             ref caps,
+            ..
         } => {
             w.borrow_mut().flush().map_err(|e| {
                 EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
@@ -1457,6 +1488,7 @@ pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     caps: caps.clone(),
                     inner: Rc::clone(inner),
                     write_inner: Some(Rc::clone(w)),
+                    seek_inner: None,
                 },
                 call_span,
             )
@@ -1533,6 +1565,287 @@ pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Return Null (the inner writer is dropped when the Rc goes out of scope)
     ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `seek`: Seek to a byte offset from the start of the file.
+/// Takes a Handle and an Int offset, returns the Handle for chaining.
+/// Requires the Seekable capability.
+pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("seek", named, call_span)?;
+
+    let handle_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let offset_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract offset as Int
+    let offset = match offset_val {
+        Value::Int(i) => i,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "seek".to_string(),
+                "Int",
+                other.type_name(),
+                args[1].span,
+            )
+            .into())
+        }
+    };
+
+    // Extract Handle and check for Seekable capability
+    match handle_val {
+        Value::Handle {
+            ref caps,
+            ref inner,
+            ref write_inner,
+            ref seek_inner,
+        } => {
+            // Check for Seekable capability
+            if !caps.contains_key("Seekable") {
+                return Err(EvalError::user_error(
+                    "seek: Handle does not have Seekable capability".to_string(),
+                    args[0].span,
+                )
+                .into());
+            }
+
+            // Get the seek_inner
+            let seek_handle = match seek_inner {
+                Some(s) => s,
+                None => {
+                    return Err(EvalError::user_error(
+                        "seek: Handle has Seekable capability but no seek interface".to_string(),
+                        args[0].span,
+                    )
+                    .into())
+                }
+            };
+
+            // Perform the seek on both the inner BufReader and seek_inner
+            // They are cloned File handles, so we need to seek both to keep them in sync
+            use std::io::Seek;
+
+            // Seek the seek_inner first
+            seek_handle
+                .borrow_mut()
+                .seek(std::io::SeekFrom::Start(offset as u64))
+                .map_err(|e| {
+                    EvalError::user_error(format!("seek: seek failed: {}", e), call_span)
+                })?;
+
+            // Now seek the inner BufReader by downcasting
+            // Since both are BufReader<cap_std::fs::File>, we can use std::any::Any
+            use std::any::Any;
+            let mut inner_borrow = inner.borrow_mut();
+            if let Some(buf_reader) =
+                (&mut *inner_borrow as &mut dyn Any).downcast_mut::<BufReader<cap_std::fs::File>>()
+            {
+                buf_reader
+                    .seek(std::io::SeekFrom::Start(offset as u64))
+                    .map_err(|e| {
+                        EvalError::user_error(
+                            format!("seek: inner buffer seek failed: {}", e),
+                            call_span,
+                        )
+                    })?;
+            } else {
+                return Err(EvalError::user_error(
+                    "seek: failed to downcast BufRead to BufReader<File>".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            drop(inner_borrow); // Release the borrow before cloning
+
+            // Return the handle for chaining
+            ok_val(
+                Value::Handle {
+                    caps: caps.clone(),
+                    inner: Rc::clone(inner),
+                    write_inner: write_inner.clone(),
+                    seek_inner: Some(Rc::clone(seek_handle)),
+                },
+                call_span,
+            )
+        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "seek".to_string(),
+            "Handle",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// `seek-end`: Seek to the end of the file.
+/// Takes a Handle, returns the Handle for chaining.
+/// Requires the Seekable capability.
+pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    let val = crate::builtins::expect_one_arg("seek-end", args, named, &ctx, depth, call_span)?;
+
+    // Extract Handle and check for Seekable capability
+    match val {
+        Value::Handle {
+            ref caps,
+            ref inner,
+            ref write_inner,
+            ref seek_inner,
+        } => {
+            // Check for Seekable capability
+            if !caps.contains_key("Seekable") {
+                return Err(EvalError::user_error(
+                    "seek-end: Handle does not have Seekable capability".to_string(),
+                    args[0].span,
+                )
+                .into());
+            }
+
+            // Get the seek_inner
+            let seek_handle = match seek_inner {
+                Some(s) => s,
+                None => {
+                    return Err(EvalError::user_error(
+                        "seek-end: Handle has Seekable capability but no seek interface"
+                            .to_string(),
+                        args[0].span,
+                    )
+                    .into())
+                }
+            };
+
+            // Perform the seek on both the inner BufReader and seek_inner
+            use std::io::Seek;
+
+            // Seek the seek_inner first
+            seek_handle
+                .borrow_mut()
+                .seek(std::io::SeekFrom::End(0))
+                .map_err(|e| {
+                    EvalError::user_error(format!("seek-end: seek failed: {}", e), call_span)
+                })?;
+
+            // Now seek the inner BufReader by downcasting
+            use std::any::Any;
+            let mut inner_borrow = inner.borrow_mut();
+            if let Some(buf_reader) =
+                (&mut *inner_borrow as &mut dyn Any).downcast_mut::<BufReader<cap_std::fs::File>>()
+            {
+                buf_reader.seek(std::io::SeekFrom::End(0)).map_err(|e| {
+                    EvalError::user_error(
+                        format!("seek-end: inner buffer seek failed: {}", e),
+                        call_span,
+                    )
+                })?;
+            } else {
+                return Err(EvalError::user_error(
+                    "seek-end: failed to downcast BufRead to BufReader<File>".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            drop(inner_borrow); // Release the borrow before cloning
+
+            // Return the handle for chaining
+            ok_val(
+                Value::Handle {
+                    caps: caps.clone(),
+                    inner: Rc::clone(inner),
+                    write_inner: write_inner.clone(),
+                    seek_inner: Some(Rc::clone(seek_handle)),
+                },
+                call_span,
+            )
+        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "seek-end".to_string(),
+            "Handle",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// `position`: Get the current byte offset in the file.
+/// Takes a Handle, returns an Int.
+/// Requires the Seekable capability.
+pub(crate) fn builtin_position(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    let val = crate::builtins::expect_one_arg("position", args, named, &ctx, depth, call_span)?;
+
+    // Extract Handle and check for Seekable capability
+    match val {
+        Value::Handle {
+            ref caps,
+            ref seek_inner,
+            ..
+        } => {
+            // Check for Seekable capability
+            if !caps.contains_key("Seekable") {
+                return Err(EvalError::user_error(
+                    "position: Handle does not have Seekable capability".to_string(),
+                    args[0].span,
+                )
+                .into());
+            }
+
+            // Get the seek_inner
+            let seek_handle = match seek_inner {
+                Some(s) => s,
+                None => {
+                    return Err(EvalError::user_error(
+                        "position: Handle has Seekable capability but no seek interface"
+                            .to_string(),
+                        args[0].span,
+                    )
+                    .into())
+                }
+            };
+
+            // Get the current position
+            use std::io::Seek;
+            let pos = seek_handle.borrow_mut().stream_position().map_err(|e| {
+                EvalError::user_error(
+                    format!("position: failed to get position: {}", e),
+                    call_span,
+                )
+            })?;
+
+            ok_val(Value::Int(pos as i64), call_span)
+        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "position".to_string(),
+            "Handle",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
 }
 
 /// `list-dir`: List directory entries with metadata.
@@ -2499,6 +2812,7 @@ pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
                 caps,
                 inner,
                 write_inner,
+                seek_inner: None,
             },
             call_span,
         )

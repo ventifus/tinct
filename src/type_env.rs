@@ -1545,6 +1545,30 @@ impl TypeEnv {
             },
         );
         env.insert(
+            "seek".to_string(),
+            Type::Function {
+                params: vec![Type::Handle, Type::Int], // Handle, byte offset
+                ret: Box::new(Type::Handle),           // Returns Handle for chaining
+                variadic: false,
+            },
+        );
+        env.insert(
+            "seek-end".to_string(),
+            Type::Function {
+                params: vec![Type::Handle],  // Handle
+                ret: Box::new(Type::Handle), // Returns Handle for chaining
+                variadic: false,
+            },
+        );
+        env.insert(
+            "position".to_string(),
+            Type::Function {
+                params: vec![Type::Handle], // Handle
+                ret: Box::new(Type::Int),   // Current byte offset
+                variadic: false,
+            },
+        );
+        env.insert(
             "list-dir".to_string(),
             Type::Function {
                 params: vec![Type::DirCap, Type::Str],

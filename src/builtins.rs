@@ -352,10 +352,11 @@ pub(crate) use crate::builtins_io::{
     builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_dir_cap, builtin_emit,
     builtin_env, builtin_flush, builtin_has_cap, builtin_http_connect, builtin_http_get,
     builtin_lines, builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow,
-    builtin_net_cap, builtin_open, builtin_proxy_connect, builtin_read_link, builtin_remove,
-    builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_slurp, builtin_socks5_connect,
-    builtin_spki_pin, builtin_stat, builtin_tls_connect, builtin_tls_peer_cert, builtin_write,
-    builtin_write_atomic, builtin_write_handle,
+    builtin_net_cap, builtin_open, builtin_position, builtin_proxy_connect, builtin_read_link,
+    builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
+    builtin_seek_end, builtin_slurp, builtin_socks5_connect, builtin_spki_pin, builtin_stat,
+    builtin_tls_connect, builtin_tls_peer_cert, builtin_write, builtin_write_atomic,
+    builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
@@ -1187,6 +1188,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("flush", builtin_flush, [Strictness::Seq]),
         builtin!("close", builtin_close, [Strictness::Seq]),
+        builtin!("seek", builtin_seek, [Strictness::Seq, Strictness::Seq]),
+        builtin!("seek-end", builtin_seek_end, [Strictness::Seq]),
+        builtin!("position", builtin_position, [Strictness::Seq]),
         builtin!(
             "list-dir",
             builtin_list_dir,
@@ -6505,22 +6509,20 @@ mod tests {
         // HTTP / network builtins
         assert!(names.contains(&"http-connect"), "missing http-connect");
         assert!(names.contains(&"http-get"), "missing http-get");
-        assert!(
-            names.contains(&"socks5-connect"),
-            "missing socks5-connect"
-        );
-        assert!(
-            names.contains(&"proxy-connect"),
-            "missing proxy-connect"
-        );
+        assert!(names.contains(&"socks5-connect"), "missing socks5-connect");
+        assert!(names.contains(&"proxy-connect"), "missing proxy-connect");
         // URI parsing builtins
         assert!(names.contains(&"uri"), "missing uri");
         assert!(names.contains(&"url"), "missing url");
         assert!(names.contains(&"urn"), "missing urn");
+        // Seek builtins
+        assert!(names.contains(&"seek"), "missing seek");
+        assert!(names.contains(&"seek-end"), "missing seek-end");
+        assert!(names.contains(&"position"), "missing position");
         assert_eq!(
             names.len(),
-            175,
-            "expected 175 builtins, got {}",
+            178,
+            "expected 178 builtins, got {}",
             names.len()
         );
     }
