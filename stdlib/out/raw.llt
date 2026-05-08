@@ -5,7 +5,7 @@
 
 [
   cond [
-    [str? %]         %
+    [str? %]         [emit %]
     [seq? %]         [each % [fn [x] [emit x]]]
     true             [error "raw formatter: expected String or Seq, got " [type-of %]]
   ]

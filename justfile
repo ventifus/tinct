@@ -86,23 +86,23 @@ fmt:
 
 # Run the application with samples/basic.llt (eval, JSON output)
 run:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval samples/basic.llt
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- run samples/basic.llt
 
 # Run the application with custom input file
 run-file FILE:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- run {{FILE}}
 
 # Run with LLT display format
 run-llt FILE:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval -f llt {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- run -o llt {{FILE}}
 
 # Run with piped JSON stdin
 run-json JSON FILE:
-    echo '{{JSON}}' | {{container}} run -i {{run_flags}} {{rust_image}} cargo run --bin tinct -- eval {{FILE}}
+    echo '{{JSON}}' | {{container}} run -i {{run_flags}} {{rust_image}} cargo run --bin tinct -- run {{FILE}}
 
 # Run the release build
 run-release:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct --release -- eval samples/basic.llt
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct --release -- run samples/basic.llt
 
 # Clean build artifacts
 clean:

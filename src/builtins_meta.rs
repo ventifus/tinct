@@ -500,6 +500,26 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(string_val(name), call_span)
 }
 
+/// `llt-repr`: takes 1 arg, deep-materializes it, returns its LLT display string representation.
+/// This is the programmatic equivalent of the LLT display format (Int(42), Dict({...}), etc.).
+/// Used by the `-o llt` output formatter.
+pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("llt-repr", args, named, &ctx, depth, call_span)?;
+    // Deep-materialize the value first (value_to_display_string requires it)
+    let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, depth, Some(&call_span))?;
+    // Convert to display string
+    let display_str = crate::value_to_display_string(&deep_val, &ctx, depth)
+        .map_err(|e| EvalError::new(format!("llt-repr: {}", e.message()), call_span))?;
+    ok_val(string_val(&display_str), call_span)
+}
+
 /// `tag-of`: Return the tag of a Variant as a String.
 pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {

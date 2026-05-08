@@ -7,8 +7,8 @@ use std::process;
 use std::rc::Rc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_source, format_with_json_llt,
-    json_to_value, literate, materialize, parse, value_to_display_string, value_to_json,
-    EvalContext, Span, Thunk, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
+    json_to_value, literate, materialize, parse, value_to_json, EvalContext, Span, Thunk,
+    MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -35,11 +35,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Evaluate an LLT file and output the result.
-    Eval {
-        /// Output format.
-        #[arg(short, long, default_value = "json", value_enum)]
-        format: OutputFormat,
-
+    #[clap(alias = "eval")]
+    Run {
         /// Deep-force all thunks before serializing (surfaces errors before partial output).
         #[arg(long)]
         eval: bool,
@@ -103,11 +100,6 @@ enum Commands {
         /// When set, [open pwd ...] and [include pwd ...] fail with undefined variable.
         #[arg(long)]
         no_pwd: bool,
-
-        /// Do not inject `stdin` Handle into the root environment.
-        /// When set, [slurp stdin] fails with undefined variable.
-        #[arg(long)]
-        no_stdin: bool,
 
         /// Do not inject `libdir` DirCap into the root environment.
         /// When set, [include libdir ...] fails with undefined variable.
@@ -232,22 +224,13 @@ enum LiterateMode {
     Weave,
 }
 
-#[derive(Clone, ValueEnum)]
-enum OutputFormat {
-    /// JSON output (default).
-    Json,
-    /// LLT display format (Int(42), Dict({...}), etc.).
-    Llt,
-}
-
 fn main() {
     let cli = Cli::parse();
 
     // Materialize is iterative (materialize_rc loop); no large worker stack needed.
     // The REPL spawns its own 128MB thread for eval when needed (src/repl.rs).
     let result = match cli.command {
-        Commands::Eval {
-            format,
+        Commands::Run {
             eval,
             no_fs,
             require_integrity,
@@ -261,7 +244,6 @@ fn main() {
             no_env,
             allow_env,
             no_pwd,
-            no_stdin,
             no_libdir,
             cap_fs,
             cap_net,
@@ -271,7 +253,6 @@ fn main() {
             files,
         } => run_eval(
             &files,
-            &format,
             eval,
             no_fs,
             require_integrity,
@@ -285,7 +266,6 @@ fn main() {
             no_env,
             allow_env,
             no_pwd,
-            no_stdin,
             no_libdir,
             cap_fs,
             cap_net,
@@ -708,7 +688,6 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
 
 fn run_eval(
     file_paths: &[String],
-    format: &OutputFormat,
     force_eval: bool,
     no_fs: bool,
     require_integrity: bool,
@@ -722,7 +701,6 @@ fn run_eval(
     no_env: bool,
     allow_env: Vec<String>,
     no_pwd: bool,
-    no_stdin: bool,
     no_libdir: bool,
     cap_fs: Vec<String>,
     cap_net: Vec<String>,
@@ -901,10 +879,9 @@ fn run_eval(
             .insert("pwd".to_string(), Rc::new(pwd_thunk));
     }
 
-    // Inject `stdin` Handle for fd 0 into the root environment (unless --no-stdin is set).
-    // --no-stdin enforcement: when the flag is set, `stdin` is NOT injected, so
-    // any reference to `stdin` in the program will fail with "undefined variable".
-    if !no_stdin {
+    // Inject `stdin` Handle for fd 0 into the root environment only when `-i` is present.
+    // When `-i` is not present, stdin is read for JSON auto-detection instead.
+    if input.is_some() {
         use std::cell::RefCell;
         use std::collections::HashMap;
         use std::io::BufReader;
@@ -1218,8 +1195,11 @@ fn run_eval(
         error_str
     })?;
 
-    // Optionally deep-force all thunks
-    let val = if force_eval {
+    // Deep-force all thunks when:
+    // - --eval flag was given (explicit deep materialization)
+    // - -o flag was given (output formatter stage may contain lazy emit calls inside a Dict
+    //   module; deep materialization forces all entries, triggering the emit side effects)
+    let val = if force_eval || output.is_some() {
         deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
@@ -1313,97 +1293,14 @@ fn run_eval(
         return Ok(());
     }
 
-    // Serialize and output (skip if emit was called)
-    if !eval_ctx.emitted.get() {
-        match format {
-            OutputFormat::Json => {
-                // Try stdlib/out/json.llt for pure-tinct JSON serialization.
-                // Falls back to value_to_json() when json.llt is not found (e.g., no libdir).
-                let json_llt_path = resolved_libdir_path
-                    .as_deref()
-                    .map(|p| p.join("out").join("json.llt"));
-
-                let output = if let Some(ref json_llt_path) = json_llt_path {
-                    match format_with_json_llt(
-                        Rc::clone(&thunk),
-                        &eval_ctx,
-                        Rc::clone(&env),
-                        json_llt_path,
-                    ) {
-                        Ok(Some(compact_json)) => {
-                            // json.llt produces compact JSON. Parse and re-serialize as
-                            // pretty-printed to preserve the expected output format.
-                            let parsed: serde_json::Value = serde_json::from_str(&compact_json)
-                                .map_err(|e| {
-                                    format!("json.llt produced invalid JSON: {e}\noutput: {compact_json}")
-                                })?;
-                            serde_json::to_string_pretty(&parsed)
-                                .map_err(|e| format!("JSON pretty-print error: {e}"))?
-                        }
-                        Ok(None) => {
-                            // json.llt not found — fall back to Rust serializer.
-                            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
-                                let mut error_str = format!("{e}");
-                                if let Some(snippet) =
-                                    tinct::render_span_snippet(&last_source, e.definition_span)
-                                {
-                                    error_str.push('\n');
-                                    error_str.push_str(&snippet);
-                                }
-                                error_str
-                            })?;
-                            serde_json::to_string_pretty(&json)
-                                .map_err(|e| format!("JSON serialization error: {e}"))?
-                        }
-                        Err(e) => return Err(e),
-                    }
-                } else {
-                    // No libdir resolved — fall back to Rust serializer.
-                    let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| {
-                        let mut error_str = format!("{e}");
-                        if let Some(snippet) =
-                            tinct::render_span_snippet(&last_source, e.definition_span)
-                        {
-                            error_str.push('\n');
-                            error_str.push_str(&snippet);
-                        }
-                        error_str
-                    })?;
-                    serde_json::to_string_pretty(&json)
-                        .map_err(|e| format!("JSON serialization error: {e}"))?
-                };
-                println!("{output}");
-            }
-            OutputFormat::Llt => {
-                // Deep-materialize for display (value_to_display_string needs it).
-                // Skip if --eval already deep-materialized above.
-                let display_val = if force_eval {
-                    &val
-                } else {
-                    &deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
-                        let mut error_str = format!("{e}");
-                        if let Some(snippet) =
-                            tinct::render_span_snippet(&last_source, e.definition_span)
-                        {
-                            error_str.push('\n');
-                            error_str.push_str(&snippet);
-                        }
-                        error_str
-                    })?
-                };
-                let output = value_to_display_string(display_val, &eval_ctx, 0).map_err(|e| {
-                    let mut error_str = format!("{e}");
-                    if let Some(snippet) =
-                        tinct::render_span_snippet(&last_source, e.definition_span)
-                    {
-                        error_str.push('\n');
-                        error_str.push_str(&snippet);
-                    }
-                    error_str
-                })?;
-                println!("{output}");
-            }
-        }
+    // Serialize and output (skip if emit was called, or if no -o flag was specified)
+    // When no -o flag is given, the output is emit-only (no JSON serialization).
+    // The -o flag appends an output formatter to the pipeline, so we never reach this point
+    // with output.is_some(). This block only runs when there was NO -o flag.
+    if !eval_ctx.emitted.get() && output.is_none() {
+        // No emit was called and no -o flag was given.
+        // Emit-only mode: print nothing (the user should use emit or -o).
+        // This is the default behavior when no output format is specified.
     }
 
     // Cancel any pending alarm before returning success
