@@ -1,0 +1,10 @@
+# Test: tls-connect validates arity (requires 3, 4, or 5 args)
+# Expected: error message about arity
+
+[tls-connect]
+
+=== error
+tls-connect: expected 3 args (Handle form) or 4-5 args (Connector form), got 0
+
+=== warn
+arity mismatch: expected at least 2 argument(s), got 0

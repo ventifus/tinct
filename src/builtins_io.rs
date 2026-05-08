@@ -15,7 +15,10 @@
 //!
 //! **Network builtins:**
 //! - `net-cap`: Create a NetCap from an allowlist
-//! - `connect`: Open a TCP connection within a NetCap
+//! - `connect`: Open a TCP/UDP connection within a NetCap (supports Transport variants)
+//! - `tls-connect`: Layer TLS on a connection (Connector or Handle form)
+//! - `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle
+//! - `spki-pin`: Create an SPKI pin for certificate pinning
 //!
 //! **Handle capability builtins:**
 //! - `cap-data`: Extract capability data from a Handle/WriteHandle
@@ -1856,4 +1859,196 @@ pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let target_str = target.to_string_lossy().to_string();
     ok_val(string_val(&target_str), call_span)
+}
+
+// ============================================================================
+// TLS Support (STUB — Phase 2 implementation)
+// ============================================================================
+
+/// `tls-connect`: Layer TLS on a connection (STUB).
+/// Two forms:
+/// 1. Connector form: `tls-connect connector Transport host port opts`
+/// 2. Handle form: `tls-connect handle sni opts`
+///
+/// Returns Handle[Binary Readable Writable Stream Tls] with TlsInfo in the Tls capability.
+///
+/// **Current status:** Stub implementation — validates arguments but does not perform TLS handshake.
+/// Full implementation requires refactoring Handle to preserve underlying TCP stream.
+pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth: _,
+        call_span,
+        ctx: _,
+    } = ctx_arg;
+
+    reject_named("tls-connect", named, call_span)?;
+
+    // Validate arity
+    if args.len() < 3 || args.len() > 5 {
+        return Err(EvalError::user_error(
+            format!(
+                "tls-connect: expected 3 args (Handle form) or 4-5 args (Connector form), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    // Stub: just error out for now
+    Err(EvalError::user_error(
+        "tls-connect: not yet implemented (requires Handle refactoring to preserve TCP stream)"
+            .to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle.
+/// Requires Handle[... Tls ...].
+/// Returns a dict with: subject, issuer, sans, not-before, not-after, spki-sha256.
+pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    let val =
+        crate::builtins::expect_one_arg("tls-peer-cert", args, named, &ctx, depth, call_span)?;
+
+    // Extract Handle and check for Tls capability
+    let caps = match val {
+        Value::Handle { caps, .. } => caps,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "tls-peer-cert".to_string(),
+                "Handle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    if !caps.contains_key("Tls") {
+        return Err(EvalError::user_error(
+            "tls-peer-cert: handle must have Tls capability (created by tls-connect)".to_string(),
+            call_span,
+        )
+        .into());
+    }
+
+    // TODO: Extract TlsInfo from the Tls capability data and parse the certificate
+    // For now, return a placeholder dict
+    Err(EvalError::user_error(
+        "tls-peer-cert: not yet fully implemented".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `spki-pin`: Create an SPKI pin dict.
+/// Takes HashAlgorithm variant and Bytes fingerprint.
+/// Returns dict: {algorithm: Variant, fingerprint: Bytes}.
+pub(crate) fn builtin_spki_pin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("spki-pin", named, call_span)?;
+
+    let algorithm_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let fingerprint_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Validate algorithm is a Variant
+    let algorithm_tag = match algorithm_val {
+        Value::Variant { tag, payload } => {
+            if payload.is_some() {
+                return Err(EvalError::user_error(
+                    "spki-pin: algorithm variant must not have a payload".to_string(),
+                    args[0].span,
+                )
+                .into());
+            }
+            tag
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "spki-pin".to_string(),
+                "HashAlgorithm variant",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Validate fingerprint is Bytes
+    let fingerprint_bytes = match fingerprint_val {
+        Value::Bytes { source, start, end } => source[start..end].to_vec(),
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "spki-pin".to_string(),
+                "Bytes",
+                other.type_name(),
+                args[1].span,
+            )
+            .into())
+        }
+    };
+
+    // Validate algorithm name
+    let valid_algorithms = [
+        "Sha256", "Sha384", "Sha512", "Sha3-256", "Sha3-384", "Sha3-512", "Blake3",
+    ];
+    if !valid_algorithms.contains(&algorithm_tag.as_str()) {
+        return Err(EvalError::user_error(
+            format!(
+                "spki-pin: invalid hash algorithm '{}' (expected one of: {})",
+                algorithm_tag,
+                valid_algorithms.join(", ")
+            ),
+            args[0].span,
+        )
+        .into());
+    }
+
+    // Build result dict
+    use crate::value::Key;
+    let mut dict = IndexMap::new();
+    dict.insert(
+        Key::String("algorithm".to_string()),
+        ctx.alloc_thunk(ok_val(
+            Value::Variant {
+                tag: algorithm_tag,
+                payload: None,
+            },
+            call_span,
+        )?),
+    );
+    dict.insert(
+        Key::String("fingerprint".to_string()),
+        ctx.alloc_thunk(ok_val(
+            Value::Bytes {
+                source: Rc::from(fingerprint_bytes.as_slice()),
+                start: 0,
+                end: fingerprint_bytes.len(),
+            },
+            call_span,
+        )?),
+    );
+
+    ok_val(Value::Dict(dict), call_span)
 }

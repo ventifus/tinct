@@ -644,7 +644,7 @@ impl TypeEnv {
     /// - `Any -> T`: unary operator returning type `T`
     /// - `Fn@Any [Any]`: higher-order function (e.g. map, filter) with `Any` for callbacks
     ///
-    /// **Coverage:** All 57 builtins from `standard_builtins()` (src/builtins.rs)
+    /// **Coverage:** All 60 builtins from `standard_builtins()` (src/builtins.rs)
     pub fn with_builtins() -> Self {
         let mut env = Self::new();
 
@@ -1354,6 +1354,31 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::NetCap, Type::Str, Type::Int],
                 ret: Box::new(Type::Handle),
+                variadic: false,
+            },
+        );
+        // TLS builtins (stubs — full implementation deferred)
+        env.insert(
+            "tls-connect".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown, Type::Unknown, Type::Unknown],
+                ret: Box::new(Type::Handle),
+                variadic: true, // 3-5 args depending on form
+            },
+        );
+        env.insert(
+            "tls-peer-cert".to_string(),
+            Type::Function {
+                params: vec![Type::Handle],
+                ret: Box::new(Type::Unknown), // Returns Dict with subject, issuer, sans, etc.
+                variadic: false,
+            },
+        );
+        env.insert(
+            "spki-pin".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown, Type::Bytes], // HashAlgorithm variant, Bytes fingerprint
+                ret: Box::new(Type::Unknown),             // Returns Dict {algorithm, fingerprint}
                 variadic: false,
             },
         );

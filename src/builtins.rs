@@ -332,7 +332,8 @@ pub(crate) use crate::builtins_io::{
     builtin_env, builtin_flush, builtin_has_cap, builtin_lines, builtin_link, builtin_list_dir,
     builtin_make_dir, builtin_narrow, builtin_net_cap, builtin_open, builtin_read_link,
     builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_slurp,
-    builtin_stat, builtin_write, builtin_write_atomic, builtin_write_handle,
+    builtin_spki_pin, builtin_stat, builtin_tls_connect, builtin_tls_peer_cert, builtin_write,
+    builtin_write_atomic, builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
@@ -979,6 +980,13 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             "connect",
             builtin_connect,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("tls-connect", builtin_tls_connect),
+        builtin!("tls-peer-cert", builtin_tls_peer_cert, [Strictness::Seq]),
+        builtin!(
+            "spki-pin",
+            builtin_spki_pin,
+            [Strictness::Seq, Strictness::Seq]
         ),
         builtin!("lines", builtin_lines, [Strictness::Seq]),
         builtin!(
@@ -6263,10 +6271,14 @@ mod tests {
         assert!(names.contains(&"bytes-equal?"), "missing bytes-equal?");
         assert!(names.contains(&"ct-equal?"), "missing ct-equal?");
         assert!(names.contains(&"bytes?"), "missing bytes?");
+        // TLS builtins
+        assert!(names.contains(&"tls-connect"), "missing tls-connect");
+        assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
+        assert!(names.contains(&"spki-pin"), "missing spki-pin");
         assert_eq!(
             names.len(),
-            163,
-            "expected 163 builtins, got {}",
+            166,
+            "expected 166 builtins, got {}",
             names.len()
         );
     }
