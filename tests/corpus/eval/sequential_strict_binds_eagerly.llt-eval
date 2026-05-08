@@ -1,0 +1,8 @@
+# Sequential strict let* semantics: unused but erroring binding now fails eagerly.
+# Under old lazy semantics this would return Int(42) (bad never forced).
+# Under strict let* semantics the binding of `bad` is forced at bind time → error.
+[bad: [error "unused but still evaluated"]  good: 1]
+
+42
+=== error
+[E080] unused but still evaluated

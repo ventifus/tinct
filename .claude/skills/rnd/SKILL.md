@@ -240,15 +240,17 @@ When the user indicates the direction is settled (e.g., "let's go with that", "w
 
 Write the approved direction to the target `doc/whatif/[name].md`. If the file already exists, update it.
 
-**Framing principle:** whatif docs are *advocates* for their feature. They open with "What would it take to...?" and then make the best case for adoption — concrete approaches backed by research and formal methods, with a recommended phased implementation path. They are NOT "here's why you shouldn't" documents. Present the feature as a genuine proposal: how to do it well, what the best approach is, and when to adopt it.
+**Framing principle:** whatif docs are *advocates* for their feature. They open with "What would it take to...?" and then make the best case for adoption — concrete approaches backed by research and formal methods. They are NOT "here's why you shouldn't" documents. Present the feature as a genuine proposal describing a single, fully realized end state: how it works, what it changes, what it requires. No hedging, no phases, no "we could also" alternatives.
 
-**Structure:** Read `doc/whatif/TEMPLATE.md` and use it as the skeleton for the new proposal. Follow its section headings, guidance comments, and formatting conventions. Do not copy the template's placeholder text verbatim — replace every section with real content.
+**Structure:** Read `doc/whatif/TEMPLATE.md` and use it as the skeleton. Follow its section headings and formatting conventions. Do not copy placeholder text verbatim — replace every section with real content. The Phased Adoption section from the template is **omitted** — proposals describe the complete feature, not a staged rollout.
 
 **Anti-patterns to avoid:**
 - "Don't adopt now" as the lead recommendation
-- Framing complexity as a reason not to do something (instead: acknowledge complexity and show how to manage it via phasing)
+- Framing complexity as a reason not to do something
+- Phases, stages, or "Phase 1 / Phase 2" rollout planning
+- Hedged language: "could", "might", "optionally", "we could also", "if needed"
 - Status Quo as an "approach" (only document proposed future states)
-- Vague triggers like "when needed" (use concrete scenarios)
+- Vague triggers like "when needed" (use concrete prerequisites)
 
 #### 4e: Present Draft
 
@@ -276,9 +278,9 @@ The Accept path takes a completed `doc/whatif/*.md` proposal and formally integr
 Before accepting, verify the proposal is ready:
 
 1. Read the target whatif doc in full
-2. Confirm the **Phased Adoption** section exists with phases that are each independently useful
-3. Confirm the **Trigger** section has concrete starting conditions (not vague "when needed")
-4. Check whether listed **Prerequisites** are either complete (checked off in TODO.md) or have scheduled sprints
+2. Confirm the proposal describes a single complete end state — no phases, no hedging, no "we could also" alternatives
+3. Confirm the **Prerequisites** section lists concrete dependencies (not vague "when needed")
+4. Check whether listed prerequisites are either complete (checked off in TODO.md) or have scheduled sprints
 5. If anything is missing, report the gap and ask the user whether to address it first or proceed anyway
 
 #### 5b: Mark State
@@ -357,4 +359,4 @@ Record the acceptance decision: what was accepted, why now, what doc/*.md sectio
 - **Respect existing decisions**: read doc/*.md thoroughly. Don't propose things that contradict confirmed decisions without flagging the conflict.
 - **One item at a time**: finish one item completely before moving to the next.
 - **No implementation**: this skill designs, decides, and researches — it doesn't implement. Implementation happens in /sprint.
-- **Whatif docs advocate**: Research proposals in `doc/whatif/` make the best case for their feature. They open with "What would it take to...?" and recommend a concrete phased adoption path. They are genuine proposals, not "here's why you shouldn't" documents.
+- **Whatif docs advocate**: Research proposals in `doc/whatif/` make the best case for their feature. They open with "What would it take to...?" and describe a single fully realized end state — no phases, no hedging, no alternatives. They are genuine proposals, not "here's why you shouldn't" documents.

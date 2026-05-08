@@ -17,23 +17,9 @@ In typical tinct config programs (K8s manifests, infrastructure templates), the 
 
 ## Design
 
-**Profile first, then choose the crate.** String interning is only worthwhile if dict key allocation and comparison appear as hotspots in real profiling. The proposal identifies three candidate approaches:
+String interning uses the `string-interner` crate: `Spur` type — a u32 handle. `StringInterner::get_or_intern(key) -> Spur`. Dict key becomes `Key::String(Spur)`. Comparison: `u32 == u32`, O(1). The interner is a session-scoped `Arc<StringInterner>` stored in `EvalContext.config`.
 
-### Option A: `string-interner` crate (recommended if interning is warranted)
-
-`Spur` type — a u32 handle. `StringInterner::get_or_intern(key) -> Spur`. Dict key becomes `Key::String(Spur)`. Comparison: `u32 == u32`, O(1). The interner is a global or session-scoped `Arc<StringInterner>`.
-
-- **Pros:** Minimal allocation for repeated keys; comparison is integer equality; well-maintained crate.
-- **Cons:** Requires session-scoped interner lifecycle; strings cannot be extracted without the interner; adds a dependency.
-- **When:** When `String` comparison is confirmed as a hotspot via `cargo flamegraph` or DHAT.
-
-### Option B: `lasso` crate (concurrent)
-
-Same Spur model but thread-safe. Only relevant if tinct adds parallel evaluation. Skip for now.
-
-### Option C: Hand-rolled `HashMap<String, u32>` index
-
-Maintain a `HashMap<String, u32>` + `Vec<String>` (index → string). `u32` is the interned handle. More control, no dependency. ~50 lines. Viable if `string-interner`'s API doesn't fit tinct's model.
+If `string-interner`'s API does not fit tinct's model, a hand-rolled `HashMap<String, u32>` + `Vec<String>` index (~50 lines, no new dependency) is the fallback. The `lasso` crate (concurrent Spur model) is not needed unless tinct adds parallel evaluation.
 
 ## What Would Change
 
@@ -47,29 +33,10 @@ Maintain a `HashMap<String, u32>` + `Vec<String>` (index → string). `u32` is t
 
 The interner must live as long as any `Key::String` value. Most natural location: `EvalContext.config` (shared across the eval session). All key construction goes through `ctx.config.interner.get_or_intern(s)`.
 
-## Profiling Gate
+## Prerequisites
 
-**Do not implement without profiling first.** Run `cargo flamegraph` or DHAT on a large tinct config (K8s manifest with 500+ unique dicts, each with 5–10 string keys). If `String::from`, `String::clone`, or `PartialEq<String>` appear in the top-10 hotspots, proceed. If not, the optimization is not load-bearing and this proposal is superseded.
-
-## Phased Adoption
-
-### Phase 1: Profile
-
-Measure `String` allocation and comparison cost on representative workloads. Use `heaptrack` or DHAT.
-
-### Phase 2: Intern (if warranted)
-
-If Phase 1 confirms the hotspot: add `string-interner` dependency, add `interner: StringInterner` to `EvalConfig`, change `Key::String(String)` to `Key::String(Spur)`, update all match arms and display sites.
-
-### Prerequisites
-
-- Phase 1: no prerequisites
-- Phase 2: Phase 1 profiling confirms string interning is load-bearing; arena migration considered (arena changes the allocation model, which affects whether interning remains beneficial after arena)
-
-### Trigger
-
-- Phase 1: before any large config performance work
-- Phase 2: when Phase 1 profiling confirms string key allocation/comparison is in the top-5 hotspots
+- Profiling with `cargo flamegraph` or DHAT on a representative large tinct config (K8s manifest with 500+ unique dicts, each with 5–10 string keys) confirms that `String::from`, `String::clone`, or `PartialEq<String>` appear in the top-10 hotspots. Without this evidence, the optimization is not load-bearing.
+- Arena migration considered before implementation: arena changes the allocation model, which affects whether interning remains beneficial after arena adoption.
 
 ## References
 

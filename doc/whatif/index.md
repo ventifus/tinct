@@ -17,7 +17,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Macro-Rewrite](macro-rewrite.md) | Replace `src/desugar.rs` with `[defmacro]` definitions; land `i"..."` as macro (let-binding is parser change, match is `Expr::Match` special form) |
+| [Macro-Rewrite](completed/macro-rewrite.md) | Superseded — let-binding done as `Expr::Sequential`, match as `Expr::Match`. One remaining task: migrate `i"..."` to `[defmacro tmpl]` (tracked in TODO.md) |
 | [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — user-defined macros can use full-annotated-expression equality for dict keys |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 
@@ -33,7 +33,6 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [eval↔builtins Boundary](eval-builtins-boundary.md) | Extract `src/eval_core.rs` to break circular dependency; gate on concrete need for independent builtin testing |
 | [Value Serializer Visitor](value-serializer-visitor.md) | Shared traversal for `value_to_json` + `value_to_display_string`; defer until a third format is needed |
 
 ## Formal Verification
@@ -46,7 +45,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [TLS, PKI, and HTTP](lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, tls-connect, SpkiPin, HttpConn, system roots, HTTP/1-3 |
+| [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, tls-connect, SpkiPin, HttpConn, system roots, HTTP/1-3 |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Templating
@@ -59,9 +58,9 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Supplemental Stdlib Modules](lib-supplemental.md) | **Accepted 2026-05-07.** Strings, math, bitwise, Bytes, TOML-lite, FsCap, handle caps, StringView, path utils |
-| [Date-Time Support](lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
-| [Pure-Tinct Regex Engine](lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
+| [Supplemental Stdlib Modules](completed/lib-supplemental.md) | **Accepted 2026-05-07.** Strings, math, bitwise, Bytes, TOML-lite, FsCap, handle caps, StringView, path utils |
+| [Date-Time Support](completed/lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
+| [Pure-Tinct Regex Engine](completed/lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
 
 
 ---
@@ -102,20 +101,18 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Numeric Types](completed/numeric-types.md) | Range annotations + Decimal + BigInt + `repr:` storage hints | 2026-05-07 — typing-cluster N1–4 |
 | [Parameterized Type Aliases](completed/parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site; arity-checked type constructors | 2026-05-07 — typing-cluster B3 |
 | [Path-Sensitive Narrowing](completed/narrowing.md) | Refine variable types in `if`/`match` branches from equality and type-predicate guards | 2026-05-07 — typing-cluster B5a/B5b |
-| [Supplemental Stdlib Modules](lib-supplemental.md) | Extended strings, math, bitwise, Bytes type, TOML-lite, FsCap protocol, capability-typed handles, StringView | 2026-05-07 — 8 sprints: `string-view` through `toml-lite-path` |
-| [Date-Time Support](lib-datetime.md) | Timestamp, Duration, ClockCap, Timezone via system zoneinfo | 2026-05-07 — `datetime` sprint |
-| [Pure-Tinct Regex Engine](lib-regex.md) | Thompson NFA in pure-tinct; Pattern nominal variant; re-compile/match/find/replace/split | 2026-05-07 — `regex` sprint |
-| [TLS, PKI, and HTTP](lib-tls.md) | Connector protocol, tls-connect, SpkiPin, HttpConn, system roots default, HTTP/1-3 | 2026-05-07 — `connector-tls` + `http-net` sprints |
+| [Supplemental Stdlib Modules](completed/lib-supplemental.md) | Extended strings, math, bitwise, Bytes type, TOML-lite, FsCap protocol, capability-typed handles, StringView | 2026-05-07 — 8 sprints: `string-view` through `toml-lite-path` |
+| [Date-Time Support](completed/lib-datetime.md) | Timestamp, Duration, ClockCap, Timezone via system zoneinfo | 2026-05-07 — `datetime` sprint |
+| [Pure-Tinct Regex Engine](completed/lib-regex.md) | Thompson NFA in pure-tinct; Pattern nominal variant; re-compile/match/find/replace/split | 2026-05-07 — `regex` sprint |
+| [TLS, PKI, and HTTP](completed/lib-tls.md) | Connector protocol, tls-connect, SpkiPin, HttpConn, system roots default, HTTP/1-3 | 2026-05-07 — `connector-tls` + `http-net` sprints |
 
 ### Adopt Now
 
 These proposals have no gating conditions and deliver standalone value at low cost.
 
-**[Record/Map Split and Parameterized Maps](parameterized-dict.md)** — `Record` vs `Map[K V]` type split; `Dict: [type [Record Map]]` union alias; `@Map[Int Seq@Int]` annotation for homogeneous maps. Phase 1 (annotation support) is independent of BAS — prerequisite is parameterized type aliases (complete).
+**[Record/Map Split and Parameterized Maps](parameterized-dict.md)** — `Record` vs `Map[K V]` type split; `Dict: [type [Record Map]]` BAS union alias; `@Map[Int Seq@Int]` annotation for homogeneous maps; `get` returns `V | Null` on typed maps. Requires BAS adoption.
 
 **[Custom Call Aliases](call-aliases.md)** — `[timed f ...]` macro-defined call forms. Macros cluster is complete — prerequisite met.
-
-**[Macro-Rewrite](macro-rewrite.md) Phase 1** — `[defmacro tmpl]` to migrate `i"..."` string interpolation out of `src/parser.rs`. `[defmacro]` is stable (trigger met). All typing-cluster prerequisites done. Scoped `[defmacro let]` still open once tmpl ships.
 
 **[Evaluation Semantics Verification](eval-semantics-verification.md) Phase 1 (partial)** — Confluence proof sketch to `doc/08-evaluation.md` is done; core proptest suite (200 lines + `proptest` dev-dep) still pending implementation.
 
@@ -127,7 +124,6 @@ These proposals have accepted designs but explicit gating conditions not yet met
 |----------|-----------------|
 | [String Interning](string-interning.md) | Profiling confirms `String` allocation/comparison is top-5 hotspot on real workloads |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
-| [eval↔builtins Boundary](eval-builtins-boundary.md) | Independent builtin testing is a concrete need, OR evaluator refactor where decoupling reduces blast radius |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
 | [Parse-Stage Macros](parse-stage-macros.md) | When a second macro needs context-sensitive key identity or argument-position parse modes |
@@ -160,7 +156,7 @@ type-predicates ✓ ─── let-binding ✓ ─── pattern-matching ✓ ─
 
 # Macros cluster ✓ Complete
 quasiquoting ✓ ─── macros ✓ ─── call-aliases (adopt now)
-                              ─── macro-rewrite (adopt now — trigger met)
+                              ─── macro-rewrite ✓ superseded (tmpl in TODO.md)
                               ─── parse-stage-macros
 
 # I/O
@@ -181,7 +177,7 @@ string-interning, union-find-substitution
 
 # No deps, can adopt now
 float-dict-keys (Phase 1 Decimal ✓ — Phase 2 Key::Decimal open)
-eval-builtins-boundary, value-serializer-visitor
+value-serializer-visitor
 ```
 
 ---

@@ -323,7 +323,6 @@ fn expand_expr(
                 Rc::new(transformer.as_ref().clone()),
                 Rc::clone(stdlib_env),
                 ctx,
-                0,
             )?;
 
             // Register the macro
@@ -701,16 +700,15 @@ fn expand_macro_call(
         .clone();
 
     // Materialize the transformer to get the function value
-    let transformer_val =
-        eval::materialize(&transformer, Some(&call_span), ctx, 0).map_err(|e| {
-            EvalError::user_error(
-                format!(
-                    "macro '{}' transformer failed to evaluate: {}",
-                    macro_name, e.kind
-                ),
-                call_span,
-            )
-        })?;
+    let transformer_val = eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "macro '{}' transformer failed to evaluate: {}",
+                macro_name, e.kind
+            ),
+            call_span,
+        )
+    })?;
 
     // Call the transformer function with the args list
     let result_thunk = match &transformer_val {
@@ -730,7 +728,6 @@ fn expand_macro_call(
                 default_env: closure_env,
                 ctx,
                 call_span,
-                depth: 0,
                 origin: Some(Rc::from(format!("macro:{}", macro_name))),
             };
             invoke_function(&call_ctx).map_err(|e| {
@@ -754,7 +751,7 @@ fn expand_macro_call(
     };
 
     // Materialize the result to get the AST dict
-    let result_val = eval::materialize(&result_thunk, Some(&call_span), ctx, 0).map_err(|e| {
+    let result_val = eval::materialize(&result_thunk, Some(&call_span), ctx).map_err(|e| {
         let mut err = EvalError::user_error(
             format!(
                 "macro '{}' expansion result failed to evaluate: {}",
@@ -768,7 +765,7 @@ fn expand_macro_call(
     })?;
 
     // Deep-materialize the result dict so dict_to_ast can inspect all fields
-    let deep_result = eval::deep_materialize(&result_val, ctx, 0, None).map_err(|mut e| {
+    let deep_result = eval::deep_materialize(&result_val, ctx, None).map_err(|mut e| {
         e.push_frame(format!("in expansion of `{}`", macro_name), call_span);
         e
     })?;

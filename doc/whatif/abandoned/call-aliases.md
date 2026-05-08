@@ -183,19 +183,18 @@ AST (which it already does, since it operates on the token stream).
 **Impact:** Minor — no change needed if the formatter continues to
 operate on the token stream.
 
-## Phased Adoption
+## Prerequisites
 
-### Phase 1: Macro System Foundation
+- Macro system (`doc/whatif/macros.md`) — specifically the `defmacro`
+  form and AST expansion pipeline. Fully implemented (`macro-integration`
+  sprint, 2026-05-05).
+- Quasiquoting (`doc/whatif/quasiquoting.md`) — for ergonomic macro
+  definitions. Without quasiquoting, macro bodies require verbose
+  manual AST construction. Fully implemented.
 
-Implement procedural AST macros (`doc/whatif/macros.md`). This
-provides the infrastructure for any syntactic extension, including
-custom call forms. The macro system is the prerequisite — call
-aliases are a use case, not a separate feature.
+## Standard Call Macros
 
-### Phase 2: Standard Call Macros
-
-Ship example macros in `stdlib/macros/` that demonstrate custom call
-patterns:
+`stdlib/macros/` ships example macros that demonstrate custom call patterns:
 
 - `[timed f args...]` — call with timing
 - `[traced f args...]` — call with argument/result logging
@@ -203,21 +202,6 @@ patterns:
 
 These serve as documentation and templates for users writing their
 own call forms.
-
-### Prerequisites
-
-- Macro system (`doc/whatif/macros.md`) — specifically the `defmacro`
-  form and AST expansion pipeline.
-- Quasiquoting (`doc/whatif/quasiquoting.md`) — for ergonomic macro
-  definitions. Without quasiquoting, macro bodies require verbose
-  manual AST construction.
-
-### Trigger
-
-**Trigger is met.** The macro system (`defmacro`, hygiene, expansion loop)
-is fully implemented (`macro-integration` sprint, 2026-05-05). Custom call
-forms can be defined now. The remaining work is writing the example macros
-in Phase 2 (`stdlib/macros/`) to demonstrate the pattern.
 
 ## References
 

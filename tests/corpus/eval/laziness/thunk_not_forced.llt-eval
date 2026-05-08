@@ -1,5 +1,7 @@
-# Laziness: thunk containing error is not forced when unused
+# Strict let* semantics: all string-keyed bindings from a Sequential intermediate dict
+# are forced to WHNF at binding time. Unused entries still error eagerly.
+# Use a dict-pipeline (---) if the unused entry should remain lazy.
 [unused: [error "not forced"]  used: 42]
 [result: used]
-=== out
-Dict({"result": Int(42)})
+=== error
+[E080] not forced

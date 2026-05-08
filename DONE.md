@@ -2,6 +2,22 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## Evaluation
+
+### `sequential-strict`: Make Sequential bindings strict + raise depth limit
+
+Fixes the `sequential-lazy` and partially fixes `depth-limit-toml` Known Bugs.
+See Known Bugs section for root cause analysis and panel review findings.
+
+- [x] Remove `MAX_EVAL_DEPTH` constant, all three depth checks, and the `depth: usize` parameter from `eval()`, `materialize()`, and `deep_materialize()` — update all call sites; remove `EvalError::depth_exceeded` error path; resource bounding via `--max-memory`/`--timeout`; cycle detection (InProgress blackholing) handles self-referential thunks (`src/eval.rs`, `src/eval_materialize.rs`)
+- [x] In `Expr::Sequential` loop (`src/eval.rs:667-673`): after extracting `(Key::String(name), val_thunk_id)`, call `materialize(ctx.get_thunk(val_thunk_id), Some(&seq_expr.span), ctx, depth + 1)?` and insert `Rc::new(Thunk::new_materialized(forced_value, seq_expr.span))` into `child_env` instead of the unevaluated thunk; apply only to `Key::String` entries (named bindings); integer-keyed entries remain lazy (`src/eval.rs`)
+- [x] Same change in `eval_document` (`src/eval_pipeline.rs:149`): force string-keyed binding values eagerly at document-level Sequential step time (`src/eval_pipeline.rs`)
+- [x] Move depth check in `materialize` inside the `Unevaluated`/`PendingBuiltin` match arms so already-`Materialized` thunks return at O(1) depth without a depth check (`src/eval.rs`)
+- [x] Add `force` Rust builtin: single-arg, `Strictness::Seq`, calls `materialize` on argument and returns `Thunk::new_materialized`; gives users explicit control in fn-body Sequential (`src/builtins_meta.rs`, `src/builtins.rs`)
+- [x] Update `doc/09-documents.md` §[SEQ-SCOPE] (line 292): change "values remain lazy" to document strict-binding semantics; note WHNF-only (not deep), dead-but-erroring bindings now fail eagerly (`doc/09-documents.md`)
+- [x] Corpus tests: verify binding that previously errored lazily (unused) now errors eagerly; verify heavy computation forced at step depth not demand depth; verify `[force expr]` forces its argument (`tests/corpus/eval/`)
+- [x] Remove stale `TODO(iterative-eval)` comments left in `src/eval.rs` after the completed CEK migration (lines 698, 764, 1363, 8870) — the migration is fully done (sprints a, b1-b5, d all in DONE.md); these comments are dead documentation debt (`src/eval.rs`)
+
 ## `health-c191`: Codebase Health Findings (Cycle #191)
 
 - [x] **[Critical]** Fix `rename_single_type_var` missing Union/Intersection traversal: add Union/Intersection arms to the rename function (`src/type_env.rs:117-141`)

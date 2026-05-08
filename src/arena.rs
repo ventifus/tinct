@@ -362,7 +362,7 @@ mod tests {
         let ctx = EvalContext::new(base_dir, env, false);
 
         // Attempt to materialize the placeholder thunk - this should panic
-        let _result = materialize(&thunk, None, &ctx, 0);
+        let _result = materialize(&thunk, None, &ctx);
     }
 
     #[test]

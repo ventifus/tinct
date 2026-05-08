@@ -36,7 +36,6 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -47,13 +46,11 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let f_thunk = Rc::clone(&args[0]);
     let init_thunk = Rc::clone(&args[1]);
-    let xs = materialize(&args[2], None, &ctx, depth)?;
+    let xs = materialize(&args[2], None, &ctx)?;
 
     // Flatten Overlay to Dict before dispatch. Bytes → Seq of Int byte values.
     let xs = match xs {
-        Value::Overlay(l, r) => {
-            Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, depth, call_span)?)
-        }
+        Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, call_span)?),
         Value::Bytes {
             ref source,
             start,
@@ -94,7 +91,6 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("reduce", builtin_reduce_seq_step),
                 step_args,
                 None,
-                depth,
                 call_span,
                 Some(Rc::from("call $reduce")),
                 Rc::clone(&ctx),
@@ -117,7 +113,6 @@ pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -144,7 +139,7 @@ pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
     ));
 
     // Check if tail is empty (sequence end)
-    let tail_val = materialize(&tail_thunk, None, &ctx, depth)?;
+    let tail_val = materialize(&tail_thunk, None, &ctx)?;
     match tail_val {
         Value::Dict(_) => {
             // Empty dict = end of sequence, return accumulator
@@ -164,7 +159,6 @@ pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                 builtin!("reduce", builtin_reduce_seq_step),
                 step_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $reduce")),
                 Rc::clone(&ctx),
@@ -191,7 +185,6 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -200,15 +193,13 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let sep = materialize(&args[0], None, &ctx, depth)?;
+    let sep = materialize(&args[0], None, &ctx)?;
     let sep_str = require_string("join", sep, args[0].span)?;
 
-    let xs = materialize(&args[1], None, &ctx, depth)?;
+    let xs = materialize(&args[1], None, &ctx)?;
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
-        Value::Overlay(l, r) => {
-            Value::Dict(flatten_overlay(&l, &r, "join", &ctx, depth, call_span)?)
-        }
+        Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span)?),
         other => other,
     };
     match xs {
@@ -217,7 +208,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut parts = Vec::with_capacity(map.len());
             for (_key, value_thunk_id) in map.iter() {
                 let value_thunk = ctx.get_thunk(*value_thunk_id);
-                let val = materialize(&value_thunk, None, &ctx, depth)?;
+                let val = materialize(&value_thunk, None, &ctx)?;
                 parts.push(stringify(&val));
             }
 
@@ -253,7 +244,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             loop {
                 // Materialize and stringify current head
-                let head_val = materialize(&current_head, None, &ctx, depth)?;
+                let head_val = materialize(&current_head, None, &ctx)?;
                 parts.push(stringify(&head_val));
 
                 // Check collection size limit
@@ -266,7 +257,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
 
                 // Check tail
-                let tail_val = materialize(&current_tail, None, &ctx, depth)?;
+                let tail_val = materialize(&current_tail, None, &ctx)?;
                 match tail_val {
                     Value::Dict(_) => {
                         // End of sequence
@@ -332,7 +323,6 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -343,13 +333,11 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let xs_span = args[0].span;
     let ys_span = args[1].span;
-    let xs = materialize(&args[0], None, &ctx, depth)?;
+    let xs = materialize(&args[0], None, &ctx)?;
     let ys_thunk = Rc::clone(&args[1]);
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
-        Value::Overlay(l, r) => {
-            Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, depth, call_span)?)
-        }
+        Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span)?),
         other => other,
     };
 
@@ -359,7 +347,7 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // This catches concat(seq(1, 2, 3), 42) at call time rather than
             // deferring the error until the consumer exhausts xs — which would
             // only manifest deep in the PendingBuiltin chain at high stack depth.
-            let ys_val = materialize(&ys_thunk, None, &ctx, depth)?;
+            let ys_val = materialize(&ys_thunk, None, &ctx)?;
             match ys_val {
                 Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
                 other => {
@@ -380,7 +368,6 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("concat", builtin_concat_seq_step),
                 step_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $concat")),
                 Rc::clone(&ctx),
@@ -398,7 +385,7 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             if xs_map.is_empty() {
                 // Empty xs: validate ys type before returning it directly.
                 // Without this check, concat([], 42) would silently succeed.
-                let ys = materialize(&ys_thunk, None, &ctx, depth)?;
+                let ys = materialize(&ys_thunk, None, &ctx)?;
                 match ys {
                     Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
                     other => {
@@ -415,11 +402,11 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 return Ok(ys_thunk);
             }
 
-            let ys = materialize(&ys_thunk, None, &ctx, depth)?;
+            let ys = materialize(&ys_thunk, None, &ctx)?;
             // Flatten Overlay ys to Dict for the dict-concat path.
             let ys = match ys {
                 Value::Overlay(l, r) => {
-                    Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, depth, call_span)?)
+                    Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span)?)
                 }
                 other => other,
             };
@@ -473,14 +460,13 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
-        depth,
         call_span,
         ctx,
         ..
     } = ctx_arg;
     let xs_tail_thunk = Rc::clone(&args[0]);
     let ys_thunk = Rc::clone(&args[1]);
-    let xs_tail = materialize(&xs_tail_thunk, None, &ctx, depth)?;
+    let xs_tail = materialize(&xs_tail_thunk, None, &ctx)?;
 
     match xs_tail {
         Value::Dict(_) => {
@@ -497,7 +483,6 @@ pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                 builtin!("concat", builtin_concat_seq_step),
                 step_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $concat")),
                 Rc::clone(&ctx),

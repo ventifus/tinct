@@ -20,12 +20,11 @@ pub(crate) fn builtin_uri(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = expect_one_arg("uri", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("uri", args, named, &ctx, call_span)?;
     let s = match val {
         Value::String {
             ref source,
@@ -169,12 +168,11 @@ pub(crate) fn builtin_url(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = expect_one_arg("url", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("url", args, named, &ctx, call_span)?;
     let s = match val {
         Value::String {
             ref source,
@@ -286,12 +284,11 @@ pub(crate) fn builtin_urn(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = expect_one_arg("urn", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("urn", args, named, &ctx, call_span)?;
     let s = match val {
         Value::String {
             ref source,

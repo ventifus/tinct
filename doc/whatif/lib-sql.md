@@ -286,9 +286,7 @@ The only new Rust-level additions for SQL are:
 
 ### Type Checker (`src/typecheck.rs`)
 
-**Phase 1:** `sql-open` infers as returning `Any`. The SQL-aware `filter`/`map` shadow wrappers infer as `Any → Any → Any` (like other dynamically-dispatched stdlib functions).
-
-**Phase 3:** With a schema annotation on functions that process SQL sources, the type checker validates column names. Requires `row-unification` sprints to be complete.
+`sql-open` infers as returning `Any`. The SQL-aware `filter`/`map` shadow wrappers infer as `Any → Any → Any` (like other dynamically-dispatched stdlib functions). With a schema annotation on functions that process SQL sources, the type checker validates column names — requiring `row-unification` sprints to be complete:
 
 ```tinct
 [
@@ -299,7 +297,9 @@ The only new Rust-level additions for SQL are:
 # u.nme inside process → type error: field 'nme' not in schema
 ```
 
-**Impact:** None in Phase 1. Moderate in Phase 3.
+`sql-schema` generates `CREATE TABLE` DDL from closed record type annotations.
+
+**Impact:** Moderate — type-checked column names require `row-unification` sprints.
 
 ### Parser / Grammar
 
@@ -307,45 +307,10 @@ No changes. SQL data sources use only existing tinct syntax.
 
 ### Dependencies (`Cargo.toml`)
 
-Phase 1 (SQLite only): `rusqlite = "0.31"` — self-contained, no server required.
-Phase 2 (multi-driver): `sqlx = { version = "0.8", features = ["postgres", "mysql", "sqlite"] }`.
+- `rusqlite = "0.31"` — SQLite, self-contained, no server required.
+- `sqlx = { version = "0.8", features = ["postgres", "mysql", "sqlite"] }` — PostgreSQL and MySQL multi-driver support.
 
-## Phased Adoption
-
-### Phase 1: SQLite, Basic Queries
-
-`sql-open` for SQLite only. `stdlib/sql.llt` with SQL-aware `filter`, `map`, `take`, `collect`. Predicate translation via proxy rows. Tinct fallback for untranslatable predicates. No joins.
-
-```tinct
-[include "stdlib/sql.llt"]
-
-[sql-open "sqlite://data.db" "events"]
----
-[filter [fn [e] [= e.type "login"]] %]
----
-[take 100 %]
-```
-
-**Prerequisites:** `overridable-ops` sprint (for `proxy` and shadowable operators).
-
-### Phase 2: Multi-Driver, `reduce` Aggregation, Joins
-
-PostgreSQL and MySQL via `sqlx`. `reduce` with recognizable accumulators (functions built from `+`, `*` etc. on a single field) pushed as GROUP BY aggregations; unrecognizable accumulators fall back to tinct-side streaming reduce. `sql-join` for same-connection joins.
-
-```tinct
-[sql-open "postgresql://..." "orders"]
----
-[reduce [fn [total o] [+ total o.amount]] 0 %]
-# dispatches: SELECT SUM(amount) FROM orders
-```
-
-### Phase 3: Schema Annotation and Type-Checked Columns
-
-Row type annotations on functions that process SQL sources enable the type checker to validate column names. `sql-schema` generates `CREATE TABLE` DDL from closed record type annotations.
-
-**Prerequisites:** `row-unification` sprints complete.
-
-### Phase 4: Write Operations
+### Write Operations
 
 `sql-insert`, `sql-update`, `sql-delete` — eager builtins, execute immediately. Transactional grouping via `sql-transaction`.
 
@@ -353,21 +318,14 @@ Row type annotations on functions that process SQL sources enable the type check
 [sql-insert db "users" [name: "Alice"  age: 30]]
 ```
 
-### Prerequisites
+## Prerequisites
 
-- Phase 1: ~~`overridable-ops` sprint~~ ✓ Done (`stdlib/prelude.llt` has
-  stable `builtin-*` aliases and overridable operator wrappers); `proxy` builtin
-  ✓ Done (`Value::Proxy { handler }` in `src/value.rs`, registered in
-  `standard_builtins()`). `EvalConfig` refactor: still needed if not done.
-- Phase 2: Phase 1 stable; async runtime integration decided
-- Phase 3: `row-unification` sprints complete
-- Phase 4: Phase 2 stable; `emit` side-effect model established as precedent
-
-### Trigger
-
-- When a tinct pipeline needs to process a dataset too large to fit in a JSON file
-- When a tinct pipeline needs to join SQL data with config-file data in the same program
-- When the stdlib's seq combinators are stable and the lazy Seq model is proven
+- ~~`overridable-ops` sprint~~ ✓ Done — `stdlib/prelude.llt` has stable `builtin-*` aliases and overridable operator wrappers.
+- ~~`proxy` builtin~~ ✓ Done — `Value::Proxy { handler }` in `src/value.rs`, registered in `standard_builtins()`.
+- `EvalConfig` refactor: complete if not already done.
+- Async runtime integration: decided before multi-driver (`sqlx`) work.
+- `row-unification` sprints: required for type-checked column names.
+- `emit` side-effect model: established before write operations (`sql-insert`, `sql-update`, `sql-delete`).
 
 ## References
 
@@ -375,4 +333,4 @@ Row type annotations on functions that process SQL sources enable the type check
 - Leijen, D. & Meijer, E. (1999). "Domain specific embedded compilers." *DSL '99*. — Foundational paper for embedded query DSLs in functional languages; directly motivates the proxy row + operator shadowing approach.
 - Voigtländer, J., Calegari, D., Claessen, K. & Farmer, A. (2014). "Combining syntactic and semantic normalization." — Query normalization for embedded DSLs; relevant to flattening nested `filter`/`map` chains before SQL compilation.
 - Slick documentation. "Slick — Functional Relational Mapping." *Lightbend*. — Lifted embedding model: types are `Rep[T]` that can be either executed or compiled to SQL. tinct's `SqlExpr` dicts play the role of Slick's `Rep[T]`; `proxy` provides the field-interception mechanism.
-- SQLite documentation. "Overview." — Phase 1 driver; `rusqlite` wraps this API.
+- SQLite documentation. "Overview." — `rusqlite` wraps this API.

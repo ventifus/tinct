@@ -34,7 +34,6 @@ pub fn eval_document(
     doc: &Spanned<Document>,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
-    depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     let exprs = &doc.node.expressions;
 
@@ -108,24 +107,19 @@ pub fn eval_document(
 
         if is_last {
             // Last expression: return its thunk as-is (lazy, any type)
-            return eval(Rc::clone(expr), current_env, ctx, depth);
+            return eval(Rc::clone(expr), current_env, ctx);
         }
 
         // Intermediate expression: materialize and extract dict bindings
-        let thunk = eval(Rc::clone(expr), Rc::clone(&current_env), ctx, depth)?;
-        let value = materialize(&thunk, Some(&expr.span), ctx, depth + 1)?;
+        let thunk = eval(Rc::clone(expr), Rc::clone(&current_env), ctx)?;
+        let value = materialize(&thunk, Some(&expr.span), ctx)?;
 
         // Flatten Overlay to Dict for scope chain binding.
         let map = match value {
             Value::Dict(map) => map,
-            Value::Overlay(l, r) => crate::builtins::flatten_overlay(
-                &l,
-                &r,
-                "document pipeline",
-                ctx,
-                depth + 1,
-                expr.span,
-            )?,
+            Value::Overlay(l, r) => {
+                crate::builtins::flatten_overlay(&l, &r, "document pipeline", ctx, expr.span)?
+            }
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "document pipeline".to_string(),
@@ -143,11 +137,14 @@ pub fn eval_document(
             for (key, val_thunk_id) in map {
                 // Only string keys become scope bindings; int keys are positional, not named.
                 // Owned iteration (into_iter): Key::String(name) moves the String rather than
-                // cloning it, and val_thunk is moved directly — saves one String clone + one
-                // Rc clone per string-keyed entry in each document pipeline step.
+                // cloning it — saves one String clone per string-keyed entry.
+                // Named bindings are forced to WHNF at binding time — strict let* semantics.
+                // This means dead-but-erroring bindings fail eagerly.
                 if let Key::String(name) = key {
                     let val_thunk = ctx.get_thunk(val_thunk_id);
-                    child_env.borrow_mut().insert(name, val_thunk);
+                    let forced_value = materialize(&val_thunk, Some(&expr.span), ctx)?;
+                    let strict_thunk = Rc::new(Thunk::new_materialized(forced_value, expr.span));
+                    child_env.borrow_mut().insert(name, strict_thunk);
                 }
             }
             current_env = child_env;
@@ -235,9 +232,8 @@ pub fn eval_file(
     file: &File,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
-    depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
-    eval_file_with_input(file, env, ctx, None, depth)
+    eval_file_with_input(file, env, ctx, None)
 }
 
 /// Evaluate a parsed [`File`], optionally injecting an initial `%` value for the first document.
@@ -258,7 +254,6 @@ pub fn eval_file_with_input(
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
     initial_input: Option<Rc<Thunk>>,
-    depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     // % starts as the provided input, or empty dict if none given
     let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Rc::clone(t)));
@@ -289,7 +284,7 @@ pub fn eval_file_with_input(
                 .insert(format!("%{}", section_name), Rc::clone(section_thunk));
         }
 
-        let result = eval_document(doc, doc_env, ctx, depth)?;
+        let result = eval_document(doc, doc_env, ctx)?;
 
         // If this document is named, accumulate it in the named map
         if let Some(ref name) = doc.node.name {

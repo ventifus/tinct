@@ -35,7 +35,6 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -45,7 +44,7 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let estimated_capacity = args.len() * 10;
     let mut result = String::with_capacity(estimated_capacity);
     for arg in args {
-        let val = materialize(arg, Some(&call_span), &ctx, depth)?;
+        let val = materialize(arg, Some(&call_span), &ctx)?;
         result.push_str(&stringify(&val));
     }
     ok_val(string_val(&result), call_span)
@@ -61,7 +60,6 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -70,10 +68,10 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
-    let sep_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let sep_val = materialize(&args[0], Some(&call_span), &ctx)?;
     // arg[1] is forced synchronously; BuiltinForceArg only covers arg[0].
     // Acceptable: the input string is typically a small literal or bound variable.
-    let input_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let input_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     let sep = require_string("split", sep_val, args[0].span)?;
 
@@ -249,7 +247,6 @@ pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -258,11 +255,11 @@ pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
     // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
-    let pattern_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let pattern_val = materialize(&args[0], Some(&call_span), &ctx)?;
     // args[1] and args[2] are forced synchronously; BuiltinForceArg only covers arg[0].
     // Acceptable: replacement and input strings are typically small literals or bound variables.
-    let replacement_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let input_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let replacement_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let input_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     let pattern = require_string("replace", pattern_val, args[0].span)?;
     let replacement = require_string("replace", replacement_val, args[1].span)?;
@@ -313,11 +310,10 @@ pub(crate) fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("upper", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("upper", args, named, &ctx, call_span)?;
     let s = require_string("upper", val, args[0].span)?;
     // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
     if s.len() > MAX_STRING_SIZE {
@@ -354,11 +350,10 @@ pub(crate) fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("lower", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("lower", args, named, &ctx, call_span)?;
     let s = require_string("lower", val, args[0].span)?;
     // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
     if s.len() > MAX_STRING_SIZE {
@@ -397,11 +392,10 @@ pub(crate) fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("trim", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("trim", args, named, &ctx, call_span)?;
     let s = require_string("trim", val, args[0].span)?;
     ok_val(string_val(s.trim()), call_span)
 }
@@ -414,11 +408,10 @@ pub(crate) fn builtin_str_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("str-length", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("str-length", args, named, &ctx, call_span)?;
     let s = require_string("str-length", val, args[0].span)?;
     let len = s.chars().count();
     let len_i64 = i64::try_from(len).map_err(|_| {
@@ -439,7 +432,6 @@ pub(crate) fn builtin_str_contains(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -448,8 +440,8 @@ pub(crate) fn builtin_str_contains(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let haystack_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let needle_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let haystack_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let needle_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     let haystack = require_string("str-contains?", haystack_val, args[0].span)?;
     let needle = require_string("str-contains?", needle_val, args[1].span)?;
@@ -466,7 +458,6 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -476,9 +467,9 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Materialize all arguments
-    let input_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let start_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let end_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let input_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let start_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let end_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Extract the source Rc<str> from the input string
     let (input_source, input_start, input_end) = match input_val {
@@ -594,7 +585,6 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -603,8 +593,8 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let haystack_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let prefix_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let haystack_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let prefix_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     match (&haystack_val, &prefix_val) {
         (Value::String { .. }, Value::String { .. }) => {
@@ -641,8 +631,8 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
                 _ => unreachable!(),
             });
 
-            let haystack_head_val = materialize(&haystack_head, Some(&call_span), &ctx, depth)?;
-            let prefix_head_val = materialize(&prefix_head, Some(&call_span), &ctx, depth)?;
+            let haystack_head_val = materialize(&haystack_head, Some(&call_span), &ctx)?;
+            let prefix_head_val = materialize(&prefix_head, Some(&call_span), &ctx)?;
 
             if haystack_head_val != prefix_head_val {
                 return ok_val(Value::Bool(false), call_span);
@@ -650,7 +640,7 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
 
             // Check remaining elements
             loop {
-                let prefix_tail_val = materialize(&prefix_thunk, Some(&call_span), &ctx, depth)?;
+                let prefix_tail_val = materialize(&prefix_thunk, Some(&call_span), &ctx)?;
 
                 match prefix_tail_val {
                     Value::Dict(ref map) if map.is_empty() => {
@@ -662,7 +652,7 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
                         tail: prefix_t,
                     } => {
                         let haystack_tail_val =
-                            materialize(&haystack_thunk, Some(&call_span), &ctx, depth)?;
+                            materialize(&haystack_thunk, Some(&call_span), &ctx)?;
 
                         match haystack_tail_val {
                             Value::Dict(ref map) if map.is_empty() => {
@@ -677,14 +667,9 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
                                     &ctx.get_thunk(haystack_h),
                                     Some(&call_span),
                                     &ctx,
-                                    depth,
                                 )?;
-                                let p_val = materialize(
-                                    &ctx.get_thunk(prefix_h),
-                                    Some(&call_span),
-                                    &ctx,
-                                    depth,
-                                )?;
+                                let p_val =
+                                    materialize(&ctx.get_thunk(prefix_h), Some(&call_span), &ctx)?;
 
                                 if h_val != p_val {
                                     return ok_val(Value::Bool(false), call_span);
@@ -740,7 +725,6 @@ pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -749,8 +733,8 @@ pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let haystack_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let suffix_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let haystack_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let suffix_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     match (&haystack_val, &suffix_val) {
         (Value::String { .. }, Value::String { .. }) => {
@@ -771,7 +755,7 @@ pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut haystack_vec = Vec::new();
             let mut current_thunk = Rc::clone(&args[0]);
             loop {
-                let val = materialize(&current_thunk, Some(&call_span), &ctx, depth)?;
+                let val = materialize(&current_thunk, Some(&call_span), &ctx)?;
                 match val {
                     Value::Dict(ref map) if map.is_empty() => break,
                     Value::Seq { head, tail } => {
@@ -793,7 +777,7 @@ pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut suffix_vec = Vec::new();
             let mut current_thunk = Rc::clone(&args[1]);
             loop {
-                let val = materialize(&current_thunk, Some(&call_span), &ctx, depth)?;
+                let val = materialize(&current_thunk, Some(&call_span), &ctx)?;
                 match val {
                     Value::Dict(ref map) if map.is_empty() => break,
                     Value::Seq { head, tail } => {
@@ -820,9 +804,8 @@ pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // Compare elements from the end
             let offset = haystack_vec.len() - suffix_vec.len();
             for (i, suffix_thunk) in suffix_vec.iter().enumerate() {
-                let haystack_elem =
-                    materialize(&haystack_vec[offset + i], Some(&call_span), &ctx, depth)?;
-                let suffix_elem = materialize(suffix_thunk, Some(&call_span), &ctx, depth)?;
+                let haystack_elem = materialize(&haystack_vec[offset + i], Some(&call_span), &ctx)?;
+                let suffix_elem = materialize(suffix_thunk, Some(&call_span), &ctx)?;
                 if haystack_elem != suffix_elem {
                     return ok_val(Value::Bool(false), call_span);
                 }
@@ -850,11 +833,10 @@ pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("str-chars", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("str-chars", args, named, &ctx, call_span)?;
 
     let (input_source, input_start, input_end) = match val {
         Value::String { source, start, end } => (source, start, end),
@@ -915,11 +897,10 @@ pub(crate) fn builtin_char_code(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("char-code", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("char-code", args, named, &ctx, call_span)?;
 
     let (input_source, input_start, input_end) = match val {
         Value::String { source, start, end } => (source, start, end),
@@ -953,11 +934,10 @@ pub(crate) fn builtin_chr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("chr", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("chr", args, named, &ctx, call_span)?;
 
     match val {
         Value::Int(n) => {
@@ -996,12 +976,11 @@ pub(crate) fn builtin_str_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("str-bytes", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("str-bytes", args, named, &ctx, call_span)?;
 
     match val.as_str() {
         Some(s) => ok_val(bytes_val(s.as_bytes()), call_span),
@@ -1031,12 +1010,11 @@ pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("bytes-str", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("bytes-str", args, named, &ctx, call_span)?;
 
     match val.as_bytes() {
         Some(bytes) => match std::str::from_utf8(bytes) {

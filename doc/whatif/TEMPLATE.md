@@ -28,11 +28,12 @@ a capability, not a mechanism.
 
 ## Design
 
-The recommended design. Describe the approach in full: syntax, semantics,
-user-facing behavior, internal representation. This is the proposal —
-write it as the design, not as one option among many.
+The complete, fully realized design. Describe the feature as it will
+exist when done: syntax, semantics, user-facing behavior, internal
+representation. Write as the definitive end state — no phases, no
+"initially we could", no hedging.
 
-Include code examples showing how the feature works:
+Include code examples:
 
 ```tinct
 # User-facing syntax
@@ -43,7 +44,7 @@ Include code examples showing how the feature works:
 ```
 
 Cover interactions with existing systems (type checker, evaluator,
-parser, lazy evaluation, row polymorphism, etc.) as subsections if
+parser, lazy evaluation, row polymorphism, etc.) as subsections where
 they involve non-obvious design choices.
 
 ## What Would Change
@@ -62,32 +63,11 @@ Moderate / Major / Fundamental).
 
 ...
 
-## Phased Adoption
+## Prerequisites
 
-Break the feature into independently useful phases. Each phase should
-be a working system — not a partial implementation that only becomes
-useful later.
-
-### Phase 1: [Name]
-
-What it does, what it enables, how to implement it.
-
-### Phase 2: [Name]
-
-...
-
-### Prerequisites
-
-What must be complete before each phase can begin. Reference other
-whatif docs and TODO.md sprints by name.
-
-### Trigger
-
-Concrete conditions that should prompt adoption. These are starting
-conditions, not reasons to delay. Use specific scenarios:
-
-- "When [specific situation] occurs"
-- "When [dependency] is implemented"
+What must be complete before this feature can be implemented. Reference
+other whatif docs and TODO.md sprints by name. Use concrete dependencies,
+not vague "when needed."
 
 ## References
 

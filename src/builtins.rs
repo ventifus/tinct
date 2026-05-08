@@ -35,8 +35,6 @@ use crate::value::Strictness;
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
 use crate::eval::materialize;
-#[cfg(test)]
-use crate::eval::MAX_EVAL_DEPTH;
 use crate::value::{BuiltinArgs, Environment, Key, Thunk, Value};
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
@@ -121,7 +119,6 @@ pub(crate) fn expect_one_arg(
     args: &[Rc<Thunk>],
     named: Option<&IndexMap<String, Rc<Thunk>>>,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: Span,
 ) -> EvalResult<Value> {
     if args.len() != 1 {
@@ -130,7 +127,7 @@ pub(crate) fn expect_one_arg(
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
-    materialize(&args[0], Some(&call_span), ctx, depth)
+    materialize(&args[0], Some(&call_span), ctx)
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
@@ -187,14 +184,13 @@ pub(crate) fn stringify(value: &Value) -> String {
 /// `$take-while`) that build a dict via repeated `$merge [acc] [entry]` calls.
 /// A chain of depth N no longer overflows the Rust stack.
 ///
-/// `name` is the builtin name for error messages. `ctx` and `depth` are for
+/// `name` is the builtin name for error messages. `ctx` is for
 /// materialization. `call_span` is used as the materialization span.
 pub(crate) fn flatten_overlay(
     left: &ThunkId,
     right: &ThunkId,
     name: &str,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: Span,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     use crate::arena::ThunkId;
@@ -230,7 +226,7 @@ pub(crate) fn flatten_overlay(
     while let Some(thunk_id) = work_stack.pop() {
         let thunk = ctx.thunk_arena.borrow().get(thunk_id).clone();
         let span = thunk.span;
-        let val = materialize(&thunk, Some(&call_span), ctx, depth)?;
+        let val = materialize(&thunk, Some(&call_span), ctx)?;
         match val {
             Value::Dict(map) => {
                 layers.push(map);
@@ -276,12 +272,11 @@ pub(crate) fn require_dict(
     value: Value,
     def_span: Span,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: Span,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     match value {
         Value::Dict(map) => Ok(map),
-        Value::Overlay(l, r) => flatten_overlay(&l, &r, name, ctx, depth, call_span),
+        Value::Overlay(l, r) => flatten_overlay(&l, &r, name, ctx, call_span),
         other => {
             let err =
                 EvalError::type_mismatch_ctx(name.to_string(), "Dict", other.type_name(), def_span);
@@ -367,9 +362,9 @@ pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_big_int, builtin_bool_check, builtin_bytes_check, builtin_decimal,
     builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast, builtin_float_check,
-    builtin_fn_check, builtin_from_json, builtin_gensym, builtin_include, builtin_int_check,
-    builtin_llt_repr, builtin_null_check, builtin_num_check, builtin_str_check, builtin_tag_of,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include,
+    builtin_int_check, builtin_llt_repr, builtin_null_check, builtin_num_check, builtin_str_check,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, upper, lower, trim, str-length, str-contains?,
@@ -407,10 +402,9 @@ fn float_to_int_builtin(
     args: &[Rc<Thunk>],
     named: Option<&IndexMap<String, Rc<Thunk>>>,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: Span,
 ) -> EvalResult<Rc<Thunk>> {
-    let val = expect_one_arg(name, args, named, ctx, depth, call_span)?;
+    let val = expect_one_arg(name, args, named, ctx, call_span)?;
     match val {
         Value::Int(n) => ok_val(Value::Int(n), call_span),
         Value::Float(f) => {
@@ -443,11 +437,10 @@ fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    float_to_int_builtin("floor", f64::floor, args, named, &ctx, depth, call_span)
+    float_to_int_builtin("floor", f64::floor, args, named, &ctx, call_span)
 }
 
 /// `round`: Takes 1 numeric arg (Int or Float). Returns Int.
@@ -461,11 +454,10 @@ fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    float_to_int_builtin("round", f64::round, args, named, &ctx, depth, call_span)
+    float_to_int_builtin("round", f64::round, args, named, &ctx, call_span)
 }
 
 /// `to-int`: STRING-TO-NUMBER PARSING ONLY. Takes 1 String arg.
@@ -477,11 +469,10 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("to-int", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("to-int", args, named, &ctx, call_span)?;
     let s = require_string("to-int", val, args[0].span)?;
     match s.parse::<i64>() {
         Ok(n) => ok_val(Value::Int(n), call_span),
@@ -503,11 +494,10 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("to-float", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("to-float", args, named, &ctx, call_span)?;
     let s = require_string("to-float", val, args[0].span)?;
     match s.parse::<f64>() {
         Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
@@ -585,7 +575,6 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -593,7 +582,7 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
     match val {
         Value::String {
             ref source,
@@ -630,7 +619,7 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Int(i64::from(byte)), call_span)
         }
         other => {
-            let map = require_dict("first", other, args[0].span, &ctx, depth, call_span)?;
+            let map = require_dict("first", other, args[0].span, &ctx, call_span)?;
             if map.is_empty() {
                 return Err(EvalError::empty_collection("first".to_string(), call_span).into());
             }
@@ -653,7 +642,6 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -661,7 +649,7 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
     match val {
         Value::String {
             ref source,
@@ -699,7 +687,7 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ok_val(Value::Int(i64::from(byte)), call_span)
         }
         other => {
-            let map = require_dict("last", other, args[0].span, &ctx, depth, call_span)?;
+            let map = require_dict("last", other, args[0].span, &ctx, call_span)?;
             if map.is_empty() {
                 return Err(EvalError::empty_collection("last".to_string(), call_span).into());
             }
@@ -723,7 +711,6 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -731,18 +718,17 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
     // Seq path: delegate to $tail (O(1), preserves laziness).
     if matches!(val, Value::Seq { .. }) {
         return builtin_tail(BuiltinArgs {
             args,
             named,
-            depth,
             call_span,
             ctx,
         });
     }
-    let map = require_dict("rest", val, args[0].span, &ctx, depth, call_span)?;
+    let map = require_dict("rest", val, args[0].span, &ctx, call_span)?;
 
     // Skip the first entry (index 0 by insertion order), reindex rest as 0..n-1.
     let mut result = IndexMap::with_capacity(map.len().saturating_sub(1));
@@ -768,7 +754,6 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -778,18 +763,17 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     // args[0] is the element to prepend (kept as thunk — preserves laziness).
     // args[1] is the collection to prepend to (must be materialized to dispatch on type).
-    let xs_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let xs_val = materialize(&args[1], Some(&call_span), &ctx)?;
     // Seq path: delegate to $seq (O(1), preserves laziness).
     if matches!(xs_val, Value::Seq { .. }) {
         return builtin_seq(BuiltinArgs {
             args,
             named,
-            depth,
             call_span,
             ctx,
         });
     }
-    let map = require_dict("cons", xs_val, args[1].span, &ctx, depth, call_span)?;
+    let map = require_dict("cons", xs_val, args[1].span, &ctx, call_span)?;
 
     let mut result = IndexMap::with_capacity(map.len() + 1);
     // Insert the new element at key 0.
@@ -816,7 +800,6 @@ fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -824,8 +807,8 @@ fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let map = require_dict("reverse", val, args[0].span, &ctx, depth, call_span)?;
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let map = require_dict("reverse", val, args[0].span, &ctx, call_span)?;
 
     let mut result = IndexMap::with_capacity(map.len());
     // Collect values in reverse insertion order.
@@ -896,7 +879,6 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -904,14 +886,14 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let map = require_dict("sort", val, args[0].span, &ctx, depth, call_span)?;
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let map = require_dict("sort", val, args[0].span, &ctx, call_span)?;
 
     // Materialize all values so we can compare them.
     let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
     for (_key, thunk_id) in &map {
         let thunk = ctx.get_thunk(*thunk_id);
-        let mat = materialize(&thunk, Some(&call_span), &ctx, depth)?;
+        let mat = materialize(&thunk, Some(&call_span), &ctx)?;
         pairs.push((mat, thunk.span));
     }
 
@@ -1095,6 +1077,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
         // Evaluation control
         builtin!("eval", builtin_eval, [Strictness::Seq]),
+        builtin!("force", builtin_force, [Strictness::Seq]),
         builtin!("error", builtin_error, [Strictness::Seq]),
         builtin!("try", builtin_try, [Strictness::Id]),
         builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
@@ -1484,13 +1467,13 @@ fn load_stdlib_module(
     let builtins_env = Rc::new(crate::types::TypeEnv::with_builtins());
     let _ = crate::typecheck::typecheck_file_with_types_and_env(&file.node, builtins_env);
 
-    let thunk = crate::eval::eval_file(&file.node, Rc::clone(env), ctx, 0)?;
-    let val = crate::eval::materialize(&thunk, None, ctx, 0)?;
+    let thunk = crate::eval::eval_file(&file.node, Rc::clone(env), ctx)?;
+    let val = crate::eval::materialize(&thunk, None, ctx)?;
 
     let dict = match val {
         Value::Dict(map) => map,
         Value::Overlay(l_id, r_id) => {
-            flatten_overlay(&l_id, &r_id, module_name, ctx, 0, Span::origin())?
+            flatten_overlay(&l_id, &r_id, module_name, ctx, Span::origin())?
         }
         other => {
             return Err(crate::error::EvalError::internal(
@@ -1580,7 +1563,7 @@ mod tests {
     }
 
     fn mat(result: EvalResult<Rc<Thunk>>) -> Value {
-        crate::eval::materialize(&result.unwrap(), None, &test_ctx(), 0).unwrap()
+        crate::eval::materialize(&result.unwrap(), None, &test_ctx()).unwrap()
     }
 
     /// Helper: make a zero-arg function whose body is a single expression.
@@ -1631,7 +1614,7 @@ mod tests {
         match val {
             Value::Dict(map) => map,
             Value::Overlay(l, r) => {
-                flatten_overlay(&l, &r, "test", ctx, 0, test_span(1, 1, 1, 5)).unwrap()
+                flatten_overlay(&l, &r, "test", ctx, test_span(1, 1, 1, 5)).unwrap()
             }
             other => panic!("expected Dict or Overlay, got {other:?}"),
         }
@@ -1640,7 +1623,7 @@ mod tests {
     /// Helper: materialize the thunk identified by `id` in `ctx`'s arena.
     fn mat_id(id: ThunkId, ctx: &Rc<crate::eval::EvalContext>) -> Value {
         let thunk = ctx.get_thunk(id);
-        crate::eval::materialize(&thunk, None, ctx, 0).unwrap()
+        crate::eval::materialize(&thunk, None, ctx).unwrap()
     }
 
     /// Helper: build a `Value::Seq` with both `head` and `tail` allocated into `ctx`.
@@ -1672,7 +1655,6 @@ mod tests {
         let result = mat(builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1684,7 +1666,6 @@ mod tests {
         let result = mat(builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Int(-7))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1696,7 +1677,6 @@ mod tests {
         let result = mat(builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Int(0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1708,7 +1688,6 @@ mod tests {
         let result = mat(builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(3.7))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1721,7 +1700,6 @@ mod tests {
         let result = mat(builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(-3.2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1733,7 +1711,6 @@ mod tests {
         let result = mat(builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(5.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1745,7 +1722,6 @@ mod tests {
         let result = mat(builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(2.9999999))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1757,7 +1733,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(f64::NAN))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1770,7 +1745,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(f64::INFINITY))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1787,7 +1761,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(f64::NEG_INFINITY))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1804,7 +1777,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(string_val("3.5".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1821,7 +1793,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1838,7 +1809,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1855,7 +1825,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1872,7 +1841,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1891,7 +1859,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(3.5))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1908,7 +1875,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(1e19))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1925,7 +1891,6 @@ mod tests {
         let err = builtin_floor(BuiltinArgs {
             args: &[thunk(Value::Float(-1e19))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -1942,7 +1907,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1954,7 +1918,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Int(-7))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1967,7 +1930,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(0.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1980,7 +1942,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(-0.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -1992,7 +1953,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(2.4))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2004,7 +1964,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(2.6))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2017,7 +1976,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(-2.4))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2030,7 +1988,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(-2.6))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2042,7 +1999,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(1.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2054,7 +2010,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(-1.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2066,7 +2021,6 @@ mod tests {
         let result = mat(builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(5.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2078,7 +2032,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(f64::NAN))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2091,7 +2044,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(f64::INFINITY))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2108,7 +2060,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(f64::NEG_INFINITY))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2125,7 +2076,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(string_val("3.5".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2142,7 +2092,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(Value::Bool(false))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2159,7 +2108,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2176,7 +2124,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2193,7 +2140,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(1e19))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2210,7 +2156,6 @@ mod tests {
         let err = builtin_round(BuiltinArgs {
             args: &[thunk(Value::Float(-1e19))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2227,7 +2172,6 @@ mod tests {
         let result = mat(builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("42".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2239,7 +2183,6 @@ mod tests {
         let result = mat(builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("-7".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2251,7 +2194,6 @@ mod tests {
         let result = mat(builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("0".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2263,7 +2205,6 @@ mod tests {
         let result = mat(builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("9223372036854775807".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2275,7 +2216,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("3.14".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2292,7 +2232,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2309,7 +2248,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2326,7 +2264,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val(" 42 ".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2343,7 +2280,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2365,7 +2301,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2382,7 +2317,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2399,7 +2333,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2416,7 +2349,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2433,7 +2365,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("1".into())), thunk(string_val("2".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2450,7 +2381,6 @@ mod tests {
         let result = mat(builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("3.14".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2463,7 +2393,6 @@ mod tests {
         let result = mat(builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("42".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2475,7 +2404,6 @@ mod tests {
         let result = mat(builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("-2.5".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2487,7 +2415,6 @@ mod tests {
         let result = mat(builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("1.5e10".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2499,7 +2426,6 @@ mod tests {
         let result = mat(builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("2.5e-3".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2511,7 +2437,6 @@ mod tests {
         let result = mat(builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("0.0".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2524,7 +2449,6 @@ mod tests {
         let result = mat(builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val(".5".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2536,7 +2460,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2553,7 +2476,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2570,7 +2492,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("inf".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2587,7 +2508,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("-inf".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2604,7 +2524,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("infinity".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2621,7 +2540,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("NaN".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2638,7 +2556,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2655,7 +2572,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2672,7 +2588,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2689,7 +2604,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2709,7 +2623,6 @@ mod tests {
                 thunk(string_val("2.0".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2728,7 +2641,6 @@ mod tests {
         let err = builtin_to_float(BuiltinArgs {
             args: &[thunk(string_val("3.14".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2746,7 +2658,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("9223372036854775808".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2763,7 +2674,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2775,7 +2685,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2787,7 +2696,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2799,7 +2707,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2812,7 +2719,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(dict)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -2837,7 +2743,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -2877,7 +2782,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[outer_dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -2921,7 +2825,6 @@ mod tests {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -2939,7 +2842,6 @@ mod tests {
         let err = builtin_eval(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2956,7 +2858,6 @@ mod tests {
         let err = builtin_error(BuiltinArgs {
             args: &[thunk(string_val("boom".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2969,7 +2870,6 @@ mod tests {
         let err = builtin_error(BuiltinArgs {
             args: &[thunk(string_val("division by zero".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -2982,7 +2882,6 @@ mod tests {
         let err = builtin_error(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3000,7 +2899,6 @@ mod tests {
         let err = builtin_error(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3020,7 +2918,6 @@ mod tests {
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3041,7 +2938,6 @@ mod tests {
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3062,7 +2958,6 @@ mod tests {
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3094,7 +2989,6 @@ mod tests {
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3112,7 +3006,6 @@ mod tests {
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3129,7 +3022,6 @@ mod tests {
         let err = builtin_try(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3155,7 +3047,6 @@ mod tests {
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(b)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3183,7 +3074,6 @@ mod tests {
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(b)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3214,7 +3104,6 @@ mod tests {
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(b)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3247,7 +3136,6 @@ mod tests {
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(b)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3278,7 +3166,6 @@ mod tests {
         let result = mat(builtin_apply(BuiltinArgs {
             args: &[thunk(func), args_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3303,7 +3190,6 @@ mod tests {
         let result = mat(builtin_apply(BuiltinArgs {
             args: &[thunk(func), args_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3328,7 +3214,6 @@ mod tests {
         let result = mat(builtin_apply(BuiltinArgs {
             args: &[thunk(func), args_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3344,8 +3229,8 @@ mod tests {
                 ctx,
                 ..
             } = builtin_ctx;
-            let a = materialize(&args[0], None, &ctx, 0)?;
-            let b = materialize(&args[1], None, &ctx, 0)?;
+            let a = materialize(&args[0], None, &ctx)?;
+            let b = materialize(&args[1], None, &ctx)?;
             match (a, b) {
                 (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
                 _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
@@ -3370,7 +3255,6 @@ mod tests {
         let result = mat(builtin_apply(BuiltinArgs {
             args: &[thunk(func), args_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3393,12 +3277,11 @@ mod tests {
         let apply_thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), args_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&apply_thunk, None, &ctx, 0).unwrap_err();
+        let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
             err.message()
                 .contains("missing argument for required parameter"),
@@ -3422,12 +3305,11 @@ mod tests {
         let apply_thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(Value::Int(42)), args_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&apply_thunk, None, &ctx, 0).unwrap_err();
+        let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
             err.message().contains("expected Function"),
             "got: {}",
@@ -3441,12 +3323,11 @@ mod tests {
         let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
+        let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.message().contains("expected Dict"),
             "got: {}",
@@ -3459,12 +3340,11 @@ mod tests {
         let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
+        let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.message().contains("arity mismatch"),
             "got: {}",
@@ -3477,7 +3357,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3489,7 +3368,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3501,7 +3379,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(string_val("hi".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3513,7 +3390,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(Value::Bool(false))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3525,7 +3401,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3538,7 +3413,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3558,7 +3432,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(builtin)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3578,7 +3451,6 @@ mod tests {
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(seq)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3590,7 +3462,6 @@ mod tests {
         let err = builtin_type_of(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3607,7 +3478,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("42".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3619,7 +3489,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("3.14".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3631,7 +3500,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val(r#""hello""#))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3643,7 +3511,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("true".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3655,7 +3522,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("false".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3667,7 +3533,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("null".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3683,7 +3548,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("[1, 2, 3]".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3707,7 +3571,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val(r#"{"name": "Alice", "age": 30}"#))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3730,7 +3593,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val(json))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3761,7 +3623,6 @@ mod tests {
         let err = builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("{bad json".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3778,7 +3639,6 @@ mod tests {
         let err = builtin_from_json(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3795,7 +3655,6 @@ mod tests {
         let err = builtin_from_json(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -3812,7 +3671,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("{}".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3827,7 +3685,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("[]".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -3843,7 +3700,6 @@ mod tests {
         let result = mat(builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val(r#"[1, "two", true, null]"#))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3867,9 +3723,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. json_to_value recursion depth matches MAX_EVAL_DEPTH; verify depth guard policy only."]
+    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. json_to_value recursion depth matches JSON_DEPTH_LIMIT; verify depth guard policy only."]
     fn from_json_depth_guard() {
-        // Build JSON nested beyond MAX_EVAL_DEPTH: {"a":{"a":{...}}}
+        // Build JSON nested beyond JSON_DEPTH_LIMIT: {"a":{"a":{...}}}
         // serde_json's default recursion limit is 128, so we test json_to_value
         // directly with a pre-parsed serde_json::Value.
         fn build_deep(depth: usize) -> serde_json::Value {
@@ -3881,7 +3737,7 @@ mod tests {
             }
             val
         }
-        let deep = build_deep(MAX_EVAL_DEPTH + 1);
+        let deep = build_deep(JSON_DEPTH_LIMIT + 1);
         let ctx = test_ctx();
         let err = json_to_value(&deep, 0, call_span(), &ctx).unwrap_err();
         assert!(
@@ -3916,7 +3772,6 @@ mod tests {
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3938,7 +3793,6 @@ mod tests {
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3968,7 +3822,6 @@ mod tests {
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -3999,7 +3852,6 @@ mod tests {
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4029,7 +3881,6 @@ mod tests {
         let result = mat(builtin_keys(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4053,7 +3904,6 @@ mod tests {
         let result = mat(builtin_length(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4071,7 +3921,6 @@ mod tests {
         let result = mat(builtin_length(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4088,7 +3937,6 @@ mod tests {
         let result = mat(builtin_length(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4108,7 +3956,6 @@ mod tests {
         let result = mat(builtin_merge(BuiltinArgs {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4134,7 +3981,6 @@ mod tests {
         let result = mat(builtin_merge(BuiltinArgs {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4157,7 +4003,6 @@ mod tests {
                 thunk_dict(IndexMap::new(), &ctx),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4198,7 +4043,6 @@ mod tests {
         let result = mat(builtin_merge(BuiltinArgs {
             args: &[thunk_dict(IndexMap::new(), &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4216,7 +4060,6 @@ mod tests {
         let result = mat(builtin_merge(BuiltinArgs {
             args: &[thunk_dict(left, &ctx), thunk_dict(IndexMap::new(), &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4243,7 +4086,6 @@ mod tests {
         let result = mat(builtin_merge(BuiltinArgs {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4266,7 +4108,6 @@ mod tests {
         let result = mat(builtin_merge(BuiltinArgs {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4288,7 +4129,6 @@ mod tests {
         let err = builtin_keys(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4307,7 +4147,6 @@ mod tests {
         let err = builtin_keys(BuiltinArgs {
             args: &[d.clone(), d],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -4324,7 +4163,6 @@ mod tests {
         let err = builtin_length(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4343,7 +4181,6 @@ mod tests {
         let err = builtin_length(BuiltinArgs {
             args: &[d.clone(), d],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -4362,7 +4199,6 @@ mod tests {
         let err = builtin_merge(BuiltinArgs {
             args: &[d],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -4381,7 +4217,6 @@ mod tests {
         let err = builtin_merge(BuiltinArgs {
             args: &[d.clone(), d.clone(), d],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -4398,7 +4233,6 @@ mod tests {
         let err = builtin_keys(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4417,7 +4251,6 @@ mod tests {
         let err = builtin_keys(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4435,7 +4268,6 @@ mod tests {
         let err = builtin_keys(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4450,7 +4282,6 @@ mod tests {
         let result = mat(builtin_length(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4462,7 +4293,6 @@ mod tests {
         let result = mat(builtin_length(BuiltinArgs {
             args: &[thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4475,7 +4305,6 @@ mod tests {
         let result = mat(builtin_length(BuiltinArgs {
             args: &[thunk(string_val("\u{1F600}\u{1F601}".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4487,7 +4316,6 @@ mod tests {
         let err = builtin_length(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4510,17 +4338,16 @@ mod tests {
         let result = builtin_merge(BuiltinArgs {
             args: &[thunk(Value::Int(1)), d],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });
         // builtin_merge itself succeeds — returns Overlay(Int(1), {})
         let overlay_thunk = result.unwrap();
-        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx, 0).unwrap();
+        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx).unwrap();
         // Flatten fires the type error: left side is Int, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
-                let err = flatten_overlay(&l, &r, "merge", &ctx, 0, call_span()).unwrap_err();
+                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span()).unwrap_err();
                 assert!(
                     err.message().contains("expected Dict"),
                     "got: {}",
@@ -4541,16 +4368,15 @@ mod tests {
         let result = builtin_merge(BuiltinArgs {
             args: &[d, thunk(string_val("nope".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });
         let overlay_thunk = result.unwrap();
-        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx, 0).unwrap();
+        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx).unwrap();
         // Flatten fires the type error: right side is String, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
-                let err = flatten_overlay(&l, &r, "merge", &ctx, 0, call_span()).unwrap_err();
+                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span()).unwrap_err();
                 assert!(
                     err.message().contains("expected Dict"),
                     "got: {}",
@@ -4573,7 +4399,6 @@ mod tests {
         let result = mat(builtin_append(BuiltinArgs {
             args: &[empty, thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4597,7 +4422,6 @@ mod tests {
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(string_val("c".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4621,7 +4445,6 @@ mod tests {
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::Int(99))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4646,7 +4469,6 @@ mod tests {
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::Int(60))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4669,7 +4491,6 @@ mod tests {
         let result = mat(builtin_append(BuiltinArgs {
             args: &[dict, thunk(string_val("second".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4695,7 +4516,6 @@ mod tests {
         let result = mat(builtin_append(BuiltinArgs {
             args: &[empty, Rc::clone(&val_thunk)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4714,7 +4534,6 @@ mod tests {
         let err = builtin_append(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4732,7 +4551,6 @@ mod tests {
                 thunk(Value::Int(2)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -4745,7 +4563,6 @@ mod tests {
         let err = builtin_append(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -4767,7 +4584,6 @@ mod tests {
         let err = builtin_append(BuiltinArgs {
             args: &[dict, thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -4784,7 +4600,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4796,7 +4611,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4808,7 +4622,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[thunk(Value::Int(-7))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4820,7 +4633,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4832,7 +4644,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4844,7 +4655,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4856,7 +4666,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[thunk(Value::Bool(false))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4883,7 +4692,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[dict],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4895,7 +4703,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &[thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4912,7 +4719,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4932,7 +4738,6 @@ mod tests {
         let result = mat(builtin_str(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -4951,7 +4756,6 @@ mod tests {
                 thunk(string_val("a,b,c".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -4978,7 +4782,6 @@ mod tests {
                 thunk(string_val("a,,b".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -5000,7 +4803,6 @@ mod tests {
                 thunk(string_val("a/b/c/d".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5019,7 +4821,6 @@ mod tests {
                 thunk(string_val("hello".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -5042,7 +4843,6 @@ mod tests {
                 thunk(string_val("a::b::c".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -5066,7 +4866,6 @@ mod tests {
         let result = mat(builtin_split(BuiltinArgs {
             args: &[thunk(string_val(",".into())), thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -5092,7 +4891,6 @@ mod tests {
         let result = builtin_split(BuiltinArgs {
             args: &[thunk(string_val("")), thunk(string_val(&input))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -5114,7 +4912,6 @@ mod tests {
         let result = builtin_split(BuiltinArgs {
             args: &[thunk(string_val(",")), thunk(string_val(&input))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -5137,7 +4934,6 @@ mod tests {
                 thunk(string_val("hello world".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5153,7 +4949,6 @@ mod tests {
                 thunk(string_val("banana".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5169,7 +4964,6 @@ mod tests {
                 thunk(string_val("hello".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5185,7 +4979,6 @@ mod tests {
                 thunk(string_val("abc".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5201,7 +4994,6 @@ mod tests {
                 thunk(string_val("hello".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5221,7 +5013,6 @@ mod tests {
                 thunk(string_val(&input)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -5241,7 +5032,6 @@ mod tests {
                 thunk(string_val(&input)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5254,7 +5044,6 @@ mod tests {
         let result = mat(builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5266,7 +5055,6 @@ mod tests {
         let result = mat(builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("Hello World".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5278,7 +5066,6 @@ mod tests {
         let result = mat(builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("ABC".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5290,7 +5077,6 @@ mod tests {
         let result = mat(builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5302,7 +5088,6 @@ mod tests {
         let result = mat(builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("abc123".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5314,7 +5099,6 @@ mod tests {
         let result = mat(builtin_lower(BuiltinArgs {
             args: &[thunk(string_val("HELLO".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5326,7 +5110,6 @@ mod tests {
         let result = mat(builtin_lower(BuiltinArgs {
             args: &[thunk(string_val("Hello World".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5338,7 +5121,6 @@ mod tests {
         let result = mat(builtin_lower(BuiltinArgs {
             args: &[thunk(string_val("abc".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5350,7 +5132,6 @@ mod tests {
         let result = mat(builtin_lower(BuiltinArgs {
             args: &[thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5366,7 +5147,6 @@ mod tests {
         let result = builtin_upper(BuiltinArgs {
             args: &[thunk(string_val(&large_string))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -5393,7 +5173,6 @@ mod tests {
         let result = builtin_lower(BuiltinArgs {
             args: &[thunk(string_val(&large_string))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -5416,7 +5195,6 @@ mod tests {
         let result = mat(builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("café résumé".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5428,7 +5206,6 @@ mod tests {
         let result = mat(builtin_lower(BuiltinArgs {
             args: &[thunk(string_val("ZÜRICH МОСКВА".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5440,7 +5217,6 @@ mod tests {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("  hello  ".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5452,7 +5228,6 @@ mod tests {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("   hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5464,7 +5239,6 @@ mod tests {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("hello   ".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5476,7 +5250,6 @@ mod tests {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5488,7 +5261,6 @@ mod tests {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("   ".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5500,7 +5272,6 @@ mod tests {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("\t\nhello\n\t".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5512,7 +5283,6 @@ mod tests {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -5524,7 +5294,6 @@ mod tests {
         let err = builtin_split(BuiltinArgs {
             args: &[thunk(string_val(",".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5550,7 +5319,6 @@ mod tests {
                 thunk(string_val("extra".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5567,7 +5335,6 @@ mod tests {
         let err = builtin_replace(BuiltinArgs {
             args: &[thunk(string_val("a".into())), thunk(string_val("b".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5589,7 +5356,6 @@ mod tests {
         let err = builtin_upper(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5606,7 +5372,6 @@ mod tests {
         let err = builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("a".into())), thunk(string_val("b".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5623,7 +5388,6 @@ mod tests {
         let err = builtin_lower(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5640,7 +5404,6 @@ mod tests {
         let err = builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("a".into())), thunk(string_val("b".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5657,7 +5420,6 @@ mod tests {
         let err = builtin_split(BuiltinArgs {
             args: &[thunk(Value::Int(42)), thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5680,7 +5442,6 @@ mod tests {
         let err = builtin_split(BuiltinArgs {
             args: &[thunk(string_val(",".into())), thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5706,7 +5467,6 @@ mod tests {
                 thunk(string_val("abc".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5728,7 +5488,6 @@ mod tests {
                 thunk(string_val("abc".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5750,7 +5509,6 @@ mod tests {
                 thunk(Value::Float(3.14)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5772,7 +5530,6 @@ mod tests {
         let err = builtin_upper(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5795,7 +5552,6 @@ mod tests {
         let err = builtin_lower(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5818,7 +5574,6 @@ mod tests {
         let err = builtin_trim(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5847,7 +5602,6 @@ mod tests {
         let err = builtin_upper(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5866,7 +5620,6 @@ mod tests {
         let err = builtin_lower(BuiltinArgs {
             args: &[thunk(string_val("HELLO".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5885,7 +5638,6 @@ mod tests {
         let err = builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("  hello  ".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5904,7 +5656,6 @@ mod tests {
         let err = builtin_eval(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5923,7 +5674,6 @@ mod tests {
         let err = builtin_error(BuiltinArgs {
             args: &[thunk(string_val("boom".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5942,7 +5692,6 @@ mod tests {
         let err = builtin_type_of(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5961,7 +5710,6 @@ mod tests {
         let err = builtin_from_json(BuiltinArgs {
             args: &[thunk(string_val("42".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -5980,7 +5728,6 @@ mod tests {
         let err = builtin_to_int(BuiltinArgs {
             args: &[thunk(string_val("42".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6002,7 +5749,6 @@ mod tests {
                 thunk(string_val("a,b".into())),
             ],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6025,7 +5771,6 @@ mod tests {
                 thunk(string_val("abc".into())),
             ],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6044,7 +5789,6 @@ mod tests {
         let err = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6063,7 +5807,6 @@ mod tests {
         let err = builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Int(1))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6082,7 +5825,6 @@ mod tests {
         let err = builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(2)), thunk(Value::Int(3))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6101,7 +5843,6 @@ mod tests {
         let err = builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Int(3))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6120,7 +5861,6 @@ mod tests {
         let err = builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6139,7 +5879,6 @@ mod tests {
         let err = builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6162,7 +5901,6 @@ mod tests {
                 thunk(Value::Int(2)),
             ],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6190,7 +5928,6 @@ mod tests {
         let err = builtin_keys(BuiltinArgs {
             args: &[dict],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -6210,7 +5947,6 @@ mod tests {
         let err = builtin_length(BuiltinArgs {
             args: &[thunk(Value::Dict(map))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6232,7 +5968,6 @@ mod tests {
                 thunk(Value::Dict(IndexMap::new())),
             ],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6251,7 +5986,6 @@ mod tests {
         let err = builtin_append(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new())), thunk(Value::Int(42))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6270,7 +6004,6 @@ mod tests {
         let err = builtin_str(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6290,7 +6023,6 @@ mod tests {
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6310,12 +6042,11 @@ mod tests {
         let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(Value::Dict(IndexMap::new()))],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx(), 0).unwrap_err();
+        let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.message().contains("named arguments"),
             "got: {}",
@@ -6357,6 +6088,7 @@ mod tests {
         assert!(names.contains(&"to-float"), "missing to-float");
         // Evaluation control
         assert!(names.contains(&"eval"), "missing eval");
+        assert!(names.contains(&"force"), "missing force");
         assert!(names.contains(&"error"), "missing error");
         assert!(names.contains(&"try"), "missing try");
         assert!(names.contains(&"apply"), "missing apply");
@@ -6504,8 +6236,8 @@ mod tests {
         assert!(names.contains(&"position"), "missing position");
         assert_eq!(
             names.len(),
-            176,
-            "expected 176 builtins, got {}",
+            177,
+            "expected 177 builtins, got {}",
             names.len()
         );
     }
@@ -6515,7 +6247,6 @@ mod tests {
         let r = mat(builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6527,7 +6258,6 @@ mod tests {
         let r = mat(builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Float(2.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6539,7 +6269,6 @@ mod tests {
         let r = mat(builtin_add(BuiltinArgs {
             args: &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6551,7 +6280,6 @@ mod tests {
         let r = mat(builtin_add(BuiltinArgs {
             args: &[thunk(Value::Float(1.5)), thunk(Value::Float(2.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6563,7 +6291,6 @@ mod tests {
         let r = mat(builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(-10)), thunk(Value::Int(3))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6575,7 +6302,6 @@ mod tests {
         let r = mat(builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6587,7 +6313,6 @@ mod tests {
         let e = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6604,7 +6329,6 @@ mod tests {
         let e = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6625,7 +6349,6 @@ mod tests {
                 thunk(Value::Int(3)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6642,7 +6365,6 @@ mod tests {
         let err = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(i64::MAX)), thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6659,7 +6381,6 @@ mod tests {
         let err = builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(i64::MIN)), thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6676,7 +6397,6 @@ mod tests {
         let r = mat(builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Int(3))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6688,7 +6408,6 @@ mod tests {
         let r = mat(builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Float(3.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6700,7 +6419,6 @@ mod tests {
         let r = mat(builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Float(10.5)), thunk(Value::Int(3))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6712,7 +6430,6 @@ mod tests {
         let r = mat(builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Float(10.5)), thunk(Value::Float(3.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6724,7 +6441,6 @@ mod tests {
         let r = mat(builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Int(10))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6736,7 +6452,6 @@ mod tests {
         let r = mat(builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6748,7 +6463,6 @@ mod tests {
         let e = builtin_sub(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6765,7 +6479,6 @@ mod tests {
         let e = builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6786,7 +6499,6 @@ mod tests {
                 thunk(Value::Int(3)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6803,7 +6515,6 @@ mod tests {
         let e = builtin_sub(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6820,7 +6531,6 @@ mod tests {
         let r = mat(builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(4)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6832,7 +6542,6 @@ mod tests {
         let r = mat(builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(4)), thunk(Value::Float(2.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6844,7 +6553,6 @@ mod tests {
         let r = mat(builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Float(2.5)), thunk(Value::Int(4))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6856,7 +6564,6 @@ mod tests {
         let r = mat(builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Float(2.5)), thunk(Value::Float(3.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6868,7 +6575,6 @@ mod tests {
         let r = mat(builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(42)), thunk(Value::Int(0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6880,7 +6586,6 @@ mod tests {
         let r = mat(builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(-3)), thunk(Value::Int(4))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6892,7 +6597,6 @@ mod tests {
         let r = mat(builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(42)), thunk(Value::Int(-1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -6904,7 +6608,6 @@ mod tests {
         let err = builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(i64::MAX)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6921,7 +6624,6 @@ mod tests {
         let err = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Float(1e308)), thunk(Value::Float(1e308))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6942,7 +6644,6 @@ mod tests {
                 thunk(Value::Float(f64::INFINITY)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6959,7 +6660,6 @@ mod tests {
         let err = builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Float(1e308)), thunk(Value::Float(10.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -6983,7 +6683,6 @@ mod tests {
                 thunk(Value::Float(f64::INFINITY)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7000,7 +6699,6 @@ mod tests {
         let r = mat(builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Int(3))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7017,7 +6715,6 @@ mod tests {
         let r = mat(builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7032,7 +6729,6 @@ mod tests {
         let r = mat(builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Float(3.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7049,7 +6745,6 @@ mod tests {
         let r = mat(builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Float(7.5)), thunk(Value::Float(2.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7061,7 +6756,6 @@ mod tests {
         let e = builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Int(0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7078,7 +6772,6 @@ mod tests {
         let e = builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Float(10.0)), thunk(Value::Float(0.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7095,7 +6788,6 @@ mod tests {
         let e = builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Float(0.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7112,7 +6804,6 @@ mod tests {
         let r = mat(builtin_div_float(BuiltinArgs {
             args: &[thunk(Value::Float(-0.0)), thunk(Value::Float(1.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7124,7 +6815,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7136,7 +6826,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Int(6))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7148,7 +6837,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Float(3.14)), thunk(Value::Float(3.14))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7160,7 +6848,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Float(3.14)), thunk(Value::Float(2.71))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7175,7 +6862,6 @@ mod tests {
                 thunk(string_val("hello".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7190,7 +6876,6 @@ mod tests {
                 thunk(string_val("world".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7202,7 +6887,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7214,7 +6898,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7226,7 +6909,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7238,7 +6920,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Float(5.0)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7250,7 +6931,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Float(5.1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7265,7 +6945,6 @@ mod tests {
                 thunk(Value::Dict(IndexMap::new())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7277,7 +6956,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(string_val("1".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7289,7 +6967,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Bool(true)), thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7301,7 +6978,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7313,7 +6989,6 @@ mod tests {
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7325,7 +7000,6 @@ mod tests {
         let e = builtin_eq(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7342,7 +7016,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7354,7 +7027,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Int(3))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7366,7 +7038,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7378,7 +7049,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Float(2.5)), thunk(Value::Float(3.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7393,7 +7063,6 @@ mod tests {
                 thunk(string_val("banana".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7408,7 +7077,6 @@ mod tests {
                 thunk(string_val("apple".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7423,7 +7091,6 @@ mod tests {
                 thunk(string_val("same".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7438,7 +7105,6 @@ mod tests {
                 thunk(string_val("abc".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7450,7 +7116,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Float(3.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7462,7 +7127,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7474,7 +7138,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7486,7 +7149,6 @@ mod tests {
         let e = builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7499,7 +7161,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Bool(false)), thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7511,7 +7172,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7523,7 +7183,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Bool(false)), thunk(Value::Bool(false))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7535,7 +7194,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7550,7 +7208,6 @@ mod tests {
                 thunk(Value::Dict(IndexMap::new())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7563,7 +7220,6 @@ mod tests {
         let e = builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7580,7 +7236,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Int(-10)), thunk(Value::Int(-5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7592,7 +7247,6 @@ mod tests {
         let r = mat(builtin_lt(BuiltinArgs {
             args: &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(1.0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7609,7 +7263,6 @@ mod tests {
         let result = mat(builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7626,7 +7279,6 @@ mod tests {
         let result = mat(builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7651,7 +7303,6 @@ mod tests {
         let result = mat(builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7680,7 +7331,6 @@ mod tests {
         let result = mat(builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -7697,7 +7347,6 @@ mod tests {
         let e = builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7724,7 +7373,6 @@ mod tests {
         let e = builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7742,7 +7390,6 @@ mod tests {
         let e = builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7765,7 +7412,6 @@ mod tests {
         let e = builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -7793,7 +7439,6 @@ mod tests {
         let err = builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span_val,
             ctx: test_ctx(),
         })
@@ -7837,7 +7482,6 @@ mod tests {
         let err = builtin_if(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: same_span,
             ctx: test_ctx(),
         })
@@ -7935,7 +7579,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -7959,7 +7602,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -7983,7 +7625,6 @@ mod tests {
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8011,7 +7652,6 @@ mod tests {
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         }));
@@ -8030,7 +7670,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8058,7 +7697,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8082,7 +7720,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8112,7 +7749,6 @@ mod tests {
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8147,7 +7783,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8171,7 +7806,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -8195,7 +7829,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8220,7 +7853,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8245,7 +7877,6 @@ mod tests {
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8271,7 +7902,6 @@ mod tests {
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8305,7 +7935,6 @@ mod tests {
         let raw1 = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -8315,7 +7944,6 @@ mod tests {
         let raw2 = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -8347,7 +7975,6 @@ mod tests {
         let result1 = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8356,7 +7983,6 @@ mod tests {
         let result2 = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8391,7 +8017,6 @@ mod tests {
         let result1 = mat(builtin_include(BuiltinArgs {
             args: &args1,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8401,7 +8026,6 @@ mod tests {
         let result2 = mat(builtin_include(BuiltinArgs {
             args: &args2,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8436,7 +8060,6 @@ mod tests {
         let result_a = mat(builtin_include(BuiltinArgs {
             args: &args_a,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8446,7 +8069,6 @@ mod tests {
         let result_c = mat(builtin_include(BuiltinArgs {
             args: &args_c,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8493,7 +8115,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8532,7 +8153,6 @@ mod tests {
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8562,7 +8182,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8590,7 +8209,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8618,7 +8236,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8647,7 +8264,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8681,7 +8297,6 @@ mod tests {
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8725,7 +8340,6 @@ mod tests {
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         })
@@ -8783,7 +8397,6 @@ mod tests {
         let _result = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -8811,7 +8424,6 @@ mod tests {
         let _err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -8835,7 +8447,6 @@ mod tests {
         let result = mat(builtin_seq(BuiltinArgs {
             args: &[head_val.clone(), tail_val.clone()],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -8853,7 +8464,6 @@ mod tests {
         let result = builtin_seq(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8865,7 +8475,6 @@ mod tests {
         let result = builtin_seq(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8881,7 +8490,6 @@ mod tests {
                 thunk(Value::Int(3)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8907,7 +8515,6 @@ mod tests {
         let result = builtin_seq(BuiltinArgs {
             args: &[undef_thunk, tail_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8926,7 +8533,6 @@ mod tests {
         let result = builtin_head(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });
@@ -8940,7 +8546,6 @@ mod tests {
         let result = builtin_head(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8952,7 +8557,6 @@ mod tests {
         let result = builtin_head(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8964,7 +8568,6 @@ mod tests {
         let result = builtin_head(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8976,7 +8579,6 @@ mod tests {
         let result = builtin_head(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -8993,7 +8595,6 @@ mod tests {
         let result = builtin_tail(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9016,7 +8617,6 @@ mod tests {
         let result = builtin_tail(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });
@@ -9030,7 +8630,6 @@ mod tests {
         let result = builtin_tail(BuiltinArgs {
             args: &[thunk(string_val("not a seq".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9048,7 +8647,6 @@ mod tests {
         let result = mat(builtin_collect(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9071,7 +8669,6 @@ mod tests {
         let result = mat(builtin_collect(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9092,7 +8689,6 @@ mod tests {
         let result = builtin_collect(BuiltinArgs {
             args: &[thunk(Value::Int(123))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9115,7 +8711,6 @@ mod tests {
         let result = builtin_collect(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });
@@ -9132,7 +8727,6 @@ mod tests {
         let range_result = builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -9141,7 +8735,6 @@ mod tests {
         let take_result = builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(200)), range_result],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -9150,7 +8743,6 @@ mod tests {
         let collect_result = builtin_collect(BuiltinArgs {
             args: &[take_result],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });
@@ -9159,7 +8751,7 @@ mod tests {
             collect_result.is_ok(),
             "collect should succeed for 200 elements"
         );
-        match crate::eval::materialize(&collect_result.unwrap(), None, &ctx, 0).unwrap() {
+        match crate::eval::materialize(&collect_result.unwrap(), None, &ctx).unwrap() {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 200);
                 // Spot-check first and last elements
@@ -9193,7 +8785,6 @@ mod tests {
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 })
@@ -9205,7 +8796,6 @@ mod tests {
                 let collect_result = builtin_collect(BuiltinArgs {
                     args: &[range_result],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 });
@@ -9239,7 +8829,6 @@ mod tests {
         let result = mat(builtin_seq_check(BuiltinArgs {
             args: &[seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9251,7 +8840,6 @@ mod tests {
         let result = mat(builtin_seq_check(BuiltinArgs {
             args: &[thunk(string_val("not a seq".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -9263,7 +8851,6 @@ mod tests {
         let result = mat(builtin_seq_check(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -9279,7 +8866,6 @@ mod tests {
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9305,7 +8891,6 @@ mod tests {
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -9321,7 +8906,6 @@ mod tests {
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(10)), thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -9338,7 +8922,6 @@ mod tests {
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9363,7 +8946,6 @@ mod tests {
         let result = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9394,7 +8976,6 @@ mod tests {
         let result = builtin_range(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9410,7 +8991,6 @@ mod tests {
                 thunk(Value::Int(10)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9422,7 +9002,6 @@ mod tests {
         let result = builtin_range(BuiltinArgs {
             args: &[thunk(string_val("not an int".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9434,7 +9013,6 @@ mod tests {
         let result = builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Float(5.5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9450,7 +9028,6 @@ mod tests {
         let result = mat(builtin_repeat(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9492,7 +9069,6 @@ mod tests {
         let result = builtin_repeat(BuiltinArgs {
             args: &[undef_thunk],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9508,7 +9084,6 @@ mod tests {
         let result = builtin_repeat(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9520,7 +9095,6 @@ mod tests {
         let result = builtin_repeat(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9541,7 +9115,6 @@ mod tests {
         let result = mat(builtin_cycle(BuiltinArgs {
             args: &[dict_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9583,7 +9156,6 @@ mod tests {
         let result = builtin_cycle(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9596,7 +9168,6 @@ mod tests {
         let result = builtin_cycle(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9608,7 +9179,6 @@ mod tests {
         let result = builtin_cycle(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9631,7 +9201,6 @@ mod tests {
         let result = mat(builtin_iterate(BuiltinArgs {
             args: &[f_thunk, x_thunk.clone()],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9647,7 +9216,7 @@ mod tests {
                         // Trying to materialize h2 (which is PendingCall(Int(999), [Int(0)]))
                         // will error because Int(999) is not a function
                         let h2_thunk = ctx.get_thunk(h2);
-                        let h2_result = crate::eval::materialize(&h2_thunk, None, &ctx, 0);
+                        let h2_result = crate::eval::materialize(&h2_thunk, None, &ctx);
                         assert!(h2_result.is_err());
                     }
                     other => panic!("expected Seq for tail, got {:?}", other),
@@ -9681,7 +9250,6 @@ mod tests {
         let result = builtin_iterate(BuiltinArgs {
             args: &[undef_f, undef_x],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9697,7 +9265,6 @@ mod tests {
         let result = builtin_iterate(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9717,7 +9284,6 @@ mod tests {
         let result = builtin_unfold(BuiltinArgs {
             args: &[step_thunk, seed_thunk],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9725,7 +9291,7 @@ mod tests {
         // Result is a PendingBuiltin, not yet materialized
         // Materializing it would call unfold_step, which would error because
         // step is Int(999), not a function
-        let result_val = materialize(&result.unwrap(), None, &test_ctx(), 0);
+        let result_val = materialize(&result.unwrap(), None, &test_ctx());
         assert!(result_val.is_err());
     }
 
@@ -9734,7 +9300,6 @@ mod tests {
         let result = builtin_unfold(BuiltinArgs {
             args: &[thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9756,7 +9321,6 @@ mod tests {
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(2)), dict_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9787,7 +9351,6 @@ mod tests {
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(0)), dict_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9808,7 +9371,6 @@ mod tests {
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(-5)), dict_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9830,7 +9392,6 @@ mod tests {
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(10)), dict_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9854,7 +9415,6 @@ mod tests {
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(2)), seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9888,7 +9448,6 @@ mod tests {
         let result = mat(builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(0)), seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -9903,7 +9462,6 @@ mod tests {
         let result = builtin_take(BuiltinArgs {
             args: &[thunk(string_val("not int".into())), thunk(Value::Int(1))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9918,7 +9476,6 @@ mod tests {
                 thunk(string_val("not dict or seq".into())),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9930,7 +9487,6 @@ mod tests {
         let result = builtin_take(BuiltinArgs {
             args: &[thunk(Value::Int(5))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         });
@@ -9953,14 +9509,13 @@ mod tests {
         let result = builtin_concat(BuiltinArgs {
             args: &[xs, ys],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
         // Materialize the result to verify structure
-        let result_val = crate::eval::materialize(&result, None, &ctx, 0).unwrap();
+        let result_val = crate::eval::materialize(&result, None, &ctx).unwrap();
         match result_val {
             Value::Seq { head: h1, tail: t1 } => {
                 assert_eq!(mat_id(h1, &ctx), Value::Int(1));
@@ -10005,14 +9560,13 @@ mod tests {
         let result = builtin_concat(BuiltinArgs {
             args: &[xs, ys.clone()],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
         // Result should be ys — verify by materializing and checking value
-        let result_val = crate::eval::materialize(&result, None, &ctx, 0).unwrap();
+        let result_val = crate::eval::materialize(&result, None, &ctx).unwrap();
         match result_val {
             Value::Seq { head, .. } => {
                 assert_eq!(mat_id(head, &ctx), Value::Int(1));
@@ -10031,14 +9585,13 @@ mod tests {
         let result = builtin_concat(BuiltinArgs {
             args: &[xs, ys],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
         .unwrap();
 
         // Materialize to verify: Seq(1, {})
-        let result_val = crate::eval::materialize(&result, None, &ctx, 0).unwrap();
+        let result_val = crate::eval::materialize(&result, None, &ctx).unwrap();
         match result_val {
             Value::Seq { head, tail } => {
                 assert_eq!(mat_id(head, &ctx), Value::Int(1));
@@ -10069,7 +9622,6 @@ mod tests {
         let result = mat(builtin_concat(BuiltinArgs {
             args: &[xs, ys],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -10109,7 +9661,6 @@ mod tests {
         let err = builtin_concat(BuiltinArgs {
             args: &[xs, ys],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -10144,7 +9695,6 @@ mod tests {
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 })
@@ -10156,7 +9706,6 @@ mod tests {
                 let join_result = builtin_join(BuiltinArgs {
                     args: &[thunk(string_val(",")), range_result],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 });
@@ -10190,7 +9739,6 @@ mod tests {
         let result = mat(builtin_join(BuiltinArgs {
             args: &[thunk(string_val(",")), thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -10213,7 +9761,6 @@ mod tests {
         let result = mat(builtin_concat(BuiltinArgs {
             args: &[thunk_dict(dict1, &ctx), thunk_dict(dict2, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -10249,7 +9796,7 @@ mod tests {
         // The predicate is implemented as a Rust builtin (not an LLT function) to avoid
         // needing a closure env with stdlib builtins.
         fn pred_eq_299(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            let val = crate::eval::materialize(&ctx.args[0], None, &ctx.ctx, ctx.depth)?;
+            let val = crate::eval::materialize(&ctx.args[0], None, &ctx.ctx)?;
             ok_val(Value::Bool(matches!(val, Value::Int(299))), Span::origin())
         }
 
@@ -10260,7 +9807,6 @@ mod tests {
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0)), thunk(Value::Int(300))],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 })
@@ -10275,7 +9821,6 @@ mod tests {
                 let filter_result = builtin_filter(BuiltinArgs {
                     args: &[pred, range_result],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 })
@@ -10285,12 +9830,12 @@ mod tests {
                 // exceeded after ~128 consecutive failures. After the fix the internal
                 // loop handles all 299 failures at constant depth.
                 let ctx_inner = test_ctx();
-                let val = crate::eval::materialize(&filter_result, None, &ctx_inner, 0).unwrap();
+                let val = crate::eval::materialize(&filter_result, None, &ctx_inner).unwrap();
                 match val {
                     Value::Seq { head, .. } => {
                         let head_thunk = ctx_inner.get_thunk(head);
                         let head_val =
-                            crate::eval::materialize(&head_thunk, None, &ctx_inner, 0).unwrap();
+                            crate::eval::materialize(&head_thunk, None, &ctx_inner).unwrap();
                         assert_eq!(
                             head_val,
                             Value::Int(299),
@@ -10352,7 +9897,7 @@ mod tests {
                 let filter_result = builtin_filter(BuiltinArgs {
                     args: &[pred, dict_thunk],
                     named: no_named(),
-                    depth: 200,
+
                     call_span: call_span(),
                     ctx: Rc::clone(&ctx_inner),
                 })
@@ -10362,13 +9907,13 @@ mod tests {
                 let collect_result = builtin_collect(BuiltinArgs {
                     args: &[filter_result],
                     named: no_named(),
-                    depth: 200,
+
                     call_span: call_span(),
                     ctx: Rc::clone(&ctx_inner),
                 })
                 .unwrap();
 
-                let val = crate::eval::materialize(&collect_result, None, &ctx_inner, 200).unwrap();
+                let val = crate::eval::materialize(&collect_result, None, &ctx_inner).unwrap();
                 match val {
                     Value::Dict(ref map) => {
                         assert_eq!(
@@ -10400,7 +9945,6 @@ mod tests {
         let err = builtin_concat(BuiltinArgs {
             args: &[xs, ys],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -10437,7 +9981,6 @@ mod tests {
         let result = builtin_concat(BuiltinArgs {
             args: &[xs, ys],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });
@@ -10474,7 +10017,6 @@ mod tests {
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 })
@@ -10485,7 +10027,6 @@ mod tests {
                 let take_result = builtin_take(BuiltinArgs {
                     args: &[thunk(Value::Int(260)), range_result],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 })
@@ -10495,7 +10036,6 @@ mod tests {
                 let collect_result = builtin_collect(BuiltinArgs {
                     args: &[take_result],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 });
@@ -10525,7 +10065,6 @@ mod tests {
         let result = builtin_proxy(BuiltinArgs {
             args: &[handler.clone()],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         })
@@ -10548,7 +10087,6 @@ mod tests {
         let err = builtin_proxy(BuiltinArgs {
             args: &[],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -10563,7 +10101,6 @@ mod tests {
         let err = builtin_proxy(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -10582,7 +10119,6 @@ mod tests {
                 thunk(Value::Int(3)),
             ],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -10602,7 +10138,6 @@ mod tests {
         let err = builtin_proxy(BuiltinArgs {
             args: &[],
             named: Some(&named),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         })
@@ -10630,14 +10165,13 @@ mod tests {
             builtin!("drop", builtin_drop_seq_step),
             vec![n_remaining, seq],
             None,
-            0,
             call_span(),
             Some(Rc::from("test drop_seq_step")),
             Rc::clone(&ctx),
         ));
 
         // Materialize it and expect an error
-        let result = crate::eval::materialize(&pending_thunk, None, &ctx, 0);
+        let result = crate::eval::materialize(&pending_thunk, None, &ctx);
         let err = result.unwrap_err();
 
         // Verify it's a TypeMismatch error with the expected message
@@ -10728,7 +10262,6 @@ mod tests {
         let seq = mat(builtin_range(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(10))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -10736,7 +10269,6 @@ mod tests {
         let result = mat(builtin_drop(BuiltinArgs {
             args: &[thunk(Value::Int(2)), thunk(seq)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -10769,7 +10301,6 @@ mod tests {
         let result = mat(builtin_reduce(BuiltinArgs {
             args: &[thunk(add_builtin), thunk(Value::Int(0)), seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -10790,7 +10321,6 @@ mod tests {
         let result = mat(builtin_join(BuiltinArgs {
             args: &[thunk(string_val(",".into())), seq_val],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -10867,7 +10397,6 @@ mod tests {
                 let result = mat(builtin_until(BuiltinArgs {
                     args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 }));
@@ -10908,7 +10437,6 @@ mod tests {
                 let result = mat(builtin_until(BuiltinArgs {
                     args: &[thunk(pred), thunk(f), thunk(Value::Int(42))],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 }));
@@ -10967,7 +10495,6 @@ mod tests {
                 let result = mat(builtin_until(BuiltinArgs {
                     args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
                     named: no_named(),
-                    depth: 0,
                     call_span: call_span(),
                     ctx: test_ctx(),
                 }));
@@ -11001,7 +10528,7 @@ mod tests {
         ctx: &Rc<crate::eval::EvalContext>,
     ) -> i64 {
         let thunk = ctx.get_thunk(*map.get(&Key::Int(idx)).unwrap());
-        match crate::eval::materialize(&thunk, None, ctx, 0).unwrap() {
+        match crate::eval::materialize(&thunk, None, ctx).unwrap() {
             Value::Int(n) => n,
             other => panic!("expected Int at index {idx}, got {:?}", other),
         }
@@ -11013,7 +10540,6 @@ mod tests {
         let result = mat(builtin_rest(BuiltinArgs {
             args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11032,7 +10558,6 @@ mod tests {
         let result = mat(builtin_rest(BuiltinArgs {
             args: &[thunk(make_int_dict(&[42], &ctx))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11047,7 +10572,6 @@ mod tests {
         let result = mat(builtin_rest(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -11063,7 +10587,6 @@ mod tests {
         let result = mat(builtin_cons(BuiltinArgs {
             args: &[thunk(Value::Int(0)), thunk(make_int_dict(&[1, 2, 3], &ctx))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11083,7 +10606,6 @@ mod tests {
         let result = mat(builtin_cons(BuiltinArgs {
             args: &[thunk(Value::Int(99)), thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11101,7 +10623,6 @@ mod tests {
         let result = mat(builtin_reverse(BuiltinArgs {
             args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11120,7 +10641,6 @@ mod tests {
         let result = mat(builtin_reverse(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -11136,7 +10656,6 @@ mod tests {
         let result = mat(builtin_sort(BuiltinArgs {
             args: &[thunk(make_int_dict(&[3, 1, 4, 1, 5], &ctx))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11161,7 +10680,6 @@ mod tests {
         let result = mat(builtin_sort(BuiltinArgs {
             args: &[thunk_dict(map, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11178,7 +10696,6 @@ mod tests {
         let result = mat(builtin_sort(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -11195,7 +10712,6 @@ mod tests {
         let result = mat(builtin_each(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -11216,7 +10732,6 @@ mod tests {
         let result = mat(builtin_each(BuiltinArgs {
             args: &[thunk_dict(map, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11227,7 +10742,7 @@ mod tests {
                 assert_eq!(head_val, Value::Int(10));
                 // Verify tail is also a Seq (not fully unwinding it here)
                 let tail_thunk = ctx.get_thunk(tail);
-                let tail_val = crate::eval::materialize(&tail_thunk, None, &ctx, 0).unwrap();
+                let tail_val = crate::eval::materialize(&tail_thunk, None, &ctx).unwrap();
                 assert!(matches!(tail_val, Value::Seq { .. }));
             }
             other => panic!("expected Seq, got {:?}", other),
@@ -11240,7 +10755,6 @@ mod tests {
         let result = builtin_each(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         });
@@ -11259,7 +10773,6 @@ mod tests {
         let result = builtin_each(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         });
@@ -11278,7 +10791,6 @@ mod tests {
         let result = builtin_each(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         });
@@ -11296,7 +10808,6 @@ mod tests {
         let result = mat(builtin_each_key(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -11312,7 +10823,6 @@ mod tests {
         let result = builtin_each_key(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         });
@@ -11330,7 +10840,6 @@ mod tests {
         let result = mat(builtin_each_kv(BuiltinArgs {
             args: &[thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: test_ctx(),
         }));
@@ -11346,7 +10855,6 @@ mod tests {
         let result = builtin_each_kv(BuiltinArgs {
             args: &[thunk(Value::Bool(false))],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx,
         });
@@ -11369,7 +10877,6 @@ mod tests {
         let result = mat(builtin_get(BuiltinArgs {
             args: &[thunk(Value::Int(1)), thunk_dict(map, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         }));
@@ -11385,7 +10892,6 @@ mod tests {
         let result = builtin_get(BuiltinArgs {
             args: &[thunk(string_val("z".into())), thunk_dict(map, &ctx)],
             named: no_named(),
-            depth: 0,
             call_span: call_span(),
             ctx: Rc::clone(&ctx),
         });

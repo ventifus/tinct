@@ -27,7 +27,6 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -41,7 +40,7 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
-    let start = materialize(&args[0], None, &ctx, depth)?;
+    let start = materialize(&args[0], None, &ctx)?;
     let start_int = match start {
         Value::Int(n) => n,
         other => {
@@ -66,7 +65,6 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             builtin!("range", builtin_range),
             tail_args,
             None,
-            depth + 1,
             call_span,
             Some(Rc::from("call $range")),
             Rc::clone(&ctx),
@@ -82,7 +80,7 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
     } else {
         // Finite range: [start, start+1, ..., end-1]
-        let end = materialize(&args[1], None, &ctx, depth)?;
+        let end = materialize(&args[1], None, &ctx)?;
         let end_int = match end {
             Value::Int(n) => n,
             other => {
@@ -112,7 +110,6 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("range", builtin_range),
                 tail_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $range")),
                 Rc::clone(&ctx),
@@ -139,7 +136,6 @@ pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
         ..
@@ -155,7 +151,6 @@ pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         builtin!("repeat", builtin_repeat),
         tail_args,
         None,
-        depth + 1,
         call_span,
         Some(Rc::from("call $repeat")),
         Rc::clone(&ctx),
@@ -177,7 +172,6 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -186,7 +180,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let dict = materialize(&args[0], None, &ctx, depth)?;
+    let dict = materialize(&args[0], None, &ctx)?;
     let map = match &dict {
         Value::Dict(m) => m,
         other => {
@@ -200,7 +194,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         }
     };
 
-    let idx = materialize(&args[1], None, &ctx, depth)?;
+    let idx = materialize(&args[1], None, &ctx)?;
     let idx_int = match idx {
         Value::Int(i) => i,
         other => {
@@ -237,7 +231,6 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         builtin!("cycle", builtin_cycle_step),
         tail_args,
         None,
-        depth + 1,
         call_span,
         Some(Rc::from("call $cycle")),
         Rc::clone(&ctx),
@@ -262,7 +255,6 @@ pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -271,7 +263,7 @@ pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
 
-    let val = materialize(&args[0], None, &ctx, depth)?;
+    let val = materialize(&args[0], None, &ctx)?;
     match val {
         Value::Dict(ref map) => {
             if map.is_empty() {
@@ -281,7 +273,6 @@ pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             builtin_cycle_step(BuiltinArgs {
                 args: &[Rc::clone(&args[0]), ok_val(Value::Int(0), call_span)?],
                 named: None,
-                depth,
                 call_span,
                 ctx: Rc::clone(&ctx),
             })
@@ -306,7 +297,6 @@ pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -340,7 +330,6 @@ pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         builtin!("iterate", builtin_iterate),
         tail_args,
         None,
-        depth + 1,
         call_span,
         Some(Rc::from("call $iterate")),
         Rc::clone(&ctx),
@@ -364,7 +353,6 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -387,7 +375,7 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         Some(Rc::from("unfold")),
         Rc::clone(&ctx),
     ));
-    let step_result = materialize(&step_result_thunk, None, &ctx, depth)?;
+    let step_result = materialize(&step_result_thunk, None, &ctx)?;
 
     match step_result {
         Value::Dict(ref map) if map.is_empty() => {
@@ -410,7 +398,6 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
                 builtin!("unfold", builtin_unfold_step),
                 tail_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $unfold")),
                 Rc::clone(&ctx),
@@ -455,7 +442,6 @@ pub(crate) fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -470,7 +456,6 @@ pub(crate) fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         builtin!("unfold", builtin_unfold_step),
         tail_args,
         None,
-        depth,
         call_span,
         Some(Rc::from("call $unfold")),
         Rc::clone(&ctx),

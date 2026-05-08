@@ -29,7 +29,7 @@ pub fn builtin_parse_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let s_val = materialize(s_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let s_val = materialize(s_thunk, Some(&args.call_span), &args.ctx)?;
     let s = s_val
         .as_str()
         .ok_or_else(|| dt_err("parse-timestamp requires a String", args.call_span))?;
@@ -56,7 +56,7 @@ pub fn builtin_format_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -89,7 +89,7 @@ pub fn builtin_timestamp_to_unix(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -117,7 +117,7 @@ pub fn builtin_unix_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx)?;
     let seconds = match &n_val {
         Value::Int(n) => *n,
         _ => return Err(dt_err("unix->timestamp requires an Int", args.call_span)),
@@ -139,7 +139,7 @@ pub fn builtin_now(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("now requires 1 argument", args.call_span));
     };
 
-    let cap_val = materialize(cap_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let cap_val = materialize(cap_thunk, Some(&args.call_span), &args.ctx)?;
     let clock_cap = match &cap_val {
         Value::ClockCap(inner) => inner,
         _ => return Err(dt_err("now requires a ClockCap", args.call_span)),
@@ -166,7 +166,7 @@ pub fn builtin_fixed_clock(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("fixed-clock requires 1 argument", args.call_span));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => return Err(dt_err("fixed-clock requires a Timestamp", args.call_span)),
@@ -184,8 +184,8 @@ pub fn builtin_timestamp_add(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("timestamp-add requires 2 arguments", args.call_span));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
-    let d_val = materialize(d_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
+    let d_val = materialize(d_thunk, Some(&args.call_span), &args.ctx)?;
 
     let t_nanos = match &t_val {
         Value::Timestamp(n) => *n,
@@ -226,8 +226,8 @@ pub fn builtin_timestamp_diff(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
-    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx)?;
+    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx)?;
 
     let t1_nanos = match &t1_val {
         Value::Timestamp(n) => *n,
@@ -265,8 +265,8 @@ pub fn builtin_timestamp_lt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("timestamp<? requires 2 arguments", args.call_span));
     };
 
-    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
-    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx)?;
+    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx)?;
 
     let t1_nanos = match &t1_val {
         Value::Timestamp(n) => *n,
@@ -300,8 +300,8 @@ pub fn builtin_timestamp_gt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("timestamp>? requires 2 arguments", args.call_span));
     };
 
-    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
-    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx)?;
+    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx)?;
 
     let t1_nanos = match &t1_val {
         Value::Timestamp(n) => *n,
@@ -335,8 +335,8 @@ pub fn builtin_timestamp_eq(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("timestamp=? requires 2 arguments", args.call_span));
     };
 
-    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
-    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx)?;
+    let t2_val = materialize(t2_thunk, Some(&args.call_span), &args.ctx)?;
 
     let t1_nanos = match &t1_val {
         Value::Timestamp(n) => *n,
@@ -370,7 +370,7 @@ pub fn builtin_timestamp_year(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("timestamp-year requires 1 argument", args.call_span));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -402,7 +402,7 @@ pub fn builtin_timestamp_month(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -431,7 +431,7 @@ pub fn builtin_timestamp_day(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("timestamp-day requires 1 argument", args.call_span));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => return Err(dt_err("timestamp-day requires a Timestamp", args.call_span)),
@@ -455,7 +455,7 @@ pub fn builtin_timestamp_hour(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("timestamp-hour requires 1 argument", args.call_span));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -487,7 +487,7 @@ pub fn builtin_timestamp_minute(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -519,7 +519,7 @@ pub fn builtin_timestamp_second(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -551,7 +551,7 @@ pub fn builtin_timestamp_parts(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
         _ => {
@@ -623,7 +623,7 @@ pub fn builtin_duration_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("duration-nanos requires 1 argument", args.call_span));
     };
 
-    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &n_val {
         Value::Int(n) => *n,
         _ => return Err(dt_err("duration-nanos requires an Int", args.call_span)),
@@ -644,7 +644,7 @@ pub fn builtin_duration_seconds(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx)?;
     let seconds = match &n_val {
         Value::Int(n) => *n,
         _ => return Err(dt_err("duration-seconds requires an Int", args.call_span)),
@@ -669,7 +669,7 @@ pub fn builtin_duration_minutes(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx)?;
     let minutes = match &n_val {
         Value::Int(n) => *n,
         _ => return Err(dt_err("duration-minutes requires an Int", args.call_span)),
@@ -692,7 +692,7 @@ pub fn builtin_duration_hours(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("duration-hours requires 1 argument", args.call_span));
     };
 
-    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx)?;
     let hours = match &n_val {
         Value::Int(n) => *n,
         _ => return Err(dt_err("duration-hours requires an Int", args.call_span)),
@@ -715,7 +715,7 @@ pub fn builtin_duration_days(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("duration-days requires 1 argument", args.call_span));
     };
 
-    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx)?;
     let days = match &n_val {
         Value::Int(n) => *n,
         _ => return Err(dt_err("duration-days requires an Int", args.call_span)),
@@ -741,7 +741,7 @@ pub fn builtin_duration_to_seconds(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let d_val = materialize(d_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let d_val = materialize(d_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &d_val {
         Value::Duration(n) => *n,
         _ => {
@@ -769,7 +769,7 @@ pub fn builtin_duration_to_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let d_val = materialize(d_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let d_val = materialize(d_thunk, Some(&args.call_span), &args.ctx)?;
     let nanos = match &d_val {
         Value::Duration(n) => *n,
         _ => {
@@ -792,8 +792,8 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(dt_err("load-tz requires 2 arguments", args.call_span));
     };
 
-    let dir_val = materialize(dir_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
-    let name_val = materialize(name_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let dir_val = materialize(dir_thunk, Some(&args.call_span), &args.ctx)?;
+    let name_val = materialize(name_thunk, Some(&args.call_span), &args.ctx)?;
 
     let dir = match &dir_val {
         Value::DirCap(d) => d,
@@ -851,8 +851,8 @@ pub fn builtin_timestamp_in_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
-    let tz_val = materialize(tz_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx)?;
+    let tz_val = materialize(tz_thunk, Some(&args.call_span), &args.ctx)?;
 
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
@@ -952,13 +952,13 @@ pub fn builtin_local_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     }
 
-    let year_val = materialize(&args.args[0], Some(&args.call_span), &args.ctx, args.depth)?;
-    let month_val = materialize(&args.args[1], Some(&args.call_span), &args.ctx, args.depth)?;
-    let day_val = materialize(&args.args[2], Some(&args.call_span), &args.ctx, args.depth)?;
-    let hour_val = materialize(&args.args[3], Some(&args.call_span), &args.ctx, args.depth)?;
-    let minute_val = materialize(&args.args[4], Some(&args.call_span), &args.ctx, args.depth)?;
-    let second_val = materialize(&args.args[5], Some(&args.call_span), &args.ctx, args.depth)?;
-    let tz_val = materialize(&args.args[6], Some(&args.call_span), &args.ctx, args.depth)?;
+    let year_val = materialize(&args.args[0], Some(&args.call_span), &args.ctx)?;
+    let month_val = materialize(&args.args[1], Some(&args.call_span), &args.ctx)?;
+    let day_val = materialize(&args.args[2], Some(&args.call_span), &args.ctx)?;
+    let hour_val = materialize(&args.args[3], Some(&args.call_span), &args.ctx)?;
+    let minute_val = materialize(&args.args[4], Some(&args.call_span), &args.ctx)?;
+    let second_val = materialize(&args.args[5], Some(&args.call_span), &args.ctx)?;
+    let tz_val = materialize(&args.args[6], Some(&args.call_span), &args.ctx)?;
 
     let year = match &year_val {
         Value::Int(n) => *n as i16,
@@ -1033,7 +1033,7 @@ pub fn builtin_local_tz_name(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ));
     };
 
-    let dir_val = materialize(dir_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
+    let dir_val = materialize(dir_thunk, Some(&args.call_span), &args.ctx)?;
     let _dir = match &dir_val {
         Value::DirCap(d) => d,
         _ => return Err(dt_err("local-tz-name requires DirCap", args.call_span)),

@@ -21,7 +21,6 @@ pub(crate) fn eval_dict(
     parent_env: &Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
     dict_span: &Span,
-    depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     let dict_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         parent_env,
@@ -35,7 +34,7 @@ pub(crate) fn eval_dict(
             // expressions must not see sibling bindings. This prevents keys from
             // depending on values that are still unevaluated thunks and keeps
             // key evaluation deterministic regardless of entry order.
-            Some(key_expr) => eval_key(key_expr, parent_env, ctx, depth)?,
+            Some(key_expr) => eval_key(key_expr, parent_env, ctx)?,
             None => {
                 let k = Key::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
@@ -112,7 +111,6 @@ pub(crate) fn eval_key(
     key_expr: &Spanned<Expr>,
     parent_env: &Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
-    depth: usize,
 ) -> EvalResult<Key> {
     // Fast path for literal keys (avoids creating temporary thunks)
     match &key_expr.node {
@@ -121,13 +119,8 @@ pub(crate) fn eval_key(
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete Key values
-    let thunk = eval(
-        Rc::new(key_expr.clone()),
-        Rc::clone(parent_env),
-        ctx,
-        depth + 1,
-    )?;
-    let value = materialize(&thunk, Some(&key_expr.span), ctx, depth + 1)?;
+    let thunk = eval(Rc::new(key_expr.clone()), Rc::clone(parent_env), ctx)?;
+    let value = materialize(&thunk, Some(&key_expr.span), ctx)?;
     value_to_key(&value, &key_expr.span)
 }
 
