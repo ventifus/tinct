@@ -262,6 +262,10 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
 - **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
+- **Extended strings** (`starts-with?`, `ends-with?` as Rust builtins; `pad-left`, `pad-right`, `str-find`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching and padding; auto-loaded at startup
+- **Extended math** (`pow`, `sqrt`, `log`, `sin`, `cos`, `tan`, etc. as Rust builtins; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` in `stdlib/math.llt`) — trigonometric and exponential functions; constants auto-loaded at startup
+- **Encoding** (`band`, `bor`, `bxor`, `shl`, `shr`, `char-code`, `chr` as Rust builtins; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives and binary encoding; auto-loaded at startup
+- **I/O** (`write`, `flush`, `close` as Rust builtins; `write-line` in `stdlib/io.llt`) — WriteHandle streaming output
 
 These additions bring Tinct's stdlib coverage closer to mature configuration languages while maintaining the LLT-first principle; predicate builtins are Rust-native, `list?` is LLT-implemented on top of them.
 

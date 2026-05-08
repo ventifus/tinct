@@ -534,9 +534,10 @@ fn parse_net_cap_entry(s: &str, span: Span) -> EvalResult<crate::value::NetCapEn
     }
 }
 
-/// `connect`: Open a TCP connection within a NetCap.
-/// Takes a NetCap, hostname String, and port Int.
-/// Returns Value::Handle wrapping a BufReader<TcpStream>.
+/// `connect`: Open a TCP or UDP connection within a NetCap.
+/// Takes a NetCap, hostname String, port Int, and optional Transport variant (default: Tcp).
+/// - `Tcp` (default) → Handle[Binary Readable Writable Stream]
+/// - `Udp` → error "UDP not yet supported, use Tcp" (reserved for Phase 2)
 pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -546,15 +547,63 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
 
-    // Expect 3 args: NetCap, String host, Int port
-    if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    // Expect 3 or 4 args: NetCap, String host, Int port, [Transport variant]
+    if args.len() < 3 || args.len() > 4 {
+        return Err(EvalError::user_error(
+            format!(
+                "connect: expected 3 or 4 arguments (cap host port [transport]), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
     }
     reject_named("connect", named, call_span)?;
 
     let cap_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
     let host_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
     let port_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract optional Transport variant (4th arg); default to Tcp
+    let transport_tag = if args.len() == 4 {
+        let transport_val = materialize(&args[3], Some(&call_span), &ctx, depth)?;
+        match transport_val {
+            Value::Variant { tag, .. } => tag,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "connect".to_string(),
+                    "Transport variant (Tcp or Udp)",
+                    other.type_name(),
+                    args[3].span,
+                )
+                .into())
+            }
+        }
+    } else {
+        "Tcp".to_string()
+    };
+
+    // Validate transport and reject UDP (reserved for Phase 2)
+    match transport_tag.as_str() {
+        "Tcp" => {} // proceed below
+        "Udp" => {
+            return Err(EvalError::user_error(
+                "connect: UDP not yet supported, use Tcp".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        other => {
+            return Err(EvalError::user_error(
+                format!(
+                    "connect: unknown transport '{}' (expected Tcp or Udp)",
+                    other
+                ),
+                call_span,
+            )
+            .into());
+        }
+    }
 
     // Extract NetCap
     let entries = match cap_val {
@@ -609,7 +658,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Box::new(buf_reader) as Box<dyn std::io::BufRead>
     ));
 
-    // Default caps for TCP connection
+    // Caps for TCP connection: Binary Readable Writable Stream
     let mut caps = HashMap::new();
     caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
     caps.insert("Writable".to_string(), Value::Dict(IndexMap::new())); // Null
