@@ -328,9 +328,10 @@ pub(crate) use crate::builtins_dict::{
 // Implementations live in builtins_io.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
-    builtin_connect, builtin_dir_cap, builtin_emit, builtin_env, builtin_lines, builtin_narrow,
-    builtin_net_cap, builtin_open, builtin_revocable, builtin_revoke_cap, builtin_slurp,
-    builtin_write, builtin_write_atomic,
+    builtin_cap_data, builtin_close, builtin_connect, builtin_dir_cap, builtin_emit, builtin_env,
+    builtin_flush, builtin_has_cap, builtin_lines, builtin_narrow, builtin_net_cap, builtin_open,
+    builtin_revocable, builtin_revoke_cap, builtin_slurp, builtin_write, builtin_write_atomic,
+    builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
@@ -975,6 +976,23 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_write_atomic,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
+        builtin!(
+            "cap-data",
+            builtin_cap_data,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "has-cap?",
+            builtin_has_cap,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "write-handle",
+            builtin_write_handle,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("flush", builtin_flush, [Strictness::Seq]),
+        builtin!("close", builtin_close, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
         // Sequences
@@ -6000,6 +6018,11 @@ mod tests {
         assert!(names.contains(&"lines"), "missing lines");
         assert!(names.contains(&"write"), "missing write");
         assert!(names.contains(&"write-atomic"), "missing write-atomic");
+        assert!(names.contains(&"cap-data"), "missing cap-data");
+        assert!(names.contains(&"has-cap?"), "missing has-cap?");
+        assert!(names.contains(&"write-handle"), "missing write-handle");
+        assert!(names.contains(&"flush"), "missing flush");
+        assert!(names.contains(&"close"), "missing close");
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
         // Sequences
@@ -6080,8 +6103,8 @@ mod tests {
         assert!(names.contains(&"bytes?"), "missing bytes?");
         assert_eq!(
             names.len(),
-            120,
-            "expected 120 builtins, got {}",
+            125,
+            "expected 125 builtins, got {}",
             names.len()
         );
     }

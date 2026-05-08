@@ -346,10 +346,16 @@ pub fn visit_value<V: ValueVisitor>(
             "NetCap".to_string(),
             ast::Span::origin(),
         ))),
-        value::Value::Handle(_) => Err(Box::new(error::EvalError::value_not_serializable(
+        value::Value::Handle { .. } => Err(Box::new(error::EvalError::value_not_serializable(
             "Handle".to_string(),
             ast::Span::origin(),
         ))),
+        value::Value::WriteHandle { .. } => {
+            Err(Box::new(error::EvalError::value_not_serializable(
+                "WriteHandle".to_string(),
+                ast::Span::origin(),
+            )))
+        }
         value::Value::RevocableDirCap { .. } => Err(Box::new(
             error::EvalError::value_not_serializable("DirCap".to_string(), ast::Span::origin()),
         )),
