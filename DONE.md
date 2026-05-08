@@ -4482,3 +4482,38 @@ Seed the type checker with a fully-resolved import environment (prelude + user `
 - [x] Dual-dispatch: length, first, last, contains? work on strings
 - [x] New builtins: str-slice, str-contains?
 - [x] 1930 tests pass
+
+## Testing & Quality
+
+### `corpus-cleanup`: Corpus Test Cleanup
+
+Audit findings from 2026-05-07. One category of test failures (macro `=== warn` stale expectations) and two categories of dead annotation (valid/ warn sections, errors/ missing `=== error`).
+
+**Failures (test_eval_corpus FAILED — 7 tests):**
+
+The macro expansion pass now runs before typechecking (`typecheck_source` calls `expand::expand_macros` first). DefMacro nodes are fully expanded before the typechecker sees them, so the "defmacro should be removed by expansion pass before typechecking" warnings and the "undefined variable: <macro-name>" warnings are no longer produced. The `=== warn` sections in these 7 files are stale expectations from before the pipeline fix.
+
+Fix: remove the `=== warn` sections from all 7 files (typecheck now cleanly handles expanded macro code).
+
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_simple.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_unless.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/hygiene_no_capture.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_integration_full.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_with_underscore.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/nested_expansion.llt-eval`
+- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/scope_isolation.llt-eval`
+
+**Unenforced `=== warn` annotations in `tests/corpus/valid/` (29 files):**
+
+`test_valid_corpus` only runs `parse()` / `parse_expression()` — it never calls `typecheck_source`. The `=== warn` sections in valid/ files are currently ignored. Fixed by `corpus-section-consistency` below, which extends the valid/ runner to enforce them.
+
+**`=== error` section — clarification:**
+
+The `strict-mode` sprint wired up `=== error` in `test_eval_corpus()`. The section is now live. `tests/corpus/eval/errors/` files historically use `=== out` for error substrings (established convention predating labeled sections); migration to `=== error` is tracked in `corpus-section-consistency` below.
+
+- [x] Document `=== error` live behavior in `doc/12-tooling.md §Corpus Test Format`; clarify coexistence with `eval/errors/` convention of using `=== out` (`doc/12-tooling.md`)
+
+**Deferred cleanup from strict-mode sprint:**
+
+- [x] Audit unit test helpers in `src/lib.rs` and `src/typecheck.rs` that call `eval` or `typecheck` directly on hand-constructed ASTs; add `expand_macros` calls where needed to preserve the pipeline invariant (`src/lib.rs`, `src/typecheck.rs`)
+- [x] Refactor `run_fmt` to parse once and pass the AST to both the formatter and the type checker when `--strict` is active (`src/main.rs`)
