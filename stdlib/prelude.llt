@@ -209,11 +209,10 @@ abs: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]
 # Example: [sign 3.14] => 1
 # Inherently materializing: derived from comparison and arithmetic.
 sign: [fn@Int [x@Number]
-    [builtin-if [builtin-lt x 0]
-        [builtin-sub 0 1]
-        [builtin-if [builtin-eq x 0]
-            0
-            1]]]
+    [cond [
+        [[builtin-lt x 0] [builtin-sub 0 1]]
+        [[builtin-eq x 0] 0]
+        [true 1]]]]
 
 # Clamp a value between lo and hi bounds (inclusive).
 # Returns lo if x < lo, hi if x > hi, otherwise x.
@@ -253,12 +252,12 @@ words: [fn@Seq [s@String]
 # Evaluates body if pred is true, otherwise returns [].
 # assert: [when true result] => result
 # assert: [when false result] => []
-when: [fn [pred body] [builtin-if pred body []]]
+when: [fn@Any [pred body] [builtin-if pred body []]]
 
 # Evaluates body if pred is false, otherwise returns [].
 # assert: [unless false result] => result
 # assert: [unless true result] => []
-unless: [fn [pred body] [builtin-if pred [] body]]
+unless: [fn@Any [pred body] [builtin-if pred [] body]]
 
 # Multi-branch conditional. Takes a list of [condition result] pairs.
 # Returns [] (empty dict) when no branch matches.
@@ -267,14 +266,14 @@ unless: [fn [pred body] [builtin-if pred [] body]]
 #   [[> x 0]  "positive"]
 #   [true     "other"]
 # ]]
-cond: [fn [pairs@Dict] [cond-impl pairs 0]]
+cond: [fn@Any [pairs@Dict] [cond-impl pairs 0]]
 
-cond-impl: [fn [pairs@Dict i@Int]
+cond-impl: [fn@Any [pairs@Dict i@Int]
     [builtin-if [>= i [length pairs]]
         []
         [cond-check pairs i [get i pairs].0 [get i pairs].1]]]
 
-cond-check: [fn [pairs@Dict i@Int condition result]
+cond-check: [fn@Any [pairs@Dict i@Int condition result]
     [builtin-if condition
         result
         [cond-impl pairs [builtin-add i 1]]]]
@@ -299,7 +298,9 @@ has?: [fn@Bool [xs@Dict k]
     [has?-impl [try [fn [] [get k xs]]]]]
 
 has?-impl: [fn@Bool [try-result@Dict]
-    [builtin-eq [first [keys try-result]] "ok"]]
+    [match try-result
+        [ok: _] true
+        [err: _] false]]
 
 # Get value by key with a default if key is missing.
 # assert: [get-or [x: 1] "x" 99] => 1
@@ -312,7 +313,7 @@ get-or: [fn [xs@Dict k default]
 # Use get-in-or for a default fallback on missing keys.
 # Usage: [get-in data [key1 key2 key3]]
 # Inherently materializing: must traverse nested dict path, accessing each level.
-get-in: [fn [xs path@Dict]
+get-in: [fn@Any [xs path@Dict]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
@@ -323,7 +324,7 @@ get-in: [fn [xs path@Dict]
 # Returns default when any intermediate key is missing.
 # Usage: [get-in-or data [key1 key2 key3] fallback]
 # Inherently materializing: must traverse nested dict path, accessing each level.
-get-in-or: [fn [xs path@Dict default]
+get-in-or: [fn@Any [xs path@Dict default]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
@@ -605,7 +606,7 @@ slice-step: [fn@Dict [xs@Dict ks start@Int end@Int i@Int acc@Dict current-key]
 # Pair entries from two collections by position. Returns a list of pairs.
 # If both xs and ys are Seq: lazy Seq of pairs.
 # Otherwise: collect Seqs to Dicts, then use eager zip-dict-impl.
-zip: [fn [xs ys]
+zip: [fn@Any [xs ys]
     [builtin-if [and [seq? xs] [seq? ys]]
         [zip-seq-impl xs ys]
         [zip-dict-impl
@@ -613,7 +614,7 @@ zip: [fn [xs ys]
             [builtin-if [seq? ys] [collect ys] ys]]]]
 
 # Lazy zip for two Seqs: produces a Seq of pairs until either input terminates.
-zip-seq-impl: [fn [xs ys]
+zip-seq-impl: [fn@Any [xs ys]
     [builtin-if [and [seq? xs] [seq? ys]]
         [seq [[head xs] [head ys]]
             [zip-seq-impl [tail xs] [tail ys]]]
@@ -645,7 +646,7 @@ flatten-impl: [fn@Dict [xs@Dict ks i@Int acc@Dict]
         [flatten-step xs ks i acc [get i ks]]]]
 
 flatten-step: [fn@Dict [xs@Dict ks i@Int acc@Dict current-key]
-    [builtin-if [builtin-eq [type-of [get current-key xs]] "Dict"]
+    [builtin-if [dict? [get current-key xs]]
         [flatten-impl xs ks [builtin-add i 1]
             [concat acc [reindex [get current-key xs]]]]
         [flatten-impl xs ks [builtin-add i 1]
@@ -653,30 +654,30 @@ flatten-step: [fn@Dict [xs@Dict ks i@Int acc@Dict current-key]
 
 # Recursively search for a key in nested dicts.
 # Inherently materializing: must traverse nested structure recursively to search.
-find-deep: [fn [xs@Dict target]
+find-deep: [fn@Any [xs@Dict target]
     [find-deep-impl xs target [keys xs] 0]]
 
-find-deep-impl: [fn [xs@Dict target ks i@Int]
+find-deep-impl: [fn@Any [xs@Dict target ks i@Int]
     [builtin-if [>= i [length ks]]
         [error [str "key not found: " target]]
         [find-deep-check xs target ks i [get i ks]]]]
 
-find-deep-check: [fn [xs@Dict target ks i@Int current-key]
+find-deep-check: [fn@Any [xs@Dict target ks i@Int current-key]
     [builtin-if [builtin-eq current-key target]
         [get current-key xs]
-        [builtin-if [builtin-eq [type-of [get current-key xs]] "Dict"]
+        [builtin-if [dict? [get current-key xs]]
             [find-deep-try [get current-key xs] target xs ks i]
             [find-deep-impl xs target ks [builtin-add i 1]]]]]
 
-find-deep-try: [fn [subtree@Dict target parent@Dict ks i@Int]
+find-deep-try: [fn@Any [subtree@Dict target parent@Dict ks i@Int]
     [find-deep-try-check
         [try [fn [] [find-deep subtree target]]]
         parent target ks i]]
 
-find-deep-try-check: [fn [result@Dict parent@Dict target ks i@Int]
-    [builtin-if [builtin-eq [first [keys result]] "ok"]
-        result.ok
-        [find-deep-impl parent target ks [builtin-add i 1]]]]
+find-deep-try-check: [fn@Any [result@Dict parent@Dict target ks i@Int]
+    [match result
+        [ok: v] v
+        [err: _] [find-deep-impl parent target ks [builtin-add i 1]]]]
 
 # ============================================================================
 # Higher-Order Dict/List Utilities
@@ -754,8 +755,8 @@ deep-merge-step: [fn@Dict [acc@Dict a@Dict b@Dict k]
                 [and
                     [has? a k]
                     [and
-                        [builtin-eq [type-of [get k a]] "Dict"]
-                        [builtin-eq [type-of [get k b]] "Dict"]]]
+                        [dict? [get k a]]
+                        [dict? [get k b]]]]
                 [deep-merge [get k a] [get k b]]
                 [get k b]]]]]
 
@@ -763,8 +764,8 @@ deep-merge-step: [fn@Dict [acc@Dict a@Dict b@Dict k]
 # For dicts: recursively transform all values first, then apply f to the resulting dict.
 # For non-dicts: apply f directly to the value.
 # Inherently materializing: must traverse entire structure.
-walk: [fn [f@Fn xs]
-    [builtin-if [builtin-eq [type-of xs] "Dict"]
+walk: [fn@Any [f@Fn xs]
+    [builtin-if [dict? xs]
         [f [walk-dict f xs]]
         [f xs]]]
 
@@ -903,9 +904,9 @@ try-or: [fn [f@Fn default]
     [try-or-impl [try f] default]]
 
 try-or-impl: [fn [try-result@Dict default]
-    [builtin-if [builtin-eq [first [keys try-result]] "ok"]
-        try-result.ok
-        default]]
+    [match try-result
+        [ok: v] v
+        [err: _] default]]
 
 # ============================================================================
 # Sequences

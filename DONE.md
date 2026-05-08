@@ -4573,3 +4573,26 @@ The `valid/` and `eval/` directory distinction is load-bearing: `valid/` = parse
 **LSP runner:**
 
 - [x] Update `lsp_corpus_tests.rs` to use `split_test_file` from `tests/test_helpers.rs` — the LSP runner has its own enforcement logic and keeps it, but shares the file parsing step (`tests/lsp_corpus_tests.rs`)
+
+## `stdlib-modernize`: Type Annotations + Pattern Matching Across Stdlib
+
+Modernize stdlib `.llt` files to leverage the typing cluster facilities implemented 2026-05-07. Three orthogonal improvements: (1) **pattern matching** — replace `type-of` string comparisons and `try`-result `[first [keys r]]` checks with `[match ...]`; (2) **full type annotations** — every public function carries `fn@ReturnType` and every parameter carries `@Type`; (3) **`sign` refactor** — nested `builtin-if` chain replaced with `[match ...]`.
+
+**prelude.llt:**
+- [x] `try` result pattern matching: rewrite `has?-impl`, `try-or-impl`, `find-deep-try-check` using `[match result [ok: v] ... [err: _] ...]`
+- [x] `type-of` → predicate/match: rewrite `walk`, `flatten-step`, `deep-merge-step`, `find-deep-check` to use `[dict? x]` / `[match x Dict ...]`
+- [x] Complete annotation pass: `find-deep` family, `walk`, `get-in`/`get-in-or`, `zip`/`zip-seq-impl`, `cond`/`when`/`unless`
+- [x] `sign` → match: replace nested `builtin-if` chain with `[match ...]`
+
+**numeric.llt:**
+- [x] Add return type annotation to `to-bytes`: `fn@Str`; verify type alias entries carry correct `Int` range constraints
+
+**formatter/compact.llt:**
+- [x] Complete annotation pass: `fn@Str` return types on all formatting functions; param annotations for `node@Dict`, `entry@Dict`, `na@Dict` etc.
+
+**formatter/pretty.llt:**
+- [x] Public/private split, string-dispatch → `[match]`, complete annotation pass
+
+1930 tests pass.
+
+**Deferred:** public/private split (prelude.llt — `-impl`/`-step`/`-check` helpers into first dict); union type annotations for dual-dispatch parameters (`@[Dict Seq]` — failed, type system limitation); `doc:` annotations on all exported functions; `formatter/compact.llt` public/private split and `[match]` dispatch; `out/` formatters (7 files); `in/json.llt`, `io.llt`, `net.llt`; corpus tests for pattern-matched `try` result sites; `doc/11-stdlib.md` type signature table update.

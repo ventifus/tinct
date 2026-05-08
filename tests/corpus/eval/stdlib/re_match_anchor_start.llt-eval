@@ -1,0 +1,10 @@
+# Test start anchor (not yet implemented - using literal match for now)
+[include "stdlib/regex.llt"]
+
+---
+
+[call %.re-match "hello" "hello world"]
+
+=== out
+
+Bool(true)

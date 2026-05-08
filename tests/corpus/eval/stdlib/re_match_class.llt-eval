@@ -1,0 +1,10 @@
+# Test character class (not yet implemented - using literal match for now)
+[include "stdlib/regex.llt"]
+
+---
+
+[call %.re-match "123" "123"]
+
+=== out
+
+Bool(true)

@@ -25,11 +25,8 @@ indent-size: 2
 # Utilities
 # ============================================================================
 
-# Join strings with a separator
-join-strings: [fn [sep items]
-  [join-strings-impl sep items 0 ""]]
-
-join-strings-impl: [fn [sep items i acc]
+# Join strings with a separator (internal implementation)
+join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
   [if [>= i [length items]]
     acc
     [join-strings-impl
@@ -40,26 +37,31 @@ join-strings-impl: [fn [sep items i acc]
         [if [> i 0] sep ""]
         [get i items]]]]]
 
-# Map a function over a list-shaped dict
-map-list: [fn [f xs]
-  [map-list-impl f xs 0]]
+# Join strings with a separator
+join-strings: [fn@Str [sep@Str items@Dict]
+  [join-strings-impl sep items 0 ""]]
 
-map-list-impl: [fn [f xs i]
+# Map a function over a list-shaped dict (internal implementation)
+map-list-impl: [fn@Dict [f@Fn xs@Dict i@Int]
   [if [>= i [length xs]]
     []
     [merge
       [make-entry i [f [get i xs]]]
       [map-list-impl f xs [+ i 1]]]]]
 
+# Map a function over a list-shaped dict
+map-list: [fn@Dict [f@Fn xs@Dict]
+  [map-list-impl f xs 0]]
+
 # Helper to construct single-entry dict
-make-entry: [fn [k v] [$k: v]]
+make-entry: [fn@Dict [k v] [$k: v]]
 
 # Count entries in a dict node
-entry-count: [fn [node]
+entry-count: [fn@Int [node@Dict]
   [length [get "entries" node]]]
 
 # Check if a field exists and is non-empty
-has?: [fn [dict key]
+has?: [fn@Bool [dict@Dict key@Str]
   [try [fn [] [not [empty? [get key dict]]]] [fn [] false]]]
 
 # ============================================================================
@@ -67,7 +69,7 @@ has?: [fn [dict key]
 # ============================================================================
 
 # Render a node inline (for width measurement)
-render-inline: [fn [node]
+render-inline: [fn@Str [node@Dict]
   [cond [
     [[= [get "type" node] "literal"]        [format-literal node]]
     [[= [get "type" node] "var"]            [get "name" node]]
@@ -89,7 +91,7 @@ render-inline: [fn [node]
   ]]]
 
 # Render dict inline (for measurement)
-render-dict-inline: [fn [node]
+render-dict-inline: [fn@Str [node@Dict]
   [if [empty? [get "entries" node]]
     "[]"
     [str "["
@@ -100,7 +102,7 @@ render-dict-inline: [fn [node]
       "]"]]]
 
 # Render call inline (for measurement)
-render-call-inline: [fn [node]
+render-call-inline: [fn@Str [node@Dict]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
@@ -116,7 +118,7 @@ render-call-inline: [fn [node]
     "]"]]
 
 # Render fn inline (for measurement)
-render-fn-inline: [fn [node]
+render-fn-inline: [fn@Str [node@Dict]
   [str
     "[fn ["
     [join-strings " "
@@ -126,7 +128,7 @@ render-fn-inline: [fn [node]
     "]"]]
 
 # Format entry inline (no comments)
-format-entry-inline: [fn [entry]
+format-entry-inline: [fn@Str [entry@Dict]
   [if [empty? [get "key" entry]]
     # Auto-indexed entry (no key)
     [render-inline [get "value" entry]]
@@ -137,7 +139,7 @@ format-entry-inline: [fn [entry]
       [render-inline [get "value" entry]]]]]
 
 # Check if a dict node fits inline
-fits-inline?: [fn [node indent]
+fits-inline?: [fn@Bool [node@Dict indent@Int]
   [and
     [<= [entry-count node] max-entries]
     [<= [+ indent [str-length [render-dict-inline node]]] max-width]]]
@@ -147,14 +149,14 @@ fits-inline?: [fn [node indent]
 # ============================================================================
 
 # Emit leading comments with proper indentation
-emit-leading-comments: [fn [comments indent]
+emit-leading-comments: [fn@Str [comments@Dict indent@Int]
   [join-strings "\n"
     [map-list
       [fn [c] [str [str-repeat " " indent] "# " c]]
       comments]]]
 
 # Emit trailing comment
-emit-trailing-comment: [fn [comment]
+emit-trailing-comment: [fn@Str [comment@Str]
   [str "  # " comment]]
 
 # ============================================================================
@@ -162,7 +164,7 @@ emit-trailing-comment: [fn [comment]
 # ============================================================================
 
 # Main entry point: dispatch on node.type with indentation
-format-node: [fn [node indent]
+format-node: [fn@Str [node@Dict indent@Int]
   [cond [
     [[= [get "type" node] "literal"]        [format-literal node]]
     [[= [get "type" node] "var"]            [get "name" node]]
@@ -184,7 +186,7 @@ format-node: [fn [node indent]
   ]]]
 
 # Format a literal (int, float, bool, str)
-format-literal: [fn [node]
+format-literal: [fn@Str [node@Dict]
   [cond [
     [[= [get "kind" node] "int"]   [str [get "value" node]]]
     [[= [get "kind" node] "float"] [str [get "value" node]]]
@@ -199,7 +201,7 @@ format-literal: [fn [node]
   ]]]
 
 # Format dot access: target.field
-format-dot-access: [fn [node]
+format-dot-access: [fn@Str [node@Dict]
   [str
     [format-node [get "target" node] 0]
     "."
@@ -208,14 +210,14 @@ format-dot-access: [fn [node]
       [get "field" node]]]]
 
 # Format pipe: lhs | rhs
-format-pipe: [fn [node]
+format-pipe: [fn@Str [node@Dict]
   [str
     [format-node [get "lhs" node] 0]
     " | "
     [format-node [get "rhs" node] 0]]]
 
 # Format dict: decide inline vs block based on width and entry count
-format-dict: [fn [node indent]
+format-dict: [fn@Str [node@Dict indent@Int]
   [if [empty? [get "entries" node]]
     "[]"
     [if [fits-inline? node indent]
@@ -234,10 +236,10 @@ format-dict: [fn [node indent]
         "]"]]]]
 
 # Format entries in block mode (one per line, with comments)
-format-entries-block: [fn [entries indent]
+format-entries-block: [fn@Str [entries@Dict indent@Int]
   [format-entries-block-impl entries indent 0 ""]]
 
-format-entries-block-impl: [fn [entries indent i acc]
+format-entries-block-impl: [fn@Str [entries@Dict indent@Int i@Int acc@Str]
   [if [>= i [length entries]]
     acc
     [format-entries-block-impl
@@ -250,7 +252,7 @@ format-entries-block-impl: [fn [entries indent i acc]
         [format-entry-block [get i entries] indent]]]]]
 
 # Format a single entry in block mode with comments
-format-entry-block: [fn [entry indent]
+format-entry-block: [fn@Str [entry@Dict indent@Int]
   [str
     # Blank line before if needed
     [if [has? entry "blank-before"]
@@ -277,7 +279,7 @@ format-entry-block: [fn [entry indent]
       ""]]]
 
 # Format call: [fn args...] or [call fn args...]
-format-call: [fn [node indent]
+format-call: [fn@Str [node@Dict indent@Int]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
@@ -293,14 +295,14 @@ format-call: [fn [node indent]
     "]"]]
 
 # Format named argument: name: value
-format-named-arg: [fn [na]
+format-named-arg: [fn@Str [na@Dict]
   [str
     [get "name" na]
     ": "
     [format-node [get "value" na] 0]]]
 
 # Format function: [fn [params] body]
-format-fn: [fn [node indent]
+format-fn: [fn@Str [node@Dict indent@Int]
   [str
     "[fn ["
     [join-strings " "
@@ -310,7 +312,7 @@ format-fn: [fn [node indent]
     "]"]]
 
 # Format parameter
-format-param: [fn [param]
+format-param: [fn@Str [param@Dict]
   [str
     [get "name" param]
     [if [not [empty? [get "annotation" param]]]
@@ -319,7 +321,7 @@ format-param: [fn [param]
     [if [get "variadic" param] "..." ""]]]
 
 # Format annotation
-format-annotation: [fn [ann]
+format-annotation: [fn@Str [ann@Dict]
   [cond [
     [[= [get "kind" ann] "simple"]
       [get "value" ann]]
@@ -340,18 +342,18 @@ format-annotation: [fn [ann]
   ]]]
 
 # Format type alias: `expr
-format-type-alias: [fn [node]
+format-type-alias: [fn@Str [node@Dict]
   [str "`" [format-node [get "expr" node] 0]]]
 
 # Format type assert: expr@Ann
-format-type-assert: [fn [node]
+format-type-assert: [fn@Str [node@Dict]
   [str
     [format-node [get "expr" node] 0]
     "@"
     [format-annotation [get "annotation" node]]]]
 
 # Format annotated: @Name expr
-format-annotated: [fn [node]
+format-annotated: [fn@Str [node@Dict]
   [str
     "@"
     [get "name" node]
@@ -359,25 +361,25 @@ format-annotated: [fn [node]
     [format-annotation [get "annotation" node]]]]
 
 # Format rest: ... or ...name
-format-rest: [fn [node]
+format-rest: [fn@Str [node@Dict]
   [if [empty? [get "name" node]]
     "..."
     [str "..." [get "name" node]]]]
 
 # Format quote: [quote expr]
-format-quote: [fn [node indent]
+format-quote: [fn@Str [node@Dict indent@Int]
   [str "[quote " [format-node [get "expr" node] indent] "]"]]
 
 # Format unquote: [unquote expr]
-format-unquote: [fn [node indent]
+format-unquote: [fn@Str [node@Dict indent@Int]
   [str "[unquote " [format-node [get "expr" node] indent] "]"]]
 
 # Format unquote-splice: [unquote-splice expr]
-format-unquote-splice: [fn [node indent]
+format-unquote-splice: [fn@Str [node@Dict indent@Int]
   [str "[unquote-splice " [format-node [get "expr" node] indent] "]"]]
 
 # Format defmacro: [defmacro name transformer]
-format-defmacro: [fn [node indent]
+format-defmacro: [fn@Str [node@Dict indent@Int]
   [str "[defmacro " [get "name" node] " " [format-node [get "transformer" node] indent] "]"]]
 
 # ============================================================================
@@ -385,7 +387,7 @@ format-defmacro: [fn [node indent]
 # ============================================================================
 
 # Format a document (list of expressions)
-format-document: [fn [doc]
+format-document: [fn@Str [doc@Dict]
   [str
     # Leading comments (file header)
     [if [has? doc "leading-comments"]
@@ -395,10 +397,10 @@ format-document: [fn [doc]
     [format-expressions [get "expressions" doc]]]]
 
 # Format expressions with proper spacing
-format-expressions: [fn [exprs]
+format-expressions: [fn@Str [exprs@Dict]
   [format-expressions-impl exprs 0 ""]]
 
-format-expressions-impl: [fn [exprs i acc]
+format-expressions-impl: [fn@Str [exprs@Dict i@Int acc@Str]
   [if [>= i [length exprs]]
     acc
     [format-expressions-impl
@@ -410,10 +412,10 @@ format-expressions-impl: [fn [exprs i acc]
         [format-node [get i exprs] 0]]]]]
 
 # Format a file (list of documents with --- separators)
-format-file: [fn [file]
+format-file: [fn@Str [file@Dict]
   [format-file-impl file [get "documents" file] 0 ""]]
 
-format-file-impl: [fn [file docs i acc]
+format-file-impl: [fn@Str [file@Dict docs@Dict i@Int acc@Str]
   [if [>= i [length docs]]
     [str acc "\n"]
     [format-file-impl
@@ -430,7 +432,7 @@ format-file-impl: [fn [file docs i acc]
         [format-document [get i docs]]]]]]
 
 # Format document header (section name, output type, expects)
-format-doc-header: [fn [doc]
+format-doc-header: [fn@Str [doc@Dict]
   [str
     [if [not [empty? [get "name" doc]]]
       [str " %" [get "name" doc]]
@@ -448,7 +450,7 @@ format-doc-header: [fn [doc]
 
 # Format an AST dict to pretty source
 # Expects % to be a file dict from ast_to_dict with source+comments mode
-format: [fn [ast]
+format: [fn@Str [ast@Dict]
   [format-file ast]]
 
 # Pipeline mode: receive AST as % and emit formatted source
