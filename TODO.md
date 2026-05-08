@@ -108,8 +108,8 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Add `Value::WriteHandle` variant carrying `caps: HashMap<String, Value>` + encoding tag (Text/Binary) + `Box<dyn Write>` (`src/value.rs`)
 - [x] Implement `cap-data` Rust builtin: `Handle → String → Value` — reads associated data for a named capability; errors if cap is absent (`src/builtins_io.rs`, `src/types.rs`)
 - [x] Implement `has-cap?` Rust builtin: `Handle → String → Bool` — tests whether Handle has a named capability (`src/builtins_io.rs`, `src/types.rs`)
-- [ ] Refactor `builtin_open`: replace 3-arg (DirCap, path, mode-string) signature with variadic Variant flags; each `Value::Variant { tag, payload }` arg inserts `(tag, payload.unwrap_or(Value::Null))` into the caps HashMap; require at least one flag (error otherwise); derive encoding (Text/Binary) and direction from cap presence (`src/builtins_io.rs`)
-- [ ] `open` returns `Value::Handle` when `Readable` is in caps, `Value::WriteHandle` when `Writable` (but not `Readable`) is in caps; both carry the full caps HashMap (`src/builtins_io.rs`)
+- [x] Refactor `builtin_open`: replace 3-arg (DirCap, path, mode-string) signature with variadic Variant flags; each `Value::Variant { tag, payload }` arg inserts `(tag, payload.unwrap_or(Value::Null))` into the caps HashMap; require at least one flag (error otherwise); derive encoding (Text/Binary) and direction from cap presence. **Maintains backward compatibility** with 3-arg string mode `[open dir path "r"]`. (`src/builtins_io.rs`)
+- [x] `open` returns `Value::Handle` when `Readable` is in caps, `Value::WriteHandle` when `Writable` (but not `Readable`) is in caps; both carry the full caps HashMap (`src/builtins_io.rs`)
 - [x] Implement `write` Rust builtin: polymorphic on WriteHandle encoding — `String` arg for Text, `Bytes` arg for Binary; returns WriteHandle for chaining (`src/builtins_io.rs`)
 - [x] Implement `flush` Rust builtin: flushes WriteHandle buffer; returns WriteHandle (`src/builtins_io.rs`)
 - [x] Implement `close` Rust builtin: flushes and closes WriteHandle; returns null; further writes error (`src/builtins_io.rs`)
@@ -169,10 +169,10 @@ Extend the existing `DocMap` infrastructure (already wired into LSP hover) to co
 - [x] Implement `:describe <name>` REPL command: look up `name` in the session's DocMap and TypeMap; format and print type signature + doc string. Output format mirrors LSP hover: `name : TypeSignature\n\nDoc string here.` (`src/repl.rs`)
 - [x] Implement `:type <name>` REPL command: type signature only, no doc. (`src/repl.rs`)
 - [x] Implement `:help` REPL command: list available meta-commands with one-line descriptions. (`src/repl.rs`)
-- [ ] Extend `run_describe` (`tinct describe`): include doc strings from DocMap alongside type signatures in both text and JSON output modes. (`src/main.rs`)
+- [x] Extend `run_describe` (`tinct describe`): include doc strings from DocMap alongside type signatures in both text and JSON output modes. (`src/main.rs`)
 - [x] Add `@[doc: "..."]` annotations to 8 representative prelude functions as working examples and adoption seed: `map`, `filter`, `reduce`, `sorted`, `contains?`, `empty?`, `get`, `get-or`. (`stdlib/prelude.llt`; `first`/`last` are Rust builtins, not in prelude)
 - [x] Tests: unit tests verifying `doc:` on dict entry binding, function param, and fn return annotation are parsed and available. (`src/typecheck.rs`)
-- [ ] Tests: CLI test for `tinct describe` output including doc string when annotation is present. (`tests/cli_tests.rs`)
+- [x] Tests: CLI test for `tinct describe` output including doc string when annotation is present. (`tests/cli_tests.rs`)
 
 
 ## Standard Library

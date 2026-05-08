@@ -3247,3 +3247,84 @@ fn cap_clock_fixed_invalid_timestamp() {
         "expected --cap-clock-fixed error message, got: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// tinct describe — input contract introspection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn describe_with_doc_string() {
+    // Verify that `tinct describe` includes doc strings from @[doc: "..."] annotations
+    let llt_content = r#"
+[
+  greet@[type: Fn  doc: "Returns a greeting message"]: fn name [
+    call $str-concat "Hello, " $name
+  ]
+
+  add@[doc: "Adds two numbers"]: fn a b [call $+ $a $b]
+]
+"#;
+    let (path, _dir) = write_temp_llt("describe_doc_string", llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["describe", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("greet") && stdout.contains("Returns a greeting message"),
+        "expected doc string for greet in output, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("add") && stdout.contains("Adds two numbers"),
+        "expected doc string for add in output, got: {stdout}"
+    );
+}
+
+#[test]
+fn describe_json_mode_with_doc_string() {
+    // Verify that `tinct describe --json` includes doc strings in the JSON output
+    let llt_content = r#"
+[
+  greet@[type: Fn  doc: "Returns a greeting message"]: fn name [
+    call $str-concat "Hello, " $name
+  ]
+]
+"#;
+    let (path, _dir) = write_temp_llt("describe_json_doc", llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["describe", "--json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON from describe --json");
+
+    // Verify the JSON structure includes a docs section
+    if let Some(contracts) = json.get("contracts").and_then(|c| c.as_array()) {
+        if let Some(contract) = contracts.first() {
+            if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
+                assert!(
+                    docs.get("greet")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.contains("Returns a greeting message"))
+                        .unwrap_or(false),
+                    "expected doc string for greet in JSON, got: {json}"
+                );
+            } else {
+                panic!("expected docs section in contract, got: {json}");
+            }
+        }
+    }
+}
