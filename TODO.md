@@ -94,24 +94,6 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Load `stdlib/encoding.llt` at startup (`src/builtins.rs` or `src/lib.rs`)
 - [x] Tests: corpus tests for all bitwise ops, char-code/chr round-trips, hex-encode/hex-decode, base64 (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
-### `bytes-type`: Bytes Type
-
-**Spec chapters:** `doc/whatif/lib-supplemental.md` §Bytes Type. Independent of other sprints.
-
-- [ ] Add `Value::Bytes { source: Rc<[u8]>, start: usize, end: usize }` to Value enum (`src/value.rs`)
-- [ ] Add `Type::Bytes` to Type enum; `bytes?` predicate in `builtin_type_of` (`src/types.rs`, `src/builtins_meta.rs`)
-- [ ] Add `subtle = "1"` to `Cargo.toml` (`Cargo.toml`)
-- [ ] Implement `bytes` Rust builtin: variadic concat (mirrors `str`) (`src/builtins_string.rs` or new `src/builtins_bytes.rs`)
-- [ ] Implement `bytes-find` Rust builtin: byte-pattern search → Int index or -1 (`src/builtins_bytes.rs`)
-- [ ] Implement `bytes-of` Rust builtin: collect `Seq@Int` → Bytes (`src/builtins_bytes.rs`)
-- [ ] Implement `bytes-equal?` Rust builtin: fast structural equality (short-circuit) (`src/builtins_bytes.rs`)
-- [ ] Implement `ct-equal?` Rust builtin: constant-time via `subtle::ConstantTimeEq` (`src/builtins_bytes.rs`)
-- [ ] Wire `str-bytes` and `bytes-str` (from bitwise-encoding sprint) to use `Value::Bytes` instead of `Value::Dict` (`src/builtins_string.rs`)
-- [ ] Add Bytes dual-dispatch in prelude collection functions: `map`, `filter`, `fold`, `reduce`, `first`, `last`, `nth`, `take`, `drop`, `count`, `reverse`, `contains?`, `slice`, `length`, `starts-with?`, `ends-with?`, `split`, `replace`, `join`, `get` — iterate over byte values as `Int (0-255)` (`src/builtins.rs`, `src/builtins_seq_reduce.rs`)
-- [ ] JSON serialization: `Value::Bytes` → base64-encoded string (`src/lib.rs`)
-- [ ] Register all builtin type signatures (`src/types.rs`)
-- [ ] Tests: corpus tests for bytes construction, ct-equal?, bytes-find, bytes-of collect, Bytes dual-dispatch in map/filter/split/join/contains?, JSON serialization as base64 (`tests/corpus/eval/builtins/`)
-
 ### `handle-caps`: Capability-Typed Handles & Streaming I/O
 
 **Spec chapters:** `doc/whatif/lib-supplemental.md` §Streaming File I/O. **Depends on:** `string-view`.

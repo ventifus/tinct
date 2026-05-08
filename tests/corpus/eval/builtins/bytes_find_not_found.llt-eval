@@ -1,0 +1,4 @@
+# bytes-find: pattern not found
+[bytes-find [bytes-of [1 2 3 4 5]] [bytes-of [9 9]]]
+=== out
+Int(-1)

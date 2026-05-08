@@ -49,6 +49,7 @@ pub fn deep_materialize(
         | Value::Float(_)
         | Value::String { .. }
         | Value::Bool(_)
+        | Value::Bytes { .. }
         | Value::Function { .. }
         | Value::Builtin(_) => return Ok(val.clone()),
         _ => {}
@@ -142,6 +143,7 @@ fn deep_materialize_impl(
         | Value::Float(_)
         | Value::String { .. }
         | Value::Bool(_)
+        | Value::Bytes { .. }
         | Value::Function { .. }
         | Value::Builtin(_) => return Ok(root_val.clone()),
         _ => {}

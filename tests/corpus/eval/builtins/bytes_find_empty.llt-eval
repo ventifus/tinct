@@ -1,0 +1,4 @@
+# bytes-find: empty pattern
+[bytes-find [bytes-of [1 2 3]] [bytes-of []]]
+=== out
+Int(0)

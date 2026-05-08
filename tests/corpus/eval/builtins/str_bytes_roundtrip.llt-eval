@@ -1,0 +1,4 @@
+# str-bytes then bytes-str: roundtrip ASCII
+[bytes-str [str-bytes "Hello"]]
+=== out
+String("Hello")

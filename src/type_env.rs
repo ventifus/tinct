@@ -308,6 +308,7 @@ impl fmt::Display for Type {
             Type::Str => write!(f, "String"),
             Type::StringLiteral(s) => write!(f, "\"{s}\""),
             Type::Bool => write!(f, "Bool"),
+            Type::Bytes => write!(f, "Bytes"),
             Type::Number => write!(f, "Number"),
             Type::Unknown => write!(f, "?"),
             Type::Top => write!(f, "\u{22a4}"),
@@ -869,22 +870,72 @@ impl TypeEnv {
             },
         );
 
-        // str-bytes: String → Bytes (stub for bytes-type sprint)
+        // str-bytes: String → Bytes
         env.insert(
             "str-bytes".to_string(),
             Type::Function {
                 params: vec![Type::Str],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Bytes),
                 variadic: false,
             },
         );
 
-        // bytes-str: Bytes → String (stub for bytes-type sprint)
+        // bytes-str: Bytes → String
         env.insert(
             "bytes-str".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![Type::Bytes],
                 ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+
+        // bytes: variadic Bytes → Bytes (concat)
+        env.insert(
+            "bytes".to_string(),
+            Type::Function {
+                params: vec![],
+                ret: Box::new(Type::Bytes),
+                variadic: true,
+            },
+        );
+
+        // bytes-find: Bytes → Bytes → Int
+        env.insert(
+            "bytes-find".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Bytes],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
+
+        // bytes-of: Seq → Bytes (or Dict → Bytes)
+        env.insert(
+            "bytes-of".to_string(),
+            Type::Function {
+                params: vec![Type::Top], // Accepts Seq or Dict
+                ret: Box::new(Type::Bytes),
+                variadic: false,
+            },
+        );
+
+        // bytes-equal?: Bytes → Bytes → Bool
+        env.insert(
+            "bytes-equal?".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Bytes],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+
+        // ct-equal?: Bytes → Bytes → Bool
+        env.insert(
+            "ct-equal?".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Bytes],
+                ret: Box::new(Type::Bool),
                 variadic: false,
             },
         );
@@ -1133,6 +1184,14 @@ impl TypeEnv {
         );
         env.insert(
             "bool?".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "bytes?".to_string(),
             Type::Function {
                 params: vec![Type::Unknown],
                 ret: Box::new(Type::Bool),

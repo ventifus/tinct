@@ -74,6 +74,7 @@ pub enum Type {
     Str,
     StringLiteral(String),
     Bool,
+    Bytes,
     /// Supertype of both `Int` and `Float` — represents any numeric value.
     /// No `NumberLiteral` variant exists (unlike `IntLiteral`/`StringLiteral`) because:
     /// - Literals parse to concrete types (`IntLiteral` or `Float`)
@@ -141,6 +142,7 @@ impl PartialEq for Type {
             (Type::Str, Type::Str) => true,
             (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 == s2,
             (Type::Bool, Type::Bool) => true,
+            (Type::Bytes, Type::Bytes) => true,
             (Type::Number, Type::Number) => true,
             (Type::Record(row1), Type::Record(row2)) => row1 == row2,
             (
@@ -749,20 +751,21 @@ fn type_order(ty: &Type) -> u8 {
         Type::Str => 3,
         Type::StringLiteral(_) => 4,
         Type::Bool => 5,
-        Type::Number => 6,
-        Type::Record(_) => 7,
-        Type::Function { .. } => 8,
-        Type::Seq(_) => 9,
-        Type::Proxy => 10,
-        Type::TypeVar(_, _) => 11,
-        Type::Unknown => 12,
-        Type::Top => 13,
-        Type::Error => 14,
-        Type::DirCap => 15,
-        Type::NetCap => 16,
-        Type::Handle => 17,
-        Type::Union(_) => 18, // Should not appear after flattening, but included for completeness
-        Type::Intersection(_) => 19, // Should not appear after flattening, but included for completeness
+        Type::Bytes => 6,
+        Type::Number => 7,
+        Type::Record(_) => 8,
+        Type::Function { .. } => 9,
+        Type::Seq(_) => 10,
+        Type::Proxy => 11,
+        Type::TypeVar(_, _) => 12,
+        Type::Unknown => 13,
+        Type::Top => 14,
+        Type::Error => 15,
+        Type::DirCap => 16,
+        Type::NetCap => 17,
+        Type::Handle => 18,
+        Type::Union(_) => 19, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 20, // Should not appear after flattening, but included for completeness
     }
 }
 

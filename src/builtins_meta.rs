@@ -621,6 +621,19 @@ pub(crate) fn builtin_bool_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     ok_val(Value::Bool(matches!(val, Value::Bool(_))), call_span)
 }
 
+/// `bytes?`: Return true if the argument is Bytes.
+pub(crate) fn builtin_bytes_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("bytes?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(matches!(val, Value::Bytes { .. })), call_span)
+}
+
 /// `null?`: Return true if the argument is Null (represented as an empty Dict).
 pub(crate) fn builtin_null_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
@@ -681,6 +694,7 @@ fn type_name(val: &Value) -> String {
         Value::Float(_) => "Float",
         Value::String { .. } => "String",
         Value::Bool(_) => "Bool",
+        Value::Bytes { .. } => "Bytes",
         Value::Dict(_) | Value::Overlay(..) => "Dict",
         Value::Seq { .. } => "Seq",
         Value::Function { .. } => "Function",
