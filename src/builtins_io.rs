@@ -3184,3 +3184,200 @@ pub(crate) fn builtin_spki_pin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     ok_val(Value::Dict(dict), call_span)
 }
+
+/// `http-connect`: Create an HTTP connection pool (reqwest Client).
+/// Takes a Uri (base URL) and optional configuration dict.
+/// Returns an HttpConn value for use with http-get/http-post/etc.
+pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.is_empty() || args.len() > 2 {
+        return Err(EvalError::user_error(
+            format!(
+                "http-connect: expected 1 or 2 arguments (uri [opts]), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+    reject_named("http-connect", named, call_span)?;
+
+    let uri_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+
+    // Extract URI
+    let base_url = match uri_val {
+        Value::Uri { scheme, uri } => {
+            // Only allow http and https
+            if scheme != "http" && scheme != "https" {
+                return Err(EvalError::user_error(
+                    format!(
+                        "http-connect: URI scheme must be http or https, got '{}'",
+                        scheme
+                    ),
+                    args[0].span,
+                )
+                .into());
+            }
+            uri
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http-connect".to_string(),
+                "Uri",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Build reqwest client
+    // For now, use default configuration with rustls
+    let client = reqwest::blocking::Client::builder()
+        .use_rustls_tls()
+        .build()
+        .map_err(|e| {
+            EvalError::user_error(
+                format!("http-connect: failed to build HTTP client: {}", e),
+                call_span,
+            )
+        })?;
+
+    ok_val(
+        Value::HttpConn {
+            client: Rc::new(client),
+            base_url: Some(base_url),
+        },
+        call_span,
+    )
+}
+
+/// `http-get`: Make an HTTP GET request.
+/// Overloaded form: http-get conn@HttpConn path@String [headers@Dict]
+/// Returns a Dict with status, headers, and body.
+pub(crate) fn builtin_http_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.len() < 2 || args.len() > 3 {
+        return Err(EvalError::user_error(
+            format!(
+                "http-get: expected 2 or 3 arguments (conn path [headers]), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+    reject_named("http-get", named, call_span)?;
+
+    let conn_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract HttpConn
+    let (client, base_url) = match conn_val {
+        Value::HttpConn { client, base_url } => (client, base_url),
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http-get".to_string(),
+                "HttpConn",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Extract path
+    let path = require_string("http-get", path_val, args[1].span)?;
+
+    // Build URL
+    let url = if let Some(base) = base_url {
+        // Append path to base URL
+        if path.starts_with('/') {
+            format!("{}{}", base.trim_end_matches('/'), path)
+        } else {
+            format!("{}/{}", base.trim_end_matches('/'), path)
+        }
+    } else {
+        path
+    };
+
+    // Make the request
+    let response = client.get(&url).send().map_err(|e| {
+        EvalError::user_error(format!("http-get: request failed: {}", e), call_span)
+    })?;
+
+    // Extract status
+    let status = response.status().as_u16() as i64;
+
+    // Extract headers as a dict
+    let mut headers_dict = IndexMap::new();
+    for (name, value) in response.headers().iter() {
+        let key = crate::value::Key::String(name.as_str().to_string());
+        let value_str = value.to_str().unwrap_or("<invalid UTF-8>").to_string();
+        headers_dict.insert(
+            key,
+            ctx.alloc_thunk(ok_val(string_val(&value_str), call_span)?),
+        );
+    }
+
+    // Extract body as bytes
+    let body_bytes = response.bytes().map_err(|e| {
+        EvalError::user_error(
+            format!("http-get: failed to read response body: {}", e),
+            call_span,
+        )
+    })?;
+
+    // Build result dict
+    use crate::value::Key;
+    let mut result = IndexMap::new();
+    result.insert(
+        Key::String("status".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Int(status), call_span)?),
+    );
+    result.insert(
+        Key::String("headers".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Dict(headers_dict), call_span)?),
+    );
+    result.insert(
+        Key::String("body".to_string()),
+        ctx.alloc_thunk(ok_val(
+            Value::Bytes {
+                source: Rc::from(body_bytes.as_ref()),
+                start: 0,
+                end: body_bytes.len(),
+            },
+            call_span,
+        )?),
+    );
+
+    ok_val(Value::Dict(result), call_span)
+}
+
+/// `socks5-connect`: Create a SOCKS5 proxy tunnel.
+/// Stub implementation — returns error "not yet implemented".
+pub(crate) fn builtin_socks5_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error("socks5-connect: not yet implemented".to_string(), call_span).into())
+}
+
+/// `proxy-connect`: Create an HTTP CONNECT proxy tunnel.
+/// Stub implementation — returns error "not yet implemented".
+pub(crate) fn builtin_proxy_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error("proxy-connect: not yet implemented".to_string(), call_span).into())
+}

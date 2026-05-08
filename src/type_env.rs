@@ -730,7 +730,7 @@ impl TypeEnv {
     /// - `Any -> T`: unary operator returning type `T`
     /// - `Fn@Any [Any]`: higher-order function (e.g. map, filter) with `Any` for callbacks
     ///
-    /// **Coverage:** All 60 builtins from `standard_builtins()` (src/builtins.rs)
+    /// **Coverage:** All builtins from `standard_builtins()` (src/builtins.rs)
     pub fn with_builtins() -> Self {
         let mut env = Self::new();
 
@@ -1465,6 +1465,38 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::Unknown, Type::Bytes], // HashAlgorithm variant, Bytes fingerprint
                 ret: Box::new(Type::Unknown),             // Returns Dict {algorithm, fingerprint}
+                variadic: false,
+            },
+        );
+        env.insert(
+            "http-connect".to_string(),
+            Type::Function {
+                params: vec![Type::Uri],      // Uri base URL
+                ret: Box::new(Type::Unknown), // Returns HttpConn
+                variadic: false,
+            },
+        );
+        env.insert(
+            "http-get".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown, Type::Str], // HttpConn, path String
+                ret: Box::new(Type::Unknown),           // Returns Dict {status, headers, body}
+                variadic: false,
+            },
+        );
+        env.insert(
+            "socks5-connect".to_string(),
+            Type::Function {
+                params: vec![Type::Handle, Type::Str, Type::Int], // Handle, host, port
+                ret: Box::new(Type::Handle),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "proxy-connect".to_string(),
+            Type::Function {
+                params: vec![Type::Handle, Type::Str, Type::Int], // Handle, host, port
+                ret: Box::new(Type::Handle),
                 variadic: false,
             },
         );

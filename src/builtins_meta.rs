@@ -732,6 +732,7 @@ fn type_name(val: &Value) -> String {
         Value::Duration(_) => "Duration",
         Value::ClockCap(_) => "ClockCap",
         Value::Timezone(_) => "Timezone",
+        Value::HttpConn { .. } => "HttpConn",
     }
     .to_string()
 }

@@ -1,0 +1,6 @@
+# Test that http-get exists and validates its argument types
+# Expected: error (non-HttpConn first argument)
+[http-get "not a connection" "/path"]
+
+=== error
+[E010] http-get: expected HttpConn, got String

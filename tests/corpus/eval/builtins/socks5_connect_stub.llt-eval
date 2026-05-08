@@ -1,0 +1,9 @@
+# Test that socks5-connect exists and returns "not yet implemented"
+# Expected: error "not yet implemented"
+[socks5-connect "placeholder"]
+
+=== error
+[E080] socks5-connect: not yet implemented
+
+=== warn
+arity mismatch: expected 3 argument(s), got 1

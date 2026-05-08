@@ -388,6 +388,10 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::Duration(nanos) => Ok(visitor.visit_duration(*nanos)),
         value::Value::ClockCap(_) => visitor.visit_clock_cap(),
         value::Value::Timezone(_) => visitor.visit_timezone(),
+        value::Value::HttpConn { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+            "HttpConn".to_string(),
+            ast::Span::origin(),
+        ))),
     }
 }
 

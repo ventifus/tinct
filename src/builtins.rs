@@ -350,9 +350,10 @@ pub(crate) use crate::builtins_dict::{
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
     builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_dir_cap, builtin_emit,
-    builtin_env, builtin_flush, builtin_has_cap, builtin_lines, builtin_link, builtin_list_dir,
-    builtin_make_dir, builtin_narrow, builtin_net_cap, builtin_open, builtin_read_link,
-    builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_slurp,
+    builtin_env, builtin_flush, builtin_has_cap, builtin_http_connect, builtin_http_get,
+    builtin_lines, builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow,
+    builtin_net_cap, builtin_open, builtin_proxy_connect, builtin_read_link, builtin_remove,
+    builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_slurp, builtin_socks5_connect,
     builtin_spki_pin, builtin_stat, builtin_tls_connect, builtin_tls_peer_cert, builtin_write,
     builtin_write_atomic, builtin_write_handle,
 };
@@ -1150,6 +1151,14 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_spki_pin,
             [Strictness::Seq, Strictness::Seq]
         ),
+        builtin!("http-connect", builtin_http_connect, [Strictness::Seq]),
+        builtin!(
+            "http-get",
+            builtin_http_get,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("socks5-connect", builtin_socks5_connect, [Strictness::Seq]),
+        builtin!("proxy-connect", builtin_proxy_connect, [Strictness::Seq]),
         builtin!("lines", builtin_lines, [Strictness::Seq]),
         builtin!(
             "write",
@@ -6493,14 +6502,25 @@ mod tests {
         assert!(names.contains(&"tls-connect"), "missing tls-connect");
         assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
         assert!(names.contains(&"spki-pin"), "missing spki-pin");
+        // HTTP / network builtins
+        assert!(names.contains(&"http-connect"), "missing http-connect");
+        assert!(names.contains(&"http-get"), "missing http-get");
+        assert!(
+            names.contains(&"socks5-connect"),
+            "missing socks5-connect"
+        );
+        assert!(
+            names.contains(&"proxy-connect"),
+            "missing proxy-connect"
+        );
         // URI parsing builtins
         assert!(names.contains(&"uri"), "missing uri");
         assert!(names.contains(&"url"), "missing url");
         assert!(names.contains(&"urn"), "missing urn");
         assert_eq!(
             names.len(),
-            171,
-            "expected 171 builtins, got {}",
+            175,
+            "expected 175 builtins, got {}",
             names.len()
         );
     }
