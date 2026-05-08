@@ -3290,8 +3290,7 @@ fn cap_file_readable_slurp() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
     assert_eq!(json, serde_json::json!("hello from cap-file"));
 }
 

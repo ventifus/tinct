@@ -6,7 +6,7 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 **Vision:** One language where structured data is the native citizen. No impedance mismatch between your data model and your transformation logic — no shell pipelines to glue things together, no separate query language, no JSON-in-strings. Lazy evaluation keeps large structures efficient, Hindley-Milner types catch shape errors before they reach production, and generator-native pipelines (think jq, but typed and composable) make data flow a first-class concern.
 
-**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, union types, algebraic data types, nominal variants, type classes, gradual typing (`Unknown`/`Top`), parameterized type aliases, path-sensitive narrowing, pattern matching with exhaustiveness checking, structural contracts, Decimal/BigInt/range numeric types, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter with tinct-hosted compact modes, AST dict schema (`ast_to_dict`), LSP server with diagnostics and hover, comprehensive test suite.
+**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, union types, algebraic data types, nominal variants, type classes, gradual typing (`Unknown`/`Top`), parameterized type aliases, path-sensitive narrowing, pattern matching with exhaustiveness checking, structural contracts, Decimal/BigInt/range numeric types, object capability model (`--cap-fs`/`--cap-net`/`--cap-file`, `%` prefix convention), TLS/HTTPS networking (`tls-connect`, CA roots, mTLS, ALPN, SPKI pinning), macros (`[defmacro]`, `[quote]`/`[unquote]`, quasiquoting), string interpolation (`i"..."` via `[defmacro tmpl]`), generator pipelines (`|` pipe, `each`/`each-key`/`each-kv`), rich diagnostics (error codes `T001`–`T004`, Rust-style source snippets, `tinct explain`), `caps:` pragma, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter with tinct-hosted compact modes, AST dict schema (`ast_to_dict`), LSP server with diagnostics and hover, comprehensive test suite.
 
 ## Syntax at a Glance
 
@@ -153,7 +153,20 @@ Multi-document files pass the output of one document to the next as `%`. Transfo
 
 ### Standard library
 
-A standard library written in Tinct itself (`stdlib/prelude.llt`), covering collection operations, string manipulation, math, and control flow. Loaded automatically into every evaluation.
+`stdlib/prelude.llt` is written in Tinct itself, covering collection operations, string manipulation, math, and control flow. It is loaded automatically into every evaluation.
+
+Supplemental modules are available but must be loaded explicitly with `[include libdir "name.llt"]`:
+
+| Module | Contents |
+|--------|----------|
+| `strings.llt` | Extended string utilities: `str-pad`, `str-trim`, `str-center`, `str-wrap`, etc. |
+| `math.llt` | Math functions: `floor`, `ceil`, `clamp`, `lerp`, `gcd`, `log`, `pow`, etc. |
+| `encoding.llt` | Base64, hex, percent-encoding encode/decode |
+| `datetime.llt` | `Timestamp`, `Duration`, `ClockCap`, timezone support |
+| `regex.llt` | Thompson NFA regex engine in pure Tinct; `re-compile`/`re-match`/`re-find`/`re-replace`/`re-split` |
+| `net.llt` | Pure-Tinct HTTP helpers: `parse-url`, `http-get`, `fetch`, `parse-http-response` |
+| `toml-lite.llt` | TOML subset parser written in pure Tinct |
+| `macros.llt` | `tmpl` macro and macro utilities (auto-loaded by the expander) |
 
 ### Interactive REPL
 
@@ -258,25 +271,62 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/lexer.rs` | Hand-written tokenizer with whitespace-sensitive access detection |
 | `src/parser.rs` | Hand-written iterative descent parser + comprehensive unit tests |
 | `src/ast.rs` | AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>` |
-| `src/eval.rs` | Evaluator: `eval()`, `materialize()` (call-site span attachment, stack frame propagation), dict construction with letrec semantics, document evaluation with scope chains and `%` pipeline, function evaluation (`fn`/`call`), named args, variadics, arity checking, TypeAssert `default:` fallback, depth limit (256) |
-| `src/desugar.rs` | Desugarer: `$_` implicit lambda desugaring — pre-typecheck, pre-eval AST transformation (source-to-source pass between parsing and type checking) |
-| `src/builtins.rs` | Rust-native builtins (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences, proxy), `include` resolved via `EvalContext`, `standard_builtins()` registry, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/ast_dict.rs` | `ast_to_dict` — canonical AST → tinct dict serialization; shared by formatter, quasiquoting, macros |
+| `src/expand.rs` | Macro expander: runs `[defmacro]` transformers before typecheck/eval; pre-registers `tmpl` macro |
+| `src/desugar.rs` | Desugarer: `$_` implicit lambda; source-to-source pass between parsing and type checking |
+| `src/resolve.rs` | Variable resolution pass: de Bruijn slot assignment, free-variable detection |
+| `src/imports.rs` | Shared import resolution: `build_prelude_env()`, `collect_include_paths()`, `build_type_env()` |
+| `src/types.rs` | Type system: `Type` enum, `Row`/`RowTail`, `Substitution` (kinded unification), `TypeEnv`, `TypeError`, `InferState` (levels-based generalization) |
+| `src/type_env.rs` | Builtin type registrations: seeds `TypeEnv` with types for all builtins; `%pwd`/`%libdir`/`%stdin` cap types |
+| `src/type_unify.rs` | Unification engine: `unify()`, occurs check, row unification, level adjustment |
+| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, five-pass dict inference, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, row polymorphism |
+| `src/typecheck_annot.rs` | Annotation type inference helpers |
+| `src/typecheck_dict.rs` | Dict-specific type inference (five-pass algorithm) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
-| `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces |
-| `src/types.rs` | Type system: `Type` enum (Int, Float, Str, Bool, Number, Record, Function, TypeVar, Any, IntLiteral, StringLiteral, Seq, Proxy), `Row` struct with `RowTail` (Empty, RowVar), `Substitution` (kinded unification with `type_map` and `row_map`), `TypeEnv` (Rc-based scope chain), `TypeError`, `InferState` (levels-based let-generalization) |
-| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, five-pass dict inference (Pass 0-4), access chain checking, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, `Fn@Return [Params]` resolution, row polymorphism |
+| `src/arena.rs` | `ThunkId(u32)` arena: `Vec<Thunk>` flat storage for the evaluator |
+| `src/eval.rs` | Evaluator core: `eval()`, `Expr::Sequential` strict binding, dict construction with letrec semantics |
+| `src/eval_call.rs` | Function call evaluation: `fn`/`call`, named args, variadics, arity checking |
+| `src/eval_materialize.rs` | `materialize()`: call-site span attachment, stack frame propagation, WHNF forcing |
+| `src/eval_access.rs` | Access chain evaluation: dot, bracket, range, TypeAssert |
+| `src/eval_dict.rs` | Dict construction and letrec scoping |
+| `src/eval_pipeline.rs` | Document pipeline evaluation: scope chains, `%` pipeline, document-level Sequential |
+| `src/eval_deep.rs` | `deep_materialize()`: recursive full forcing of all thunks |
+| `src/builtins.rs` | Builtin registry: `standard_builtins()`, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
+| `src/builtins_io.rs` | I/O builtins: `open`, `slurp`, `write`, `lines`, `connect`, `tls-connect`, `tls-peer-cert`, `spki-pin`, `http-connect` |
+| `src/builtins_math.rs` | Math builtins: arithmetic, `floor`, `ceil`, `round`, `pow`, `log`, `sqrt`, etc. |
+| `src/builtins_string.rs` | String builtins: `str`, `str-find`, `str-split`, `str-replace`, `str-chars`, etc. |
+| `src/builtins_meta.rs` | Meta builtins: `type-of`, `tag-of`, `eval`, `try`, `apply`, `force`, `validate` |
+| `src/builtins_bytes.rs` | Bytes builtins: `bytes-of`, `bytes-find`, `bytes-equal?`, `bytes-concat` |
+| `src/builtins_uri.rs` | URI builtins: `uri`, `url`, `urn`, `uri-params`, `uri-origin`, `uri->string` |
+| `src/builtins_datetime.rs` | Date/time builtins: `now`, `timestamp-add`, `timestamp-diff`, `format-timestamp`, `parse-timestamp` |
+| `src/builtins_dict.rs` | Dict builtins: `merge`, `get`, `get-or`, `keys`, `values`, `entries`, `map-keys` |
+| `src/builtins_seq_prim.rs` | Sequence primitives: `length`, `first`, `last`, `nth`, `take`, `drop`, `reverse` |
+| `src/builtins_seq_xform.rs` | Sequence transformers: `map`, `filter`, `flat-map`, `zip`, `each`, `each-key`, `each-kv` |
+| `src/builtins_seq_gen.rs` | Sequence generators: `range`, `repeat`, `iterate`, `collect-kv` |
+| `src/builtins_seq_reduce.rs` | Sequence reducers: `reduce`, `fold`, `sum`, `any`, `all`, `count` |
+| `src/error.rs` | `EvalError` with definition-site span, materialization-site span, `StackFrame` traces; `TypeError` with `T001`–`T004` codes; `render_span_snippet` |
 | `src/formatter.rs` | Source formatter: idempotent pretty-printing (`tinct fmt`), `--check` mode |
+| `src/literate.rs` | Literate mode support |
+| `src/coverage.rs` | Coverage instrumentation |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
-| `src/lib.rs` | Public API: `parse()`, `parse_expression()`, `eval_source()`, `eval_file()`, `eval_file_with_input()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `value_to_json()`, `value_to_display_string()`; `EvalContext`, `EvalConfig`, `EvalState` |
-| `src/repl.rs` | REPL session: scope chains, bracket matching, error recovery |
+| `src/lib.rs` | Public API: `parse()`, `eval_source()`, `eval_file()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `value_to_json()`, `value_to_display_string()`; `EvalContext`, `EvalConfig`, `EvalState` |
+| `src/repl.rs` | REPL session: scope chains, bracket matching, `:describe`/`:type`/`:help` meta-commands, error recovery |
 | `src/lsp/` | LSP server: `tinct lsp` with `textDocument/didOpen`, `didChange`, `publishDiagnostics`, and hover |
-| `src/main.rs` | CLI (`tinct` binary): `eval` (JSON/Tinct output, stdin injection, deep-forcing), `fmt` (format source), `repl`, `lsp` |
-| `stdlib/prelude.llt` | Tinct standard library: stdlib functions written in Tinct itself |
+| `src/main.rs` | CLI (`tinct` binary): `eval`, `fmt`, `repl`, `lsp`, `explain` subcommands; `--cap-fs`/`--cap-net`/`--cap-file` cap injection |
+| `stdlib/prelude.llt` | Core stdlib (auto-loaded): collection ops, string utils, math, control flow |
+| `stdlib/strings.llt` | Extended string utilities (explicit include required) |
+| `stdlib/math.llt` | Extended math functions (explicit include required) |
+| `stdlib/encoding.llt` | Base64/hex/percent-encoding (explicit include required) |
+| `stdlib/datetime.llt` | Date/time support (explicit include required) |
+| `stdlib/regex.llt` | Thompson NFA regex engine in pure Tinct (explicit include required) |
+| `stdlib/net.llt` | HTTP helpers: `http-get`, `fetch`, `parse-url` (explicit include required) |
+| `stdlib/toml-lite.llt` | TOML subset parser in pure Tinct (explicit include required) |
+| `stdlib/macros.llt` | `tmpl` macro and macro utilities (auto-loaded by expander) |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `tests/cli_tests.rs` | CLI integration tests: file eval, format flags, stdin JSON, error handling |
 | `samples/` | Sample tinct programs (`basic.llt` — the canonical demo) |
-| `Cargo.toml` | Dependencies: indexmap, serde_json, clap, rustyline (optional) |
+| `Cargo.toml` | Dependencies: indexmap, serde_json, clap, rustyline, rustls, cap-std, etc. |
 | `justfile` | Containerized build commands |
 
 ## Testing

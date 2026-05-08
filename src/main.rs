@@ -1137,9 +1137,9 @@ fn run_eval(
 
             // Parse mode: r, rb, w, wb
             let (readable, _writable, binary) = match mode_str {
-                "r"  => (true, false, false),
+                "r" => (true, false, false),
                 "rb" => (true, false, true),
-                "w"  => (false, true, false),
+                "w" => (false, true, false),
                 "wb" => (false, true, true),
                 other => {
                     return Err(format!(
@@ -1156,11 +1156,20 @@ fn run_eval(
                 })?;
                 let buf_reader: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
                 let mut caps: HashMap<String, tinct::Value> = HashMap::new();
-                caps.insert("Readable".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                caps.insert(
+                    "Readable".to_string(),
+                    tinct::Value::Dict(indexmap::IndexMap::new()),
+                );
                 if binary {
-                    caps.insert("Binary".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                    caps.insert(
+                        "Binary".to_string(),
+                        tinct::Value::Dict(indexmap::IndexMap::new()),
+                    );
                 } else {
-                    caps.insert("Text".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                    caps.insert(
+                        "Text".to_string(),
+                        tinct::Value::Dict(indexmap::IndexMap::new()),
+                    );
                 }
                 tinct::Value::Handle {
                     caps,
@@ -1175,11 +1184,20 @@ fn run_eval(
                 })?;
                 let buf_writer: Box<dyn std::io::Write> = Box::new(file);
                 let mut caps: HashMap<String, tinct::Value> = HashMap::new();
-                caps.insert("Writable".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                caps.insert(
+                    "Writable".to_string(),
+                    tinct::Value::Dict(indexmap::IndexMap::new()),
+                );
                 if binary {
-                    caps.insert("Binary".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                    caps.insert(
+                        "Binary".to_string(),
+                        tinct::Value::Dict(indexmap::IndexMap::new()),
+                    );
                 } else {
-                    caps.insert("Text".to_string(), tinct::Value::Dict(indexmap::IndexMap::new()));
+                    caps.insert(
+                        "Text".to_string(),
+                        tinct::Value::Dict(indexmap::IndexMap::new()),
+                    );
                 }
                 tinct::Value::WriteHandle {
                     caps,
