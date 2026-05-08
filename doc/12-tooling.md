@@ -164,19 +164,19 @@ Semicolons (`;`) are whitespace-equivalent and compress multi-line syntax but do
 
 ### `-i <format>` / `--input <format>` — Input Formatters
 
-Prepend an input formatter from `stdlib/in/<format>.llt` as the first pipeline stage. Suppresses stdin JSON auto-detection so the input program reads from the `stdin` Handle directly. Error if the formatter file does not exist.
+Prepend an input formatter from `stdlib/in/<format>.llt` as the first pipeline stage. Suppresses stdin JSON auto-detection so the input program reads from the `%stdin` Handle directly. Error if the formatter file does not exist.
 
 ```bash
 # Explicit JSON input (equivalent to auto-detection but via formatter)
 tinct run -i json -e '%.x' <<< '{"x":42}'          # → 42
 ```
 
-**Convention:** Input formatters live in `stdlib/in/`. Each formatter reads from the `stdin` Handle and produces a tinct value as `%` for the next stage.
+**Convention:** Input formatters live in `stdlib/in/`. Each formatter reads from the `%stdin` Handle and produces a tinct value as `%` for the next stage.
 
 **Included input formatters:**
-- `json` — `[from-json [slurp stdin]]` (parse JSON from stdin)
+- `json` — `[from-json [slurp %stdin]]` (parse JSON from %stdin)
 
-When `-i` is present, auto-detection is suppressed and the input program reads from stdin as a Handle (via `$slurp` or `$lines`).
+When `-i` is present, auto-detection is suppressed and the input program reads from `%stdin` as a Handle (via `$slurp` or `$lines`).
 
 ### `-o <format>` / `--output <format>` — Output Formatters
 
@@ -215,7 +215,7 @@ When `tinct run` finishes and no `emit` call was made, the final value is serial
 
 **Key properties:**
 
-- The formatter is user-visible and lives at `stdlib/out/json.llt`. You can inspect it or use it directly in programs: `[include libdir "out/json.llt"]`.
+- The formatter is user-visible and lives at `stdlib/out/json.llt`. You can inspect it or use it directly in programs: `[include %libdir "out/json.llt"]`.
 - If `stdlib/out/json.llt` is not found (e.g. running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. Note: the fallback serializes empty dicts as `{}` (JSON empty object) rather than `null`.
 - The output is indented (2-space pretty-printed) by default.
 
@@ -228,7 +228,7 @@ tinct run config.llt                  # indented JSON via stdlib/out/json.llt (2
 ```tinct
 # Load and call the JSON formatter explicitly in a pipeline
 [
-  json: [include libdir "out/json.llt"]
+  json: [include %libdir "out/json.llt"]
   output: [json.json my-value]
 ]
 ```
@@ -474,7 +474,7 @@ Tinct provides multiple unprivileged sandboxing layers to restrict what evaluati
 - **Landlock** (Linux 5.13+): Kernel-enforced filesystem ACLs as defense-in-depth
 - **seccomp-bpf** (Linux): Network/process syscall blocking
 - **rlimit caps**: `--max-memory`, `--max-cpu`, `--max-fds` resource limits
-- **Object capability flags**: `--no-pwd`, `--no-stdin`, `--cap-fs NAME=PATH` (io-phase1)
+- **Object capability flags**: `--no-pwd`, `--no-stdin`, `--cap-fs NAME=PATH` (io-phase1, injects as `%NAME`)
 
 ### Object Capability Model (io-phase1)
 
@@ -484,45 +484,47 @@ The runtime injects three capability values into the root environment at startup
 
 | Name | Type | Authority | Suppressed by |
 |------|------|-----------|---------------|
-| `pwd` | `DirCap` | Current working directory at `llt eval` time | `--no-pwd` |
-| `libdir` | `DirCap` | Tinct standard library directory | `--no-libdir` |
-| `stdin` | `Handle` | File descriptor 0 (standard input) | `--no-stdin` |
+| `%pwd` | `DirCap` | Current working directory at `llt eval` time | `--no-pwd` |
+| `%libdir` | `DirCap` | Tinct standard library directory | `--no-libdir` |
+| `%stdin` | `Handle` | File descriptor 0 (standard input) | `--no-stdin` |
 
-**`--no-pwd`** — Suppresses `pwd`. Programs that attempt `[open pwd ...]` or `[include pwd ...]` receive an undefined variable error. Use for programs that should not access the filesystem even via the working directory.
+The `%` prefix on injected cap names makes them visually distinct from user-defined variables. User programs use `%pwd`, `%libdir`, and `%stdin` directly as identifiers (no `$` needed — they are plain bare-word identifiers that happen to start with `%`).
 
-**`--no-stdin`** — Suppresses `stdin`. Programs that attempt `[slurp stdin]` or `[lines stdin]` receive an undefined variable error. Use for batch jobs that must not read from stdin.
+**`--no-pwd`** — Suppresses `%pwd`. Programs that attempt `[open %pwd ...]` or `[include %pwd ...]` receive an undefined variable error. Use for programs that should not access the filesystem even via the working directory.
 
-**`--no-libdir`** — Suppresses `libdir`. Programs that attempt `[include libdir "io.llt"]` receive an undefined variable error. The embedded stdlib (prelude) is always available via builtins; `--no-libdir` only affects `[include libdir ...]` calls. Rarely needed — libdir is safe language infrastructure.
+**`--no-stdin`** — Suppresses `%stdin`. Programs that attempt `[slurp %stdin]` or `[lines %stdin]` receive an undefined variable error. Use for batch jobs that must not read from stdin.
 
-**`--cap-fs NAME=PATH`** — Inject an additional named `DirCap`. Creates a directory capability for `PATH` and binds it as `$NAME` in the root environment. Repeatable; each flag adds one cap. Example:
+**`--no-libdir`** — Suppresses `%libdir`. Programs that attempt `[include %libdir "io.llt"]` receive an undefined variable error. The embedded stdlib (prelude) is always available via builtins; `--no-libdir` only affects `[include %libdir ...]` calls. Rarely needed — libdir is safe language infrastructure.
+
+**`--cap-fs NAME=PATH`** — Inject an additional named `DirCap`. Creates a directory capability for `PATH` and binds it as `%NAME` in the root environment. Repeatable; each flag adds one cap. Example:
 
 ```bash
-# $data is a DirCap for /var/data; $out is a DirCap for /tmp/output
+# %data is a DirCap for /var/data; %out is a DirCap for /tmp/output
 llt eval --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
 ```
 
-Inside `script.llt`, `$data` and `$out` are available as DirCaps. The program can call `[open data "config.json" "r"]` but cannot open files outside `/var/data` via `$data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
+Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program can call `[open %data "config.json" "r"]` but cannot open files outside `/var/data` via `%data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
 
-**`--cap-net NAME=ENTRY`** — Inject a network capability as `$NAME` in the root environment. `ENTRY` is currently a stub; in future it will accept a connector dict or protocol specifier.
+**`--cap-net NAME=ENTRY`** — Inject a network capability as `%NAME` in the root environment. `ENTRY` is currently a stub; in future it will accept a connector dict or protocol specifier.
 
 **`--no-env`** and **`--allow-env NAME`** — Control environment variable access via the `$env` builtin. `--no-env` causes `$env` to return `Null` for all names. `--allow-env NAME` (repeatable) creates an explicit allowlist: only the listed names return their values; all others return `Null`. See §Environment Variable Access.
 
 **Fully sandboxed invocation:**
 
 ```bash
-# No filesystem caps (not even pwd), no stdin, no env vars, 5s timeout
+# No filesystem caps (not even %pwd), no %stdin, no env vars, 5s timeout
 llt eval --no-pwd --no-stdin --no-env --timeout 5s script.llt
 ```
 
-`libdir` is retained even in sandboxed invocations so stdlib modules remain accessible. Suppress it explicitly with `--no-libdir` if needed.
+`%libdir` is retained even in sandboxed invocations so stdlib modules remain accessible. Suppress it explicitly with `--no-libdir` if needed.
 
 **Capability delegation within programs:**
 
 Capabilities are first-class values. A program that receives a `DirCap` via `$data` can pass it to functions and to `narrow` for attenuation:
 
 ```tinct
-# Narrow data to a subdirectory and pass the narrower cap to a helper
-[safe-cap: [narrow data "configs"]]
+# Narrow %data to a subdirectory and pass the narrower cap to a helper
+[safe-cap: [narrow %data "configs"]]
 [read-config safe-cap "app.yaml"]
 ```
 

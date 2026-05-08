@@ -1215,9 +1215,9 @@ fn include_with_dircap() {
     // Create a helper file in the test directory
     fs::write(dir.path().join("data.llt"), "[value: 42]").unwrap();
 
-    // Main file uses `cap` (injected via --cap-fs) for include.
+    // Main file uses `%cap` (injected via --cap-fs) for include.
     // Use a scope chain to avoid serializing the DirCap itself.
-    let main_src = r#"cap
+    let main_src = r#"%cap
 ---
 [include % "data.llt"]"#;
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
@@ -1256,10 +1256,10 @@ fn include_with_dircap_and_hash() {
     let hash = blake3::hash(content.as_bytes());
     let hash_hex = hash.to_hex();
 
-    // Main file uses cap (injected via --cap-fs) for include with hash verification.
+    // Main file uses %cap (injected via --cap-fs) for include with hash verification.
     // Use a scope chain to avoid serializing the DirCap itself.
     let main_src = format!(
-        r#"cap
+        r#"%cap
 ---
 [include % "data.llt" "blake3:{}"]"#,
         hash_hex
@@ -2079,7 +2079,7 @@ fn revocable_and_revoke() {
     fs::write(&test_file, "test content").expect("failed to write test file");
 
     let llt_content = r#"
-[revocable-cap: [revocable cap]]
+[revocable-cap: [revocable %cap]]
 [fh: [open revocable-cap "data.txt" "r"]]
 [content: [slurp fh]]
 [_ : [revoke-cap revocable-cap]]
@@ -2115,7 +2115,7 @@ fn lines_basic() {
     fs::write(&test_file, "line1\nline2\nline3\n").expect("failed to write test file");
 
     let llt_content = r#"
-[fh: [open cap "lines.txt" "r"]]
+[fh: [open %cap "lines.txt" "r"]]
 [collect [take 2 [lines fh]]]
 "#;
     let (path, _llt_dir) = write_temp_llt("lines_basic", llt_content);
@@ -2147,8 +2147,8 @@ fn write_basic() {
     let test_file_path = dir.path().join("output.txt");
 
     let llt_content = r#"
-[write cap "output.txt" "hello world"]
-[fh: [open cap "output.txt" "r"]]
+[write %cap "output.txt" "hello world"]
+[fh: [open %cap "output.txt" "r"]]
 [slurp fh]
 "#;
     let (path, _llt_dir) = write_temp_llt("write_basic", llt_content);
@@ -2184,8 +2184,8 @@ fn write_atomic_basic() {
     let test_file_path = dir.path().join("output.txt");
 
     let llt_content = r#"
-[write-atomic cap "output.txt" "atomic content"]
-[fh: [open cap "output.txt" "r"]]
+[write-atomic %cap "output.txt" "atomic content"]
+[fh: [open %cap "output.txt" "r"]]
 [slurp fh]
 "#;
     let (path, _llt_dir) = write_temp_llt("write_atomic_basic", llt_content);
@@ -2228,9 +2228,9 @@ fn write_and_slurp_roundtrip() {
     let dir = TempDir::new("write_roundtrip_test");
 
     let llt_content = r#"
-[include libdir "io.llt"]
-[write-file cap "test.txt" "roundtrip data"]
-[read-file cap "test.txt"]
+[include %libdir "io.llt"]
+[write-file %cap "test.txt" "roundtrip data"]
+[read-file %cap "test.txt"]
 "#;
     let (path, _llt_dir) = write_temp_llt("write_roundtrip", llt_content);
     let output = Command::new(tinct_bin())
@@ -3157,7 +3157,7 @@ fn describe_human_readable() {
 fn cap_clock_real() {
     // Verify --cap-clock injects a real ClockCap that can be used with $now
     // format-timestamp converts Timestamp → String so json.llt can serialize it
-    let llt_content = r#"[call $format-timestamp [call $now my-clock]]"#;
+    let llt_content = r#"[call $format-timestamp [call $now %my-clock]]"#;
     let (path, _dir) = write_temp_llt("cap_clock_real", llt_content);
     let output = Command::new(tinct_bin())
         .args([
@@ -3195,7 +3195,7 @@ fn cap_clock_real() {
 fn cap_clock_fixed() {
     // Verify --cap-clock-fixed injects a fixed ClockCap returning the specified timestamp
     // format-timestamp converts Timestamp → String so json.llt can serialize it
-    let llt_content = r#"[call $format-timestamp [call $now test-clock]]"#;
+    let llt_content = r#"[call $format-timestamp [call $now %test-clock]]"#;
     let (path, _dir) = write_temp_llt("cap_clock_fixed", llt_content);
     let output = Command::new(tinct_bin())
         .args([

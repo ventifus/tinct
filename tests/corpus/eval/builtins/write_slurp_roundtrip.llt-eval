@@ -1,11 +1,11 @@
 # write then slurp roundtrip: write "hello tinct" to target/, read it back
 # % is used as an intermediate expression in the second document to force
 # materialization of the write side-effect before the slurp runs.
-[write [narrow pwd "target"] "tinct-test-write-slurp.txt" "hello tinct"]
+[write [narrow %pwd "target"] "tinct-test-write-slurp.txt" "hello tinct"]
 ---
 %
-[slurp [open [narrow pwd "target"] "tinct-test-write-slurp.txt" "r"]]
+[slurp [open [narrow %pwd "target"] "tinct-test-write-slurp.txt" "r"]]
 === out
 String("hello tinct")
 === warn
-undefined variable: pwd
+undefined variable: %pwd

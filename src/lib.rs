@@ -193,15 +193,15 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
-    // Inject `pwd` DirCap for the current directory (mirrors the CLI run_eval behavior).
-    // This allows corpus tests to use `pwd` for file operations without dir-cap.
+    // Inject `%pwd` DirCap for the current directory (mirrors the CLI run_eval behavior).
+    // This allows corpus tests to use `%pwd` for file operations without dir-cap.
     if !no_fs {
         if let Ok(pwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         {
             let pwd_val = Value::DirCap(Rc::new(pwd_dir));
             let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            env.borrow_mut().insert("pwd".to_string(), pwd_thunk);
+            env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
         }
     }
     let thunk =
