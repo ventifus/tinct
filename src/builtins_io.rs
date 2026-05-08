@@ -47,7 +47,7 @@ use crate::ast::Span;
 use crate::builtins::{builtin, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{string_val, BuiltinArgs, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
 /// `emit`: Write a string to stdout and suppress JSON output.
 /// Takes a String argument, writes it to stdout, sets ctx.emitted flag, returns null (empty dict).
@@ -3500,7 +3500,7 @@ pub(crate) fn builtin_spki_pin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `http-connect`: Create an HTTP connection pool (reqwest Client).
-/// Takes a Uri (base URL) and optional configuration dict.
+/// Takes a Url dict (from `url` builtin) with scheme/host/port fields.
 /// Returns an HttpConn value for use with http-get/http-post/etc.
 pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
@@ -3514,7 +3514,7 @@ pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     if args.is_empty() || args.len() > 2 {
         return Err(EvalError::user_error(
             format!(
-                "http-connect: expected 1 or 2 arguments (uri [opts]), got {}",
+                "http-connect: expected 1 or 2 arguments (url [opts]), got {}",
                 args.len()
             ),
             call_span,
@@ -3523,34 +3523,122 @@ pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     }
     reject_named("http-connect", named, call_span)?;
 
-    let uri_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let url_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
 
-    // Extract URI
-    let base_url = match uri_val {
-        Value::Uri { scheme, uri } => {
-            // Only allow http and https
-            if scheme != "http" && scheme != "https" {
-                return Err(EvalError::user_error(
-                    format!(
-                        "http-connect: URI scheme must be http or https, got '{}'",
-                        scheme
-                    ),
-                    args[0].span,
-                )
-                .into());
-            }
-            uri
-        }
+    // Extract Url dict fields
+    let url_dict = match url_val {
+        Value::Dict(ref dict) => dict,
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "http-connect".to_string(),
-                "Uri",
+                "Url (Dict with scheme/host/port)",
                 other.type_name(),
                 args[0].span,
             )
             .into())
         }
     };
+
+    // Extract scheme
+    let scheme_thunk_id = url_dict
+        .get(&Key::String("scheme".to_string()))
+        .ok_or_else(|| {
+            EvalError::user_error(
+                "http-connect: Url dict missing 'scheme' field".to_string(),
+                args[0].span,
+            )
+        })?;
+    let scheme_thunk = ctx.get_thunk(*scheme_thunk_id);
+    let scheme = match materialize(&scheme_thunk, Some(&call_span), &ctx, depth)? {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => source[start..end].to_string(),
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http-connect (scheme field)".to_string(),
+                "String",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Only allow http and https
+    if scheme != "http" && scheme != "https" {
+        return Err(EvalError::user_error(
+            format!(
+                "http-connect: URL scheme must be http or https, got '{}'",
+                scheme
+            ),
+            args[0].span,
+        )
+        .into());
+    }
+
+    // Extract host
+    let host_thunk_id = url_dict
+        .get(&Key::String("host".to_string()))
+        .ok_or_else(|| {
+            EvalError::user_error(
+                "http-connect: Url dict missing 'host' field".to_string(),
+                args[0].span,
+            )
+        })?;
+    let host_thunk = ctx.get_thunk(*host_thunk_id);
+    let host = match materialize(&host_thunk, Some(&call_span), &ctx, depth)? {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => source[start..end].to_string(),
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http-connect (host field)".to_string(),
+                "String",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Extract port
+    let port_thunk_id = url_dict
+        .get(&Key::String("port".to_string()))
+        .ok_or_else(|| {
+            EvalError::user_error(
+                "http-connect: Url dict missing 'port' field".to_string(),
+                args[0].span,
+            )
+        })?;
+    let port_thunk = ctx.get_thunk(*port_thunk_id);
+    let port = match materialize(&port_thunk, Some(&call_span), &ctx, depth)? {
+        Value::Int(p) => {
+            if p < 1 || p > 65535 {
+                return Err(EvalError::user_error(
+                    format!("http-connect: port must be in range 1-65535, got {}", p),
+                    args[0].span,
+                )
+                .into());
+            }
+            p as u16
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http-connect (port field)".to_string(),
+                "Int",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Reconstruct base URL string for reqwest
+    let base_url = format!("{}://{}:{}", scheme, host, port);
 
     // Build reqwest client
     // For now, use default configuration with rustls
