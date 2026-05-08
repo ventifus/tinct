@@ -236,15 +236,17 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 
 **Tasks — `out/` formatters (7 files: `json`, `json-pretty`, `yaml`, `csv`, `toml`, `env`, `raw`):**
 
-- [ ] For each file: (a) identify internal helpers; apply public/private split if any exist; (b) replace any `type-of`/cond-string dispatch with `[match]`; (c) add `fn@Str` return types to all output-generating functions and `@Type` to all params (`stdlib/out/`)
+- [x] Annotation pass: add `fn@Str` return types to all output-generating functions and `@Type` to all params (7 files) (`stdlib/out/`)
+- [ ] For each file: (a) identify internal helpers; apply public/private split if any exist (KNOWN ISSUE); (b) replace any `type-of`/cond-string dispatch with `[match]` (`stdlib/out/`)
 
 **Tasks — `in/json.llt`, `io.llt`, `net.llt`:**
 
-- [ ] For each file: public/private split, pattern match modernization, complete annotation pass (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
+- [x] Annotation pass: complete type annotations for all functions (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
+- [ ] For each file: public/private split (KNOWN ISSUE), pattern match modernization (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
 
 **Tests and spec:**
 
-- [ ] Run full corpus test suite after each file refactor; zero regressions required (`tests/corpus/`)
+- [x] Run full corpus test suite after each file refactor; zero regressions required (`tests/corpus/`)
 - [ ] Add one corpus test per pattern-matched `try` result site verifying the new dispatch path: `[ok: v]` arm and `[err: e]` arm both exercised (`tests/corpus/eval/stdlib/`)
 - [ ] Update `doc/11-stdlib.md` type signature table to reflect new union-type annotations (`@[Dict Seq]` on dual-dispatch functions) and any newly-annotated functions (`doc/11-stdlib.md`)
 

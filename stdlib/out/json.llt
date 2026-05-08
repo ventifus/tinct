@@ -4,7 +4,7 @@
 [
 # Internal: escape a string for JSON
 # Escapes: " \ newline tab carriage-return
-json-escape: [fn [s]
+json-escape: [fn@String [s@String]
   [replace "\r" "\\r"
     [replace "\t" "\\t"
       [replace "\n" "\\n"
@@ -12,16 +12,16 @@ json-escape: [fn [s]
           [replace "\\" "\\\\" s]]]]]]
 
 # Internal: quote and escape a string for JSON
-json-quote: [fn [s]
+json-quote: [fn@String [s@String]
   [str "\"" [json-escape s] "\""]]
 
 # Internal: check if dict is list-shaped (sequential integer keys 0..n-1)
-is-list?: [fn [d]
+is-list?: [fn@Bool [d@Dict]
   [if [empty? d]
     true
     [is-list-impl? d [keys d] 0]]]
 
-is-list-impl?: [fn [d ks i]
+is-list-impl?: [fn@Bool [d@Dict ks@Dict i@Int]
   [if [>= i [length ks]]
     true
     [if [and [int? [get i ks]] [= [get i ks] i]]
@@ -29,7 +29,7 @@ is-list-impl?: [fn [d ks i]
       false]]]
 
 # Internal: format a single value to JSON
-json-value: [fn [val]
+json-value: [fn@String [val@Any]
   [cond [
     [[null? val] "null"]
     [[bool? val] [if val "true" "false"]]
@@ -45,12 +45,12 @@ json-value: [fn [val]
   ]]]
 
 # Internal: format dict as JSON array
-json-array-body: [fn [d]
+json-array-body: [fn@String [d@Dict]
   [if [empty? d]
     "[]"
     [str "[" [json-array-items d 0] "]"]]]
 
-json-array-items: [fn [d i]
+json-array-items: [fn@String [d@Dict i@Int]
   [if [>= i [length d]]
     ""
     [str
@@ -59,12 +59,12 @@ json-array-items: [fn [d i]
       [json-array-items d [+ i 1]]]]]
 
 # Internal: format dict as JSON object
-json-dict-body: [fn [d]
+json-dict-body: [fn@String [d@Dict]
   [if [empty? d]
     "{}"
     [str "{" [json-dict-entries d [keys d] 0] "}"]]]
 
-json-dict-entries: [fn [d ks i]
+json-dict-entries: [fn@String [d@Dict ks@Dict i@Int]
   [if [>= i [length ks]]
     ""
     [str
@@ -75,7 +75,7 @@ json-dict-entries: [fn [d ks i]
       [json-dict-entries d ks [+ i 1]]]]]
 
 # Public API: format value to compact JSON (returns String)
-json: [fn [val]
+json: [fn@String [val@Any]
   [json-value val]]
 
 # When used as a formatter pipeline stage: emit the result
