@@ -1,0 +1,12 @@
+# Test that path functions are NOT available without include
+# Uses try to capture the undefined-variable error as a value
+
+[try [fn [] [basename "/foo/bar.txt"]]]
+
+=== out
+
+Dict({"err": String("undefined variable: basename (did you mean the string \"basename\"? Use quotes.)")})
+
+=== warn
+
+arity mismatch

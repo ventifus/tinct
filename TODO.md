@@ -59,16 +59,16 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Implement `str-chars` Rust builtin (internal): walk `source[start..end].char_indices()`, yield lazy `Seq` of `Value::String` slices per codepoint (`src/builtins_string.rs`)
 - [x] Implement `str-slice` Rust builtin: compute byte offsets for char positions, construct `Value::String { source: Rc::clone, start: byte_of(from), end: byte_of(to) }` — O(n) for UTF-8 char walk, O(1) allocation (`src/builtins_string.rs`, `src/types.rs`)
 - [x] Add `starts-with?` and `ends-with?` to prelude scope (loaded at startup alongside `prelude.llt`) (`src/builtins.rs`)
-- [ ] Add Bytes dual-dispatch for `starts-with?` and `ends-with?` (byte-prefix/suffix match) (`src/builtins_string.rs`)
-- [ ] Add Bytes dual-dispatch for `contains?`: byte-pattern search (deferred from `bytes-type` sprint) (`src/builtins.rs`)
-- [ ] Add Bytes dual-dispatch for `length`, `get`, `nth`: byte count and byte-index access (deferred from `bytes-type` sprint) (`src/builtins.rs`, `src/builtins_dict.rs`)
-- [ ] Add Bytes dual-dispatch for `map`, `filter`, `reduce`, `fold`, `first`, `last`, `take`, `drop`, `slice`, `count`, `reverse`: iterate over byte values as Int (0–255); results are Seq (not Bytes); use `bytes-of` to collect back to Bytes (deferred from `bytes-type` sprint) (`src/builtins_seq_reduce.rs`, `src/builtins.rs`)
-- [ ] Add Bytes dual-dispatch for `split`, `replace`, `join`: byte-pattern split/replace, byte-separator join (deferred from `bytes-type` sprint) (`src/builtins_string.rs`)
+- [x] Add Bytes dual-dispatch for `starts-with?` and `ends-with?` (byte-prefix/suffix match) (`src/builtins_string.rs`)
+- [x] Add Bytes dual-dispatch for `contains?`: byte-pattern search via `bytes-find` on single-byte needle; needle must be Int 0-255 (`stdlib/prelude.llt`)
+- [x] Add Bytes dual-dispatch for `length`: byte count (`end - start`) as Int (`src/builtins_dict.rs`); `get`/`nth` still deferred
+- [x] Add Bytes dual-dispatch for `map`, `filter`, `reduce`, `first`, `last`, `take`, `drop`: iterate over byte values as Int (0–255); results are Seq; `first`/`last` on Bytes return byte as Int; `fold`, `slice`, `count`, `reverse` still deferred (`src/builtins_seq_reduce.rs`, `src/builtins_seq_xform.rs`, `src/builtins.rs`)
+- [x] Add Bytes dual-dispatch for `split`, `replace`, `join`: byte-pattern split/replace, byte-separator join (deferred from `bytes-type` sprint) (`src/builtins_string.rs`)
 - [x] Add Seq dual-dispatch for `starts-with?` and `ends-with?` (element-by-element prefix match) (`src/builtins_string.rs`)
 - [x] Create `stdlib/strings.llt` with pure-tinct functions: `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse` (Note: `str-contains?` is already a Rust builtin, `str-repeat` is in prelude but duplicated here per requirements) (`stdlib/strings.llt`)
 - [x] Load `stdlib/strings.llt` at startup (alongside `prelude.llt`); `pad-left`, `str-find`, `str-reverse` available without explicit include (`src/builtins.rs`)
-- [ ] Tests: verify `basename`, `path-join` are NOT in scope without `[include "stdlib/path.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
-- [ ] Tests: verify `parse-toml-lite` is NOT in scope without `[include "stdlib/toml-lite.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
+- [x] Tests: verify `basename` is NOT in scope without `[include "stdlib/path.llt"]` (`tests/corpus/eval/stdlib/path_scoping.llt-eval`); IS available shown by existing `path_basename.llt-eval`
+- [x] Tests: verify `parse-toml-lite` is NOT in scope without `[include "stdlib/toml-lite.llt"]` (`tests/corpus/eval/stdlib/toml_scoping.llt-eval`)
 - [x] Register type signatures for all new builtins (`src/types.rs`)
 - [x] Tests: corpus tests for starts-with?/ends-with? on String/Bytes/Seq, str-slice O(1), str-find, pad-left/pad-right alignment (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
@@ -96,7 +96,7 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Define `HashAlgorithm` type alias as a union of nominal variants: `Sha256 | Sha384 | Sha512 | Sha3-256 | Sha3-384 | Sha3-512 | Blake3` — register in prelude scope (`stdlib/encoding.llt` or `src/builtins.rs`)
 - [x] Create `stdlib/encoding.llt` with pure-tinct functions: `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` (`stdlib/encoding.llt`)
 - [x] Load `stdlib/encoding.llt` at startup (alongside `prelude.llt`); `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode`, `mask-apply` available without explicit include (`src/builtins.rs`)
-- [ ] Register `HashAlgorithm` type alias in `TypeEnv::with_builtins()` so type checker recognises `Sha256`, `Sha3-256`, `Blake3`, etc. as `HashAlgorithm` members (deferred from `bitwise-encoding` sprint) (`src/type_env.rs` or `src/types.rs`)
+- [x] Register `HashAlgorithm` type alias in `TypeEnv::with_builtins()` as union of `StringLiteral` variants (pending `Type::Variant`); type checker recognises `HashAlgorithm` in annotations (`src/type_env.rs`)
 - [x] Tests: corpus tests for all bitwise ops, char-code/chr round-trips, hex-encode/hex-decode, base64 (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
 ### `handle-caps`: Capability-Typed Handles & Streaming I/O
@@ -131,7 +131,7 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 
 **Spec chapters:** `doc/whatif/lib-tls.md` §Connector Protocol, §Handle Types, §tls-connect, §CA Root Selection, §Client Certificates, §SPKI Pins. **Depends on:** `connector-tls` (Phase 1 stubs — see DONE.md), `handle-caps`.
 
-- [ ] Define `Transport` nominal variants: `Tcp`, `Udp` as unit variants registered in prelude (`src/builtins.rs`)
+- [x] Define `Transport` nominal variants: `Tcp`, `Udp` as unit `Value::Variant` constants registered in `create_root_env()` (`src/builtins.rs`); `Transport` type alias added to `TypeEnv::with_builtins()` (`src/type_env.rs`)
 - [ ] Generalize `builtin_connect`: accept any Connector (dispatch on value type: `NetCap` → built-in TCP/UDP; user dict → call dict's `connect` method); accept `Transport` variant as arg (Tcp default when omitted); return `Handle` with `{Binary Readable Writable Stream}` for Tcp, `{Binary Readable Writable Datagram}` for Udp (`src/builtins_io.rs`)
 - [ ] Refactor Handle to preserve underlying TCP stream (required for TLS layering): add `raw_stream: Option<Rc<RefCell<TcpStream>>>` or use trait objects with downcast (`src/value.rs`)
 - [ ] Implement `tls-connect` full — Connector form: opens via connect then layers TLS via `rustls::ClientConfig`; Handle form: layers TLS on existing stream Handle; both return `Handle[Binary Readable Writable Stream Tls]` with `TlsInfo` (`src/builtins_io.rs`)

@@ -2000,6 +2000,58 @@ impl TypeEnv {
             },
         );
 
+        // first: Dict|String|Bytes -> Any (returns first element, char, or byte-as-Int)
+        env.insert(
+            "first".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Unknown),
+                variadic: false,
+            },
+        );
+        // last: Dict|String|Bytes -> Any (returns last element, char, or byte-as-Int)
+        env.insert(
+            "last".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Unknown),
+                variadic: false,
+            },
+        );
+
+        // HashAlgorithm: type alias for the supported hash algorithm identifiers.
+        // Represented as a union of string literals (variant tags are strings at the type level
+        // until Type::Variant is added in a future type-extension sprint).
+        // Used as the algorithm argument to hash and SPKI pin functions.
+        env.insert_type_alias(
+            "HashAlgorithm".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::normalize_union(vec![
+                    Type::StringLiteral("Sha256".to_string()),
+                    Type::StringLiteral("Sha384".to_string()),
+                    Type::StringLiteral("Sha512".to_string()),
+                    Type::StringLiteral("Sha3-256".to_string()),
+                    Type::StringLiteral("Sha3-384".to_string()),
+                    Type::StringLiteral("Sha3-512".to_string()),
+                    Type::StringLiteral("Blake3".to_string()),
+                ]),
+            },
+        );
+
+        // Transport: type alias for network transport variants (Tcp, Udp).
+        // Represented as a union of string literals until Type::Variant exists.
+        env.insert_type_alias(
+            "Transport".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::normalize_union(vec![
+                    Type::StringLiteral("Tcp".to_string()),
+                    Type::StringLiteral("Udp".to_string()),
+                ]),
+            },
+        );
+
         // builtin-* aliases: same types as canonical counterparts.
         // Used by stdlib/prelude to call builtins when canonical names may be shadowed.
         for (alias, canonical) in [

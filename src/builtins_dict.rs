@@ -70,9 +70,9 @@ pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::Dict(result), call_span)
 }
 
-/// `length`: Takes 1 arg (a Dict or String). Returns an Int with the number of entries/characters.
-/// Dual-dispatch: Dict returns entry count, String returns character count.
-/// Inherently materializing: must access IndexMap to count entries or count UTF-8 characters.
+/// `length`: Takes 1 arg (a Dict, String, or Bytes). Returns an Int with the number of entries/characters/bytes.
+/// Dual-dispatch: Dict returns entry count, String returns character count, Bytes returns byte count.
+/// Inherently materializing: must access IndexMap to count entries or count UTF-8 characters or bytes.
 pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -94,6 +94,16 @@ pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let len_i64 = i64::try_from(len).map_err(|_| {
                 EvalError::resource_limit_exceeded(
                     "length: string length exceeds i64::MAX".to_string(),
+                    call_span,
+                )
+            })?;
+            ok_val(Value::Int(len_i64), call_span)
+        }
+        Value::Bytes { start, end, .. } => {
+            let len = end - start;
+            let len_i64 = i64::try_from(len).map_err(|_| {
+                EvalError::resource_limit_exceeded(
+                    "length: byte length exceeds i64::MAX".to_string(),
                     call_span,
                 )
             })?;

@@ -18,8 +18,8 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::builtins::{
-    builtin, flatten_overlay, ok_val, reject_named, require_string, stringify, MAX_COLLECT_SIZE,
-    MAX_STRING_SIZE,
+    builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named, require_string, stringify,
+    MAX_COLLECT_SIZE, MAX_STRING_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
@@ -49,11 +49,16 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let init_thunk = Rc::clone(&args[1]);
     let xs = materialize(&args[2], None, &ctx, depth)?;
 
-    // Flatten Overlay to Dict before dispatch.
+    // Flatten Overlay to Dict before dispatch. Bytes → Seq of Int byte values.
     let xs = match xs {
         Value::Overlay(l, r) => {
             Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, depth, call_span)?)
         }
+        Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => bytes_to_seq(&source[start..end], call_span, &ctx),
         other => other,
     };
     match xs {
