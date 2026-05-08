@@ -1,0 +1,8 @@
+# Test URN parsing builtin per RFC 8141
+
+[u: [urn "urn:isbn:0451450523"]]
+
+u.nid
+
+=== out
+String("isbn")
