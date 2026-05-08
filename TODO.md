@@ -140,7 +140,7 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 - [ ] Implement SPKI hash computation for pin matching: SHA-256/384/512 via `ring`, SHA3-256/384/512 via `sha3`, BLAKE3 via `blake3`; validate leaf cert SPKI against `spki-pin` list during TLS handshake (`src/builtins_io.rs`)
 - [ ] Implement ALPN: `alpn` option → `ClientConfig::alpn_protocols`; default `["http/1.1"]` (`src/builtins_io.rs`)
 - [ ] Implement `tls-peer-cert` full: parse leaf certificate, return dict with `subject`, `issuer`, `sans`, `not-before` (@Timestamp), `not-after` (@Timestamp), `spki-sha256` (`src/builtins_io.rs`)
-- [ ] Add `--cap-net NAME=ENTRY` CLI documentation for Connector protocol context (`doc/12-tooling.md`)
+- [x] Add `--cap-net NAME=ENTRY` CLI documentation for Connector protocol context (`doc/12-tooling.md`)
 - [ ] Tests: corpus tests for connect Tcp/Udp, tls-connect with system roots, tls-connect with custom CA, mTLS, certificate pinning (SpkiPin), ALPN negotiation, tls-peer-cert return shape (`tests/corpus/eval/builtins/`)
 
 ### `http-net`: HTTP Client & Network Stack
@@ -171,9 +171,9 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depends on:** `type-classes-constrained` (B4), `param-type-aliases` (B3), let-generalization complete. **Note:** multi-parameter type classes and functional dependencies are explicitly out of scope for this sprint.
 
 **Parsing and AST:**
-- [ ] Verify `[class [ClassName params] superclasses... methods...]` parser against spec syntax; add `class` and `instance` to keyword denylist if not already present (`src/lexer.rs`, `src/parser.rs`)
-- [ ] Verify `[instance [ClassName Type] methods...]` parser; method entries may be signature-only or signature+body (default implementations) (`src/parser.rs`)
-- [ ] Formatter: round-trip `Expr::ClassDecl` and `Expr::InstanceDecl` without losing method bodies (`src/formatter.rs`)
+- [x] Verify `[class [ClassName params] superclasses... methods...]` parser against spec syntax; add `class` and `instance` to keyword denylist if not already present (`src/lexer.rs`, `src/parser.rs`) — verified: parser handles `class`/`instance` contextually (no `[` keyword denylist exists; they're parsed as identifiers at position 0 of a bracket form). ClassDecl/InstanceDecl parsing fully implemented in parser.rs.
+- [x] Verify `[instance [ClassName Type] methods...]` parser; method entries may be signature-only or signature+body (default implementations) (`src/parser.rs`) — verified: InstanceDecl fully implemented.
+- [x] Formatter: round-trip `Expr::ClassDecl` and `Expr::InstanceDecl` without losing method bodies (`src/formatter.rs`) — verified: both variants handled in formatter.rs.
 
 **Kind system:**
 - [ ] `Kind::Var(u32)` variant for kind variables; `KindState` analogous to `InferState` for kind unification (`src/types.rs`)
@@ -219,7 +219,7 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 
 - [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`)
 - [ ] Union type annotations for dual-dispatch parameters: add `@[Dict Seq]` to `sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map` (wrapper), `reduce` (wrapper) — failed in initial attempt due to type system limitation (`stdlib/prelude.llt`)
-- [ ] `doc:` annotations: add `doc: "..."` to the return-type annotation of every exported function in the second (public) dict, e.g. `fn@[type: Bool  doc: "Returns true if pred holds for any element"]` (`stdlib/prelude.llt`)
+- [ ] `doc:` annotations: add `doc: "..."` to the return-type annotation of every exported function in the second (public) dict, e.g. `fn@[type: Bool  doc: "Returns true if pred holds for any element"]` (`stdlib/prelude.llt`) — KNOWN ISSUE: deferred; too many functions (~30+) to annotate mechanically, and the `doc:` field syntax in type annotations is not yet finalized in the type system spec.
 
 **Tasks — `formatter/compact.llt`:**
 

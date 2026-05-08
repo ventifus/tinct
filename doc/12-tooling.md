@@ -503,6 +503,8 @@ llt eval --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
 
 Inside `script.llt`, `$data` and `$out` are available as DirCaps. The program can call `[open data "config.json" "r"]` but cannot open files outside `/var/data` via `$data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
 
+**`--cap-net NAME=ENTRY`** — Inject a network capability as `$NAME` in the root environment. `ENTRY` is currently a stub; in future it will accept a connector dict or protocol specifier.
+
 **`--no-env`** and **`--allow-env NAME`** — Control environment variable access via the `$env` builtin. `--no-env` causes `$env` to return `Null` for all names. `--allow-env NAME` (repeatable) creates an explicit allowlist: only the listed names return their values; all others return `Null`. See §Environment Variable Access.
 
 **Fully sandboxed invocation:**
