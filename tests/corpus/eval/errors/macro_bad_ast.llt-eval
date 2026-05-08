@@ -4,5 +4,8 @@
 ]]
 
 [bad-macro 1]
-=== out
+=== error
 invalid AST dict
+
+=== warn
+[E080] macro 'bad-macro' returned invalid AST dict: missing required field: type (defined at 5:1-5:14)

@@ -1,5 +1,5 @@
 # TypeAssert Record: accessing a guarded field whose runtime value has the wrong type
 # @Any inner wrapper lets the type checker pass; guard fires lazily on field access
 [@[name: String] [@Any [name: 42]]].name
-=== out
+=== error
 [E011] type assertion failed: expected field `name`: String, got Int

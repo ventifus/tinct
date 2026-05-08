@@ -324,14 +324,15 @@ pub(crate) use crate::builtins_dict::{
     builtin_length, builtin_merge,
 };
 
-// I/O builtins: dir-cap, open, slurp, write, connect, lines, emit, env.
+// I/O builtins: dir-cap, open, slurp, write, connect, lines, emit, env, list-dir, stat, etc.
 // Implementations live in builtins_io.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
-    builtin_cap_data, builtin_close, builtin_connect, builtin_dir_cap, builtin_emit, builtin_env,
-    builtin_flush, builtin_has_cap, builtin_lines, builtin_narrow, builtin_net_cap, builtin_open,
-    builtin_revocable, builtin_revoke_cap, builtin_slurp, builtin_write, builtin_write_atomic,
-    builtin_write_handle,
+    builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_dir_cap, builtin_emit,
+    builtin_env, builtin_flush, builtin_has_cap, builtin_lines, builtin_link, builtin_list_dir,
+    builtin_make_dir, builtin_narrow, builtin_net_cap, builtin_open, builtin_read_link,
+    builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_slurp,
+    builtin_stat, builtin_write, builtin_write_atomic, builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
@@ -994,6 +995,38 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("flush", builtin_flush, [Strictness::Seq]),
         builtin!("close", builtin_close, [Strictness::Seq]),
+        builtin!(
+            "list-dir",
+            builtin_list_dir,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("stat", builtin_stat, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "make-dir",
+            builtin_make_dir,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("remove", builtin_remove, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "rename",
+            builtin_rename,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "copy",
+            builtin_copy,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "link",
+            builtin_link,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "read-link",
+            builtin_read_link,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
         // Sequences
@@ -6025,6 +6058,14 @@ mod tests {
         assert!(names.contains(&"write-handle"), "missing write-handle");
         assert!(names.contains(&"flush"), "missing flush");
         assert!(names.contains(&"close"), "missing close");
+        assert!(names.contains(&"list-dir"), "missing list-dir");
+        assert!(names.contains(&"stat"), "missing stat");
+        assert!(names.contains(&"make-dir"), "missing make-dir");
+        assert!(names.contains(&"remove"), "missing remove");
+        assert!(names.contains(&"rename"), "missing rename");
+        assert!(names.contains(&"copy"), "missing copy");
+        assert!(names.contains(&"link"), "missing link");
+        assert!(names.contains(&"read-link"), "missing read-link");
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
         // Sequences
@@ -6105,8 +6146,8 @@ mod tests {
         assert!(names.contains(&"bytes?"), "missing bytes?");
         assert_eq!(
             names.len(),
-            126,
-            "expected 126 builtins, got {}",
+            134,
+            "expected 134 builtins, got {}",
             names.len()
         );
     }

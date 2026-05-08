@@ -3,5 +3,5 @@
 # The key expression $x evaluates in parent scope where x is NOT bound,
 # so this raises E002 undefined variable: x.
 [$x: 1]
-=== out
+=== error
 [E002] undefined variable: x

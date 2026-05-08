@@ -1,4 +1,7 @@
 # cycle: error when called with non-Dict argument
 [cycle 42]
-=== out
+=== error
 [E010] cycle: expected Dict, got Int
+
+=== warn
+cannot unify Seq[?] with 42 at 1:8-1:10

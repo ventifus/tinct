@@ -1,4 +1,7 @@
 # concat: error when first argument is not a sequence
 [concat 42 [1 2 3]]
-=== out
+=== error
 [E010] concat: expected Dict or Seq, got Int
+
+=== warn
+arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:1-1:20

@@ -5,5 +5,8 @@
 # handler invocation (e.g., handler not callable), not to errors raised inside the body.
 [p: [proxy [fn [key] [error "proxy-error"]]]
  result: p.test]
-=== out
+=== error
 proxy field access
+
+=== warn
+cannot unify Proxy with [test: _t2 ...] at 5:1-6:17

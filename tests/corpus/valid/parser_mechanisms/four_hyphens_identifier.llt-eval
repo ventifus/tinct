@@ -3,3 +3,5 @@
 [x: ----]
 === out
 ["x": ----]
+=== warn
+undefined variable: ---- at 2:5-2:9

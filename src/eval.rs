@@ -344,6 +344,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::DirCap => matches!(value, Value::DirCap(_) | Value::RevocableDirCap { .. }),
         Type::NetCap => matches!(value, Value::NetCap(_)),
         Type::Handle => matches!(value, Value::Handle { .. } | Value::WriteHandle { .. }),
+        Type::Uri => matches!(value, Value::Uri { .. }),
         Type::Union(members) => {
             // Value matches union if it matches ANY member type
             members

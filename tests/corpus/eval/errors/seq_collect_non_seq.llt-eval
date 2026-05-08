@@ -1,4 +1,7 @@
 # collect: error on non-Seq (assuming collect requires Seq, not just any dict)
 [collect 42]
-=== out
+=== error
 [E010] collect: expected Seq, got Int
+
+=== warn
+cannot unify Seq[?] with 42 at 1:1-1:13

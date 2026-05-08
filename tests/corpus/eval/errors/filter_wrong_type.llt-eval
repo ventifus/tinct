@@ -1,4 +1,4 @@
 # filter: error when xs is not a Dict or Seq
 [filter [fn [x] true] 42]
-=== out
+=== error
 [E010] filter: expected Dict or Seq, got Int

@@ -1,4 +1,7 @@
 # sort: Seq input produces descriptive error
 [sort [range 0 10]]
-=== out
+=== error
 [E010] sort: expected Dict, got Seq
+
+=== warn
+cannot unify [...] with Seq[Int] at 1:1-1:20

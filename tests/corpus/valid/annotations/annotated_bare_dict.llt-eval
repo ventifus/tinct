@@ -1,3 +1,5 @@
 [Fn@[type: Number  doc: "returns a number"] [a b]]
 === out
 [Fn@["type": Number  "doc": "returns a number"]  [a b]]
+=== warn
+undefined variable: a at 1:46-1:47

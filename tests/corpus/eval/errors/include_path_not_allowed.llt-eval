@@ -1,4 +1,4 @@
 # no_fs
 [include "restricted/secret.llt"]
-=== out
+=== error
 [E042] filesystem access is disabled

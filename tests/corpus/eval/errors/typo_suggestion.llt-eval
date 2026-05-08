@@ -1,4 +1,7 @@
 [data: [username: "alice"]]
 data.usernme
-=== out
+=== error
 [E001] key not found: usernme (did you mean: 'username')
+
+=== warn
+field 'usernme' not found in [username: "alice"] at 2:1-2:13

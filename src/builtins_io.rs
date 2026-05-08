@@ -1209,3 +1209,651 @@ pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Return Null (the inner writer is dropped when the Rc goes out of scope)
     ok_val(Value::Dict(IndexMap::new()), call_span)
 }
+
+/// `list-dir`: List directory entries with metadata.
+/// Takes a DirCap and String path, returns a Seq of metadata Dicts.
+/// Each dict has keys: name, type, size, mtime.
+pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 2 args: DirCap, String path
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("list-dir", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "list-dir: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "list-dir".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("list-dir", path_val, args[1].span)?;
+
+    // Read directory entries
+    let entries = dir.read_dir(&path).map_err(|e| {
+        EvalError::user_error(
+            format!("list-dir: failed to read directory '{}': {}", path, e),
+            call_span,
+        )
+    })?;
+
+    // Collect entries into a vector
+    let mut entry_values = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            EvalError::user_error(
+                format!("list-dir: failed to read directory entry: {}", e),
+                call_span,
+            )
+        })?;
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let metadata = entry.metadata().map_err(|e| {
+            EvalError::user_error(
+                format!("list-dir: failed to read metadata for '{}': {}", name, e),
+                call_span,
+            )
+        })?;
+
+        // Determine file type
+        let file_type = if metadata.is_dir() {
+            "dir"
+        } else if metadata.is_symlink() {
+            "symlink"
+        } else if metadata.is_file() {
+            "file"
+        } else {
+            "other"
+        };
+
+        // Get mtime as unix timestamp
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| {
+                use std::time::UNIX_EPOCH;
+                t.into_std().duration_since(UNIX_EPOCH).ok()
+            })
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // Build metadata dict
+        use crate::value::Key;
+        let mut dict = IndexMap::new();
+        dict.insert(
+            Key::String("name".to_string()),
+            ctx.alloc_thunk(ok_val(string_val(&name), call_span)?),
+        );
+        dict.insert(
+            Key::String("type".to_string()),
+            ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
+        );
+        dict.insert(
+            Key::String("size".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
+        );
+        dict.insert(
+            Key::String("mtime".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
+        );
+
+        entry_values.push(Value::Dict(dict));
+    }
+
+    // Build a sequence from the collected entries
+    let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
+    for entry in entry_values.into_iter().rev() {
+        let head_id = ctx.alloc_thunk(ok_val(entry, call_span)?);
+        let tail_id = ctx.alloc_thunk(ok_val(seq, call_span)?);
+        seq = Value::Seq {
+            head: head_id,
+            tail: tail_id,
+        };
+    }
+
+    ok_val(seq, call_span)
+}
+
+/// `stat`: Get metadata for a file or directory.
+/// Takes a DirCap and String path, returns a metadata Dict.
+/// Dict has keys: name, type, size, mtime, mode, is-dir, is-file, is-symlink.
+pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 2 args: DirCap, String path
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("stat", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "stat: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "stat".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("stat", path_val, args[1].span)?;
+
+    // Get metadata
+    let metadata = dir.metadata(&path).map_err(|e| {
+        EvalError::user_error(
+            format!("stat: failed to get metadata for '{}': {}", path, e),
+            call_span,
+        )
+    })?;
+
+    // Determine file type
+    let file_type = if metadata.is_dir() {
+        "dir"
+    } else if metadata.is_symlink() {
+        "symlink"
+    } else if metadata.is_file() {
+        "file"
+    } else {
+        "other"
+    };
+
+    // Get mtime as unix timestamp
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|t| {
+            use std::time::UNIX_EPOCH;
+            t.into_std().duration_since(UNIX_EPOCH).ok()
+        })
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Get permissions (Unix-specific)
+    #[cfg(unix)]
+    let mode = {
+        use cap_std::fs::PermissionsExt;
+        metadata.permissions().mode() as i64
+    };
+    #[cfg(not(unix))]
+    let mode = 0i64;
+
+    // Build metadata dict
+    use crate::value::Key;
+    let mut dict = IndexMap::new();
+    dict.insert(
+        Key::String("name".to_string()),
+        ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
+    );
+    dict.insert(
+        Key::String("type".to_string()),
+        ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
+    );
+    dict.insert(
+        Key::String("size".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
+    );
+    dict.insert(
+        Key::String("mtime".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
+    );
+    dict.insert(
+        Key::String("mode".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
+    );
+    dict.insert(
+        Key::String("is-dir".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
+    );
+    dict.insert(
+        Key::String("is-file".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
+    );
+    dict.insert(
+        Key::String("is-symlink".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
+    );
+
+    ok_val(Value::Dict(dict), call_span)
+}
+
+/// `make-dir`: Create a directory (and parent directories if needed).
+/// Takes a DirCap and String path, returns Null.
+pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 2 args: DirCap, String path
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("make-dir", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "make-dir: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "make-dir".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("make-dir", path_val, args[1].span)?;
+
+    // Create directory (and parents)
+    dir.create_dir_all(&path).map_err(|e| {
+        EvalError::user_error(
+            format!("make-dir: failed to create directory '{}': {}", path, e),
+            call_span,
+        )
+    })?;
+
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `remove`: Remove a file or empty directory.
+/// Takes a DirCap and String path, returns Null.
+/// Tries to remove as file first, then as directory.
+pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 2 args: DirCap, String path
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("remove", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "remove: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "remove".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("remove", path_val, args[1].span)?;
+
+    // Try to remove as file first, then as directory
+    if let Err(file_err) = dir.remove_file(&path) {
+        dir.remove_dir(&path).map_err(|dir_err| {
+            EvalError::user_error(
+                format!(
+                    "remove: failed to remove '{}' (as file: {}, as dir: {})",
+                    path, file_err, dir_err
+                ),
+                call_span,
+            )
+        })?;
+    }
+
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `rename`: Rename or move a file or directory.
+/// Takes a DirCap, old path String, and new path String, returns Null.
+pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: DirCap, String old_path, String new_path
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+    reject_named("rename", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let old_path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let new_path_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "rename: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "rename".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let old_path = require_string("rename", old_path_val, args[1].span)?;
+    let new_path = require_string("rename", new_path_val, args[2].span)?;
+
+    // Rename (both source and dest are in the same DirCap)
+    dir.rename(&old_path, &dir, &new_path).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "rename: failed to rename '{}' to '{}': {}",
+                old_path, new_path, e
+            ),
+            call_span,
+        )
+    })?;
+
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `copy`: Copy a file.
+/// Takes a DirCap, source path String, and destination path String, returns Null.
+pub(crate) fn builtin_copy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: DirCap, String src_path, String dst_path
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+    reject_named("copy", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let src_path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dst_path_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "copy: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "copy".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let src_path = require_string("copy", src_path_val, args[1].span)?;
+    let dst_path = require_string("copy", dst_path_val, args[2].span)?;
+
+    // Read source file
+    use std::io::Read;
+    let mut src_file = dir.open(&src_path).map_err(|e| {
+        EvalError::user_error(
+            format!("copy: failed to open source file '{}': {}", src_path, e),
+            call_span,
+        )
+    })?;
+    let mut contents = Vec::new();
+    src_file.read_to_end(&mut contents).map_err(|e| {
+        EvalError::user_error(
+            format!("copy: failed to read source file '{}': {}", src_path, e),
+            call_span,
+        )
+    })?;
+
+    // Write to destination file
+    use std::io::Write;
+    let mut dst_file = dir.create(&dst_path).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "copy: failed to create destination file '{}': {}",
+                dst_path, e
+            ),
+            call_span,
+        )
+    })?;
+    dst_file.write_all(&contents).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "copy: failed to write to destination file '{}': {}",
+                dst_path, e
+            ),
+            call_span,
+        )
+    })?;
+
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `link`: Create a hard link.
+/// Takes a DirCap, existing path String, and link path String, returns Null.
+pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: DirCap, String existing_path, String link_path
+    if args.len() != 3 {
+        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+    }
+    reject_named("link", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let existing_path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let link_path_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "link: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "link".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let existing_path = require_string("link", existing_path_val, args[1].span)?;
+    let link_path = require_string("link", link_path_val, args[2].span)?;
+
+    // Create hard link
+    dir.hard_link(&existing_path, &dir, &link_path)
+        .map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "link: failed to create hard link from '{}' to '{}': {}",
+                    existing_path, link_path, e
+                ),
+                call_span,
+            )
+        })?;
+
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `read-link`: Read the target of a symbolic link.
+/// Takes a DirCap and String path, returns the target path as a String.
+pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 2 args: DirCap, String path
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("read-link", named, call_span)?;
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    // Extract DirCap
+    let dir = match dir_val {
+        Value::DirCap(d) => d,
+        Value::RevocableDirCap { inner, revoked } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    "read-link: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            inner
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "read-link".to_string(),
+                "DirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let path = require_string("read-link", path_val, args[1].span)?;
+
+    // Read symlink target
+    let target = dir.read_link(&path).map_err(|e| {
+        EvalError::user_error(
+            format!("read-link: failed to read symlink '{}': {}", path, e),
+            call_span,
+        )
+    })?;
+
+    let target_str = target.to_string_lossy().to_string();
+    ok_val(string_val(&target_str), call_span)
+}

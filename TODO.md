@@ -123,25 +123,6 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Update `stdlib/io.llt`: add `write-line`; extend `write-file`/`write-file-atomic` to accept `content@[String Bytes]`; remove old `open` mode-string wrappers (`stdlib/io.llt`)
 - [ ] Tests: corpus tests for open with flags (Readable, Writable, Binary), write + slurp round-trip, seek + position, close-then-write error, encoding mismatch error (`tests/corpus/eval/builtins/`)
 
-### `fscap-protocol`: FsCap Protocol & DirCap Extension
-
-**Spec chapters:** `doc/whatif/lib-supplemental.md` §Filesystem Capabilities. **Depends on:** `handle-caps`.
-
-- [ ] Implement `list-dir` Rust builtin: DirCap → String → `Seq` of `{name type size mtime}` dicts; use `cap_std::fs::Dir::entries()` (`src/builtins_io.rs`)
-- [ ] Implement `stat` Rust builtin: DirCap → String → full metadata Dict (all fields; null for unavailable) (`src/builtins_io.rs`)
-- [ ] Implement `make-dir` Rust builtin: DirCap → String → null; `mkdir -p` semantics via `Dir::create_dir_all()` (`src/builtins_io.rs`)
-- [ ] Implement `remove` Rust builtin: DirCap → String → null; unlink file or empty dir (`src/builtins_io.rs`)
-- [ ] Implement `rename` Rust builtin: DirCap → String → String → null; atomic via `Dir::rename()` (`src/builtins_io.rs`)
-- [ ] Implement `copy` Rust builtin: DirCap → String → String → null; efficient via `copy_file_range` where available (`src/builtins_io.rs`)
-- [ ] Implement `link` Rust builtin: DirCap → String → String → null; hard link via `Dir::hard_link()` (`src/builtins_io.rs`)
-- [ ] Implement `read-link` Rust builtin: DirCap → String → String; readlink target (`src/builtins_io.rs`)
-- [ ] Add `Value::Uri { scheme: String, uri: String }` to Value enum (`src/value.rs`)
-- [ ] Add `Type::Uri` to Type enum (`src/types.rs`)
-- [ ] Update `--cap-fs` CLI parsing: detect URI scheme; `file://` → DirCap; other schemes → `Value::Uri` (`src/main.rs`)
-- [ ] Register type signatures for all 8 DirCap builtins (`src/types.rs`)
-- [ ] Tests: corpus tests for list-dir, stat, make-dir + remove round-trip, rename atomic, copy, --cap-fs with file:// and s3:// URIs (`tests/corpus/eval/builtins/`, `tests/cli_tests.rs`)
-- [ ] Spec: update `doc/03-data-model.md` §Value Types for Uri; update `doc/12-tooling.md` §CLI for --cap-fs URI
-
 ## Date-Time
 
 Accepted from `doc/whatif/lib-datetime.md` (2026-05-07).

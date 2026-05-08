@@ -1,4 +1,8 @@
 # join: error when separator is not a string
 [join 42 [1 2 3]]
-=== out
+=== error
 [E010] join: expected String, got Int
+
+=== warn
+cannot unify String with 42 at 1:7-1:9
+cannot unify Seq[?] with [0: 1 1: 2 2: 3] at 1:10-1:17

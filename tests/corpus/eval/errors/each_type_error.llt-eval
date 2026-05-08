@@ -1,4 +1,7 @@
 # each: type error when called on Int (expects Dict)
 [each 42]
-=== out
+=== error
 [E010] each: expected Dict, got Int
+
+=== warn
+undefined variable: each at 1:2-1:6

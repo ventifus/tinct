@@ -219,6 +219,9 @@ pub enum Value {
         start: usize,
         end: usize,
     },
+    /// URI — a uniform resource identifier with scheme and URI string.
+    /// Used for capability-tagged URLs (e.g., http://, file://, mailto:).
+    Uri { scheme: String, uri: String },
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
@@ -264,6 +267,7 @@ impl Value {
             Value::Decimal(_) => "Decimal",
             Value::BigInt(_) => "BigInt",
             Value::Bytes { .. } => "Bytes",
+            Value::Uri { .. } => "Uri",
         }
     }
 
@@ -330,6 +334,7 @@ impl fmt::Debug for Value {
                 let bytes = &source[*start..*end];
                 write!(f, "Bytes({} bytes)", bytes.len())
             }
+            Value::Uri { scheme, uri } => write!(f, "Uri({scheme}:{uri})"),
         }
     }
 }
@@ -392,6 +397,7 @@ impl fmt::Display for Value {
                 let bytes = &source[*start..*end];
                 write!(f, "<bytes:{} bytes>", bytes.len())
             }
+            Value::Uri { uri, .. } => write!(f, "{uri}"),
         }
     }
 }
@@ -459,6 +465,16 @@ impl PartialEq for Value {
                     end: end_b,
                 },
             ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
+            (
+                Value::Uri {
+                    scheme: scheme_a,
+                    uri: uri_a,
+                },
+                Value::Uri {
+                    scheme: scheme_b,
+                    uri: uri_b,
+                },
+            ) => scheme_a == scheme_b && uri_a == uri_b,
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
             // Handle and WriteHandle cannot be meaningfully compared (contain RefCell and trait objects).

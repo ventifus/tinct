@@ -3,5 +3,5 @@
   f: [fn [a b@[default: 2] c d] [+ a d]]
   result: [f 1 c: 5]
 ]
-=== out
+=== error
 [E024] missing argument for required parameter

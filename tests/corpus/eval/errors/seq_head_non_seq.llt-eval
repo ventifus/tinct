@@ -1,4 +1,7 @@
 # head: error on non-Seq
 [head 42]
-=== out
+=== error
 [E010] head: expected Seq, got Int
+
+=== warn
+cannot unify Seq[?] with 42 at 1:7-1:9

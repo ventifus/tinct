@@ -3,5 +3,5 @@
   f: [fn [a b c] [+ a [+ b c]]]
   result: [f 1 2 3 b: 99]
 ]
-=== out
+=== error
 [E021] parameter 'b' received both positional and named argument

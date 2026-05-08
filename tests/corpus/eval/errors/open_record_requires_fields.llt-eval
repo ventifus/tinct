@@ -3,5 +3,5 @@
 # At runtime, validate_and_wrap_record rejects because "name" is missing (open records still
 # require the declared fields; only extra fields are allowed).
 [@[name: String  ...] [@Any [score: 42]]]
-=== out
+=== error
 [E011] type assertion failed: expected record with field "name", got record missing field "name"

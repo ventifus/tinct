@@ -2,5 +2,5 @@
 [x: [error "boom"]  y: 42]
 ---
 %.x
-=== out
+=== error
 [E080] boom

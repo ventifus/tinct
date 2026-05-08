@@ -368,6 +368,7 @@ impl fmt::Display for Type {
             Type::DirCap => write!(f, "DirCap"),
             Type::NetCap => write!(f, "NetCap"),
             Type::Handle => write!(f, "Handle"),
+            Type::Uri => write!(f, "Uri"),
             Type::Union(members) => {
                 for (i, member) in members.iter().enumerate() {
                     if i > 0 {
@@ -1393,6 +1394,90 @@ impl TypeEnv {
                     fields: HashMap::new(),
                     tail: RowTail::Empty,
                 })),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "list-dir".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str],
+                ret: Box::new(Type::Unknown), // Returns Seq of metadata Dicts
+                variadic: false,
+            },
+        );
+        env.insert(
+            "stat".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str],
+                ret: Box::new(Type::Unknown), // Returns metadata Dict
+                variadic: false,
+            },
+        );
+        env.insert(
+            "make-dir".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str],
+                // Null -- Type::Record(Row::Empty)
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "remove".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str],
+                // Null -- Type::Record(Row::Empty)
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "rename".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str, Type::Str],
+                // Null -- Type::Record(Row::Empty)
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "copy".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str, Type::Str],
+                // Null -- Type::Record(Row::Empty)
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "link".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str, Type::Str],
+                // Null -- Type::Record(Row::Empty)
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "read-link".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str],
+                ret: Box::new(Type::Str), // Returns target path as String
                 variadic: false,
             },
         );

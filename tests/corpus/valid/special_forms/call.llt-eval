@@ -1,3 +1,5 @@
 [f x y]
 === out
 [f x y]
+=== warn
+undefined variable: f at 1:2-1:3

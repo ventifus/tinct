@@ -117,6 +117,8 @@ pub enum Type {
     /// File/stream handle — wraps Box<dyn BufRead>. Created by `open` or `connect`.
     /// Represents authority to read/write a specific open resource.
     Handle,
+    /// URI — uniform resource identifier with scheme. Represents capability-tagged URLs.
+    Uri,
     /// Union type — represents a value that can be one of several types.
     /// Invariant: members are sorted, deduplicated, and flattened (no nested unions).
     /// Single-element unions are unwrapped to the bare type by normalize_union().
@@ -166,6 +168,7 @@ impl PartialEq for Type {
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
             (Type::Handle, Type::Handle) => true,
+            (Type::Uri, Type::Uri) => true,
             (Type::Union(members1), Type::Union(members2)) => members1 == members2,
             (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
             _ => false,
@@ -764,8 +767,9 @@ fn type_order(ty: &Type) -> u8 {
         Type::DirCap => 16,
         Type::NetCap => 17,
         Type::Handle => 18,
-        Type::Union(_) => 19, // Should not appear after flattening, but included for completeness
-        Type::Intersection(_) => 20, // Should not appear after flattening, but included for completeness
+        Type::Uri => 19,
+        Type::Union(_) => 20, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 21, // Should not appear after flattening, but included for completeness
     }
 }
 

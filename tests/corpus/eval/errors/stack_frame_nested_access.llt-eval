@@ -6,5 +6,9 @@
   ]
 ]
 a.b.c
-=== out
+=== error
 [E002] undefined variable: undefined (did you mean the string "undefined"? Use quotes.)
+
+=== warn
+undefined variable: undefined at 4:10-4:19
+undefined variable: a at 8:1-8:2

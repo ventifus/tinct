@@ -1,4 +1,7 @@
 # each-key: type error when called on String (expects Dict)
 [each-key "hello"]
-=== out
+=== error
 [E010] each-key: expected Dict, got String
+
+=== warn
+undefined variable: each-key at 1:2-1:10

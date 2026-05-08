@@ -3,5 +3,5 @@
   f: [fn [a b] [+ a b]]
   result: [f 1 2 z: 99]
 ]
-=== out
+=== error
 [E022] unexpected named argument

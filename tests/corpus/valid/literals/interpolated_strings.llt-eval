@@ -2,3 +2,5 @@
 i"Hello $name"
 === out
 [call str "Hello " name]
+=== warn
+undefined variable: name at 1:1-1:15
