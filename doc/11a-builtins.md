@@ -330,6 +330,281 @@ All have **dual dispatch** on Dict/Seq. Dict paths preserve keys; Seq paths retu
 
 **Proxy behavior:** When a dict key access or builtin operation fails inside a proxy, the error is captured and stored. Subsequent operations propagate the error. This enables error-tolerant pipelines.
 
+## Network
+
+Network builtins create and operate on `Value::Handle`, `Value::HttpConn`, and URI value types. For the Handle capability row model, see [Data Model](03-data-model.md) §Handles.
+
+All network operations materialize their non-Handle arguments. Handle arguments are passed by reference — they carry the connection state and are not forced as thunks.
+
+### Transport — connect
+
+Opens a transport-layer connection via a Connector and returns a `Handle`.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `connect` | 3–4 | `S × S × S (× S)? → Handle` | Handle | Open a connection; Connector × Transport × host × port |
+
+**Two call forms:**
+
+```tinct
+# Explicit transport:
+[connect net Tcp "api.example.com" 443]   # → Handle{ Binary Readable Writable Stream }
+[connect net Udp "8.8.8.8" 53]            # → Handle{ Binary Readable Writable Datagram }
+
+# Tcp is the default when Transport is omitted:
+[connect net "api.example.com" 443]       # same as Tcp form
+```
+
+The first argument is any Connector — a value with a `connect` method implementing the Connector protocol (see [Data Model](03-data-model.md) §Handles). `NetCap` (injected via `--cap-net`) is the stdlib Connector for OS sockets. User-defined Connectors (WireGuard clients, SOCKS5 wrappers, test fakes) implement the same protocol.
+
+`Transport` is a nominal unit variant: `Tcp` produces a `Stream` Handle; `Udp` produces a `Datagram` Handle. User-defined transport variants are forwarded to the Connector unchanged.
+
+**Error cases:** Type mismatch if host is not String or port is not Int; connection refused or timeout at the OS level; Connector rejects the host/port (allowlist violation for `NetCap`).
+
+### TLS — tls-connect
+
+Establishes a TLS 1.3 session and returns a `Handle` with the `Tls` capability.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `tls-connect` | 2–5 | `S × … → Handle` | Handle | Two forms: Connector form or Handle form |
+
+**Two call forms:**
+
+```tinct
+# Connector form — opens TCP connection and layers TLS:
+[tls-connect net Tcp "api.example.com" 443 opts]
+# → Handle{ Binary Readable Writable Stream Tls }
+
+# Handle form — layers TLS on an existing stream Handle:
+[tcp: [connect net Tcp "10.0.0.5" 443]]          # connect to specific IP
+[tls: [tls-connect tcp "api.example.com" opts]]   # TLS with SNI for domain
+# → Handle{ Binary Readable Writable Stream Tls }
+```
+
+The SNI hostname must always be provided explicitly. It may differ from the IP actually connected to (e.g., when bypassing DNS or routing through a proxy).
+
+**Default trust:** System CA roots via `rustls-native-certs` (Linux: `/etc/ssl/certs`; macOS: Keychain; Windows: Certificate Store). Override via the `opts` dict.
+
+**Options dict (`opts`):**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ca-bundle` | `Handle[Text Readable …]` | — | PEM file via `[open cap path Readable]`; added to system roots |
+| `no-system-roots` | `Bool` | `false` | Drop system roots; trust only `ca-bundle` (fully private PKI) |
+| `mozilla-roots` | `Bool` | `false` | Also load compiled-in Mozilla roots (`webpki-roots`) |
+| `client-cert` | `Handle[Text Readable …]` | — | PEM client certificate for mutual TLS |
+| `client-key` | `Handle[Text Readable …]` | — | PEM private key for the client certificate |
+| `pins` | `Seq[SpkiPin]` | — | SPKI fingerprints; leaf cert must match one (see §SPKI Pinning) |
+| `alpn` | `Seq[String]` | `["http/1.1"]` | ALPN protocol list for negotiation |
+
+All three trust sources (`ca-bundle`, system roots, Mozilla roots) union when combined. Set `no-system-roots: true` to trust only `ca-bundle` (required for fully private PKI where public CAs must be excluded).
+
+**Mutual TLS example:**
+
+```tinct
+[cert: [open fs "certs/client.pem" Readable]]
+[key:  [open fs "certs/client-key.pem" Readable]]
+[h: [tls-connect net "api.internal" 443 [client-cert: cert  client-key: key]]]
+```
+
+**Error cases:** Type mismatch if host/SNI is not String or port is not Int; TLS handshake failure (certificate verification, expired cert, hostname mismatch); SPKI pin mismatch if `pins` is specified and the leaf cert matches none; unsupported transport (Transport must produce a `Stream` Handle in the Connector form).
+
+### SPKI Pinning
+
+SPKI (Subject Public Key Info) hash pinning locks a `tls-connect` call to a specific public key, defending against CA compromise. Pinning survives certificate rotation as long as the key is reused.
+
+A `SpkiPin` value carries the hash algorithm and raw fingerprint bytes:
+
+```tinct
+[spki-pin Sha3-256 [hex-decode "aabbcc..."]]   # SHA3-256 (preferred)
+[spki-pin Sha256   [base64-decode "AAAA...="]] # SHA-256 (compatibility)
+```
+
+`SpkiPin` is constructed via the `spki-pin` stdlib function (two positional args: `HashAlgorithm` variant and `Bytes`). SHA-3 (Keccak construction) is preferred for new deployments; SHA-256 is accepted for compatibility with existing tooling.
+
+Maintain both current and next-rotation pins to allow key rotation without a service outage — `tls-connect` succeeds if the leaf SPKI matches any pin in the list using that pin's algorithm.
+
+### TLS Introspection — tls-peer-cert
+
+Reads the peer certificate from a TLS Handle.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `tls-peer-cert` | 1 | `S → D` | Dict | Return peer certificate fields; requires Handle with `Tls` capability |
+
+The argument must be a `Handle` carrying the `Tls` capability (i.e., produced by `tls-connect`). The `Tls` capability in the Handle's cap row stores this information at handshake time; `tls-peer-cert` extracts it without making any additional network calls.
+
+The returned dict has these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `subject` | `String` | Distinguished name, e.g. `"CN=api.internal,O=Internal Corp"` |
+| `issuer` | `String` | Distinguished name of the signing CA |
+| `sans` | `Dict` (list of `String`) | Subject Alternative Names |
+| `not-before` | `Timestamp` | Certificate validity start (lib-datetime Timestamp) |
+| `not-after` | `Timestamp` | Certificate validity end; compare with `[now clock]` for expiry checks |
+| `spki-sha256` | `String` | `sha256//base64=` format SPKI fingerprint |
+
+```tinct
+[h:    [tls-connect net "api.internal" 443]]
+[cert: [tls-peer-cert h]]
+[days-left: [days-between [parse-timestamp cert.not-after] [now clock]]]
+[if [< days-left 30]
+  [emit [str "WARNING: cert expires in " days-left " days"]]
+  null]
+```
+
+**Error cases:** Type mismatch if arg is not a Handle; capability error if the Handle does not carry the `Tls` capability (calling `tls-peer-cert` on a plain TCP Handle is a static type error and a runtime capability error).
+
+### Handle Capability Access — cap-data, has-cap?
+
+Read capability data from the Handle's capability row.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `cap-data` | 2 | `S × S → V` | Any | Return the `Value` stored for capability `name` in Handle `h` |
+| `has-cap?` | 2 | `S × S → V` | Bool | Return true if Handle `h` carries capability `name` |
+
+```tinct
+[has-cap? h "Tls"]        # → true if h was created by tls-connect
+[cap-data h "Tls"]        # → dict with cert fields (same as tls-peer-cert)
+[has-cap? h "Readable"]   # → true for all read-capable Handles
+```
+
+`cap-data` errors if the named capability is absent. Use `has-cap?` to test first. Boolean capabilities (Readable, Writable, Stream, Datagram, Seekable, Binary, Text) store `Value::Null` as their data; `cap-data` on these returns `null`.
+
+**Error cases:** Type mismatch if first arg is not Handle or second arg is not String; key-not-found error from `cap-data` if capability is absent.
+
+### HTTP Sessions — http-connect
+
+Opens a persistent HTTP connection pool and returns a `Value::HttpConn`.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `http-connect` | 2–4 | `S × … → HttpConn` | HttpConn | Two forms: Connector form or Handle form |
+
+**Two call forms:**
+
+```tinct
+# Connector form — http-connect picks the transport:
+[client: [http-connect wg "api.example.com" 443 []]]
+# → HttpConn (HTTP/2 or HTTP/3 via ALPN negotiation)
+
+# Handle form — use an existing TLS stream:
+[tcp: [connect net Tcp "10.0.0.5" 443]]
+[tls: [tls-connect tcp "api.example.com" opts]]
+[client: [http-connect tls "api.example.com"]]
+# → HttpConn (reuses the established TLS stream)
+```
+
+`http-connect` selects the appropriate transport internally: HTTP/1.1 and HTTP/2 use `Tcp` with ALPN negotiation; HTTP/3 uses `Udp` and QUIC internally (handled by `reqwest`/`quinn`). When given a WireGuard Connector, `http-connect wg "api.example.com" 443 []` asks `wg` for a `Udp` Handle and runs QUIC over it — the Connector only needs to implement the transport layer.
+
+Passing the `HttpConn` to `http-get` reuses the connection:
+
+```tinct
+[users:  [http-get client "/v1/users"  []]]
+[posts:  [http-get client "/v1/posts"  []]]
+```
+
+**Error cases:** Connection refused; TLS handshake failure; protocol negotiation failure.
+
+### HTTP Requests — http-get, fetch
+
+Single-shot HTTP requests. `http-get` is implemented in pure-tinct (`stdlib/net.llt`) over a `Handle[Binary Readable Writable]`; it handles both `http://` and `https://` by dispatching on `url.scheme`. `https-get` does not exist as a separate function.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `http-get` | 2–4 | `S × S (× S)? (× S)? → D` | Dict | HTTP GET request; dispatches on url.scheme for http/https |
+| `fetch` | 2 | `S × S → D` | Dict | Convenience wrapper: `http-get connector url [] null` |
+
+**Signatures:**
+
+```
+http-get : [fn@Dict [connector@Connector  url@Url  headers@Dict  tls-opts@[TlsOpts Null]]]
+fetch    : [fn@Dict [connector@Connector  url@Url]]
+```
+
+`http-get` accepts either a plain Connector (opens a fresh connection per call) or an `HttpConn` (reuses the existing session). When passed an `HttpConn`, the `tls-opts` argument is ignored — TLS was configured at `http-connect` time.
+
+The returned dict:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `Int` | HTTP status code, e.g. `200`, `404` |
+| `headers` | `Dict` | Response headers, lowercase keys |
+| `body` | `String` | Response body as UTF-8 string |
+
+```tinct
+[resp: [fetch net [url "https://api.example.com/config"]]]
+resp.status   # → 200
+resp.body     # → "{...}"
+```
+
+**Error cases:** Type mismatch if url is not Url or HttpConn; unsupported scheme (only `"http"` and `"https"` are handled); connection or TLS errors; non-UTF-8 response body.
+
+### Proxy Tunnels — socks5-connect, proxy-connect
+
+Tunnel a Handle through a proxy server, returning a new Handle with the same capabilities as the original.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `socks5-connect` | 4 | `S × S × S × S → Handle` | Handle | SOCKS5 tunnel: `h host port creds` |
+| `proxy-connect` | 3 | `S × S × S → Handle` | Handle | HTTP CONNECT tunnel: `h host port` |
+
+```tinct
+# SOCKS5 proxy → TLS → HTTP/2:
+[proxy:    [connect net Tcp "proxy.internal" 1080]]
+[tunneled: [socks5-connect proxy "api.example.com" 443 creds]]
+[tls:      [tls-connect tunneled "api.example.com" opts]]
+[client:   [http-connect tls "api.example.com"]]
+```
+
+`socks5-connect` wraps `h` (a plain TCP Handle to the proxy server) with a SOCKS5 negotiation, forwarding subsequent reads and writes to the remote `host:port` through the proxy. `creds` is a dict with optional `username` and `password` keys (or `null` for unauthenticated). `proxy-connect` uses the HTTP CONNECT method instead of SOCKS5.
+
+**Error cases:** Type mismatch if h is not a Handle; proxy negotiation failure; proxy rejects the target host/port.
+
+### URI Builtins — uri, url, urn
+
+Parse URI strings into structured values with dot-accessible fields.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `uri` | 1 | `S → Uri` | Uri | Parse any RFC 3986 URI string → `Value::Uri` |
+| `url` | 1 | `S → Url` | Url | Parse hierarchical URL → `Value::Url`; errors if no authority |
+| `urn` | 1 | `S → Urn` | Urn | Parse URN → `Value::Urn`; errors if not `urn:` scheme |
+
+For field descriptions, see [Data Model](03-data-model.md) §URI Values.
+
+**Error cases:**
+- `uri`: Parse error if string is not a valid RFC 3986 URI
+- `url`: Parse error if not a valid URI; type error if no authority (host) component is present
+- `urn`: Parse error if not a valid URI; type error if scheme is not `"urn"`
+
+### URI Helpers — uri-params, uri-origin, uri->string
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `uri-params` | 1 | `S → D` | Dict | Parse `u.query` → `{key: value, …}`; returns `{}` if query is null |
+| `uri-origin` | 1 | `S → V` | String | `"scheme://host:port"` — Url only (host is required) |
+| `uri->string` | 1 | `S → V` | String | Reconstruct the full URI/URL/URN string from a Uri, Url, or Urn value |
+
+```tinct
+[u: [url "https://api.example.com/search?q=tinct&page=1"]]
+[uri-params u]     # → [q: "tinct"  page: "1"]
+[uri-origin u]     # → "https://api.example.com:443"
+[uri->string u]    # → "https://api.example.com/search?q=tinct&page=1"
+```
+
+`uri-params` splits on `&`, then on `=`, URL-decoding both key and value. Repeated keys produce a dict with the last value (last-wins). An empty query string returns an empty dict.
+
+`uri-origin` requires a `Url` (host is guaranteed present); calling it on a `Uri` whose host is null is a type error.
+
+**Error cases:**
+- `uri-params`: Type mismatch if arg is not Uri or Url; malformed query string (percent-decode failure)
+- `uri-origin`: Type mismatch if arg is not Url
+- `uri->string`: Type mismatch if arg is not Uri, Url, or Urn
+
 ## Stable Aliases
 
 The following `builtin-*` aliases provide access to the raw Rust implementations, bypassing any LLT-implemented wrappers in the prelude:
@@ -353,7 +628,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 77 Rust-native builtins + 12 stable aliases = 89 registered names.
+**Total:** 92 Rust-native builtins + 12 stable aliases = 104 registered names. (Network section adds 15 builtins: connect, tls-connect, tls-peer-cert, cap-data, has-cap?, http-connect, http-get, fetch, socks5-connect, proxy-connect, uri, url, urn, uri-params, uri-origin, uri->string — minus connect and net-cap which were already counted in I/O.)
 
 **By category:**
 - Arithmetic: 4 (+, -, *, /)
@@ -368,6 +643,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 - Type introspection: 10 (type-of, int?, float?, num?, str?, bool?, null?, dict?, fn?, seq?)
 - Schema validation: 1 (validate)
 - I/O: 15 (emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, net-cap, connect, lines, write, write-atomic, from-json, include)
+- Network: 13 (tls-connect, tls-peer-cert, cap-data, has-cap?, http-connect, http-get, fetch, socks5-connect, proxy-connect, uri, url, urn, uri-params, uri-origin, uri->string)
 - Sequences: 16 (seq, head, tail, collect, range, repeat, cycle, iterate, unfold, map, filter, take, drop, reduce, join, concat)
 - List operations: 4 (rest, cons, reverse, sort)
 - Proxy: 1

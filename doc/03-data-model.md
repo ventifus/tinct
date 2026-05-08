@@ -163,9 +163,156 @@ data.0                          # integer dot access — looks up Key::Int(0)
 
 ### Lazy Sequences — Value::Seq
 
-**Lazy sequences (`Value::Seq`) are a runtime-only value type** representing infinite or demand-driven data (from `$range`, `$repeat`, `$cycle`, `$iterate`, etc.). They exist alongside `Dict`, `Int`, `Float`, `String`, `Bool`, and `Function` in the value representation. Sequences have no literal syntax — they are produced by builtin functions and consumed by sequence operations like `$map`, `$filter`, `$take`, `$collect`.
+**Lazy sequences (`Value::Seq`) are a runtime-only value type** representing infinite or demand-driven data (from `$range`, `$repeat`, `$cycle`, `$iterate`, etc.). They exist alongside `Dict`, `Int`, `Float`, `String`, `Bool`, `Function`, `Handle`, `HttpConn`, `Uri`, `Url`, and `Urn` in the value representation. Sequences have no literal syntax — they are produced by builtin functions and consumed by sequence operations like `$map`, `$filter`, `$take`, `$collect`.
 
 Sequences are dual-dispatch targets: `$map` on a Seq returns a lazy Seq, `$filter` on a Seq returns a lazy Seq. Use `$collect` to materialize a Seq to a dense dict. Attempting operations that require full materialization (like `$sort` or `$length`) on an infinite Seq will error. See doc/08-evaluation.md §Lazy Sequences for implementation details and laziness semantics.
+
+### Handles — Value::Handle
+
+**Handles (`Value::Handle`) are runtime-only values representing open I/O resources** — file descriptors, network streams, and other OS-level channels. A Handle is an unforgeable reference in the capability sense (Dennis & Van Horn 1966): holding it is sufficient authority to perform I/O; no separate capability argument is required at use time.
+
+#### Capability Row
+
+Every Handle carries a **capability row** — a `HashMap<String, Value>` mapping capability names to associated data. The row is immutable after construction; each operation that adds a capability produces a new Handle wrapping the old one. The capability row determines which builtins are callable on the Handle:
+
+| Capability | Value | Granted by | Required by |
+|-----------|-------|------------|-------------|
+| `Readable` | `Value::Null` | `open … Readable`, `connect`, `tls-connect` | `slurp`, `lines`, `read` |
+| `Writable` | `Value::Null` | `open … Writable`, `connect`, `tls-connect` | `write`, stream writes |
+| `Binary` | `Value::Null` | `connect`, `tls-connect` | `slurp` (binary mode) |
+| `Text` | `Value::Null` | `open … Readable` on text files | `lines`, `slurp` (text mode) |
+| `Stream` | `Value::Null` | `connect … Tcp`, `tls-connect` | streaming reads/writes |
+| `Datagram` | `Value::Null` | `connect … Udp` | datagram I/O |
+| `Seekable` | `Value::Null` | regular file `open` | `seek` |
+| `Tls` | `Value::Dict` (TLS metadata) | `tls-connect` | `tls-peer-cert` |
+
+Boolean capabilities (Readable, Writable, Binary, Text, Stream, Datagram, Seekable) store `Value::Null` as their associated data — the presence of the key is the entire capability. Protocol capabilities like `Tls` store structured data: the `Tls` value is a dict containing the leaf certificate metadata and negotiated ALPN protocol string.
+
+**Reading capability data:** Use `cap-data h name` to read the associated `Value` for a capability, and `has-cap? h name` to test whether a capability is present without extracting data.
+
+#### Network Handles
+
+Network builtins produce Handles with these capability rows:
+
+```
+connect connector Tcp  host port  → Handle{ Binary Readable Writable Stream }
+connect connector Udp  host port  → Handle{ Binary Readable Writable Datagram }
+tls-connect …                    → Handle{ Binary Readable Writable Stream Tls→{cert…} }
+```
+
+The `Tls` capability value is a dict with the same fields as the `PeerCert` type returned by `tls-peer-cert` (see [Builtins](11a-builtins.md) §Network).
+
+#### Handle Immutability and Composability
+
+Handles compose: `tls-connect` wraps an existing stream Handle and returns a new Handle with the `Tls` capability added. The original Handle is consumed — the new Handle is the only reference to the underlying connection. Proxy builtins (`socks5-connect`, `proxy-connect`) follow the same pattern: they accept a plain Handle and return a new Handle tunneled through the proxy, with the original Handle's capabilities preserved.
+
+### HTTP Connections — Value::HttpConn
+
+**`Value::HttpConn` is a runtime-only value representing a persistent HTTP connection pool.** Unlike a raw Handle (which models one bidirectional byte stream), an `HttpConn` manages the full HTTP session state required for connection reuse across HTTP/1.1, HTTP/2, and HTTP/3.
+
+`HttpConn` is opaque — there is no field access syntax for it. It is accepted as the first argument to `http-get` (instead of a plain Connector), which then reuses the connection rather than opening a new one:
+
+```tinct
+# All three requests share one HTTP/2 connection:
+[client: [http-connect wg "api.example.com" 443 []]]
+[users:  [http-get client "/v1/users"  []]]
+[posts:  [http-get client "/v1/posts"  []]]
+[config: [http-get client "/v1/config" []]]
+```
+
+`http-connect` accepts either a Connector (opens a new connection) or an existing TLS Handle (reuses an established stream). See [Builtins](11a-builtins.md) §Network for both call forms.
+
+**Why a separate type rather than Handle:** HTTP/2 and HTTP/3 multiplex multiple request/response streams over one connection using protocol-level framing (stream IDs, HPACK compression, QUIC streams). This cannot be expressed as a single `Handle[Readable Writable]` byte stream — the multiplexing state lives in Rust inside the `HttpConn` value, implemented via `reqwest`. HTTP/1.0 single-shot requests are handled by pure-tinct `http-get` over a plain Handle; `HttpConn` is for session reuse with HTTP/2+.
+
+### URI Values — Uri, Url, Urn
+
+Three RFC 3986 value types represent parsed URIs at the tinct value level. These are produced by the `uri`, `url`, and `urn` builtins and are distinct from raw strings — their fields are accessible via dot notation.
+
+#### Uri — Value::Uri (RFC 3986 §3)
+
+**`Value::Uri` represents a generic RFC 3986 URI**, covering all URI forms including non-hierarchical ones (mailto:, tel:, urn:, news:). The `uri` builtin parses any URI string and returns a Uri.
+
+Fields accessible via dot notation:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scheme` | `String` | Lowercase scheme, e.g. `"https"`, `"mailto"`, `"urn"` |
+| `username` | `String` or `Null` | Null if absent or URI is non-hierarchical |
+| `password` | `String` or `Null` | Null if absent; splitting userinfo on `:` is a practical convention — RFC 3986 §3.2.1 treats the userinfo component as opaque. Password in URIs is deprecated per RFC 7235 §6.5. |
+| `host` | `String` or `Null` | Null for non-hierarchical URIs (mailto:, tel:, urn:, news:) |
+| `port` | `Int` or `Null` | Null for non-hierarchical or when unspecified; an empty port string (e.g., `"http://host:/path"`) is parsed as null, not an error |
+| `path` | `String` | Always present per RFC 3986 §3.3 (though may be empty) |
+| `query` | `String` or `Null` | Raw query string without `?`; null if absent |
+| `fragment` | `String` or `Null` | Fragment without `#`; null if absent |
+
+```tinct
+[u: [uri "https://user:pass@host:8080/path?q=1#frag"]]
+u.scheme    # → "https"
+u.host      # → "host"
+u.port      # → 8080
+u.path      # → "/path"
+u.query     # → "q=1"
+u.fragment  # → "frag"
+
+[m: [uri "mailto:user@example.com"]]
+m.scheme    # → "mailto"
+m.host      # → null (non-hierarchical)
+m.path      # → "user@example.com"
+```
+
+#### Url — Value::Url (RFC 3986 §3.2)
+
+**`Value::Url` represents a hierarchical URI with a required authority (host and port)**. The `url` builtin parses the string and errors if the URI has no authority component. All network functions (`http-get`, `http-connect`, `tls-connect`) accept `Url`, not the generic `Uri`.
+
+Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scheme` | `String` | Lowercase: `"https"`, `"http"`, `"postgres"`, `"s3"`, `"amqp"`, etc. |
+| `username` | `String` or `Null` | Null if absent |
+| `password` | `String` or `Null` | Null if absent; splitting userinfo on `:` is a convention not mandated by RFC 3986 §3.2.1; deprecated for HTTP (RFC 7235 §6.5) |
+| `host` | `String` | Always present — validated at parse time; IPv6 addresses without brackets |
+| `port` | `Int` | Always present — scheme-defaulted if absent (e.g., `443` for https, `80` for http); empty port string treated as absent and then defaulted |
+| `path` | `String` | Always present; `"/"` if absent in the input string |
+| `query` | `String` or `Null` | Raw query string without `?`; null if absent |
+| `fragment` | `String` or `Null` | Fragment without `#`; null if absent |
+
+```tinct
+[u: [url "https://api.example.com/v1/users?page=2"]]
+u.scheme    # → "https"
+u.host      # → "api.example.com"
+u.port      # → 443
+u.path      # → "/v1/users"
+u.query     # → "page=2"
+
+# url errors for non-hierarchical URIs:
+[url "mailto:user@example.com"]   # → Error: no authority component
+[url "urn:isbn:978-0-306-40615-7"] # → Error: no authority component
+```
+
+#### Urn — Value::Urn (RFC 8141)
+
+**`Value::Urn` represents a URN per RFC 8141**: `urn:NID:NSS[?+r][?=q][#f]`. The `urn` builtin parses the string and errors if it is not a `urn:` URI.
+
+Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `nid` | `String` | Namespace Identifier: `"isbn"`, `"uuid"`, `"oasis"`, etc. |
+| `nss` | `String` | Namespace Specific String |
+| `r-component` | `String` or `Null` | RFC 8141 §2.3 resolution parameters (`?+…`); null if absent. RFC 8141 §2.3.1 states this component SHOULD NOT be used (reserved for future use); it is parsed and stored but should be ignored in most contexts. |
+| `q-component` | `String` or `Null` | RFC 8141 §2.3 query parameters (`?=…`); null if absent |
+| `fragment` | `String` or `Null` | Fragment (`#…`); null if absent |
+
+```tinct
+[u: [urn "urn:isbn:978-0-306-40615-7"]]
+u.nid    # → "isbn"
+u.nss    # → "978-0-306-40615-7"
+
+[u: [urn "urn:uuid:6e8bc430-9c3a-11d9-9669-0800200c9a66"]]
+u.nid    # → "uuid"
+u.nss    # → "6e8bc430-9c3a-11d9-9669-0800200c9a66"
+```
 
 ### List vs Dict Operations — Renumbering Rule
 

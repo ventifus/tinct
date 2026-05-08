@@ -279,6 +279,8 @@ pub(crate) fn entry_key_name(
         Some(key_expr) => match &key_expr.node {
             Expr::Str(s) => Some(s.clone()),
             Expr::Int(n) => Some(n.to_string()),
+            // Annotated key: name@[doc: "..."] — extract name directly
+            Expr::Annotated { name, .. } => Some(name.clone()),
             _ => match infer_expr(key_expr, env, state, type_map) {
                 Ok(Type::StringLiteral(s)) => Some(s),
                 Ok(Type::IntLiteral(n)) => Some(n.to_string()),

@@ -142,14 +142,20 @@ fn extract_bindings_from_expr(expr: &Expr, type_map: &TypeMap, env: &mut TypeEnv
         Expr::Dict(entries) => {
             // Extract all top-level bindings from this dict
             for entry in entries {
-                // Only process entries with explicit string keys
+                // Only process entries with explicit string keys (VarRef or Annotated)
                 if let Some(ref key_expr) = entry.node.key {
-                    if let Expr::Str(name) = &key_expr.node {
+                    let name = match &key_expr.node {
+                        Expr::Str(n) => Some(n.clone()),
+                        Expr::VarRef { name, .. } => Some(name.clone()),
+                        Expr::Annotated { name, .. } => Some(name.clone()),
+                        _ => None,
+                    };
+                    if let Some(name) = name {
                         // Look up the value's inferred type in the type_map
                         let value_span = entry.node.value.span;
                         let key = (value_span.start.offset, value_span.end.offset);
                         if let Some(ty) = type_map.get(&key) {
-                            env.insert(name.clone(), ty.clone());
+                            env.insert(name, ty.clone());
                         }
                     }
                 }

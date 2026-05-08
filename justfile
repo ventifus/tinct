@@ -179,54 +179,10 @@ version:
     {{container}} run {{run_flags}} {{rust_image}} cargo --version
 
 # Show current vs latest versions of Rust toolchain and all direct dependencies.
-# Reads Cargo.lock for locked versions; queries crates.io for latest.
-# Runs on host (no container overhead) — requires curl and internet access.
+# Reads Cargo.lock for locked versions; queries crates.io and rust-lang.org via HTTPS.
+# Runs on host (no container overhead) — requires tinct in PATH (just install).
 versions:
-    #!/usr/bin/env bash
-    LOCK=Cargo.lock
-
-    echo ""
-    echo "Rust toolchain"
-    printf "  %-10s %s\n" "pinned:" "{{rust_version}}"
-    latest_rust=$(curl -sf --max-time 10 \
-        https://static.rust-lang.org/dist/channel-rust-stable.toml 2>/dev/null \
-        | awk '/^\[pkg\.rust\]/{found=1} found && /^version =/{split($0,a,"\""); print a[2]; exit}')
-    [ -z "$latest_rust" ] && latest_rust="?"
-    if [ "{{rust_version}}" = "$latest_rust" ]; then
-        printf "  %-10s %s  ✓\n" "latest:" "$latest_rust"
-    else
-        printf "  %-10s %s  ←\n" "latest:" "$latest_rust"
-    fi
-
-    echo ""
-    echo "Direct dependencies (Cargo.lock → crates.io latest)"
-    printf "  %-22s  %-12s  %-12s\n" "crate" "locked" "latest"
-    printf "  %-22s  %-12s  %-12s\n" "─────────────────────" "──────────" "──────────"
-
-    # Derive direct dep names from Cargo.toml: any [*dependencies*] section entry.
-    crates=$(awk '
-        /dependencies/ && /^\[/ { in_dep=1; next }
-        /^\[/          { in_dep=0 }
-        in_dep && /^[a-zA-Z]/ { match($0, /^[a-zA-Z0-9_-]+/); print substr($0, RSTART, RLENGTH) }
-    ' Cargo.toml | sort -u)
-
-    for crate in $crates; do
-        locked=$(grep -A2 "^name = \"$crate\"$" "$LOCK" \
-            | awk -F'"' '/^version/{print $2; exit}')
-        latest=$(curl -sf --max-time 5 \
-            "https://crates.io/api/v1/crates/$crate" \
-            -H "User-Agent: tinct-version-check/0.1" \
-            2>/dev/null \
-            | grep -o '"max_stable_version":"[^"]*"' | head -1 | cut -d'"' -f4)
-        [ -z "$locked" ] && locked="—"
-        [ -z "$latest" ] && latest="?"
-        if [ "$locked" = "$latest" ]; then
-            printf "  %-22s  %-12s  %-12s  ✓\n" "$crate" "$locked" "$latest"
-        else
-            printf "  %-22s  %-12s  %-12s  ←\n" "$crate" "$locked" "$latest"
-        fi
-    done
-    echo ""
+    RUST_VERSION={{rust_version}} tinct run samples/versions.llt
 
 # Build documentation
 doc:
@@ -317,6 +273,16 @@ volume-info:
     @echo ""
     @echo "Volume disk usage:"
     @{{container}} system df -v 2>/dev/null | grep -E "(VOLUME NAME|{{project_name}})" || true
+
+# Download RFC reference documents to .training/rfcs/
+download-rfcs:
+    mkdir -p .training/rfcs
+    curl -sSL https://www.rfc-editor.org/rfc/rfc3986.txt -o .training/rfcs/rfc3986.txt
+    curl -sSL https://www.rfc-editor.org/rfc/rfc7320.txt -o .training/rfcs/rfc7320.txt
+    curl -sSL https://www.rfc-editor.org/rfc/rfc8820.txt -o .training/rfcs/rfc8820.txt
+    curl -sSL https://www.rfc-editor.org/rfc/rfc8141.txt -o .training/rfcs/rfc8141.txt
+    curl -sSL https://www.rfc-editor.org/rfc/rfc3987.txt -o .training/rfcs/rfc3987.txt
+    @echo "Downloaded RFCs to .training/rfcs/"
 
 # Add === warn sections to corpus files that produce type warnings
 add-warn-sections:

@@ -1,0 +1,86 @@
+# versions.llt — check Rust toolchain and dependency versions
+# Run from project root: RUST_VERSION=<pinned> tinct run samples/versions.llt
+# Reads Cargo.toml + Cargo.lock; queries rust-lang.org and crates.io via HTTPS.
+
+[
+  # Capabilities resolved from CWD (project root when invoked via justfile)
+  root: [dir-cap "."]
+  nc:   [net-cap ["static.rust-lang.org:443" "crates.io:443"]]
+
+  # Stdlib modules (paths relative to project root via root cap)
+  toml:    [include root "stdlib/toml-lite.llt"]
+  net-lib: [include root "stdlib/net.llt"]
+
+  # Sequence a dict of effects left-to-right (fold forces each value in key order)
+  run-seq: [fn [effects] [fold [fn [acc e] [merge acc e]] [] effects]]
+
+  # Pinned Rust version — injected by justfile as RUST_VERSION env var
+  rust-version: [.ok [env "RUST_VERSION"]]
+
+  # Parse local project files
+  cargo-toml: [toml.parse-toml-lite [slurp [open root "Cargo.toml" "r"]]]
+  cargo-lock: [toml.parse-toml-lite [slurp [open root "Cargo.lock" "r"]]]
+
+  # Fetch and parse latest Rust toolchain version from rust-lang.org
+  rust-resp:    [net-lib.fetch nc "https://static.rust-lang.org/dist/channel-rust-stable.toml"]
+  rust-channel: [toml.parse-toml-lite rust-resp.body]
+  latest-rust:  [first [split " " rust-channel.pkg.rust.version]]
+
+  # Collect dep names from all *dependencies* sections in Cargo.toml
+  collect-dep-names: [fn [sections]
+    [builtin-reduce
+      [fn [acc section-name]
+        [r: [try [fn [] [keys [get section-name cargo-toml]]]]
+        [builtin-if [builtin-eq [first [keys r]] "ok"]
+          [builtin-reduce [fn [a depname] [append a depname]] acc r.ok]
+          acc]]]
+      []
+      sections]]
+
+  dep-names: [sorted [collect-dep-names
+    ["dependencies" "dev-dependencies" "build-dependencies"]]]
+
+  # Find the locked version for a crate name by scanning Cargo.lock packages
+  packages:  cargo-lock.package
+  pkg-count: [length packages]
+
+  find-locked: [fn [name] [find-loop 0 name]]
+
+  find-loop: [fn [i name]
+    [builtin-if [builtin-lt i pkg-count]
+      [pkg: [get i packages]
+      [builtin-if [builtin-eq pkg.name name]
+        pkg.version
+        [find-loop [+ i 1] name]]]
+      "—"]]
+
+  # Fetch the latest stable version for a crate from crates.io
+  crate-latest: [fn [name]
+    [resp: [net-lib.fetch nc [str "https://crates.io/api/v1/crates/" name]]
+    [builtin-if [builtin-eq resp.status 200]
+      [data: [from-json resp.body]
+      [get "max_stable_version" [get "crate" data]]]
+      "?"]]]
+
+  mark: [fn [a b] [if [builtin-eq a b] "✓" "←"]]
+
+  emit-dep-row: [fn [name]
+    [locked: [find-locked name]
+    [latest: [crate-latest name]
+    [emit [str
+      "  " [pad-right name   22 " "]
+      "  " [pad-right locked 12 " "]
+      "  " [pad-right latest 12 " "]
+      "  " [mark locked latest]
+      "\n"]]]]]
+
+  result: [run-seq
+    [0: [emit "\nRust toolchain\n"]
+     1: [emit [str "  " [pad-right "pinned:" 10 " "] " " rust-version "\n"]]
+     2: [emit [str "  " [pad-right "latest:" 10 " "] " " latest-rust "  " [mark rust-version latest-rust] "\n"]]
+     3: [emit "\nDirect dependencies (Cargo.lock → crates.io latest)\n"]
+     4: [emit [str "  " [pad-right "crate"                 22 " "] "  " [pad-right "locked" 12 " "] "  " [pad-right "latest" 12 " "] "\n"]]
+     5: [emit [str "  " [pad-right "─────────────────────" 22 " "] "  " [pad-right "──────────" 12 " "] "  " [pad-right "──────────" 12 " "] "\n"]]
+     6: [fold [fn [acc e] [merge acc e]] [] [map emit-dep-row dep-names]]
+     7: [emit "\n"]]]
+]
