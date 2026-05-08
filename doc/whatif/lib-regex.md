@@ -1,6 +1,6 @@
 # What If: Pure-Tinct Regular Expression Engine
 
-**State:** Proposal
+**State:** Accepted — 2026-05-07
 
 What would it take to implement a full regular expression engine
 entirely in pure-tinct, with no Rust builtins and no crate dependency?
@@ -8,23 +8,17 @@ entirely in pure-tinct, with no Rust builtins and no crate dependency?
 ## Current State
 
 tinct has no pattern matching for strings. The only string inspection
-tools are `split`, `replace`, `upper`, `lower`, `trim`, and the
-pure-tinct predicates in `stdlib/strings.llt` (`str-contains?`,
-`str-starts-with?`, `str-ends-with?`). These cover simple cases but
-cannot express structured patterns.
-
-The `stdlib/strings.llt` predicates are implemented by splitting on the
-needle and checking part counts — correct for containment but unable to
-handle patterns like character classes, quantifiers, alternation, or
-anchors:
+tools are `split`, `replace`, `upper`, `lower`, `trim`, `contains?`
+(substring search), `starts-with?`, and `ends-with?`. These cover
+simple cases but cannot express structured patterns.
 
 ```tinct
 # Current: test if string needs YAML quoting
 # Must enumerate every special character individually
 yaml-needs-quoting?: [fn [s]
   [or [= "" s]
-    [or [str-contains? ":" s]
-      [or [str-contains? "#" s]
+    [or [contains? s ":"]
+      [or [contains? s "#"]
         # ... 12 more cases
         ]]]]
 ```
@@ -42,7 +36,7 @@ yaml-needs-quoting?: [fn [s]
 
 **Serialization helpers become writable in one line.** `yaml-quote-string`,
 `toml-escape`, `nginx-escape` all reduce to a single `re-match` call
-instead of a chain of `str-contains?` checks.
+instead of a chain of `contains?` checks.
 
 **The NFA is a tinct value.** Because the compiled state machine is a
 tinct dict, users can inspect it, cache it at file level (lazy
@@ -51,14 +45,20 @@ transition rules, or write alternative runners. This is not possible
 with an opaque Rust builtin.
 
 **No crate dependency.** Thompson's NFA simulation achieves O(nm)
-matching — the same asymptotic complexity as the `regex` crate's DFA
-approach — with no new Cargo dependency and no unsafe code.
+matching — where n is input length and m is NFA state count — with no
+new Cargo dependency and no unsafe code. The `regex` crate uses a lazy
+DFA that achieves O(n) per match after construction; NFA simulation is
+slower by a factor of m but avoids the exponential worst-case blowup
+of backtracking engines. For the short patterns typical in config
+language use (hostname validation, YAML quoting checks), the constant
+factor is acceptable.
 
-**Primitives compose.** The engine is built on the string utilities
-from `stdlib/strings.llt` (Phase 1 of `doc/whatif/lib-supplemental.md`)
-and the bitwise primitives from Phase 4 of the same doc (`char-code`
-for character class range comparison). Once those primitives exist,
-the regex engine is pure library code users can read and modify.
+**Primitives compose.** The engine is built on `char-code` (from
+`doc/whatif/lib-supplemental.md` §Bitwise Primitives) for character
+class range comparison, and on tinct's string dual-dispatch (§Strings
+as Character Sequences) for character-by-character simulation. Once
+those primitives exist, the regex engine is pure library code users
+can read and modify.
 
 ## Design
 
@@ -113,8 +113,11 @@ The parser produces a recursive dict structure where every node has a
 [type: "named"    id: 1  name: "host"  child: ...] # (?P<name>...)
 ```
 
-Character class ranges are stored as integer codepoints from `char-code`,
-so `[a-z]` becomes `[lo: 97  hi: 122]`.
+Character class ranges are stored as integer codepoints via `char-code`,
+so `[a-z]` becomes `[lo: 97  hi: 122]`. Literal character matching
+also uses `char-code` to convert the input character to an Int for
+transition table lookup — this is the only Bitwise Primitive the engine
+depends on.
 
 ### NFA State Representation
 
@@ -199,7 +202,13 @@ nfa-star: [fn [child nfa0]
 
 The simulator maintains a dict mapping `state-id → capture-snapshot`.
 At each character, all active states advance on that character and
-the ε-closure of the resulting states is computed:
+the ε-closure of the resulting states is computed.
+
+With `Value::String` dual-dispatch (from `doc/whatif/lib-supplemental.md`
+§Strings as Character Sequences), strings participate directly in `fold`
+as sequences of single-character strings — no explicit `str-chars` call
+needed. Each character in the fold step is a one-char String; `char-code`
+converts it to an Int for transition table lookup.
 
 ```tinct
 # captures: Dict[group-id → [start: Int  end: Int]]
@@ -217,7 +226,7 @@ nfa-run: [fn [nfa s]
   [fold
     [fn [active char] [nfa-step nfa active char]]
     [nfa-epsilon-closure nfa [make-entry nfa.start []]]
-    [str-chars s]]]
+    s]]   # fold directly over String — dual-dispatch iterates characters
 
 nfa-accepts: [fn [nfa s]
   [any?
@@ -225,36 +234,162 @@ nfa-accepts: [fn [nfa s]
     [entries [nfa-run nfa s]]]]
 ```
 
-### Public API
+### Type Definitions
 
-**`re-compile pattern`** → `NFA dict` — parses and compiles the pattern.
-Returns the NFA as an inspectable tinct dict. Lazy evaluation
-memoizes the result automatically when bound at file level:
+**`Pattern`** — the structural dict type returned by `re-compile`:
 
 ```tinct
-# Compiled once, reused on every call — lazy eval handles caching
-ip-pattern: [re-compile "([0-9]{1,3}\\.){3}[0-9]{1,3}"]
-ip?: [fn [s] [re-match-compiled ip-pattern s]]
+# Type aliases declared using [type ...] syntax.
+# These would appear in a stdlib/regex.llt type declarations block.
+
+[
+  # NfaState — one state in the compiled NFA
+  NfaState: [type [
+    # transitions: Dict keyed by char-code (Int); each value is Seq@Int of successor state ids.
+    # tinct's Dict type is not yet parameterized by key/value types — @Dict is the best
+    # available annotation. The runtime invariant is: every key is @Int, every value is @Seq@Int.
+    transitions: @Dict
+    epsilon:     @Seq@Int    # ε-transition targets (state ids; free moves)
+    accept:      @Bool
+    group-start: @Seq@Int    # group ids that open at this state
+    group-end:   @Seq@Int    # group ids that close at this state
+  ]]
+
+  # Pattern — nominal variant; Value::Variant { tag: "Pattern", payload: NfaDict }
+  # Only re-compile produces a Pattern. Inner NfaDict accessible via [payload p].
+  # NfaDict shape (for reference; access via payload, not directly):
+  NfaDict: [type [
+    states: @Seq@NfaState
+    start:  @Int
+    # groups: Dict keyed by group-id (Int); each value is @String name ("" for unnamed).
+    # Not parameterizable in current type system — @Dict with runtime invariant documented here.
+    groups: @Dict
+  ]]
+
+  # MatchResult — return type of re-find / re-findall elements
+  MatchResult: [type [
+    match: @String   # matched substring
+    start: @Int      # character offset of match start in haystack
+    end:   @Int      # character offset of match end (exclusive)
+    # ... additional @String fields: one per named capture group
+  ]]
+]
 ```
 
-**`re-match pattern s`** → `Bool` — tests whether `s` contains a match.
+`Pattern` uses `Value::Variant { tag: "Pattern", payload: nfa-dict }`
+— a nominal variant wrapper. This ensures provenance: only `re-compile`
+produces a `Pattern`; an arbitrary dict cannot accidentally match the
+type even if it has the right shape. The NFA dict is accessible via
+`payload`:
 
-**`re-find pattern s`** → `[match: String  start: Int  end: Int  ...]`
-or `[]` — first match with named capture groups as additional keys:
+```tinct
+[compiled: [re-compile "a+"]]
+[nfa: [payload compiled]]   # → NfaDict; inspect states, start, groups
+nfa.states                  # → Seq@NfaState
+
+# Write a custom runner against the same NFA:
+[my-run: [fn [s] [my-nfa-sim nfa s]]]
+```
+
+`re-match pattern@[String Pattern] ...` — the type checker accepts
+either a `String` (compiles on the fly) or a `Pattern` variant
+(uses the pre-compiled NFA directly). Nominal wrapping prevents
+structural spoofing.
+
+### Public API
+
+All functions that accept a pattern accept **`String | Pattern`**. When
+given a `String`, the pattern is compiled on the fly. When given a
+`Pattern`, the pre-compiled NFA is used directly. There is no separate
+`re-match-compiled` — the dispatch is automatic.
+
+```tinct
+# Internal dispatch (pure-tinct):
+re-ensure-compiled: [fn [pattern]
+  [if [str? pattern]
+    [re-compile pattern]
+    pattern]]   # already a Pattern
+
+re-match: [fn [pattern@[String Pattern] s@String]
+  [nfa-accepts [payload [re-ensure-compiled pattern]] s]]
+```
+
+**Caching pre-compiled patterns:** bind at file level — lazy evaluation
+memoizes the `re-compile` call automatically:
+
+```tinct
+# Compiled once on first use; zero overhead on subsequent calls
+ip-pattern: [re-compile "([0-9]{1,3}\\.){3}[0-9]{1,3}"]
+
+# Pass the Pattern directly — no recompilation:
+ip?: [fn [s@String] [re-match ip-pattern s]]
+```
+
+---
+
+**`re-compile pattern@String`** → `Pattern`
+
+Parses and compiles the pattern string into a `Pattern` value. The
+inner NFA dict is accessible via `[payload p]` for inspection or
+custom runners.
+
+**`re-match pattern@[String|Pattern] s@String`** → `Bool`
+
+Tests whether `s` contains a match anywhere. Compiles `pattern` if
+it is a `String`; uses the pre-compiled NFA if it is a `Pattern`.
+
+**`re-find pattern@[String|Pattern] s@String`** → `Dict`
+
+Returns the first match as a dict, or `[]` if no match:
 
 ```tinct
 [re-find "(?P<host>[a-z0-9.-]+):(?P<port>[0-9]+)" "db.prod:5432"]
 # → [match: "db.prod:5432"  host: "db.prod"  port: "5432"  start: 0  end: 12]
+
+[re-find ip-pattern "no match here"]
+# → []
 ```
 
-**`re-findall pattern s`** → `Dict` — all non-overlapping matches,
-same shape as `re-find`.
+Fixed keys: `match` (the matched substring), `start`, `end` (byte
+offsets). Named capture groups add their names as additional keys.
 
-**`re-replace pattern replacement s`** → `String` — replaces all
-matches. Capture group references via `\1`, `\2`, or `\k<name>`.
+**`re-findall pattern@[String|Pattern] s@String`** → `Seq`
 
-**`re-split pattern s`** → `Dict` — parts of `s` between matches,
-same shape as `split` output.
+All non-overlapping matches in order, each a dict of the same shape
+as `re-find`.
+
+**`re-replace pattern@[String|Pattern] replacement@String s@String`** → `String`
+
+Replaces all matches. Capture group references in `replacement` via
+`\1`, `\2`, or `\k<name>`.
+
+**`re-split pattern@[String|Pattern] s@String`** → `Seq[String]`
+
+Parts of `s` between matches. **Zero-length match policy:** if the
+pattern can match the empty string, zero-length matches at the boundary
+of a previous match are skipped (same behaviour as Python 3.7+ and
+PCRE2). A zero-length match at the very start of the string produces
+a leading empty string. This avoids infinite empty-string production
+while preserving n-matches → n+1-parts semantics for non-ambiguous
+patterns.
+
+**`re-replace pattern@[String|Pattern] replacement@String s@String`** → `String`
+
+Replaces all non-overlapping matches. `replacement` supports back-references:
+`\1`, `\2` (positional), `\k<name>` (named), `\0` (whole match).
+
+**Security note:** if `replacement` comes from untrusted input, an
+attacker can inject `\k<name>` to expand arbitrary named capture groups.
+Use `re-escape-replacement` to make a replacement string safe:
+
+```tinct
+# re-escape-replacement — escape a string so it is treated as a literal
+# replacement (no back-reference expansion)
+re-escape-replacement: [fn@String [s@String]
+  [replace "\\" "\\\\" s]]   # escape backslashes; \1 becomes \\1
+```
+
+Use this whenever the replacement string comes from user input or config values.
 
 ### Interaction with Lazy Evaluation
 
@@ -266,87 +401,71 @@ a name.
 
 ### Interaction with the Type Checker
 
-`re-match` has type `String → String → Bool`. `re-find` returns an
-open record type — the fixed keys (`match`, `start`, `end`) plus
-additional keys for named capture groups whose names are not statically
-known. The return type is `[match: String  start: Int  end: Int  ...]`
-(open record) or `[]` (empty dict). Type inference infers `Any` for
-named capture group access until a `TypeAssert` annotation constrains
-it.
+```tinct
+re-compile : [fn@Pattern              [pattern@String]]
+
+re-match   : [fn@Bool                 [pattern@[String Pattern]  s@String]]
+
+re-find    : [fn@[MatchResult Dict]   # Dict = [] (empty dict) on no match
+               [pattern@[String Pattern]  s@String]]
+
+re-findall : [fn@Seq@MatchResult      [pattern@[String Pattern]  s@String]]
+
+re-replace : [fn@String               [pattern@[String Pattern]
+                                       replacement@String   # \1 \2 \k<name> \0
+                                       s@String]]
+
+re-split   : [fn@Seq@String           [pattern@[String Pattern]  s@String]]
+             # n matches → n+1 parts; empty string at boundaries
+```
+
+`Pattern` is the nominal variant type produced by `re-compile` —
+distinct from `String` and `Dict`. The first argument of every
+function is a union `[String | Pattern]`; if a `String` is passed the
+pattern is compiled on the fly, if a `Pattern` is passed the
+pre-compiled NFA is used directly.
+
+`re-find` returns an open record `[match: String  start: Int  end: Int
+...String]` — named capture groups add keys whose names are not
+statically known, so their values infer as `String` with `Any` access
+at the call site until narrowed by `TypeAssert`. The empty-dict case
+`[]` is the "no match" sentinel; callers check `[empty? result]` or
+match on it.
+
+`re-replace` back-references: `\1`, `\2` for positional groups,
+`\k<name>` for named groups, `\0` for the whole match.
 
 ## What Would Change
 
 ### Standard Library (`stdlib/regex.llt`)
 
-**Current:** No regex support.
+New file implementing the full engine: parser, NFA compiler, NFA
+simulator, and public API (`re-compile`, `re-match`, `re-find`,
+`re-findall`, `re-replace`, `re-split`, `re-match-compiled`). Loaded
+automatically alongside `prelude.llt`. Approximately 400–600 lines;
+zero change to `src/builtins.rs` or `Cargo.toml`.
 
-**Proposed:** New file `stdlib/regex.llt` implementing the full engine:
-parser, NFA compiler, NFA simulator, and the public API functions
-(`re-compile`, `re-match`, `re-find`, `re-findall`, `re-replace`,
-`re-split`, `re-match-compiled`). Loaded automatically alongside
-`prelude.llt`.
+### Evaluator Builtins (`src/builtins.rs`)
 
-**Impact:** Major — large new stdlib file (~400–600 lines), but zero
-change to `src/builtins.rs` or `Cargo.toml`.
+No new Rust builtins for the engine itself. A future performance
+sprint can add `nfa-run nfa-dict s` as a Rust builtin that interprets
+the same dict representation at native speed without changing the
+public API — the pure-tinct implementation is the correct starting
+point; profiling determines if the Rust accelerator is needed.
 
-### Dependencies on Other Modules
+## Dependencies
 
-**`stdlib/strings.llt`** (Phase 1 of `doc/whatif/lib-supplemental.md`):
-`str-chars` for iterating pattern and input characters; `str-find` for
-locating match positions.
-
-**Phase 4 bitwise primitives** (`doc/whatif/lib-supplemental.md`):
-`char-code` for converting characters to integer codes for transition
-table lookup and character class range comparisons. Without `char-code`,
-character classes (`[a-z]`, `\d`, `\w`) cannot be implemented.
-
-**Impact:** Phase 3 (this proposal) must be delivered after both Phase 1
-and Phase 4 of `lib-supplemental.md`.
-
-## Phased Adoption
-
-### Phase 1: Core NFA Engine
-
-Implement the parser, compiler, and simulator for the core constructs:
-literals, `.`, `*`, `+`, `?`, concatenation, alternation, `^`/`$`
-anchors, and unnamed groups. Ships as `stdlib/regex.llt`.
-
-**What it enables:** `re-match` and basic `re-find` with positional
-capture groups. Sufficient for `yaml-quote-string`, CIDR validation,
-hostname checks.
-
-### Phase 2: Full Syntax
-
-Add character classes (`[a-z]`, `[^...]`, `\d`, `\w`, `\s`), named
-capture groups (`(?P<name>...)`), counted repetition (`{n,m}`),
-and `re-replace` with capture group back-references.
-
-**What it enables:** Full regex expressiveness. Named group extraction
-for structured parsing.
-
-### Phase 3: Performance Optimization
-
-Replace the pure-tinct simulation loop with a Rust builtin
-`nfa-run nfa-dict s` that interprets the same dict representation
-at native speed. The public API is unchanged — the tinct wrappers
-call the Rust runner instead of the pure-tinct one. This phase is
-purely an optimization and can be deferred indefinitely.
-
-### Prerequisites
-
-- **Phase 1 of `lib-supplemental.md`** complete — `str-chars`,
-  `str-find` required.
-- **Phase 4 of `lib-supplemental.md`** complete — `char-code`
-  required for character classes (needed even in Phase 1 of this doc,
-  since literal matching uses `char-code` for transition lookup).
-  Deliver this doc after Phase 4 of `lib-supplemental.md`.
-
-### Trigger
-
-- When `str-contains?` chains in serialization helpers grow beyond
-  ~5 checks and a single `re-match` would be cleaner.
-- When the first use case requiring capture group extraction arises
-  (structured string parsing, config validation with error attribution).
+- `char-code` from `doc/whatif/lib-supplemental.md` §Bitwise Primitives
+  — required for character class range comparison and transition table
+  lookup. This is the only Bitwise Primitive the engine uses.
+- String dual-dispatch (`fold`/`map`/`filter` on `String`) from
+  `doc/whatif/lib-supplemental.md` §Strings as Character Sequences —
+  enables `nfa-run` to fold directly over input strings without an
+  explicit `str-chars` call.
+- `str-find` from `doc/whatif/lib-supplemental.md` §Extended String
+  Utilities — used for locating match start positions.
+- `contains?` (substring search for String, from prelude generalization)
+  — used internally for pattern validation.
 
 ## References
 
@@ -364,5 +483,5 @@ purely an optimization and can be deferred indefinitely.
   construction (NFA from regex AST). This doc implements §3.7 only;
   subset construction (§3.7.1) is not needed for NFA simulation.
 - doc/whatif/lib-supplemental.md — prerequisite stdlib modules:
-  Phase 1 (string utilities) and Phase 4 (bitwise primitives including
-  `char-code`).
+  `char-code` (Bitwise Primitives), string dual-dispatch (Strings as
+  Character Sequences), `str-find` (Extended String Utilities).

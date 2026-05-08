@@ -2,5 +2,3 @@
 [words ""]
 === out
 Dict({})
-=== warn
-undefined variable: words at 1:2-1:7

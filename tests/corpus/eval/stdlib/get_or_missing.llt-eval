@@ -3,4 +3,4 @@
 === out
 Int(99)
 === warn
-undefined variable: get-or at 1:2-1:8
+undefined variable: b at 1:16-1:17

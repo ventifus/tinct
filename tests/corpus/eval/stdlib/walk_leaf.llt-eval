@@ -2,5 +2,3 @@
 [walk [fn [x] [builtin-if [builtin-eq [type-of x] "Dict"] x [* x 2]]] 5]
 === out
 Int(10)
-=== warn
-undefined variable: walk at 1:2-1:6

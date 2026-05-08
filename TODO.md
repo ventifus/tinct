@@ -4,61 +4,300 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Type Checking Infrastructure
+## Research
 
-### `typecheck-import-env`
+### `research-parameterized-dict`
 
-Seed the type checker with a fully-resolved import environment before running inference. Currently `typecheck_file()` starts from `TypeEnv::with_builtins()` only — it has no knowledge of the prelude or user `$include` files. This causes ~250 corpus tests to carry stale `=== warn: undefined variable` annotations for prelude functions, and means type errors in included files are invisible until eval time.
+Investigate whether tinct's type system should support a parameterized
+`Dict[K V]` type constructor — algebraic type constructors with kind
+`Type → Type → Type`. Motivated by the need to type `transitions` in
+`stdlib/regex.llt` as `Dict[Int Seq@Int]` (char-code → successor state
+ids) rather than the current unparameterized `@Dict` with a runtime
+invariant comment.
 
-**Design: shared `src/imports.rs` module — no LSP-specific plumbing**
+**The gap:** BAS (`doc/whatif/boolean-algebraic-subtyping.md`) encodes
+multi-field records as intersections of single-field types and handles
+union/intersection over specific named fields — but cannot express "all
+values in this dict are of type T" because that requires universal
+quantification over field labels (∀f. {f: T}), which is outside BAS's
+scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
+(lib-regex.md) are the concrete cases that remain untyped.
 
-All import resolution logic lives in a new `src/imports.rs`. The LSP replaces its bespoke `PreludeIndex`/`with_prelude_types` machinery with calls into this shared module. The only legitimately LSP-specific code that remains is `IncludeGraph` invalidation on file-change events.
+**Questions for the research phase:**
 
-**Prelude environment:**
+- [ ] Survey how comparable languages type parameterized maps: Haskell
+  `Map k v`, TypeScript `Record<K, V>`, Nickel's contract-based approach,
+  CUE's structural constraints (`{[string]: int}`). Which model fits
+  tinct's use cases?
+- [ ] Can BAS accommodate a `Dict[K V]` constructor as a primitive
+  type constructor (not derived from records)? What interaction does
+  `Dict[K V]` have with union/intersection (`Dict[Int Str] | Dict[Str Int]`)?
+- [ ] Is `Dict[K V]` the right primitive, or should tinct distinguish
+  between structural records (field names known statically) and dynamic
+  maps (keys are runtime values)? The current `Dict` conflates both.
+- [ ] Identify all stdlib functions whose type signatures benefit from
+  `Dict[K V]`: `transitions` in regex NFA, `groups` in NFA, the `stat`
+  return dict, `tls-peer-cert` result, `list-dir` entry dict.
+- [ ] Write a `doc/whatif/parameterized-dict.md` proposal.
 
-- [ ] Add `src/imports.rs` with `pub fn build_prelude_env() -> Rc<TypeEnv>`: parse the embedded `include_str!("../stdlib/prelude.llt")` source, run `expand_macros` + `desugar_file`, then `typecheck_file_with_types_and_env` seeded with `TypeEnv::with_builtins()`; walk the resulting `TypeMap` to extract top-level binding names and their inferred types; extend `TypeEnv::with_builtins()` with those bindings; cache the result in a `std::sync::OnceLock<Rc<TypeEnv>>` so it is built once per process (`src/imports.rs`)
-- [ ] `build_prelude_env()` must tolerate prelude-internal type warnings without failing — it returns the best available env even if some prelude functions have unresolved type vars; log nothing to stderr (callers don't want noise) (`src/imports.rs`)
-- [ ] **`LazyLock` for stdlib env cache** (from `rust-modernize`): prefer `LazyLock<Rc<TypeEnv>>` over `OnceLock` for the prelude env cache in `src/imports.rs` if the closure form is cleaner; note that `LazyLock::get()` / `force_mut()` are stable at 1.94 (`src/imports.rs`)
+**Depends on:** BAS adoption (`doc/whatif/boolean-algebraic-subtyping.md`),
+since the interaction between `Dict[K V]` and union/intersection types
+requires the full BAS constraint solver to be sound.
 
-**Include path collection (moved from LSP):**
+---
 
-- [ ] `pub fn collect_include_paths(file: &File) -> Vec<(Span, String)>`: walk AST for `Call { func: VarRef("include"), args: [Str(path)] }` — extracts all statically-known include paths with their spans; dynamic includes (computed paths) are silently skipped (`src/imports.rs`)
+## Supplemental Standard Library
 
-**Include resolution:**
+Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
-- [ ] `pub fn resolve_includes(paths: &[(Span, String)], base_dir: &Path, base_env: Rc<TypeEnv>, visited: &mut HashSet<PathBuf>) -> Rc<TypeEnv>`: for each path, resolve relative to `base_dir`; skip if already in `visited` (cycle detection); read file via `std::fs::read_to_string` (plain OS read, no eval involved); parse + `expand_macros` + `desugar_file`; call `typecheck_file_with_types_and_env` with the current accumulated env; extract top-level bindings from the resulting `TypeMap`; extend env; insert path into `visited`; recurse for the included file's own includes; depth cap 16 (`src/imports.rs`)
-- [ ] `resolve_includes` returns `base_env` unchanged on any IO or parse failure (best-effort; type errors in included files surface at eval time as before) (`src/imports.rs`)
+### `string-view`: Value::String Representation Change
 
-**Unified entry point:**
+Replace `Value::String(String)` with `Value::String { source: Rc<str>, start: usize, end: usize }`. Zero-copy slicing; GHC ByteString model. **Spec chapters:** `doc/whatif/lib-supplemental.md` §Strings as Character Sequences.
 
-- [ ] `pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> Rc<TypeEnv>`: compose the above — start from `build_prelude_env()`, then if `base_dir` is `Some`, call `collect_include_paths(file)` + `resolve_includes`; return the fully-seeded env. When `base_dir` is `None` (source-only callers like `typecheck_source`), only the prelude is seeded — include resolution requires a filesystem path (`src/imports.rs`)
+- [ ] Add `Rc<str>` import and change `Value::String(String)` to struct variant `Value::String { source: Rc<str>, start: usize, end: usize }` (`src/value.rs`)
+- [ ] Update `Value::String` construction sites: every `Value::String(s.into())` becomes `Value::String { source: Rc::from(s.as_str()), start: 0, end: s.len() }` — write a helper `fn string_val(s: &str) -> Value` (`src/value.rs`)
+- [ ] Update all `Value::String(ref s)` match arms in `src/eval.rs` to destructure `{ source, start, end }` and extract `&source[start..end]` (`src/eval.rs`)
+- [ ] Update all `Value::String` match arms in `src/builtins.rs` (`src/builtins.rs`)
+- [ ] Update all `Value::String` match arms in `src/builtins_string.rs` (`src/builtins_string.rs`)
+- [ ] Update all `Value::String` match arms in `src/builtins_math.rs` (`src/builtins_math.rs`)
+- [ ] Update all `Value::String` match arms in `src/builtins_dict.rs` (`src/builtins_dict.rs`)
+- [ ] Update all `Value::String` match arms in `src/builtins_io.rs` (`src/builtins_io.rs`)
+- [ ] Update all `Value::String` match arms in `src/builtins_meta.rs` (`src/builtins_meta.rs`)
+- [ ] Update all `Value::String` match arms in `src/builtins_seq_gen.rs` and `src/builtins_seq_reduce.rs`
+- [ ] Update `value_to_json` in `src/lib.rs` to use `&source[start..end]` (`src/lib.rs`)
+- [ ] Update `value_to_display_string` in `src/lib.rs` (`src/lib.rs`)
+- [ ] Update `deep_materialize` in `src/lib.rs` (`src/lib.rs`)
+- [ ] Update type checker `Value::String` patterns in `src/typecheck.rs` and `src/typecheck_dict.rs`
+- [ ] Update `split` builtin to return `Value::String` slices sharing the source `Rc<str>` (zero-copy split) (`src/builtins_string.rs`)
+- [ ] Add dual-dispatch for `String` in `map`, `filter`, `fold`, `reduce`, `first`, `last`, `nth`, `take`, `drop`, `count`, `reverse`, `contains?`, `slice`, `length` — iterate via `.char_indices()` on `&source[start..end]`, yield `Value::String` slices (`src/builtins.rs`, `src/builtins_seq_reduce.rs`)
+- [ ] Document space-leak risk: small slice pins entire `Rc<str>` source; copy with `str` to release (`doc/03-data-model.md`)
+- [ ] Tests: corpus tests for split-returns-shared-slices, char iteration, dual-dispatch map/filter on String, slice zero-copy (`tests/corpus/eval/`)
+- [ ] All existing corpus and CLI tests pass after the refactor
 
-**Wire into the eval/typecheck pipeline:**
+### `string-utils`: Extended String Utilities
 
-- [ ] Update `typecheck_source(input)` in `src/lib.rs` to call `imports::build_type_env(&file.node, None)` and pass the result to `typecheck_file_with_types_and_env` instead of starting from bare `TypeEnv::with_builtins()` (`src/lib.rs`)
-- [ ] Update `typecheck_file()` in `src/typecheck.rs` to call `imports::build_prelude_env()` as its base env instead of `TypeEnv::with_builtins()` — this ensures all callers of the lower-level function also get the prelude (`src/typecheck.rs`)
-- [ ] Update `tinct eval <file>` path in `src/main.rs`: derive `base_dir` from the file path and pass it when building the type env, enabling include resolution for file-based eval; `--stdin` mode passes `None` (`src/main.rs`)
-- [ ] Update `typecheck_file_with_types()` (the LSP's current zero-arg entry) to use `build_prelude_env()` as its base — this is a one-line change since it delegates to `typecheck_file_with_types_and_env` (`src/typecheck.rs`)
+**Spec chapters:** `doc/whatif/lib-supplemental.md` §Extended String Utilities. **Depends on:** `string-view`.
 
-**LSP migration — remove divergent plumbing:**
+- [ ] Implement `starts-with?` Rust builtin: `str::starts_with` on `&source[start..end]`; register in `standard_builtins()` with type `[String|Bytes|Seq] → [String|Bytes|Seq] → Bool` (`src/builtins_string.rs`, `src/types.rs`)
+- [ ] Implement `ends-with?` Rust builtin: `str::ends_with`; register analogously (`src/builtins_string.rs`, `src/types.rs`)
+- [ ] Implement `str-chars` Rust builtin (internal): walk `source[start..end].char_indices()`, yield lazy `Seq` of `Value::String` slices per codepoint (`src/builtins_string.rs`)
+- [ ] Implement `str-slice` Rust builtin: compute byte offsets for char positions, construct `Value::String { source: Rc::clone, start: byte_of(from), end: byte_of(to) }` — O(n) for UTF-8 char walk, O(1) allocation (`src/builtins_string.rs`, `src/types.rs`)
+- [ ] Add `starts-with?` and `ends-with?` to prelude scope (loaded at startup alongside `prelude.llt`) (`src/builtins.rs`)
+- [ ] Add Bytes dual-dispatch for `starts-with?` and `ends-with?` (byte-prefix/suffix match) (`src/builtins_string.rs`)
+- [ ] Add Seq dual-dispatch for `starts-with?` and `ends-with?` (element-by-element prefix match) (`src/builtins_string.rs`)
+- [ ] Create `stdlib/strings.llt` with pure-tinct functions: `str-contains?`, `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse` (`stdlib/strings.llt`)
+- [ ] Load `stdlib/strings.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Register type signatures for all new builtins (`src/types.rs`)
+- [ ] Tests: corpus tests for starts-with?/ends-with? on String/Bytes/Seq, str-slice O(1), str-find, pad-left/pad-right alignment (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
-- [ ] Delete `build_prelude_index()` from `src/lsp/document.rs`; delete `PreludeIndex` struct, `PreludeIndexInner`, `PreludeIndex::empty()`, `PreludeIndex::name_to_key_span()`, `PreludeIndex::type_map()`, `find_stdlib_prelude_path()` (`src/lsp/document.rs`)
-- [ ] Delete `TypeEnv::with_prelude_types()` from `src/types.rs` — no longer needed once `build_type_env` is the seeding mechanism (`src/types.rs`)
-- [ ] Update `DocumentState::new`: remove `prelude_index: &PreludeIndex` parameter; instead call `imports::build_type_env(&file.node, Some(base_dir))` to get the seeded env; pass to `typecheck_file_with_types_and_env` (`src/lsp/document.rs`)
-- [ ] Remove `prelude_index` field from `DocumentStore`; remove `build_prelude_index()` call from `DocumentStore::new()`; update all `DocumentState::new()` call sites to drop the `prelude_index` argument (`src/lsp/document.rs`)
-- [ ] Replace LSP-local `collect_include_paths` usage with `imports::collect_include_paths` — the `IncludeGraph` invalidation logic in `index_document_includes` and `reindex_document` remains LSP-specific (file watching is legitimately LSP-only) but the path-extraction step is shared (`src/lsp/document.rs`)
-- [ ] Update LSP `index_document_file` (the include graph crawler): it already does read+parse+`DocumentState::new` recursively; this is now redundant with `resolve_includes` for type-env purposes, but the LSP still needs it for the `IncludeGraph` (hover, go-to-definition over includes). Keep the graph crawler, but have it call `imports::collect_include_paths` instead of its own extraction logic (`src/lsp/document.rs`)
+### `math-builtins`: Extended Math Builtins
 
-**Corpus cleanup:**
+**Spec chapters:** `doc/whatif/lib-supplemental.md` §Extended Math Builtins. Independent of other sprints.
 
-- [ ] Script: `grep -rl 'undefined variable:' tests/corpus/ | xargs grep -l '=== warn'` — collect the ~250 affected files; for each, if the warned name is a prelude function (not a pattern-match variable), remove the `=== warn` section entirely; verify with `cargo test` that the prelude-function warnings are gone (`tests/corpus/`)
-- [ ] Keep `=== warn` sections for pattern-match bound variables (`h`, `v`, `a`, `b`, `n`, etc.) — those are a separate type checker scoping bug, not fixed by this sprint
+- [ ] Implement 13 math Rust builtins as `f64` method wrappers: `pow` (powf), `sqrt`, `log` (ln), `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` (`src/builtins_math.rs`)
+- [ ] Implement 3 float predicate builtins: `nan?` (is_nan), `inf?` (is_infinite), `finite?` (is_finite) (`src/builtins_math.rs`)
+- [ ] Register all 16 builtins in `standard_builtins()` with correct `Strictness` (`src/builtins.rs`)
+- [ ] Register type signatures: `pow: Number → Number → Float`, `sqrt/log/sin: Float → Float`, `nan?/inf?/finite?: Float → Bool`, `atan2: Float → Float → Float` (`src/types.rs`)
+- [ ] Create `stdlib/math.llt` with Float literals (`pi`, `e`, `phi`) and pure-tinct functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`) (`stdlib/math.llt`)
+- [ ] Load `stdlib/math.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Tests: corpus tests for each builtin (exact values, NaN/Inf edge cases, `nan?`/`inf?`/`finite?` predicates) (`tests/corpus/eval/builtins/`)
+- [ ] Tests: corpus tests for math.llt pure-tinct functions (`tests/corpus/eval/stdlib/`)
 
-**Tests:**
+### `bitwise-encoding`: Bitwise Primitives & Encoding
 
-- [ ] Unit tests in `src/imports.rs`: `build_prelude_env()` returns an env where `map`, `filter`, `and`, `or`, `flatten`, `zip` are all resolvable; `collect_include_paths` finds `[call $include "foo.llt"]` and returns `"foo.llt"`; `resolve_includes` with a missing file returns the base env unchanged (`src/imports.rs`)
-- [ ] Integration test in `src/lib.rs`: `typecheck_source("[call $map [fn [x] x] [1 2 3]]")` returns `Ok(())` (no undefined-variable warning for `map`) (`src/lib.rs`)
-- [ ] Corpus suite passes with zero `undefined variable` warnings for prelude functions after the cleanup pass (`tests/corpus/`)
+**Spec chapters:** `doc/whatif/lib-supplemental.md` §Bitwise Primitives. Independent of other sprints.
+
+- [ ] Implement 5 bitwise Rust builtins: `band` (i64 &), `bor` (|), `bxor` (^), `shl` (<<), `shr` (logical >>; treat as u64 for zero-fill) (`src/builtins_math.rs`)
+- [ ] Implement `char-code` Rust builtin: first char of String → Int codepoint (`src/builtins_string.rs`)
+- [ ] Implement `chr` Rust builtin: Int codepoint → single-char String (`src/builtins_string.rs`)
+- [ ] Implement `str-bytes` Rust builtin: String → Bytes (UTF-8 encode) — deferred until `bytes-type` sprint provides `Value::Bytes` (stub with error for now, or implement if bytes-type ships first) (`src/builtins_string.rs`)
+- [ ] Implement `bytes-str` Rust builtin: Bytes → String (UTF-8 decode; error on invalid) — same deferral as str-bytes (`src/builtins_string.rs`)
+- [ ] Register all 9 builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
+- [ ] Define `HashAlgorithm` type alias as a union of nominal variants: `Sha256 | Sha384 | Sha512 | Sha3-256 | Sha3-384 | Sha3-512 | Blake3` — register in prelude scope (`stdlib/encoding.llt` or `src/builtins.rs`)
+- [ ] Create `stdlib/encoding.llt` with pure-tinct functions: `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` (`stdlib/encoding.llt`)
+- [ ] Load `stdlib/encoding.llt` at startup (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Tests: corpus tests for all bitwise ops, char-code/chr round-trips, hex-encode/hex-decode, base64 (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
+
+### `bytes-type`: Bytes Type
+
+**Spec chapters:** `doc/whatif/lib-supplemental.md` §Bytes Type. Independent of other sprints.
+
+- [ ] Add `Value::Bytes { source: Rc<[u8]>, start: usize, end: usize }` to Value enum (`src/value.rs`)
+- [ ] Add `Type::Bytes` to Type enum; `bytes?` predicate in `builtin_type_of` (`src/types.rs`, `src/builtins_meta.rs`)
+- [ ] Add `subtle = "1"` to `Cargo.toml` (`Cargo.toml`)
+- [ ] Implement `bytes` Rust builtin: variadic concat (mirrors `str`) (`src/builtins_string.rs` or new `src/builtins_bytes.rs`)
+- [ ] Implement `bytes-find` Rust builtin: byte-pattern search → Int index or -1 (`src/builtins_bytes.rs`)
+- [ ] Implement `bytes-of` Rust builtin: collect `Seq@Int` → Bytes (`src/builtins_bytes.rs`)
+- [ ] Implement `bytes-equal?` Rust builtin: fast structural equality (short-circuit) (`src/builtins_bytes.rs`)
+- [ ] Implement `ct-equal?` Rust builtin: constant-time via `subtle::ConstantTimeEq` (`src/builtins_bytes.rs`)
+- [ ] Wire `str-bytes` and `bytes-str` (from bitwise-encoding sprint) to use `Value::Bytes` instead of `Value::Dict` (`src/builtins_string.rs`)
+- [ ] Add Bytes dual-dispatch in prelude collection functions: `map`, `filter`, `fold`, `reduce`, `first`, `last`, `nth`, `take`, `drop`, `count`, `reverse`, `contains?`, `slice`, `length`, `starts-with?`, `ends-with?`, `split`, `replace`, `join`, `get` — iterate over byte values as `Int (0-255)` (`src/builtins.rs`, `src/builtins_seq_reduce.rs`)
+- [ ] JSON serialization: `Value::Bytes` → base64-encoded string (`src/lib.rs`)
+- [ ] Register all builtin type signatures (`src/types.rs`)
+- [ ] Tests: corpus tests for bytes construction, ct-equal?, bytes-find, bytes-of collect, Bytes dual-dispatch in map/filter/split/join/contains?, JSON serialization as base64 (`tests/corpus/eval/builtins/`)
+
+### `handle-caps`: Capability-Typed Handles & Streaming I/O
+
+**Spec chapters:** `doc/whatif/lib-supplemental.md` §Streaming File I/O. **Depends on:** `string-view`.
+
+- [ ] Design `Handle` capability row representation in Rust: `HandleFlags` bitset or `HashSet<String>` storing capability variant names (`Readable`, `Writable`, `Seekable`, `Stream`, `Datagram`, `Text`, `Binary`, `Tls`, `Exclusive`, `Sync`, `NoFollow`, `Atomic`, `Linkable`, `Symlinkable`) (`src/value.rs`)
+- [ ] Replace `Value::Handle(Rc<RefCell<Box<dyn BufRead>>>)` with a struct carrying `flags: HandleFlags` + the inner reader/writer (`src/value.rs`)
+- [ ] Add `Value::WriteHandle` variant carrying encoding tag (Text/Binary) + `Box<dyn Write>` (`src/value.rs`)
+- [ ] Redesign `builtin_open`: accept nominal variant capability flags as trailing args (`Readable`, `Writable`, `Appendable`, `Binary`, `Seekable`, `Exclusive`, `Sync`, `NoFollow`); require at least one flag (no-flag = error); set Handle flags from args (`src/builtins_io.rs`)
+- [ ] `open` returns `Value::Handle` for read modes, `Value::WriteHandle` for write modes; encoding (Text/Binary) determined by flag presence (`src/builtins_io.rs`)
+- [ ] Implement `write` Rust builtin: polymorphic on WriteHandle encoding — `String` arg for Text, `Bytes` arg for Binary; returns WriteHandle for chaining (`src/builtins_io.rs`)
+- [ ] Implement `flush` Rust builtin: flushes WriteHandle buffer; returns WriteHandle (`src/builtins_io.rs`)
+- [ ] Implement `close` Rust builtin: flushes and closes WriteHandle; returns null; further writes error (`src/builtins_io.rs`)
+- [ ] Implement `seek` Rust builtin: requires Seekable flag; `lseek` to offset; returns Handle (`src/builtins_io.rs`)
+- [ ] Implement `seek-end` Rust builtin: requires Seekable; seek to end (`src/builtins_io.rs`)
+- [ ] Implement `position` Rust builtin: requires Seekable; returns current byte offset as Int (`src/builtins_io.rs`)
+- [ ] Update `builtin_slurp`: dispatch on Handle encoding — Text → String, Binary → Bytes (`src/builtins_io.rs`)
+- [ ] Update `builtin_lines`: require Text encoding flag; error on Binary handles (`src/builtins_io.rs`)
+- [ ] Update `builtin_connect`: return `Handle` with `{Binary Readable Writable Stream}` flags (not Seekable) (`src/builtins_io.rs`)
+- [ ] Register type signatures for all new builtins (`src/types.rs`)
+- [ ] Update `stdlib/io.llt`: add `write-line`; extend `write-file`/`write-file-atomic` to accept `content@[String Bytes]`; remove old `open` mode-string wrappers (`stdlib/io.llt`)
+- [ ] Tests: corpus tests for open with flags (Readable, Writable, Binary), write + slurp round-trip, seek + position, close-then-write error, encoding mismatch error (`tests/corpus/eval/builtins/`)
+
+### `fscap-protocol`: FsCap Protocol & DirCap Extension
+
+**Spec chapters:** `doc/whatif/lib-supplemental.md` §Filesystem Capabilities. **Depends on:** `handle-caps`.
+
+- [ ] Implement `list-dir` Rust builtin: DirCap → String → `Seq` of `{name type size mtime}` dicts; use `cap_std::fs::Dir::entries()` (`src/builtins_io.rs`)
+- [ ] Implement `stat` Rust builtin: DirCap → String → full metadata Dict (all fields; null for unavailable) (`src/builtins_io.rs`)
+- [ ] Implement `make-dir` Rust builtin: DirCap → String → null; `mkdir -p` semantics via `Dir::create_dir_all()` (`src/builtins_io.rs`)
+- [ ] Implement `remove` Rust builtin: DirCap → String → null; unlink file or empty dir (`src/builtins_io.rs`)
+- [ ] Implement `rename` Rust builtin: DirCap → String → String → null; atomic via `Dir::rename()` (`src/builtins_io.rs`)
+- [ ] Implement `copy` Rust builtin: DirCap → String → String → null; efficient via `copy_file_range` where available (`src/builtins_io.rs`)
+- [ ] Implement `link` Rust builtin: DirCap → String → String → null; hard link via `Dir::hard_link()` (`src/builtins_io.rs`)
+- [ ] Implement `read-link` Rust builtin: DirCap → String → String; readlink target (`src/builtins_io.rs`)
+- [ ] Add `Value::Uri { scheme: String, uri: String }` to Value enum (`src/value.rs`)
+- [ ] Add `Type::Uri` to Type enum (`src/types.rs`)
+- [ ] Update `--cap-fs` CLI parsing: detect URI scheme; `file://` → DirCap; other schemes → `Value::Uri` (`src/main.rs`)
+- [ ] Register type signatures for all 8 DirCap builtins (`src/types.rs`)
+- [ ] Tests: corpus tests for list-dir, stat, make-dir + remove round-trip, rename atomic, copy, --cap-fs with file:// and s3:// URIs (`tests/corpus/eval/builtins/`, `tests/cli_tests.rs`)
+- [ ] Spec: update `doc/03-data-model.md` §Value Types for Uri; update `doc/12-tooling.md` §CLI for --cap-fs URI
+
+### `toml-lite-path`: TOML-Lite & Path Utilities
+
+**Spec chapters:** `doc/whatif/lib-supplemental.md` §TOML Parsing Lite, §Path Utilities. **Depends on:** `string-utils`.
+
+- [ ] Implement `stdlib/toml-lite.llt`: `parse-toml-lite` function using `starts-with?`, `split`, `trim`, `reduce` with section-tracking accumulator; handle `[section]`, `[[array-table]]`, `key = "string-value"`, comments, blank lines (`stdlib/toml-lite.llt`)
+- [ ] Create `stdlib/in/toml-lite.llt`: `[parse-toml-lite [slurp stdin]]` pipeline wrapper (`stdlib/in/toml-lite.llt`)
+- [ ] Create `stdlib/path.llt`: `path-parts`, `basename`, `dirname`, `extension`, `path-join` (all pure-tinct using `split`/`join`) (`stdlib/path.llt`)
+- [ ] Tests: corpus tests parsing Cargo.toml structure, Cargo.lock `[[package]]` array tables, comments, blank lines, edge cases (`tests/corpus/eval/stdlib/`)
+- [ ] Tests: corpus tests for path.llt functions (`tests/corpus/eval/stdlib/`)
+- [ ] Integration test: parse tinct's own Cargo.toml and verify dep names extracted correctly
+
+## Date-Time
+
+Accepted from `doc/whatif/lib-datetime.md` (2026-05-07).
+
+### `datetime`: Date-Time Support
+
+**Spec chapters:** `doc/whatif/lib-datetime.md`. **Depends on:** `string-utils` (pad-left for format-date).
+
+- [ ] Add `jiff = { version = "0.1", default-features = false }` to `Cargo.toml`; disable `jiff-tzdb` (we read system zoneinfo via DirCap) (`Cargo.toml`)
+- [ ] Add `Value::Timestamp(i64)` (nanoseconds since epoch) to Value enum (`src/value.rs`)
+- [ ] Add `Value::Duration(i64)` (signed nanoseconds) to Value enum (`src/value.rs`)
+- [ ] Add `Value::ClockCap(Rc<ClockCapInner>)` with `enum ClockCapInner { Real, Fixed(i64) }` (`src/value.rs`)
+- [ ] Add `Value::Timezone(Rc<...>)` wrapping parsed TZ rules (`src/value.rs`)
+- [ ] Add `Type::Timestamp`, `Type::Duration`, `Type::ClockCap`, `Type::Timezone` (`src/types.rs`)
+- [ ] Implement timestamp construction builtins: `parse-timestamp` (RFC 3339 → Timestamp; validate fits i64 range), `format-timestamp` (Timestamp → RFC 3339 string), `timestamp->unix`, `unix->timestamp` (`src/builtins_datetime.rs`)
+- [ ] Implement clock builtins: `now` (ClockCap → Timestamp), `fixed-clock` (Timestamp → ClockCap) (`src/builtins_datetime.rs`)
+- [ ] Implement timestamp arithmetic: `timestamp-add` (Timestamp + Duration → Timestamp), `timestamp-diff` (Timestamp - Timestamp → Duration; `i64::checked_sub`, error on overflow) (`src/builtins_datetime.rs`)
+- [ ] Implement timestamp comparison: `timestamp<?`, `timestamp>?`, `timestamp=?` (`src/builtins_datetime.rs`)
+- [ ] Implement timestamp extraction (UTC): `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts` (`src/builtins_datetime.rs`)
+- [ ] Implement duration constructors: `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration->seconds`, `duration->nanos` (`src/builtins_datetime.rs`)
+- [ ] Implement timezone builtins: `load-tz` (DirCap → String → Timezone; use jiff `TimeZoneDatabase::from_dir()`; return error never panic on malformed TZif), `timestamp-in-tz` (Timestamp → Timezone → Dict), `local->timestamp`, `local-tz-name` (`src/builtins_datetime.rs`)
+- [ ] Add CLI flags: `--cap-clock NAME` (inject real ClockCap), `--cap-clock-fixed "RFC3339" NAME` (inject fixed; validate fits i64 range) (`src/main.rs`)
+- [ ] Create `stdlib/datetime.llt` with pure-tinct helpers: `days-between`, `timestamp-in-range?`, `format-date` (`stdlib/datetime.llt`)
+- [ ] JSON serialization: Timestamp → RFC 3339 string; Duration → ISO 8601 string (`src/lib.rs`)
+- [ ] Register all builtin type signatures (~25 builtins) (`src/types.rs`)
+- [ ] Tests: corpus tests for parse/format round-trip, arithmetic, extraction, comparison, ClockCap fixed vs real, timezone conversion, i64 overflow error, RFC 5280 sentinel clamping (`tests/corpus/eval/builtins/`)
+- [ ] Tests: CLI tests for --cap-clock and --cap-clock-fixed (`tests/cli_tests.rs`)
+
+## Regex
+
+Accepted from `doc/whatif/lib-regex.md` (2026-05-07).
+
+### `regex`: Pure-Tinct Regex Engine
+
+**Spec chapters:** `doc/whatif/lib-regex.md`. **Depends on:** `string-view` (string dual-dispatch for fold), `bitwise-encoding` (char-code).
+
+- [ ] Implement regex parser in pure-tinct: pattern string → AST dict (recursive descent over chars; handles `.`, `*`, `+`, `?`, `{n,m}`, `[a-z]`, `[^...]`, `|`, `()`, `(?P<name>...)`, `^`, `$`) (`stdlib/regex.llt`)
+- [ ] Implement Thompson NFA compiler in pure-tinct: AST → NFA dict via `nfa-char`, `nfa-concat`, `nfa-alt`, `nfa-star`, `nfa-plus`, `nfa-opt`, `nfa-repeat`, `nfa-group` (`stdlib/regex.llt`)
+- [ ] Implement NFA simulator in pure-tinct: `nfa-step` (advance active states on one char via char-code transition lookup + epsilon closure), `nfa-run` (fold over input string), `nfa-accepts` (`stdlib/regex.llt`)
+- [ ] Implement character class matching: ranges via `char-code` comparison (`[a-z]` = code 97-122); negated classes (`[^...]`); predefined `\d`, `\w`, `\s` (`stdlib/regex.llt`)
+- [ ] Implement capture group tracking: `nfa-run` carries `Dict[group-id → [start end]]` snapshots through active state set (`stdlib/regex.llt`)
+- [ ] Implement `re-compile`: parse + compile → `Value::Variant { tag: "Pattern", payload: nfa-dict }` (`stdlib/regex.llt`, register Pattern variant)
+- [ ] Implement `re-match`: `[String|Pattern] → String → Bool`; compile if String; simulate NFA (`stdlib/regex.llt`)
+- [ ] Implement `re-find`: `[String|Pattern] → String → MatchResult | []`; return first match with `match`/`start`/`end` + named capture group keys (`stdlib/regex.llt`)
+- [ ] Implement `re-findall`: `[String|Pattern] → String → Seq@MatchResult`; all non-overlapping matches (`stdlib/regex.llt`)
+- [ ] Implement `re-replace`: `[String|Pattern] → String → String → String`; back-references `\1`, `\2`, `\k<name>`, `\0` in replacement string (`stdlib/regex.llt`)
+- [ ] Implement `re-split`: `[String|Pattern] → String → Seq@String`; zero-length match policy: skip at boundary of previous match (Python 3.7+ semantics) (`stdlib/regex.llt`)
+- [ ] Implement `re-escape-replacement`: escape backslashes in replacement strings to prevent injection (`stdlib/regex.llt`)
+- [ ] Load `stdlib/regex.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Tests: corpus tests for literal matching, character classes, quantifiers, alternation, anchors, groups, named groups, re-find/findall/replace/split, zero-length match edge cases, re-escape-replacement (`tests/corpus/eval/stdlib/`)
+
+## TLS & HTTP
+
+Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
+
+### `connector-tls`: Connector Protocol & TLS
+
+**Spec chapters:** `doc/whatif/lib-tls.md` §Connector Protocol, §Handle Types, §tls-connect, §CA Root Selection, §Client Certificates, §SPKI Pins. **Depends on:** `handle-caps`, `bytes-type`, `bitwise-encoding`.
+
+- [ ] Add `rustls = "0.23"`, `rustls-native-certs = "0.7"`, `webpki-roots = "0.26"`, `sha3 = "0.10"` to `Cargo.toml` (`Cargo.toml`)
+- [ ] Define `Transport` nominal variants: `Tcp`, `Udp` as unit variants registered in prelude (`src/builtins.rs`)
+- [ ] Generalize `builtin_connect`: accept any Connector (dispatch on value type: `NetCap` → built-in TCP/UDP; user dict → call dict's `connect` method); accept `Transport` variant as arg (Tcp default when omitted); return `Handle` with `{Binary Readable Writable Stream}` for Tcp, `{Binary Readable Writable Datagram}` for Udp (`src/builtins_io.rs`)
+- [ ] Implement `tls-connect` Rust builtin — Connector form: `tls-connect connector Transport host port opts` opens via connect then layers TLS via `rustls::ClientConfig`; Handle form: `tls-connect handle sni opts` layers TLS on existing stream Handle; both return `Handle[Binary Readable Writable Stream Tls]` with `TlsInfo` (`src/builtins_io.rs`)
+- [ ] Implement CA root loading: default = `rustls-native-certs` system roots; `ca-bundle` Handle → read PEM, add to root store; `no-system-roots: true` → drop system roots; `mozilla-roots: true` → add `webpki-roots` (`src/builtins_io.rs`)
+- [ ] Implement mTLS: read `client-cert` and `client-key` Handle PEM bytes; configure `ClientConfig` with client auth (`src/builtins_io.rs`)
+- [ ] Implement `SpkiPin` type: `spki-pin` builtin takes `HashAlgorithm` variant + `Bytes` fingerprint → dict; `pins` option in TLS opts validates leaf cert SPKI against pin list using specified hash algorithm (`src/builtins_io.rs`)
+- [ ] Implement SPKI hash computation for pin matching: SHA-256/384/512 via `ring`, SHA3-256/384/512 via `sha3`, BLAKE3 via `blake3` (`src/builtins_io.rs`)
+- [ ] Implement ALPN: `alpn` option → `ClientConfig::alpn_protocols`; default `["http/1.1"]` (`src/builtins_io.rs`)
+- [ ] Implement `tls-peer-cert` Rust builtin: requires Handle with `Tls` flag; return dict with `subject`, `issuer`, `sans`, `not-before` (@Timestamp), `not-after` (@Timestamp), `spki-sha256` (`src/builtins_io.rs`)
+- [ ] Add `--cap-net NAME=ENTRY` CLI documentation for Connector protocol context (`doc/12-tooling.md`)
+- [ ] Register all type signatures (`src/types.rs`)
+- [ ] Tests: corpus tests for connect Tcp/Udp, tls-connect with system roots, tls-connect with custom CA, mTLS, certificate pinning (SpkiPin), ALPN negotiation, tls-peer-cert return shape (`tests/corpus/eval/builtins/`)
+
+### `http-net`: HTTP Client & Network Stack
+
+**Spec chapters:** `doc/whatif/lib-tls.md` §HttpConn, §HTTP/2 HTTP/3, §Network Stack Summary. **Depends on:** `connector-tls`, `string-utils`.
+
+- [ ] Add `reqwest = { version = "0.12", features = ["http2", "http3", "brotli", "rustls-tls"] }` to `Cargo.toml` (`Cargo.toml`)
+- [ ] Implement pure-tinct `http-get` in `stdlib/net.llt`: connect → write HTTP/1.0 request → slurp → parse response (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `https-get` in `stdlib/net.llt`: tls-connect → write → slurp → parse (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `fetch` in `stdlib/net.llt`: parse URL, dispatch on `starts-with? "https://" url` (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `build-http-request` helper: construct HTTP/1.0 GET request with headers (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `parse-http-response` helper: split status line / headers / body (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `parse-url` helper: extract scheme, host, port, path (`stdlib/net.llt`)
+- [ ] Add `Value::HttpConn` to Value enum (wraps reqwest Client or connection pool) (`src/value.rs`)
+- [ ] Implement `http-connect` Rust builtin — Connector form: `http-connect connector host port opts` → `HttpConn`; Handle form: `http-connect handle host` → `HttpConn`; internally opens Tcp (HTTP/1.1+2) or Udp (HTTP/3) based on ALPN (`src/builtins_io.rs`)
+- [ ] Implement `http-get` overload on `HttpConn`: `http-get conn path headers` → response Dict (`src/builtins_io.rs`)
+- [ ] Implement `socks5-connect` Rust builtin: SOCKS5 tunnel; takes Handle + host + port + creds → Handle[Stream RW] (`src/builtins_io.rs`)
+- [ ] Implement `proxy-connect` Rust builtin: HTTP CONNECT tunnel; takes Handle + host + port → Handle[Stream RW] (`src/builtins_io.rs`)
+- [ ] Register all type signatures (`src/types.rs`)
+- [ ] Tests: corpus tests for pure-tinct http-get against a local test HTTP server, fetch URL dispatch, HttpConn connection reuse, proxy tunneling (`tests/corpus/eval/builtins/`, integration tests)
+
+## CLI Modernization
+
+### `cli-run`: Rename eval → run
+
+**Spec chapters:** `doc/12-tooling.md`. Independent of other sprints.
+
+- [ ] Rename `Commands::Eval` to `Commands::Run` in `src/main.rs`; update match arm (`src/main.rs`)
+- [ ] Remove `--format` / `-f` flag and `OutputFormat` enum (`src/main.rs`)
+- [ ] Remove `--no-stdin` flag; stdin bound only when `-i` is present (`src/main.rs`)
+- [ ] Default behavior (no `-o`): skip JSON serialization block — emit-only output (`src/main.rs`)
+- [ ] Add `llt-repr` Rust builtin: calls `value_to_display_string`, returns String (`src/builtins_meta.rs`)
+- [ ] Create `stdlib/out/llt.llt`: `[llt-repr %]` (`stdlib/out/llt.llt`)
+- [ ] Update `tests/cli_tests.rs`: `"eval"` → `"run"` everywhere; `-f json` → `-o json`; `-f llt` → `-o llt` (`tests/cli_tests.rs`)
+- [ ] Update `justfile`: `-- eval` → `-- run` in all recipes (`justfile`)
+- [ ] Register `llt-repr` type signature (`src/types.rs`)
+- [ ] Tests: CLI tests for run subcommand, emit-only default, -o json, -o llt (`tests/cli_tests.rs`)
+
+---
 
 ## Phase D: Advanced Typing
 

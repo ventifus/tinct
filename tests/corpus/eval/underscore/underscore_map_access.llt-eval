@@ -2,5 +2,3 @@
 [map [identity _.name] [0: [name: "Alice"] 1: [name: "Bob"]]]
 === out
 Dict({0: String("Alice"), 1: String("Bob")})
-=== warn
-undefined variable: identity at 1:7-1:15

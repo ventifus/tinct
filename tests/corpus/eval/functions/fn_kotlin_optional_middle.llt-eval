@@ -5,5 +5,3 @@
 ]
 === out
 Dict({"f": Function(a, b, c), "result": Int(8)})
-=== warn
-type _t3 does not satisfy constraint Numeric at 2:31-2:44

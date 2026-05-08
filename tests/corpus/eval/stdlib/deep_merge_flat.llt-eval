@@ -2,5 +2,3 @@
 [deep-merge [a: 1  b: 2] [b: 99  c: 3]]
 === out
 Dict({"a": Int(1), "b": Int(99), "c": Int(3)})
-=== warn
-undefined variable: deep-merge at 1:2-1:12

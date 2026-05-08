@@ -45,7 +45,7 @@ pub type DocMap = HashMap<String, String>;
 /// the canonical call sequence.
 pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut errors = Vec::new();
-    let mut env = Rc::new(TypeEnv::with_builtins());
+    let mut env = crate::imports::build_prelude_env();
     let mut state = InferState::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
@@ -250,7 +250,7 @@ fn reset_expr(expr: &Spanned<Expr>) {
 /// **`desugar::desugar_file` must be called on the [`File`] before passing it here.**
 /// See [`typecheck_file`] for details.
 pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap, DocMap) {
-    typecheck_file_with_types_and_env(file, Rc::new(TypeEnv::with_builtins()))
+    typecheck_file_with_types_and_env(file, crate::imports::build_prelude_env())
 }
 
 /// Type-check a parsed [`File`] with a custom initial type environment.
@@ -8351,18 +8351,19 @@ mod tests {
     #[test]
     fn test_narrowing_conjunction_and() {
         // After `[and [= x 42] [has? y "name"]]`, both narrowings apply.
-        // and and has? are defined locally because they are prelude functions, not typed builtins.
-        let result = check(
+        // and and has? are prelude functions, not builtins, so define locally.
+        let env = doc_env_with_builtins(
             "[and: [fn [a b] [if a b false]]  has?: [fn [xs k] true]]\n\
              [x: 30  y: []]\n\
              [result: [if [and [= x 42] [has? y \"name\"]] [+ x $y.age] 0]]",
         );
         // This should type-check — x is narrowed to IntLiteral(42) (promotes to Int for +),
         // y is narrowed to have at least a name field (age access gets a fresh TypeVar)
-        assert!(
-            result.is_ok(),
-            "conjunction narrowing should apply both constraints"
-        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int for conjunction narrowing result, got {other}"),
+            None => panic!("field 'result' not found in env"),
+        }
     }
 
     #[test]

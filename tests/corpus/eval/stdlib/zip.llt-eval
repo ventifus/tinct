@@ -2,5 +2,3 @@
 [zip [1 2 3] ["a" "b" "c"]]
 === out
 Dict({0: Dict({0: Int(1), 1: String("a")}), 1: Dict({0: Int(2), 1: String("b")}), 2: Dict({0: Int(3), 1: String("c")})})
-=== warn
-undefined variable: zip at 1:2-1:5

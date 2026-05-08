@@ -2,5 +2,3 @@
 [get-in [a: [b: [c: 42]]] ["a" "b" "c"]]
 === out
 Int(42)
-=== warn
-undefined variable: get-in at 1:2-1:8

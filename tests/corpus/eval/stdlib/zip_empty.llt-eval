@@ -2,5 +2,3 @@
 [zip [] [1 2 3]]
 === out
 Dict({})
-=== warn
-undefined variable: zip at 1:2-1:5

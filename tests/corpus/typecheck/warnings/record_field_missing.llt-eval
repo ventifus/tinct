@@ -6,4 +6,4 @@
 === out
 Dict({"f": Function(r)})
 === warn
-field 'y' not found
+field 'y' not found in [x: Int] at 4:22-4:25

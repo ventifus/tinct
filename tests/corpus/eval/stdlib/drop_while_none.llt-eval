@@ -1,5 +1,3 @@
 [drop-while [fn [x] [< x 10]] [1 2 3]]
 === out
 Dict({})
-=== warn
-undefined variable: drop-while at 1:2-1:12

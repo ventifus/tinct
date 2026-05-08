@@ -1,5 +1,3 @@
 [list? [1 2 3]]
 === out
 Bool(true)
-=== warn
-undefined variable: list? at 1:2-1:7

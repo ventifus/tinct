@@ -2,5 +2,3 @@
 [from-entries [[key: "x" value: 10] [key: "y" value: 20]]]
 === out
 Dict({"x": Int(10), "y": Int(20)})
-=== warn
-undefined variable: from-entries at 1:2-1:14

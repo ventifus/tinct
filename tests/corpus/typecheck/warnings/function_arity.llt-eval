@@ -6,4 +6,4 @@
 === out
 Function(x, y)
 === warn
-arity mismatch
+arity mismatch: expected 1 arguments, got 2 at 4:18-4:30

@@ -321,3 +321,7 @@ volume-info:
 # Add === warn sections to corpus files that produce type warnings
 add-warn-sections:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --example add_warn_sections
+
+# Clean up stale === warn sections in corpus test files
+cleanup-warn-sections:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --example cleanup_warn_sections

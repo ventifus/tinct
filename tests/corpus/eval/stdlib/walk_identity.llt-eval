@@ -2,5 +2,3 @@
 [walk [fn [x] x] [a: 1  b: [c: 2  d: 3]]]
 === out
 Dict({"a": Int(1), "b": Dict({"c": Int(2), "d": Int(3)})})
-=== warn
-undefined variable: walk at 1:2-1:6

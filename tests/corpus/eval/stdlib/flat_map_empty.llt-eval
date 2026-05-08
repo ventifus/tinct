@@ -2,5 +2,3 @@
 [flat-map [fn [x] [x]] []]
 === out
 Dict({})
-=== warn
-undefined variable: flat-map at 1:2-1:10

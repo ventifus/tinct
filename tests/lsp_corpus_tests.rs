@@ -193,7 +193,7 @@ enum DiagnosticSeverity {
 #[cfg(feature = "lsp")]
 fn get_diagnostics_for_source(source: &str) -> Vec<Diagnostic> {
     use tinct::lsp::analysis::diagnostics_for;
-    use tinct::lsp::document::{DocumentState, PreludeIndex};
+    use tinct::lsp::document::DocumentState;
 
     // Create minimal environment for LSP analysis
     let stdlib_env = tinct::create_stdlib_env().expect("Failed to create stdlib environment");
@@ -204,10 +204,9 @@ fn get_diagnostics_for_source(source: &str) -> Vec<Diagnostic> {
         Rc::clone(&stdlib_env),
         true, // no_fs (LSP context should have no_fs=true for security)
     );
-    let prelude_index = PreludeIndex::empty();
 
     // Create DocumentState (this runs parse + expand + desugar + resolve + typecheck + eval)
-    let doc = DocumentState::new(source.to_string(), &stdlib_env, &eval_ctx, &prelude_index);
+    let doc = DocumentState::new(source.to_string(), &stdlib_env, &eval_ctx, None);
 
     // Generate LSP diagnostics
     let uri = "file:///test.llt"

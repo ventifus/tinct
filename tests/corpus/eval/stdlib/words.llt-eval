@@ -2,5 +2,3 @@
 [words "hello world"]
 === out
 Seq(String("hello"), ...)
-=== warn
-undefined variable: words at 1:2-1:7

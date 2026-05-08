@@ -2,5 +2,3 @@
 [empty? [seq 1 []]]
 === out
 Bool(false)
-=== warn
-undefined variable: empty? at 1:2-1:8

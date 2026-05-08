@@ -8,5 +8,3 @@
 ]]
 === out
 String("positive")
-=== warn
-undefined variable: cond at 3:2-3:6

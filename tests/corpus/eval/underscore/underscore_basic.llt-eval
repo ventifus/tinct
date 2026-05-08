@@ -2,5 +2,3 @@
 [call [identity _] 42]
 === out
 Int(42)
-=== warn
-undefined variable: identity at 1:8-1:16

@@ -2,5 +2,3 @@
 [not true]
 === out
 Bool(false)
-=== warn
-undefined variable: not at 1:2-1:5

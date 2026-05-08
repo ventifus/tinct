@@ -2,5 +2,3 @@
 [get "a" [a: 42  b: 99]]
 === out
 Int(42)
-=== warn
-undefined variable: get at 1:2-1:5

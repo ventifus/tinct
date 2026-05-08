@@ -2,5 +2,3 @@
 [set [x: 1] "y" 2]
 === out
 Dict({"x": Int(1), "y": Int(2)})
-=== warn
-undefined variable: set at 1:2-1:5

@@ -4,5 +4,3 @@
 [total: [reduce + 0 %.items]]
 === out
 Dict({"total": Int(6)})
-=== warn
-cannot unify Seq[?] with [0: 1 1: 2 2: 3] at 3:21-3:28

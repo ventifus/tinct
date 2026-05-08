@@ -2,5 +2,3 @@
 [call [const 42] "ignored"]
 === out
 Int(42)
-=== warn
-undefined variable: const at 1:8-1:13

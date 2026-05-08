@@ -4,5 +4,3 @@
 [get 1 data]
 === out
 String("one")
-=== warn
-undefined variable: get at 3:2-3:5

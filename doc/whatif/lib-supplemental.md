@@ -1,11 +1,13 @@
 # What If: Supplemental Standard Library Modules for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-07
 
 What would it take to ship standard library modules beyond the core
 prelude, covering extended strings, math, bitwise encoding, TOML
-parsing, streaming file I/O, and string-as-sequence operations for
-common configuration and scripting tasks?
+parsing, streaming file I/O, string-as-sequence operations, a native
+`Bytes` type, and a generalised filesystem capability protocol (`FsCap`)
+supporting S3, WebDAV, and other object-store backends alongside the
+local POSIX filesystem?
 
 ## Current State
 
@@ -70,9 +72,10 @@ With `str-contains?` this is terser; with the regex engine from
 5. **TOML parsing** — no way to read TOML files from within tinct scripts;
    blocks self-hosted tooling that reads Cargo.toml, Cargo.lock, or
    other TOML configuration feeds.
-6. **Streaming file writes** — `write-file` is atomic (full content at
-   once); no way to open a file and write to it incrementally. Blocks
-   scripts that build output line by line before closing.
+6. **Streaming file writes and filesystem operations** — `write-file` is
+   atomic and `DirCap` supports only local POSIX paths. No streaming
+   writes, no `list-dir`/`rename`/`copy`/`stat`, and no way to plug in
+   non-POSIX backends (S3, WebDAV, object stores).
 7. **Strings as sequences** — strings cannot be passed directly to `map`,
    `filter`, `reduce`, etc.; you must split to a collection first. Blocks
    natural character-level string processing.
@@ -349,6 +352,31 @@ freely.
 **`char-code` is also required by `doc/whatif/lib-regex.md`** for
 character class range comparisons.
 
+**`HashAlgorithm` type alias** — used by `doc/whatif/lib-tls.md` for
+strongly-typed certificate pin fingerprints. Declared here because hash
+algorithms are a general encoding primitive, not TLS-specific:
+
+```tinct
+[
+  HashAlgorithm: [type
+    # SHA-2 family (via ring — already in rustls; no new dep)
+    Sha256   # 32 bytes; current HPKP/TLSA convention; 128-bit quantum security
+    Sha384   # 48 bytes
+    Sha512   # 64 bytes
+    # SHA-3 / Keccak family (requires sha3 crate — new dep)
+    Sha3-256 # 32 bytes; NIST FIPS 202; independent Keccak construction
+    Sha3-384 # 48 bytes
+    Sha3-512 # 64 bytes
+    # BLAKE3 (blake3 crate — already in tinct for $include integrity)
+    Blake3   # 32 bytes; fast, modern; not NIST-standardized
+  ]
+]
+```
+
+`Sha256` remains the current standard for SPKI pinning tools. `Sha3-256`
+or `Blake3` are preferred for new infrastructure where tooling permits.
+SHA-1 is excluded — broken for collision resistance since 2017.
+
 **Adds 9 Rust builtins.** No new crates.
 
 ### TOML Parsing Lite (stdlib/toml-lite.llt)
@@ -457,6 +485,281 @@ Example — a script that builds a report incrementally:
 
 **Adds 3 Rust builtins:** `write`, `flush`, `close`. `open` is extended
 for write modes. No new crates.
+
+### Filesystem Capabilities (`FsCap` protocol)
+
+`DirCap` (from `doc/whatif/io.md`) is a built-in capability granting
+access to a local filesystem directory — currently hardwired to POSIX
+paths via `cap_std`. This section generalises it into a **FsCap
+protocol**: any value that implements the required methods can be used
+wherever a `DirCap` is accepted. S3 buckets, WebDAV servers, and
+user-defined virtual filesystems all become drop-in replacements.
+
+#### Protocol Declaration
+
+A FsCap is a tinct Dict with a `caps` field declaring the capability
+flags it supports, plus one field per implemented method. The tinct
+evaluator dispatches protocol method calls by looking up the field
+name in the FsCap dict — exactly like any other tinct function call.
+
+```tinct
+# Minimal shape of a user FsCap:
+[
+  caps:       [Readable Writable Exclusive]   # declared capabilities (nominal variants)
+  open:       [fn [path flags...] ...]
+  write-file: [fn [path content] ...]
+  list-dir:   [fn [path] ...]
+  stat:       [fn [path] ...]
+  copy:       [fn [src dst] ...]
+  remove:     [fn [path] ...]
+  make-dir:   [fn [path] [error "not supported"]]
+  rename:     [fn [src dst] [error "rename not atomic on this backend"]]
+]
+```
+
+`DirCap` (the built-in Rust value) carries the same `caps` field
+internally; the type checker reads it to enforce flag constraints.
+
+#### Capability Flags
+
+Extending the flag set from §Streaming File I/O:
+
+| Flag | O_ flag | POSIX | S3 | WebDAV | NFS | Notes |
+|------|---------|-------|----|--------|-----|-------|
+| `Readable` | `O_RDONLY` | ✓ | ✓ | ✓ | ✓ | |
+| `Writable` | `O_WRONLY` | ✓ | ✓ | ✓ | ✓ | |
+| `Appendable` | `O_APPEND` | ✓ | ✗ | ✓ | ✓ | S3 must re-upload entire object |
+| `Seekable` (read) | — | ✓ | ✓ (byte-range GETs) | ✓ | ✓ | |
+| `Seekable` (write) | — | ✓ | ✗ | ✓ | ✓ | S3 requires full atomic upload |
+| `Exclusive` | `O_EXCL` | ✓ | ✓ (`If-None-Match: *`) | ✓ | ✓ | |
+| `Sync` | `O_SYNC` | ✓ | ✗ | ✗ | ✓ | |
+| `NoFollow` | `O_NOFOLLOW` | ✓ | n/a | n/a | ✓ | |
+| `Atomic` | — | ✓ | ✗ | ✓ | ✓ | Gates `rename`; S3 rename = copy+delete |
+| `Linkable` | — | ✓ | ✗ | ✗ | ✓ | Gates `link`; no concept in object stores |
+| `Symlinkable` | — | ✓ | ✗ | ✗ | ✓ | Gates `symlink`/`read-link` |
+| `Watchable` | — | ✓ (inotify) | ✓ (events, async) | ✗ | ✓ | **Stub — future** |
+
+#### Protocol Methods
+
+**`open fscap path Flags... → Handle[...]`**
+
+The FsCap validates that all requested flags are in its `caps` set. If
+any flag is unsupported, `open` returns an error. The returned Handle
+carries the intersection of the requested flags and the backend's
+capabilities.
+
+**`write-file fscap path content@[String Bytes] → null`**
+
+Atomic write: on POSIX, temp file + rename. On S3, a single PUT
+request (S3 objects become visible atomically when upload completes,
+so `write-file` and `write-file-atomic` have identical semantics on
+S3). On WebDAV, a PUT with `Content-Length`.
+
+**`list-dir fscap path → Seq[Dict]`**
+
+Returns a lazy `Seq` of entry dicts. Each entry contains at minimum:
+
+```
+{
+  name:  String     # filename only (no directory component)
+  type:  String     # "file" | "dir" | "symlink" | "other"
+  size:  Int        # bytes; 0 for dirs where size is not meaningful
+  mtime: Timestamp  # last modified (from lib-datetime.md)
+}
+```
+
+Backends that cannot determine a field return `null` for it. On S3,
+`type` is always `"file"` (S3 has no real directories; common prefixes
+are returned as `{name: "prefix/" type: "dir" size: 0 mtime: null}`
+as a convention).
+
+**`stat fscap path → Dict`**
+
+Full metadata dict. All fields are present; backends that cannot
+provide a field return `null`:
+
+```
+{
+  name:         String      # filename
+  type:         String      # "file" | "dir" | "symlink" | "other"
+  size:         Int         # bytes
+  mtime:        Timestamp   # last modified
+  atime:        Timestamp   # last accessed (null on S3/WebDAV)
+  ctime:        Timestamp   # last status change (null on S3/WebDAV)
+  inode:        Int         # inode number (null on S3/WebDAV)
+  nlink:        Int         # hard link count (null on S3/WebDAV)
+  mode:         Int         # POSIX permission bits as Int (null on S3/WebDAV)
+  uid:          Int         # owner user ID (null on S3/WebDAV)
+  gid:          Int         # owner group ID (null on S3/WebDAV)
+  etag:         String      # content hash / ETag (null on POSIX unless xattr)
+  content-type: String      # MIME type (null on POSIX unless xattr)
+}
+```
+
+**`make-dir fscap path → null`**
+
+POSIX: `mkdir -p`. WebDAV: `MKCOL`. S3: no-op (S3 has no real
+directories; objects with `/` in their key form virtual prefixes). A
+user FsCap for S3 should implement `make-dir` as a no-op or as
+creating a zero-byte placeholder object (`path/`).
+
+**`remove fscap path → null`**
+
+POSIX: unlink for files, rmdir for empty directories. S3: `DELETE`.
+WebDAV: `DELETE`. Errors if path does not exist.
+
+**`rename fscap src dst → null`**
+
+Requires `Atomic` in the FsCap's `caps`. If the FsCap does not declare
+`Atomic`, calling `rename` is a type error at the call site — the
+caller must use `copy` + `remove` explicitly for non-atomic rename.
+POSIX: atomic via `rename(2)`. WebDAV: `MOVE`.
+
+**`copy fscap src dst → null`**
+
+Server-side copy where the backend supports it efficiently (S3:
+`CopyObject`; WebDAV: `COPY`; POSIX: `copy_file_range`/`sendfile`).
+A FsCap that does not implement `copy` is not required to — callers
+that need copy-on-backends-without-it must implement it themselves as
+`write-file dst (slurp (open src Readable))`. `copy` is the
+optimisation path, not the contract.
+
+**`link fscap src dst → null`**
+
+Requires `Linkable`. Hard link. POSIX only.
+
+**`read-link fscap path → String`**
+
+Requires `Symlinkable`. Returns the symlink target. POSIX only.
+
+**`watch fscap path handler → WatchHandle`**
+
+**Stub — not yet designed.** Requires `Watchable`. Change notification
+APIs are highly OS-specific (inotify, kqueue, FSEvents,
+ReadDirectoryChangesW, S3 Event Notifications via SNS/SQS) and require
+an event-driven execution model that tinct does not yet have. The flag
+and method name are reserved. A FsCap that does not support `watch`
+should omit the field; calling `watch` on it is a type error.
+
+#### FsCap Capability Matrix
+
+| Backend | Supported flags | Notes |
+|---------|----------------|-------|
+| Local `DirCap` | All | Full POSIX via `cap_std` |
+| S3 bucket | Readable, Writable, Exclusive | No Seekable-write, no Atomic, no links |
+| WebDAV | Readable, Writable, Seekable, Atomic, Exclusive | Atomic rename, real dirs, no links |
+| NFS (mounted) | All (same as local) | Appears as local path; DirCap suffices |
+| User-defined | Any declared subset | Error on undeclared flags/methods |
+
+#### Example — S3 FsCap in pure-tinct
+
+```tinct
+# s3-connect returns a FsCap dict over http-connect
+[s3: [s3-connect net "my-bucket" aws-creds]]
+
+# Use it anywhere DirCap was accepted:
+[config:  [slurp [open s3 "configs/prod.toml" Readable]]]
+[write-file s3 "output/result.json" result]
+
+# Atomic create-only (Exclusive → If-None-Match: * header):
+[lock: [open s3 "locks/deploy.lock" Writable Exclusive]]
+[close lock]
+
+# Server-side copy (S3 CopyObject — no data transferred):
+[copy s3 "templates/base.yaml" "envs/prod.yaml"]
+
+# list-dir returns Seq of entry dicts:
+[entries: [list-dir s3 "configs/"]]
+# → [{name: "prod.toml" type: "file" size: 1234 mtime: <Timestamp>} ...]
+
+# stat returns full metadata:
+[meta: [stat s3 "configs/prod.toml"]]
+# → {name: "prod.toml" type: "file" size: 1234 mtime: <Timestamp>
+#    etag: "\"abc123\"" content-type: "application/toml"
+#    atime: null ctime: null inode: null nlink: null mode: null ...}
+
+# These error on S3 (not declared in S3FsCap.caps):
+# [open s3 "file.bin" Writable Seekable]   # Seekable-write not in caps
+# [rename s3 "old" "new"]                  # Atomic not in caps → type error
+# [link s3 "src" "dst"]                    # Linkable not in caps → type error
+```
+
+#### Type System
+
+`DirCap` gains a `caps` field internally. The type checker reads it
+to enforce constraints: `[open s3-cap path Writable Seekable]` is a
+type error if `S3FsCap.caps` does not include `Seekable`. User FsCap
+dicts declare their `caps` field; the type checker can inspect this
+field if the type of the FsCap value is statically known.
+
+`rename` is typed as requiring a FsCap with `Atomic` in its `caps`.
+This makes non-atomic rename a static type error rather than a
+runtime surprise.
+
+#### New Rust Builtins for DirCap Extension
+
+| Builtin | Signature | Notes |
+|---------|-----------|-------|
+| `make-dir cap path` | `DirCap → String → null` | `mkdir -p` semantics |
+| `remove cap path` | `DirCap → String → null` | Unlink file or empty dir |
+| `rename cap src dst` | `DirCap → String → String → null` | Atomic via `rename(2)` |
+| `copy cap src dst` | `DirCap → String → String → null` | `copy_file_range` / `sendfile` |
+| `link cap src dst` | `DirCap → String → String → null` | Hard link |
+| `read-link cap path` | `DirCap → String → String` | Readlink |
+| `list-dir cap path` | `DirCap → String → Seq` | Seq of `{name type size mtime}` dicts |
+| `stat cap path` | `DirCap → String → Dict` | Full metadata dict (all fields) |
+
+No new crates — `cap_std` is already present. S3/WebDAV FsCaps are
+user-implemented in pure-tinct over `http-connect`.
+
+#### CLI — `--cap-fs`
+
+`--cap-fs NAME=URI` accepts either a bare path or a URI. The scheme
+determines what gets injected as `$NAME`:
+
+| Argument form | Injected value | Type |
+|---|---|---|
+| `--cap-fs fs=/var/data` | DirCap for `/var/data` | `DirCap` |
+| `--cap-fs fs=file:///var/data` | DirCap for `/var/data` | `DirCap` |
+| `--cap-fs fs=file://.` | DirCap for current directory | `DirCap` |
+| `--cap-fs bucket=s3://my-bucket` | Inert URI reference | `Value::Uri` |
+| `--cap-fs dav=webdav://dav.internal/files` | Inert URI reference | `Value::Uri` |
+
+**`file://` URIs** are resolved immediately by the CLI into a local
+`DirCap` — a POSIX FsCap with all flags (`Readable`, `Writable`,
+`Seekable`, `Atomic`, `Linkable`, `Symlinkable`, `Exclusive`, `Sync`,
+`NoFollow`, `Watchable`). Bare paths without a scheme are treated as
+`file://`.
+
+**Non-`file://` URIs** inject a `Value::Uri { scheme: "s3", uri: "s3://my-bucket" }` — an
+inert typed reference that carries no access authority of its own.
+It cannot be passed to `open`, `list-dir`, or any FsCap protocol
+method directly. The script passes it to a user-provided library
+constructor that validates the URI and creates a proper FsCap:
+
+```tinct
+[include "lib/s3.llt"]
+
+# tinct run --cap-fs bucket=s3://my-bucket
+#           --cap-net aws=*.s3.amazonaws.com
+#           script.llt
+
+# $bucket is Value::Uri — inert until activated by a library
+[s3: [s3-mount bucket aws aws-creds]]   # Uri + NetCap + creds → FsCap dict
+
+# Now $s3 is a full FsCap:
+[config: [slurp [open s3 "configs/prod.toml" Readable]]]
+[write-file s3 "outputs/result.json" result]
+```
+
+The `NetCap` separately grants network access; the `Value::Uri` merely
+identifies what to connect to. Authority comes from the capabilities,
+not the URI.
+
+There is no `--cap-s3` or `--cap-webdav` CLI flag — non-POSIX FsCaps
+are constructed in tinct code. The CLI's role is to declare the
+resource identity (`--cap-fs`) and grant the required access
+(`--cap-net`). The script composes them using its own libraries.
 
 ### Strings as Character Sequences (`Value::String`)
 
@@ -578,7 +881,8 @@ zero bytes copied. `Bytes` values are immutable.
 | `bytes-get b i` | `Bytes → Int → Int` | Byte at index `i` as Int (0–255) |
 | `bytes-slice b start end` | `Bytes → Int → Int → Bytes` | Zero-copy subslice |
 | `bytes-concat b1 b2` | `Bytes → Bytes → Bytes` | Concatenate two byte sequences |
-| `bytes-equal? b1 b2` | `Bytes → Bytes → Bool` | Constant-time comparison |
+| `bytes-equal? b1 b2` | `Bytes → Bytes → Bool` | Structural equality (fast; short-circuits; not constant-time) |
+| `ct-equal? b1 b2` | `Bytes → Bytes → Bool` | Constant-time comparison via `subtle::ConstantTimeEq`; use for HMAC/token verification |
 
 **Revised builtins from §Bitwise Primitives:**
 
@@ -634,7 +938,7 @@ a subtype of `String` or `Dict`; not interchangeable without explicit
 conversion. `str-bytes`/`bytes-str` are the explicit bridges.
 
 **Adds 5 Rust builtins:** `bytes-length`, `bytes-get`, `bytes-slice`,
-`bytes-concat`, `bytes-equal?`. Updates `str-bytes`/`bytes-str`
+`bytes-concat`, `ct-equal?`. Updates `str-bytes`/`bytes-str`
 signatures. No new crates.
 
 ### Path Utilities (stdlib/path.llt)
@@ -657,111 +961,245 @@ path-join:    [fn [...parts] [join "/" parts]]
 
 ### Dependencies (`Cargo.toml`)
 
-No new crates. All builtins use only the Rust standard library; derived
-encoding and regex operations are pure-tinct.
+`subtle = "1"` — required for `ct-equal?`. Provides `ConstantTimeEq`
+which prevents LLVM from optimizing the comparison into a short-circuit
+branch. Zero transitive dependencies; widely audited (used by `rustls`,
+`ring`, `ed25519-dalek`). All other builtins use only the Rust standard
+library.
+
+### New Value Variants (`src/value.rs`)
+
+| Variant | Description |
+|---------|-------------|
+| `Value::String { source: Rc<str>, start: usize, end: usize }` | Replaces `Value::String(String)` — zero-copy string slices |
+| `Value::Bytes { source: Rc<[u8]>, start: usize, end: usize }` | New binary data type |
+| `Value::WriteHandle(WriteHandleInner)` | Write-mode file handles; carries text/binary encoding |
+| `Value::Uri { scheme: String, uri: String }` | Inert URI reference from `--cap-fs` |
+
+`Value::String` change is a pervasive refactor — every match site in
+`eval.rs`, `builtins.rs`, `lib.rs`, `typecheck.rs`, `value.rs` must
+be updated. All other new variants are additive.
 
 ### Evaluator Builtins (`src/builtins.rs`)
 
-33 new Rust builtins total: 3 string (`starts-with?`, `ends-with?`,
-`str-chars`), 13 math (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`,
-`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`; `pi` and `e`
-are Float literals in stdlib), 9 bitwise (`band`, `bor`, `bxor`, `shl`,
-`shr`, `char-code`, `chr`, `str-bytes`, `bytes-str`), 3 I/O
-(`write`, `flush`, `close`), 5 bytes (`bytes-length`, `bytes-get`,
-`bytes-slice`, `bytes-concat`, `bytes-equal?`). `open` is extended for
-write modes. `str-bytes`/`bytes-str` signatures change from `Dict` to
-`Bytes`. The `Value::String` change replaces `Value::String`
-throughout — no new builtins, but a pervasive refactor of existing
-match sites.
+40 new Rust builtins across six groups:
 
-All follow the existing registration pattern in `standard_builtins()`
-and the `builtin_*` naming convention.
+**String (2 to prelude + 1 internal + 1 str-domain):**
+`starts-with?`, `ends-with?` (move to prelude, gain `Seq`/`Bytes`
+dual-dispatch), `str-chars` (internal), `str-slice` (O(1) String
+construction).
+
+**Math (16):**
+`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`,
+`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+`nan?`, `inf?`, `finite?`.
+`pi`, `e`, `phi` are Float literals in `stdlib/math.llt`.
+
+**Bitwise (9):**
+`band`, `bor`, `bxor`, `shl`, `shr`,
+`char-code`, `chr`, `str-bytes`, `bytes-str`.
+
+**I/O (6):**
+`write`, `flush`, `close`, `seek`, `seek-end`, `position`.
+`open` is extended (not new) — gains capability flag dispatch.
+
+**Bytes (4):**
+`bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?`.
+`split`, `replace`, `join`, `contains?`, `length`, `get`, `nth`,
+`slice`, `take`, `drop` gain `Bytes` dispatch in the prelude — no
+new builtins, dispatch changes only.
+
+**FsCap / DirCap extension (8):**
+`make-dir`, `remove`, `rename`, `copy`, `link`, `read-link`,
+`list-dir`, `stat`.
 
 ### Standard Library Files
 
-New files added alongside `prelude.llt`:
-
-- `stdlib/strings.llt` — `str-contains?`, `starts-with?` (builtin),
-  `ends-with?` (builtin), `str-chars` (builtin), `pad-left`,
-  `pad-right`, `str-repeat`, `str-find`, `str-slice`
-- `stdlib/math.llt` — `pi`, `e` (Float literals), `hypot`, `deg->rad`,
-  `rad->deg`, `log-base`
+**New files:**
+- `stdlib/strings.llt` — `str-contains?`, `pad-left`, `pad-right`,
+  `str-repeat`, `str-find`, `str-reverse`
+  (`starts-with?`/`ends-with?` move to prelude; `str-slice` subsumed
+  by generalized `slice`; `str-chars` is internal-only)
+- `stdlib/math.llt` — `pi`, `e`, `phi` (Float literals), `hypot`,
+  `deg->rad`, `rad->deg`, `log-base`
 - `stdlib/encoding.llt` — `base64-encode`, `base64-decode`,
-  `hex-encode`, `hex-decode`, `mask-apply` and other bit-level utilities
-  (pure-tinct on top of bitwise primitives)
-- `stdlib/toml-lite.llt` — `parse-toml-lite` (pure-tinct)
-- `stdlib/in/toml-lite.llt` — pipeline wrapper: `[parse-toml-lite [slurp stdin]]`
-- `stdlib/io.llt` extended — `open-write`, `open-append`, `write-line`,
-  `write-lines` (pure-tinct wrappers over new `write`/`flush`/`close` builtins)
-- `stdlib/encoding.llt` revised — `base64-encode`/`hex-encode` accept `Bytes`;
-  `base64-decode`/`hex-decode` return `Bytes`
-- `stdlib/path.llt` — `basename`, `dirname`, `extension`, `path-join`,
-  `path-parts`
-- `stdlib/regex.llt` — Thompson NFA regex engine (separate doc:
-  `doc/whatif/lib-regex.md`; depends on `str-chars` and `char-code`)
+  `hex-encode`, `hex-decode`, `bytes-reverse`, `bytes-repeat`,
+  `mask-apply` (pure-tinct on bitwise primitives; encoding functions
+  take/return `Bytes`)
+- `stdlib/toml-lite.llt` — `parse-toml-lite: [fn [s@String] → Dict]`
+- `stdlib/in/toml-lite.llt` — `[parse-toml-lite [slurp stdin]]`
+- `stdlib/path.llt` — `basename`, `dirname`, `extension`,
+  `path-join`, `path-parts`
+- `stdlib/regex.llt` — see `doc/whatif/lib-regex.md`
 
-`strings.llt`, `math.llt`, and `encoding.llt` are loaded by `tinct run`
-at startup alongside `prelude.llt` — all their functions are in scope
-by default. `toml-lite.llt` is an opt-in library: scripts `$include` it
-explicitly and call `parse-toml-lite` directly. `stdlib/in/toml-lite.llt`
-is available as `-i toml-lite` for pipeline use.
+**Extended files:**
+- `stdlib/prelude.llt` — gains `starts-with?`, `ends-with?` (now
+  multi-dispatch on `String`/`Bytes`/`Seq`); `slice`, `take`, `drop`,
+  `count`, `reverse`, `contains?`, `get`, `nth`, `length` gain
+  `String` and `Bytes` dual-dispatch
+- `stdlib/io.llt` — gains `write-line`; `write-file`/`write-file-atomic`
+  signatures extended to `content@[String Bytes]`; `list-dir`, `stat`,
+  `make-dir`, `remove`, `rename`, `copy`, `link`, `read-link` for
+  local `DirCap`; `open` now takes explicit capability flags (no mode
+  strings)
+
+`strings.llt`, `math.llt`, and `encoding.llt` are loaded at startup
+alongside `prelude.llt`. `toml-lite.llt` is opt-in (`$include`
+explicitly). `stdlib/in/toml-lite.llt` is available as `-i toml-lite`.
 
 ### Type Checker (`src/typecheck.rs`)
 
-Register new builtins in `TypeEnv::with_builtins()` with precise signatures:
+**New type definitions:**
 
+```tinct
+# Type aliases using [type ...] syntax.
+# These would be declared in a stdlib/io.llt types block.
+[
+  # Inert URI reference — not a FsCap; must be activated by a library constructor
+  Uri: [type [scheme: @String  uri: @String]]
+
+  # Directory listing entry (returned per item by list-dir)
+  DirEntry: [type [
+    name:  @String            # filename only (no directory component)
+    type:  @String            # "file" | "dir" | "symlink" | "other"
+    size:  @Int               # bytes
+    mtime: @[Timestamp Null]  # last modified; null if unavailable
+  ]]
+
+  # Full file metadata (returned by stat)
+  StatResult: [type [
+    name:         @String
+    type:         @String           # "file" | "dir" | "symlink" | "other"
+    size:         @Int
+    mtime:        @[Timestamp Null]
+    atime:        @[Timestamp Null]  # null on S3/WebDAV
+    ctime:        @[Timestamp Null]  # null on S3/WebDAV
+    inode:        @[Int Null]        # null on S3/WebDAV
+    nlink:        @[Int Null]        # null on S3/WebDAV
+    mode:         @[Int Null]        # POSIX permission bits; null on S3/WebDAV
+    uid:          @[Int Null]        # null on S3/WebDAV
+    gid:          @[Int Null]        # null on S3/WebDAV
+    etag:         @[String Null]     # content hash; null on POSIX
+    content-type: @[String Null]     # MIME type; null on POSIX
+  ]]
+
+  # FsCap protocol type (structural — any dict with these fields)
+  FsCap: [type [
+    caps:       @Seq@Any      # declared capability flags (nominal variants)
+    open:       [fn@Handle       [path@String]]
+    write-file: [fn@Null         [path@String  content@[String Bytes]]]
+    list-dir:   [fn@Seq@DirEntry [path@String]]
+    stat:       [fn@StatResult   [path@String]]
+    make-dir:   [fn@Null         [path@String]]
+    remove:     [fn@Null         [path@String]]
+    rename:     [fn@Null         [src@String  dst@String]]
+    copy:       [fn@Null         [src@String  dst@String]]
+    link:       [fn@Null         [src@String  dst@String]]
+    read-link:  [fn@String       [path@String]]
+    watch:      [fn@Any          [path@String  handler@Fn]]   # stub
+  ]]
+]
+
+# Handle capability rows: nominal cap variants compose the row
+# Handle[Readable Writable Stream ...]  — any subset of cap variants
+# WriteHandle[Text] / WriteHandle[Binary] — write-mode, encoding-tagged
 ```
-# String builtins
-starts-with? : String → String → Bool   -- starts-with? prefix haystack
-ends-with?   : String → String → Bool   -- ends-with? suffix haystack
-str-chars    : String → Seq             -- lazy Seq of single-codepoint String slices
 
-# Math builtins
-pow : Float → Float → Float
-sqrt : Float → Float
-sin : Float → Float   (and cos, tan, asin, acos, atan)
-atan2 : Float → Float → Float
-# pi and e are Float literals in stdlib/math.llt, not registered builtins
+**New builtin signatures in `TypeEnv::with_builtins()`:**
+
+```tinct
+# Prelude additions (multi-dispatch: String | Bytes | Seq)
+starts-with? : [fn@Bool         [prefix@[String Bytes Seq]  haystack@[String Bytes Seq]]]
+ends-with?   : [fn@Bool         [suffix@[String Bytes Seq]  haystack@[String Bytes Seq]]]
+
+# String-domain
+str-chars : [fn@Seq@String  [s@String]]          # internal; Seq of single-char String slices
+str-slice : [fn@String      [from@Int  to@Int  s@String]]  # O(1) zero-copy substring
+
+# Math
+pow    : [fn@Float  [base@Number  exp@Number]]
+sqrt   : [fn@Float  [x@Float]]
+log    : [fn@Float  [x@Float]]    # log2, log10, exp analogous
+sin    : [fn@Float  [x@Float]]    # cos, tan, asin, acos, atan analogous
+atan2  : [fn@Float  [y@Float  x@Float]]
+nan?   : [fn@Bool   [x@Float]]
+inf?   : [fn@Bool   [x@Float]]
+finite?: [fn@Bool   [x@Float]]
+# pi, e, phi are Float literals in math.llt, not registered builtins
 
 # Bitwise primitives
-band : Int → Int → Int
-bor : Int → Int → Int
-bxor : Int → Int → Int
-shl : Int → Int → Int
-shr : Int → Int → Int
-char-code : String → Int
-chr : Int → String
-str-bytes : String → Bytes  -- UTF-8 encode string to Bytes
-bytes-str : Bytes → String  -- UTF-8 decode Bytes to string; errors on invalid UTF-8
+band      : [fn@Int     [a@Int  b@Int]]
+bor       : [fn@Int     [a@Int  b@Int]]
+bxor      : [fn@Int     [a@Int  b@Int]]
+shl       : [fn@Int     [a@Int  n@Int]]
+shr       : [fn@Int     [a@Int  n@Int]]
+char-code : [fn@Int     [s@String]]   # Unicode codepoint of first char
+chr       : [fn@String  [n@Int]]      # single-char string for codepoint
+str-bytes : [fn@Bytes   [s@String]]   # UTF-8 encode
+bytes-str : [fn@String  [b@Bytes]]    # UTF-8 decode; errors on invalid UTF-8
 
-# Bytes builtins
-bytes-length : Bytes → Int
-bytes-get    : Bytes → Int → Int
-bytes-slice  : Bytes → Int → Int → Bytes
-bytes-concat : Bytes → Bytes → Bytes
-bytes-equal? : Bytes → Bytes → Bool
+# Bytes
+bytes       : [fn@Bytes  [...@Bytes]]              # variadic concat; mirrors str
+bytes-find  : [fn@Int    [pattern@Bytes  b@Bytes]] # byte index, or -1
+bytes-of    : [fn@Bytes  [seq@Seq@Int]]            # collect byte Ints (0-255)
+bytes-equal?: [fn@Bool  [b1@Bytes  b2@Bytes]]   # fast structural equality (short-circuits)
+ct-equal?:    [fn@Bool  [b1@Bytes  b2@Bytes]]   # constant-time (subtle::ConstantTimeEq); use for secrets
+
+# I/O (WriteHandle encoding is tracked in the type)
+write    : [fn@WriteHandle  [wh@WriteHandle  content@[String Bytes]]]
+           # content type must match wh encoding (String for Text, Bytes for Binary)
+flush    : [fn@WriteHandle  [wh@WriteHandle]]
+close    : [fn@Null         [wh@WriteHandle]]
+seek     : [fn@Handle       [h@Handle  offset@Int]]   # h must carry Seekable
+seek-end : [fn@Handle       [h@Handle]]               # h must carry Seekable
+position : [fn@Int          [h@Handle]]               # h must carry Seekable
+
+# FsCap DirCap extension
+make-dir  : [fn@Null         [cap@DirCap  path@String]]
+remove    : [fn@Null         [cap@DirCap  path@String]]
+rename    : [fn@Null         [cap@DirCap  src@String  dst@String]]  # cap must declare Atomic
+copy      : [fn@Null         [cap@DirCap  src@String  dst@String]]
+link      : [fn@Null         [cap@DirCap  src@String  dst@String]]  # cap must declare Linkable
+read-link : [fn@String       [cap@DirCap  path@String]]             # cap must declare Symlinkable
+list-dir  : [fn@Seq@DirEntry [cap@DirCap  path@String]]
+stat      : [fn@StatResult   [cap@DirCap  path@String]]
 ```
 
 ## Dependencies
 
-- `stdlib/toml-lite.llt` requires `starts-with?`, `ends-with?`, `trim`
+**Between sections in this document:**
+- §TOML Parsing Lite requires `starts-with?`, `ends-with?`, `trim`
   from §Extended String Utilities.
-- `doc/whatif/lib-regex.md` requires `str-chars` from §Extended String
-  Utilities and `char-code` from §Bitwise Primitives.
-- §Strings as Character Sequences (`Value::String`) replaces
-  `Value::String(String)` throughout the codebase — requires updating
-  every match site in `src/eval.rs`, `src/builtins.rs`, `src/lib.rs`,
-  `src/typecheck.rs`, and `src/value.rs`. Independent of all other
-  sections except it makes `str-chars` return a `Seq` of `String`
-  slices, which `str-slice` and `str-find` depend on.
+- §Strings as Character Sequences (`Value::String` refactor) makes
+  `str-chars` return a `Seq` of `String` slices — `str-find` and the
+  internal implementation of `str-slice` depend on this. All other
+  sections are independent of the representation change.
 - §Bytes Type requires `Value::Bytes` (new variant) and `Type::Bytes`.
-  `str-bytes`/`bytes-str` signatures change from Dict to Bytes; the
-  encoding.llt functions must be updated accordingly.
-- §Streaming File I/O requires `Value::WriteHandle` (new variant) and
-  extension of `open` to return it for write/append modes.
+  `str-bytes`/`bytes-str` signatures change from `Dict` to `Bytes`;
+  `encoding.llt` must be updated accordingly. `bytes-reverse` and
+  `bytes-repeat` depend on `bytes-of`.
+- §Streaming File I/O and §Filesystem Capabilities share the `open`
+  capability-flag infrastructure. `Value::WriteHandle` is required by
+  Streaming I/O; `Value::Uri` is required by the FsCap CLI (`--cap-fs`
+  with non-`file://` URIs).
 - §Extended Math and §Bitwise Primitives are independent of each other
   and of §Extended String Utilities.
 - §Path Utilities has no dependencies.
+
+**On other whatif documents:**
+- `doc/whatif/lib-regex.md` requires `str-chars` (§Extended String
+  Utilities) and `char-code` (§Bitwise Primitives).
+- §Filesystem Capabilities `stat` return dict includes `Timestamp`
+  fields — depends on `doc/whatif/lib-datetime.md` for the
+  `Timestamp` type (`mtime`, `atime`, `ctime`). Where lib-datetime
+  is not implemented, these fields return `null`.
+- User-defined FsCaps (S3, WebDAV) are built in tinct over
+  `http-connect` — depends on `doc/whatif/lib-tls.md` Connector
+  protocol and `HttpConn`.
+
+**Stubs:**
+- `Watchable` flag and `watch` protocol method are reserved with no
+  implementation — requires a future event-driven execution model.
 
 ## References
 
@@ -787,5 +1225,28 @@ bytes-equal? : Bytes → Bytes → Bool
   sharing one buffer, avoiding per-character allocation. GHC's
   `Data.ByteString` implements this directly; `Value::String` is
   the same structure adapted to tinct's `Rc<str>` ownership model.
+- Berners-Lee, T., Fielding, R. & Masinter, L. (2005). "Uniform
+  Resource Identifier (URI): Generic Syntax." RFC 3986. — URI scheme
+  syntax used by `--cap-fs` for non-`file://` backends.
+- Hoffman, P. & Masinter, L. (2016). "The file URI Scheme." RFC 8089.
+  — Normative reference for `file://` URI resolution in `--cap-fs`.
+- The Open Group (2018). "The Single UNIX Specification, Version 4." —
+  POSIX filesystem semantics (`rename(2)`, `link(2)`, `symlink(2)`,
+  `stat(2)`, `O_*` flags) that define the local `DirCap` FsCap.
+- Amazon Web Services. "Amazon S3 API Reference." — S3 operations
+  mapped to FsCap protocol: `GetObject` → `open Readable`, `PutObject`
+  → `write-file`, `CopyObject` → `copy`, `DeleteObject` → `remove`,
+  `ListObjectsV2` → `list-dir`, `If-None-Match: *` → `Exclusive`.
+- RFC 4918. Dusseault, L. (2007). "HTTP Extensions for Web Distributed
+  Authoring and Versioning (WebDAV)." IETF. — WebDAV method mapping:
+  `GET` → `open Readable`, `PUT` → `write-file`, `COPY` → `copy`,
+  `MOVE` → `rename`, `MKCOL` → `make-dir`, `DELETE` → `remove`.
+- Miller, M.S. (2006). *Robust Composition*. — Object-capability model
+  underpinning FsCap: capabilities as unforgeable references, attenuation
+  via narrowing, `Value::Uri` as inert non-capability reference.
+- doc/whatif/lib-datetime.md — `Timestamp` type used in `stat` return
+  dict (`mtime`, `atime`, `ctime`).
 - doc/whatif/lib-regex.md — regex engine that depends on `str-chars`
   and `char-code` from this document.
+- doc/whatif/lib-tls.md — Connector protocol and `http-connect` used
+  by user-defined FsCaps (S3, WebDAV) to make HTTP requests.

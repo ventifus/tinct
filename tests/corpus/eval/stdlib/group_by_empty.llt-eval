@@ -2,5 +2,3 @@
 [group-by [fn [x] x] []]
 === out
 Dict({})
-=== warn
-undefined variable: group-by at 1:2-1:10

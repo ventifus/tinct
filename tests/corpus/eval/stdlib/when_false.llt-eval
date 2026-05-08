@@ -2,5 +2,3 @@
 [when false 42]
 === out
 Dict({})
-=== warn
-undefined variable: when at 1:2-1:6

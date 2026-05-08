@@ -3,5 +3,3 @@
 [[get "value" [get "inner" outer]]]
 === out
 Dict({0: Int(99)})
-=== warn
-undefined variable: get at 2:3-2:6

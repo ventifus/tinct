@@ -1,5 +1,3 @@
 [abs 0]
 === out
 Int(0)
-=== warn
-undefined variable: abs at 1:2-1:5

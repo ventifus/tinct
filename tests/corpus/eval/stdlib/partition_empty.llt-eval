@@ -2,5 +2,3 @@
 [partition [fn [x] [> x 0]] []]
 === out
 Dict({"pass": Dict({}), "fail": Dict({})})
-=== warn
-undefined variable: partition at 1:2-1:11

@@ -5,7 +5,7 @@ use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Lo
 use crate::ast::{Expr, Span};
 use crate::error::render_span_snippet;
 use crate::lsp::convert::llt_span_to_lsp_range;
-use crate::lsp::document::{DocumentState, PreludeIndex};
+use crate::lsp::document::DocumentState;
 use crate::parser::ParseError;
 use crate::typecheck::{DocMap, TypeMap};
 use crate::types::TypeError;
@@ -14,13 +14,16 @@ use crate::types::TypeError;
 ///
 /// Returns `None` if no meaningful hover information is available.
 ///
-/// Falls back to the prelude index if the document's type map has no entry.
 /// Also searches direct includes' type maps for cross-file hover.
+///
+/// Note: Prelude hover fallback via prelude span map is not currently supported
+/// after migration to the shared imports module. Prelude types are still seeded
+/// via imports::build_type_env(), so hover should work for prelude functions if
+/// the type checker inferred their types correctly.
 pub fn hover_at(
     doc: &DocumentState,
     doc_url: &Uri,
     offset: usize,
-    prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
 ) -> Option<String> {
     let file = match &doc.ast {
@@ -38,7 +41,6 @@ pub fn hover_at(
                 &doc.type_map,
                 &doc.doc_map,
                 &doc.text,
-                prelude_index,
                 include_graph,
                 doc_url,
             ) {
@@ -53,12 +55,14 @@ pub fn hover_at(
 /// Look up the inferred type for the given span in the type map.
 /// Returns a formatted suffix like " (Int)" or empty string if not found.
 ///
-/// Falls back to the prelude type map and direct includes' type maps if the
-/// document type map has no entry.
+/// Falls back to direct includes' type maps if the document type map has no entry.
+///
+/// Note: Prelude type map fallback is not currently supported after migration to
+/// the shared imports module. Prelude types should still appear in hover if the
+/// type checker inferred them correctly (via imports::build_type_env seeding).
 fn type_suffix(
     span: Span,
     type_map: &TypeMap,
-    prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
     doc_url: &Uri,
 ) -> String {
@@ -66,11 +70,6 @@ fn type_suffix(
 
     // Try document type map first
     if let Some(ty) = type_map.get(&key) {
-        return format!(" ({ty})");
-    }
-
-    // Try prelude type map
-    if let Some(ty) = prelude_index.type_map().get(&key) {
         return format!(" ({ty})");
     }
 
@@ -106,7 +105,6 @@ fn hover_at_expr(
     type_map: &TypeMap,
     doc_map: &DocMap,
     source: &str,
-    prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
     doc_url: &Uri,
 ) -> Option<String> {
@@ -129,25 +127,25 @@ fn hover_at_expr(
             };
             Some(format!(
                 "Variable: {display}{}{}",
-                type_suffix(span, type_map, prelude_index, include_graph, doc_url),
+                type_suffix(span, type_map, include_graph, doc_url),
                 doc_suffix(name, doc_map)
             ))
         }
         Expr::Int(n) => Some(format!(
             "Int literal: {n}{}",
-            type_suffix(span, type_map, prelude_index, include_graph, doc_url)
+            type_suffix(span, type_map, include_graph, doc_url)
         )),
         Expr::Float(f) => Some(format!(
             "Float literal: {f}{}",
-            type_suffix(span, type_map, prelude_index, include_graph, doc_url)
+            type_suffix(span, type_map, include_graph, doc_url)
         )),
         Expr::Bool(b) => Some(format!(
             "Bool literal: {b}{}",
-            type_suffix(span, type_map, prelude_index, include_graph, doc_url)
+            type_suffix(span, type_map, include_graph, doc_url)
         )),
         Expr::Str(s) => Some(format!(
             "String literal: {s:?}{}",
-            type_suffix(span, type_map, prelude_index, include_graph, doc_url)
+            type_suffix(span, type_map, include_graph, doc_url)
         )),
 
         Expr::DotAccess {
@@ -162,14 +160,13 @@ fn hover_at_expr(
                 type_map,
                 doc_map,
                 source,
-                prelude_index,
                 include_graph,
                 doc_url,
             )
             .or_else(|| {
                 Some(format!(
                     "Field access: .{field}{}",
-                    type_suffix(span, type_map, prelude_index, include_graph, doc_url)
+                    type_suffix(span, type_map, include_graph, doc_url)
                 ))
             })
         }
@@ -184,7 +181,6 @@ fn hover_at_expr(
                         type_map,
                         doc_map,
                         source,
-                        prelude_index,
                         include_graph,
                         doc_url,
                     ) {
@@ -198,7 +194,6 @@ fn hover_at_expr(
                     type_map,
                     doc_map,
                     source,
-                    prelude_index,
                     include_graph,
                     doc_url,
                 ) {
@@ -220,7 +215,6 @@ fn hover_at_expr(
             type_map,
             doc_map,
             source,
-            prelude_index,
             include_graph,
             doc_url,
         )
@@ -233,7 +227,6 @@ fn hover_at_expr(
                     type_map,
                     doc_map,
                     source,
-                    prelude_index,
                     include_graph,
                     doc_url,
                 )
@@ -248,7 +241,6 @@ fn hover_at_expr(
                     type_map,
                     doc_map,
                     source,
-                    prelude_index,
                     include_graph,
                     doc_url,
                 )
@@ -273,7 +265,6 @@ fn hover_at_expr(
                 type_map,
                 doc_map,
                 source,
-                prelude_index,
                 include_graph,
                 doc_url,
             )
@@ -286,7 +277,6 @@ fn hover_at_expr(
             type_map,
             doc_map,
             source,
-            prelude_index,
             include_graph,
             doc_url,
         ),
@@ -298,7 +288,6 @@ fn hover_at_expr(
             type_map,
             doc_map,
             source,
-            prelude_index,
             include_graph,
             doc_url,
         ),
@@ -312,7 +301,6 @@ fn hover_at_expr(
                 type_map,
                 doc_map,
                 source,
-                prelude_index,
                 include_graph,
                 doc_url,
             )
@@ -332,7 +320,6 @@ fn hover_at_expr(
                 type_map,
                 doc_map,
                 source,
-                prelude_index,
                 include_graph,
                 doc_url,
             )
@@ -340,7 +327,7 @@ fn hover_at_expr(
                 Some(format!(
                     "Type assertion: @{}{}",
                     annotation.node,
-                    type_suffix(span, type_map, prelude_index, include_graph, doc_url)
+                    type_suffix(span, type_map, include_graph, doc_url)
                 ))
             })
         }
@@ -349,7 +336,7 @@ fn hover_at_expr(
             "Annotated: {}@{}{}",
             name,
             annotation.node,
-            type_suffix(span, type_map, prelude_index, include_graph, doc_url)
+            type_suffix(span, type_map, include_graph, doc_url)
         )),
 
         Expr::Rest(name) => Some(format!("Rest marker: {}", name.as_deref().unwrap_or("..."))),
@@ -363,7 +350,6 @@ fn hover_at_expr(
                     type_map,
                     doc_map,
                     source,
-                    prelude_index,
                     include_graph,
                     doc_url,
                 ) {
@@ -380,7 +366,6 @@ fn hover_at_expr(
             type_map,
             doc_map,
             source,
-            prelude_index,
             include_graph,
             doc_url,
         )
@@ -392,7 +377,6 @@ fn hover_at_expr(
                 type_map,
                 doc_map,
                 source,
-                prelude_index,
                 include_graph,
                 doc_url,
             )
@@ -405,7 +389,6 @@ fn hover_at_expr(
             type_map,
             doc_map,
             source,
-            prelude_index,
             include_graph,
             doc_url,
         )
@@ -418,7 +401,6 @@ fn hover_at_expr(
                     type_map,
                     doc_map,
                     source,
-                    prelude_index,
                     include_graph,
                     doc_url,
                 ) {
@@ -438,7 +420,6 @@ fn hover_at_expr(
                         type_map,
                         doc_map,
                         source,
-                        prelude_index,
                         include_graph,
                         doc_url,
                     ) {
@@ -452,7 +433,6 @@ fn hover_at_expr(
                     type_map,
                     doc_map,
                     source,
-                    prelude_index,
                     include_graph,
                     doc_url,
                 ) {
@@ -473,7 +453,6 @@ fn hover_at_expr(
             type_map,
             doc_map,
             source,
-            prelude_index,
             include_graph,
             doc_url,
         )
@@ -487,7 +466,6 @@ fn hover_at_expr(
                         type_map,
                         doc_map,
                         source,
-                        prelude_index,
                         include_graph,
                         doc_url,
                     ) {
@@ -501,7 +479,6 @@ fn hover_at_expr(
                     type_map,
                     doc_map,
                     source,
-                    prelude_index,
                     include_graph,
                     doc_url,
                 ) {
@@ -521,78 +498,6 @@ fn hover_at_expr(
 /// Check if a span contains a byte offset.
 fn span_contains(span: Span, offset: usize) -> bool {
     offset >= span.start.offset && offset < span.end.offset
-}
-
-/// Collect all `$include` call paths from a parsed file.
-///
-/// Walks the AST for `Call { func: VarRef("include"), args: [Str(path)] }` nodes.
-/// Returns `(path, call_span)` pairs for each literal include path found.
-/// Ignores non-literal paths (e.g., `[call $include $dynamic_path]`).
-pub fn collect_include_paths(file: &crate::ast::File) -> Vec<(String, Span)> {
-    let mut paths = Vec::new();
-    for document in &file.documents {
-        for expr in &document.node.expressions {
-            collect_include_paths_expr(&expr.node, expr.span, &mut paths);
-        }
-    }
-    paths
-}
-
-fn collect_include_paths_expr(expr: &Expr, span: Span, paths: &mut Vec<(String, Span)>) {
-    match expr {
-        Expr::Call { func, args, .. } => {
-            // Check if func is VarRef("include")
-            if let Expr::VarRef { name, .. } = &func.node {
-                if name == "include" {
-                    // Check if the first arg is a string literal
-                    if let Some(first_arg) = args.first() {
-                        if let Expr::Str(path) = &first_arg.node {
-                            paths.push((path.clone(), span));
-                        }
-                    }
-                }
-            }
-            // Recurse into func and args
-            collect_include_paths_expr(&func.node, func.span, paths);
-            for arg in args {
-                collect_include_paths_expr(&arg.node, arg.span, paths);
-            }
-        }
-        Expr::Dict(entries) => {
-            for entry in entries {
-                if let Some(ref key) = entry.node.key {
-                    collect_include_paths_expr(&key.node, key.span, paths);
-                }
-                collect_include_paths_expr(&entry.node.value.node, entry.node.value.span, paths);
-            }
-        }
-        Expr::Fn { body, .. } => {
-            collect_include_paths_expr(&body.node, body.span, paths);
-        }
-        Expr::DotAccess { expr: target, .. } => {
-            collect_include_paths_expr(&target.node, target.span, paths);
-        }
-        Expr::Sequential(exprs) => {
-            for seq_expr in exprs {
-                collect_include_paths_expr(&seq_expr.node, seq_expr.span, paths);
-            }
-        }
-        Expr::Pipe { lhs, rhs } => {
-            collect_include_paths_expr(&lhs.node, lhs.span, paths);
-            collect_include_paths_expr(&rhs.node, rhs.span, paths);
-        }
-        Expr::TypeAlias { body, .. } => {
-            collect_include_paths_expr(&body.node, body.span, paths);
-        }
-        Expr::TypeAssert { expr: inner, .. } => {
-            collect_include_paths_expr(&inner.node, inner.span, paths);
-        }
-        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
-            collect_include_paths_expr(&inner.node, inner.span, paths);
-        }
-        // Literals, VarRef, Rest, Annotated, Error: no nested expressions
-        _ => {}
-    }
 }
 
 /// Extract the static name from a dict entry key expression.
@@ -754,12 +659,15 @@ fn find_key_definition(expr: &Expr, _span: Span, name: &str) -> Option<Span> {
 /// Returns `None` if:
 /// - The document has a parse error.
 /// - No variable reference is found at the offset.
-/// - The variable reference has no definition in the document, includes, or prelude.
+/// - The variable reference has no definition in the document or includes.
+///
+/// Note: Prelude go-to-definition is not currently supported after the migration
+/// to the shared imports module. This could be re-added by extending imports.rs
+/// to provide a prelude span map.
 pub fn definition_at(
     doc: &DocumentState,
     doc_url: &Uri,
     offset: usize,
-    prelude_index: &PreludeIndex,
     include_graph: &crate::lsp::document::IncludeGraph,
 ) -> Option<(Uri, Span)> {
     let file = match &doc.ast {
@@ -806,14 +714,8 @@ pub fn definition_at(
         }
     }
 
-    // Fall back to the prelude index.
-    if let Some(&span) = prelude_index.name_to_key_span().get(&name) {
-        if let Some(path) = prelude_index.path() {
-            if let Some(uri) = crate::lsp::convert::file_path_to_uri(path) {
-                return Some((uri, span));
-            }
-        }
-    }
+    // TODO: Add prelude go-to-definition by extending imports.rs to provide
+    // a prelude span map if needed.
 
     None
 }
@@ -995,11 +897,6 @@ mod tests {
         crate::eval::EvalContext::new(base_dir, test_env(), true)
     }
 
-    /// Helper: create an empty prelude index for tests.
-    fn test_prelude_index() -> PreludeIndex {
-        PreludeIndex::empty()
-    }
-
     /// Helper: create an empty include graph for tests.
     fn test_include_graph() -> crate::lsp::document::IncludeGraph {
         std::collections::HashMap::new()
@@ -1013,14 +910,8 @@ mod tests {
     #[test]
     fn test_hover_int_literal() {
         let env = test_env();
-        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), &test_prelude_index());
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            0,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
         assert_eq!(hover.as_deref(), Some("Int literal: 42 (42)"));
     }
 
@@ -1028,14 +919,8 @@ mod tests {
     fn test_hover_var_ref() {
         let env = test_env();
         // $x is undefined, so no type is inferred -- just syntactic info.
-        let doc = DocumentState::new("$x".to_string(), &env, &test_ctx(), &test_prelude_index());
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            1,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let doc = DocumentState::new("$x".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph());
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $x"));
     }
@@ -1044,22 +929,11 @@ mod tests {
     fn test_hover_var_ref_with_type() {
         let env = test_env();
         // $x is defined in scope, so hover should show its type.
-        let doc = DocumentState::new(
-            "[x: 42]\n[y: $x]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[x: 42]\n[y: $x]".to_string(), &env, &test_ctx(), None);
         // Offset 12 is inside "$x" in the second expression "[y: $x]"
         // "[x: 42]\n[y: $x]"
         //  0123456 7 89012345
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            12,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let hover = hover_at(&doc, &test_uri(), 12, &test_include_graph());
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Variable: $x"), "got: {text}");
@@ -1069,19 +943,8 @@ mod tests {
     #[test]
     fn test_hover_string_literal() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "\"hello\"".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            2,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let doc = DocumentState::new("\"hello\"".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 2, &test_include_graph());
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("String literal"), "got: {text}");
@@ -1094,32 +957,16 @@ mod tests {
     #[test]
     fn test_hover_no_match() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[x: 1]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
         // Hover on whitespace between entries.
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            100,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let hover = hover_at(&doc, &test_uri(), 100, &test_include_graph());
         assert!(hover.is_none());
     }
 
     #[test]
     fn test_diagnostics_parse_error() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[unterminated".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
         let diags = diagnostics_for(&doc, &test_uri());
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
@@ -1129,12 +976,7 @@ mod tests {
     #[test]
     fn test_diagnostics_type_error() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[@Number hello]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), None);
         let diags = diagnostics_for(&doc, &test_uri());
         assert!(!diags.is_empty());
         let type_diag = diags
@@ -1147,12 +989,7 @@ mod tests {
     #[test]
     fn test_diagnostics_eval_error() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "$undefined".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
         let diags = diagnostics_for(&doc, &test_uri());
         assert!(!diags.is_empty());
         let eval_diag = diags
@@ -1170,12 +1007,7 @@ mod tests {
     #[test]
     fn test_diagnostics_valid_source() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[x: 42]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
         let diags = diagnostics_for(&doc, &test_uri());
         assert!(diags.is_empty());
     }
@@ -1183,38 +1015,16 @@ mod tests {
     #[test]
     fn test_hover_dict_entry_key() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[x: 42]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            1,
-            &test_prelude_index(),
-            &test_include_graph(),
-        ); // on 'x'
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph()); // on 'x'
         assert!(hover.is_some());
     }
 
     #[test]
     fn test_hover_dict_entry_value() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[x: 42]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            4,
-            &test_prelude_index(),
-            &test_include_graph(),
-        ); // on '42'
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 4, &test_include_graph()); // on '42'
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Int literal"), "got: {text}");
@@ -1224,19 +1034,8 @@ mod tests {
     #[test]
     fn test_hover_nested_dict() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[a: [b: 1]]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            8,
-            &test_prelude_index(),
-            &test_include_graph(),
-        ); // on '1'
+        let doc = DocumentState::new("[a: [b: 1]]".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 8, &test_include_graph()); // on '1'
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Int literal"), "got: {text}");
@@ -1245,19 +1044,8 @@ mod tests {
     #[test]
     fn test_hover_function_param() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[fn [x] $x]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            5,
-            &test_prelude_index(),
-            &test_include_graph(),
-        ); // on 'x' in param list
+        let doc = DocumentState::new("[fn [x] $x]".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 5, &test_include_graph()); // on 'x' in param list
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Parameter"));
     }
@@ -1265,19 +1053,8 @@ mod tests {
     #[test]
     fn test_hover_call_expression() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[call $+ 1 2]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            6,
-            &test_prelude_index(),
-            &test_include_graph(),
-        ); // on '$+'
+        let doc = DocumentState::new("[call $+ 1 2]".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph()); // on '$+'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $+"));
     }
@@ -1285,28 +1062,16 @@ mod tests {
     #[test]
     fn test_hover_float_literal() {
         let env = test_env();
-        let doc = DocumentState::new("3.14".to_string(), &env, &test_ctx(), &test_prelude_index());
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            0,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let doc = DocumentState::new("3.14".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
         assert_eq!(hover.as_deref(), Some("Float literal: 3.14 (Float)"));
     }
 
     #[test]
     fn test_hover_bool_literal() {
         let env = test_env();
-        let doc = DocumentState::new("true".to_string(), &env, &test_ctx(), &test_prelude_index());
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            0,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let doc = DocumentState::new("true".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
         assert_eq!(hover.as_deref(), Some("Bool literal: true (Bool)"));
     }
 
@@ -1315,19 +1080,8 @@ mod tests {
         let env = test_env();
         // $undefined has type <error> when inference fails -- LSP hover shows the sentinel
         // so users can see that the expression has a type error rather than seeing Any.
-        let doc = DocumentState::new(
-            "$undefined".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            1,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph());
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert_eq!(text, "Variable: $undefined (<error>)");
@@ -1438,18 +1192,12 @@ mod tests {
     #[test]
     fn test_definition_at_simple() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[x: 42  y: $x]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[x: 42  y: $x]".to_string(), &env, &test_ctx(), None);
         let uri = test_uri();
         // Offset 12 is on '$x' in the second entry.
         // "[x: 42  y: $x]"
         //  0123456789012345
-        let def_result =
-            definition_at(&doc, &uri, 12, &test_prelude_index(), &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 12, &test_include_graph());
         assert!(def_result.is_some(), "should find definition of $x");
         let (_url, span) = def_result.unwrap();
         // Key "x" is at offset 1, one character long.
@@ -1460,17 +1208,12 @@ mod tests {
     #[test]
     fn test_definition_at_mutually_recursive() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[a: $b  b: $a]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[a: $b  b: $a]".to_string(), &env, &test_ctx(), None);
         let uri = test_uri();
         // Offset 5 is on '$b' in the first entry.
         // "[a: $b  b: $a]"
         //  01234567890123
-        let def_result = definition_at(&doc, &uri, 5, &test_prelude_index(), &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 5, &test_include_graph());
         assert!(def_result.is_some(), "should find definition of $b");
         let (_url, span) = def_result.unwrap();
         // Key "b" is at offset 8, one character long.
@@ -1481,18 +1224,12 @@ mod tests {
     #[test]
     fn test_definition_at_annotated_key() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[x@Int: 1  y: $x]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[x@Int: 1  y: $x]".to_string(), &env, &test_ctx(), None);
         let uri = test_uri();
         // Offset 15 is on '$x' in the second entry.
         // "[x@Int: 1  y: $x]"
         //  01234567890123456
-        let def_result =
-            definition_at(&doc, &uri, 15, &test_prelude_index(), &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 15, &test_include_graph());
         assert!(def_result.is_some(), "should find definition of $x");
         let (_url, span) = def_result.unwrap();
         // Key "x@Int" starts at offset 1, ends at offset 6 (the annotated key).
@@ -1503,15 +1240,10 @@ mod tests {
     #[test]
     fn test_definition_at_no_match() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "$undefined".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
         let uri = test_uri();
         // Offset 1 is on '$undefined', which has no definition in the document.
-        let def_result = definition_at(&doc, &uri, 1, &test_prelude_index(), &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 1, &test_include_graph());
         assert!(
             def_result.is_none(),
             "should return None for undefined variable"
@@ -1525,14 +1257,13 @@ mod tests {
             "[outer: [inner: 42]  use: $inner]".to_string(),
             &env,
             &test_ctx(),
-            &test_prelude_index(),
+            None,
         );
         let uri = test_uri();
         // Offset 30 is on '$inner' in the second entry.
         // "[outer: [inner: 42]  use: $inner]"
         //  0123456789012345678901234567890123
-        let def_result =
-            definition_at(&doc, &uri, 30, &test_prelude_index(), &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 30, &test_include_graph());
         assert!(def_result.is_some(), "should find definition of $inner");
         let (_url, span) = def_result.unwrap();
         // Key "inner" is at offset 9, 5 characters long.
@@ -1543,33 +1274,29 @@ mod tests {
     #[test]
     fn test_definition_at_parse_error() {
         let env = test_env();
-        let doc = DocumentState::new(
-            "[unterminated".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
         let uri = test_uri();
-        let def_result = definition_at(&doc, &uri, 1, &test_prelude_index(), &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 1, &test_include_graph());
         assert!(def_result.is_none(), "should return None when parse fails");
     }
 
     #[test]
     fn test_hover_prelude_name() {
-        use crate::lsp::document::build_prelude_index;
+        // After migration to shared imports module, prelude types are seeded via
+        // imports::build_type_env(). This test verifies that hover still works
+        // for prelude functions via the document's type_map.
         let env = test_env();
         let ctx = test_ctx();
-        let prelude_index = build_prelude_index();
         let doc = DocumentState::new(
             "[call $map [fn [x] x] [1 2 3]]".to_string(),
             &env,
             &ctx,
-            &prelude_index,
+            None, // base_dir=None still seeds prelude types via imports::build_type_env
         );
         // Offset 6 is on '$map'
         // "[call $map [fn [x] x] [1 2 3]]"
         //  0123456789...
-        let hover = hover_at(&doc, &test_uri(), 6, &prelude_index, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph());
         assert!(hover.is_some(), "should find hover for $map");
         let text = hover.unwrap();
         assert!(
@@ -1582,104 +1309,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_definition_at_prelude_name() {
-        use crate::lsp::document::build_prelude_index;
-        let env = test_env();
-        let ctx = test_ctx();
-        let prelude_index = build_prelude_index();
-        let doc = DocumentState::new(
-            "[call $identity 42]".to_string(),
-            &env,
-            &ctx,
-            &prelude_index,
-        );
-        let uri = test_uri();
-        // Offset 6 is on '$identity'
-        // "[call $identity 42]"
-        //  0123456789...
-        let def_result = definition_at(&doc, &uri, 6, &prelude_index, &test_include_graph());
-        // If the prelude path resolves, we should get Some; otherwise None is acceptable
-        // (e.g., in CI environments where the binary layout is different)
-        if prelude_index.path().is_some() {
-            assert!(
-                def_result.is_some(),
-                "should find definition for $identity when prelude path resolves"
-            );
-            let (url, _span) = def_result.unwrap();
-            assert!(
-                url.as_str().contains("prelude.llt"),
-                "definition URL should point to prelude.llt; got: {}",
-                url.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn test_collect_include_paths_literal() {
-        use crate::parser::parse2;
-
-        let source = r#"[call $include "foo.llt"]"#;
-        let file = parse2(source).unwrap().file.node;
-        let paths = collect_include_paths(&file);
-        assert_eq!(paths.len(), 1);
-        assert_eq!(paths[0].0, "foo.llt");
-    }
-
-    #[test]
-    fn test_collect_include_paths_non_literal() {
-        use crate::parser::parse2;
-
-        let source = r#"[path: "foo.llt"  call $include $path]"#;
-        let file = parse2(source).unwrap().file.node;
-        let paths = collect_include_paths(&file);
-        assert_eq!(paths.len(), 0, "should ignore non-literal include paths");
-    }
-
-    #[test]
-    fn test_collect_include_paths_multiple() {
-        use crate::parser::parse2;
-
-        let source = r#"
-            [call $include "a.llt"]
-            [call $include "b.llt"]
-        "#;
-        let file = parse2(source).unwrap().file.node;
-        let paths = collect_include_paths(&file);
-        assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0].0, "a.llt");
-        assert_eq!(paths[1].0, "b.llt");
-    }
-
-    #[test]
-    fn test_collect_include_paths_nested() {
-        use crate::parser::parse2;
-
-        let source = r#"[f: [fn [] [call $include "nested.llt"]]]"#;
-        let file = parse2(source).unwrap().file.node;
-        let paths = collect_include_paths(&file);
-        assert_eq!(paths.len(), 1);
-        assert_eq!(paths[0].0, "nested.llt");
-    }
+    // Note: test_definition_at_prelude_name was removed during migration to shared
+    // imports module. Prelude go-to-definition is not currently supported but could
+    // be re-added by extending imports.rs to provide a prelude span map.
 
     #[test]
     fn test_hover_shows_doc() {
         let env = test_env();
         let source = r#"[fn [x@[type: String doc: "the name"]] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), &test_prelude_index());
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
         // Hover on "$x" in the function body (starts at offset 39)
         // "[fn [x@[type: String doc: "the name"]] $x]"
         //  0         1         2         3         4
         //  0123456789012345678901234567890123456789012
         //                                         ^-- $ at 39, x at 40, ] at 41
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            39,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let hover = hover_at(&doc, &test_uri(), 39, &test_include_graph());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -1696,18 +1341,12 @@ mod tests {
     fn test_hover_no_doc() {
         let env = test_env();
         let source = r#"[fn [x@String] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), &test_prelude_index());
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
         // Hover on "$x" in the function body (starts at offset 15)
         // "[fn [x@String] $x]"
         //  012345678901234567
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            15,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let hover = hover_at(&doc, &test_uri(), 15, &test_include_graph());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -1724,19 +1363,13 @@ mod tests {
     fn test_hover_doc_and_default() {
         let env = test_env();
         let source = r#"[fn [x@[type: Number default: 0 doc: "count"]] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), &test_prelude_index());
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
         // Hover on "$x" in the function body (starts at offset 48)
         // "[fn [x@[type: Number default: 0 doc: "count"]] $x]"
         //  0         1         2         3         4
         //  012345678901234567890123456789012345678901234567890
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            48,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let hover = hover_at(&doc, &test_uri(), 48, &test_include_graph());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -1754,18 +1387,12 @@ mod tests {
     fn test_hover_param_with_doc() {
         let env = test_env();
         let source = r#"[fn [x@[type: String doc: "the name"]] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), &test_prelude_index());
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
         // Hover on parameter "x" itself (around offset 5)
         // "[fn [x@[type: String doc: "the name"]] $x]"
         //  012345
-        let hover = hover_at(
-            &doc,
-            &test_uri(),
-            5,
-            &test_prelude_index(),
-            &test_include_graph(),
-        );
+        let hover = hover_at(&doc, &test_uri(), 5, &test_include_graph());
         assert!(hover.is_some(), "hover should be present on param");
         let text = hover.unwrap();
         assert!(

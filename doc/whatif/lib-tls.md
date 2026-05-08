@@ -1,5 +1,7 @@
 # What If: TLS, PKI, and HTTP Protocol Support for tinct (lib-tls)
 
+**State:** Accepted — 2026-05-07
+
 What would it take to give tinct a complete HTTP and TLS story — CA roots,
 client certificates, certificate pinning, and protocol negotiation — while
 keeping the capability model clean and the design appropriate for a
@@ -7,14 +9,18 @@ configuration language?
 
 ## Current State
 
-`doc/whatif/io.md` defines `tls-connect net-cap host port`, which opens a TLS
-connection via `rustls` with full chain and hostname verification always
-enabled. It returns a `Value::Handle` — the same opaque byte-stream type
-as a file or TCP socket. The Handle IS the authenticated channel in the
-capability model: the TLS handshake completed at call time, so holding
-the Handle proves the connection was established against a trusted server.
+`doc/whatif/io.md` (accepted and archived) defines `connect` and `tls`
+builtins for TCP and TLS connections. The current implementation has
+`connect` returning a read-only `Handle` (`Box<dyn BufRead>`) — the write
+half of the TCP stream was discarded. This document redesigns both
+builtins: `connect` now returns a bidirectional `Handle[Binary Readable
+Writable Stream]`, and `tls` is renamed `tls-connect` returning
+`Handle[Binary Readable Writable Stream Tls]`. The Handle IS the
+authenticated channel: the TLS handshake completed at call time, so
+holding a `Tls`-capable Handle proves the connection was established
+against a trusted server.
 
-What is not yet specified or implemented:
+What is not yet implemented (all are specified in this document's Design section):
 
 - **CA configuration** — no mechanism for custom CA bundles (corporate
   internal CA, Vault PKI, self-signed dev certs)
@@ -50,56 +56,173 @@ these edge cases matter most.
 
 ## Design
 
+### The Connector Protocol
+
+A **Connector** is any value that can open connections to remote
+endpoints. `NetCap` is the stdlib implementation; user-written
+transports (WireGuard clients, custom resolvers, test fakes) implement
+the same protocol and can be substituted anywhere a `NetCap` is accepted.
+
+**Protocol method:**
+
+```
+[connect connector Transport host port opts] → Handle[... Stream|Datagram ...]
+```
+
+`Transport` is a nominal unit variant specifying the transport
+semantics. The stdlib provides two; users define others:
+
+| Variant | Semantics | Handle capability | Notes |
+|---------|-----------|-------------------|-------|
+| `Tcp` | reliable byte stream | `Stream` | default when unspecified |
+| `Udp` | unreliable datagrams | `Datagram` | |
+| *(user-defined)* | anything | user-specified | `Sctp`, `UdpLite`, `Quic`, … |
+
+The Handle returned carries `Stream` or `Datagram` (and `Readable
+Writable Binary`) to indicate what higher layers can do with it.
+
+**`NetCap` is a built-in Connector** that implements `Tcp` and `Udp`
+via OS sockets. `connect` (the existing builtin) becomes:
+
+```tinct
+# Explicit transport:
+[connect net Tcp "api.example.com" 443]   # → Handle[Binary Readable Writable Stream]
+[connect net Udp "8.8.8.8" 53]            # → Handle[Binary Readable Writable Datagram]
+
+# Tcp is the default when Transport is omitted:
+[connect net "api.example.com" 443]       # same as Tcp form
+```
+
+**User-defined Connector (e.g. WireGuard client):**
+
+```tinct
+[wg: [wg-connect wg-cap config]]   # → WgConnector
+
+# WgConnector implements the protocol:
+WgConnector: [
+  connect: [fn [transport host port opts]
+    [match transport
+      Tcp  [wg-open-tcp  host port opts]
+      Udp  [wg-open-udp  host port opts]
+      _    [error [str "unsupported transport: " [tag-of transport]]]]]]
+
+# Use it anywhere NetCap was accepted:
+[tls-connect wg Tcp "api.example.com" 443 tls-opts]
+[http-connect wg "api.example.com" 443 []]
+```
+
 ### Handle Types for Network Connections
 
-Following the capability-typed handle model from
-`doc/whatif/lib-supplemental.md` §Streaming File I/O:
+Network handles produced by `connect` carry `Readable` and `Writable`
+(TCP is bidirectional) but not `Seekable` (streams are sequential).
+`tls-connect` adds the `Tls` capability, which gates `tls-peer-cert`.
 
 ```
-connect cap host port        → Handle[Binary Readable Writable]
-tls     cap host port ...    → Handle[Binary Readable Writable Tls]
+connect     connector Tcp  host port      → Handle[Binary Readable Writable Stream]
+connect     connector Udp  host port      → Handle[Binary Readable Writable Datagram]
+tls-connect connector Tcp  host port opts → Handle[Binary Readable Writable Stream Tls]
+tls-connect h@Handle[...Stream RW...] sni opts → Handle[Binary Readable Writable Stream Tls]
 ```
 
-Network handles carry `Readable` and `Writable` — TCP is bidirectional.
-They do not carry `Seekable` — streams are sequential. `connect` handles
-are plain TCP; `tls-connect` handles carry an additional `Tls` capability that
-gates `tls-peer-cert`.
-
-With `Handle[Binary Readable Writable]`, HTTP can be implemented in
-pure-tinct `stdlib/net.llt` without any Rust-level `http-get` builtin:
+**Two forms for `tls-connect`:**
 
 ```tinct
-# stdlib/net.llt — pure-tinct HTTP/1.0 over a Readable Writable handle
-http-get: [fn [cap@NetCap host@String port@Int path@String headers@Dict]
-  [conn: [connect cap host port]]
-  [req:  [build-http-request "GET" path headers]]
-  [write conn [str-bytes req]]
+# Connector form — opens TCP connection and layers TLS:
+[tls-connect wg Tcp "api.example.com" 443 opts]
+
+# Handle form — layers TLS on an existing stream Handle:
+[tcp: [connect net Tcp "10.0.0.5" 443]]          # connect to specific IP
+[tls: [tls-connect tcp "api.example.com" opts]]   # TLS with SNI for domain
+```
+
+The SNI hostname must always be provided explicitly (it may differ from
+the IP actually connected to, e.g. when bypassing DNS or using a proxy).
+
+With `Handle[Binary Readable Writable Stream]`, HTTP/1.0 is pure-tinct:
+
+```tinct
+# stdlib/net.llt — HTTP/1.0 over any Readable Writable Stream Handle
+http-get: [fn [connector@Connector host@String port@Int path@String headers@Dict]
+  [conn: [connect connector Tcp host port]]
+  [write conn [str-bytes [build-http-request "GET" path headers]]]
   [parse-http-response [slurp conn]]]
-```
 
-`https-get` is identical but uses `tls-connect` instead of `connect`:
-
-```tinct
-https-get: [fn [cap@NetCap host@String port@Int path@String headers@Dict tls-opts@Dict]
-  [conn: [tls-connect cap host port tls-opts]]
-  [req:  [build-http-request "GET" path headers]]
-  [write conn [str-bytes req]]
+https-get: [fn [connector@Connector host@String port@Int path@String headers@Dict tls-opts@Dict]
+  [conn: [tls-connect connector Tcp host port tls-opts]]
+  [write conn [str-bytes [build-http-request "GET" path headers]]]
   [parse-http-response [slurp conn]]]
-```
 
-`fetch` in `stdlib/net.llt` wraps both with URL parsing:
-
-```tinct
-fetch: [fn [cap@NetCap url@String]
+fetch: [fn [connector@Connector url@String]
   [parsed: [parse-url url]]
   [if [starts-with? "https://" url]
-    [https-get cap parsed.host parsed.port parsed.path [] []]
-    [http-get  cap parsed.host parsed.port parsed.path []]]]
+    [https-get connector parsed.host parsed.port parsed.path [] []]
+    [http-get  connector parsed.host parsed.port parsed.path []]]]
 ```
 
-For HTTP/2 and HTTP/3, the Handle byte-stream model is insufficient
-(see §HTTP/2, HTTP/3, and the Handle Boundary). Those protocols require
-a Rust-level `fetch` builtin using `reqwest`.
+### `HttpConn` and Connection Reuse
+
+A single-shot `http-get` creates and closes a connection per request.
+For connection reuse (required for HTTP/2 multiplexing), use
+`http-connect` to obtain an `HttpConn` value:
+
+```
+http-connect connector host port opts → HttpConn
+```
+
+`HttpConn` wraps a persistent connection (or connection pool). It
+accepts a `Connector` and internally calls `connect connector Tcp ...`
+or `connect connector Udp ...` depending on the protocol negotiated.
+Multiple requests over the same `HttpConn` reuse the underlying
+HTTP/2 (or HTTP/3) connection:
+
+```tinct
+# All three requests share one HTTP/2 connection:
+[client: [http-connect wg "api.example.com" 443 []]]
+[users:  [http-get  client "/v1/users"  []]]
+[posts:  [http-get  client "/v1/posts"  []]]
+[config: [http-get  client "/v1/config" []]]
+```
+
+**Two forms for `http-connect`:**
+
+```tinct
+# Connector form — http-connect picks the transport (Tcp or Udp for QUIC):
+[client: [http-connect wg "api.example.com" 443 []]]
+
+# Handle form — use an existing TLS stream:
+[tcp: [connect net Tcp "10.0.0.5" 443]]
+[tls: [tls-connect tcp "api.example.com" opts]]
+[client: [http-connect tls "api.example.com"]]
+```
+
+**Full composability example:**
+
+```tinct
+# SOCKS5 proxy → TLS → HTTP/2
+[proxy:    [connect net Tcp "proxy.internal" 1080]]
+[tunneled: [socks5-connect proxy "api.example.com" 443 creds]]
+[tls:      [tls-connect tunneled "api.example.com" opts]]
+[client:   [http-connect tls "api.example.com"]]
+
+# WireGuard → everything through the tunnel:
+[wg:     [wg-connect wg-cap config]]
+[client: [http-connect wg "api.example.com" 443 []]]
+```
+
+### HTTP/2, HTTP/3, and the Handle Boundary
+
+`http-connect` picks the appropriate transport internally:
+
+- For HTTP/1.1 / HTTP/2: asks the Connector for `Tcp`, layers TLS,
+  negotiates via ALPN (`h2` vs `http/1.1`)
+- For HTTP/3: asks the Connector for `Udp`, runs QUIC internally
+  (QUIC is not a raw `Handle` — it multiplexes streams and is
+  implemented in Rust via `quinn`/`reqwest`)
+
+HTTP/3 over a user Connector (e.g. WireGuard): `http-connect wg ...`
+asks `wg` for a `Udp` Handle, then runs QUIC over it. The WireGuard
+client only needs to implement `connect wg Udp host port` — QUIC and
+HTTP/3 are handled by `http-connect` internally.
 
 ### `tls-connect` Options Dict
 
@@ -107,7 +230,7 @@ a Rust-level `fetch` builtin using `reqwest`.
 TLS configuration options:
 
 ```tinct
-# Common case: compiled-in Mozilla roots, no client cert, default ALPN
+# Common case: system roots (default), no client cert, default ALPN
 [h: [tls-connect net "api.example.com" 443]]
 
 # Custom CA bundle for internal PKI
@@ -121,7 +244,7 @@ TLS configuration options:
 
 # Certificate pinning
 [h: [tls-connect net "api.internal" 443 [
-  pin-sha256: ["sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]
+  pins: [[spki-pin Sha256 [base64-decode "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]]]
 ]]]
 
 # Combined: custom CA + mutual TLS + pinning
@@ -129,7 +252,11 @@ TLS configuration options:
   ca-bundle:    ca-pem
   client-cert:  cert
   client-key:   key
-  pin-sha256:   ["sha256//FINGERPRINT1=" "sha256//FINGERPRINT2="]
+  pins: [
+    [spki-pin Sha3-256 current-key-hash]
+    [spki-pin Sha256   current-key-sha256]    # compatibility
+    [spki-pin Sha3-256 next-rotation-hash]    # backup pin
+  ]
 ]]]
 ```
 
@@ -137,36 +264,40 @@ The options dict keys:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ca-bundle` | `Handle[Text Readable ...]` | — | PEM file via `[open cap path]`; extends or replaces roots |
-| `system-roots` | `Bool` | `false` | Also trust the OS CA store |
+| `ca-bundle` | `Handle[Text Readable ...]` | — | PEM file via `[open cap path Readable]`; added to system roots |
+| `no-system-roots` | `Bool` | `false` | Drop system roots — use only `ca-bundle` (private PKI) |
+| `mozilla-roots` | `Bool` | `false` | Also load compiled-in Mozilla roots (`webpki-roots` opt-in) |
 | `client-cert` | `Handle[Text Readable ...]` | — | PEM client certificate (mTLS) |
 | `client-key` | `Handle[Text Readable ...]` | — | PEM private key for client cert |
-| `pin-sha256` | `Seq[String]` | — | SPKI SHA-256 fingerprints (base64); leaf cert must match one |
+| `pins` | `@Seq@SpkiPin` | — | SPKI fingerprints; leaf cert must match one. See §SPKI Pins. |
 | `alpn` | `Seq[String]` | `["http/1.1"]` | ALPN protocol list for negotiation |
 
 ### CA Root Selection
 
-Three trust sources, combinable:
+**System roots — the default.** `rustls-native-certs` reads the OS
+certificate store at connection time (Linux: `/etc/ssl/certs`; macOS:
+Keychain; Windows: Certificate Store). This is what the operator
+maintains and trusts.
 
-**Compiled-in Mozilla roots (`webpki-roots`)** — the default.
-Deterministic and container-safe: the same binary always trusts the
-same set of public CAs, regardless of whether the container has a CA
-store installed. The correct default for a config tool run in CI and
-containers.
+**Custom CA bundle** — `ca-bundle` points to a PEM file opened via
+`[open cap path Readable]`. Cert access flows through `DirCap` and is
+auditable. The PEM is added to system roots by default; set
+`no-system-roots: true` to trust only the custom CA (fully private PKI
+where public CAs must be excluded):
 
-**Custom CA bundle** — the `ca-bundle` Handle points to a PEM file
-opened via `open`. Cert access flows through `DirCap` and is
-auditable. The PEM is consumed by `tls-connect` at connection time; the Handle
-is drained and closed.
+```tinct
+[tls-connect net "vault.internal" 8200 [
+  ca-bundle:       ca-pem
+  no-system-roots: true    # trust only our internal CA
+]]
+```
 
-**System roots** — `system-roots: true` also includes the OS CA store.
-Container deployments should avoid this: an empty or missing system
-store silently produces zero certs, causing every connection to fail.
+**Compiled-in Mozilla roots** — opt-in via `mozilla-roots: true`. Only
+pulls in the `webpki-roots` crate when used. Useful in containers with
+no system CA store and no custom CA bundle (e.g. connecting to a public
+API from a distroless image).
 
-When `ca-bundle` and `system-roots: true` are both present, both trust
-sets are unioned. When only `ca-bundle` is present, only the custom CA
-is trusted — useful for fully private PKI where public CAs must be
-excluded.
+All three trust sources union when combined.
 
 ### Client Certificates and Mutual TLS
 
@@ -201,30 +332,57 @@ as Handles to `tls-connect`.
 [response: [slurp conn]]
 ```
 
-### Certificate Pinning
+### SPKI Pins
 
-tinct implements **SPKI hash pinning**: the SHA-256 hash of the leaf
-certificate's Subject Public Key Info. SPKI pinning survives certificate
-rotation (as long as the key is reused) and is the form used by HTTP
-Public Key Pinning (HPKP itself is deprecated for browsers, but the
-underlying SPKI hash technique remains valid for non-browser contexts).
+SPKI (Subject Public Key Info) hash pinning locks a connection to a
+specific public key, providing defence against CA compromise. Pinning
+survives certificate rotation as long as the key is reused.
 
-`pin-sha256` is a list of acceptable SPKI hashes in `sha256//base64=`
-format. The connection proceeds if the leaf's SPKI hash matches any
-entry; `tls-connect` fails with an error otherwise.
+**`SpkiPin`** is a strongly-typed value carrying the hash algorithm and
+the raw fingerprint bytes. The algorithm is a `HashAlgorithm` nominal
+variant (defined in `doc/whatif/lib-supplemental.md` §Bitwise Primitives):
+
+```tinct
+[
+  SpkiPin: [type [
+    algorithm:   @HashAlgorithm   # Sha3-256 | Sha256 | Sha384 | Sha512 | ...
+    fingerprint: @Bytes           # raw hash bytes (not base64 string)
+  ]]
+]
+
+# Constructor:
+spki-pin: [fn@SpkiPin [algorithm@HashAlgorithm  fingerprint@Bytes]]
+```
+
+**Post-quantum preferred.** SHA-3 (Keccak construction) is recommended
+for new deployments. SHA-2 is accepted for compatibility with existing
+tooling that generates SHA-256 fingerprints:
+
+```tinct
+# Preferred: SHA3-256 fingerprint (post-quantum preferred)
+[spki-pin Sha3-256 [hex-decode "aabbcc..."]]
+
+# Compatibility: SHA-256 (existing tooling)
+[spki-pin Sha256 [base64-decode "AAAA...="]]
+```
+
+**Usage in `tls-connect`:**
 
 ```tinct
 [h: [tls-connect net "vault.internal" 8200 [
-  ca-bundle:  ca-pem
-  pin-sha256: [
-    "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-    "sha256//BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="   # backup pin
+  ca-bundle: ca-pem
+  pins: [
+    [spki-pin Sha3-256 current-key-sha3-256]   # preferred
+    [spki-pin Sha256   current-key-sha256]      # compatibility
+    [spki-pin Sha3-256 next-rotation-sha3-256]  # backup pin
   ]
 ]]]
 ```
 
-Maintain two pins (current + next-rotation backup) to allow key rotation
-without a service outage.
+Maintain current + next-rotation pins to allow key rotation without
+a service outage. The connection proceeds if the leaf's SPKI matches
+any pin in the list using the pin's specified algorithm;
+`tls-connect` fails with an error if no pin matches.
 
 ### TLS Identity Introspection: `tls-peer-cert`
 
@@ -240,8 +398,8 @@ system prevents calling `tls-peer-cert` on a plain TCP handle.
 #   subject:     "CN=api.internal,O=Internal Corp"
 #   issuer:      "CN=Internal CA,O=Internal Corp"
 #   sans:        ["api.internal" "api.internal.corp.net"]
-#   not-before:  "2025-01-01T00:00:00Z"
-#   not-after:   "2026-01-01T00:00:00Z"
+#   not-before:  <Timestamp>   # lib-datetime Timestamp; use format-timestamp to display
+#   not-after:   <Timestamp>   # compare with [now clock] for expiry checks
 #   spki-sha256: "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 # ]
 
@@ -287,48 +445,91 @@ returning a response dict:
 # resp: [status: 200  headers: [...]  body: "..."]
 ```
 
-### The `fetch` Boundary: stdlib vs Rust
+### Network Stack Summary
 
-| Tier | Function | Protocol | Implementation |
-|------|----------|----------|----------------|
-| Low-level | `connect` | TCP | Rust builtin → `Handle[Binary Readable Writable]` |
-| Low-level | `tls-connect` | TLS | Rust builtin → `Handle[Binary Readable Writable Tls]` |
-| Mid-level | `http-get` | HTTP/1.0 plain | **pure-tinct** (stdlib/net.llt) |
-| Mid-level | `https-get` | HTTP/1.0 over TLS | **pure-tinct** (stdlib/net.llt) |
-| Mid-level | `fetch` (stdlib) | HTTP/1.0, scheme dispatch | pure-tinct (stdlib/net.llt) |
-| High-level | `fetch` (Rust) | HTTP/1.1+/HTTP/2/HTTP/3 | Rust builtin (reqwest), replaces stdlib version |
+| Tier | Abstraction | Implementation |
+|------|-------------|----------------|
+| Transport | `connect connector Transport host port` | Connector protocol; `NetCap` is stdlib impl |
+| TLS | `tls-connect connector\|Handle host port opts` | Rust (rustls); two forms |
+| HTTP/1.0 | `http-get`, `https-get`, `fetch` | **pure-tinct** stdlib/net.llt |
+| HTTP sessions | `http-connect connector\|Handle host port opts` | Rust (reqwest); returns `HttpConn` |
+| Proxy tunnels | `socks5-connect`, `proxy-connect` | Rust; return `Handle[...Stream RW]` |
 
-`http-get` and `https-get` are pure-tinct because the capability-typed
-`Handle[Binary Readable Writable]` from `connect`/`tls-connect` supports both
-reads and writes. No Rust builtin needed for HTTP/1.0.
+`http-get`/`https-get`/`fetch` are pure-tinct because
+`Handle[Binary Readable Writable Stream]` supports both reads and
+writes. `http-connect` is Rust because HTTP/2 and HTTP/3 protocol
+engines can't be expressed as Handle streams.
 
 ## What Would Change
 
 ### Rust Builtins (`src/builtins.rs`)
 
-**`connect cap host port`** — returns `Handle[Binary Readable Writable]`
-instead of the current read-only `Handle`. No other API change.
+**`connect connector Transport host port opts`** — generalised from
+`connect cap host port`. Accepts any Connector (not just `NetCap`) and
+an explicit `Transport` variant (`Tcp`, `Udp`, or user-defined).
+Returns `Handle[Binary Readable Writable Stream]` for `Tcp`,
+`Handle[Binary Readable Writable Datagram]` for `Udp`. `Tcp` is
+default when `Transport` is omitted.
 
-**`tls-connect net-cap host port`** — extended to accept optional fifth argument
-(TLS opts dict). Returns `Handle[Binary Readable Writable Tls]`. The
-`Tls` capability tag carries leaf cert metadata and negotiated ALPN
-protocol for `tls-peer-cert`.
+**`tls-connect`** — two forms:
+- Connector form: `tls-connect connector Transport host port opts`
+  opens the connection via `connect connector Transport ...` then
+  layers TLS. `Transport` must produce a `Stream` Handle.
+- Handle form: `tls-connect h@Handle[...Stream RW...] sni opts`
+  layers TLS on an existing stream Handle.
+
+Returns `Handle[Binary Readable Writable Stream Tls]`. Default trust:
+system roots via `rustls-native-certs`. `mozilla-roots: true` opt-in
+loads `webpki-roots`. The `Tls` tag carries leaf cert metadata and
+negotiated ALPN for `tls-peer-cert`.
 
 **`tls-peer-cert handle`** — new builtin. Requires
 `Handle[... Tls ...]`. Returns dict with `subject`, `issuer`, `sans`,
 `not-before`, `not-after`, `spki-sha256`. Type error on non-Tls handles.
 
-**`fetch net-cap url`** — Rust-level HTTP client using `reqwest`.
-Replaces `fetch` in `stdlib/net.llt` for HTTP/2+ support. Returns
+**`fetch connector url`** — Rust-level HTTP client using `reqwest`.
+Accepts any Connector (not just `NetCap`). Replaces `fetch` in
+`stdlib/net.llt` for HTTP/2+ support. Returns
 `[status: Int  headers: Dict  body: String]`. Accepts optional opts
 dict: `[tls: TLS-opts  follow-redirects: Bool  headers: Dict  method: String  body: String]`.
+
+### CLI — `--cap-net`
+
+`--cap-net NAME=ENTRY` injects `$NAME` as a `NetCap` — the stdlib
+Connector. A `NetCap` supports `connect $NAME Tcp host port` and
+`connect $NAME Udp host port` for any host/port that matches the
+allowlist `ENTRY` (hostname, `host:port`, or `*.glob`).
+
+`NetCap` is a built-in Connector; user-defined Connectors (WireGuard
+clients, SOCKS5 wrappers, custom resolvers) are constructed inside the
+tinct script itself and do not have a CLI flag. The CLI only needs to
+grant the raw network capability; the script composes it into whatever
+transport stack it needs.
+
+```
+# Inject a NetCap allowing access to api.internal:
+tinct run --cap-net net=api.internal script.llt
+
+# Script then composes freely:
+[tls: [tls-connect net Tcp "api.internal" 443 opts]]
+[client: [http-connect tls "api.internal"]]
+```
+
+Multiple `--cap-net` flags with the same NAME accumulate into one
+NetCap allowlist:
+```
+tinct run --cap-net api=api.internal --cap-net api=metrics.internal script.llt
+# $api allows both hosts
+```
 
 ### Handle Type (`src/value.rs`)
 
 `Value::Handle` gains a capability row per
-`doc/whatif/lib-supplemental.md` §Streaming File I/O. `connect` sets
-`{Binary Readable Writable}`; `tls-connect` sets `{Binary Readable Writable Tls}`.
-The `Tls` tag carries `Option<TlsInfo>` (leaf cert + negotiated ALPN).
+`doc/whatif/lib-supplemental.md` §Streaming File I/O. `connect Tcp`
+sets `{Binary Readable Writable Stream}`; `connect Udp` sets
+`{Binary Readable Writable Datagram}`; `tls-connect` sets
+`{Binary Readable Writable Stream Tls}`. The `Tls` tag carries
+`Option<TlsInfo>` (leaf cert + negotiated ALPN).
 
 ### stdlib (`stdlib/net.llt`)
 
@@ -338,21 +539,85 @@ builtin lands, `stdlib/net.llt` becomes a thin compatibility wrapper.
 
 ### Dependencies (`Cargo.toml`)
 
-| Crate | Purpose |
-|-------|---------|
-| `rustls = "0.23"` | TLS engine |
-| `rustls-native-certs = "0.7"` | System root loading (`system-roots: true`) |
-| `webpki-roots = "0.26"` | Compiled-in Mozilla roots (default) |
-| `reqwest = { version = "0.12", features = ["http2", "brotli"] }` | High-level HTTP/2 |
-| `reqwest = { ..., features = ["http3"] }` | HTTP/3 via QUIC |
+| Crate | Required | Purpose |
+|-------|----------|---------|
+| `rustls = "0.23"` | always | TLS engine |
+| `rustls-native-certs = "0.7"` | always | System roots (the default) |
+| `webpki-roots = "0.26"` | always | Compiled-in Mozilla roots; needed at runtime when `mozilla-roots: true` |
+| `sha3 = "0.10"` | always | SHA3-256/384/512 SPKI pin algorithms; needed at runtime for those variants |
+| `blake3` | already present | `Blake3` SPKI pin variant; tinct already uses blake3 for `$include` hashes |
+| `reqwest = { version = "0.12", features = ["http2", "brotli"] }` | always | HTTP/2 `fetch` |
+| `reqwest = { ..., features = ["http3"] }` | always | HTTP/3 `fetch` |
 
-`rustls` and `webpki-roots` are already required by io.md.
+All crates are compiled in unconditionally. The tinct binary must
+support all runtime options without recompilation — script authors
+cannot be expected to recompile tinct to enable `mozilla-roots: true`
+or SHA3-256 pins.
+| `reqwest = { version = "0.12", features = ["http2", "brotli"] }` | Rust `fetch` | High-level HTTP/2 |
+| `reqwest = { ..., features = ["http3"] }` | HTTP/3 | HTTP/3 via QUIC |
+
+All crates are compiled in unconditionally. `rustls` has no built-in
+root CAs; `rustls-native-certs` provides the default system roots.
+`webpki-roots` is always compiled in so that `mozilla-roots: true` is
+available at runtime without recompilation.
 
 ### Type Checker (`src/typecheck.rs`)
 
-`Handle` gains a capability row parameter. `tls-peer-cert` is typed as
-`Handle[Tls | r] → Dict` — a type error on plain TCP handles. TLS opts
-dict infers as `Any` for now; future work can add field-level validation.
+```tinct
+# Type aliases declared in stdlib/net.llt
+
+[
+  # TLS options dict — passed as fifth arg to tls-connect
+  TlsOpts: [type [
+    ca-bundle:      @[Handle Null]   # PEM file via [open cap path Readable]
+    no-system-roots: @[Bool Null]   # default false; drop system roots
+    mozilla-roots:  @[Bool Null]    # default false; opt-in webpki-roots
+    client-cert:    @[Handle Null]  # PEM client cert (mTLS)
+    client-key:     @[Handle Null]  # PEM private key for client cert
+    pins:           @[Seq@SpkiPin Null] # typed SPKI fingerprints; see §SPKI Pins
+    alpn:           @[Seq@String Null]  # default ["http/1.1"]
+  ]]
+
+  # tls-peer-cert return type
+  PeerCert: [type [
+    subject:     @String
+    issuer:      @String
+    sans:        @Seq@String        # Subject Alternative Names
+    not-before:  @Timestamp         # lib-datetime Timestamp (depends on lib-datetime.md)
+    not-after:   @Timestamp         # compare directly with [now clock]; no parse-timestamp needed
+    spki-sha256: @String            # sha256//base64= format
+  ]]
+
+  # Connector protocol type (structural)
+  Connector: [type [
+    connect: [fn@Handle [transport@Any  host@String  port@Int  opts@Any]]
+  ]]
+]
+
+# Builtin signatures:
+connect     : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Int]]
+              # Tcp → Handle[Binary Readable Writable Stream]
+              # Udp → Handle[Binary Readable Writable Datagram]
+              # Transport omitted → Tcp implied
+
+tls-connect : [fn@Handle      [connector@Connector  transport@Any  host@String  port@Int  opts@TlsOpts]]
+tls-connect : [fn@Handle      [h@Handle  sni@String  opts@TlsOpts]]
+              # Either form → Handle[Binary Readable Writable Stream Tls]
+
+tls-peer-cert : [fn@PeerCert  [h@Handle]]   # h must carry Tls capability
+
+http-connect  : [fn@HttpConn  [connector@Connector  host@String  port@Int  opts@Any]]
+http-connect  : [fn@HttpConn  [h@Handle  host@String]]
+
+socks5-connect : [fn@Handle   [h@Handle  host@String  port@Int  creds@Any]]
+proxy-connect  : [fn@Handle   [h@Handle  host@String  port@Int]]
+
+# In stdlib/net.llt:
+http-get   : [fn@Dict  [connector@Connector  host@String  port@Int  path@String  headers@Dict]]
+https-get  : [fn@Dict  [connector@Connector  host@String  port@Int  path@String  headers@Dict  tls-opts@TlsOpts]]
+fetch      : [fn@Dict  [connector@Connector  url@String]]
+             # returns [status: @Int  headers: @Dict  body: @String]
+```
 
 ## Dependencies
 

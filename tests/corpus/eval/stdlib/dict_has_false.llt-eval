@@ -2,5 +2,3 @@
 [has? [x: 1 y: 2] "z"]
 === out
 Bool(false)
-=== warn
-undefined variable: has? at 1:2-1:6

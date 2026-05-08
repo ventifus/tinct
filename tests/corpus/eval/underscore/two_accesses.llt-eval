@@ -2,5 +2,3 @@
 [call [identity [+ _.x _.y]] [x: 10  y: 20]]
 === out
 Int(30)
-=== warn
-undefined variable: identity at 1:8-1:16
