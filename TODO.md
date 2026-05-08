@@ -83,16 +83,16 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 **Spec chapters:** `doc/whatif/lib-supplemental.md` §Bitwise Primitives. Independent of other sprints.
 
-- [ ] Implement 5 bitwise Rust builtins: `band` (i64 &), `bor` (|), `bxor` (^), `shl` (<<), `shr` (logical >>; treat as u64 for zero-fill) (`src/builtins_math.rs`)
-- [ ] Implement `char-code` Rust builtin: first char of String → Int codepoint (`src/builtins_string.rs`)
-- [ ] Implement `chr` Rust builtin: Int codepoint → single-char String (`src/builtins_string.rs`)
+- [x] Implement 5 bitwise Rust builtins: `band` (i64 &), `bor` (|), `bxor` (^), `shl` (<<), `shr` (logical >>; treat as u64 for zero-fill) (`src/builtins_math.rs`)
+- [x] Implement `char-code` Rust builtin: first char of String → Int codepoint (`src/builtins_string.rs`)
+- [x] Implement `chr` Rust builtin: Int codepoint → single-char String (`src/builtins_string.rs`)
 - [ ] Implement `str-bytes` Rust builtin: String → Bytes (UTF-8 encode) — deferred until `bytes-type` sprint provides `Value::Bytes` (stub with error for now, or implement if bytes-type ships first) (`src/builtins_string.rs`)
 - [ ] Implement `bytes-str` Rust builtin: Bytes → String (UTF-8 decode; error on invalid) — same deferral as str-bytes (`src/builtins_string.rs`)
-- [ ] Register all 9 builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
-- [ ] Define `HashAlgorithm` type alias as a union of nominal variants: `Sha256 | Sha384 | Sha512 | Sha3-256 | Sha3-384 | Sha3-512 | Blake3` — register in prelude scope (`stdlib/encoding.llt` or `src/builtins.rs`)
-- [ ] Create `stdlib/encoding.llt` with pure-tinct functions: `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` (`stdlib/encoding.llt`)
+- [x] Register all 9 builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
+- [x] Define `HashAlgorithm` type alias as a union of nominal variants: `Sha256 | Sha384 | Sha512 | Sha3-256 | Sha3-384 | Sha3-512 | Blake3` — register in prelude scope (`stdlib/encoding.llt` or `src/builtins.rs`)
+- [x] Create `stdlib/encoding.llt` with pure-tinct functions: `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` (`stdlib/encoding.llt`)
 - [ ] Load `stdlib/encoding.llt` at startup (`src/builtins.rs` or `src/lib.rs`)
-- [ ] Tests: corpus tests for all bitwise ops, char-code/chr round-trips, hex-encode/hex-decode, base64 (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
+- [x] Tests: corpus tests for all bitwise ops, char-code/chr round-trips, hex-encode/hex-decode, base64 (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
 ### `bytes-type`: Bytes Type
 

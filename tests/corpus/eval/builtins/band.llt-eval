@@ -1,0 +1,3 @@
+[call $band 255 15]
+=== out
+Int(15)

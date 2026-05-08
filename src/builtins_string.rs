@@ -884,3 +884,102 @@ pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     Ok(result)
 }
+
+/// `char-code`: Get the Unicode codepoint of the first character in a string.
+///
+/// Takes 1 arg: `input` (String).
+/// Returns an Int representing the Unicode codepoint of the first character.
+/// Returns an error if the string is empty.
+/// Inherently materializing: must inspect string content to extract the first character.
+pub(crate) fn builtin_char_code(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("char-code", args, named, &ctx, depth, call_span)?;
+
+    let (input_source, input_start, input_end) = match val {
+        Value::String { source, start, end } => (source, start, end),
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                "char-code".to_string(),
+                "String",
+                val.type_name(),
+                args[0].span,
+            )
+            .into());
+        }
+    };
+
+    let input_str = &input_source[input_start..input_end];
+
+    if let Some(ch) = input_str.chars().next() {
+        ok_val(Value::Int(ch as u32 as i64), call_span)
+    } else {
+        Err(EvalError::new("char-code: empty string".to_string(), call_span).into())
+    }
+}
+
+/// `chr`: Convert a Unicode codepoint to a single-character string.
+///
+/// Takes 1 arg: `codepoint` (Int).
+/// Returns a String containing the character corresponding to the codepoint.
+/// Returns an error if the codepoint is invalid.
+/// Inherently materializing: must convert the integer to a character.
+pub(crate) fn builtin_chr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("chr", args, named, &ctx, depth, call_span)?;
+
+    match val {
+        Value::Int(n) => {
+            if let Some(ch) = char::from_u32(n as u32) {
+                ok_val(string_val(&ch.to_string()), call_span)
+            } else {
+                Err(
+                    EvalError::new(format!("chr: invalid Unicode codepoint {}", n), call_span)
+                        .into(),
+                )
+            }
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "chr".to_string(),
+            "Int",
+            val.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// `str-bytes`: Convert a string to a sequence of byte values (stub).
+///
+/// This is a placeholder for the bytes-type sprint. Currently returns an error.
+pub(crate) fn builtin_str_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let call_span = ctx_arg.call_span;
+    Err(EvalError::new(
+        "str-bytes requires Value::Bytes from bytes-type sprint".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `bytes-str`: Convert a sequence of byte values to a string (stub).
+///
+/// This is a placeholder for the bytes-type sprint. Currently returns an error.
+pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let call_span = ctx_arg.call_span;
+    Err(EvalError::new(
+        "bytes-str requires Value::Bytes from bytes-type sprint".to_string(),
+        call_span,
+    )
+    .into())
+}

@@ -617,3 +617,144 @@ pub(crate) fn builtin_finite_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let val = extract_single_float("finite?", args, named, &ctx, depth, call_span)?;
     ok_val(Value::Bool(val.is_finite()), call_span)
 }
+
+/// Helper to extract two Int operands, enforcing arity == 2 and type Int.
+fn extract_int_pair(
+    name: &str,
+    args: &[Rc<Thunk>],
+    named: Option<&IndexMap<String, Rc<Thunk>>>,
+    ctx: &Rc<crate::eval::EvalContext>,
+    depth: usize,
+    call_span: crate::ast::Span,
+) -> EvalResult<(i64, i64)> {
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named(name, named, call_span)?;
+    let left = materialize(&args[0], Some(&call_span), ctx, depth)?;
+    let right = materialize(&args[1], Some(&call_span), ctx, depth)?;
+
+    let a = match left {
+        Value::Int(n) => n,
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                name.to_string(),
+                "Int",
+                left.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let b = match right {
+        Value::Int(n) => n,
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                name.to_string(),
+                "Int",
+                right.type_name(),
+                args[1].span,
+            )
+            .into())
+        }
+    };
+
+    Ok((a, b))
+}
+
+/// `band`: Bitwise AND. Takes 2 Int args. Returns Int.
+/// Inherently materializing: must extract numeric values to compute bitwise AND.
+pub(crate) fn builtin_band(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let (a, b) = extract_int_pair("band", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Int(a & b), call_span)
+}
+
+/// `bor`: Bitwise OR. Takes 2 Int args. Returns Int.
+/// Inherently materializing: must extract numeric values to compute bitwise OR.
+pub(crate) fn builtin_bor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let (a, b) = extract_int_pair("bor", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Int(a | b), call_span)
+}
+
+/// `bxor`: Bitwise XOR. Takes 2 Int args. Returns Int.
+/// Inherently materializing: must extract numeric values to compute bitwise XOR.
+pub(crate) fn builtin_bxor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let (a, b) = extract_int_pair("bxor", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Int(a ^ b), call_span)
+}
+
+/// `shl`: Left shift. Takes 2 Int args (value, bits). Returns Int.
+/// Inherently materializing: must extract numeric values to compute left shift.
+pub(crate) fn builtin_shl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let (value, bits) = extract_int_pair("shl", args, named, &ctx, depth, call_span)?;
+
+    // Negative shift is undefined; shifts >= 64 produce 0
+    if bits < 0 {
+        return Err(
+            EvalError::new(format!("shl: negative shift count {}", bits), call_span).into(),
+        );
+    }
+
+    if bits >= 64 {
+        return ok_val(Value::Int(0), call_span);
+    }
+
+    ok_val(Value::Int(value << bits), call_span)
+}
+
+/// `shr`: Logical right shift (zero-fill). Takes 2 Int args (value, bits). Returns Int.
+/// Inherently materializing: must extract numeric values to compute right shift.
+pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let (value, bits) = extract_int_pair("shr", args, named, &ctx, depth, call_span)?;
+
+    // Negative shift is undefined; shifts >= 64 produce 0
+    if bits < 0 {
+        return Err(
+            EvalError::new(format!("shr: negative shift count {}", bits), call_span).into(),
+        );
+    }
+
+    if bits >= 64 {
+        return ok_val(Value::Int(0), call_span);
+    }
+
+    // Logical shift: cast to u64, shift, cast back to i64
+    let result = ((value as u64) >> bits) as i64;
+    ok_val(Value::Int(result), call_span)
+}

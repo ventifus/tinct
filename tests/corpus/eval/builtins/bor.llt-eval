@@ -1,0 +1,3 @@
+[call $bor 1 2]
+=== out
+Int(3)

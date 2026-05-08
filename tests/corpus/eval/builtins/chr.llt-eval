@@ -1,0 +1,3 @@
+[call $chr 65]
+=== out
+String("A")

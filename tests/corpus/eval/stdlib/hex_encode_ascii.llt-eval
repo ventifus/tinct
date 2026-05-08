@@ -1,0 +1,6 @@
+[include "stdlib/encoding.llt"]
+---
+# Test ASCII character 'A' (code 65)
+[call %.hex-encode "A"]
+=== out
+String("41")

@@ -1,0 +1,6 @@
+[include "stdlib/encoding.llt"]
+---
+# Test XOR masking round-trip
+[call %.mask-apply [call %.mask-apply "hello" "key"] "key"]
+=== out
+String("hello")

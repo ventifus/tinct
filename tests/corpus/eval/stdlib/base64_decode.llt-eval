@@ -1,0 +1,6 @@
+[include "stdlib/encoding.llt"]
+---
+# Round-trip test
+[call %.base64-decode [call %.base64-encode "hello"]]
+=== out
+String("hello")

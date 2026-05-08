@@ -1,0 +1,5 @@
+[include "stdlib/encoding.llt"]
+---
+[call %.hex-encode "hello"]
+=== out
+String("68656c6c6f")
