@@ -35,7 +35,7 @@ use crate::ast::Span;
 use crate::builtins::{builtin, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
 /// `emit`: Write a string to stdout and suppress JSON output.
 /// Takes a String argument, writes it to stdout, sets ctx.emitted flag, returns null (empty dict).
@@ -91,7 +91,7 @@ pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Read env var
     match std::env::var(name) {
-        Ok(value) => ok_val(Value::String(value), call_span),
+        Ok(value) => ok_val(string_val(&value), call_span),
         Err(_) => ok_val(Value::Dict(IndexMap::new()), call_span), // Not set -> Null
     }
 }
@@ -240,7 +240,7 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .read_to_string(&mut contents)
         .map_err(|e| EvalError::user_error(format!("slurp: read failed: {}", e), call_span))?;
 
-    ok_val(Value::String(contents), call_span)
+    ok_val(string_val(&contents), call_span)
 }
 
 /// `narrow`: Attenuate a DirCap to a subdirectory.
@@ -427,9 +427,14 @@ pub(crate) fn builtin_net_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 entries.push(parse_net_cap_entry(&entry_str, call_span)?);
             }
         }
-        Value::String(s) => {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
             // Single string — wrap in vec
-            entries.push(parse_net_cap_entry(&s, call_span)?);
+            let s = &source[start..end];
+            entries.push(parse_net_cap_entry(s, call_span)?);
         }
         other => {
             return Err(EvalError::type_mismatch_ctx(
@@ -666,7 +671,7 @@ pub(crate) fn builtin_lines_step(
             }
 
             // Create head thunk
-            let head = ok_val(Value::String(line), call_span)?;
+            let head = ok_val(string_val(&line), call_span)?;
             let head_id = ctx.alloc_thunk(head);
 
             // Create tail as PendingBuiltin that will read the next line

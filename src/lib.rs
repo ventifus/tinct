@@ -288,7 +288,14 @@ pub fn visit_value<V: ValueVisitor>(
     match val {
         value::Value::Int(n) => Ok(visitor.visit_int(*n)),
         value::Value::Float(f) => visitor.visit_float(*f),
-        value::Value::String(s) => Ok(visitor.visit_str(s)),
+        value::Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = &source[*start..*end];
+            Ok(visitor.visit_str(s))
+        }
         value::Value::Bool(b) => Ok(visitor.visit_bool(*b)),
         value::Value::Dict(map) => {
             let mut entries = Vec::with_capacity(map.len());
@@ -722,7 +729,14 @@ pub fn format_with_json_llt(
         .map_err(|e| format!("json.llt: serialize error: {e}"))?;
 
     match result_val {
-        value::Value::String(s) => Ok(Some(s)),
+        value::Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = source[start..end].to_string();
+            Ok(Some(s))
+        }
         other => Err(format!(
             "json.llt: expected String result, got {}",
             other.type_name()
@@ -737,7 +751,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use test_util::test_span;
-    use value::{Environment, Key, Thunk, Value};
+    use value::{string_val, Environment, Key, Thunk, Value};
 
     /// Helper: wrap a Value in a materialized thunk.
     fn thunk(val: Value) -> Rc<Thunk> {
@@ -855,19 +869,19 @@ mod tests {
 
     #[test]
     fn test_json_string() {
-        let result = value_to_json(&Value::String("hello".into()), &test_ctx(), 0).unwrap();
+        let result = value_to_json(&string_val("hello"), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!("hello"));
     }
 
     #[test]
     fn test_json_string_empty() {
-        let result = value_to_json(&Value::String("".into()), &test_ctx(), 0).unwrap();
+        let result = value_to_json(&string_val(""), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!(""));
     }
 
     #[test]
     fn test_json_string_with_special_chars() {
-        let result = value_to_json(&Value::String("line\nnewline".into()), &test_ctx(), 0).unwrap();
+        let result = value_to_json(&string_val("line\nnewline"), &test_ctx(), 0).unwrap();
         assert_eq!(result, serde_json::json!("line\nnewline"));
     }
 
@@ -894,10 +908,7 @@ mod tests {
     fn test_json_dict_string_keys() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            Key::String("name".into()),
-            thunk(Value::String("Alice".into())),
-        );
+        map.insert(Key::String("name".into()), thunk(string_val("Alice")));
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
         let val = make_dict(map, &ctx);
         let result = value_to_json(&val, &ctx, 0).unwrap();
@@ -909,8 +920,8 @@ mod tests {
         // Int keys that are NOT sequential from 0 -> object with stringified keys
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(Key::Int(5), thunk(Value::String("five".into())));
-        map.insert(Key::Int(10), thunk(Value::String("ten".into())));
+        map.insert(Key::Int(5), thunk(string_val("five")));
+        map.insert(Key::Int(10), thunk(string_val("ten")));
         let val = make_dict(map, &ctx);
         let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!({"5": "five", "10": "ten"}));
@@ -920,7 +931,7 @@ mod tests {
     fn test_json_dict_mixed_keys() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(Key::Int(0), thunk(Value::String("zero".into())));
+        map.insert(Key::Int(0), thunk(string_val("zero")));
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let val = make_dict(map, &ctx);
         let result = value_to_json(&val, &ctx, 0).unwrap();
@@ -932,9 +943,9 @@ mod tests {
         // Sequential int keys 0, 1, 2 -> JSON array
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(Key::Int(0), thunk(Value::String("a".into())));
-        map.insert(Key::Int(1), thunk(Value::String("b".into())));
-        map.insert(Key::Int(2), thunk(Value::String("c".into())));
+        map.insert(Key::Int(0), thunk(string_val("a")));
+        map.insert(Key::Int(1), thunk(string_val("b")));
+        map.insert(Key::Int(2), thunk(string_val("c")));
         let val = make_dict(map, &ctx);
         let result = value_to_json(&val, &ctx, 0).unwrap();
         assert_eq!(result, serde_json::json!(["a", "b", "c"]));
@@ -955,8 +966,8 @@ mod tests {
         // Keys are 0 and 1, but inserted in wrong order in IndexMap -> not sequential
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(Key::Int(1), thunk(Value::String("b".into())));
-        map.insert(Key::Int(0), thunk(Value::String("a".into())));
+        map.insert(Key::Int(1), thunk(string_val("b")));
+        map.insert(Key::Int(0), thunk(string_val("a")));
         // First key is 1 at index 0 -> not array-like
         let val = make_dict(map, &ctx);
         let result = value_to_json(&val, &ctx, 0).unwrap();
@@ -993,16 +1004,10 @@ mod tests {
     fn test_json_array_of_objects() {
         let ctx = test_ctx();
         let mut obj1 = IndexMap::new();
-        obj1.insert(
-            Key::String("name".into()),
-            thunk(Value::String("Alice".into())),
-        );
+        obj1.insert(Key::String("name".into()), thunk(string_val("Alice")));
         let obj1_val = make_dict(obj1, &ctx);
         let mut obj2 = IndexMap::new();
-        obj2.insert(
-            Key::String("name".into()),
-            thunk(Value::String("Bob".into())),
-        );
+        obj2.insert(Key::String("name".into()), thunk(string_val("Bob")));
         let obj2_val = make_dict(obj2, &ctx);
 
         let mut arr = IndexMap::new();

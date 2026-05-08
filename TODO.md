@@ -50,30 +50,6 @@ requires the full BAS constraint solver to be sound.
 
 Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
-### `string-view`: Value::String Representation Change
-
-Replace `Value::String(String)` with `Value::String { source: Rc<str>, start: usize, end: usize }`. Zero-copy slicing; GHC ByteString model. **Spec chapters:** `doc/whatif/lib-supplemental.md` §Strings as Character Sequences.
-
-- [ ] Add `Rc<str>` import and change `Value::String(String)` to struct variant `Value::String { source: Rc<str>, start: usize, end: usize }` (`src/value.rs`)
-- [ ] Update `Value::String` construction sites: every `Value::String(s.into())` becomes `Value::String { source: Rc::from(s.as_str()), start: 0, end: s.len() }` — write a helper `fn string_val(s: &str) -> Value` (`src/value.rs`)
-- [ ] Update all `Value::String(ref s)` match arms in `src/eval.rs` to destructure `{ source, start, end }` and extract `&source[start..end]` (`src/eval.rs`)
-- [ ] Update all `Value::String` match arms in `src/builtins.rs` (`src/builtins.rs`)
-- [ ] Update all `Value::String` match arms in `src/builtins_string.rs` (`src/builtins_string.rs`)
-- [ ] Update all `Value::String` match arms in `src/builtins_math.rs` (`src/builtins_math.rs`)
-- [ ] Update all `Value::String` match arms in `src/builtins_dict.rs` (`src/builtins_dict.rs`)
-- [ ] Update all `Value::String` match arms in `src/builtins_io.rs` (`src/builtins_io.rs`)
-- [ ] Update all `Value::String` match arms in `src/builtins_meta.rs` (`src/builtins_meta.rs`)
-- [ ] Update all `Value::String` match arms in `src/builtins_seq_gen.rs` and `src/builtins_seq_reduce.rs`
-- [ ] Update `value_to_json` in `src/lib.rs` to use `&source[start..end]` (`src/lib.rs`)
-- [ ] Update `value_to_display_string` in `src/lib.rs` (`src/lib.rs`)
-- [ ] Update `deep_materialize` in `src/lib.rs` (`src/lib.rs`)
-- [ ] Update type checker `Value::String` patterns in `src/typecheck.rs` and `src/typecheck_dict.rs`
-- [ ] Update `split` builtin to return `Value::String` slices sharing the source `Rc<str>` (zero-copy split) (`src/builtins_string.rs`)
-- [ ] Add dual-dispatch for `String` in `map`, `filter`, `fold`, `reduce`, `first`, `last`, `nth`, `take`, `drop`, `count`, `reverse`, `contains?`, `slice`, `length` — iterate via `.char_indices()` on `&source[start..end]`, yield `Value::String` slices (`src/builtins.rs`, `src/builtins_seq_reduce.rs`)
-- [ ] Document space-leak risk: small slice pins entire `Rc<str>` source; copy with `str` to release (`doc/03-data-model.md`)
-- [ ] Tests: corpus tests for split-returns-shared-slices, char iteration, dual-dispatch map/filter on String, slice zero-copy (`tests/corpus/eval/`)
-- [ ] All existing corpus and CLI tests pass after the refactor
-
 ### `string-utils`: Extended String Utilities
 
 **Spec chapters:** `doc/whatif/lib-supplemental.md` §Extended String Utilities. **Depends on:** `string-view`.

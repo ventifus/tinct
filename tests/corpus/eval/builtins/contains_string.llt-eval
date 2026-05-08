@@ -1,0 +1,4 @@
+# contains? : dual-dispatch on string checks substring
+[contains? "hello" "ell"]
+=== out
+Bool(true)

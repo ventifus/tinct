@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 use crate::arena::ThunkId;
 use crate::ast::{Entry, Expr, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{Environment, Key, Thunk, Value};
+use crate::value::{string_val, Environment, Key, Thunk, Value};
 
 use super::{eval, materialize, EvalContext};
 
@@ -61,7 +61,7 @@ pub(crate) fn eval_dict(
                 entry.node.value.span,
             )),
             Expr::Str(s) => Rc::new(Thunk::new_materialized(
-                Value::String(s.clone()),
+                string_val(s),
                 entry.node.value.span,
             )),
             _ => Rc::new(Thunk::new_unevaluated(
@@ -133,7 +133,11 @@ pub(crate) fn eval_key(
 
 fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
     match value {
-        Value::String(s) => Ok(Key::String(s.clone())),
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => Ok(Key::String(source[*start..*end].to_string())),
         Value::Int(n) => Ok(Key::Int(*n)),
         _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), *span).into()),
     }

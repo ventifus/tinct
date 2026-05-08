@@ -1,0 +1,4 @@
+# last : dual-dispatch on string returns last character
+[last "hello"]
+=== out
+String("o")

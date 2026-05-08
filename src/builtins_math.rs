@@ -178,7 +178,18 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a == b,
         (Value::Float(a), Value::Float(b)) => a == b,
-        (Value::String(a), Value::String(b)) => a == b,
+        (
+            Value::String {
+                source: source_a,
+                start: start_a,
+                end: end_a,
+            },
+            Value::String {
+                source: source_b,
+                start: start_b,
+                end: end_b,
+            },
+        ) => &source_a[*start_a..*end_a] == &source_b[*start_b..*end_b],
         (Value::Bool(a), Value::Bool(b)) => a == b,
         // Cross-type: Int/Float promotion via `as f64` cast.
         // Known limitation: integers with absolute value > 2^53 lose precision on
@@ -229,7 +240,18 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a < b,
         (Value::Float(a), Value::Float(b)) => a < b,
-        (Value::String(a), Value::String(b)) => a < b,
+        (
+            Value::String {
+                source: source_a,
+                start: start_a,
+                end: end_a,
+            },
+            Value::String {
+                source: source_b,
+                start: start_b,
+                end: end_b,
+            },
+        ) => &source_a[*start_a..*end_a] < &source_b[*start_b..*end_b],
         (Value::Bool(a), Value::Bool(b)) => !a && *b, // false < true
         // Cross-type: Int/Float promotion via `as f64` cast.
         // Known limitation: integers with absolute value > 2^53 lose precision on
