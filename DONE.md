@@ -2,6 +2,10 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## `math-builtins`: Extended Math Builtins
+
+16 Rust builtins as `f64` method wrappers: `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` (13 math) + `nan?`, `inf?`, `finite?` (3 float predicates). Registered in `standard_builtins()` with type signatures in `type_env.rs`. Pure-tinct `stdlib/math.llt`: constants (`pi`, `e`, `phi`) and functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`). Corpus tests for all builtins and stdlib functions. **Deferred:** `stdlib/math.llt` not auto-loaded at startup (requires explicit `[include]`).
+
 ## `string-utils`: Extended String Utilities
 
 Rust builtins: `starts-with?`, `ends-with?` (String + Seq dual-dispatch), `str-chars` (lazy zero-copy char sequence), `str-slice` (zero-copy substring via byte-offset computation). Registered in `standard_builtins()` with type signatures in `type_env.rs`. Pure-tinct `stdlib/strings.llt`: `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse`. Corpus tests for all builtins and stdlib functions. **Deferred:** Bytes dual-dispatch (no `Value::Bytes` yet); `stdlib/strings.llt` not auto-loaded at startup (requires explicit `[include]`).

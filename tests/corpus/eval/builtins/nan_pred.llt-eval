@@ -1,0 +1,4 @@
+# nan? : check if result is NaN
+[nan? [sqrt -1]]
+=== out
+Bool(true)

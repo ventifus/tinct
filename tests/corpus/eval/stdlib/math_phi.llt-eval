@@ -1,0 +1,5 @@
+[include "stdlib/math.llt"]
+---
+%.phi
+=== out
+Float(1.618033988749895)

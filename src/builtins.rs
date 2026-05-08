@@ -309,7 +309,10 @@ pub(crate) fn reject_named(
 // Implementations live in builtins_math.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_math::{
-    builtin_add, builtin_div_float, builtin_eq, builtin_if, builtin_lt, builtin_mul, builtin_sub,
+    builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_cos,
+    builtin_div_float, builtin_eq, builtin_exp, builtin_finite_check, builtin_if,
+    builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_mul,
+    builtin_nan_check, builtin_pow, builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
 };
 
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
@@ -856,6 +859,22 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // Numeric
         builtin!("floor", builtin_floor, [Strictness::Seq]),
         builtin!("round", builtin_round, [Strictness::Seq]),
+        builtin!("pow", builtin_pow, [Strictness::Seq, Strictness::Seq]),
+        builtin!("sqrt", builtin_sqrt, [Strictness::Seq]),
+        builtin!("log", builtin_log, [Strictness::Seq]),
+        builtin!("log2", builtin_log2, [Strictness::Seq]),
+        builtin!("log10", builtin_log10, [Strictness::Seq]),
+        builtin!("exp", builtin_exp, [Strictness::Seq]),
+        builtin!("sin", builtin_sin, [Strictness::Seq]),
+        builtin!("cos", builtin_cos, [Strictness::Seq]),
+        builtin!("tan", builtin_tan, [Strictness::Seq]),
+        builtin!("asin", builtin_asin, [Strictness::Seq]),
+        builtin!("acos", builtin_acos, [Strictness::Seq]),
+        builtin!("atan", builtin_atan, [Strictness::Seq]),
+        builtin!("atan2", builtin_atan2, [Strictness::Seq, Strictness::Seq]),
+        builtin!("nan?", builtin_nan_check, [Strictness::Seq]),
+        builtin!("inf?", builtin_inf_check, [Strictness::Seq]),
+        builtin!("finite?", builtin_finite_check, [Strictness::Seq]),
         // Parsing
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
@@ -5986,7 +6005,29 @@ mod tests {
         assert!(names.contains(&"starts-with?"), "missing starts-with?");
         assert!(names.contains(&"ends-with?"), "missing ends-with?");
         assert!(names.contains(&"validate"), "missing validate");
-        assert_eq!(names.len(), 89, "expected 89 builtins, got {}", names.len());
+        // Math builtins
+        assert!(names.contains(&"pow"), "missing pow");
+        assert!(names.contains(&"sqrt"), "missing sqrt");
+        assert!(names.contains(&"log"), "missing log");
+        assert!(names.contains(&"log2"), "missing log2");
+        assert!(names.contains(&"log10"), "missing log10");
+        assert!(names.contains(&"exp"), "missing exp");
+        assert!(names.contains(&"sin"), "missing sin");
+        assert!(names.contains(&"cos"), "missing cos");
+        assert!(names.contains(&"tan"), "missing tan");
+        assert!(names.contains(&"asin"), "missing asin");
+        assert!(names.contains(&"acos"), "missing acos");
+        assert!(names.contains(&"atan"), "missing atan");
+        assert!(names.contains(&"atan2"), "missing atan2");
+        assert!(names.contains(&"nan?"), "missing nan?");
+        assert!(names.contains(&"inf?"), "missing inf?");
+        assert!(names.contains(&"finite?"), "missing finite?");
+        assert_eq!(
+            names.len(),
+            105,
+            "expected 105 builtins, got {}",
+            names.len()
+        );
     }
 
     #[test]

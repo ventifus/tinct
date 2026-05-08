@@ -1,0 +1,6 @@
+[include "stdlib/math.llt"]
+---
+# log₂(8) = 3
+[call %.log-base 2 8]
+=== out
+Float(3)

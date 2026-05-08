@@ -881,6 +881,44 @@ impl TypeEnv {
             );
         }
 
+        // Math functions: 1-arg (Number -> Float)
+        for name in [
+            "sqrt", "log", "log2", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan",
+        ] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Number],
+                    ret: Box::new(Type::Float),
+                    variadic: false,
+                },
+            );
+        }
+
+        // Math functions: 2-arg (Number -> Number -> Float)
+        for name in ["pow", "atan2"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Number, Type::Number],
+                    ret: Box::new(Type::Float),
+                    variadic: false,
+                },
+            );
+        }
+
+        // Float predicates (Float -> Bool)
+        for name in ["nan?", "inf?", "finite?"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Float],
+                    ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+            );
+        }
+
         // Parsing
         env.insert(
             "to-int".to_string(),

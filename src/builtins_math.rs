@@ -13,6 +13,8 @@
 
 use std::rc::Rc;
 
+use indexmap::IndexMap;
+
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
@@ -314,4 +316,304 @@ pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Err(err.into())
         }
     }
+}
+
+/// Helper to extract one numeric operand and convert to f64.
+fn extract_single_float(
+    name: &str,
+    args: &[Rc<Thunk>],
+    named: Option<&IndexMap<String, Rc<Thunk>>>,
+    ctx: &Rc<crate::eval::EvalContext>,
+    depth: usize,
+    call_span: crate::ast::Span,
+) -> EvalResult<f64> {
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    reject_named(name, named, call_span)?;
+    let val = materialize(&args[0], Some(&call_span), ctx, depth)?;
+    match val {
+        Value::Int(n) => Ok(n as f64),
+        Value::Float(f) => Ok(f),
+        _ => Err(EvalError::type_mismatch_ctx(
+            name.to_string(),
+            "Int or Float",
+            val.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// Helper to extract two numeric operands and convert to f64.
+fn extract_two_floats(
+    name: &str,
+    args: &[Rc<Thunk>],
+    named: Option<&IndexMap<String, Rc<Thunk>>>,
+    ctx: &Rc<crate::eval::EvalContext>,
+    depth: usize,
+    call_span: crate::ast::Span,
+) -> EvalResult<(f64, f64)> {
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named(name, named, call_span)?;
+    let left = materialize(&args[0], Some(&call_span), ctx, depth)?;
+    let right = materialize(&args[1], Some(&call_span), ctx, depth)?;
+
+    let a = match left {
+        Value::Int(n) => n as f64,
+        Value::Float(f) => f,
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                name.to_string(),
+                "Int or Float",
+                left.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let b = match right {
+        Value::Int(n) => n as f64,
+        Value::Float(f) => f,
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                name.to_string(),
+                "Int or Float",
+                right.type_name(),
+                args[1].span,
+            )
+            .into())
+        }
+    };
+
+    Ok((a, b))
+}
+
+/// `pow`: Power function. Takes 2 numeric args (base, exponent). Returns Float.
+/// Inherently materializing: must extract numeric values to compute power.
+pub(crate) fn builtin_pow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let (base, exp) = extract_two_floats("pow", args, named, &ctx, depth, call_span)?;
+    check_float_result(base.powf(exp), "pow", call_span)
+}
+
+/// `sqrt`: Square root. Takes 1 numeric arg. Returns Float.
+/// Allows NaN results (e.g., sqrt(-1)) for downstream predicates to check.
+/// Inherently materializing: must extract numeric value to compute square root.
+pub(crate) fn builtin_sqrt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("sqrt", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Float(val.sqrt()), call_span)
+}
+
+/// `log`: Natural logarithm (ln). Takes 1 numeric arg. Returns Float.
+/// Allows -Inf results (e.g., log(0)) for downstream predicates to check.
+/// Inherently materializing: must extract numeric value to compute logarithm.
+pub(crate) fn builtin_log(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("log", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Float(val.ln()), call_span)
+}
+
+/// `log2`: Base-2 logarithm. Takes 1 numeric arg. Returns Float.
+/// Inherently materializing: must extract numeric value to compute logarithm.
+pub(crate) fn builtin_log2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("log2", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.log2(), "log2", call_span)
+}
+
+/// `log10`: Base-10 logarithm. Takes 1 numeric arg. Returns Float.
+/// Inherently materializing: must extract numeric value to compute logarithm.
+pub(crate) fn builtin_log10(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("log10", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.log10(), "log10", call_span)
+}
+
+/// `exp`: Exponential function (e^x). Takes 1 numeric arg. Returns Float.
+/// Inherently materializing: must extract numeric value to compute exponential.
+pub(crate) fn builtin_exp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("exp", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.exp(), "exp", call_span)
+}
+
+/// `sin`: Sine function. Takes 1 numeric arg (radians). Returns Float.
+/// Inherently materializing: must extract numeric value to compute sine.
+pub(crate) fn builtin_sin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("sin", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.sin(), "sin", call_span)
+}
+
+/// `cos`: Cosine function. Takes 1 numeric arg (radians). Returns Float.
+/// Inherently materializing: must extract numeric value to compute cosine.
+pub(crate) fn builtin_cos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("cos", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.cos(), "cos", call_span)
+}
+
+/// `tan`: Tangent function. Takes 1 numeric arg (radians). Returns Float.
+/// Inherently materializing: must extract numeric value to compute tangent.
+pub(crate) fn builtin_tan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("tan", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.tan(), "tan", call_span)
+}
+
+/// `asin`: Arcsine function. Takes 1 numeric arg. Returns Float (radians).
+/// Inherently materializing: must extract numeric value to compute arcsine.
+pub(crate) fn builtin_asin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("asin", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.asin(), "asin", call_span)
+}
+
+/// `acos`: Arccosine function. Takes 1 numeric arg. Returns Float (radians).
+/// Inherently materializing: must extract numeric value to compute arccosine.
+pub(crate) fn builtin_acos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("acos", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.acos(), "acos", call_span)
+}
+
+/// `atan`: Arctangent function. Takes 1 numeric arg. Returns Float (radians).
+/// Inherently materializing: must extract numeric value to compute arctangent.
+pub(crate) fn builtin_atan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("atan", args, named, &ctx, depth, call_span)?;
+    check_float_result(val.atan(), "atan", call_span)
+}
+
+/// `atan2`: Two-argument arctangent (atan2(y, x)). Takes 2 numeric args. Returns Float (radians).
+/// Inherently materializing: must extract numeric values to compute arctangent.
+pub(crate) fn builtin_atan2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let (y, x) = extract_two_floats("atan2", args, named, &ctx, depth, call_span)?;
+    check_float_result(y.atan2(x), "atan2", call_span)
+}
+
+/// `nan?`: Checks if a float is NaN. Takes 1 numeric arg. Returns Bool.
+/// Inherently materializing: must extract numeric value to check for NaN.
+pub(crate) fn builtin_nan_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("nan?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(val.is_nan()), call_span)
+}
+
+/// `inf?`: Checks if a float is infinite. Takes 1 numeric arg. Returns Bool.
+/// Inherently materializing: must extract numeric value to check for infinity.
+pub(crate) fn builtin_inf_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("inf?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(val.is_infinite()), call_span)
+}
+
+/// `finite?`: Checks if a float is finite (not NaN or infinite). Takes 1 numeric arg. Returns Bool.
+/// Inherently materializing: must extract numeric value to check for finiteness.
+pub(crate) fn builtin_finite_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = extract_single_float("finite?", args, named, &ctx, depth, call_span)?;
+    ok_val(Value::Bool(val.is_finite()), call_span)
 }
