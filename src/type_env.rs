@@ -846,10 +846,9 @@ impl TypeEnv {
         env.insert(
             "length".to_string(),
             Type::Function {
-                params: vec![Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_dict".to_string(), 0),
-                })],
+                // builtin_length dispatches on Value::Dict, Value::String, and Value::Bytes.
+                // Use Unknown so callers with String or Bytes arguments are not rejected.
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -906,20 +905,25 @@ impl TypeEnv {
                 },
             },
         );
-        for name in ["split", "replace"] {
-            env.insert(
-                name.to_string(),
-                Type::Function {
-                    params: vec![Type::Str, Type::Str],
-                    ret: Box::new(if name == "split" {
-                        Type::Seq(Box::new(Type::Str))
-                    } else {
-                        Type::Str
-                    }),
-                    variadic: false,
-                },
-            );
-        }
+        env.insert(
+            "split".to_string(),
+            Type::Function {
+                params: vec![Type::Str, Type::Str],
+                // split returns an integer-keyed Dict, not a Seq. Use Unknown to avoid
+                // spurious "cannot unify Seq[String] with [...]" errors when downstream
+                // code passes the result to dict operations (length, get, builtin-reduce).
+                ret: Box::new(Type::Unknown),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "replace".to_string(),
+            Type::Function {
+                params: vec![Type::Str, Type::Str],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
         for name in ["upper", "lower", "trim"] {
             env.insert(
                 name.to_string(),

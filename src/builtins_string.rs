@@ -55,7 +55,9 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes 2 args: `separator` (String), `input` (String).
 /// Returns a Dict with integer keys `0..n` mapping to the split substrings.
 /// Zero-copy: split parts share the original string's Rc<str> allocation.
-/// Inherently materializing: must inspect string content to split into substrings.
+/// Returns a Dict (not Seq) for O(1) indexed access — the dominant use case
+/// is `[get 0 [split sep s]]`. A lazy Seq variant is possible but would make
+/// indexed access O(n).
 pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,

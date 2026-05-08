@@ -18,43 +18,9 @@ both provide local bindings natively. For rare inline cases, use `[call [fn [x] 
 
 Documented in `doc/02-syntax.md` §3.3.1a (head-position rule) and §3.3.1b (IIFE patterns).
 
-### `sequential-lazy`: Sequential fn-body bindings are lazy, not eager
+### ~~`sequential-lazy`: Sequential fn-body bindings are lazy, not eager~~ (FIXED)
 
-`Expr::Sequential` materializes the outer dict at each step but the binding VALUES
-remain as `Unevaluated` thunks in the child env (`eval.rs:671` inserts `ctx.get_thunk(val_thunk_id)` —
-no forcing). Pre-computing an expensive value as a Sequential step does NOT make it
-cache at a shallow depth — it is forced lazily at whatever depth first demands it.
-
-**Root cause** (`eval_dict.rs:50-79`): non-literal values get `Thunk::new_unevaluated`; `eval_dict`
-returns a shallow `Thunk::new_materialized(Value::Dict(dict_map))` where all inner `ThunkId`s
-are still unevaluated. Sequential extracts those ThunkIds and inserts them into `child_env` as-is.
-
-**Fix plan** (confirmed by eval-engine + computer-scientist panel, 2026-05-08):
-
-1. **Make Sequential bindings strict (WHNF-only)**: in the Sequential loop, after extracting
-   `(Key::String(name), val_thunk_id)`, call `materialize(ctx.get_thunk(val_thunk_id), ...)` and
-   insert a pre-materialized thunk instead. Forces at depth ~3-5; subsequent demands return
-   the memoized value at O(1) depth. Only semantic break: dead-but-erroring bindings now fail
-   eagerly — correct behavior for a config language. WHNF-only (shallow force) preserves laziness
-   within bound values. Formally sound: Sequential is `let*` (no mutual recursion), not letrec;
-   strict `let*` is well-established (Schmidt-Schauss & Sabel 2015). (`src/eval.rs`)
-
-2. **Remove `MAX_EVAL_DEPTH` entirely**: the depth limit is an LLT-level design choice, not a Rust
-   stack safety requirement (CEK machine is heap-based). Resource bounding is handled by
-   `--max-memory` and `--timeout`. Informative errors for infinite recursion are covered by cycle
-   detection (InProgress blackholing). The `depth` parameter may be retained for error span
-   context but the depth CHECK is removed from `eval()`, `materialize()`, and `deep_materialize()`.
-   Also resolves `depth-limit-toml` entirely. The `depth: usize` parameter is removed from all evaluation functions. (`src/eval.rs`, `src/eval_materialize.rs`)
-
-3. **Add `[force expr]` builtin**: thin complement for user-controlled forcing in fn-body Sequential
-   where strict bindings may be unwanted. One line of Rust + `Strictness::Seq`. (`src/builtins.rs`,
-   `src/builtins_meta.rs`)
-
-4. **Apply existing `materialize` depth-check optimization**: move the depth check inside the
-   `Unevaluated`/`PendingBuiltin` arms (not before the state check) so already-materialized thunks
-   return at O(1) depth regardless of call depth. Separate but related improvement. (`src/eval.rs`)
-
-**Note**: The CEK machine migration is complete (sprints a, b1-b5, d all done). MAX_EVAL_DEPTH is being removed entirely in the `sequential-strict` sprint — resource bounding is handled by `--max-memory`/`--timeout`; cycle detection handles infinite recursion.
+Fixed in `sequential-strict` sprint: Sequential named bindings are now forced to WHNF at binding time (strict `let*` semantics). See `doc/09-documents.md` §[SEQ-SCOPE].
 
 ### ~~`depth-limit-toml`: `parse-toml-lite` exceeds depth on large TOML files~~ (RESOLVED)
 
@@ -64,56 +30,83 @@ without a depth limit this is no longer a concern.
 
 ---
 
-## Research
-
-### `research-parameterized-dict`
-
-Investigate whether tinct's type system should support a parameterized
-`Dict[K V]` type constructor — algebraic type constructors with kind
-`Type → Type → Type`. Motivated by the need to type `transitions` in
-`stdlib/regex.llt` as `Dict[Int Seq@Int]` (char-code → successor state
-ids) rather than the current unparameterized `@Dict` with a runtime
-invariant comment.
-
-**The gap:** BAS (`doc/whatif/boolean-algebraic-subtyping.md`) encodes
-multi-field records as intersections of single-field types and handles
-union/intersection over specific named fields — but cannot express "all
-values in this dict are of type T" because that requires universal
-quantification over field labels (∀f. {f: T}), which is outside BAS's
-scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
-(lib-regex.md) are the concrete cases that remain untyped.
-
-- [x] Survey comparable languages — Nickel `{_: Type}`, TypeScript index signatures, Haskell `Map k v`; see `doc/whatif/parameterized-dict.md` §References
-- [x] Can BAS accommodate `Dict[K V]`? — BAS is only needed for union/intersection *over* map types (Phase 3); annotation and inference are BAS-independent
-- [x] Record vs Map split — yes; `Dict: [type [Record Map]]` is the right model; see `doc/whatif/parameterized-dict.md` §Design
-- [x] Stdlib functions that benefit — `transitions` and `groups` in regex NFA are the primary cases; `stat`/`tls-peer-cert`/`list-dir` are structural Records, not Maps
-- [x] Write proposal — see `doc/whatif/parameterized-dict.md`
-
 ## Known Bugs (Type Signatures)
-
-### `split-return-type`: `split` typed as `Seq[String]` but returns `Dict`
-
-`type_env.rs` registers `split` with return type `Seq[String]`. At runtime, `builtin_split` builds an integer-keyed `IndexMap` — a `Dict`, not a `Seq`. Every downstream use of `split`'s result with dict operations (`length`, `get`, `builtin-reduce`) produces spurious "cannot unify Seq[String] with [...]" type errors. Confirmed in `samples/versions.llt` errors at lines 18 and 78.
-
-- [ ] Change `split` return type registration in `type_env.rs` from `Type::Seq(Box::new(Type::Str))` to an open record type (`Type::Record(Row { fields: {}, tail: RowTail::RowVar(fresh) })`), matching the actual `Dict` that `builtin_split` produces (`src/type_env.rs`)
-- [ ] Corpus test: `[length [split "," "a,b,c"]]` type-checks without error (`tests/corpus/eval/`)
 
 ### `length-narrow-type`: `length` typed as Dict-only but accepts String and Bytes
 
-`type_env.rs` registers `length` with parameter type `[...]` (open record — Dict only). At runtime, `builtin_length` dispatches on `Value::String` and `Value::Bytes` in addition to `Value::Dict`. Passing a String to `length` produces spurious "cannot unify String with [...]" type errors. Confirmed in `samples/versions.llt` errors at lines 60 and 69.
+`type_env.rs` registers `length` with parameter type `[...]` (open record — Dict only). At runtime, `builtin_length` dispatches on `Value::String` and `Value::Bytes` in addition to `Value::Dict`. The correct parameter type is `Dict | String | Bytes` — not `Unknown` (which would accept Int, Float, etc. that actually error at runtime). Confirmed in `samples/versions.llt` errors at lines 60 and 69.
 
-- [ ] Change `length` parameter type in `type_env.rs` to `Type::Unknown`, matching the dual-dispatch behavior — same strategy used for other polymorphic builtins (`src/type_env.rs`)
-- [ ] Corpus test: `[length "hello"]` and `[length [str-bytes "hi"]]` type-check without error (`tests/corpus/eval/`)
+- [ ] Change `length` parameter type in `type_env.rs` to `Type::Union(vec![Type::Record(open_row), Type::String, Type::Bytes])`, accurately reflecting the three dispatch branches in `builtin_length` (`src/type_env.rs`)
+- [ ] Corpus test: `[length "hello"]` and `[length [str-bytes "hi"]]` type-check without error; `[length 42]` produces a type error (`tests/corpus/eval/`)
 
-## Macros
+## Diagnostics
 
-### `tmpl-macro`: Migrate `i"..."` string interpolation from parser to `[defmacro tmpl]`
+### `rich-diagnostics`: Rust-style error reporting with source context
 
-`desugar_interpolated_string()` in `src/parser.rs` converts `i"Hello $name"` tokens directly to `[str "Hello " name]` at parse time. The `[defmacro]` system is now complete — this logic belongs in `stdlib/macros.llt` as `[defmacro tmpl]`, making it corpus-testable and modifiable without recompiling tinct. See `doc/whatif/completed/macro-rewrite.md` for the design.
+Type errors and parse errors currently print bare messages with coordinates:
+```
+arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 10:1-10:32
+undefined variable: https-get at 34:18-34:27
+```
 
-- [ ] Change parser to emit `[tmpl "Hello $name"]` call node instead of expanding `InterpolatedString` inline; the raw template string is passed as an opaque argument (`src/parser.rs`, `src/lexer.rs`)
-- [ ] Implement `[defmacro tmpl [template] ...]` in `stdlib/macros.llt`: parse the template string char-by-char splitting on `$`, produce `[str segment1 var1 segment2 ...]` (`stdlib/macros.llt`)
-- [ ] Remove `desugar_interpolated_string()` from `src/parser.rs` (`src/parser.rs`)
-- [ ] Corpus tests: `i"Hello $name"` still expands correctly; nested expressions `i"val: $[+ x 1]"` work; empty interpolation `i"plain"` works (`tests/corpus/eval/`)
+Runtime errors already use `render_span_snippet` (see `src/main.rs:1224`). Type errors call `format!("{e}")` with no source context (`src/main.rs:1433`, `src/lib.rs:246`). The goal is Rust-style output:
+
+```
+error[T002]: undefined variable: `https-get`
+ --> samples/versions.llt:34:18
+  |
+34 |   [rust-toml-raw: [https-get "static.rust-lang.org" 443
+  |                    ^^^^^^^^^
+  = note: `https-get` is defined earlier in the document but Sequential
+          bindings are not visible to the type checker at this point
+
+error[T001]: arity mismatch
+ --> samples/versions.llt:10:1
+  |
+10 | [include %libdir "strings.llt"]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: `include` expects 1 argument, got 2 (2 positional, 0 named)
+  = help: the 2-argument cap-qualified form `[include cap "path"]` is
+          the correct form; single-argument `[include "path"]` is removed
+```
+
+- [ ] Add error codes to `TypeError` enum variants: `T001` (arity mismatch), `T002` (undefined variable), `T003` (cannot unify), `T004` (type assert failure), etc. — parallel to runtime `E0xx` codes (`src/typecheck.rs`, `src/error.rs`)
+- [ ] Implement `fn format_type_error(err: &TypeError, source: &str) -> String` that renders the Rust-style multi-line format: `error[Txxx]: message\n --> file:line:col\n  |\nNN | source\n   | ^^^^` using existing `render_span_snippet` infrastructure (`src/error.rs`)
+- [ ] Apply `format_type_error` to type error output in `run_eval` (`src/main.rs:1433`) and `typecheck_source` (`src/lib.rs:246`); the source string is already available in both call sites
+- [ ] Apply same snippet rendering to parse errors in strict mode (parse errors currently also lack source context) (`src/main.rs`, `src/error.rs`)
+- [ ] Add contextual `= note:` lines for common type errors: arity mismatch (show expected vs got); undefined variable (note if name appears in a later Sequential step — "defined later at line N"); cannot unify (show both types with labels "expected" / "found") (`src/typecheck.rs`, `src/error.rs`)
+- [ ] Add `= help:` suggestions for actionable fixes: arity mismatch on `include` → "use cap-qualified form `[include %libdir \"path\"]`"; undefined variable that looks like a Sequential scope issue → "group definitions with `[call [fn [] ...]]`" (`src/error.rs`)
+- [ ] Add `tinct explain T001` subcommand (like `rustc --explain`) — each error code has a long-form explanation with examples (`src/main.rs`, new `src/explain.rs`)
+- [ ] Update `tinct run --strict` output header from bare `type checking failed with N error(s)` to `error: type checking failed with N error(s) (use --strict to make fatal)` in non-strict mode, or `error: type checking failed — cannot evaluate` in strict mode (`src/main.rs`)
+- [ ] Corpus tests for error message format: verify snippet is present, correct line/col, correct caret length; verify note/help text for known error patterns (`tests/corpus/`)
+
+## Capabilities
+
+### `cap-file`: Single-file capability via `--cap-file name=path:mode`
+
+`--cap-fs` injects a `DirCap` granting access to an entire directory. For pinpoint access to a single file, the right primitive is `Handle` — an already-open file descriptor. A new `--cap-file name=path:mode` CLI flag pre-opens the file and injects it as `%name` (the `%` prefix is added by tinct, same as `--cap-net nc=...` → `%nc`).
+
+```bash
+# User writes on command line (no % prefix):
+tinct run --cap-file config=Cargo.toml:r script.llt
+
+# Tinct injects as %config (Handle[Readable Text]) in root env
+```
+
+```tinct
+# In the script:
+--- caps: [%config: @Handle]
+[slurp %config]   # can only read this one file
+```
+
+Mode suffix: `r` → `{Readable, Text}`, `rb` → `{Readable, Binary}`, `w` → `{Writable, Text}`, `wb` → `{Writable, Binary}`.
+
+- [ ] Parse `--cap-file name=path:mode` entries in CLI (repeatable, same pattern as `--cap-net`); validate mode suffix (`r`, `rb`, `w`, `wb`); auto-prefix `%` to the name (`src/main.rs`)
+- [ ] Open the file using `cap_std::ambient_authority()` + appropriate `OpenOptions`; wrap as `Value::Handle` with correct caps `{Readable/Writable, Text/Binary}` and `write_inner: None/Some` depending on mode (`src/main.rs`, `src/builtins_io.rs`)
+- [ ] Ensure `--no-fs` (already exists) also suppresses `--cap-file`-injected Handles; verify the flag correctly blocks all filesystem caps: `%pwd`, `%libdir`, `--cap-fs`, and `--cap-file` (`src/main.rs`)
+- [ ] Extend `--- caps:` pragma runtime validation to handle `@Handle` type: emit `%config@Handle is required but not provided\n  inject it with:  tinct run --cap-file config=PATH:r ...` — the flag hint is derived from the cap name (strip `%`) and defaults to `:r` mode; see `doc/09-documents.md` §caps: pragma for the full error format (`src/eval.rs` or `src/main.rs`)
+- [ ] Update `doc/09-documents.md` §caps: pragma: add `@Handle` to the type table alongside `@NetCap` and `@DirCap`, showing the corresponding `--cap-file` flag hint in error messages (`doc/09-documents.md`)
+- [ ] Update `doc/12-tooling.md`: document `--cap-file name=path:mode` alongside `--cap-fs` and `--cap-net`; document `--no-fs` as the coarse-grained filesystem suppressor (blocks `%pwd`, `%libdir`, all `--cap-fs`, all `--cap-file`); note that mode determines read/write capability and text/binary encoding (`doc/12-tooling.md`)
+- [ ] Corpus / CLI tests: `--cap-file` injects readable Handle; `[slurp %handle]` reads the file; write mode allows `[write-handle %handle ...]`; missing file errors clearly (`tests/`)
 
 ## Codebase Health

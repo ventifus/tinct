@@ -1,0 +1,4 @@
+# split-return-type: length of split result type-checks without error
+[length [split "," "a,b,c"]]
+=== out
+Int(3)

@@ -1,6 +1,4 @@
 # length : dual-dispatch on string returns character count
 [length "hello"]
-=== warn
-cannot unify [...] with "hello" at 1:1-1:17
 === out
 Int(5)

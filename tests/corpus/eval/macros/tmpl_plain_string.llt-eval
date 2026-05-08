@@ -1,0 +1,4 @@
+# tmpl macro: plain text with no interpolation (no $ signs)
+i"Hello world"
+=== out
+String("Hello world")

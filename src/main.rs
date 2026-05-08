@@ -42,7 +42,9 @@ enum Commands {
         #[arg(long)]
         eval: bool,
 
-        /// Disable filesystem access ($include).
+        /// Disable all filesystem access: suppresses %pwd, %libdir, and any caps injected
+        /// via --cap-fs or --cap-file. Scripts that attempt filesystem operations fail.
+        /// Use --no-pwd or --no-libdir for fine-grained suppression.
         #[arg(long)]
         no_fs: bool,
 

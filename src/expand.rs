@@ -234,6 +234,39 @@ pub struct ExpandResult {
 /// This is the top-level entry point called from the pipeline.
 /// Takes a no_fs flag to match the pipeline configuration.
 /// Returns the expanded AST and the provenance side map for dual-span error reporting.
+/// Register stdlib macros from the stdlib env into a fresh MacroEnv.
+///
+/// Each stdlib macro is exported from `stdlib/macros.llt` as a `<name>-transformer`
+/// function. This function looks them up and pre-registers them so that macro calls
+/// like `[tmpl "Hello $name"]` are expanded before any user-defined `[defmacro]` nodes
+/// are processed.
+///
+/// Stdlib macro names must NOT collide with registered Rust builtins (the same check
+/// that `register_macro` performs). This is guaranteed by design: the `tmpl` macro
+/// cannot shadow any builtin since no builtin is named `tmpl`.
+fn register_stdlib_macros(
+    env_macro: &mut MacroEnv,
+    stdlib_env: &Rc<RefCell<Environment>>,
+    span: Span,
+) {
+    /// Table of (macro_name, transformer_key_in_stdlib_env) pairs.
+    const STDLIB_MACROS: &[(&str, &str)] = &[("tmpl", "tmpl-transformer")];
+
+    for (macro_name, transformer_key) in STDLIB_MACROS {
+        let transformer_thunk = {
+            let env_ref = stdlib_env.borrow();
+            env_ref.get(*transformer_key)
+        };
+        if let Some(transformer) = transformer_thunk {
+            // register_macro checks for builtin collisions. Ignore errors here:
+            // if registration fails (e.g. the key is absent), the macro simply
+            // won't expand and user code gets an "undefined variable: tmpl" error,
+            // which is a clear signal that stdlib/macros.llt is not loaded.
+            let _ = env_macro.register_macro((*macro_name).to_string(), transformer, span);
+        }
+    }
+}
+
 pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResult> {
     let mut env_macro = MacroEnv::new();
 
@@ -257,6 +290,9 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
             file.span,
         )
     })?;
+
+    // Pre-register stdlib macros (e.g. tmpl) from macros.llt before processing user code.
+    register_stdlib_macros(&mut env_macro, &stdlib_env, file.span);
 
     let ctx = Rc::new(EvalContext::new(base_dir, Rc::clone(&stdlib_env), no_fs));
 
