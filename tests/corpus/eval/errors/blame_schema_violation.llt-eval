@@ -3,5 +3,8 @@
 [x: 1]
 ---
 [@Int %]
-=== out
+=== error
 [E011] type assertion failed: expected Int, got Dict
+
+=== warn
+cannot unify Int with [x: 1] at 4:7-4:8

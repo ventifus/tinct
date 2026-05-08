@@ -1,0 +1,3 @@
+[builtin-get "is-file" [call $stat [dir-cap "."] "Cargo.toml"]]
+---
+true

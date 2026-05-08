@@ -1,3 +1,6 @@
 nonexistent
-=== out
+=== error
 [E002] undefined variable: nonexistent (did you mean the string "nonexistent"? Use quotes.)
+
+=== warn
+undefined variable: nonexistent at 1:1-1:12

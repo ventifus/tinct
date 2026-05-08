@@ -10,5 +10,8 @@
   ]
   result: [validate $schema [hostname: "localhost"]]
 ].result
-=== out
+=== error
 required field is missing
+
+=== warn
+undefined variable: validate at 10:12-10:20

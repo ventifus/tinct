@@ -1,5 +1,8 @@
 # E024: calling a 3-param function with 0 args produces MissingRequiredParam.
 # Error is reported for the first uncovered required parameter (a).
 [call [fn [a b c] a]]
-=== out
+=== error
 [E024] missing argument for required parameter 'a'
+
+=== warn
+arity mismatch: expected 3 argument(s), got 0 (0 positional, 0 named) at 2:1-2:22

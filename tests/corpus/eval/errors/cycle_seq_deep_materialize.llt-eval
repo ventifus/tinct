@@ -1,5 +1,5 @@
 # Cycle detection: forcing a cyclic Seq through deep_materialize should error
 [data: [iterate [fn [x] x] [error "cycle"]]
  result: [collect [take 5 data]]]
-=== out
+=== error
 [E080] cycle

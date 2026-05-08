@@ -1,3 +1,6 @@
 [+ 1 [head []]]
-=== out
+=== error
 [E034] head on empty collection
+
+=== warn
+cannot unify Seq[?] with [] at 1:12-1:14

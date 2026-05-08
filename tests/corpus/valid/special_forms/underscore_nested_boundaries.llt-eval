@@ -6,3 +6,5 @@
 [f [g _]]
 === out
 [f [g _]]
+=== warn
+undefined variable: f at 5:2-5:3

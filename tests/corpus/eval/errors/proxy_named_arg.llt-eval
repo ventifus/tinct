@@ -1,4 +1,4 @@
 # $proxy does not accept named arguments
 [proxy handler: [fn [k] k]]
-=== out
+=== error
 [E023] proxy does not accept named arguments

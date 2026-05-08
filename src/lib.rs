@@ -372,6 +372,10 @@ pub fn visit_value<V: ValueVisitor>(
         }
         value::Value::Decimal(d) => Ok(visitor.visit_decimal(*d)),
         value::Value::BigInt(n) => Ok(visitor.visit_bigint(n)),
+        value::Value::Uri { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+            "Uri".to_string(),
+            ast::Span::origin(),
+        ))),
     }
 }
 

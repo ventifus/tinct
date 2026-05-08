@@ -1,4 +1,7 @@
 # range: error when start argument is a non-Int (quoted string)
 [range "not a number" 10]
-=== out
+=== error
 [E010]
+
+=== warn
+cannot unify Int with "not a number" at 1:8-1:22

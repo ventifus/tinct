@@ -3,5 +3,8 @@
 "not-a-number"
 ---
 [@Int %]
-=== out
+=== error
 [E011] type assertion failed: expected Int, got String
+
+=== warn
+cannot unify Int with "not-a-number" at 4:7-4:8

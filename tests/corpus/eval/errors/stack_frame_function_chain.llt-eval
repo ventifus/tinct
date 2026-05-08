@@ -3,5 +3,5 @@
   f2: [fn [y] [f1 y]]
 ]
 [f2 []]
-=== out
+=== error
 [E034] head on empty collection

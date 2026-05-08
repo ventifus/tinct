@@ -3,5 +3,5 @@
 # The function f calls itself recursively without a base case.
 [f: [fn [n] [f [+ n 1]]]]
 [result: [f 0]]
-=== out
+=== error
 [E040]

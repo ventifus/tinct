@@ -3,5 +3,8 @@
 # Note: filter with an infinite seq and always-false predicate loops indefinitely
 # (the internal loop skips without depth accumulation). Using a bounded input here.
 [head [filter [fn [n] false] [take 100 [range 0]]]]
-=== out
+=== error
 [E034]
+
+=== warn
+arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 4:40-4:49

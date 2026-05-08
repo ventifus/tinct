@@ -35,9 +35,12 @@
 //! Uses `parse()` for stdlib syntax validation. Both approaches validate the
 //! analysis pipeline without spawning the LSP server as a subprocess.
 
+mod test_helpers;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use test_helpers::split_test_file;
 
 /// Recursively find all .llt-eval files in a directory
 fn find_test_files(dir: &Path) -> Vec<PathBuf> {
@@ -57,123 +60,6 @@ fn find_test_files(dir: &Path) -> Vec<PathBuf> {
 
     files.sort();
     files
-}
-
-/// Expected output sections from a test file.
-#[derive(Debug)]
-struct TestExpectations {
-    /// Expected warnings (from `=== warn` section).
-    warn: Option<String>,
-    /// Expected error substring (from `=== error` section).
-    error: Option<String>,
-    /// Expected output (from `=== out` section).
-    out: Option<String>,
-}
-
-/// Extract source and expectations from a corpus test file.
-fn split_test_file(content: &str) -> (String, TestExpectations) {
-    // Strip directive line if present
-    let content = if let Some(newline_pos) = content.find('\n') {
-        let (first_line, remainder) = content.split_at(newline_pos);
-        if first_line.trim().starts_with('#') {
-            &remainder[1..] // skip the newline
-        } else {
-            content
-        }
-    } else {
-        content
-    };
-
-    // Find all section delimiters
-    let mut sections = Vec::new();
-    let mut search_start = 0;
-
-    while let Some(pos) = content[search_start..].find("\n===") {
-        let abs_pos = search_start + pos;
-        let after_delim = &content[abs_pos + 4..]; // skip "\n==="
-
-        // Extract the label (text between === and the next newline)
-        let label_end = after_delim.find('\n').unwrap_or(after_delim.len());
-        let label = after_delim[..label_end].trim();
-
-        sections.push((abs_pos, label.to_string()));
-        search_start = abs_pos + 4 + label_end;
-    }
-
-    // If no sections found, the entire content is input
-    if sections.is_empty() {
-        return (
-            content.to_string(),
-            TestExpectations {
-                warn: None,
-                error: None,
-                out: None,
-            },
-        );
-    }
-
-    // First section starts at input, ends at first delimiter
-    let input = &content[..sections[0].0 + 1]; // include trailing newline before ===
-
-    // Parse sections
-    let mut warn = None;
-    let mut error = None;
-    let mut out = None;
-
-    for (i, (pos, label)) in sections.iter().enumerate() {
-        // Content starts after "\n=== label\n"
-        let label_line_start = pos + 4; // skip "\n==="
-        let label_line_end = content[label_line_start..]
-            .find('\n')
-            .map(|p| label_line_start + p)
-            .unwrap_or(content.len());
-        let content_start = if label_line_end < content.len() {
-            label_line_end + 1 // skip the newline after label
-        } else {
-            label_line_end
-        };
-
-        // Content ends at next section or EOF
-        let content_end = sections
-            .get(i + 1)
-            .map(|(next_pos, _)| *next_pos + 1) // include trailing newline
-            .unwrap_or(content.len());
-
-        let section_content = &content[content_start..content_end];
-        let trimmed = section_content.trim();
-
-        match label.as_str() {
-            "warn" => {
-                warn = if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                };
-            }
-            "error" => {
-                error = if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                };
-            }
-            "out" => {
-                out = if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                };
-            }
-            _ => {
-                panic!(
-                    "unknown section label '{}' in corpus file; valid labels are 'out', 'warn', 'error'",
-                    label
-                );
-            }
-        }
-    }
-
-    (input.to_string(), TestExpectations { warn, error, out })
 }
 
 /// Simplified diagnostic for test comparisons.
@@ -268,10 +154,12 @@ fn test_lsp_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let (source, expectations) = split_test_file(&content);
+        let test = split_test_file(&content);
 
         // Skip files with ANY labeled sections — those are owned by the eval corpus runner
-        if expectations.out.is_some() || expectations.warn.is_some() || expectations.error.is_some()
+        if test.expectations.out.is_some()
+            || test.expectations.warn.is_some()
+            || test.expectations.error.is_some()
         {
             skipped += 1;
             continue;
@@ -280,7 +168,7 @@ fn test_lsp_corpus() {
         tested += 1;
 
         // Get diagnostics from LSP
-        let diagnostics = get_diagnostics_for_source(&source);
+        let diagnostics = get_diagnostics_for_source(&test.input);
 
         // Files without sections must produce zero diagnostics
         if !diagnostics.is_empty() {

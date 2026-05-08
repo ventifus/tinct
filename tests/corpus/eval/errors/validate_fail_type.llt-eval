@@ -1,4 +1,7 @@
 # validate: type mismatch produces error
 [validate [type: "Int"] "not an int"]
-=== out
+=== error
 expected type Int, got String
+
+=== warn
+undefined variable: validate at 1:2-1:10

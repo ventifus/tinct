@@ -3,5 +3,5 @@
 # Keys in the inner dict are evaluated in the outer dict's scope (parent_env rule),
 # so $k1 and $k2 both resolve to "x", triggering a runtime duplicate-key error.
 [k1: "x"  k2: "x"  result: [$k1: 1  $k2: 2]]
-=== out
+=== error
 [E030] duplicate key: x

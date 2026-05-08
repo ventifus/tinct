@@ -727,6 +727,7 @@ fn type_name(val: &Value) -> String {
         Value::Variant { tag, .. } => tag.as_str(),
         Value::Decimal(_) => "Decimal",
         Value::BigInt(_) => "BigInt",
+        Value::Uri { .. } => "Uri",
     }
     .to_string()
 }

@@ -1,4 +1,4 @@
 # /: float division by zero produces an error (E031)
 [/ 1 0]
-=== out
+=== error
 [E031] /: division by zero

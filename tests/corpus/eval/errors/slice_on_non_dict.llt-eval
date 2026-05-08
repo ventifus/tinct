@@ -1,5 +1,8 @@
 [x: 42]
 
 [slice x 0 2]
-=== out
+=== error
 [E010] keys: expected Dict, got Int
+
+=== warn
+cannot unify [...] with 42 at 3:1-3:14

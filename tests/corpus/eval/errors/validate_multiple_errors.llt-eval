@@ -15,5 +15,8 @@
   ]
   result: [validate $schema [port: 100000 hostname: "ab"]]
 ].result
-=== out
+=== error
 schema validation failed
+
+=== warn
+undefined variable: validate at 15:12-15:20

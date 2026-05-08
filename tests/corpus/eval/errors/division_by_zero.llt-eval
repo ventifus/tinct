@@ -1,4 +1,4 @@
 # quot: division by zero produces an error
 [quot 10 0]
-=== out
+=== error
 [E031] /: division by zero

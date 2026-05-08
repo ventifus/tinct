@@ -3,5 +3,5 @@
 [include "stdlib/out/json.llt"]
 ---
 [call %.json [seq 1 10]]
-=== out
+=== error
 [E080] cannot serialize Seq to JSON — use | collect for JSON array output

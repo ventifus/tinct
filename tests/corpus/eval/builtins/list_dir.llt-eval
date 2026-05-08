@@ -1,0 +1,3 @@
+[> [length [collect [call $list-dir [dir-cap "."] "src"]]] 0]
+---
+true

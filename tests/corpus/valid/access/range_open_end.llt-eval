@@ -1,3 +1,5 @@
 [tail: [drop 2 data]]
 === out
 ["tail": [drop 2 data]]
+=== warn
+undefined variable: data at 1:16-1:20

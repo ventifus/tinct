@@ -1,3 +1,6 @@
 [call 42]
-=== out
+=== error
 [E010] type mismatch: expected Function
+
+=== warn
+expected function type, got 42 at 1:1-1:10

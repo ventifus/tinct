@@ -1,4 +1,7 @@
 # head: error on empty seq
 [head []]
-=== out
+=== error
 [E034] head on empty collection
+
+=== warn
+cannot unify Seq[?] with [] at 1:7-1:9

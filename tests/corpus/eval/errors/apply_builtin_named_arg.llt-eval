@@ -3,5 +3,8 @@
 # calls reject_named and produces E023 (NamedArgRejected).
 # Note: $+ is a Tinct wrapper function, not the raw builtin.
 [apply builtin-add [named: 1]]
-=== out
+=== error
 [E023]
+
+=== warn
+arity mismatch: expected 1 arguments, got 2 at 4:1-4:31

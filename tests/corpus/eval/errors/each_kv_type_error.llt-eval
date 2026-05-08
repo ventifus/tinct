@@ -1,4 +1,7 @@
 # each-kv: type error when called on Bool (expects Dict)
 [each-kv true]
-=== out
+=== error
 [E010] each-kv: expected Dict, got Bool
+
+=== warn
+undefined variable: each-kv at 1:2-1:9

@@ -325,3 +325,11 @@ add-warn-sections:
 # Clean up stale === warn sections in corpus test files
 cleanup-warn-sections:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --example cleanup_warn_sections
+
+# Migrate === out to === error in eval/errors/ corpus test files
+migrate-error-sections:
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --example migrate_error_sections
+
+# Add === warn sections to error files that produce type warnings
+add-warn-to-error-files:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --example add_warn_to_error_files

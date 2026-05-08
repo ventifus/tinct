@@ -5,3 +5,5 @@
 [0]]
 === out
 [a [0]]
+=== warn
+undefined variable: a at 3:2-3:3

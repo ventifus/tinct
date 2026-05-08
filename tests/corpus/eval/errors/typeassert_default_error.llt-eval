@@ -2,5 +2,5 @@
 # The default is evaluated when type mismatch occurs, and if the default
 # errors, that error propagates (not masked by type assertion failure)
 [@[type: Int  default: [error "deliberate error"]] "hello"]
-=== out
+=== error
 [E080] deliberate error

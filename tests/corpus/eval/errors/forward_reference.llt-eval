@@ -2,5 +2,8 @@
 # %undefined_section is not declared anywhere; accessing it in the
 # last (only) document forces materialisation → E002.
 %undefined_section.x
-=== out
+=== error
 [E002] undefined variable: %undefined_section
+
+=== warn
+undefined variable: %undefined_section at 3:1-3:19

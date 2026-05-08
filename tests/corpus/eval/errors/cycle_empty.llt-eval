@@ -1,4 +1,7 @@
 # cycle: error when called with empty collection
 [cycle []]
-=== out
+=== error
 [E034] cycle on empty collection
+
+=== warn
+cannot unify Seq[?] with [] at 1:8-1:10

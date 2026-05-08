@@ -4,5 +4,8 @@
 [data: [a: 1  b: 2]]
 
 data.missing
-=== out
+=== error
 [E001] key not found: missing (available keys: a, b)
+
+=== warn
+field 'missing' not found in [a: 1 b: 2] at 5:1-5:13
