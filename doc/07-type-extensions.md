@@ -27,7 +27,7 @@ Because the resolved type is part of the AST, it is captured naturally by `Uneva
 
 ```
 ────────────────────────────────── [VM-ANY]
-v ∈ Any
+v ∈ Unknown
 
 v = Int(n),  n = m
 ────────────────────────────────── [VM-INT-LIT]
@@ -102,13 +102,13 @@ data: [@[name: String age: Int] [from-json input]]
 |-----------------|-----------|------|-----------|
 | `Int`, `Float`, `Number`, `Str`, `Bool` | Exact | Immediate | Primitive — fully checkable |
 | `IntLiteral(n)`, `StringLiteral(s)` | Exact | Immediate | Singleton value comparison |
-| `Any` | Always passes | Immediate | Dynamic escape hatch |
+| `Unknown` | Always passes | Immediate | Gradual typing escape hatch |
 | `Record(fields, Closed)` | Shape + cardinality | Immediate | Keys present, no extras |
 | `Record(fields, Open)` | Shape only | Immediate | Required keys present |
 | `Record` field types | Per-field via guard | On access | Proxy contract — lazy |
 | `Fn(params → ret)` | Tag only — "is callable" | Immediate | Params/return opaque (Findler-style monitor would be needed for deep checking) |
 | `Seq(τ)` | Tag only — "is sequence" | Immediate | Element type opaque; forcing all would diverge |
-| `TypeVar(α)` | Always passes | Immediate | Residual from polymorphic instantiation; treated as `Any` |
+| `TypeVar(α)` | Always passes | Immediate | Residual from polymorphic instantiation; treated as `Unknown` |
 
 Note on type-level variables: `TypeVar(α)` and `RowVar(r)` are both "variables" but serve different purposes. A `TypeVar` in a field type position indicates unconstrained polymorphism — treated as `Any` at runtime. A `RowVar` in the row rest position indicates structural openness — treated as `Open` at runtime (allow extra fields). `TypeVar` values in `resolved_type` arise only from polymorphic type schemes where a variable was not constrained during inference. Unresolved type aliases produce a `TypeError` during elaboration — they never reach the evaluator as `TypeVar`.
 
@@ -150,7 +150,7 @@ If Γ ⊢ e ⇒ σ  and  σ <: τ  and  eval(e) = v  and  τ is deeply checkable
 then v ∈ τ.
 ```
 
-A type τ is *deeply checkable* when all constituents are fully observable at runtime: primitives, singleton literals, records (recursively), and `Any`. The invariant holds because `is_subtype` is more restrictive than `v ∈ τ` for these types.
+A type τ is *deeply checkable* when all constituents are fully observable at runtime: primitives, singleton literals, records (recursively), and `Unknown`. The invariant holds because `is_subtype` is more restrictive than `v ∈ τ` for these types.
 
 For *opaque* type constructors (`Fn`, `Seq`), the invariant degenerates to tag-level soundness: [VM-FN] and [VM-SEQ] perform only tag checks, so they accept values that `is_subtype` would reject (e.g., `Fn(Int→Int) ∈ Fn(String→String)` succeeds at runtime). The forward direction still holds: if `is_subtype(σ, τ)` passes statically, the tag check will certainly pass at runtime. But the converse does not — runtime tag success does not imply static subtyping.
 
@@ -188,12 +188,12 @@ For guard failures (detected on field access), the error includes the field path
 
 ## Dual-Dispatch Builtins
 
-**Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. The type checker assigns these builtins type `Any` because:
+**Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. The type checker assigns these builtins type `Unknown` because:
 
 1. Tinct has no union types — the precise input type `Dict | Seq` cannot be expressed
 2. Separate functions (`$map-dict`, `$map-seq`) would be verbose and break the polymorphic API
 3. Overloaded function types would require type system extensions (type classes or similar)
-4. `Any` is already used for other inherently dynamic operations (e.g., `$from-json`)
+4. `Unknown` is already used for other inherently dynamic operations (e.g., `$from-json`)
 
 Type assertions (`[@Type $expr]`) provide a runtime narrowing mechanism when concrete types are needed. With union types, `$try` can return a precise `[ok: τ] | [err: Str]` result, enabling static reasoning over the dual-dispatch return type.
 
@@ -210,7 +210,7 @@ Several builtins dispatch on their input type (Dict vs Seq), producing different
 | `$reduce` | Single value (accumulated over entries) | Single value (accumulated over elements) |
 | `$join` | String (concatenates values) | String (concatenates elements) |
 
-**Type system strategy: `Any` for all dual-dispatch builtins.** The type checker assigns type `Any` to these operations because:
+**Type system strategy: `Unknown` for all dual-dispatch builtins.** The type checker assigns type `Unknown` to these operations because:
 
 1. **No union types.** The precise input type would be `Dict | Seq`, which cannot be expressed without union types. There is no way to accurately represent "accepts either Dict or Seq."
 
@@ -218,7 +218,7 @@ Several builtins dispatch on their input type (Dict vs Seq), producing different
 
 3. **Overloaded function types require type system extensions.** True ad-hoc polymorphism (overloading) requires type classes or similar mechanisms — see §Expressiveness in §Type System Extension Roadmap.
 
-4. **`Any` is handled uniformly.** Builtins that cannot be precisely typed (e.g., `$from-json`) use `Any`, and type assertions (`[@Type $expr]`) provide a runtime narrowing mechanism.
+4. **`Unknown` is handled uniformly.** Builtins that cannot be precisely typed (e.g., `$from-json`) use `Unknown`, and type assertions (`[@Type $expr]`) provide a runtime narrowing mechanism.
 
 If the type system gains union types or type classes, dual-dispatch builtins can be typed more precisely — see §Expressiveness.
 
@@ -374,7 +374,7 @@ apply_type(τ, S):
   Record(r)       → Record(apply_row(r, S))
   Function(ps, r) → Function(map(apply_type, ps), apply_type(r, S))
   Seq(τ)          → Seq(apply_type(τ, S))
-  otherwise       → τ  (Int, Float, Str, Bool, Number, Any, literals)
+  otherwise       → τ  (Int, Float, Str, Bool, Number, Unknown, literals)
 
 apply_row(Row { fields, tail }, S):
   fields' = { l: apply_type(τ, S) for (l, τ) in fields }
@@ -611,7 +611,7 @@ pub struct TypeScheme {
 
 ### Part 5: Access Chain Constraint Generation
 
-With row variables bindable, access chains can generate constraints instead of falling back to `Any` (resolving the limitation documented in [Type Inference](06-type-inference.md) §Access Chain Evaluation Part 5).
+With row variables bindable, access chains can generate constraints instead of falling back to `Unknown` (resolving the limitation documented in [Type Inference](06-type-inference.md) §Access Chain Evaluation Part 5).
 
 ```
 check_dot_access(Γ, e, field) :
@@ -630,7 +630,7 @@ check_dot_access(Γ, e, field) :
                    let ρ = fresh_row_var()
                    unify(TypeVar(α), Record(Row { fields: {field: β}, tail: RowVar(ρ) }))
                    return β
-    Any         → Any
+    Unknown     → Unknown
     _           → ERROR: not a record
 ```
 
@@ -715,7 +715,7 @@ The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and ch
 
 **P4 — Occurs check termination.** The per-kind occurs check prevents infinite types (`α = Record({x: α})`) and infinite rows (`ρ = {x: Int, ...ρ}`). The row-variable occurs check traverses field types to prevent infinite structures through nesting (`ρ = {x: Record({y: Int, ...ρ})}`). Combined with the finite-depth property of tinct's AST, unification terminates.
 
-**P5 — Backward compatibility.** All currently well-typed programs remain well-typed. The migration changes internal representation but not the type language visible to users. Programs that previously inferred `Any` for row-polymorphic positions will now infer more precise types — this is strictly more informative, not breaking.
+**P5 — Backward compatibility.** All currently well-typed programs remain well-typed. The migration changes internal representation but not the type language visible to users. Programs that previously inferred `Unknown` for row-polymorphic positions will now infer more precise types — this is strictly more informative, not breaking.
 
 **P6 — Forward compatibility with full Rémy.** Adding presence/absence flags changes field map values from `Type` to `(FieldPresence, Type)`. The partitioning algorithm gains a presence-compatibility check (Present must match Present, Absent must match Absent), and field access must skip Absent fields. The overall structure (partition shared/unique, unify shared, bind tails) is preserved. See Part 1: Row Kind for the extension point.
 
@@ -733,8 +733,8 @@ The type system evolves across three areas. Each is independently useful and pro
 
 **Precision.** Register builtin type signatures, add Seq type inference, add error recovery for LSP.
 
-- `TypeEnv::with_builtins()` constructor pre-registering type signatures for all Rust-native builtins. Dual-dispatch builtins (`$map`, `$filter`, etc.) are typed as `Any` (matching §Dual-Dispatch Builtins above). Non-overloaded builtins get precise types (e.g., `$+ : Fn(Number, Number → Number)`, `$length : Fn(Any → Int)`).
-- Seq type inference for sequence-only builtins (`$seq`, `$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`, `$take`). Annotate return types in `check_call` so LSP hover shows `Seq(Int)` instead of `Any`. Dual-dispatch builtins (`$map`, `$filter` on Dict|Seq) remain typed as `Any` — precise typing requires type classes or union types (see §Expressiveness).
+- `TypeEnv::with_builtins()` constructor pre-registering type signatures for all Rust-native builtins. Dual-dispatch builtins (`$map`, `$filter`, etc.) are typed as `Unknown` (matching §Dual-Dispatch Builtins above). Non-overloaded builtins get precise types (e.g., `$+ : Fn(Number, Number → Number)`, `$length : Fn(Unknown → Int)`).
+- Seq type inference for sequence-only builtins (`$seq`, `$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`, `$take`). Annotate return types in `check_call` so LSP hover shows `Seq(Int)` instead of `Unknown`. Dual-dispatch builtins (`$map`, `$filter` on Dict|Seq) remain typed as `Unknown` — precise typing requires type classes or union types (see §Expressiveness).
 - `Type::Error` sentinel — a type that propagates silently through inference without generating additional errors. When a subexpression fails type checking, `Type::Error` prevents cascading errors (currently, a single type error can produce 5–10 follow-on errors from dependent expressions). Semantics: `unify(Error, τ) → S` unchanged (no binding, no error), `is_subtype(Error, _) = false`. `Type::Error` is recorded in the type map so LSP hover can show "error" rather than nothing. This is the standard approach used by GHC, Elm, and Rust.
 
 The Precision area does not change any inference rules or subtyping relationships. It extends the type environment and improves error reporting.
@@ -744,9 +744,9 @@ The Precision area does not change any inference rules or subtyping relationship
 - Named arg unification — extend `Type::Function` to carry param names: `Function { params: Vec<(Option<String>, Type)>, ret: Box<Type> }`. Named args are matched **positionally** (by index, matching current evaluation semantics where named args fill positional parameter slots). After positional unification, named args are unified against their corresponding param types. This resolves the "named args not type-checked" limitation.
 - Polymorphic recursion detection — forbid with a clear error message ("polymorphic recursion requires explicit type annotation"), rather than silently diverging during inference. Detection is immediate (depth 1): if a recursive call site instantiates a type variable that was bound by an outer call to the same function, report the error. No partial polymorphic recursion is allowed. This item assumes let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) is implemented — without let-polymorphism, every recursive call is monomorphic by definition and the detection is vacuous.
 - CALL-MONO/CALL-POLY divergence fix — the current dual-path design (unify for CALL-POLY, is_subtype for CALL-MONO) gives different verdicts for the same literal type pair depending on whether type variables are present (see [Type Inference](06-type-inference.md) §CALL-MONO/CALL-POLY literal type divergence). The structural recursive `check_expr` from the bidirectional typing design ([Type Inference](06-type-inference.md) §Bidirectional Typing) resolves this by applying [SUB] at leaves and unification only at actual type variable positions. Note: this is unrelated to function subtyping variance rules (contravariant parameters, covariant return), which are already correctly implemented in `src/types.rs:177-196`.
-- Formalize `Any` semantics (documentation only) — document the consistency relation that `Any` actually implements, distinguishing it from true subtyping. Define what the Gradual Guarantee means for tinct. Identify blame boundaries (TypeAssert, builtin return types, function annotations). See `doc/whatif/gradual-typing.md` for the full analysis.
+- Formalize `Unknown` semantics (documentation only) — document the consistency relation that `Unknown` actually implements, distinguishing it from true subtyping. Define what the Gradual Guarantee means for tinct. Identify blame boundaries (TypeAssert, builtin return types, function annotations). See `doc/whatif/gradual-typing.md` for the full analysis.
 
-Completeness's named arg unification depends on Precision (builtin type signatures must exist before named args can be checked against them). Other Completeness items (polymorphic recursion detection, CALL-MONO/CALL-POLY divergence fix, `Any` formalization) may proceed in parallel with Precision.
+Completeness's named arg unification depends on Precision (builtin type signatures must exist before named args can be checked against them). Other Completeness items (polymorphic recursion detection, CALL-MONO/CALL-POLY divergence fix, `Unknown` formalization) may proceed in parallel with Precision.
 
 **Relationship to other work.** The §Row-Variable Unification and let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) are separate infrastructure areas, not part of this roadmap. Completeness's polymorphic recursion detection assumes let-generalization is implemented. Row variable binding is complete as of row-unification-e.
 
@@ -754,8 +754,8 @@ Completeness's named arg unification depends on Precision (builtin type signatur
 
 | Feature | Condition | Analysis |
 |---------|-----------|----------|
-| Gradual typing formalization | `Any`-as-top-and-bottom causes a soundness bug that affects users | `doc/whatif/gradual-typing.md` |
+| Gradual typing formalization | `Unknown`-as-top-and-bottom causes a soundness bug that affects users | `doc/whatif/gradual-typing.md` |
 | Type classes | User-defined types need to participate in builtin protocols (Eq, Ord, Num) — see `doc/whatif/typeclasses.md` for the accepted design | `doc/whatif/typeclasses.md` |
-| Union types | `Any` typing for dual-dispatch builtins causes false positives in practice | `doc/whatif/union-types.md` |
+| Union types | `Unknown` typing for dual-dispatch builtins causes false positives in practice | `doc/whatif/union-types.md` |
 
 Expressiveness features are independent of each other — any can be adopted without the others. The `doc/whatif/` files analyze what each adoption would require, what it would gain and lose, and recommend an implementation approach.

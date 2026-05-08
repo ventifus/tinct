@@ -39,10 +39,12 @@ are still unevaluated. Sequential extracts those ThunkIds and inserts them into 
    within bound values. Formally sound: Sequential is `let*` (no mutual recursion), not letrec;
    strict `let*` is well-established (Schmidt-Schauss & Sabel 2015). (`src/eval.rs`)
 
-2. **Raise `MAX_EVAL_DEPTH` from 256 to 1024**: Option A forces at depth ~5; the TOML parser needs
-   ~900 levels, so 512 is insufficient. At 1024 and ~400 bytes/frame, Rust stack usage is ~400 KB
-   against a 64 MB available stack — zero risk. Also addresses `depth-limit-toml` for most
-   practical call depths. (`src/eval.rs:21`)
+2. **Remove `MAX_EVAL_DEPTH` entirely**: the depth limit is an LLT-level design choice, not a Rust
+   stack safety requirement (CEK machine is heap-based). Resource bounding is handled by
+   `--max-memory` and `--timeout`. Informative errors for infinite recursion are covered by cycle
+   detection (InProgress blackholing). The `depth` parameter may be retained for error span
+   context but the depth CHECK is removed from `eval()`, `materialize()`, and `deep_materialize()`.
+   Also resolves `depth-limit-toml` entirely. The `depth: usize` parameter is removed from all evaluation functions. (`src/eval.rs`, `src/eval_materialize.rs`)
 
 3. **Add `[force expr]` builtin**: thin complement for user-controlled forcing in fn-body Sequential
    where strict bindings may be unwanted. One line of Rust + `Strictness::Seq`. (`src/builtins.rs`,
@@ -52,19 +54,13 @@ are still unevaluated. Sequential extracts those ThunkIds and inserts them into 
    `Unevaluated`/`PendingBuiltin` arms (not before the state check) so already-materialized thunks
    return at O(1) depth regardless of call depth. Separate but related improvement. (`src/eval.rs`)
 
-**Note**: The CEK machine migration is complete (sprints a, b1-b5, d all done). MAX_EVAL_DEPTH is the LLT-level depth counter enforced inside the iterative `run()` loop — it is a design choice (informative errors vs cryptic crashes), not a Rust-stack artifact. Raising it is low-risk; eliminating it entirely would require a design decision to drop the user-visible depth limit.
+**Note**: The CEK machine migration is complete (sprints a, b1-b5, d all done). MAX_EVAL_DEPTH is being removed entirely in the `sequential-strict` sprint — resource bounding is handled by `--max-memory`/`--timeout`; cycle detection handles infinite recursion.
 
-### `depth-limit-toml`: `parse-toml-lite` exceeds depth on large TOML files
+### ~~`depth-limit-toml`: `parse-toml-lite` exceeds depth on large TOML files~~ (RESOLVED)
 
-The recursive tinct parser in `stdlib/toml-lite.llt` uses ~15 depth levels per
-TOML line (via `parse-lines-impl` → `parse-line-dispatch` → `parse-key-value` →
-`parse-value-try-int` → `try-or` → `try`). On a Cargo.toml with 60 non-blank
-lines, it requires ~900 depth levels.
-
-With `sequential-lazy` fix #2 above (MAX_EVAL_DEPTH=1024), the TOML parser fits when
-called from depth ≤124. For deeper call sites or larger TOML files, a permanent fix is
-still needed: (b) rewrite using `builtin-reduce` (Rust-level iteration resets depth per
-iteration) or (c) add a `parse-toml-lite-iter` builtin that processes line-by-line in Rust.
+Resolved by removing `MAX_EVAL_DEPTH` in the `sequential-strict` sprint. The recursive
+tinct parser in `stdlib/toml-lite.llt` required ~900 depth levels for a 60-line TOML file;
+without a depth limit this is no longer a concern.
 
 ---
 
@@ -87,26 +83,11 @@ quantification over field labels (∀f. {f: T}), which is outside BAS's
 scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
 (lib-regex.md) are the concrete cases that remain untyped.
 
-**Questions for the research phase:**
-
-- [ ] Survey how comparable languages type parameterized maps: Haskell
-  `Map k v`, TypeScript `Record<K, V>`, Nickel's contract-based approach,
-  CUE's structural constraints (`{[string]: int}`). Which model fits
-  tinct's use cases?
-- [ ] Can BAS accommodate a `Dict[K V]` constructor as a primitive
-  type constructor (not derived from records)? What interaction does
-  `Dict[K V]` have with union/intersection (`Dict[Int Str] | Dict[Str Int]`)?
-- [ ] Is `Dict[K V]` the right primitive, or should tinct distinguish
-  between structural records (field names known statically) and dynamic
-  maps (keys are runtime values)? The current `Dict` conflates both.
-- [ ] Identify all stdlib functions whose type signatures benefit from
-  `Dict[K V]`: `transitions` in regex NFA, `groups` in NFA, the `stat`
-  return dict, `tls-peer-cert` result, `list-dir` entry dict.
-- [ ] Write a `doc/whatif/parameterized-dict.md` proposal.
-
-**Depends on:** BAS adoption (`doc/whatif/boolean-algebraic-subtyping.md`),
-since the interaction between `Dict[K V]` and union/intersection types
-requires the full BAS constraint solver to be sound.
+- [x] Survey comparable languages — Nickel `{_: Type}`, TypeScript index signatures, Haskell `Map k v`; see `doc/whatif/parameterized-dict.md` §References
+- [x] Can BAS accommodate `Dict[K V]`? — BAS is only needed for union/intersection *over* map types (Phase 3); annotation and inference are BAS-independent
+- [x] Record vs Map split — yes; `Dict: [type [Record Map]]` is the right model; see `doc/whatif/parameterized-dict.md` §Design
+- [x] Stdlib functions that benefit — `transitions` and `groups` in regex NFA are the primary cases; `stat`/`tls-peer-cert`/`list-dir` are structural Records, not Maps
+- [x] Write proposal — see `doc/whatif/parameterized-dict.md`
 
 ## Evaluation
 
@@ -115,7 +96,7 @@ requires the full BAS constraint solver to be sound.
 Fixes the `sequential-lazy` and partially fixes `depth-limit-toml` Known Bugs.
 See Known Bugs section for root cause analysis and panel review findings.
 
-- [ ] Raise `MAX_EVAL_DEPTH` from 256 to 1024 (`src/eval.rs:21`) — zero risk; ~400KB Rust stack at 1024 depth vs 64MB available
+- [ ] Remove `MAX_EVAL_DEPTH` constant, all three depth checks, and the `depth: usize` parameter from `eval()`, `materialize()`, and `deep_materialize()` — update all call sites; remove `EvalError::depth_exceeded` error path; resource bounding via `--max-memory`/`--timeout`; cycle detection (InProgress blackholing) handles self-referential thunks (`src/eval.rs`, `src/eval_materialize.rs`)
 - [ ] In `Expr::Sequential` loop (`src/eval.rs:667-673`): after extracting `(Key::String(name), val_thunk_id)`, call `materialize(ctx.get_thunk(val_thunk_id), Some(&seq_expr.span), ctx, depth + 1)?` and insert `Rc::new(Thunk::new_materialized(forced_value, seq_expr.span))` into `child_env` instead of the unevaluated thunk; apply only to `Key::String` entries (named bindings); integer-keyed entries remain lazy (`src/eval.rs`)
 - [ ] Same change in `eval_document` (`src/eval_pipeline.rs:149`): force string-keyed binding values eagerly at document-level Sequential step time (`src/eval_pipeline.rs`)
 - [ ] Move depth check in `materialize` inside the `Unevaluated`/`PendingBuiltin` match arms so already-`Materialized` thunks return at O(1) depth without a depth check (`src/eval.rs`)
@@ -123,3 +104,5 @@ See Known Bugs section for root cause analysis and panel review findings.
 - [ ] Update `doc/09-documents.md` §[SEQ-SCOPE] (line 292): change "values remain lazy" to document strict-binding semantics; note WHNF-only (not deep), dead-but-erroring bindings now fail eagerly (`doc/09-documents.md`)
 - [ ] Corpus tests: verify binding that previously errored lazily (unused) now errors eagerly; verify heavy computation forced at step depth not demand depth; verify `[force expr]` forces its argument (`tests/corpus/eval/`)
 - [ ] Remove stale `TODO(iterative-eval)` comments left in `src/eval.rs` after the completed CEK migration (lines 698, 764, 1363, 8870) — the migration is fully done (sprints a, b1-b5, d all in DONE.md); these comments are dead documentation debt (`src/eval.rs`)
+
+## Codebase Health

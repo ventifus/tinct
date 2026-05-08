@@ -1,0 +1,5 @@
+# Interpolated string with multiple variables in single expression
+[a: "foo" b: "bar"]
+i"$a and $b"
+=== out
+String("foo and bar")

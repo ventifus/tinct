@@ -2,6 +2,20 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## `health-c191`: Codebase Health Findings (Cycle #191)
+
+- [x] **[Critical]** Fix `rename_single_type_var` missing Union/Intersection traversal: add Union/Intersection arms to the rename function (`src/type_env.rs:117-141`)
+- [x] **[Major]** Update doc/06-type-inference.md and doc/07-type-extensions.md: replace all `Any` references with `Unknown`/`Top` (`doc/06-type-inference.md`, `doc/07-type-extensions.md`)
+- [x] **[Major]** Document `match`, `class`, `instance` special forms in doc/02-syntax.md §3.3 (`doc/02-syntax.md`)
+- [x] **[Major]** Add missing AST node documentation to doc/15-ast.md §Node Semantics table (`doc/15-ast.md`)
+- [x] **[Major]** Verify LSP desugar ordering in `DocumentState::new` (`src/lsp/document.rs`)
+- [x] **[Major]** Add secondary_span check to `attach_provenance` closure (`src/lib.rs:155-179`)
+- [x] **[Minor]** Fix `least_upper_bound` hardcoded `"_lub"` row variable (`src/typecheck.rs:1214-1217`)
+- [x] **[Minor]** Move unify_rows collection allocations inside else block — analyzed: current structure is optimal, allocations needed by second fast-path (`src/type_unify.rs:943-959`)
+- [x] **[Minor]** Update doc/11-stdlib.md: add `first`/`last` and Sequence Constructors (`doc/11-stdlib.md`)
+- [x] **[Minor]** Add interpolated string corpus tests (`tests/corpus/`)
+- [x] **[Minor]** Fix doc/02-syntax.md colon_ahead rule description (`doc/02-syntax.md:497`)
+
 ## `typecheck-cap-awareness`: Type Checker Cap & Include Awareness
 
 Three type checker gaps closed: (1) cap-qualified include resolution — `find_libdir_path()` extracted to `src/lib.rs`, `collect_include_paths_from_expr` handles 2-arg `[include %libdir "path"]` form, `resolve_includes` accepts `libdir: Option<&Path>`, 1-arg bare `[include "path"]` removed with warning suggesting cap-qualified form; (2) TypeEnv seeded with always-injected cap types (`%pwd: DirCap`, `%libdir: DirCap`, `%stdin: Handle`) before include resolution; `DirCap`/`NetCap` confirmed registered in `TypeEnv::with_builtins()`; (3) `caps:` pragma on `---` document header — AST `Document.caps` field, parser dispatch for `caps:` key (dict of `%name: @Type` entries), type checker extends TypeEnv with declared caps before body type-checking, runtime validates declared caps present in root env with structured error messages including CLI flag suggestions (`--cap-net`/`--cap-fs`), special-case auto-injected caps (`%pwd`, `%libdir`, `%stdin`). `samples/versions.llt` updated with `--- caps: [%nc: @NetCap]` header. Corpus tests for single/mixed cap declarations, missing cap errors with CLI flag suggestions.

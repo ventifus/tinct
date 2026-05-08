@@ -1111,6 +1111,16 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 | `conj` | `(Dict a -> a -> Dict a)` | `fn@Dict [xs@Dict x]` |
 | `reindex` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
 
+### Sequence Constructors
+
+| Function | Type signature | Notes |
+|----------|---------------|-------|
+| `range` | `(Int -> Seq Int)` or `(Int -> Int -> Seq Int)` | `fn [start]` (infinite) or `fn [start end]` (finite, end exclusive) |
+| `repeat` | `(a -> Seq a)` | `fn [val]` — infinite Seq of copies of val; use `[take n [repeat val]]` for finite |
+| `cycle` | `(Dict a -> Seq a)` | `fn [xs]` — infinite Seq cycling through dict entries; use `[take n [cycle xs]]` for finite |
+| `iterate` | `((a -> a) -> a -> Seq a)` | `fn [f x]` — infinite seq: x, f(x), f(f(x)), ... |
+| `unfold` | `((b -> [value: a  state: b]) -> b -> Seq a)` | `fn [step seed]` — Seq from step function; step returns `[value state]` or `[]` to stop |
+
 ### Collection Operations
 
 | Function | Type signature | Notes |
