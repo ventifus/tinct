@@ -1215,21 +1215,19 @@ fn include_with_dircap() {
     // Create a helper file in the test directory
     fs::write(dir.path().join("data.llt"), "[value: 42]").unwrap();
 
-    // Main file uses dir-cap to create a capability, then includes via that cap.
+    // Main file uses `cap` (injected via --cap-fs) for include.
     // Use a scope chain to avoid serializing the DirCap itself.
-    let main_src = format!(
-        r#"[dir-cap "{}"]
+    let main_src = r#"cap
 ---
-[include % "data.llt"]"#,
-        dir.path().display()
-    );
-    fs::write(dir.path().join("main.llt"), &main_src).unwrap();
+[include % "data.llt"]"#;
+    fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
     let output = Command::new(tinct_bin())
         .args([
             "run",
             "-o",
             "json",
+            &format!("--cap-fs=cap={}", dir.path().display()),
             dir.path().join("main.llt").to_str().unwrap(),
         ])
         .output()
@@ -1258,13 +1256,12 @@ fn include_with_dircap_and_hash() {
     let hash = blake3::hash(content.as_bytes());
     let hash_hex = hash.to_hex();
 
-    // Main file uses dir-cap and includes with hash verification.
+    // Main file uses cap (injected via --cap-fs) for include with hash verification.
     // Use a scope chain to avoid serializing the DirCap itself.
     let main_src = format!(
-        r#"[dir-cap "{}"]
+        r#"cap
 ---
 [include % "data.llt" "blake3:{}"]"#,
-        dir.path().display(),
         hash_hex
     );
     fs::write(dir.path().join("main.llt"), &main_src).unwrap();
@@ -1274,6 +1271,7 @@ fn include_with_dircap_and_hash() {
             "run",
             "-o",
             "json",
+            &format!("--cap-fs=cap={}", dir.path().display()),
             dir.path().join("main.llt").to_str().unwrap(),
         ])
         .output()
@@ -2080,20 +2078,22 @@ fn revocable_and_revoke() {
     let test_file = dir.path().join("data.txt");
     fs::write(&test_file, "test content").expect("failed to write test file");
 
-    let llt_content = format!(
-        r#"
-[cap: [dir-cap "{}"]]
+    let llt_content = r#"
 [revocable-cap: [revocable cap]]
 [fh: [open revocable-cap "data.txt" "r"]]
 [content: [slurp fh]]
 [_ : [revoke-cap revocable-cap]]
 content
-"#,
-        dir.path().display()
-    );
-    let (path, _llt_dir) = write_temp_llt("revocable_revoke", &llt_content);
+"#;
+    let (path, _llt_dir) = write_temp_llt("revocable_revoke", llt_content);
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args([
+            "run",
+            "-o",
+            "json",
+            &format!("--cap-fs=cap={}", dir.path().display()),
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 
@@ -2114,17 +2114,19 @@ fn lines_basic() {
     let test_file = dir.path().join("lines.txt");
     fs::write(&test_file, "line1\nline2\nline3\n").expect("failed to write test file");
 
-    let llt_content = format!(
-        r#"
-[cap: [dir-cap "{}"]]
+    let llt_content = r#"
 [fh: [open cap "lines.txt" "r"]]
 [collect [take 2 [lines fh]]]
-"#,
-        dir.path().display()
-    );
-    let (path, _llt_dir) = write_temp_llt("lines_basic", &llt_content);
+"#;
+    let (path, _llt_dir) = write_temp_llt("lines_basic", llt_content);
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args([
+            "run",
+            "-o",
+            "json",
+            &format!("--cap-fs=cap={}", dir.path().display()),
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 
@@ -2144,18 +2146,20 @@ fn write_basic() {
     let dir = TempDir::new("write_test");
     let test_file_path = dir.path().join("output.txt");
 
-    let llt_content = format!(
-        r#"
-[cap: [dir-cap "{}"]]
+    let llt_content = r#"
 [write cap "output.txt" "hello world"]
 [fh: [open cap "output.txt" "r"]]
 [slurp fh]
-"#,
-        dir.path().display()
-    );
-    let (path, _llt_dir) = write_temp_llt("write_basic", &llt_content);
+"#;
+    let (path, _llt_dir) = write_temp_llt("write_basic", llt_content);
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args([
+            "run",
+            "-o",
+            "json",
+            &format!("--cap-fs=cap={}", dir.path().display()),
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 
@@ -2179,18 +2183,20 @@ fn write_atomic_basic() {
     let dir = TempDir::new("write_atomic_test");
     let test_file_path = dir.path().join("output.txt");
 
-    let llt_content = format!(
-        r#"
-[cap: [dir-cap "{}"]]
+    let llt_content = r#"
 [write-atomic cap "output.txt" "atomic content"]
 [fh: [open cap "output.txt" "r"]]
 [slurp fh]
-"#,
-        dir.path().display()
-    );
-    let (path, _llt_dir) = write_temp_llt("write_atomic_basic", &llt_content);
+"#;
+    let (path, _llt_dir) = write_temp_llt("write_atomic_basic", llt_content);
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args([
+            "run",
+            "-o",
+            "json",
+            &format!("--cap-fs=cap={}", dir.path().display()),
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 
@@ -2221,18 +2227,20 @@ fn write_and_slurp_roundtrip() {
     // Test write + slurp roundtrip via stdlib/io.llt wrappers
     let dir = TempDir::new("write_roundtrip_test");
 
-    let llt_content = format!(
-        r#"
+    let llt_content = r#"
 [include libdir "io.llt"]
-[cap: [dir-cap "{}"]]
 [write-file cap "test.txt" "roundtrip data"]
 [read-file cap "test.txt"]
-"#,
-        dir.path().display()
-    );
-    let (path, _llt_dir) = write_temp_llt("write_roundtrip", &llt_content);
+"#;
+    let (path, _llt_dir) = write_temp_llt("write_roundtrip", llt_content);
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args([
+            "run",
+            "-o",
+            "json",
+            &format!("--cap-fs=cap={}", dir.path().display()),
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 

@@ -1,8 +1,18 @@
 # versions.llt — check Rust toolchain and dependency versions
-# Run from project root: RUST_VERSION=<pinned> tinct run samples/versions.llt
+# Run from project root:
+#   RUST_VERSION=<pinned> tinct run \
+#     --cap-net nc=static.rust-lang.org:443 \
+#     --cap-net nc=crates.io:443 \
+#     samples/versions.llt
+#
+# pwd   — CWD DirCap, injected at startup
+# nc    — NetCap injected via --cap-net nc=...
+# libdir — stdlib DirCap, injected at startup
+
+[include libdir "strings.llt"]
 
 [emit
-  [call [fn [root nc]
+  [call [fn []
 
     # Strip HTTP response headers.
     [http-body: [fn [raw]
@@ -10,6 +20,7 @@
       [builtin-if [builtin-lt [length parts] 2] "" [get 1 parts]]]]
 
     # HTTPS GET — returns body string, or "" on any failure.
+    # Uses nc (NetCap) from closure.
     [https-get: [fn [host port path]
       [r: [try [fn []
         [bytes-str [slurp [write-handle
@@ -20,9 +31,10 @@
         [http-body r.ok]
         ""]]]
 
+    # Uses pwd (DirCap) from closure.
     [rust-version:    [env "RUST_VERSION"]]
-    [cargo-toml-text: [slurp [open root "Cargo.toml" "r"]]]
-    [cargo-lock-text: [slurp [open root "Cargo.lock" "r"]]]
+    [cargo-toml-text: [slurp [open pwd "Cargo.toml" "r"]]]
+    [cargo-lock-text: [slurp [open pwd "Cargo.lock" "r"]]]
 
     # Latest Rust version — scan channel TOML for the version line in [pkg.rust].
     [rust-toml-raw: [https-get "static.rust-lang.org" 443
@@ -111,7 +123,4 @@
         "  " [pad-right "──────────" 12 " "]
         "  " [pad-right "──────────" 12 " "] "\n"
       [join "" [map dep-row dep-names]]
-      "\n"]]
-
-  [dir-cap "."]
-  [net-cap ["static.rust-lang.org:443" "crates.io:443"]]]]
+      "\n"]]]]

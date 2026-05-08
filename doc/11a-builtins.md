@@ -628,7 +628,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 92 Rust-native builtins + 12 stable aliases = 104 registered names. (Network section adds 15 builtins: connect, tls-connect, tls-peer-cert, cap-data, has-cap?, http-connect, http-get, fetch, socks5-connect, proxy-connect, uri, url, urn, uri-params, uri-origin, uri->string — minus connect and net-cap which were already counted in I/O.)
+**Total:** 90 Rust-native builtins + 12 stable aliases = 102 registered names. (dir-cap and net-cap were removed in the cap-remove-ambient sprint — caps now flow exclusively from CLI injection or runtime env.)
 
 **By category:**
 - Arithmetic: 4 (+, -, *, /)
@@ -642,7 +642,7 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 - Evaluation: 5 (eval, error, try, apply, until)
 - Type introspection: 10 (type-of, int?, float?, num?, str?, bool?, null?, dict?, fn?, seq?)
 - Schema validation: 1 (validate)
-- I/O: 15 (emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, net-cap, connect, lines, write, write-atomic, from-json, include)
+- I/O: 13 (emit, env, open, slurp, narrow, revocable, revoke-cap, connect, lines, write, write-atomic, from-json, include)
 - Network: 13 (tls-connect, tls-peer-cert, cap-data, has-cap?, http-connect, http-get, fetch, socks5-connect, proxy-connect, uri, url, urn, uri-params, uri-origin, uri->string)
 - Sequences: 16 (seq, head, tail, collect, range, repeat, cycle, iterate, unfold, map, filter, take, drop, reduce, join, concat)
 - List operations: 4 (rest, cons, reverse, sort)

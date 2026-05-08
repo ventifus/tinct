@@ -1,18 +1,9 @@
-# Test that stdlib modules (strings, math, encoding) are loaded at startup
-# without requiring explicit include statements
+# Test that only prelude is loaded at startup; strings/math/encoding require explicit include.
+# Verify prelude functions (not, identity) work without any include.
 
 [
-  # strings module
-  pad-test: [pad-left "hi" 5 " "]
-  reverse-test: [str-reverse "hello"]
-
-  # math module
-  pi-test: pi
-  hypot-test: [hypot 3 4]
-
-  # encoding module
-  hex-test: [hex-encode "A"]
-  base64-test: [base64-encode "a"]
+  not-test: [not false]
+  id-test: [identity 42]
 ]
 === out
-Dict({"pad-test": String("   hi"), "reverse-test": String("olleh"), "pi-test": Float(3.141592653589793), "hypot-test": Float(5), "hex-test": String("41"), "base64-test": String("YQ==")})
+Dict({"not-test": Bool(true), "id-test": Int(42)})

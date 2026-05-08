@@ -1,3 +1,5 @@
-[builtin-get "type" [call $stat [dir-cap "."] "Cargo.toml"]]
+[builtin-get "type" [call $stat pwd "Cargo.toml"]]
 ---
 "file"
+=== warn
+undefined variable: pwd

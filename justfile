@@ -182,7 +182,7 @@ version:
 # Reads Cargo.lock for locked versions; queries crates.io and rust-lang.org via HTTPS.
 # Runs on host (no container overhead) — requires tinct in PATH (just install).
 versions:
-    RUST_VERSION={{rust_version}} tinct run samples/versions.llt
+    RUST_VERSION={{rust_version}} tinct run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
 
 # Build documentation
 doc:

@@ -131,11 +131,11 @@ pub enum Type {
     /// absorption), so parent expressions can continue inference without spurious downstream
     /// errors. `is_subtype(Error, _)` returns false; Error is not a subtype of anything.
     Error,
-    /// Directory capability — wraps cap_std::fs::Dir. Created by `dir-cap` builtin or
-    /// injected via CLI --cap-fs. Represents authority to access a specific directory tree.
+    /// Directory capability — wraps cap_std::fs::Dir. Injected via CLI --cap-fs or
+    /// runtime env (pwd, libdir). Represents authority to access a specific directory tree.
     DirCap,
-    /// Network capability — wraps host allowlist. Created by `net-cap` builtin or injected
-    /// via CLI --cap-net. Represents authority to connect to specific network hosts.
+    /// Network capability — wraps host allowlist. Injected via CLI --cap-net.
+    /// Represents authority to connect to specific network hosts.
     NetCap,
     /// File/stream handle — wraps Box<dyn BufRead>. Created by `open` or `connect`.
     /// Represents authority to read/write a specific open resource.

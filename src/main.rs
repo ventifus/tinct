@@ -673,8 +673,15 @@ fn find_libdir_path() -> Option<std::path::PathBuf> {
 }
 
 /// Parse a CLI NetCap entry (from --cap-net NAME=ENTRY).
+///
+/// Special value: `any` creates an unrestricted NetCap that allows all hosts/ports.
+/// This is the CLI equivalent of a wildcard allowlist, intended for trusted scripts.
 fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
     use tinct::NetCapEntry;
+
+    if s == "any" {
+        return Ok(NetCapEntry::Any);
+    }
 
     if let Some((host, port_str)) = s.split_once(':') {
         // host:port format
@@ -1010,7 +1017,7 @@ fn run_eval(
             }
             let entry_str = entry_str.trim();
 
-            // Parse the entry using the same logic as builtin_net_cap
+            // Parse the entry using parse_cli_net_cap_entry
             let entry = parse_cli_net_cap_entry(entry_str)?;
             net_caps.entry(name.to_string()).or_default().push(entry);
         }

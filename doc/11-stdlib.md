@@ -239,7 +239,7 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 **Loading mechanism:**
 
-The Tinct stdlib lives in `stdlib/prelude.llt`, bundled at compile time via `include_str!`. At startup:
+Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
 
 1. Create root environment with Rust-native builtins (primary names + stable aliases)
 2. Parse and evaluate `prelude.llt` with root environment as parent — adds wrappers and derived functions
@@ -252,6 +252,27 @@ Rust primitives (builtin-lt, builtin-eq, builtin-add, builtin-if, builtin-filter
               └── User predicates and programs
 ```
 
+**Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
+
+| Module | Functions provided | When to include |
+|--------|-------------------|-----------------|
+| `strings.llt` | `pad-left`, `pad-right`, `str-find`, `str-reverse`, `str-repeat` | String formatting, padding, search |
+| `math.llt` | `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` | Math constants, derived trig/log functions |
+| `encoding.llt` | `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` | Binary encoding/decoding |
+| `datetime.llt` | `parse-timestamp`, `format-timestamp`, `timestamp-add`, etc. | Date/time formatting |
+| `regex.llt` | `regex-match`, `regex-find-all`, `regex-replace` | Pattern matching |
+| `path.llt` | `basename`, `dirname`, `path-join`, `path-ext` | File path manipulation |
+| `io.llt` | `write-line`, `write-file`, `write-file-atomic`, `read-file` | File I/O helpers |
+| `net.llt` | `http-get`, `fetch`, `uri-params`, `uri-origin`, `uri->string` | HTTP client utilities |
+| `toml-lite.llt` | `parse-toml-lite` | Subset TOML parser |
+| `in/json.llt` | JSON pipeline input (stdin → parsed dict) | Pipeline input stage |
+| `out/json.llt` | `json` | JSON output formatting |
+| `stdlib/out/yaml.llt` | `yaml` | YAML output formatting |
+| `stdlib/out/csv.llt` | `csv` | CSV output formatting |
+| `stdlib/out/toml.llt` | `toml` | TOML output formatting |
+
+Note: the Rust builtins in each domain (e.g., `starts-with?`, `pow`, `band`, `uri`) are always available without any include — only the pure-tinct helper functions require an explicit include.
+
 ## Stdlib Function Reference
 
 **Architecture:** 191 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 12 shadowable wrappers). Of the 191 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv` is a pure LLT implementation in `prelude.llt` built on `builtin-reduce` — it is shadowable via `$include` like other prelude functions, but has no `builtin-collect-kv` alias.
@@ -262,9 +283,9 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
 - **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
-- **Extended strings** (`starts-with?`, `ends-with?`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-length`, `str-slice`, `str-contains?`, `str-chars` as Rust builtins; `pad-left`, `pad-right`, `str-find`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching, padding, character/byte operations; stdlib helpers auto-loaded at startup
-- **Extended math** (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?` as Rust builtins; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` in `stdlib/math.llt`) — trigonometric, exponential, and logarithmic functions; NaN/infinity checks; constants auto-loaded at startup
-- **Bitwise & Encoding** (`band`, `bor`, `bxor`, `shl`, `shr` as Rust builtins; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives and binary encoding; auto-loaded at startup
+- **Extended strings** (`starts-with?`, `ends-with?`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-length`, `str-slice`, `str-contains?`, `str-chars` as Rust builtins; `pad-left`, `pad-right`, `str-find`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching, padding, character/byte operations; pure-tinct helpers require `[include libdir "strings.llt"]`
+- **Extended math** (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?` as Rust builtins; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` in `stdlib/math.llt`) — trigonometric, exponential, and logarithmic functions; NaN/infinity checks; constants and derived functions require `[include libdir "math.llt"]`
+- **Bitwise & Encoding** (`band`, `bor`, `bxor`, `shl`, `shr` as Rust builtins; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives and binary encoding; pure-tinct encoding functions require `[include libdir "encoding.llt"]`
 - **Bytes** (`bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?` as Rust builtins) — byte buffer operations with constant-time equality for cryptographic use
 - **Datetime** (`parse-timestamp`, `format-timestamp`, `timestamp-to-unix`, `unix-to-timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp-lt`, `timestamp-gt`, `timestamp-eq`, `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts`, `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration-to-seconds`, `duration-to-nanos`, `load-tz`, `timestamp-in-tz`, `local-to-timestamp`, `local-tz-name` as Rust builtins) — RFC 3339 timestamp parsing/formatting, Unix epoch conversion, arithmetic, timezone handling
 - **URI & HTTP** (`uri`, `url`, `urn`, `uri-params`, `uri-origin`, `uri->string` as Rust builtins; `http-get`, `fetch` in `stdlib/net.llt`) — RFC 3986/8141 URI parsing; HTTP client operations via reqwest

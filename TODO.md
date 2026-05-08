@@ -6,13 +6,9 @@ See DONE.md for the full history of completed sprints.
 
 ## Known Bugs
 
-### `cap-ambient`: `dir-cap` and `net-cap` create authority from thin air
+### ~~`cap-ambient`: `dir-cap` and `net-cap` create authority from thin air~~ (FIXED)
 
-`dir-cap "."` and `net-cap [...]` are user-callable builtins that construct new capabilities using `cap_std::ambient_authority()`. This breaks the object-capability model: every cap must narrow an existing cap — programs should not be able to conjure new authority.
-
-The correct model: all caps flow in from the CLI (`--cap-fs NAME=PATH`, `--cap-net NAME=ENTRY`) or are runtime-injected (`pwd`, `libdir`). `dir-cap` and `net-cap` are removed entirely. Fix tracked in `cap-remove-ambient`.
-
-Workaround until fixed: replace `[dir-cap "."]` with `pwd`; replace `[net-cap [...]]` with a `--cap-net`-injected variable.
+Fixed in sprint `cap-remove-ambient`: `dir-cap` and `net-cap` are removed entirely. All caps now flow from CLI (`--cap-fs`, `--cap-net`) or runtime injection (`pwd`, `libdir`).
 
 ### `iife-parse`: `[[fn ...] args]` parsed as Dict, not Call
 
@@ -255,27 +251,42 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 
 Only `stdlib/prelude.llt` should be loaded at startup. `stdlib/strings.llt`, `stdlib/math.llt`, and `stdlib/encoding.llt` must be loaded explicitly via `[include libdir "module.llt"]`. The `libdir` DirCap is already injected at startup (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds). See `doc/11-stdlib.md` §Loading mechanism and §Optional stdlib modules.
 
-- [ ] Remove `strings_source`, `math_source`, `encoding_source` loads from `create_stdlib_env()`: delete the three `include_str!` + `load_stdlib_module` call pairs for strings, math, and encoding (`src/builtins.rs`)
-- [ ] Audit corpus tests for implicit use of `pad-left`/`pad-right`/`str-find`/`str-reverse` (from `strings.llt`); add `[include libdir "strings.llt"]` where needed (`tests/corpus/`)
-- [ ] Audit corpus tests for implicit use of `pi`/`e`/`phi`/`hypot`/`deg->rad`/`rad->deg`/`log-base` (from `math.llt`); add `[include libdir "math.llt"]` where needed (`tests/corpus/`)
-- [ ] Audit corpus tests for implicit use of `hex-encode`/`hex-decode`/`base64-encode`/`base64-decode`/`mask-apply` (from `encoding.llt`); add `[include libdir "encoding.llt"]` where needed (`tests/corpus/`)
-- [ ] Update `samples/versions.llt`: add `[include libdir "strings.llt"]` (uses `pad-right`); replace `[dir-cap "."]` with `pwd` (already injected); remove `[net-cap [...]]` and accept `nc` as a CLI-injected cap parameter instead (`samples/versions.llt`)
-- [ ] Update `justfile` `versions` recipe to pass `--cap-net nc=static.rust-lang.org:443` and `--cap-net nc=crates.io:443` so `nc` is injected into the script's root env (`justfile`)
-- [ ] Update test assertions in `src/builtins.rs` that check `pad-left`, `pad-right`, `pi`, `hex-encode`, etc. are present in the stdlib env — remove those assertions or invert them (`src/builtins.rs`)
-- [ ] Add corpus tests verifying `pad-right` is NOT available without include, IS available after `[include libdir "strings.llt"]` (`tests/corpus/eval/stdlib/strings_scoping.llt-eval`)
-- [ ] Add corpus tests verifying `pi` is NOT available without include, IS available after `[include libdir "math.llt"]` (`tests/corpus/eval/stdlib/math_scoping.llt-eval`)
-- [ ] Add corpus tests verifying `hex-encode` is NOT available without include, IS available after `[include libdir "encoding.llt"]` (`tests/corpus/eval/stdlib/encoding_scoping.llt-eval`)
+- [x] Remove `strings_source`, `math_source`, `encoding_source` loads from `create_stdlib_env()`: delete the three `include_str!` + `load_stdlib_module` call pairs for strings, math, and encoding (`src/builtins.rs`)
+- [x] Audit corpus tests for implicit use of `pad-left`/`pad-right`/`str-find`/`str-reverse` (from `strings.llt`); add `[include libdir "strings.llt"]` where needed (`tests/corpus/`)
+- [x] Audit corpus tests for implicit use of `pi`/`e`/`phi`/`hypot`/`deg->rad`/`rad->deg`/`log-base` (from `math.llt`); add `[include libdir "math.llt"]` where needed (`tests/corpus/`)
+- [x] Audit corpus tests for implicit use of `hex-encode`/`hex-decode`/`base64-encode`/`base64-decode`/`mask-apply` (from `encoding.llt`); add `[include libdir "encoding.llt"]` where needed (`tests/corpus/`)
+- [x] Update `samples/versions.llt`: add `[include libdir "strings.llt"]` (uses `pad-right`); replace `[dir-cap "."]` with `pwd` (already injected); remove `[net-cap [...]]` and accept `nc` as a CLI-injected cap parameter instead (`samples/versions.llt`)
+- [x] Update `justfile` `versions` recipe to pass `--cap-net nc=static.rust-lang.org:443` and `--cap-net nc=crates.io:443` so `nc` is injected into the script's root env (`justfile`)
+- [x] Update test assertions in `src/builtins.rs` that check `pad-left`, `pad-right`, `pi`, `hex-encode`, etc. are present in the stdlib env — remove those assertions or invert them (`src/builtins.rs`)
+- [x] Add corpus tests verifying `pad-right` is NOT available without include, IS available after `[include libdir "strings.llt"]` (`tests/corpus/eval/stdlib/strings_scoping.llt-eval`)
+- [x] Add corpus tests verifying `pi` is NOT available without include, IS available after `[include libdir "math.llt"]` (`tests/corpus/eval/stdlib/math_scoping.llt-eval`)
+- [x] Add corpus tests verifying `hex-encode` is NOT available without include, IS available after `[include libdir "encoding.llt"]` (`tests/corpus/eval/stdlib/encoding_scoping.llt-eval`)
 
 ### `cap-remove-ambient`: Remove `dir-cap` and `net-cap` user-callable builtins
 
 Every cap must narrow an existing cap. `dir-cap` and `net-cap` create authority from ambient — they are removed entirely. All filesystem caps come from `pwd` (injected CWD), `libdir` (injected stdlib dir), or `--cap-fs NAME=PATH` CLI flags. All network caps come from `--cap-net NAME=ENTRY` CLI flags. See Known Bug `cap-ambient`.
 
-- [ ] Remove `builtin_dir_cap` registration from `standard_builtins()` and delete its implementation (`src/builtins.rs`, `src/builtins_io.rs`)
-- [ ] Remove `builtin_net_cap` registration from `standard_builtins()` and delete its implementation (`src/builtins.rs`, `src/builtins_io.rs`)
-- [ ] Update all corpus tests that call `[dir-cap "."]` to use `pwd` instead (`tests/corpus/`)
-- [ ] Update all corpus tests that call `[net-cap [...]]` to receive a net cap via test harness injection or skip network tests (`tests/corpus/`)
-- [ ] Update `doc/12-tooling.md` and `doc/11a-builtins.md`: remove `dir-cap` and `net-cap` from the builtin reference; document `pwd`, `libdir`, `--cap-fs`, `--cap-net` as the only sources of new caps (`doc/12-tooling.md`, `doc/11a-builtins.md`)
-- [ ] Update any internal test helpers in `src/` that construct `Value::DirCap` via `dir-cap` to use `cap_std::Dir::open_ambient_dir` directly (Rust-level, not exposed to tinct programs) (`src/builtins.rs`)
-- [ ] Add `any` alias to `--cap-net` parsing: `--cap-net net=any` creates an unrestricted NetCap (equivalent to `*`); recognised in `parse_cli_net_cap_entry` by matching the literal string `"any"` before other pattern checks; document in `--cap-net` CLI help and `doc/12-tooling.md` (`src/main.rs`, `doc/12-tooling.md`)
+- [x] Remove `builtin_dir_cap` registration from `standard_builtins()` and delete its implementation (`src/builtins.rs`, `src/builtins_io.rs`)
+- [x] Remove `builtin_net_cap` registration from `standard_builtins()` and delete its implementation (`src/builtins.rs`, `src/builtins_io.rs`)
+- [x] Update all corpus tests that call `[dir-cap "."]` to use `pwd` instead (`tests/corpus/`)
+- [x] Update all corpus tests that call `[net-cap [...]]` to receive a net cap via test harness injection or skip network tests (`tests/corpus/`)
+- [x] Update `doc/12-tooling.md` and `doc/11a-builtins.md`: remove `dir-cap` and `net-cap` from the builtin reference; document `pwd`, `libdir`, `--cap-fs`, `--cap-net` as the only sources of new caps (`doc/12-tooling.md`, `doc/11a-builtins.md`)
+- [x] Update any internal test helpers in `src/` that construct `Value::DirCap` via `dir-cap` to use `cap_std::Dir::open_ambient_dir` directly (Rust-level, not exposed to tinct programs) (`src/builtins.rs`)
+- [x] Add `any` alias to `--cap-net` parsing: `--cap-net net=any` creates an unrestricted NetCap (equivalent to `*`); recognised in `parse_cli_net_cap_entry` by matching the literal string `"any"` before other pattern checks; document in `--cap-net` CLI help and `doc/12-tooling.md` (`src/main.rs`, `doc/12-tooling.md`)
 
+### `cap-pct-prefix`: Prefix injected cap variables with `%`
+
+All runtime-injected capabilities and ambient handles get a `%` prefix as a visual convention: `%pwd`, `%libdir`, `%stdin`. `--cap-fs` and `--cap-net` auto-prefix the user-supplied name: `--cap-net nc=any` injects `%nc`. The `%` sigil is not enforced — user code may define `%`-prefixed names freely — it is purely a visual marker that the variable was granted by the operator, not defined in the program.
+
+No lexer change required: `%` is already a valid `bare_word_char` (not in the exclusion denylist). `lex_percent_word()` in `src/lexer.rs` already handles `%name` as a single `BareWord("%name")` token, stopping at `.` for dot-access. The `new-syntax-a` sprint already added atom-parsing: `BareWord(s) if s.starts_with('%')` → `Expr::VarRef(s)`. So `%pwd` in user code already resolves as a variable reference.
+
+- [ ] Verify: add a unit test confirming `%pwd`, `%nc`, `%libdir` lex as `BareWord("%pwd")` etc. and parse as `Expr::VarRef` in value position (`src/lexer.rs`, `src/parser.rs`)
+- [ ] `src/main.rs`: rename injected variables — `pwd` → `%pwd`, `libdir` → `%libdir`, `stdin` → `%stdin` in all `env.insert(...)` calls (`src/main.rs`)
+- [ ] `src/main.rs`: auto-prefix `%` in `--cap-fs NAME=PATH` and `--cap-net NAME=ENTRY` parsing — inject as `%NAME` rather than `NAME` (`src/main.rs`)
+- [ ] Update `--no-pwd` / `--no-libdir` / `--no-stdin` error messages to use the new `%`-prefixed names in any user-visible text (`src/main.rs`)
+- [ ] Update all corpus tests that reference `pwd`, `libdir`, or `stdin` as variable names to use `%pwd`, `%libdir`, `%stdin` (`tests/corpus/`)
+- [ ] Update `samples/versions.llt`: `pwd` → `%pwd`; justfile `--cap-net nc=...` already correct (injected as `%nc` after this change) (`samples/versions.llt`)
+- [ ] Update `doc/12-tooling.md`: all references to `pwd`, `libdir`, `stdin` as injected variable names; update `--cap-fs` and `--cap-net` docs to show `%NAME` as the resulting binding (`doc/12-tooling.md`)
+- [ ] Update `doc/09-documents.md` §Pipeline variable: clarify that bare `%` is the pipeline input; `%name` (no space) is an identifier that conventionally marks injected caps (`doc/09-documents.md`)
+- [ ] LSP: update hover/completion for `%pwd`, `%libdir`, `%stdin` if the LSP seeds these names for the root document scope (`src/lsp/`)
 
