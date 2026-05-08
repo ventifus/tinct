@@ -645,31 +645,9 @@ fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Resu
 
 /// Resolve the stdlib directory path from the binary location.
 ///
-/// Tries two layouts in order:
-/// 1. Development: `<exe_grandparent>/stdlib/`
-/// 2. Installed: `<exe_parent>/../share/tinct/stdlib/`
-///
-/// Returns `None` if neither directory exists.
+/// Wrapper around `tinct::find_libdir_path()`.
 fn find_libdir_path() -> Option<std::path::PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
-            exe.parent() // target/debug
-                .and_then(|p| p.parent()) // target
-                .and_then(|p| p.parent()) // project root
-                .map(|root| root.join("stdlib"))
-        })
-        .filter(|p| p.is_dir())
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| {
-                    exe.parent() // bin/
-                        .and_then(|p| p.parent()) // <prefix>/
-                        .map(|prefix| prefix.join("share").join("tinct").join("stdlib"))
-                })
-                .filter(|p| p.is_dir())
-        })
+    tinct::find_libdir_path()
 }
 
 /// Parse a CLI NetCap entry (from --cap-net NAME=ENTRY).
@@ -994,8 +972,7 @@ fn run_eval(
             } else {
                 format!("%{name}")
             };
-            env.borrow_mut()
-                .insert(scoped_name, Rc::new(cap_thunk));
+            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
         }
     }
 
@@ -1059,8 +1036,7 @@ fn run_eval(
             } else {
                 format!("%{name}")
             };
-            env.borrow_mut()
-                .insert(scoped_name, Rc::new(cap_thunk));
+            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
         }
     }
 
@@ -1102,8 +1078,7 @@ fn run_eval(
             } else {
                 format!("%{name}")
             };
-            env.borrow_mut()
-                .insert(scoped_name, Rc::new(cap_thunk));
+            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
         }
     }
 

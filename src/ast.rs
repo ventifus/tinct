@@ -81,6 +81,7 @@ pub struct Document {
     pub name: Option<String>,
     pub output_type: Option<Spanned<Annotation>>,
     pub expects: Option<Spanned<Annotation>>,
+    pub caps: Option<Spanned<Vec<(String, Annotation)>>>,
 }
 
 /// The central expression type
@@ -885,6 +886,7 @@ mod tests {
             name: None,
             output_type: None,
             expects: None,
+            caps: None,
         };
         assert_eq!(format!("{doc}"), "42");
     }
@@ -900,6 +902,7 @@ mod tests {
             name: None,
             output_type: None,
             expects: None,
+            caps: None,
         };
         assert_eq!(format!("{doc}"), "x\n10\ntrue");
     }
@@ -911,6 +914,7 @@ mod tests {
             name: None,
             output_type: None,
             expects: None,
+            caps: None,
         };
         assert_eq!(format!("{doc}"), "");
     }
@@ -923,6 +927,7 @@ mod tests {
                 name: None,
                 output_type: None,
                 expects: None,
+                caps: None,
             })],
         };
         assert_eq!(format!("{file}"), "1");
@@ -937,12 +942,14 @@ mod tests {
                     name: None,
                     output_type: None,
                     expects: None,
+                    caps: None,
                 }),
                 sp(Document {
                     expressions: vec![Rc::new(sp(Expr::Int(2)))],
                     name: None,
                     output_type: None,
                     expects: None,
+                    caps: None,
                 }),
             ],
         };

@@ -1,0 +1,6 @@
+# Test: capability declared and provided
+--- caps: [%pwd: @DirCap]
+[result: "ok"]
+
+=== out
+Dict({"result": String("ok")})

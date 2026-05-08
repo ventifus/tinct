@@ -94,15 +94,28 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Start with builtins
     let mut env = TypeEnv::with_builtins();
 
+    // Inject capability variable types that the CLI always provides.
+    // These are runtime-injected by the CLI (see main.rs:905, 955, 934),
+    // so the type checker needs to know about them to avoid false "undefined variable" errors.
+    env.insert("%pwd".to_string(), crate::types::Type::DirCap);
+    env.insert("%libdir".to_string(), crate::types::Type::DirCap);
+    env.insert("%stdin".to_string(), crate::types::Type::Handle);
+
     // Only prelude.llt is loaded at startup.
     // strings.llt, math.llt, and encoding.llt require explicit [include libdir "module.llt"].
     let prelude_source = include_str!("../stdlib/prelude.llt");
 
     // Type-check prelude
-    let builtins_env = Rc::new(TypeEnv::with_builtins());
+    let mut builtins_env = TypeEnv::with_builtins();
+    // Inject capability types into builtins_env for prelude type-checking
+    builtins_env.insert("%pwd".to_string(), crate::types::Type::DirCap);
+    builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
+    builtins_env.insert("%stdin".to_string(), crate::types::Type::Handle);
+    let builtins_env = Rc::new(builtins_env);
+
     if typecheck_and_merge_stdlib_module(prelude_source, &builtins_env, &mut env).is_err() {
-        // Parse/expand error: return builtins-only environment
-        return Rc::new(TypeEnv::with_builtins());
+        // Parse/expand error: return builtins-only environment (with capability bindings)
+        return builtins_env;
     }
 
     Rc::new(env)
@@ -165,10 +178,13 @@ fn extract_bindings_from_expr(expr: &Expr, type_map: &TypeMap, env: &mut TypeEnv
 
 /// Collect statically-known include paths from a File.
 ///
-/// Walks the AST looking for `[call $include "path"]` patterns and extracts
-/// the string literal paths. Returns a list of `(span, path)` pairs for all
-/// statically-known includes. Skips dynamic includes (computed paths).
-pub fn collect_include_paths(file: &File) -> Vec<(Span, String)> {
+/// Walks the AST looking for `[include ...]` patterns and extracts
+/// the string literal paths. Returns a list of `(span, cap_name, path)` tuples
+/// where `cap_name` is `Some("%libdir")` or `Some("%pwd")` for cap-qualified includes,
+/// or `None` for deprecated bare includes.
+///
+/// Skips dynamic includes (computed paths).
+pub fn collect_include_paths(file: &File) -> Vec<(Span, Option<String>, String)> {
     let mut paths = Vec::new();
     for doc in &file.documents {
         for expr in &doc.node.expressions {
@@ -179,7 +195,7 @@ pub fn collect_include_paths(file: &File) -> Vec<(Span, String)> {
 }
 
 /// Recursively collect include paths from an expression tree.
-fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, String)>) {
+fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<String>, String)>) {
     match expr {
         Expr::Call {
             func,
@@ -189,11 +205,17 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, String)>)
         } => {
             // Check if this is a call to `include`
             if let Expr::VarRef { name, .. } = &func.node {
-                if name == "include" && args.len() == 1 {
-                    // Check if the argument is a string literal
-                    if let Expr::Str(path) = &args[0].node {
-                        paths.push((args[0].span, path.clone()));
+                if name == "include" {
+                    // Handle 2-arg cap-qualified form: [include %cap "path"]
+                    if args.len() == 2 {
+                        if let Expr::VarRef { name: cap_name, .. } = &args[0].node {
+                            if let Expr::Str(path) = &args[1].node {
+                                paths.push((args[1].span, Some(cap_name.clone()), path.clone()));
+                            }
+                        }
                     }
+                    // Deprecated 1-arg form: [include "path"]
+                    // Skip this form — cap-qualified is now required
                 }
             }
             // Recurse into function and arguments
@@ -269,17 +291,23 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, String)>)
 /// Resolve include paths and build a TypeEnv with all included bindings.
 ///
 /// For each path in `include_paths`:
-/// 1. Resolve relative to `base_dir`
+/// 1. Resolve relative to the appropriate base directory (determined by cap variable)
 /// 2. Skip if already visited (cycle detection)
 /// 3. Read the file and parse it
 /// 4. Type-check it with the accumulated environment
 /// 5. Extract bindings and extend the environment
 ///
+/// Cap-qualified includes:
+/// - `%libdir` → resolve relative to `libdir` parameter
+/// - `%pwd` → resolve relative to `base_dir` parameter
+/// - Other caps → skip silently (e.g., `%custom_cap` is not supported)
+///
 /// Returns `base_env` unchanged on any IO or parse failure (best-effort approach).
 /// Depth is capped at `MAX_INCLUDE_DEPTH` to prevent runaway recursion.
 fn resolve_includes(
-    include_paths: &[(Span, String)],
+    include_paths: &[(Span, Option<String>, String)],
     base_dir: Option<&Path>,
+    libdir: Option<&Path>,
     base_env: Rc<TypeEnv>,
     visited: &mut HashSet<String>,
     depth: usize,
@@ -291,12 +319,27 @@ fn resolve_includes(
 
     let mut env = base_env;
 
-    for (_span, path) in include_paths {
-        // Resolve the path relative to base_dir (if provided)
-        let full_path = if let Some(base) = base_dir {
+    for (_span, cap_name, path) in include_paths {
+        // Determine the base directory based on the cap variable
+        let resolve_base = match cap_name.as_deref() {
+            Some("%libdir") => libdir,
+            Some("%pwd") => base_dir,
+            Some(_other) => {
+                // Unknown cap variable — skip this include silently
+                continue;
+            }
+            None => {
+                // Bare include without cap qualifier — deprecated, skip
+                continue;
+            }
+        };
+
+        // Resolve the path relative to the determined base
+        let full_path = if let Some(base) = resolve_base {
             base.join(path)
         } else {
-            std::path::PathBuf::from(path)
+            // No base directory available for this cap — skip
+            continue;
         };
 
         // Normalize the path for cycle detection
@@ -356,7 +399,14 @@ fn resolve_includes(
         // Recursively resolve includes from this file
         let nested_includes = collect_include_paths(&file.node);
         let parent_dir = normalized.parent();
-        env = resolve_includes(&nested_includes, parent_dir, env, visited, depth + 1);
+        env = resolve_includes(
+            &nested_includes,
+            parent_dir,
+            libdir,
+            env,
+            visited,
+            depth + 1,
+        );
     }
 
     env
@@ -369,19 +419,35 @@ fn resolve_includes(
 /// fully-populated type environment for a given file.
 ///
 /// 1. Start with the prelude environment from `build_prelude_env()`
-/// 2. If `base_dir` is provided, collect include paths from `file` and
+/// 2. Seed the environment with always-available cap variables (`%pwd`, `%libdir`, `%stdin`)
+/// 3. If `base_dir` is provided, collect include paths from `file` and
 ///    resolve them recursively, extending the environment with each included
 ///    file's top-level bindings.
 ///
 /// Returns the accumulated environment. Best-effort: IO failures, parse errors,
 /// and type errors are silently ignored.
 pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> Rc<TypeEnv> {
-    let mut env = build_prelude_env();
+    let prelude_env = build_prelude_env();
+
+    // Seed with always-available cap types
+    let mut env = TypeEnv::with_parent(&prelude_env);
+    env.insert("%pwd".to_string(), crate::types::Type::DirCap);
+    env.insert("%libdir".to_string(), crate::types::Type::DirCap);
+    env.insert("%stdin".to_string(), crate::types::Type::Handle);
+    let mut env = Rc::new(env);
 
     if let Some(dir) = base_dir {
         let include_paths = collect_include_paths(file);
         let mut visited = HashSet::new();
-        env = resolve_includes(&include_paths, Some(dir), env, &mut visited, 0);
+        let libdir = crate::find_libdir_path();
+        env = resolve_includes(
+            &include_paths,
+            Some(dir),
+            libdir.as_deref(),
+            env,
+            &mut visited,
+            0,
+        );
     }
 
     env
@@ -426,16 +492,18 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_include_paths_finds_static_includes() {
+    fn test_collect_include_paths_finds_cap_qualified_includes() {
         let source = r#"
-            [include "foo.llt"]
-            [include "bar.llt"]
+            [include %pwd "foo.llt"]
+            [include %libdir "bar.llt"]
         "#;
         let file = parser::parse(source).unwrap();
         let paths = collect_include_paths(&file.node);
         assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0].1, "foo.llt");
-        assert_eq!(paths[1].1, "bar.llt");
+        assert_eq!(paths[0].1, Some("%pwd".to_string()));
+        assert_eq!(paths[0].2, "foo.llt");
+        assert_eq!(paths[1].1, Some("%libdir".to_string()));
+        assert_eq!(paths[1].2, "bar.llt");
     }
 
     #[test]
@@ -484,18 +552,28 @@ mod tests {
         );
     }
 
-    /// Verify that `collect_include_paths` finds `[call $include "path"]` forms.
+    /// Verify that `collect_include_paths` finds `[call $include %cap "path"]` forms.
     ///
     /// This exercises the explicit `call` form (`[call $include ...]`) as distinct
     /// from the implied-call form (`[include ...]`) tested in the existing test.
     /// Both parse to the same `Expr::Call` AST node with `func = VarRef { name: "include" }`.
     #[test]
-    fn collect_include_paths_finds_static_includes() {
-        let source = r#"[call $include "foo.llt"]"#;
+    fn collect_include_paths_finds_explicit_call_form() {
+        let source = r#"[call $include %pwd "foo.llt"]"#;
         let file = parser::parse(source).unwrap();
         let paths = collect_include_paths(&file.node);
         assert_eq!(paths.len(), 1, "expected exactly one include path");
-        assert_eq!(paths[0].1, "foo.llt");
+        assert_eq!(paths[0].1, Some("%pwd".to_string()));
+        assert_eq!(paths[0].2, "foo.llt");
+    }
+
+    /// Verify that `collect_include_paths` skips deprecated 1-arg includes.
+    #[test]
+    fn collect_include_paths_skips_bare_includes() {
+        let source = r#"[include "foo.llt"]"#;
+        let file = parser::parse(source).unwrap();
+        let paths = collect_include_paths(&file.node);
+        assert_eq!(paths.len(), 0, "bare includes should be skipped");
     }
 
     /// Verify that `resolve_includes` returns `base_env` unchanged when the
@@ -508,13 +586,18 @@ mod tests {
         use crate::ast::Span;
 
         let base_env = Rc::new(TypeEnv::with_builtins());
-        let include_paths = vec![(Span::origin(), "nonexistent_file_xyz.llt".to_string())];
+        let include_paths = vec![(
+            Span::origin(),
+            Some("%pwd".to_string()),
+            "nonexistent_file_xyz.llt".to_string(),
+        )];
         let tmp = std::env::temp_dir();
         let mut visited = HashSet::new();
 
         let result = resolve_includes(
             &include_paths,
             Some(tmp.as_path()),
+            None, // no libdir
             Rc::clone(&base_env),
             &mut visited,
             0,
@@ -525,5 +608,23 @@ mod tests {
             Rc::ptr_eq(&result, &base_env),
             "expected resolve_includes to return the original base_env when file is missing"
         );
+    }
+
+    /// Verify that `build_type_env` seeds the environment with cap types.
+    #[test]
+    fn test_build_type_env_has_cap_types() {
+        let file = File { documents: vec![] };
+        let env = build_type_env(&file, None);
+
+        // Check that cap variables are present with correct types
+        assert!(env.get("%pwd").is_some(), "expected %pwd in type env");
+        assert!(env.get("%libdir").is_some(), "expected %libdir in type env");
+        assert!(env.get("%stdin").is_some(), "expected %stdin in type env");
+
+        // Verify types
+        use crate::types::Type;
+        assert_eq!(env.get("%pwd").unwrap().body, Type::DirCap);
+        assert_eq!(env.get("%libdir").unwrap().body, Type::DirCap);
+        assert_eq!(env.get("%stdin").unwrap().body, Type::Handle);
     }
 }

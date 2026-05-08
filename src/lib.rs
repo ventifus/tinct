@@ -1625,3 +1625,34 @@ mod tests {
         );
     }
 }
+
+/// Resolve the stdlib directory path from the binary location.
+///
+/// Tries two layouts in order:
+/// 1. Development: `<exe_grandparent>/stdlib/`
+/// 2. Installed: `<exe_parent>/../share/tinct/stdlib/`
+///
+/// Returns `None` if neither directory exists.
+///
+/// This is used by the type checker to resolve `%libdir` cap-qualified includes.
+pub fn find_libdir_path() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent() // target/debug
+                .and_then(|p| p.parent()) // target
+                .and_then(|p| p.parent()) // project root
+                .map(|root| root.join("stdlib"))
+        })
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| {
+                    exe.parent() // bin/
+                        .and_then(|p| p.parent()) // <prefix>/
+                        .map(|prefix| prefix.join("share").join("tinct").join("stdlib"))
+                })
+                .filter(|p| p.is_dir())
+        })
+}

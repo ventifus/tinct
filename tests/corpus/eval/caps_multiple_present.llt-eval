@@ -1,0 +1,6 @@
+# Test: multiple capabilities declared, all present
+--- caps: [%pwd: @DirCap]
+[result: "all caps present"]
+
+=== out
+Dict({"result": String("all caps present")})

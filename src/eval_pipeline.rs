@@ -45,6 +45,62 @@ pub fn eval_document(
         )));
     }
 
+    // Validate capabilities if caps: is declared
+    if let Some(ref caps_ann) = doc.node.caps {
+        for (cap_name, annotation) in &caps_ann.node {
+            let full_cap_name = format!("%{}", cap_name);
+
+            // Check if capability is present in environment
+            let cap_present = {
+                let env_ref = env.borrow();
+                env_ref.get(&full_cap_name).is_some()
+            };
+
+            if !cap_present {
+                // Determine the CLI flag suggestion based on the annotation type
+                let (flag_type, flag_example) = match annotation {
+                    crate::ast::Annotation::Simple(type_name) if type_name == "NetCap" => {
+                        ("--cap-net", format!("{}=HOST:PORT", cap_name))
+                    }
+                    crate::ast::Annotation::Simple(type_name) if type_name == "DirCap" => {
+                        ("--cap-fs", format!("{}=PATH", cap_name))
+                    }
+                    _ => {
+                        // Generic fallback for other capability types
+                        ("--cap", format!("{}=VALUE", cap_name))
+                    }
+                };
+
+                // Check if this is an auto-injected capability
+                let auto_injected_caps = ["pwd", "libdir", "stdin"];
+                let is_auto_injected = auto_injected_caps.contains(&cap_name.as_str());
+
+                let mut message = format!(
+                    "{}@{} is required but not provided",
+                    full_cap_name,
+                    match annotation {
+                        crate::ast::Annotation::Simple(type_name) => type_name.clone(),
+                        crate::ast::Annotation::PropertyDict(_) => "Dict".to_string(),
+                    }
+                );
+
+                if is_auto_injected {
+                    message.push_str(&format!(
+                        "\n  note: {} is injected automatically — did you pass --no-{}?",
+                        full_cap_name, cap_name
+                    ));
+                } else {
+                    message.push_str(&format!(
+                        "\n  inject it with:  tinct run {} {} ...\n  or unrestricted: tinct run {} {}=any ...",
+                        flag_type, flag_example, flag_type, cap_name
+                    ));
+                }
+
+                return Err(EvalError::new(message, caps_ann.span).into());
+            }
+        }
+    }
+
     let mut current_env = env;
 
     for (i, expr) in exprs.iter().enumerate() {

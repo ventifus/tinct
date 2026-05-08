@@ -503,6 +503,27 @@ fn typecheck_document(
         }
     }
 
+    // Process caps: declarations if present.
+    // Each cap entry (%name: @Type) extends the environment with that capability variable.
+    if let Some(ref caps_ann) = doc.node.caps {
+        // Need to make env mutable to extend it
+        let mut env_mut = (*env).clone();
+        for (cap_name, annotation) in &caps_ann.node {
+            match resolve_annotation(annotation, &env, caps_ann.span, state, &mut None, &mut None) {
+                Ok(cap_type) => {
+                    // Insert capability variable with % prefix
+                    env_mut.insert(format!("%{}", cap_name), cap_type);
+                }
+                Err(e) => {
+                    // Caps annotation errors are fatal (not advisory).
+                    // If a capability type annotation is invalid, we can't type-check the document.
+                    errors.push(e);
+                }
+            }
+        }
+        env = Rc::new(env_mut);
+    }
+
     let mut result_type = Type::Record(Row {
         fields: HashMap::new(),
         tail: RowTail::Empty,

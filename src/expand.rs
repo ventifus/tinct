@@ -305,6 +305,7 @@ fn expand_document(
         name: doc.name,
         output_type: doc.output_type,
         expects: doc.expects,
+        caps: doc.caps,
     })
 }
 
