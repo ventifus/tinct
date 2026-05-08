@@ -1,0 +1,12 @@
+# Test that parse-toml-lite is NOT available without [include "stdlib/toml-lite.llt"]
+# Uses try to capture the undefined-variable error as a value
+
+[try [fn [] [parse-toml-lite "key = \"value\""]]]
+
+=== out
+
+Dict({"err": String("undefined variable: parse-toml-lite (did you mean the string \"parse-toml-lite\"? Use quotes.)")})
+
+=== warn
+
+arity mismatch

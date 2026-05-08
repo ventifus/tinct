@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
-use crate::builtins::{builtin, flatten_overlay, ok_val, reject_named};
+use crate::builtins::{builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, ThunkState, Value};
@@ -44,6 +44,12 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Overlay(l, r) => {
             Value::Dict(flatten_overlay(&l, &r, "map", &ctx, depth, call_span)?)
         }
+        // Bytes: treat as Seq of Int byte values
+        Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => bytes_to_seq(&source[start..end], call_span, &ctx),
         other => other,
     };
 
@@ -135,6 +141,12 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Overlay(l, r) => {
             Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, depth, call_span)?)
         }
+        // Bytes: treat as Seq of Int byte values
+        Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => bytes_to_seq(&source[start..end], call_span, &ctx),
         other => other,
     };
 
@@ -459,6 +471,15 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     let xs = materialize(&args[1], None, &ctx, depth)?;
+    // Bytes: treat as Seq of Int byte values
+    let xs = match xs {
+        Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => bytes_to_seq(&source[start..end], call_span, &ctx),
+        other => other,
+    };
     match xs {
         Value::Dict(ref map) => {
             // Dict: take first n entries by position
@@ -542,6 +563,15 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     let xs = materialize(&args[1], None, &ctx, depth)?;
+    // Bytes: treat as Seq of Int byte values
+    let xs = match xs {
+        Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => bytes_to_seq(&source[start..end], call_span, &ctx),
+        other => other,
+    };
     match xs {
         Value::Dict(ref map) => {
             // Dict: skip first n entries by position

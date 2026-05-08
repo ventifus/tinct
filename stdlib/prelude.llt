@@ -396,15 +396,11 @@ from-entries: [fn@Dict [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-e
 # List Operations (integer keys, dense 0..n output)
 # ============================================================================
 
-# Get the first element of a list or first character of a string.
+# Get the first element of a list, first character of a string, or first byte of Bytes (as Int).
+# first is now a Rust builtin — see src/builtins.rs for implementation.
 # assert: [first [10 20 30]] => 10
 # assert: [first "hello"] => "h"
-first: [fn [xs]
-    [builtin-if [builtin-eq [type-of xs] "String"]
-        [builtin-if [builtin-eq [length xs] 0]
-            [error "first: empty string"]
-            [str-slice xs 0 1]]
-        xs.0]]
+# assert: [first (str-bytes "A")] => 65
 
 # Get the nth element by insertion-order position.
 # Supports negative indices: -1 is last, -2 is second-to-last, etc.
@@ -416,15 +412,11 @@ nth: [fn [xs@Dict n@Int]
 nth-impl: [fn [xs@Dict ks n@Int len@Int]
     [get [get [builtin-if [builtin-lt n 0] [builtin-add len n] n] ks] xs]]
 
-# Get the last element by insertion-order position, or last character of a string.
+# Get the last element by insertion-order position, last character of a string, or last byte of Bytes (as Int).
+# last is now a Rust builtin — see src/builtins.rs for implementation.
 # assert: [last [10 20 30]] => 30
 # assert: [last "hello"] => "o"
-last: [fn [xs]
-    [builtin-if [builtin-eq [type-of xs] "String"]
-        [builtin-if [builtin-eq [length xs] 0]
-            [error "last: empty string"]
-            [str-slice xs [builtin-sub [length xs] 1] [length xs]]]
-        [get [get [builtin-sub [length xs] 1] [keys xs]] xs]]]
+# assert: [last (str-bytes "Z")] => 90
 
 # rest: Rust-native builtin. Dict: O(n) drop-first-and-reindex. Seq: O(1) tail (delegates to tail).
 # See src/builtins.rs for implementation.
@@ -837,15 +829,25 @@ count: [fn@Int [pred@Fn xs]
         0
         xs]]
 
-# Check if a collection contains val (using structural equality) or a string contains a substring.
+# Check if a collection contains val (using structural equality), a string contains a substring,
+# or a Bytes value contains a given byte (val must be an Int 0-255).
 # Handles Dict input (uses any?), Seq input (uses filter then seq? to check non-empty),
-# and String input (uses str-contains? for substring search).
+# String input (uses str-contains? for substring search),
+# and Bytes input (uses bytes-find to search for a single-byte needle).
 contains?: [fn@Bool [xs val]
     [builtin-if [builtin-eq [type-of xs] "String"]
         [str-contains? xs val]
-        [builtin-if [seq? xs]
-            [seq? [builtin-filter [fn [e] [builtin-eq e val]] xs]]
-            [any? [fn [e] [builtin-eq e val]] xs]]]]
+        [builtin-if [builtin-eq [type-of xs] "Bytes"]
+            [builtin-if [int? val]
+                [builtin-if [>= val 0]
+                    [builtin-if [< val 256]
+                        [>= [bytes-find xs [bytes-of [0: val]]] 0]
+                        [error "contains?: byte value must be in range 0-255"]]
+                    [error "contains?: byte value must be in range 0-255"]]
+                [error "contains?: needle must be Int (byte value) when haystack is Bytes"]]
+            [builtin-if [seq? xs]
+                [seq? [builtin-filter [fn [e] [builtin-eq e val]] xs]]
+                [any? [fn [e] [builtin-eq e val]] xs]]]]]
 
 # Remove duplicate elements, keeping the first occurrence of each.
 # Inherently materializing: O(n²) due to sequential contains? checks.

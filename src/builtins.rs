@@ -90,6 +90,27 @@ pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Rc<Thunk>> {
     Ok(Rc::new(Thunk::new_materialized(v, span)))
 }
 
+/// Convert a `Value::Bytes` slice into a `Value::Seq` of `Value::Int` (one per byte).
+///
+/// Used by sequence operations (map, filter, take, drop, reduce) to treat Bytes as
+/// an iterable sequence of byte values (0–255). Results are always Seq (not Bytes).
+///
+/// The returned value is a `Value::Seq { head, tail }` if bytes is non-empty, or
+/// `Value::Dict(IndexMap::new())` (the terminal empty-dict sentinel) if empty.
+pub(crate) fn bytes_to_seq(bytes: &[u8], span: Span, ctx: &Rc<crate::eval::EvalContext>) -> Value {
+    // Build from the right so we don't need a separate pass.
+    let mut acc: Value = Value::Dict(IndexMap::new());
+    for &byte in bytes.iter().rev() {
+        let head = Rc::new(Thunk::new_materialized(Value::Int(i64::from(byte)), span));
+        let tail = Rc::new(Thunk::new_materialized(acc, span));
+        acc = Value::Seq {
+            head: ctx.alloc_thunk(head),
+            tail: ctx.alloc_thunk(tail),
+        };
+    }
+    acc
+}
+
 /// Maximum file size for reading LLT files: 10 MB.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
@@ -546,6 +567,143 @@ pub(crate) use crate::builtins_datetime::{
     builtin_timestamp_second, builtin_timestamp_to_unix, builtin_timestamp_year,
     builtin_unix_to_timestamp,
 };
+
+/// `first`: Return the first element of a Dict, the first character of a String,
+/// or the first byte (as Int) of a Bytes value.
+///
+/// - Takes 1 arg: a Dict, String, or Bytes.
+/// - Dict path: O(1) — returns the value at the first key (insertion order).
+/// - String path: O(1) — returns a single-char String slice of the first codepoint.
+/// - Bytes path: O(1) — returns the first byte as Value::Int.
+/// Inherently materializing: must access the value to determine type and extract first element.
+fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("first", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    match val {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = &source[start..end];
+            if s.is_empty() {
+                return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+            }
+            let ch = s
+                .chars()
+                .next()
+                .expect("non-empty string has at least one char");
+            let char_end = start + ch.len_utf8();
+            ok_val(
+                Value::String {
+                    source: Rc::clone(source),
+                    start,
+                    end: char_end,
+                },
+                call_span,
+            )
+        }
+        Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => {
+            if start >= end {
+                return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+            }
+            let byte = source[start];
+            ok_val(Value::Int(i64::from(byte)), call_span)
+        }
+        other => {
+            let map = require_dict("first", other, args[0].span, &ctx, depth, call_span)?;
+            if map.is_empty() {
+                return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+            }
+            let (_, first_id) = map.into_iter().next().expect("non-empty map");
+            let thunk = ctx.get_thunk(first_id);
+            Ok(thunk)
+        }
+    }
+}
+
+/// `last`: Return the last element of a Dict, the last character of a String,
+/// or the last byte (as Int) of a Bytes value.
+///
+/// - Takes 1 arg: a Dict, String, or Bytes.
+/// - Dict path: O(n) — must iterate to the last entry (IndexMap doesn't have O(1) last).
+/// - String path: O(n) — must walk UTF-8 chars to find the last codepoint.
+/// - Bytes path: O(1) — returns the last byte as Value::Int.
+/// Inherently materializing: must access the value to determine type and extract last element.
+fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("last", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    match val {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = &source[start..end];
+            if s.is_empty() {
+                return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+            }
+            let (last_char_start, last_ch) = s
+                .char_indices()
+                .last()
+                .expect("non-empty string has at least one char");
+            let char_start = start + last_char_start;
+            let char_end = char_start + last_ch.len_utf8();
+            ok_val(
+                Value::String {
+                    source: Rc::clone(source),
+                    start: char_start,
+                    end: char_end,
+                },
+                call_span,
+            )
+        }
+        Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => {
+            if start >= end {
+                return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+            }
+            let byte = source[end - 1];
+            ok_val(Value::Int(i64::from(byte)), call_span)
+        }
+        other => {
+            let map = require_dict("last", other, args[0].span, &ctx, depth, call_span)?;
+            if map.is_empty() {
+                return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+            }
+            let (_, last_id) = map.into_iter().last().expect("non-empty map");
+            let thunk = ctx.get_thunk(last_id);
+            Ok(thunk)
+        }
+    }
+}
 
 /// `rest`: Returns all elements of a collection except the first, reindexed 0..n-1.
 ///
@@ -1080,6 +1238,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Spine, Strictness::Seq]
         ),
         // List operations (moved from LLT stdlib to Rust for performance)
+        builtin!("first", builtin_first, [Strictness::Spine]),
+        builtin!("last", builtin_last, [Strictness::Spine]),
         builtin!("rest", builtin_rest, [Strictness::Spine]),
         builtin!("cons", builtin_cons, [Strictness::Id, Strictness::Spine]),
         builtin!("reverse", builtin_reverse, [Strictness::Spine]),
@@ -1263,6 +1423,19 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
     for def in aliases {
         let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
         env.borrow_mut().insert(def.name.to_string(), thunk);
+    }
+
+    // Transport nominal variant constants: Tcp and Udp.
+    // These are unit variants (no payload) used as flags for `connect` and `tls-connect`.
+    for tag in ["Tcp", "Udp"] {
+        let thunk = Rc::new(Thunk::new_materialized(
+            Value::Variant {
+                tag: tag.to_string(),
+                payload: None,
+            },
+            Span::origin(),
+        ));
+        env.borrow_mut().insert(tag.to_string(), thunk);
     }
 
     env
@@ -6248,6 +6421,8 @@ mod tests {
         assert!(names.contains(&"join"), "missing join");
         assert!(names.contains(&"concat"), "missing concat");
         // List operations (moved from LLT to Rust)
+        assert!(names.contains(&"first"), "missing first");
+        assert!(names.contains(&"last"), "missing last");
         assert!(names.contains(&"rest"), "missing rest");
         assert!(names.contains(&"cons"), "missing cons");
         assert!(names.contains(&"reverse"), "missing reverse");
@@ -6312,8 +6487,8 @@ mod tests {
         assert!(names.contains(&"spki-pin"), "missing spki-pin");
         assert_eq!(
             names.len(),
-            166,
-            "expected 166 builtins, got {}",
+            168,
+            "expected 168 builtins, got {}",
             names.len()
         );
     }

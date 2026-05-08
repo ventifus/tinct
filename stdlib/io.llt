@@ -28,4 +28,9 @@ write-file: [fn@Any [cap@DirCap path@String content@String]
 # cap: DirCap, path: String, content: String
 write-file-atomic: [fn@Any [cap@DirCap path@String content@String]
   [write-atomic cap path content]]
+
+# Write a line to a WriteHandle, appending a newline and flushing.
+# handle: WriteHandle, line: String
+write-line: [fn [handle@WriteHandle line@String]
+  [flush [write-handle handle [str line "\n"]]]]
 ]

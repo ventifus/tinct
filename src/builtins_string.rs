@@ -580,11 +580,13 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     )
 }
 
-/// `starts-with?`: Check if a string or sequence starts with a prefix.
+/// `starts-with?`: Check if a string, byte sequence, or sequence starts with a prefix.
 ///
 /// Dual-dispatch:
 /// - String mode: Takes 2 args: `haystack` (String), `prefix` (String).
 ///   Returns a Bool indicating whether haystack starts with prefix.
+/// - Bytes mode: Takes 2 args: `haystack` (Bytes), `prefix` (Bytes).
+///   Returns a Bool indicating whether haystack's bytes start with prefix's bytes.
 /// - Seq mode: Takes 2 args: `haystack` (Seq), `prefix` (Seq).
 ///   Returns a Bool indicating whether haystack's elements match prefix's elements.
 /// Inherently materializing: must inspect string/seq content to check prefix.
@@ -609,6 +611,14 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
             let haystack = require_string("starts-with?", haystack_val, args[0].span)?;
             let prefix = require_string("starts-with?", prefix_val, args[1].span)?;
             ok_val(Value::Bool(haystack.starts_with(&prefix)), call_span)
+        }
+        (Value::Bytes { .. }, Value::Bytes { .. }) => {
+            let haystack_bytes = haystack_val.as_bytes().expect("matched Bytes");
+            let prefix_bytes = prefix_val.as_bytes().expect("matched Bytes");
+            ok_val(
+                Value::Bool(haystack_bytes.starts_with(prefix_bytes)),
+                call_span,
+            )
         }
         (Value::Seq { .. }, Value::Seq { .. }) => {
             // Element-by-element prefix matching
@@ -708,7 +718,7 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         }
         _ => Err(EvalError::type_mismatch_ctx(
             "starts-with?".to_string(),
-            "String or Seq",
+            "String, Bytes, or Seq",
             haystack_val.type_name(),
             args[0].span,
         )
@@ -716,11 +726,13 @@ pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     }
 }
 
-/// `ends-with?`: Check if a string or sequence ends with a suffix.
+/// `ends-with?`: Check if a string, byte sequence, or sequence ends with a suffix.
 ///
 /// Dual-dispatch:
 /// - String mode: Takes 2 args: `haystack` (String), `suffix` (String).
 ///   Returns a Bool indicating whether haystack ends with suffix.
+/// - Bytes mode: Takes 2 args: `haystack` (Bytes), `suffix` (Bytes).
+///   Returns a Bool indicating whether haystack's bytes end with suffix's bytes.
 /// - Seq mode: Takes 2 args: `haystack` (Seq), `suffix` (Seq).
 ///   Returns a Bool indicating whether haystack's trailing elements match suffix's elements.
 /// Inherently materializing: must inspect string/seq content to check suffix.
@@ -745,6 +757,14 @@ pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let haystack = require_string("ends-with?", haystack_val, args[0].span)?;
             let suffix = require_string("ends-with?", suffix_val, args[1].span)?;
             ok_val(Value::Bool(haystack.ends_with(&suffix)), call_span)
+        }
+        (Value::Bytes { .. }, Value::Bytes { .. }) => {
+            let haystack_bytes = haystack_val.as_bytes().expect("matched Bytes");
+            let suffix_bytes = suffix_val.as_bytes().expect("matched Bytes");
+            ok_val(
+                Value::Bool(haystack_bytes.ends_with(suffix_bytes)),
+                call_span,
+            )
         }
         (Value::Seq { .. }, Value::Seq { .. }) => {
             // Convert both sequences to vectors for easier comparison
@@ -812,7 +832,7 @@ pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
         _ => Err(EvalError::type_mismatch_ctx(
             "ends-with?".to_string(),
-            "String or Seq",
+            "String, Bytes, or Seq",
             haystack_val.type_name(),
             args[0].span,
         )
