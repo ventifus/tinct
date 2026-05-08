@@ -1,0 +1,12 @@
+# Test: spki-pin creates a valid pin dict with Sha256 algorithm and bytes fingerprint
+# Expected: dict with algorithm and fingerprint fields
+
+[Sha256: [variant "Sha256"]]
+[pin: [spki-pin Sha256 [bytes-of [65 66 67]]]]
+[
+  algorithm: [tag-of pin.algorithm]
+  fingerprint: [bytes? pin.fingerprint]
+]
+
+=== out
+Dict({"algorithm": String("Sha256"), "fingerprint": Bool(true)})

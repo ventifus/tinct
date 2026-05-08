@@ -134,22 +134,20 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 
-### `connector-tls`: Connector Protocol & TLS
+### `connector-tls-full`: Connector Protocol & TLS (Full Implementation)
 
-**Spec chapters:** `doc/whatif/lib-tls.md` §Connector Protocol, §Handle Types, §tls-connect, §CA Root Selection, §Client Certificates, §SPKI Pins. **Depends on:** `handle-caps`, `bytes-type`, `bitwise-encoding`.
+**Spec chapters:** `doc/whatif/lib-tls.md` §Connector Protocol, §Handle Types, §tls-connect, §CA Root Selection, §Client Certificates, §SPKI Pins. **Depends on:** `connector-tls` (Phase 1 stubs — see DONE.md), `handle-caps`.
 
-- [ ] Add `rustls = "0.23"`, `rustls-native-certs = "0.7"`, `webpki-roots = "0.26"`, `sha3 = "0.10"` to `Cargo.toml` (`Cargo.toml`)
 - [ ] Define `Transport` nominal variants: `Tcp`, `Udp` as unit variants registered in prelude (`src/builtins.rs`)
 - [ ] Generalize `builtin_connect`: accept any Connector (dispatch on value type: `NetCap` → built-in TCP/UDP; user dict → call dict's `connect` method); accept `Transport` variant as arg (Tcp default when omitted); return `Handle` with `{Binary Readable Writable Stream}` for Tcp, `{Binary Readable Writable Datagram}` for Udp (`src/builtins_io.rs`)
-- [ ] Implement `tls-connect` Rust builtin — Connector form: `tls-connect connector Transport host port opts` opens via connect then layers TLS via `rustls::ClientConfig`; Handle form: `tls-connect handle sni opts` layers TLS on existing stream Handle; both return `Handle[Binary Readable Writable Stream Tls]` with `TlsInfo` (`src/builtins_io.rs`)
+- [ ] Refactor Handle to preserve underlying TCP stream (required for TLS layering): add `raw_stream: Option<Rc<RefCell<TcpStream>>>` or use trait objects with downcast (`src/value.rs`)
+- [ ] Implement `tls-connect` full — Connector form: opens via connect then layers TLS via `rustls::ClientConfig`; Handle form: layers TLS on existing stream Handle; both return `Handle[Binary Readable Writable Stream Tls]` with `TlsInfo` (`src/builtins_io.rs`)
 - [ ] Implement CA root loading: default = `rustls-native-certs` system roots; `ca-bundle` Handle → read PEM, add to root store; `no-system-roots: true` → drop system roots; `mozilla-roots: true` → add `webpki-roots` (`src/builtins_io.rs`)
 - [ ] Implement mTLS: read `client-cert` and `client-key` Handle PEM bytes; configure `ClientConfig` with client auth (`src/builtins_io.rs`)
-- [ ] Implement `SpkiPin` type: `spki-pin` builtin takes `HashAlgorithm` variant + `Bytes` fingerprint → dict; `pins` option in TLS opts validates leaf cert SPKI against pin list using specified hash algorithm (`src/builtins_io.rs`)
-- [ ] Implement SPKI hash computation for pin matching: SHA-256/384/512 via `ring`, SHA3-256/384/512 via `sha3`, BLAKE3 via `blake3` (`src/builtins_io.rs`)
+- [ ] Implement SPKI hash computation for pin matching: SHA-256/384/512 via `ring`, SHA3-256/384/512 via `sha3`, BLAKE3 via `blake3`; validate leaf cert SPKI against `spki-pin` list during TLS handshake (`src/builtins_io.rs`)
 - [ ] Implement ALPN: `alpn` option → `ClientConfig::alpn_protocols`; default `["http/1.1"]` (`src/builtins_io.rs`)
-- [ ] Implement `tls-peer-cert` Rust builtin: requires Handle with `Tls` flag; return dict with `subject`, `issuer`, `sans`, `not-before` (@Timestamp), `not-after` (@Timestamp), `spki-sha256` (`src/builtins_io.rs`)
+- [ ] Implement `tls-peer-cert` full: parse leaf certificate, return dict with `subject`, `issuer`, `sans`, `not-before` (@Timestamp), `not-after` (@Timestamp), `spki-sha256` (`src/builtins_io.rs`)
 - [ ] Add `--cap-net NAME=ENTRY` CLI documentation for Connector protocol context (`doc/12-tooling.md`)
-- [ ] Register all type signatures (`src/types.rs`)
 - [ ] Tests: corpus tests for connect Tcp/Udp, tls-connect with system roots, tls-connect with custom CA, mTLS, certificate pinning (SpkiPin), ALPN negotiation, tls-peer-cert return shape (`tests/corpus/eval/builtins/`)
 
 ### `http-net`: HTTP Client & Network Stack

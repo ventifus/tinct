@@ -1,0 +1,12 @@
+# Test: tls-peer-cert requires a Handle with Tls capability
+# Expected: error message about wrong type (Dict instead of Handle)
+
+# Create a mock non-TLS handle (using a dict as a placeholder since we can't create real Handles in corpus tests)
+[h: []]
+[tls-peer-cert h]
+
+=== error
+tls-peer-cert: expected Handle, got Dict
+
+=== warn
+cannot unify Handle with []
