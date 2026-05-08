@@ -46,7 +46,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [TLS, PKI, and HTTP](lib-tls.md) | mTLS, custom CA bundles, certificate pinning, ALPN, HTTP/2 via `fetch` |
+| [TLS, PKI, and HTTP](lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, tls-connect, SpkiPin, HttpConn, system roots, HTTP/1-3 |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Templating
@@ -59,8 +59,9 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Supplemental Stdlib Modules](lib-supplemental.md) | Extended strings, math builtins, bitwise primitives, base64/hex encoding — 3-phase plan |
-| [Pure-Tinct Regex Engine](lib-regex.md) | Thompson NFA simulation entirely in pure-tinct; depends on lib-supplemental Phases 1 + 3 |
+| [Supplemental Stdlib Modules](lib-supplemental.md) | **Accepted 2026-05-07.** Strings, math, bitwise, Bytes, TOML-lite, FsCap, handle caps, StringView, path utils |
+| [Date-Time Support](lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
+| [Pure-Tinct Regex Engine](lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
 
 
 ---
@@ -101,14 +102,14 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Numeric Types](completed/numeric-types.md) | Range annotations + Decimal + BigInt + `repr:` storage hints | 2026-05-07 — typing-cluster N1–4 |
 | [Parameterized Type Aliases](completed/parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site; arity-checked type constructors | 2026-05-07 — typing-cluster B3 |
 | [Path-Sensitive Narrowing](completed/narrowing.md) | Refine variable types in `if`/`match` branches from equality and type-predicate guards | 2026-05-07 — typing-cluster B5a/B5b |
+| [Supplemental Stdlib Modules](lib-supplemental.md) | Extended strings, math, bitwise, Bytes type, TOML-lite, FsCap protocol, capability-typed handles, StringView | 2026-05-07 — 8 sprints: `string-view` through `toml-lite-path` |
+| [Date-Time Support](lib-datetime.md) | Timestamp, Duration, ClockCap, Timezone via system zoneinfo | 2026-05-07 — `datetime` sprint |
+| [Pure-Tinct Regex Engine](lib-regex.md) | Thompson NFA in pure-tinct; Pattern nominal variant; re-compile/match/find/replace/split | 2026-05-07 — `regex` sprint |
+| [TLS, PKI, and HTTP](lib-tls.md) | Connector protocol, tls-connect, SpkiPin, HttpConn, system roots default, HTTP/1-3 | 2026-05-07 — `connector-tls` + `http-net` sprints |
 
 ### Adopt Now
 
 These proposals have no gating conditions and deliver standalone value at low cost.
-
-**[Supplemental Stdlib Modules](lib-supplemental.md) Phase 1** — Pure-tinct `stdlib/strings.llt`. At most one new Rust builtin. No new crates, no gating. Phases 2 and 3 follow.
-
-**[Pure-Tinct Regex Engine](lib-regex.md) Phase 1** — Thompson NFA in `stdlib/regex.llt`. No Rust builtins, no crates. Requires lib-supplemental Phases 1 + 3.
 
 **[Custom Call Aliases](call-aliases.md)** — `[timed f ...]` macro-defined call forms. Macros cluster is complete — prerequisite met.
 
@@ -136,7 +137,6 @@ These proposals open new ground rather than closing existing work. All have acce
 
 | Proposal | Key Unlock |
 |----------|-----------|
-| [TLS, PKI, and HTTP](lib-tls.md) | mTLS and custom CA for internal-service tinct programs |
 | [SQL Data Sources](lib-sql.md) | Lazy DB reads via `filter`/`map` predicate pushdown |
 | [Float Dict Keys](float-dict-keys.md) | `Key::Decimal` — Phase 1 (`Value::Decimal`) complete; Phase 2 (key extension) open |
 

@@ -6,6 +6,3 @@
 %.y
 === out
 Int(2)
-=== warn
-undefined variable: update at 3:2-3:8
-field 'y' not found in [] at 5:1-5:4

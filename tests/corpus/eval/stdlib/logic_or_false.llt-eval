@@ -2,5 +2,3 @@
 [or false false]
 === out
 Bool(false)
-=== warn
-undefined variable: or at 1:2-1:4

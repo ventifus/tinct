@@ -2,5 +2,3 @@
 [entries [x: 10]]
 === out
 Dict({0: Dict({"key": String("x"), "value": Int(10)})})
-=== warn
-undefined variable: entries at 1:2-1:9

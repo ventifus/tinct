@@ -2,5 +2,3 @@
 [ceil 5]
 === out
 Int(5)
-=== warn
-undefined variable: ceil at 1:2-1:6

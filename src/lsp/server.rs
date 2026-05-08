@@ -115,15 +115,8 @@ fn handle_request(
             let hover = store
                 .get(&uri)
                 .and_then(|doc| {
-                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                        hover_at(
-                            doc,
-                            &uri,
-                            offset,
-                            &store.prelude_index,
-                            &store.include_graph,
-                        )
-                    })
+                    lsp_position_to_offset(&pos, &doc.text)
+                        .and_then(|offset| hover_at(doc, &uri, offset, &store.include_graph))
                 })
                 .map(|text| lsp_types::Hover {
                     contents: HoverContents::Scalar(MarkedString::String(text)),
@@ -161,41 +154,27 @@ fn handle_request(
                 .get(&uri)
                 .and_then(|doc| {
                     lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                        definition_at(
-                            doc,
-                            &uri,
-                            offset,
-                            &store.prelude_index,
-                            &store.include_graph,
+                        definition_at(doc, &uri, offset, &store.include_graph).map(
+                            |(target_uri, span)| {
+                                // Determine source text for converting span to range:
+                                // - Document-local: use doc.text
+                                // - Included file: read from include_graph
+                                let source_text: String = if target_uri == uri {
+                                    doc.text.clone()
+                                } else {
+                                    // Included file: read from include_graph
+                                    store
+                                        .include_graph
+                                        .get(&target_uri)
+                                        .map(|node| node.state.text.clone())
+                                        .unwrap_or_default()
+                                };
+                                Location {
+                                    uri: target_uri,
+                                    range: llt_span_to_lsp_range(&span, &source_text),
+                                }
+                            },
                         )
-                        .map(|(target_uri, span)| {
-                            // Determine source text for converting span to range:
-                            // - Document-local: use doc.text
-                            // - Prelude: use embedded prelude source
-                            // - Included file: read from include_graph
-                            let source_text: String = if target_uri == uri {
-                                doc.text.clone()
-                            } else if store
-                                .prelude_index
-                                .path()
-                                .and_then(|p| crate::lsp::convert::file_path_to_uri(p))
-                                == Some(target_uri.clone())
-                            {
-                                // Prelude definition
-                                include_str!("../../stdlib/prelude.llt").to_string()
-                            } else {
-                                // Included file: read from include_graph
-                                store
-                                    .include_graph
-                                    .get(&target_uri)
-                                    .map(|node| node.state.text.clone())
-                                    .unwrap_or_default()
-                            };
-                            Location {
-                                uri: target_uri,
-                                range: llt_span_to_lsp_range(&span, &source_text),
-                            }
-                        })
                     })
                 })
                 .map(GotoDefinitionResponse::Scalar);
@@ -457,7 +436,7 @@ mod tests {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let hover = hover_at(doc, &uri, 4, &store.prelude_index, &store.include_graph); // on '42'
+        let hover = hover_at(doc, &uri, 4, &store.include_graph); // on '42'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Int"));
     }

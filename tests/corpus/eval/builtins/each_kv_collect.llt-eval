@@ -4,4 +4,4 @@
 === out
 Dict({"x": Int(1), "y": Int(2), "z": Int(3)})
 === warn
-undefined variable: collect-kv at 2:2-2:12
+undefined variable: each-kv at 2:14-2:21

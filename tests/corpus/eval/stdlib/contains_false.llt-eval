@@ -2,5 +2,3 @@
 [contains? [1 2 3 4 5] 99]
 === out
 Bool(false)
-=== warn
-undefined variable: contains? at 1:2-1:11

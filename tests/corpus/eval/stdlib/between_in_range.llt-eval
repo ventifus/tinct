@@ -2,5 +2,3 @@
 [call [between 0 255] 42]
 === out
 Bool(true)
-=== warn
-undefined variable: between at 1:8-1:15

@@ -1062,22 +1062,7 @@ fn run_eval(
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         tinct::resolve::resolve_file(&ast.node);
 
-        // Type errors are advisory unless --strict is set.
-        if let Err(type_errors) = tinct::typecheck::typecheck_file(&ast.node) {
-            if strict {
-                // In strict mode, type errors are fatal — print them and exit.
-                for err in &type_errors {
-                    eprintln!("{}", err);
-                }
-                return Err(format!(
-                    "type checking failed with {} error(s) (--strict mode)",
-                    type_errors.len()
-                ));
-            }
-            // Non-strict mode: type errors are advisory, continue with eval.
-        }
-
-        // Determine base directory for $include resolution
+        // Determine base directory for $include resolution (needed for type checking with includes)
         let file_base_dir_path = match stage {
             PipelineStage::Expr(_) => {
                 // Inline expressions use cwd as base directory
@@ -1102,6 +1087,34 @@ fn run_eval(
                 }
             }
         };
+
+        // Type errors are advisory unless --strict is set.
+        // Build type environment with prelude + includes (if file-based).
+        let type_env = match stage {
+            PipelineStage::File(file_path) if file_path != "-" => {
+                // File-based: use build_type_env with base_dir for include resolution
+                tinct::build_type_env(&ast.node, Some(&file_base_dir_path))
+            }
+            _ => {
+                // Stdin or inline expr: prelude-only (no include resolution)
+                tinct::build_prelude_env()
+            }
+        };
+        let (type_errors, _type_map, _doc_map) =
+            tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, type_env);
+        if !type_errors.is_empty() {
+            if strict {
+                // In strict mode, type errors are fatal — print them and exit.
+                for err in &type_errors {
+                    eprintln!("{}", err);
+                }
+                return Err(format!(
+                    "type checking failed with {} error(s) (--strict mode)",
+                    type_errors.len()
+                ));
+            }
+            // Non-strict mode: type errors are advisory, continue with eval.
+        }
 
         // Open base_dir as a cap-std Dir
         let base_dir =

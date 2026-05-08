@@ -2,5 +2,3 @@
 [head [filter [fn [x] [> x 5]] [range 0 10]]]
 === out
 Int(6)
-=== warn
-undefined variable: > at 1:24-1:25

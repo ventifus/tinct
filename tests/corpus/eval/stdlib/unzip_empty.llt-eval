@@ -1,5 +1,3 @@
 [unzip []]
 === out
 Dict({"a": Dict({}), "b": Dict({})})
-=== warn
-undefined variable: unzip at 1:2-1:7

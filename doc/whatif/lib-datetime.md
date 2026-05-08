@@ -1,6 +1,6 @@
 # What If: Date-Time Support for tinct (lib-datetime)
 
-**State:** Proposal
+**State:** Accepted — 2026-05-07
 
 What would it take to give tinct a complete date-time story — UTC
 timestamps, duration arithmetic, timezone conversion from the system
@@ -54,8 +54,18 @@ computes the cutoff timestamp for a 30-day retention window.
 ### Value Types
 
 **`Value::Timestamp`** — a UTC instant stored as `i64` nanoseconds since
-the Unix epoch (1970-01-01T00:00:00Z). Nanosecond precision; range
-±292 years from epoch covers all practical config use cases.
+the Unix epoch (1970-01-01T00:00:00Z). Nanosecond precision; representable
+range: approximately 1678–2262 CE (±292 years from epoch).
+
+**Range note:** RFC 5280 permits `99991231235959Z` as a sentinel value
+for non-expiring certificates. This overflows `i64` nanoseconds. When
+`tls-peer-cert` returns a `not-after` `Timestamp`, certificates using
+the RFC 5280 sentinel are clamped to the maximum representable value
+(`i64::MAX` nanoseconds, approximately 2262-04-11). Scripts that need
+to detect the "does not expire" case should check
+`[> cert.not-after [parse-timestamp "2200-01-01T00:00:00Z"]]` as a
+practical heuristic. This range is sufficient for all non-sentinel
+certificate dates in operational use.
 
 **`Value::Duration`** — a signed span stored as `i64` nanoseconds.
 Not calendar-aware (no months or years — calendar arithmetic requires
@@ -189,7 +199,7 @@ builtins.
 | Function | Signature | Notes |
 |---|---|---|
 | `timestamp-add t d` | `Timestamp → Duration → Timestamp` | Add duration to timestamp |
-| `timestamp-diff t1 t2` | `Timestamp → Timestamp → Duration` | `t1 - t2`; positive if t1 is later |
+| `timestamp-diff t1 t2` | `Timestamp → Timestamp → Duration` | `t1 - t2`; positive if t1 is later. Uses `i64::checked_sub`; returns error if difference overflows `i64` nanoseconds (>292 years apart). |
 | `timestamp<? t1 t2` | `Timestamp → Timestamp → Bool` | t1 is before t2 |
 | `timestamp>? t1 t2` | `Timestamp → Timestamp → Bool` | |
 | `timestamp=? t1 t2` | `Timestamp → Timestamp → Bool` | Exact equality |
@@ -222,7 +232,7 @@ builtins.
 
 | Function | Signature | Notes |
 |---|---|---|
-| `load-tz zoneinfo-dir name` | `DirCap → String → Timezone` | Parse IANA TZ file |
+| `load-tz zoneinfo-dir name` | `DirCap → String → Timezone` | Parse IANA TZif binary file. Returns error (never panics) on any parse failure, including malformed files. |
 | `timestamp-in-tz t tz` | `Timestamp → Timezone → Dict` | UTC→local conversion; returns year/month/day/hour/minute/second/offset-seconds/name |
 | `local->timestamp y mo d h mi s tz` | `Int×6 → Timezone → Timestamp` | Local→UTC |
 | `local-tz-name zoneinfo-dir` | `DirCap → String` | System local TZ name (e.g. `"America/New_York"`) |
@@ -315,11 +325,21 @@ Date-Time values into `Timestamp` directly.
 
 ## Dependencies
 
-- `chrono = "0.4"` or `jiff = "0.1"` (BurntSushi's modern successor
-  to chrono, with first-class support for reading system TZ database).
-  Decision deferred to implementation sprint — both are viable.
-- Timezone parsing: reads system `/usr/share/zoneinfo` via `DirCap`;
-  no compiled-in TZ data crate needed.
+- `jiff = "0.1"` — the implementation crate. Important caveat:
+  jiff bundles `jiff-tzdb` (a compiled-in copy of the IANA database)
+  by default. To read the system `/usr/share/zoneinfo` via `DirCap`
+  instead, the implementation must use `TimeZoneDatabase::from_dir(path)`
+  not the default `TimeZoneDatabase::bundled()`. The `jiff-tzdb`
+  bundled default must be disabled (`default-features = false`) to
+  avoid shipping two TZ databases. The DirCap integration is
+  implementable but requires explicit setup — it is not the default
+  jiff API. A fuzz target against the TZif binary parser is
+  recommended before shipping (jiff maintains its own fuzz corpus).
+- `--cap-clock-fixed "RFC3339" NAME` CLI flag: the RFC 3339 string
+  is parsed and converted to `i64` nanoseconds during CLI argument
+  processing. Dates outside the ±292-year range (e.g. `"9999-12-31T23:59:59Z"`)
+  overflow `i64`; the CLI must validate the parsed date fits in range
+  and return a user-visible error, not a panic or silent wrap.
 
 ## Dependencies (on other whatifs)
 

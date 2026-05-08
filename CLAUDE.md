@@ -4,6 +4,7 @@ Tinct is a configuration language with lazy evaluation and type inference. Parse
 
 **Key Files:**
 - `src/builtins.rs` — Rust-native builtins (76 functions; see doc/11-stdlib.md for current count); includes `IncludeContext` with include result cache for memoization (prevents re-evaluation of included files).
+- `src/imports.rs` — shared import resolution — `build_prelude_env()`, `collect_include_paths()`, `build_type_env()` for seeding TypeEnv with prelude and include bindings.
 - `stdlib/prelude.llt` — LLT-implemented stdlib functions (see doc/11-stdlib.md for current count).
 
 See README.md for comprehensive architecture and feature list.

@@ -2,5 +2,3 @@
 [until [fn [x] [>= x 5]] [fn [x] [* x 2]] 10]
 === out
 Int(10)
-=== warn
-undefined variable: >= at 1:17-1:19

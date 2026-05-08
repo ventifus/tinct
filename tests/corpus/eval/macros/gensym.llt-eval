@@ -5,5 +5,3 @@ Dict({"a": String(":gensym:0"), "b": String(":gensym:1"), "c": Bool(false)})
 === warn
 undefined variable: gensym at 1:6-1:12
 undefined variable: gensym at 1:18-1:24
-type _t0 does not satisfy constraint Equatable at 1:29-1:36
-type _t1 does not satisfy constraint Equatable at 1:29-1:36

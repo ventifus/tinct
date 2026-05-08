@@ -3,5 +3,3 @@
 [fold [fn [acc x] [+ acc x]] 0 [range 1 51]]
 === out
 Int(1275)
-=== warn
-undefined variable: fold at 2:2-2:6

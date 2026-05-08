@@ -2,5 +2,3 @@
 [take 2 [a: 10 b: 20 c: 30]]
 === out
 Dict({"a": Int(10), "b": Int(20)})
-=== warn
-cannot unify Seq[?] with [a: 10 b: 20 c: 30] at 1:9-1:28

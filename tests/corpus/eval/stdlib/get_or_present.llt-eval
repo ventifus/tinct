@@ -2,5 +2,3 @@
 [get-or [a: 1] "a" 99]
 === out
 Int(1)
-=== warn
-undefined variable: get-or at 1:2-1:8

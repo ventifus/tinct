@@ -2,5 +2,3 @@
 [sum []]
 === out
 Int(0)
-=== warn
-undefined variable: sum at 1:2-1:5

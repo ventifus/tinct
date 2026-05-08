@@ -2,5 +2,3 @@
 [reduce [fn [acc x] [+ acc x]] 99 []]
 === out
 Int(99)
-=== warn
-cannot unify Seq[?] with [] at 1:35-1:37

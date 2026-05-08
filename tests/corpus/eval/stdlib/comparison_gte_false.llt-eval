@@ -2,5 +2,3 @@
 [>= 3 5]
 === out
 Bool(false)
-=== warn
-undefined variable: >= at 1:2-1:4

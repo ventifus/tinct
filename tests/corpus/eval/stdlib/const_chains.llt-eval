@@ -2,5 +2,3 @@
 [map [const 0] ["a" "b" "c"]]
 === out
 Dict({0: Int(0), 1: Int(0), 2: Int(0)})
-=== warn
-undefined variable: const at 1:7-1:12

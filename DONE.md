@@ -4438,3 +4438,18 @@ Adopt new Rust 1.87–1.95 language and stdlib features available at the new MSR
 - [x] **`cfg_select!` macro** (stable 1.95): applied in setup_seccomp() (`src/main.rs`)
 - [x] **`OsStr::display()`** (stable 1.87): no applicable patterns found (`src/main.rs`)
 - LazyLock item moved to `typecheck-import-env` sprint (depends on that sprint's `src/imports.rs`)
+
+## Type Checking Infrastructure
+
+### `typecheck-import-env`
+
+Seed the type checker with a fully-resolved import environment (prelude + user `$include` files) before running inference. Created `src/imports.rs` with shared import resolution logic used by both the eval pipeline and LSP, eliminating the LSP's divergent `PreludeIndex` plumbing.
+
+- [x] `src/imports.rs`: `build_prelude_env()`, `collect_include_paths()`, `build_type_env()` (public API); `resolve_includes` is private — used by the LSP and typecheck pipeline (`src/imports.rs`)
+- [x] `LazyLock<Rc<TypeEnv>>` for prelude env cache (from `rust-modernize`) (`src/imports.rs`)
+- [x] Wire `typecheck_source()` to use `imports::build_type_env()` (`src/lib.rs`)
+- [x] Wire `typecheck_file()` and `typecheck_file_with_types()` to use `imports::build_prelude_env()` (`src/typecheck.rs`)
+- [x] Wire `tinct run <file>` to pass `base_dir` for include resolution (`src/main.rs`)
+- [x] Delete `PreludeIndex`, `with_prelude_types()`, LSP-local `collect_include_paths` (`src/lsp/document.rs`, `src/types.rs`)
+- [x] Corpus cleanup: removed ~250 stale `=== warn: undefined variable` sections for prelude functions (`tests/corpus/`)
+- [x] Unit + integration tests; corpus suite passes with zero prelude-function warnings (`src/imports.rs`, `src/lib.rs`)

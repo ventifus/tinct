@@ -2,5 +2,3 @@
 [call [identity _.x] [x: 100]]
 === out
 Int(100)
-=== warn
-undefined variable: identity at 1:8-1:16

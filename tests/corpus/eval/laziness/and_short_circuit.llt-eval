@@ -3,5 +3,3 @@
 [and false [error "should not evaluate"]]
 === out
 Bool(false)
-=== warn
-undefined variable: and at 2:2-2:5

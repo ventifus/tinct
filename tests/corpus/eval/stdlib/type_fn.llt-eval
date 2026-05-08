@@ -1,5 +1,3 @@
 [fn? identity]
 === out
 Bool(true)
-=== warn
-undefined variable: identity at 1:6-1:14

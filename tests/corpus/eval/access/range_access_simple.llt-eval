@@ -5,5 +5,3 @@
 [slice data 1 4]
 === out
 Dict({1: String("b"), 2: String("c"), 3: String("d")})
-=== warn
-undefined variable: slice at 4:2-4:7

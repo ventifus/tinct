@@ -1,5 +1,3 @@
 [clamp 10 20 5]
 === out
 Int(10)
-=== warn
-undefined variable: clamp at 1:2-1:7

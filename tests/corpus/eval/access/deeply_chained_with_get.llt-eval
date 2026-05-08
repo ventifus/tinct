@@ -8,5 +8,3 @@
 ]
 === out
 Dict({"data": Dict({0: Dict({"name": ...}), 1: Dict({"name": ...})}), "result": String("second")})
-=== warn
-undefined variable: get at 6:12-6:15

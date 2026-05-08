@@ -2,5 +2,3 @@
 [has? [10 20 30] 1]
 === out
 Bool(true)
-=== warn
-undefined variable: has? at 1:2-1:6

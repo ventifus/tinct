@@ -1499,28 +1499,6 @@ impl TypeEnv {
 
         env
     }
-
-    /// Extend a TypeEnv with prelude names, binding each to its inferred type.
-    ///
-    /// This suppresses "undefined variable" type errors for prelude functions
-    /// in LSP contexts where the prelude AST is not in scope but the prelude
-    /// environment is loaded at runtime.
-    ///
-    /// Takes a TypeMap from the prelude index and extracts types for top-level
-    /// bindings. Falls back to Type::Unknown for names without type information.
-    pub fn with_prelude_types(
-        &self,
-        name_to_span: &std::collections::HashMap<String, crate::ast::Span>,
-        type_map: &crate::typecheck::TypeMap,
-    ) -> Self {
-        let mut env = self.clone();
-        for (name, span) in name_to_span {
-            let key = (span.start.offset, span.end.offset);
-            let ty = type_map.get(&key).cloned().unwrap_or(Type::Unknown);
-            env.insert(name.clone(), ty);
-        }
-        env
-    }
 }
 
 impl Default for TypeEnv {

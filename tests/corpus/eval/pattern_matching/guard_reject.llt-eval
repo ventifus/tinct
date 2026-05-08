@@ -4,4 +4,4 @@
 === out
 String("other")
 === warn
-undefined variable: > at 2:13-2:14
+undefined variable: n at 2:15-2:16

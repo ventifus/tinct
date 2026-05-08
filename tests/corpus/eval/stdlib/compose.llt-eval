@@ -6,6 +6,3 @@
 [f 5]
 === out
 Int(11)
-=== warn
-undefined variable: compose at 3:6-3:13
-undefined variable: f at 5:2-5:3

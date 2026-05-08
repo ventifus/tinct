@@ -2,5 +2,3 @@
 [find-first [fn [x] [> x 3]] [1 2 3 4 5]]
 === out
 Int(4)
-=== warn
-undefined variable: find-first at 1:2-1:12

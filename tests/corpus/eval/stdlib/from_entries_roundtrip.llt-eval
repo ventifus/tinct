@@ -2,5 +2,3 @@
 [from-entries [entries [name: "Alice" age: 30 active: true]]]
 === out
 Dict({"name": String("Alice"), "age": Int(30), "active": Bool(true)})
-=== warn
-undefined variable: from-entries at 1:2-1:14

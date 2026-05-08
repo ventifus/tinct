@@ -2,5 +2,3 @@
 [until [fn [xs] [>= [length xs] 5]] [fn [xs] [append xs 1]] []]
 === out
 Dict({0: Int(1), 1: Int(1), 2: Int(1), 3: Int(1), 4: Int(1)})
-=== warn
-undefined variable: >= at 1:18-1:20

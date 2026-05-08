@@ -2,5 +2,3 @@
 [any? [fn [x] [> x 3]] [1 2 5]]
 === out
 Bool(true)
-=== warn
-undefined variable: any? at 1:2-1:6

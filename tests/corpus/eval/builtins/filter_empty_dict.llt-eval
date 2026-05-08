@@ -2,5 +2,3 @@
 [collect [filter [fn [x] [> x 100]] [a: 1 b: 2 c: 3]]]
 === out
 Dict({})
-=== warn
-undefined variable: > at 1:27-1:28

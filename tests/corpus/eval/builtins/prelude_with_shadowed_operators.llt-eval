@@ -9,6 +9,3 @@
 ]
 === out
 Dict({"<": Function(a, b), "+": Function(a, b), "gt-result": Bool(true), "not-result": Bool(true)})
-=== warn
-undefined variable: > at 6:15-6:16
-undefined variable: not at 7:16-7:19

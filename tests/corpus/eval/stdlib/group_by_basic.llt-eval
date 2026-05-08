@@ -3,5 +3,3 @@
 [group-by [fn [x] [mod x 2]] [1 2 3 4 5]]
 === out
 Dict({1: Dict({0: Int(1), 1: Int(3), 2: Int(5)}), 0: Dict({0: Int(2), 1: Int(4)})})
-=== warn
-undefined variable: group-by at 2:2-2:10

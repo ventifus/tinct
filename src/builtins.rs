@@ -1022,7 +1022,11 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     crate::resolve::resolve_file(&file.node);
 
     // Type errors are advisory; evaluation proceeds regardless.
-    let _ = crate::typecheck::typecheck_file(&file.node);
+    // Use typecheck_file_with_types_and_env with a builtins-only env to avoid
+    // re-entrancy into build_prelude_env() (which may already hold a RefCell borrow
+    // when create_stdlib_env is called from expand_macros during prelude bootstrap).
+    let builtins_env = Rc::new(crate::types::TypeEnv::with_builtins());
+    let _ = crate::typecheck::typecheck_file_with_types_and_env(&file.node, builtins_env);
 
     let thunk = crate::eval::eval_file(&file.node, Rc::clone(&root_env), &bootstrap_ctx, 0)?;
 

@@ -35,6 +35,8 @@ pub(crate) mod test_util;
 pub mod typecheck;
 pub(crate) mod types;
 pub(crate) mod value;
+// Import resolution for type checker — seeds TypeEnv with prelude function types.
+pub(crate) mod imports;
 // Rust-native builtin functions (stdlib-1 sprint).
 pub(crate) mod builtins;
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
@@ -86,6 +88,9 @@ pub use eval_deep::deep_materialize;
 pub use builtins::{
     create_root_env, create_stdlib_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
+
+/// Import resolution for the type checker.
+pub use imports::{build_prelude_env, build_type_env};
 
 // Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
 #[cfg(feature = "lsp")]
@@ -195,9 +200,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
 /// error message if type errors are found. Each error includes the error message
 /// and the source span where it occurred.
 ///
-/// The type environment is pre-populated with builtin type signatures via
-/// `TypeEnv::with_builtins()`, so stdlib builtins (`+`, `merge`, etc.) are
-/// in scope for type checking.
+/// The type environment is pre-populated with builtin type signatures AND prelude
+/// function types via `imports::build_prelude_env()`, so stdlib builtins (`+`, `merge`)
+/// and prelude functions (`map`, `filter`, `any?`, etc.) are in scope for type checking.
 ///
 /// This function is primarily used for testing and corpus validation to ensure
 /// type checking regressions are caught. The main `eval_source` function treats
@@ -212,11 +217,16 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     desugar::desugar_file(&mut file.node);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     resolve::resolve_file(&file.node);
-    // Type check the file
-    typecheck::typecheck_file(&file.node).map_err(|type_errors| {
+    // Type check the file with prelude-seeded environment
+    let env = imports::build_prelude_env();
+    let (type_errors, _type_map, _doc_map) =
+        typecheck::typecheck_file_with_types_and_env(&file.node, env);
+    if type_errors.is_empty() {
+        Ok(())
+    } else {
         let error_msgs: Vec<String> = type_errors.iter().map(|e| format!("{}", e)).collect();
-        error_msgs.join("\n")
-    })
+        Err(error_msgs.join("\n"))
+    }
 }
 
 // --- Value Serializer Visitor Pattern ---
@@ -1434,6 +1444,21 @@ mod tests {
         assert!(
             snippet_text.contains(" | "),
             "snippet should include line number format 'N | ...', got: {snippet_text}"
+        );
+    }
+
+    /// Integration test: `typecheck_source` resolves the prelude `map` function.
+    ///
+    /// Calling `[call $map [fn [x] x] [1 2 3]]` should type-check without any
+    /// "undefined variable" error for `map`, proving that `build_prelude_env()`
+    /// is wired into `typecheck_source` and that prelude functions are in scope.
+    #[test]
+    fn typecheck_source_resolves_prelude_map() {
+        let result = typecheck_source("[call $map [fn [x] x] [1 2 3]]");
+        assert!(
+            result.is_ok(),
+            "expected typecheck_source to succeed (no undefined-variable error for map), got: {:?}",
+            result
         );
     }
 

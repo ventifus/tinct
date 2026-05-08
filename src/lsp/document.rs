@@ -2,21 +2,17 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use lsp_types::Uri;
 
-use crate::ast::{Expr, File, Span, Spanned};
+use crate::ast::{File, Spanned};
 use crate::builtins::create_stdlib_env;
 use crate::error::EvalError;
 use crate::eval::{eval_file, materialize};
 use crate::parser::{parse2, ParseError};
-use crate::typecheck::{
-    typecheck_file_with_types, typecheck_file_with_types_and_env, DocMap, TypeMap,
-};
-use crate::types::{TypeEnv, TypeError};
+use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, TypeMap};
+use crate::types::TypeError;
 use crate::value::Environment;
 
 /// The parsed and analyzed state of a single document.
@@ -47,13 +43,13 @@ impl DocumentState {
     /// [`DocumentStore`]. Each document evaluation creates a child scope, so
     /// the shared env is never mutated.
     ///
-    /// The `prelude_index` parameter provides prelude function names to seed
-    /// the type environment, suppressing false "undefined variable" errors.
+    /// The `base_dir` parameter is used to resolve include paths for building
+    /// the type environment. Pass `None` for source-only contexts.
     pub fn new(
         text: String,
         stdlib_env: &Rc<RefCell<Environment>>,
         eval_ctx: &Rc<crate::eval::EvalContext>,
-        prelude_index: &PreludeIndex,
+        base_dir: Option<&std::path::Path>,
     ) -> Self {
         // Use parse2() to capture both the AST and any recovered parse errors.
         let parse_result = parse2(&text);
@@ -105,13 +101,11 @@ impl DocumentState {
             crate::resolve::resolve_file(&file.node);
 
             // Run type checker (advisory), collecting the span-to-type map for hover.
-            // Seed the type environment with prelude types from the prelude index to suppress
-            // false "undefined variable" errors and provide accurate types for hover.
-            let base_env = Rc::new(TypeEnv::with_builtins());
-            let seeded_env = Rc::new(
-                base_env
-                    .with_prelude_types(prelude_index.name_to_key_span(), prelude_index.type_map()),
-            );
+            // Seed the type environment with prelude types and resolved includes via the
+            // shared imports module to suppress false "undefined variable" errors.
+            // Respect no_fs: skip include resolution when filesystem access is disabled.
+            let type_base_dir = if eval_ctx.config.no_fs { None } else { base_dir };
+            let seeded_env = crate::imports::build_type_env(&file.node, type_base_dir);
             let (errs, map, docs) = typecheck_file_with_types_and_env(&file.node, seeded_env);
             type_errors = errs;
             type_map = map;
@@ -141,57 +135,6 @@ impl DocumentState {
             type_map,
             doc_map,
         }
-    }
-}
-
-/// Index of prelude definitions for LSP features.
-///
-/// Built once at LSP startup by parsing and type-checking the embedded prelude source.
-/// Provides accurate types for hover and enables go-to-definition navigation to the
-/// on-disk stdlib/prelude.llt.
-///
-/// Uses Arc internally to make cloning cheap (O(1) reference count bump instead of
-/// O(prelude_size) HashMap clones).
-#[derive(Debug, Clone)]
-pub struct PreludeIndex {
-    inner: Arc<PreludeIndexInner>,
-}
-
-#[derive(Debug)]
-struct PreludeIndexInner {
-    /// Path to the on-disk stdlib/prelude.llt, if it exists.
-    path: Option<PathBuf>,
-    /// Map from prelude function name to its key span in the prelude source.
-    name_to_key_span: HashMap<String, Span>,
-    /// Map from source span to inferred type for all expressions in the prelude.
-    type_map: TypeMap,
-}
-
-impl PreludeIndex {
-    /// Create an empty index (used when prelude parsing fails).
-    pub fn empty() -> Self {
-        Self {
-            inner: Arc::new(PreludeIndexInner {
-                path: None,
-                name_to_key_span: HashMap::new(),
-                type_map: TypeMap::new(),
-            }),
-        }
-    }
-
-    /// Get the path to the on-disk prelude file, if it exists.
-    pub fn path(&self) -> Option<&PathBuf> {
-        self.inner.path.as_ref()
-    }
-
-    /// Get the name-to-span map.
-    pub fn name_to_key_span(&self) -> &HashMap<String, Span> {
-        &self.inner.name_to_key_span
-    }
-
-    /// Get the type map.
-    pub fn type_map(&self) -> &TypeMap {
-        &self.inner.type_map
     }
 }
 
@@ -225,7 +168,6 @@ pub fn index_file(
     graph: &mut IncludeGraph,
     stdlib_env: &Rc<RefCell<Environment>>,
     eval_ctx: &Rc<crate::eval::EvalContext>,
-    prelude_index: &PreludeIndex,
     depth: usize,
 ) -> Result<(), String> {
     const MAX_DEPTH: usize = 16;
@@ -250,19 +192,20 @@ pub fn index_file(
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
-    // Create document state
-    let state = DocumentState::new(text, stdlib_env, eval_ctx, prelude_index);
+    // Create document state (base_dir for include resolution is the file's directory)
+    let base_dir = path.parent();
+    let state = DocumentState::new(text, stdlib_env, eval_ctx, base_dir);
 
-    // Collect include paths from this file
+    // Collect include paths from this file using the shared imports module
     let include_paths = if let Ok(ref file) = state.ast {
-        crate::lsp::analysis::collect_include_paths(&file.node)
+        crate::imports::collect_include_paths(&file.node)
     } else {
         vec![]
     };
 
-    // Resolve include URIs
+    // Resolve include URIs (note: imports module returns (Span, String), not (String, Span))
     let mut includes = Vec::new();
-    for (path, _span) in include_paths {
+    for (_span, path) in include_paths {
         if let Some(include_uri) = resolve_include_uri(&uri, &path) {
             includes.push(include_uri);
         }
@@ -281,14 +224,7 @@ pub fn index_file(
     // Recursively index included files and build reverse edges
     for include_uri in &includes {
         // Recurse
-        if let Err(e) = index_file(
-            include_uri.clone(),
-            graph,
-            stdlib_env,
-            eval_ctx,
-            prelude_index,
-            depth + 1,
-        ) {
+        if let Err(e) = index_file(include_uri.clone(), graph, stdlib_env, eval_ctx, depth + 1) {
             eprintln!("LSP: Failed to index {}: {}", include_uri.as_str(), e);
             continue;
         }
@@ -313,7 +249,6 @@ pub fn invalidate_dependents(
     graph: &mut IncludeGraph,
     stdlib_env: &Rc<RefCell<Environment>>,
     eval_ctx: &Rc<crate::eval::EvalContext>,
-    prelude_index: &PreludeIndex,
 ) {
     use std::collections::VecDeque;
     let mut queue = VecDeque::new();
@@ -341,7 +276,6 @@ pub fn invalidate_dependents(
             graph,
             stdlib_env,
             eval_ctx,
-            prelude_index,
             0, // Reset depth for re-indexing
         ) {
             eprintln!("LSP: Failed to re-index {}: {}", uri.as_str(), e);
@@ -354,115 +288,6 @@ pub fn invalidate_dependents(
                 queue.push_back(dependent_uri.clone());
             }
         }
-    }
-}
-
-/// Find the on-disk stdlib/prelude.llt path.
-///
-/// Tries two layouts in order:
-/// 1. Development: `<exe_grandparent>/stdlib/prelude.llt`
-/// 2. Installed: `<exe_parent>/../share/tinct/stdlib/prelude.llt`
-///
-/// Returns `None` if neither file exists.
-fn find_stdlib_prelude_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
-            exe.parent() // target/debug
-                .and_then(|p| p.parent()) // target
-                .and_then(|p| p.parent()) // project root
-                .map(|root| root.join("stdlib").join("prelude.llt"))
-        })
-        .filter(|p| p.is_file())
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| {
-                    let bin_dir = exe.parent()?; // bin/
-                                                 // Verify we're in a bin/ directory before assuming installed layout
-                    if bin_dir.file_name()? != std::ffi::OsStr::new("bin") {
-                        return None;
-                    }
-                    let prefix = bin_dir.parent()?; // <prefix>/
-                    Some(
-                        prefix
-                            .join("share")
-                            .join("tinct")
-                            .join("stdlib")
-                            .join("prelude.llt"),
-                    )
-                })
-                .filter(|p| p.is_file())
-        })
-}
-
-/// Build the prelude index by parsing and type-checking the embedded prelude source.
-///
-/// Returns an empty index on parse failure (with a warning logged to stderr).
-pub fn build_prelude_index() -> PreludeIndex {
-    let prelude_source = include_str!("../../stdlib/prelude.llt");
-    let path = find_stdlib_prelude_path();
-
-    // Parse the prelude source
-    let parse_result = match parse2(prelude_source) {
-        Ok(output) => output.file,
-        Err(err) => {
-            eprintln!("LSP: failed to parse prelude: {}", err.message);
-            return PreludeIndex::empty();
-        }
-    };
-
-    let file = parse_result;
-
-    // Expand macros (pre-desugar AST transformation)
-    let mut file = match crate::expand::expand_macros(file, false) {
-        Ok(result) => result.file.node,
-        Err(e) => {
-            eprintln!("LSP: failed to expand macros in prelude: {}", e);
-            return PreludeIndex::empty();
-        }
-    };
-
-    // Desugar before type-checking
-    crate::desugar::desugar_file(&mut file);
-
-    // Variable resolution pass
-    crate::resolve::resolve_file(&file);
-
-    // Type-check to extract the TypeMap and DocMap
-    let (type_errors, type_map, _doc_map) = typecheck_file_with_types(&file);
-
-    if !type_errors.is_empty() {
-        eprintln!(
-            "LSP: prelude has {} type error(s) (internal bug, please report); \
-             hover/definition may be incomplete for some stdlib functions",
-            type_errors.len()
-        );
-    }
-
-    // Walk the top-level dict entries to build the name→key-span index
-    let mut name_to_key_span = HashMap::new();
-
-    for document in &file.documents {
-        for expr in &document.node.expressions {
-            if let Expr::Dict(entries) = &expr.node {
-                for entry in entries {
-                    if let Some(ref key) = entry.node.key {
-                        if let Some(name) = crate::lsp::analysis::key_name(&key.node) {
-                            name_to_key_span.insert(name.to_string(), key.span);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    PreludeIndex {
-        inner: Arc::new(PreludeIndexInner {
-            path,
-            name_to_key_span,
-            type_map,
-        }),
     }
 }
 
@@ -494,8 +319,6 @@ pub struct DocumentStore {
     stdlib_env: Rc<RefCell<Environment>>,
     /// Base evaluation context (with "." as base_dir).
     base_eval_ctx: Rc<crate::eval::EvalContext>,
-    /// Index of prelude definitions for LSP features.
-    pub prelude_index: PreludeIndex,
     /// Include dependency graph for cross-file resolution.
     pub include_graph: IncludeGraph,
 }
@@ -530,14 +353,10 @@ impl DocumentStore {
             });
         let base_eval_ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), true);
 
-        // Build the prelude index for LSP features
-        let prelude_index = build_prelude_index();
-
         Self {
             docs: HashMap::new(),
             stdlib_env,
             base_eval_ctx,
-            prelude_index,
             include_graph: HashMap::new(),
         }
     }
@@ -568,13 +387,14 @@ impl DocumentStore {
             });
         let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
 
-        let state = DocumentState::new(text, &self.stdlib_env, &eval_ctx, &self.prelude_index);
+        // Create document state with base_path as base_dir for include resolution
+        let state = DocumentState::new(text, &self.stdlib_env, &eval_ctx, Some(&base_path));
 
-        // Collect include paths from the new AST
+        // Collect include paths from the new AST using the shared imports module
         let new_includes = if let Ok(ref file) = state.ast {
-            crate::lsp::analysis::collect_include_paths(&file.node)
+            crate::imports::collect_include_paths(&file.node)
                 .into_iter()
-                .filter_map(|(path, _span)| resolve_include_uri(&uri, &path))
+                .filter_map(|(_span, path)| resolve_include_uri(&uri, &path))
                 .collect::<Vec<_>>()
         } else {
             vec![]
@@ -596,7 +416,6 @@ impl DocumentStore {
                     &mut self.include_graph,
                     &self.stdlib_env,
                     &eval_ctx,
-                    &self.prelude_index,
                     0,
                 ) {
                     eprintln!("LSP: Failed to index {}: {}", include_uri.as_str(), e);
@@ -640,13 +459,7 @@ impl DocumentStore {
         self.docs.insert(uri.clone(), state);
 
         // Invalidate and re-index dependents
-        invalidate_dependents(
-            &uri,
-            &mut self.include_graph,
-            &self.stdlib_env,
-            &eval_ctx,
-            &self.prelude_index,
-        );
+        invalidate_dependents(&uri, &mut self.include_graph, &self.stdlib_env, &eval_ctx);
     }
 
     /// Remove a document from the store.
@@ -681,11 +494,6 @@ mod tests {
         crate::eval::EvalContext::new(base_dir, test_env(), true)
     }
 
-    /// Helper: create an empty prelude index for tests.
-    fn test_prelude_index() -> PreludeIndex {
-        PreludeIndex::empty()
-    }
-
     #[test]
     fn test_document_state_valid_source() {
         let env = test_env();
@@ -693,7 +501,7 @@ mod tests {
             "[x: 42]".to_string(),
             &env,
             &test_ctx(),
-            &test_prelude_index(),
+            None, // No base_dir for simple test
         );
         assert!(state.ast.is_ok());
         assert!(state.type_errors.is_empty());
@@ -703,12 +511,7 @@ mod tests {
     #[test]
     fn test_document_state_parse_error() {
         let env = test_env();
-        let state = DocumentState::new(
-            "[unterminated".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let state = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
         assert!(state.ast.is_err());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
@@ -717,12 +520,7 @@ mod tests {
     #[test]
     fn test_document_state_type_error() {
         let env = test_env();
-        let state = DocumentState::new(
-            "[@Number hello]".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let state = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), None);
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty());
         // TypeAssert without default: also errors at runtime on type mismatch.
@@ -732,12 +530,7 @@ mod tests {
     #[test]
     fn test_document_state_eval_error() {
         let env = test_env();
-        let state = DocumentState::new(
-            "$undefined".to_string(),
-            &env,
-            &test_ctx(),
-            &test_prelude_index(),
-        );
+        let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty()); // undefined variable is also a type error
         assert!(!state.eval_errors.is_empty());
@@ -785,7 +578,7 @@ mod tests {
         // rewrites $_ to an explicit lambda, so no type error should be emitted.
         let env = test_env();
         let ctx = test_ctx();
-        let state = DocumentState::new("[f: $_]".to_string(), &env, &ctx, &test_prelude_index());
+        let state = DocumentState::new("[f: $_]".to_string(), &env, &ctx, None);
         assert!(state.ast.is_ok(), "parse should succeed");
         assert!(
             state.type_errors.is_empty(),
@@ -818,7 +611,7 @@ mod tests {
             "[call $include \"some_file.llt\"]".to_string(),
             &env,
             &ctx,
-            &test_prelude_index(),
+            None,
         );
         assert!(state.ast.is_ok(), "parse should succeed");
         assert!(
@@ -835,20 +628,18 @@ mod tests {
     }
 
     #[test]
-    fn test_prelude_index_non_empty() {
-        let index = build_prelude_index();
+    fn test_prelude_env_non_empty() {
+        // Verify that the shared imports module provides prelude types
+        let env = crate::imports::build_prelude_env();
         // The prelude should contain at least these well-known functions
+        assert!(env.get("map").is_some(), "prelude env should contain 'map'");
         assert!(
-            index.name_to_key_span().contains_key("map"),
-            "prelude index should contain 'map'"
+            env.get("filter").is_some(),
+            "prelude env should contain 'filter'"
         );
         assert!(
-            index.name_to_key_span().contains_key("filter"),
-            "prelude index should contain 'filter'"
-        );
-        assert!(
-            index.name_to_key_span().contains_key("identity"),
-            "prelude index should contain 'identity'"
+            env.get("identity").is_some(),
+            "prelude env should contain 'identity'"
         );
     }
 
@@ -856,12 +647,11 @@ mod tests {
     fn test_no_false_undefined_for_prelude() {
         let env = test_env();
         let ctx = test_ctx();
-        let prelude_index = build_prelude_index();
         let state = DocumentState::new(
             "[call $map [fn [x] x] [1 2 3]]".to_string(),
             &env,
             &ctx,
-            &prelude_index,
+            None, // base_dir=None still gets prelude types via imports::build_type_env
         );
         assert!(state.ast.is_ok(), "parse should succeed");
         assert!(

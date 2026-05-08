@@ -7,6 +7,3 @@
 [result: [head filtered]]
 === out
 Dict({"result": Int(1)})
-=== warn
-undefined variable: > at 5:29-5:30
-undefined variable: filtered at 6:16-6:24

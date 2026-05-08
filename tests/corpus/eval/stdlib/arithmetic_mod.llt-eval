@@ -2,5 +2,3 @@
 [mod 10 3]
 === out
 Int(1)
-=== warn
-undefined variable: mod at 1:2-1:5

@@ -5,5 +5,3 @@
 [result: [slice data 5 10]]
 === out
 Dict({"result": Dict({})})
-=== warn
-undefined variable: slice at 4:11-4:16

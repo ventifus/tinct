@@ -2,5 +2,3 @@
 [cond [[true "result"] [true [error "should not fire"]]]]
 === out
 String("result")
-=== warn
-undefined variable: cond at 1:2-1:6
