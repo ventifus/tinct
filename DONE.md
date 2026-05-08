@@ -4597,6 +4597,12 @@ Modernize stdlib `.llt` files to leverage the typing cluster facilities implemen
 **formatter/pretty.llt:**
 - [x] Public/private split, string-dispatch → `[match]`, complete annotation pass
 
-1930 tests pass.
+**out/ formatters (7 files: json, json-pretty, yaml, csv, toml, env, raw):**
+- [x] Annotation pass: `fn@Str` return types on all output-generating functions; `@Type` on all params
 
-**Deferred:** public/private split (prelude.llt — `-impl`/`-step`/`-check` helpers into first dict); union type annotations for dual-dispatch parameters (`@[Dict Seq]` — failed, type system limitation); `doc:` annotations on all exported functions; `formatter/compact.llt` public/private split and `[match]` dispatch; `out/` formatters (7 files); `in/json.llt`, `io.llt`, `net.llt`; corpus tests for pattern-matched `try` result sites; `doc/11-stdlib.md` type signature table update.
+**in/json.llt, io.llt, net.llt:**
+- [x] Annotation pass: complete type annotations for all functions
+
+1930 tests pass — no regressions.
+
+**Deferred:** public/private split (prelude.llt — `-impl`/`-step`/`-check` helpers into first dict; out/ formatters; in/json.llt, io.llt, net.llt); union type annotations for dual-dispatch parameters (`@[Dict Seq]` — KNOWN ISSUE, type system limitation); `doc:` annotations on all exported functions; `formatter/compact.llt` public/private split and `[match]` dispatch; `out/` formatters `[match]` dispatch; corpus tests for pattern-matched `try` result sites; `doc/11-stdlib.md` type signature table update.

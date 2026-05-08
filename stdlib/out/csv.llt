@@ -5,37 +5,37 @@
 [
 # Internal: quote and escape a CSV field
 # Always quote to avoid checking for special characters
-csv-quote: [fn [s]
+csv-quote: [fn@String [s@String]
   [str "\"" [replace "\"" "\"\"" s] "\""]]
 
 # Internal: format header row
-csv-header: [fn [ks i acc]
+csv-header: [fn@String [ks@Dict i@Int acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-header ks [+ i 1]
       [str acc [if [> i 0] "," ""] [csv-quote [get i ks]]]]]]
 
 # Internal: format a single data row
-csv-row: [fn [row ks i acc]
+csv-row: [fn@String [row@Dict ks@Dict i@Int acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-row row ks [+ i 1]
       [str acc [if [> i 0] "," ""] [csv-quote [str [get-or row [get i ks] ""]]]]]]]
 
 # Internal: format all data rows
-csv-rows: [fn [rows ks i acc]
+csv-rows: [fn@String [rows@Dict ks@Dict i@Int acc@String]
   [if [>= i [length rows]]
     acc
     [csv-rows rows ks [+ i 1]
       [str acc [csv-row [get i rows] ks 0 ""]]]]]
 
 # Public API: format list-of-dicts to CSV
-csv: [fn [rows]
+csv: [fn@String [rows@Dict]
   [if [empty? rows]
     ""
     [csv-impl rows [keys rows.0]]]]
 
-csv-impl: [fn [rows ks]
+csv-impl: [fn@String [rows@Dict ks@Dict]
   [str
     [csv-header ks 0 ""]
     [csv-rows rows ks 0 ""]]]
