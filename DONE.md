@@ -2,6 +2,10 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## `toml-lite-path`: TOML-Lite & Path Utilities
+
+Pure-tinct `stdlib/toml-lite.llt`: `parse-toml-lite` function handling `[section]`, `[[array-table]]`, `key = "string-value"`, comments, blank lines. Recursive line processor with section-tracking accumulator, array table support via integer-keyed dicts, value parsing for quoted strings, integers, and booleans. Pipeline wrapper `stdlib/in/toml-lite.llt`. Pure-tinct `stdlib/path.llt`: `path-parts`, `basename`, `dirname`, `extension`, `path-join` (all using `split`/`join`). Corpus tests for TOML parsing (basic, comments, blanks, integration, array tables) and path utilities (basename, dirname, extension, join, parts). **Deferred:** `stdlib/toml-lite.llt` and `stdlib/path.llt` not auto-loaded at startup (require explicit `[include]`).
+
 ## `bytes-type`: Bytes Type
 
 `Value::Bytes { source: Rc<[u8]>, start, end }` added to Value enum with `Type::Bytes` in the type system and `bytes?` predicate. 6 new Rust builtins: `bytes` (variadic concat), `bytes-find` (byte-pattern search returning index or -1), `bytes-of` (collect `Seq@Int` or `Dict` of ints 0-255 into Bytes), `bytes-equal?` (fast structural equality), `ct-equal?` (constant-time via `subtle::ConstantTimeEq`), `bytes?` (type predicate). Wired `str-bytes` and `bytes-str` stubs from `bitwise-encoding` sprint to produce/consume `Value::Bytes`. JSON serialization emits hex-encoded string. Type signatures registered in `type_env.rs`. Corpus tests for all builtins. **Deferred:** Bytes dual-dispatch in collection functions (`map`, `filter`, `fold`, etc.) — tracked in `string-utils` and future sprint.

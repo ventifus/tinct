@@ -1,0 +1,8 @@
+# toml-lite: blank lines are ignored
+[include "stdlib/toml-lite.llt"]
+
+---
+
+[call %.parse-toml-lite "key = \"value\"\n\nother = 42"]
+=== out
+Dict({"key": String("value"), "other": Int(42)})

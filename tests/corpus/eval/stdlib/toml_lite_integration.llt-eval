@@ -1,0 +1,8 @@
+# toml-lite: integration test (Cargo.toml-like structure)
+[include "stdlib/toml-lite.llt"]
+
+---
+
+[call %.parse-toml-lite "[package]\nname = \"myproject\""]
+=== out
+Dict({"package": Dict({"name": String("myproject")})})

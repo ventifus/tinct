@@ -1,0 +1,6 @@
+# path-join: join path components
+[include "stdlib/path.llt"]
+---
+[call %.path-join ["a" "b" "c.txt"]]
+=== out
+String("a/b/c.txt")
