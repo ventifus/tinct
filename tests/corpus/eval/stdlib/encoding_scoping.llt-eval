@@ -1,4 +1,4 @@
-# Verify hex-encode is NOT available without [include libdir "encoding.llt"]
+# Verify hex-encode is NOT available without [include %libdir "encoding.llt"]
 # Uses try to capture the undefined-variable error as a value.
 
 [try [fn [] [hex-encode "A"]]]
