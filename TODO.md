@@ -66,7 +66,9 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Add Bytes dual-dispatch for `split`, `replace`, `join`: byte-pattern split/replace, byte-separator join (deferred from `bytes-type` sprint) (`src/builtins_string.rs`)
 - [x] Add Seq dual-dispatch for `starts-with?` and `ends-with?` (element-by-element prefix match) (`src/builtins_string.rs`)
 - [x] Create `stdlib/strings.llt` with pure-tinct functions: `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse` (Note: `str-contains?` is already a Rust builtin, `str-repeat` is in prelude but duplicated here per requirements) (`stdlib/strings.llt`)
-- [ ] Load `stdlib/strings.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Tests: verify `pad-left` is NOT in scope without `[include "stdlib/strings.llt"]` (should error `undefined variable`); verify it IS available after include; same for `str-find`, `str-reverse` (`tests/corpus/eval/stdlib/`)
+- [ ] Tests: verify `basename`, `path-join` are NOT in scope without `[include "stdlib/path.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
+- [ ] Tests: verify `parse-toml-lite` is NOT in scope without `[include "stdlib/toml-lite.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
 - [x] Register type signatures for all new builtins (`src/types.rs`)
 - [x] Tests: corpus tests for starts-with?/ends-with? on String/Bytes/Seq, str-slice O(1), str-find, pad-left/pad-right alignment (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
@@ -79,7 +81,7 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Register all 16 builtins in `standard_builtins()` with correct `Strictness` (`src/builtins.rs`)
 - [x] Register type signatures: `pow: Number → Number → Float`, `sqrt/log/sin: Float → Float`, `nan?/inf?/finite?: Float → Bool`, `atan2: Float → Float → Float` (`src/types.rs`)
 - [x] Create `stdlib/math.llt` with Float literals (`pi`, `e`, `phi`) and pure-tinct functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`) (`stdlib/math.llt`)
-- [ ] Load `stdlib/math.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Tests: verify `pi`, `hypot`, `deg->rad` are NOT in scope without `[include "stdlib/math.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
 - [x] Tests: corpus tests for each builtin (exact values, NaN/Inf edge cases, `nan?`/`inf?`/`finite?` predicates) (`tests/corpus/eval/builtins/`)
 - [x] Tests: corpus tests for math.llt pure-tinct functions (`tests/corpus/eval/stdlib/`)
 
@@ -93,7 +95,8 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Register all 9 builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
 - [x] Define `HashAlgorithm` type alias as a union of nominal variants: `Sha256 | Sha384 | Sha512 | Sha3-256 | Sha3-384 | Sha3-512 | Blake3` — register in prelude scope (`stdlib/encoding.llt` or `src/builtins.rs`)
 - [x] Create `stdlib/encoding.llt` with pure-tinct functions: `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` (`stdlib/encoding.llt`)
-- [ ] Load `stdlib/encoding.llt` at startup (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Tests: verify `hex-encode`, `base64-encode` are NOT in scope without `[include "stdlib/encoding.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
+- [ ] Register `HashAlgorithm` type alias in `TypeEnv::with_builtins()` so type checker recognises `Sha256`, `Sha3-256`, `Blake3`, etc. as `HashAlgorithm` members (deferred from `bitwise-encoding` sprint) (`src/type_env.rs` or `src/types.rs`)
 - [x] Tests: corpus tests for all bitwise ops, char-code/chr round-trips, hex-encode/hex-decode, base64 (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
 ### `handle-caps`: Capability-Typed Handles & Streaming I/O
@@ -187,7 +190,7 @@ Accepted from `doc/whatif/lib-regex.md` (2026-05-07).
 - [ ] Implement `re-replace`: `[String|Pattern] → String → String → String`; back-references `\1`, `\2`, `\k<name>`, `\0` in replacement string (`stdlib/regex.llt`)
 - [ ] Implement `re-split`: `[String|Pattern] → String → Seq@String`; zero-length match policy: skip at boundary of previous match (Python 3.7+ semantics) (`stdlib/regex.llt`)
 - [ ] Implement `re-escape-replacement`: escape backslashes in replacement strings to prevent injection (`stdlib/regex.llt`)
-- [ ] Load `stdlib/regex.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
+- [ ] Tests: verify `re-compile`, `re-match` are NOT in scope without `[include "stdlib/regex.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
 - [ ] Tests: corpus tests for literal matching, character classes, quantifiers, alternation, anchors, groups, named groups, re-find/findall/replace/split, zero-length match edge cases, re-escape-replacement (`tests/corpus/eval/stdlib/`)
 
 ## TLS & HTTP
@@ -430,39 +433,6 @@ Apply to: `format-node` and `format-literal` in `compact.llt` and analogous disp
 - [ ] Update `doc/11-stdlib.md` type signature table to reflect new union-type annotations (`@[Dict Seq]` on dual-dispatch functions) and any newly-annotated functions (`doc/11-stdlib.md`)
 
 ## Testing & Quality
-
-### `corpus-cleanup`: Corpus Test Cleanup
-
-Audit findings from 2026-05-07. One category of test failures (macro `=== warn` stale expectations) and two categories of dead annotation (valid/ warn sections, errors/ missing `=== error`).
-
-**Failures (test_eval_corpus FAILED — 7 tests):**
-
-The macro expansion pass now runs before typechecking (`typecheck_source` calls `expand::expand_macros` first). DefMacro nodes are fully expanded before the typechecker sees them, so the "defmacro should be removed by expansion pass before typechecking" warnings and the "undefined variable: <macro-name>" warnings are no longer produced. The `=== warn` sections in these 7 files are stale expectations from before the pipeline fix.
-
-Fix: remove the `=== warn` sections from all 7 files (typecheck now cleanly handles expanded macro code).
-
-- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_simple.llt-eval`
-- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/defmacro_unless.llt-eval`
-- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/hygiene_no_capture.llt-eval`
-- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_integration_full.llt-eval`
-- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/macro_with_underscore.llt-eval`
-- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/nested_expansion.llt-eval`
-- [x] Fix test: remove stale `=== warn` section from `tests/corpus/eval/macros/scope_isolation.llt-eval`
-
-**Unenforced `=== warn` annotations in `tests/corpus/valid/` (29 files):**
-
-`test_valid_corpus` only runs `parse()` / `parse_expression()` — it never calls `typecheck_source`. The `=== warn` sections in valid/ files are currently ignored. Fixed by `corpus-section-consistency` below, which extends the valid/ runner to enforce them.
-
-**`=== error` section — clarification:**
-
-The `strict-mode` sprint wired up `=== error` in `test_eval_corpus()`. The section is now live. `tests/corpus/eval/errors/` files historically use `=== out` for error substrings (established convention predating labeled sections); migration to `=== error` is tracked in `corpus-section-consistency` below.
-
-- [x] Document `=== error` live behavior in `doc/12-tooling.md §Corpus Test Format`; clarify coexistence with `eval/errors/` convention of using `=== out` (`doc/12-tooling.md`)
-
-**Deferred cleanup from strict-mode sprint:**
-
-- [x] Audit unit test helpers in `src/lib.rs` and `src/typecheck.rs` that call `eval` or `typecheck` directly on hand-constructed ASTs; add `expand_macros` calls where needed to preserve the pipeline invariant (`src/lib.rs`, `src/typecheck.rs`)
-- [ ] Refactor `run_fmt` to parse once and pass the AST to both the formatter and the type checker when `--strict` is active (`src/main.rs`)
 
 ### `corpus-section-consistency`
 
