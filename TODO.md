@@ -6,6 +6,14 @@ See DONE.md for the full history of completed sprints.
 
 ## Known Bugs
 
+### `cap-ambient`: `dir-cap` and `net-cap` create authority from thin air
+
+`dir-cap "."` and `net-cap [...]` are user-callable builtins that construct new capabilities using `cap_std::ambient_authority()`. This breaks the object-capability model: every cap must narrow an existing cap — programs should not be able to conjure new authority.
+
+The correct model: all caps flow in from the CLI (`--cap-fs NAME=PATH`, `--cap-net NAME=ENTRY`) or are runtime-injected (`pwd`, `libdir`). `dir-cap` and `net-cap` are removed entirely. Fix tracked in `cap-remove-ambient`.
+
+Workaround until fixed: replace `[dir-cap "."]` with `pwd`; replace `[net-cap [...]]` with a `--cap-net`-injected variable.
+
 ### `iife-parse`: `[[fn ...] args]` parsed as Dict, not Call
 
 When the first token inside `[` is another `[`, the parser uses priority 5
@@ -216,7 +224,7 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 
 **Tasks — `prelude.llt`:**
 
-- [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`) — DEFERRED: the multi-expression document approach works at eval time (private helpers are in scope via eval_document scope chain) but degrades typecheck quality: the resolver does not inject first-expression bindings into the resolver scope for the second expression, so references to private helpers from public functions are marked unresolvable. This causes the typechecker to produce fewer advisory warnings for user code (e.g., `all?` with Seq input). Fix requires resolver changes to model multi-expression document scope, or making typecheck use env-based lookup rather than resolver coordinates for cross-expression references. Tracked as future work.
+- [x] Public/private split: move all `-impl`, `-step`, `-check` helpers into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`) — DONE: resolver now models eval_document scope-chain semantics (injects first-dict bindings for subsequent expressions); private helpers use only Rust-native builtins (builtin-get, builtin-if, gte-impl) to avoid forward references to public wrappers; typecheck quality improved (any?/all? with Seq input now correctly warns, each-kv undefined-variable false positive removed)
 - [x] Union type annotations for dual-dispatch parameters: intentionally omitted — `@[Dict Seq]` would be an upper-bound constraint (union type), not a dispatch label; the current type system does not support union-typed parameters as dispatch annotations. Dual-dispatch functions (`sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map`, `reduce`) work correctly at runtime via `seq?` guards; the type system limitation is documented here rather than creating misleading annotations (`stdlib/prelude.llt`)
 
 
@@ -241,5 +249,33 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 - [x] Run full corpus test suite after each file refactor; zero regressions required (`tests/corpus/`)
 - [x] Add one corpus test per pattern-matched `try` result site verifying the new dispatch path: `[ok: v]` arm and `[err: e]` arm both exercised (`tests/corpus/eval/stdlib/try_result_match_ok.llt-eval`, `try_result_match_err.llt-eval`)
 - [x] Update `doc/11-stdlib.md` type signature table to reflect new union-type annotations (`@[Dict Seq]` on dual-dispatch functions) and any newly-annotated functions (`doc/11-stdlib.md`) — updated with new builtin categories and count (191 builtins)
+
+
+### `prelude-only-startup`: Remove auto-loading of strings/math/encoding modules
+
+Only `stdlib/prelude.llt` should be loaded at startup. `stdlib/strings.llt`, `stdlib/math.llt`, and `stdlib/encoding.llt` must be loaded explicitly via `[include libdir "module.llt"]`. The `libdir` DirCap is already injected at startup (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds). See `doc/11-stdlib.md` §Loading mechanism and §Optional stdlib modules.
+
+- [ ] Remove `strings_source`, `math_source`, `encoding_source` loads from `create_stdlib_env()`: delete the three `include_str!` + `load_stdlib_module` call pairs for strings, math, and encoding (`src/builtins.rs`)
+- [ ] Audit corpus tests for implicit use of `pad-left`/`pad-right`/`str-find`/`str-reverse` (from `strings.llt`); add `[include libdir "strings.llt"]` where needed (`tests/corpus/`)
+- [ ] Audit corpus tests for implicit use of `pi`/`e`/`phi`/`hypot`/`deg->rad`/`rad->deg`/`log-base` (from `math.llt`); add `[include libdir "math.llt"]` where needed (`tests/corpus/`)
+- [ ] Audit corpus tests for implicit use of `hex-encode`/`hex-decode`/`base64-encode`/`base64-decode`/`mask-apply` (from `encoding.llt`); add `[include libdir "encoding.llt"]` where needed (`tests/corpus/`)
+- [ ] Update `samples/versions.llt`: add `[include libdir "strings.llt"]` (uses `pad-right`); replace `[dir-cap "."]` with `pwd` (already injected); remove `[net-cap [...]]` and accept `nc` as a CLI-injected cap parameter instead (`samples/versions.llt`)
+- [ ] Update `justfile` `versions` recipe to pass `--cap-net nc=static.rust-lang.org:443` and `--cap-net nc=crates.io:443` so `nc` is injected into the script's root env (`justfile`)
+- [ ] Update test assertions in `src/builtins.rs` that check `pad-left`, `pad-right`, `pi`, `hex-encode`, etc. are present in the stdlib env — remove those assertions or invert them (`src/builtins.rs`)
+- [ ] Add corpus tests verifying `pad-right` is NOT available without include, IS available after `[include libdir "strings.llt"]` (`tests/corpus/eval/stdlib/strings_scoping.llt-eval`)
+- [ ] Add corpus tests verifying `pi` is NOT available without include, IS available after `[include libdir "math.llt"]` (`tests/corpus/eval/stdlib/math_scoping.llt-eval`)
+- [ ] Add corpus tests verifying `hex-encode` is NOT available without include, IS available after `[include libdir "encoding.llt"]` (`tests/corpus/eval/stdlib/encoding_scoping.llt-eval`)
+
+### `cap-remove-ambient`: Remove `dir-cap` and `net-cap` user-callable builtins
+
+Every cap must narrow an existing cap. `dir-cap` and `net-cap` create authority from ambient — they are removed entirely. All filesystem caps come from `pwd` (injected CWD), `libdir` (injected stdlib dir), or `--cap-fs NAME=PATH` CLI flags. All network caps come from `--cap-net NAME=ENTRY` CLI flags. See Known Bug `cap-ambient`.
+
+- [ ] Remove `builtin_dir_cap` registration from `standard_builtins()` and delete its implementation (`src/builtins.rs`, `src/builtins_io.rs`)
+- [ ] Remove `builtin_net_cap` registration from `standard_builtins()` and delete its implementation (`src/builtins.rs`, `src/builtins_io.rs`)
+- [ ] Update all corpus tests that call `[dir-cap "."]` to use `pwd` instead (`tests/corpus/`)
+- [ ] Update all corpus tests that call `[net-cap [...]]` to receive a net cap via test harness injection or skip network tests (`tests/corpus/`)
+- [ ] Update `doc/12-tooling.md` and `doc/11a-builtins.md`: remove `dir-cap` and `net-cap` from the builtin reference; document `pwd`, `libdir`, `--cap-fs`, `--cap-net` as the only sources of new caps (`doc/12-tooling.md`, `doc/11a-builtins.md`)
+- [ ] Update any internal test helpers in `src/` that construct `Value::DirCap` via `dir-cap` to use `cap_std::Dir::open_ambient_dir` directly (Rust-level, not exposed to tinct programs) (`src/builtins.rs`)
+- [ ] Add `any` alias to `--cap-net` parsing: `--cap-net net=any` creates an unrestricted NetCap (equivalent to `*`); recognised in `parse_cli_net_cap_entry` by matching the literal string `"any"` before other pattern checks; document in `--cap-net` CLI help and `doc/12-tooling.md` (`src/main.rs`, `doc/12-tooling.md`)
 
 
