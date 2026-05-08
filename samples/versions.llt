@@ -4,12 +4,14 @@
 #     --cap-net nc=static.rust-lang.org:443 \
 #     --cap-net nc=crates.io:443 \
 #     samples/versions.llt
-#
-# %pwd    — CWD DirCap, injected at startup
-# %nc     — NetCap injected via --cap-net nc=...
-# %libdir — stdlib DirCap, injected at startup
+
+--- caps: [%nc: @NetCap]
 
 [include %libdir "strings.llt"]
+
+# State types for reduce accumulators
+[RustVerState: [type [in-pkg-rust: Bool  version: String]]]
+[DepScanState: [type [in-deps: Bool  names: Dict]]]
 
 [http-body: [fn@String [raw@String]
   [parts: [split "\r\n\r\n" raw]]
@@ -34,7 +36,7 @@
 [latest-rust: [builtin-if [builtin-eq [length rust-toml-raw] 0]
   "?"
   [builtin-reduce
-    [fn@Dict [state@Dict line@String]
+    [fn@RustVerState [state@RustVerState line@String]
       [t: [trim line]]
       [builtin-if [builtin-eq state.version ""]
         [builtin-if [str-contains? t "[pkg.rust]"]
@@ -53,14 +55,14 @@
   [raw: [first [split "=" t]]]
   [trim raw]]]
 
-[dep-name-append: [fn@Dict [state@Dict t@String]
+[dep-name-append: [fn@DepScanState [state@DepScanState t@String]
   [name: [dep-name-from t]]
   [builtin-if [builtin-eq [length name] 0]
     state
     [set state "names" [append state.names name]]]]]
 
 [dep-names: [sorted [builtin-reduce
-  [fn@Dict [state@Dict line@String]
+  [fn@DepScanState [state@DepScanState line@String]
     [t: [trim line]]
     [builtin-if [starts-with? t "["]
       [set [set [] "in-deps" [str-contains? t "dependencies"]] "names" state.names]

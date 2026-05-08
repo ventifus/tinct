@@ -471,10 +471,10 @@ Data flows between documents via `%`, a variable injected into each document's r
 [merge %defaults %overrides]   # multi-input: both named sections accessible
 ```
 
-**`%` typing is context-dependent.** The static type of `%` varies: it is an empty closed record `[]` when no input is provided (first document, no pipeline input), or `Any` when stdin JSON is parsed via `from-json` (since the JSON shape is unknown at compile time). `[@Type %]` type assertions are the escape hatch for narrowing `%` to a specific record type. Section headers can declare input contracts with `expects:` and output types with `@Type`:
+**`%` typing is context-dependent.** The static type of `%` varies: it is an empty closed record `[]` when no input is provided (first document, no pipeline input), or `Any` when stdin JSON is parsed via `from-json` (since the JSON shape is unknown at compile time). `[@Type %]` type assertions are the escape hatch for narrowing `%` to a specific record type. Section headers can declare input contracts with `expects:`, output types with `@Type`, and required capability types with `caps:`:
 
 ```tinct
---- %validated@ValidatedConfig expects: [name: String  port: Int]
+--- %validated@ValidatedConfig expects: [name: String  port: Int] caps: [%nc: @NetCap]
 [validate server-schema %]
 ```
 
@@ -509,17 +509,46 @@ document      = expression*
 expression    = !section_header ~ value
 section_header = "---" ~ header_components? ~ NEWLINE
 header_components = header_component+
-header_component  = section_name | output_annotation | expects_pragma
+header_component  = section_name | output_annotation | expects_pragma | caps_pragma
 section_name      = "%" ~ ident_char+     // e.g., %config — bare % alone is a parse error
 output_annotation = "@" ~ annotation_value
 expects_pragma    = "expects" ~ ":" ~ annotation_value
+caps_pragma       = "caps" ~ ":" ~ "[" ~ (cap_entry)* ~ "]"
+cap_entry         = "%" ~ ident_char+ ~ ":" ~ "@" ~ ident_char+   // e.g., %nc: @NetCap
 ```
 
 **File:** The outermost unit. Contains documents separated by `---` section headers.
 
 **Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — data flows through pipeline bindings (`%` and `%name`), not the scope chain.
 
-**Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), and/or input contract (`--- expects: InputType`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error. The components may appear in any order — the parser does not enforce a fixed sequence. The conventional order is `%name@OutputType expects: InputType`, but `--- expects: T %name` is equally valid.
+**Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), input contract (`--- expects: InputType`), and/or required capability declarations (`--- caps: [%nc: @NetCap  %data: @DirCap]`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error. The components may appear in any order.
+
+**`caps:` pragma** — declares capabilities that must be injected by the caller before this document can run:
+
+```tinct
+--- caps: [%nc: @NetCap  %data: @DirCap  %store: @DirCap]
+[emit [str ...]]
+```
+
+Each entry is `%name: @Type`. The type checker adds each declared cap to the TypeEnv for the document body, resolving spurious "undefined variable" errors. At runtime, the evaluator validates that each declared cap is present in the root environment and produces a clear error if not:
+
+```
+error: %nc@NetCap is required but not provided
+  inject it with:  tinct run --cap-net nc=HOST:PORT ...
+  or unrestricted: tinct run --cap-net nc=any ...
+
+error: %data@DirCap is required but not provided
+  inject it with:  tinct run --cap-fs data=PATH ...
+```
+
+Auto-injected caps (`%pwd`, `%libdir`, `%stdin`) produce a different hint if missing:
+
+```
+error: %pwd@DirCap is required but not provided
+  note: %pwd is injected automatically — did you pass --no-pwd?
+```
+
+The CLI flag name is derived from the cap name by stripping the `%` prefix: `%nc` → `--cap-net nc=...`.
 
 **`doc_separator`:** Three hyphens `---` not followed by an `ident_char`. This prevents `----` or `---foo` from matching as a separator.
 

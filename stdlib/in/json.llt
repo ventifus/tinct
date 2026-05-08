@@ -1,4 +1,4 @@
 # JSON input formatter
-# Reads stdin and parses as JSON, producing the parsed tinct value as %
+# Reads %stdin and parses as JSON, producing the parsed tinct value as %
 
-[from-json [slurp stdin]]
+[from-json [slurp %stdin]]

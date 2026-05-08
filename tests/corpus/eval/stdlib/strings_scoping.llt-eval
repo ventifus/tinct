@@ -1,4 +1,4 @@
-# Verify pad-right is NOT available without [include libdir "strings.llt"]
+# Verify pad-right is NOT available without [include %libdir "strings.llt"]
 # Uses try to capture the undefined-variable error as a value.
 
 [try [fn [] [pad-right "hi" 5 " "]]]

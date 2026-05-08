@@ -1,4 +1,4 @@
-# Verify pi is NOT available without [include libdir "math.llt"]
+# Verify pi is NOT available without [include %libdir "math.llt"]
 # Uses try to capture the undefined-variable error as a value.
 
 [try [fn [] pi]]
