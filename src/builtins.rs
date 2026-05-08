@@ -390,6 +390,10 @@ pub(crate) use crate::builtins_bytes::{
     builtin_bytes, builtin_bytes_equal, builtin_bytes_find, builtin_bytes_of, builtin_ct_equal,
 };
 
+// URI parsing builtins: uri, url, urn.
+// Implementations live in builtins_uri.rs.
+pub(crate) use crate::builtins_uri::{builtin_uri, builtin_url, builtin_urn};
+
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
 /// operation, materializes one numeric arg, and applies the operation to floats.
 ///
@@ -1352,6 +1356,10 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("local->timestamp", builtin_local_to_timestamp),
         builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq]),
+        // URI parsing
+        builtin!("uri", builtin_uri, [Strictness::Seq]),
+        builtin!("url", builtin_url, [Strictness::Seq]),
+        builtin!("urn", builtin_urn, [Strictness::Seq]),
     ]
 }
 
@@ -6485,10 +6493,14 @@ mod tests {
         assert!(names.contains(&"tls-connect"), "missing tls-connect");
         assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
         assert!(names.contains(&"spki-pin"), "missing spki-pin");
+        // URI parsing builtins
+        assert!(names.contains(&"uri"), "missing uri");
+        assert!(names.contains(&"url"), "missing url");
+        assert!(names.contains(&"urn"), "missing urn");
         assert_eq!(
             names.len(),
-            168,
-            "expected 168 builtins, got {}",
+            171,
+            "expected 171 builtins, got {}",
             names.len()
         );
     }

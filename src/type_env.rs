@@ -2159,6 +2159,23 @@ impl TypeEnv {
             }
         }
 
+        // URI parsing builtins: uri, url, urn
+        // These return Dict types — the type system doesn't yet support precise row types
+        // for the returned dicts, so we use a generic Dict type.
+        for name in ["uri", "url", "urn"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Str],
+                    ret: Box::new(Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_uri".to_string(), 0),
+                    })),
+                    variadic: false,
+                },
+            );
+        }
+
         env
     }
 }

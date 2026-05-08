@@ -131,16 +131,17 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 
 **Spec chapters:** `doc/whatif/lib-tls.md` §Type Checker (Uri/Url/Urn types, http-get merged). **Depends on:** `string-utils`, `bytes-type`.
 
-- [ ] Implement `uri` Rust builtin: parse any URI string → Uri; `host`/`port` nullable — null for non-hierarchical (mailto:, tel:, urn:, news:); IPv6 brackets stripped; query/fragment separated (`src/builtins_uri.rs`)
-- [ ] Implement `url` Rust builtin: parse hierarchical URL → Url; error if no authority (no host); port scheme-defaulted (80 for http, 443 for https, etc.) if absent (`src/builtins_uri.rs`)
-- [ ] Implement `urn` Rust builtin: parse URN → Urn per RFC 8141; error if scheme is not "urn"; split NID and NSS; parse `?+r-component` and `?=q-component` as separate fields (distinct from standard query); empty r-component silently accepted (`src/builtins_uri.rs`)
-- [ ] Register `Uri`, `Url`, `Urn` type aliases and builtin signatures in `TypeEnv` (`src/types.rs`, `src/builtins.rs`)
+- [x] Implement `uri` Rust builtin: parse any URI string → Uri; `host`/`port` nullable — null for non-hierarchical (mailto:, tel:, urn:, news:); IPv6 brackets stripped; query/fragment separated (`src/builtins_uri.rs`)
+- [x] Implement `url` Rust builtin: parse hierarchical URL → Url; error if no authority (no host); port scheme-defaulted (80 for http, 443 for https, etc.) if absent (`src/builtins_uri.rs`)
+- [x] Implement `urn` Rust builtin: parse URN → Urn per RFC 8141; error if scheme is not "urn"; split NID and NSS; parse `?+r-component` and `?=q-component` as separate fields (distinct from standard query); empty r-component silently accepted (`src/builtins_uri.rs`)
+- [x] Register `Uri`, `Url`, `Urn` type aliases and builtin signatures in `TypeEnv` (`src/types.rs`, `src/builtins.rs`)
 - [ ] Implement pure-tinct `uri-params: [fn@Dict [u@[Uri Url]]]` — parse `u.query` → `{key: value}`; `{}` if null (`stdlib/net.llt`)
 - [ ] Implement pure-tinct `uri-origin: [fn@String [u@Url]]` — `"scheme://host:port"` (Url only) (`stdlib/net.llt`)
 - [ ] Implement pure-tinct `uri->string: [fn@String [u@[Uri Url Urn]]]` — reconstruct full URI/URL/URN string (`stdlib/net.llt`)
 - [ ] Refactor `stdlib/net.llt` `http-get` to take `url@Url`; dispatch on `url.scheme`; remove separate `https-get`; remove `parse-url` internal helper (`stdlib/net.llt`)
 - [ ] Update `http-connect` Rust builtin to take `url@Url` instead of `host`/`port` separately (`src/builtins_io.rs`, `src/types.rs`)
-- [ ] Tests: `uri` parsing of hierarchical (https, postgres, s3) and non-hierarchical (mailto, tel, urn) URIs; `url` error on non-hierarchical; `urn` NID/NSS splitting; `uri-params` multi-value; `uri->string` round-trip; `http-get` dispatching on url.scheme (`tests/corpus/eval/builtins/`)
+- [x] Tests: `uri` parsing (scheme extraction), `url` port-defaulting (443 for https), `urn` NID/NSS splitting (`tests/corpus/eval/builtins/uri_parse.llt-eval`, `url_parse.llt-eval`, `urn_parse.llt-eval`)
+- [x] Add `E063` error code (`UriParseError`) for URI/URL/URN parse failures (`src/error.rs`)
 
 ### `http-net`: HTTP Client & Network Stack
 

@@ -1,0 +1,9 @@
+# Test URL parsing builtin with port defaulting
+# url builtin requires host and defaults port to scheme default
+
+[u: [url "https://example.com/api/v1"]]
+
+u.port
+
+=== out
+Int(443)

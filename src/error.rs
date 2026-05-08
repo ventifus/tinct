@@ -224,6 +224,9 @@ pub enum ErrorKind {
         detail: String,
     },
     JsonRange,
+    UriParseError {
+        detail: String,
+    },
 
     // --- Evaluation structure (E070-E079) ---
     CircularDependency {
@@ -289,6 +292,7 @@ impl ErrorKind {
             Self::ParseConversion { .. } => "E060",
             Self::JsonParse { .. } => "E061",
             Self::JsonRange => "E062",
+            Self::UriParseError { .. } => "E063",
             Self::CircularDependency { .. } => "E070",
             Self::UserError { .. } => "E080",
             Self::SchemaViolation { .. } => "E090",
@@ -566,6 +570,7 @@ impl fmt::Display for ErrorKind {
             } => write!(f, "{builtin}: cannot parse {input:?} as {target}"),
             Self::JsonParse { detail } => write!(f, "from-json: invalid JSON: {detail}"),
             Self::JsonRange => write!(f, "JSON number outside representable range"),
+            Self::UriParseError { detail } => write!(f, "URI parse error: {detail}"),
             Self::CircularDependency { name, cycle_path } => {
                 write!(f, "circular dependency detected while evaluating {name}")?;
                 if !cycle_path.is_empty() {
@@ -752,6 +757,7 @@ impl PartialEq for ErrorKind {
             ) => b1 == b2 && i1 == i2 && t1 == t2,
             (Self::JsonParse { detail: d1 }, Self::JsonParse { detail: d2 }) => d1 == d2,
             (Self::JsonRange, Self::JsonRange) => true,
+            (Self::UriParseError { detail: d1 }, Self::UriParseError { detail: d2 }) => d1 == d2,
             (
                 Self::CircularDependency {
                     name: n1,
@@ -1390,6 +1396,19 @@ impl EvalError {
         }
     }
 
+    pub fn uri_parse_error(detail: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::UriParseError { detail },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
     pub fn json_range(definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::JsonRange,
@@ -1894,7 +1913,7 @@ mod tests {
         }
         .is_catchable());
 
-        // All other 32 variants ARE catchable
+        // All other 33 variants ARE catchable
         assert!(ErrorKind::KeyNotFound {
             key: "foo".to_string(),
             available_keys: vec![],
@@ -2015,6 +2034,10 @@ mod tests {
         }
         .is_catchable());
         assert!(ErrorKind::JsonRange.is_catchable());
+        assert!(ErrorKind::UriParseError {
+            detail: "error".to_string()
+        }
+        .is_catchable());
         assert!(ErrorKind::CircularDependency {
             name: "x".to_string(),
             cycle_path: Vec::new(),
@@ -2165,6 +2188,9 @@ mod tests {
                 detail: "error".to_string(),
             },
             ErrorKind::JsonRange,
+            ErrorKind::UriParseError {
+                detail: "error".to_string(),
+            },
             ErrorKind::CircularDependency {
                 name: "x".to_string(),
                 cycle_path: Vec::new(),
@@ -2216,7 +2242,7 @@ mod tests {
         // DepthExceeded is NOT cacheable (must retry at different depth)
         assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_cacheable());
 
-        // All other 33 variants ARE cacheable (can be stored in Failed thunk state).
+        // All other 34 variants ARE cacheable (can be stored in Failed thunk state).
         // ResourceLimitExceeded IS cacheable (unlike DepthExceeded, resource limits
         // are not context-dependent on call depth — a failed resource limit check
         // will fail consistently regardless of when it's retried).
@@ -2344,6 +2370,10 @@ mod tests {
         }
         .is_cacheable());
         assert!(ErrorKind::JsonRange.is_cacheable());
+        assert!(ErrorKind::UriParseError {
+            detail: "error".to_string()
+        }
+        .is_cacheable());
         assert!(ErrorKind::CircularDependency {
             name: "x".to_string(),
             cycle_path: Vec::new(),
@@ -2727,6 +2757,15 @@ mod tests {
         assert_eq!(
             format!("{}", ErrorKind::JsonRange),
             "JSON number outside representable range"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::UriParseError {
+                    detail: "missing scheme: example.com".to_string()
+                }
+            ),
+            "URI parse error: missing scheme: example.com"
         );
 
         // Evaluation structure (E070-E079)
@@ -3959,7 +3998,7 @@ mod tests {
         );
     }
 
-    /// Verify error code uniqueness across all 34 ErrorKind variants.
+    /// Verify error code uniqueness across all 35 ErrorKind variants.
     /// Each variant must have a distinct error code — no two variants share a code.
     #[test]
     fn test_all_error_codes_are_unique_and_valid() {
@@ -3985,11 +4024,11 @@ mod tests {
         }
         // Verify the count matches all_error_kind_variants() — the canonical list.
         // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 34 variants (verified against the ErrorKind enum definition).
+        // Current count: 35 variants (verified against the ErrorKind enum definition).
         assert_eq!(
             variants.len(),
-            34,
-            "Expected 34 ErrorKind variants in all_error_kind_variants(); got {}. \
+            35,
+            "Expected 35 ErrorKind variants in all_error_kind_variants(); got {}. \
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );
@@ -4110,6 +4149,7 @@ mod tests {
                 ErrorKind::ParseConversion { .. } => "E060",
                 ErrorKind::JsonParse { .. } => "E061",
                 ErrorKind::JsonRange => "E062",
+                ErrorKind::UriParseError { .. } => "E063",
                 ErrorKind::CircularDependency { .. } => "E070",
                 ErrorKind::UserError { .. } => "E080",
                 ErrorKind::SchemaViolation { .. } => "E090",

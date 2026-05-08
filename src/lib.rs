@@ -57,6 +57,8 @@ pub(crate) mod builtins_seq_reduce;
 pub(crate) mod builtins_seq_xform;
 // String builtins: str, split, replace, upper, lower, trim.
 pub(crate) mod builtins_string;
+// URI parsing builtins: uri, url, urn.
+pub(crate) mod builtins_uri;
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
 pub(crate) mod builtins_bytes;
 // Date-time builtins: timestamps, durations, clock capabilities, timezones.
