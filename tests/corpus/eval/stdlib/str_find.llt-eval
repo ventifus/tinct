@@ -1,0 +1,6 @@
+# str-find: find substring in string
+[include "stdlib/strings.llt"]
+---
+[call %.str-find "hello world" "world"]
+=== out
+Int(6)

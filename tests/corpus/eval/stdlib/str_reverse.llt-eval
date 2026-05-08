@@ -1,0 +1,6 @@
+# str-reverse: reverse a string
+[include "stdlib/strings.llt"]
+---
+[call %.str-reverse "hello"]
+=== out
+String("olleh")

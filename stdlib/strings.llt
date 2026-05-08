@@ -1,0 +1,122 @@
+# ============================================================================
+# LLT String Utilities (stdlib/strings.llt)
+# ============================================================================
+#
+# Pure-tinct string manipulation functions that build on Rust-native builtins.
+#
+# Available Rust builtins used here:
+#   String:      str, split, str-slice, str-contains?, length
+#   Arithmetic:  builtin-add, builtin-sub, builtin-mul, builtin-div
+#   Comparison:  builtin-lt, builtin-eq
+#   Control:     builtin-if
+#   Sequences:   range
+#   Dict:        keys
+#
+# Naming conventions:
+#   str-*     String operations (e.g., str-repeat, str-reverse, str-find)
+#   pad-*     Padding operations (left/right)
+#
+# All functions in this dict can reference each other (letrec semantics).
+# ============================================================================
+
+[
+
+# ============================================================================
+# String Padding
+# ============================================================================
+
+# Left-pad a string to a target width with a padding character.
+# If the string is already >= width, returns it unchanged.
+# Type: (String -> Int -> String -> String)
+# Example: [pad-left "hi" 5 " "] => "   hi"
+# Example: [pad-left "hello" 3 " "] => "hello"
+# Example: [pad-left "x" 4 "0"] => "000x"
+pad-left: [fn@String [s@String width@Int pad-char@String]
+    [builtin-if [builtin-lt [length s] width]
+        [str [str-repeat pad-char [builtin-sub width [length s]]] s]
+        s]]
+
+# Right-pad a string to a target width with a padding character.
+# If the string is already >= width, returns it unchanged.
+# Type: (String -> Int -> String -> String)
+# Example: [pad-right "hi" 5 " "] => "hi   "
+# Example: [pad-right "hello" 3 " "] => "hello"
+# Example: [pad-right "x" 4 "0"] => "x000"
+pad-right: [fn@String [s@String width@Int pad-char@String]
+    [builtin-if [builtin-lt [length s] width]
+        [str s [str-repeat pad-char [builtin-sub width [length s]]]]
+        s]]
+
+# ============================================================================
+# String Repetition
+# ============================================================================
+
+# Repeat a string n times.
+# Type: (String -> Int -> String)
+# Example: [str-repeat "ab" 3] => "ababab"
+# Example: [str-repeat "x" 0] => ""
+# Example: [str-repeat "hello" 1] => "hello"
+# Uses builtin-reduce over range to build up the repeated string.
+# Note: Also available in stdlib/prelude.llt (loaded at startup).
+str-repeat: [fn@String [s@String n@Int]
+    [builtin-reduce [fn [acc _] [str acc s]] "" [range 0 n]]]
+
+# ============================================================================
+# String Search
+# ============================================================================
+
+# Find the first occurrence of a substring (needle) in a string (haystack).
+# Returns the character index of the first match, or -1 if not found.
+# Type: (String -> String -> Int)
+# Example: [str-find "hello world" "world"] => 6
+# Example: [str-find "hello world" "x"] => -1
+# Example: [str-find "abc" ""] => 0  (empty string matches at start)
+#
+# Implementation strategy:
+# - Use str-contains? to check if needle exists
+# - If not found, return -1
+# - If found, iterate through positions 0..length(haystack) and check if
+#   str-slice(haystack, i, i+needle_len) == needle
+# - Return the first matching position
+str-find: [fn@Int [haystack@String needle@String]
+    [builtin-if [str-contains? haystack needle]
+        [str-find-impl haystack needle 0 [length needle] [length haystack]]
+        [builtin-sub 0 1]]]
+
+str-find-impl: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
+    [builtin-if [builtin-lt i haystack-len]
+        [str-find-check haystack needle i needle-len haystack-len]
+        [builtin-sub 0 1]]]
+
+str-find-check: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
+    [builtin-if [builtin-eq needle-len 0]
+        0
+        [builtin-if [builtin-lt [builtin-add i needle-len] [builtin-add haystack-len 1]]
+            [builtin-if [builtin-eq [str-slice haystack i [builtin-add i needle-len]] needle]
+                i
+                [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]
+            [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]]]
+
+# ============================================================================
+# String Reversal
+# ============================================================================
+
+# Reverse a string by characters.
+# Type: (String -> String)
+# Example: [str-reverse "hello"] => "olleh"
+# Example: [str-reverse ""] => ""
+# Example: [str-reverse "a"] => "a"
+#
+# Implementation strategy:
+# - Build a dict of characters by extracting single-char substrings
+# - Reverse the dict using the builtin reverse function
+# - Concatenate the reversed characters back into a string
+str-reverse: [fn@String [s@String]
+    [str-reverse-impl s 0 [length s] ""]]
+
+str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
+    [builtin-if [builtin-lt i len]
+        [str-reverse-impl s [builtin-add i 1] len [str [str-slice s i [builtin-add i 1]] acc]]
+        acc]]
+
+]

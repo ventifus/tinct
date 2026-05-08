@@ -1,0 +1,6 @@
+# str-repeat: repeat a string n times
+[include "stdlib/strings.llt"]
+---
+[call %.str-repeat "ab" 3]
+=== out
+String("ababab")

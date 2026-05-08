@@ -2,6 +2,10 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## `string-utils`: Extended String Utilities
+
+Rust builtins: `starts-with?`, `ends-with?` (String + Seq dual-dispatch), `str-chars` (lazy zero-copy char sequence), `str-slice` (zero-copy substring via byte-offset computation). Registered in `standard_builtins()` with type signatures in `type_env.rs`. Pure-tinct `stdlib/strings.llt`: `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse`. Corpus tests for all builtins and stdlib functions. **Deferred:** Bytes dual-dispatch (no `Value::Bytes` yet); `stdlib/strings.llt` not auto-loaded at startup (requires explicit `[include]`).
+
 ## cycle-findings-c141: C141 Codebase Health (Partial)
 
 - [x] **[Minor]** Fix `test_ctx()` in `src/lib.rs:486` to use `create_stdlib_env()` instead of `create_root_env()` — stdlib functions unreachable from test helper (integration-verifier) (`src/lib.rs:486`)

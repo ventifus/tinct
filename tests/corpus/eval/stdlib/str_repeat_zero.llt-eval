@@ -1,0 +1,6 @@
+# str-repeat: zero repetitions yields empty string
+[include "stdlib/strings.llt"]
+---
+[call %.str-repeat "x" 0]
+=== out
+String("")

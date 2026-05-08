@@ -1,0 +1,6 @@
+# str-reverse: empty string stays empty
+[include "stdlib/strings.llt"]
+---
+[call %.str-reverse ""]
+=== out
+String("")

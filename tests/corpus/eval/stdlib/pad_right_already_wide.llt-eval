@@ -1,0 +1,6 @@
+# pad-right: no padding when string already >= width
+[include "stdlib/strings.llt"]
+---
+[call %.pad-right "hello" 3 " "]
+=== out
+String("hello")
