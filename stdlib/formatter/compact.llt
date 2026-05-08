@@ -6,11 +6,20 @@
 # - Dicts rendered as [key: value ...] space-separated
 # - No layout decisions (always single-line)
 # - No comments (they're stripped by ast_to_dict in minimal mode)
+#
+# Structure: two-expression document.  The first dict holds private internal
+# utilities; the second dict holds the public node-formatter API and the
+# pipeline emit entry.  eval_document injects the first dict's bindings into
+# scope before evaluating the second, so utilities are accessible by plain
+# name from the public dict but are NOT exported.  The initial % (the AST
+# pipeline input) is bound at the document level and remains in scope for both
+# expressions.
+
+# ============================================================================
+# Private internal utilities (not exported)
+# ============================================================================
 
 [
-# ============================================================================
-# Utilities (Internal Helpers)
-# ============================================================================
 
 # Join strings with a separator (internal implementation)
 join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
@@ -43,10 +52,13 @@ map-list: [fn@Dict [f@Fn xs@Dict]
 # Helper to construct single-entry dict (internal)
 make-entry: [fn@Dict [k v] [$k: v]]
 
+]
+
 # ============================================================================
-# Node Formatters
+# Node Formatters (public API + pipeline emit)
 # ============================================================================
 
+[
 # Main entry point: dispatch on node.type
 format-node: [fn@Str [node@Dict]
   [match [get "type" node]
