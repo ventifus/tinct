@@ -16,7 +16,42 @@
 #   str-*     String operations (e.g., str-repeat, str-reverse, str-find)
 #   pad-*     Padding operations (left/right)
 #
-# All functions in this dict can reference each other (letrec semantics).
+# Structure: two-expression document.  The first dict holds private -impl/-check
+# helpers; the second dict holds the public API.  eval_document materialises the
+# first dict and injects its string-keyed entries into scope before evaluating
+# the second, so helpers are accessible by plain name from the public dict but
+# are NOT exported to callers (only the second dict's entries are returned).
+# ============================================================================
+
+# ============================================================================
+# Private helpers (not exported)
+# ============================================================================
+
+[
+
+str-find-impl: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
+    [builtin-if [builtin-lt i haystack-len]
+        [str-find-check haystack needle i needle-len haystack-len]
+        [builtin-sub 0 1]]]
+
+str-find-check: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
+    [builtin-if [builtin-eq needle-len 0]
+        0
+        [builtin-if [builtin-lt [builtin-add i needle-len] [builtin-add haystack-len 1]]
+            [builtin-if [builtin-eq [str-slice haystack i [builtin-add i needle-len]] needle]
+                i
+                [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]
+            [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]]]
+
+str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
+    [builtin-if [builtin-lt i len]
+        [str-reverse-impl s [builtin-add i 1] len [str [str-slice s i [builtin-add i 1]] acc]]
+        acc]]
+
+]
+
+# ============================================================================
+# Public API
 # ============================================================================
 
 [
@@ -83,20 +118,6 @@ str-find: [fn@Int [haystack@String needle@String]
         [str-find-impl haystack needle 0 [length needle] [length haystack]]
         [builtin-sub 0 1]]]
 
-str-find-impl: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
-    [builtin-if [builtin-lt i haystack-len]
-        [str-find-check haystack needle i needle-len haystack-len]
-        [builtin-sub 0 1]]]
-
-str-find-check: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
-    [builtin-if [builtin-eq needle-len 0]
-        0
-        [builtin-if [builtin-lt [builtin-add i needle-len] [builtin-add haystack-len 1]]
-            [builtin-if [builtin-eq [str-slice haystack i [builtin-add i needle-len]] needle]
-                i
-                [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]
-            [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]]]
-
 # ============================================================================
 # String Reversal
 # ============================================================================
@@ -113,10 +134,5 @@ str-find-check: [fn@Int [haystack@String needle@String i@Int needle-len@Int hays
 # - Concatenate the reversed characters back into a string
 str-reverse: [fn@String [s@String]
     [str-reverse-impl s 0 [length s] ""]]
-
-str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt i len]
-        [str-reverse-impl s [builtin-add i 1] len [str [str-slice s i [builtin-add i 1]] acc]]
-        acc]]
 
 ]

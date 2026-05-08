@@ -216,13 +216,13 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 
 **Tasks — `prelude.llt`:**
 
-- [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`) — KNOWN ISSUE: multi-document stdlib files at startup not tested
-- [ ] Union type annotations for dual-dispatch parameters: add `@[Dict Seq]` to `sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map` (wrapper), `reduce` (wrapper) — KNOWN ISSUE: type system limitation (`stdlib/prelude.llt`)
+- [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`) — DEFERRED: the multi-expression document approach works at eval time (private helpers are in scope via eval_document scope chain) but degrades typecheck quality: the resolver does not inject first-expression bindings into the resolver scope for the second expression, so references to private helpers from public functions are marked unresolvable. This causes the typechecker to produce fewer advisory warnings for user code (e.g., `all?` with Seq input). Fix requires resolver changes to model multi-expression document scope, or making typecheck use env-based lookup rather than resolver coordinates for cross-expression references. Tracked as future work.
+- [x] Union type annotations for dual-dispatch parameters: intentionally omitted — `@[Dict Seq]` would be an upper-bound constraint (union type), not a dispatch label; the current type system does not support union-typed parameters as dispatch annotations. Dual-dispatch functions (`sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map`, `reduce`) work correctly at runtime via `seq?` guards; the type system limitation is documented here rather than creating misleading annotations (`stdlib/prelude.llt`)
 
 
 **Tasks — `formatter/compact.llt`:**
 
-- [ ] Public/private split: move `join-strings-impl`, `map-list-impl`, `make-entry` into a first dict; public formatting functions in the final dict reference them by plain name (`stdlib/formatter/compact.llt`) — KNOWN ISSUE: multi-document stdlib files at startup not tested
+- [x] Public/private split: move `join-strings-impl`, `map-list-impl`, `make-entry`, `join-strings`, `map-list` into a first dict (private); public node-formatter functions in the second dict reference them by plain name (`stdlib/formatter/compact.llt`) — multi-expression document approach works: eval_document scopes first dict bindings into second; formatter is not loaded via build_prelude_env so no typecheck impact
 - [x] Replace `format-node` `cond` dispatch on `node.type` string with `[match [get "type" node] "literal" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
 - [x] Replace `format-literal` `cond` dispatch on `node.kind` string with `[match [get "kind" node] "int" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
 
