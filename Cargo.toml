@@ -49,6 +49,7 @@ webpki-roots = "0.26"  # Mozilla CA roots (opt-in via mozilla-roots: true)
 sha2 = "0.10"  # SHA-2 hash algorithms (SHA-256, SHA-384, SHA-512) for SPKI pins
 sha3 = "0.10"  # SHA3 hash algorithms for SPKI pins
 rustls-pemfile = "2"  # PEM file parsing for CA bundles and client certificates
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }  # HTTP client for http-connect/http-get
 serde_json = "1.0"
 strsim = "0.11"
 

@@ -246,6 +246,12 @@ pub enum Value {
     /// Timezone (parsed IANA TZ rules from zoneinfo file).
     /// Opaque — not serializable, consumed by timezone conversion builtins.
     Timezone(Rc<jiff::tz::TimeZone>),
+    /// HTTP connection pool — persistent connection for HTTP requests.
+    /// Created by `http-connect`, consumed by `http-get` and other HTTP verbs.
+    HttpConn {
+        client: Rc<reqwest::blocking::Client>,
+        base_url: Option<String>,
+    },
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
@@ -296,6 +302,7 @@ impl Value {
             Value::Duration(_) => "Duration",
             Value::ClockCap(_) => "ClockCap",
             Value::Timezone(_) => "Timezone",
+            Value::HttpConn { .. } => "HttpConn",
         }
     }
 
@@ -370,6 +377,13 @@ impl fmt::Debug for Value {
                 ClockCapInner::Fixed(nanos) => write!(f, "ClockCap(Fixed({nanos} ns))"),
             },
             Value::Timezone(_) => write!(f, "Timezone"),
+            Value::HttpConn { base_url, .. } => {
+                if let Some(base) = base_url {
+                    write!(f, "HttpConn({base})")
+                } else {
+                    write!(f, "HttpConn")
+                }
+            }
         }
     }
 }
@@ -446,6 +460,13 @@ impl fmt::Display for Value {
             }
             Value::ClockCap(_) => write!(f, "<ClockCap>"),
             Value::Timezone(_) => write!(f, "<Timezone>"),
+            Value::HttpConn { base_url, .. } => {
+                if let Some(base) = base_url {
+                    write!(f, "<HttpConn {base}>")
+                } else {
+                    write!(f, "<HttpConn>")
+                }
+            }
         }
     }
 }
@@ -526,7 +547,7 @@ impl PartialEq for Value {
             (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
             (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::ClockCap(a), Value::ClockCap(b)) => a == b,
-            // Timezone is not comparable — opaque parsed TZ data
+            // Timezone and HttpConn are not comparable — opaque data
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
             // Handle and WriteHandle cannot be meaningfully compared (contain RefCell and trait objects).

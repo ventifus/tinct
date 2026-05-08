@@ -4,6 +4,51 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Known Bugs
+
+### `iife-parse`: `[[fn ...] args]` parsed as Dict, not Call
+
+When the first token inside `[` is another `[`, the parser uses priority 5
+(Dict/data fallback) instead of recognising the expression as a function call.
+So `[[fn [x] body] arg]` produces a 2-entry array `{0: fn-literal, 1: arg}`
+rather than applying the fn to the arg. Users must write `[call [fn [x] body] arg]`.
+
+This is a significant ergonomic issue for IIFEs and any pattern where a
+computed function is immediately applied. The fix is to detect the `[expr args...]`
+pattern (where expr is any bracketed sub-expression, not just an identifier)
+and emit `StackFrame::Call` instead of `StackFrame::Dict`.
+
+### `sequential-lazy`: Sequential fn-body bindings are lazy, not eager
+
+`Expr::Sequential` (multi-expression fn bodies) materializes the outer dict at
+each step to extract string-key bindings, but the binding VALUES remain as
+unevaluated thunks in the child env. Pre-computing an expensive value as a
+Sequential step does NOT make it cache at a shallow depth; it will be forced
+lazily at whatever depth first demands it.
+
+This can cause `[E040] maximum evaluation depth exceeded (256)` in scripts that
+combine: complex lazy chains (map/join/str) + lazy thunks for heavy computations
+(large file parses, network fetches). The workaround is to avoid lazy accumulation
+— use string-search (`str-contains?` + `split`) instead of stateful reduce dicts,
+and avoid any pattern where large computations are forced deep inside call chains.
+
+A real fix would force binding values during Sequential materialization, or
+expose an explicit `force` builtin.
+
+### `depth-limit-toml`: `parse-toml-lite` exceeds depth on large TOML files
+
+The recursive tinct parser in `stdlib/toml-lite.llt` uses ~15 depth levels per
+TOML line (via `parse-lines-impl` → `parse-line-dispatch` → `parse-key-value` →
+`parse-value-try-int` → `try-or` → `try`). On a Cargo.toml with 60 non-blank
+lines, it requires ~900 depth levels — far exceeding the `MAX_EVAL_DEPTH = 256`
+limit when called from any non-trivial lazy evaluation chain.
+
+Fix options: (a) increase `MAX_EVAL_DEPTH`, (b) rewrite the TOML parser using
+`builtin-reduce` (Rust-level iteration resets depth per iteration), or (c) add a
+`parse-toml-lite-iter` builtin that processes line-by-line in Rust.
+
+---
+
 ## Research
 
 ### `research-parameterized-dict`
@@ -142,19 +187,6 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 - [ ] Update `http-connect` Rust builtin to take `url@Url` instead of `host`/`port` separately (`src/builtins_io.rs`, `src/types.rs`)
 - [x] Tests: `uri` parsing (scheme extraction), `url` port-defaulting (443 for https), `urn` NID/NSS splitting (`tests/corpus/eval/builtins/uri_parse.llt-eval`, `url_parse.llt-eval`, `urn_parse.llt-eval`)
 - [x] Add `E063` error code (`UriParseError`) for URI/URL/URN parse failures (`src/error.rs`)
-
-### `http-net`: HTTP Client & Network Stack
-
-**Spec chapters:** `doc/whatif/lib-tls.md` §HttpConn, §HTTP/2 HTTP/3, §Network Stack Summary. **Depends on:** `connector-tls`, `uri-type`.
-
-- [ ] Add `reqwest = { version = "0.12", features = ["http2", "http3", "brotli", "rustls-tls"] }` to `Cargo.toml` (`Cargo.toml`)
-- [ ] Add `Value::HttpConn` to Value enum (wraps reqwest Client or connection pool) (`src/value.rs`)
-- [ ] Implement `http-connect` Rust builtin — Connector form: `http-connect connector uri@Uri opts` → `HttpConn`; Handle form: `http-connect h@Handle uri@Uri` → `HttpConn`; internally opens Tcp (HTTP/1.1+2) or Udp (HTTP/3) based on ALPN (`src/builtins_io.rs`)
-- [ ] Implement `http-get` overload on `HttpConn`: `http-get conn uri@Uri headers` → response Dict (`src/builtins_io.rs`)
-- [ ] Implement `socks5-connect` Rust builtin: SOCKS5 tunnel; takes Handle + host + port + creds → Handle[Stream RW] (`src/builtins_io.rs`)
-- [ ] Implement `proxy-connect` Rust builtin: HTTP CONNECT tunnel; takes Handle + host + port → Handle[Stream RW] (`src/builtins_io.rs`)
-- [ ] Register all type signatures (`src/types.rs`)
-- [ ] Tests: corpus tests for HttpConn connection reuse, proxy tunneling, http-get via HttpConn with Url (`tests/corpus/eval/builtins/`, integration tests)
 
 ---
 
