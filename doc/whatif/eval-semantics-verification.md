@@ -67,10 +67,6 @@ fn arb_strict_builtin_call(ctx: &Rc<EvalContext>)
 3. `arb_fn_call` — generate a simple lambda `[fn [x] expr]` with a literal body, apply to generated value
 4. `arb_circular_dict` — a dict where at least two entries form a cycle (for claim 5)
 
-### What Would Change
-
-**New `tests/proptest_thunk.rs`** — ~200 lines. Add `proptest = "1"` to `[dev-dependencies]` in `Cargo.toml`.
-
 ---
 
 ## Part B: Confluence Proof (Theoretical Verification)
@@ -126,42 +122,29 @@ The Ariola & Felleisen (1997) lemmas extend to cover these states by
 unique decomposition (L1) and subject reduction (L2). □
 ```
 
-### What Would Change
-
-**`doc/08-evaluation.md`** — Add the proof sketch above to `§Thunk Lifecycle — Semantic Properties`. Documentation only; no code changes.
-
 ---
 
-## Phased Adoption
+## What Would Change
 
-### Phase 1: Proof sketch + core proptest suite
+**Status 2026-05-07:** Confluence proof sketch added to `doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties` (Part B complete).
 
-**Status 2026-05-07:** Phase 1 is partially complete.
-- ✓ Confluence proof sketch added to `doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties` (Part B complete)
-- **Open:** `tests/proptest_thunk.rs` covering claims 1 and 3 (PendingBuiltin ≡ Unevaluated, memoization) for strict-arg builtins (Part A, ~200 lines + `proptest` dev-dep)
+**Open:** `tests/proptest_thunk.rs` covering all five claims:
 
-### Phase 2: PendingCall + error memoization proptest
+| Claim | Coverage |
+|-------|----------|
+| PendingBuiltin ≡ Unevaluated | 500+ generated (builtin, args) pairs across all Seq-annotated builtins |
+| PendingCall ≡ inline fn body | 500+ generated (fn, args) pairs; compare PendingCall dispatch vs direct eval |
+| Memoization | Force same thunk twice; assert identical result, no re-evaluation |
+| Error memoization | Force a failing thunk twice; assert same `EvalError` both times |
+| Cycle detection | Generate mutual dict reference; assert `CircularDependency` error, not hang |
 
-- Extend proptest suite with claims 2 and 4 (PendingCall ≡ inline body, error memoization)
-- Extend Ariola-Felleisen lemma extension to formally cover PendingCall
+`proptest = "1"` added to `[dev-dependencies]` in `Cargo.toml`. The Ariola-Felleisen lemma extension is documented in `doc/08-evaluation.md` alongside the proof sketch.
 
-### Phase 3: Mechanized proof (stretch)
+A Coq or Isabelle formalization of the state machine is a stretch goal, contingent on the proptest suite finding zero failures and a formal semantics specification complete in `doc/08-evaluation.md`.
 
-- Coq or Isabelle formalization of the state machine and the proof sketch
-- Gate on Phase 2 finding no failures and a formal semantics specification complete in doc/08-evaluation.md
+## Prerequisites
 
-### Prerequisites
-
-- Phase 1: no prerequisites
-- Phase 2: Phase 1 complete with zero test failures; `PendingCall` path well-documented in `doc/08-evaluation.md`
-- Phase 3: Phase 2 complete; full formal semantics in doc/08-evaluation.md
-
-### Trigger
-
-- Phase 1 (proof sketch): when a reviewer challenges the confluence claim or the adequacy assertions
-- Phase 1 (proptest): when evaluator refactoring (e.g., arena migration, W1 strictness dispatch) creates risk that bisimulation properties could be violated
-- Phase 2: when Phase 1 proptest reveals an unexpected failure (indicating a real semantic bug)
-- Phase 3: if tinct is used in safety-critical or formally-verified contexts
+No prerequisites. The existing evaluator is the subject of verification — no upstream features are needed.
 
 ## References
 

@@ -19,13 +19,12 @@ pub use crate::arena::ThunkId;
 pub struct BuiltinArgs<'a> {
     pub args: &'a [Rc<Thunk>],
     pub named: Option<&'a IndexMap<String, Rc<Thunk>>>,
-    pub depth: usize,
     pub call_span: Span,
     pub ctx: Rc<crate::eval::EvalContext>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
-/// positional args, named args, evaluation depth, and call-site span.
+/// positional args, named args, and call-site span.
 /// Returns an `Rc<Thunk>` to allow builtins to participate in lazy evaluation.
 pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>;
 
@@ -597,7 +596,6 @@ pub enum ThunkState {
         /// avoids allocating an empty `IndexMap` for the many internal `PendingBuiltin`
         /// thunks created by sequence generators and transforms.
         named: Option<IndexMap<String, Rc<Thunk>>>,
-        depth: usize,
         call_span: Span,
         ctx: Rc<crate::eval::EvalContext>,
     },
@@ -676,7 +674,6 @@ impl Thunk {
         def: BuiltinDef,
         args: Vec<Rc<Thunk>>,
         named: Option<IndexMap<String, Rc<Thunk>>>,
-        depth: usize,
         span: Span,
         origin: Option<Rc<str>>,
         ctx: Rc<crate::eval::EvalContext>,
@@ -686,7 +683,6 @@ impl Thunk {
                 def,
                 args: Box::new(args),
                 named,
-                depth,
                 call_span: span,
                 ctx,
             }),
@@ -832,7 +828,6 @@ impl Thunk {
         BuiltinDef,
         Vec<Rc<Thunk>>,
         Option<IndexMap<String, Rc<Thunk>>>,
-        usize,
         Span,
         Rc<crate::eval::EvalContext>,
     )> {
@@ -842,10 +837,9 @@ impl Thunk {
                 def,
                 args,
                 named,
-                depth,
                 call_span,
                 ctx,
-            } => Some((def, *args, named, depth, call_span, ctx)),
+            } => Some((def, *args, named, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -1593,7 +1587,6 @@ mod tests {
             dummy_def,
             vec![],
             None,
-            0,
             span,
             Some(Rc::from("test builtin call")),
             Rc::clone(&ctx1),
@@ -1611,7 +1604,7 @@ mod tests {
         let taken = thunk.take_pending_builtin();
         assert!(taken.is_some(), "take_pending_builtin should succeed");
 
-        let (_def, _args, _named, _depth, _call_span, taken_ctx) = taken.unwrap();
+        let (_def, _args, _named, _call_span, taken_ctx) = taken.unwrap();
         assert!(
             Rc::ptr_eq(&taken_ctx, &ctx1),
             "PendingBuiltin should evaluate using captured ctx1"
@@ -1886,7 +1879,6 @@ mod tests {
             dummy_def,
             vec![],
             None,
-            0,
             span,
             Some(Rc::from("test")),
             Rc::clone(&ctx),
@@ -1940,7 +1932,6 @@ mod tests {
             error_def,
             vec![],
             None,
-            0,
             span,
             Some(Rc::from("test")),
             Rc::clone(&ctx),

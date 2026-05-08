@@ -241,25 +241,7 @@ match is implemented as `Expr::Match` (Rust special form). Sprint A1
 (let-binding) is a parser change (multi-expression fn bodies), not a macro.
 Sprint C1 (ADTs) uses type checker extension, not macros.
 
-## Phased Adoption
-
-### Phase 1: `[defmacro tmpl]` — String Interpolation
-
-Lowest risk: replace `desugar_interpolated_string()` with a tinct macro. Parser
-emits `[tmpl "raw"]`; macro expands to `[str ...]`. Validates the macro
-infrastructure on a real existing feature.
-
-- `src/parser.rs`: convert `InterpolatedString` to `[tmpl "..."]` call
-- `stdlib/macros.llt`: `[defmacro tmpl ...]` with `parse-template` helper
-- Tests: all existing string interpolation corpus tests pass through the macro path
-
-### Phase 2: Multi-Entry `[type ...]` for ADTs
-
-- `src/typecheck.rs`: extend `resolve_type_dict`/`[type ...]` handler to union multiple positional entries; add `Expr::Str` → `Type::StringLiteral` to `resolve_type_expr`
-- Depends on `Type::Union` (B1) for the union type representation
-- Tests: 6+ corpus tests for multi-entry type declarations and string literal type variants
-
-### Prerequisites
+## Prerequisites
 
 All prerequisites are met (2026-05-07):
 
@@ -267,9 +249,6 @@ All prerequisites are met (2026-05-07):
 - ~~Quasiquoting Phase 2~~ ✓ Complete — `[quote]`/`[unquote]` implemented
 - ~~`ast_to_dict_expr`~~ ✓ Complete — AST dict schema (`ast-dict-core` sprint)
 - ~~`Type::Union`~~ ✓ Complete — `union-types` sprint
-
-**Trigger is met.** `[defmacro]` is fully stable. Phase 1 (`[defmacro tmpl]`)
-can be adopted now.
 
 ## References
 

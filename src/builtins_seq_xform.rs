@@ -28,7 +28,6 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -38,12 +37,10 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     let f_thunk = Rc::clone(&args[0]);
-    let xs = materialize(&args[1], None, &ctx, depth)?;
+    let xs = materialize(&args[1], None, &ctx)?;
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
-        Value::Overlay(l, r) => {
-            Value::Dict(flatten_overlay(&l, &r, "map", &ctx, depth, call_span)?)
-        }
+        Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span)?),
         // Bytes: treat as Seq of Int byte values
         Value::Bytes {
             ref source,
@@ -92,7 +89,6 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("map", builtin_map),
                 tail_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $map")),
                 Rc::clone(&ctx),
@@ -125,7 +121,6 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -135,12 +130,10 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     let pred_thunk = Rc::clone(&args[0]);
-    let xs = materialize(&args[1], None, &ctx, depth)?;
+    let xs = materialize(&args[1], None, &ctx)?;
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
-        Value::Overlay(l, r) => {
-            Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, depth, call_span)?)
-        }
+        Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span)?),
         // Bytes: treat as Seq of Int byte values
         Value::Bytes {
             ref source,
@@ -171,7 +164,6 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("filter", builtin_filter_dict_step),
                 filter_args,
                 None,
-                depth,
                 call_span,
                 Some(Rc::from("call $filter")),
                 Rc::clone(&ctx),
@@ -189,7 +181,6 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("filter", builtin_filter_seq_step),
                 filter_args,
                 None,
-                depth,
                 call_span,
                 Some(Rc::from("call $filter")),
                 Rc::clone(&ctx),
@@ -219,7 +210,6 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
-        depth,
         call_span,
         ctx,
         ..
@@ -227,7 +217,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
     let pred_thunk = Rc::clone(&args[0]);
     let dict_thunk = Rc::clone(&args[1]);
 
-    let mut idx_int = match materialize(&args[2], None, &ctx, depth)? {
+    let mut idx_int = match materialize(&args[2], None, &ctx)? {
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
@@ -242,7 +232,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
 
     // dict_thunk is pre-wrapped as Materialized at the filter call site
     debug_assert!(matches!(&*dict_thunk.state(), ThunkState::Materialized(_)));
-    let dict = materialize(&dict_thunk, None, &ctx, depth)?;
+    let dict = materialize(&dict_thunk, None, &ctx)?;
     let dict_map = match dict {
         Value::Dict(ref m) => m,
         other => {
@@ -289,7 +279,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
             Some(Rc::from("filter-dict pred")),
             Rc::clone(&ctx),
         ));
-        let pred_result = materialize(&pred_call, None, &ctx, depth)?;
+        let pred_result = materialize(&pred_call, None, &ctx)?;
 
         let passes = match pred_result {
             Value::Bool(b) => b,
@@ -316,7 +306,6 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
                 builtin!("filter", builtin_filter_dict_step),
                 tail_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $filter")),
                 Rc::clone(&ctx),
@@ -349,7 +338,6 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
 pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
-        depth,
         call_span,
         ctx,
         ..
@@ -360,7 +348,7 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
     // Loop over consecutive failing elements without consuming extra depth.
     // We only defer via PendingBuiltin when we find a passing element (the tail
     // of the emitted Seq node) so depth counts emitted elements, not rejections.
-    let mut current = materialize(&seq_thunk, None, &ctx, depth)?;
+    let mut current = materialize(&seq_thunk, None, &ctx)?;
     loop {
         match current {
             Value::Dict(_) => {
@@ -381,7 +369,7 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                     Some(Rc::from("filter-seq pred")),
                     Rc::clone(&ctx),
                 ));
-                let pred_result = materialize(&pred_call, None, &ctx, depth)?;
+                let pred_result = materialize(&pred_call, None, &ctx)?;
 
                 let passes = match pred_result {
                     Value::Bool(b) => b,
@@ -403,7 +391,6 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                         builtin!("filter", builtin_filter_seq_step),
                         tail_args,
                         None,
-                        depth + 1,
                         call_span,
                         Some(Rc::from("call $filter")),
                         Rc::clone(&ctx),
@@ -417,7 +404,7 @@ pub(crate) fn builtin_filter_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
                     );
                 } else {
                     // Skip this element: advance the loop without extra depth
-                    current = materialize(&tail_thunk, None, &ctx, depth)?;
+                    current = materialize(&tail_thunk, None, &ctx)?;
                 }
             }
             other => {
@@ -442,7 +429,6 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -451,7 +437,7 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let n = materialize(&args[0], None, &ctx, depth)?;
+    let n = materialize(&args[0], None, &ctx)?;
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -470,7 +456,7 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return ok_val(Value::Dict(IndexMap::new()), call_span);
     }
 
-    let xs = materialize(&args[1], None, &ctx, depth)?;
+    let xs = materialize(&args[1], None, &ctx)?;
     // Bytes: treat as Seq of Int byte values
     let xs = match xs {
         Value::Bytes {
@@ -501,7 +487,6 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("take", builtin_take),
                 tail_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $take")),
                 Rc::clone(&ctx),
@@ -534,7 +519,6 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -543,7 +527,7 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let n = materialize(&args[0], None, &ctx, depth)?;
+    let n = materialize(&args[0], None, &ctx)?;
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -562,7 +546,7 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Ok(Rc::clone(&args[1]));
     }
 
-    let xs = materialize(&args[1], None, &ctx, depth)?;
+    let xs = materialize(&args[1], None, &ctx)?;
     // Bytes: treat as Seq of Int byte values
     let xs = match xs {
         Value::Bytes {
@@ -591,7 +575,6 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 builtin!("drop", builtin_drop_seq_step),
                 step_args,
                 None,
-                depth,
                 call_span,
                 Some(Rc::from("call $drop")),
                 Rc::clone(&ctx),
@@ -613,13 +596,12 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
-        depth,
         call_span,
         ctx,
         ..
     } = ctx_arg;
 
-    let n = materialize(&args[0], None, &ctx, depth)?;
+    let n = materialize(&args[0], None, &ctx)?;
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -638,7 +620,7 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
         return Ok(Rc::clone(&args[1]));
     }
 
-    let seq = materialize(&args[1], None, &ctx, depth)?;
+    let seq = materialize(&args[1], None, &ctx)?;
     match seq {
         Value::Dict(_) => {
             // End of sequence before we finished dropping
@@ -653,7 +635,6 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
                 builtin!("drop", builtin_drop_seq_step),
                 step_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $drop")),
                 Rc::clone(&ctx),

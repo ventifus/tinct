@@ -1218,15 +1218,16 @@ fn run_eval(
 
         // Evaluate file with pipeline input
         let file_result =
-            eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, pipeline_input, 0)
-                .map_err(|e| {
+            eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, pipeline_input).map_err(
+                |e| {
                     let mut error_str = format!("{e}");
                     if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
                         error_str.push('\n');
                         error_str.push_str(&snippet);
                     }
                     error_str
-                })?;
+                },
+            )?;
 
         // Record blame provenance for the pipeline boundary.
         // The producing stage label is the file path or expression index.
@@ -1242,7 +1243,7 @@ fn run_eval(
 
         // Record blame for the % thunk at this pipeline boundary.
         // This is used by contract violation errors to identify the producing stage.
-        if let Ok(val) = tinct::materialize(&file_result, None, &eval_ctx, 0) {
+        if let Ok(val) = tinct::materialize(&file_result, None, &eval_ctx) {
             if let tinct::Value::Dict(ref map) = val {
                 for (_, thunk_id) in map {
                     eval_ctx.record_blame(*thunk_id, stage_label.clone());
@@ -1266,7 +1267,7 @@ fn run_eval(
     let eval_ctx = last_eval_ctx.ok_or_else(|| "internal error: no eval context".to_string())?;
 
     // Materialize the final result
-    let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| {
+    let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
         let mut error_str = format!("{e}");
         if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
             error_str.push('\n');
@@ -1280,7 +1281,7 @@ fn run_eval(
     // - -o flag was given (output formatter stage may contain lazy emit calls inside a Dict
     //   module; deep materialization forces all entries, triggering the emit side effects)
     let val = if force_eval || output.is_some() {
-        deep_materialize(&val, &eval_ctx, 0, None).map_err(|e| {
+        deep_materialize(&val, &eval_ctx, None).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
                 error_str.push('\n');
@@ -1325,7 +1326,7 @@ fn run_eval(
                         drain_count += 1;
                         // Force the head to trigger any emit calls inside it.
                         let head_thunk = eval_ctx.get_thunk(head);
-                        materialize(&head_thunk, None, &eval_ctx, 0).map_err(|e| {
+                        materialize(&head_thunk, None, &eval_ctx).map_err(|e| {
                             let mut error_str = format!("{e}");
                             if let Some(snippet) =
                                 tinct::render_span_snippet(&last_source, e.definition_span)
@@ -1337,7 +1338,7 @@ fn run_eval(
                         })?;
                         // Advance to the tail.
                         let tail_thunk = eval_ctx.get_thunk(tail);
-                        current = materialize(&tail_thunk, None, &eval_ctx, 0).map_err(|e| {
+                        current = materialize(&tail_thunk, None, &eval_ctx).map_err(|e| {
                             let mut error_str = format!("{e}");
                             if let Some(snippet) =
                                 tinct::render_span_snippet(&last_source, e.definition_span)
@@ -1655,17 +1656,16 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
 
     let eval_ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
 
-    let thunk =
-        eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, None, 0).map_err(|e| {
-            let mut msg = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
-                msg.push('\n');
-                msg.push_str(&snippet);
-            }
-            msg
-        })?;
+    let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, None).map_err(|e| {
+        let mut msg = format!("{e}");
+        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
+            msg.push('\n');
+            msg.push_str(&snippet);
+        }
+        msg
+    })?;
 
-    let val = materialize(&thunk, None, &eval_ctx, 0).map_err(|e| {
+    let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
         let mut msg = format!("{e}");
         if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
             msg.push('\n');
@@ -1692,14 +1692,14 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
                         .map_err(|e| format!("JSON pretty-print error: {e}"))?
                 }
                 Ok(None) => {
-                    let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+                    let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
                     serde_json::to_string_pretty(&json)
                         .map_err(|e| format!("JSON serialization error: {e}"))?
                 }
                 Err(e) => return Err(e),
             }
         } else {
-            let json = value_to_json(&val, &eval_ctx, 0).map_err(|e| format!("{e}"))?;
+            let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
             serde_json::to_string_pretty(&json)
                 .map_err(|e| format!("JSON serialization error: {e}"))?
         };
@@ -1780,18 +1780,17 @@ fn run_literate_weave(
             Rc::clone(&env),
             &eval_ctx,
             pipeline_input.clone(),
-            0,
         )
         .map_err(|e| format!("error in code block {}: {e}", i + 1))?;
 
-        let val = materialize(&thunk, None, &eval_ctx, 0)
+        let val = materialize(&thunk, None, &eval_ctx)
             .map_err(|e| format!("error materializing code block {}: {e}", i + 1))?;
 
         let json_str = if eval_ctx.emitted.get() {
             // Block called emit — note this in the annotation.
             "(emit)".to_string()
         } else {
-            let json = value_to_json(&val, &eval_ctx, 0)
+            let json = value_to_json(&val, &eval_ctx)
                 .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
             serde_json::to_string(&json)
                 .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?

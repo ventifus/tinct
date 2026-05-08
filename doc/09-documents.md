@@ -289,7 +289,13 @@ When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_d
 
 **Return value:** Only `θₙ` (the last expression's thunk) is returned. Intermediate expressions `e₁..eₙ₋₁` contribute bindings to the scope chain but are not part of the document's value. This is the formal basis for module-style encapsulation: helpers placed in earlier expressions are lexically visible within the document but are excluded from the returned value and therefore not accessible to callers.
 
-**Intermediate materialization:** Expressions `e₁..eₙ₋₁` are forced to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Note that the thunks `θ` extracted from `mapᵢ` are inserted into `ρᵢ` *without further materialization* — only the dict structure is forced, not the individual entry values. Those values remain lazy and are forced only when accessed via `$name` in subsequent expressions. The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-by-need semantics.
+**Intermediate materialization (strict let\* semantics):** Expressions `e₁..eₙ₋₁` are forced to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Beyond extracting the dict structure, **named (string-keyed) entry values are also forced to WHNF at binding time** — this is strict `let*` semantics. Each binding is fully evaluated before the next expression sees it. Consequences:
+
+- **Dead-but-erroring bindings fail eagerly.** If a named binding computes an error, it fails at binding time even if no subsequent expression uses that name. Previously such bindings were silently ignored.
+- **WHNF only, not deep.** Dict values within a bound value remain lazy — only the outer thunk is forced. Use `[eval ...]` for deep forcing.
+- **Use `[force expr]` for explicit control.** The `$force` builtin provides WHNF forcing for function bodies and other lazy contexts where auto-forcing does not apply.
+
+The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-by-need semantics.
 
 **Dict-type constraint:** Intermediate expressions must evaluate to `Dict`. This is not a type system constraint (the type checker does not enforce it) but a runtime invariant. If `vᵢ` is not a `Dict`, evaluation fails with a type mismatch error.
 

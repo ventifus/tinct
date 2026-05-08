@@ -18,9 +18,7 @@ What would it take to replace the current linear TypeVar chain walk in `Substitu
 
 ## Design
 
-**Profile chain depth first.** Union-find is only warranted if TypeVar chains are consistently longer than 2–3 nodes on real programs. If chains are almost always depth 1 (direct binding), the current HashMap is already O(1) and union-find adds overhead with no benefit.
-
-### Approach (if chains are deep)
+### Approach
 
 Replace `HashMap<String, Type>` in `Substitution` with a union-find structure:
 
@@ -45,10 +43,6 @@ struct UnionFind {
 - `petgraph::unionfind`: bundled in `petgraph` (already a transitive dep?). Simpler if already present.
 - Hand-rolled: ~80 lines; full control; no new dependency.
 
-## Profiling Gate
-
-**Do not implement without measuring chain depth.** Instrument `Substitution::apply_inner()` to count hops per chain and emit max/average on test exit (behind a feature flag or `--debug-types`). If average chain depth is ≤2 on real programs, the current HashMap is fine. Union-find overhead (two extra allocations at creation, path-compression write per lookup) only pays off when chains are consistently ≥4 nodes.
-
 ## What Would Change
 
 ### `src/types.rs`
@@ -59,25 +53,10 @@ struct UnionFind {
 
 **Note:** Row variables (`row_map`) have different semantics (they bind to `RowTail`, not `Type`). Would require either a separate union-find or a tagged value type. This complexity may outweigh the benefit for row vars specifically — consider applying union-find only to `type_map`.
 
-## Phased Adoption
+## Prerequisites
 
-### Phase 1: Profile
-
-Add chain-depth instrumentation to `apply_inner()`. Run on large real-world tinct configs. Measure average and max chain depth.
-
-### Phase 2: Implement (if chains are deep)
-
-If Phase 1 shows chains consistently ≥4: replace `type_map` with a union-find. Keep `row_map` as-is unless row chain depth is also a problem.
-
-### Prerequisites
-
-- Phase 1: no prerequisites
-- Phase 2: Phase 1 confirms deep chains; `MAX_SUBST_SIZE` guard may be removed or reframed as union-find node count
-
-### Trigger
-
-- Phase 1: during type inference performance work
-- Phase 2: when average chain depth ≥4 confirmed on representative programs
+- Chain-depth instrumentation added to `apply_inner()` (counts hops per chain; emits max/average on test exit behind `--debug-types`). Profiling on large real-world tinct configs confirms average chain depth ≥4. If chains are consistently depth ≤2, the current HashMap is already O(1) and union-find adds overhead with no benefit.
+- `MAX_SUBST_SIZE` guard may be removed or reframed as union-find node count once the structure is replaced.
 
 ## References
 

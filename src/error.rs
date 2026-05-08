@@ -976,6 +976,7 @@ impl EvalError {
         }
     }
 
+    #[cfg(test)]
     pub fn depth_exceeded(limit: usize, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::DepthExceeded { limit },

@@ -191,7 +191,6 @@ impl ReplSession {
             Rc::clone(&self.env),
             &self.ctx,
             Some(Rc::clone(&self.prev_result)),
-            0,
         )
         .map_err(|e| {
             let mut error_str = format!("{e}");
@@ -202,7 +201,7 @@ impl ReplSession {
             error_str
         })?;
 
-        let val = materialize(&result_thunk, None, &self.ctx, 0).map_err(|e| {
+        let val = materialize(&result_thunk, None, &self.ctx).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
                 error_str.push('\n');
@@ -210,7 +209,7 @@ impl ReplSession {
             }
             error_str
         })?;
-        let forced = deep_materialize(&val, &self.ctx, 0, None).map_err(|e| {
+        let forced = deep_materialize(&val, &self.ctx, None).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
                 error_str.push('\n');
@@ -218,7 +217,7 @@ impl ReplSession {
             }
             error_str
         })?;
-        let display = value_to_display_string(&forced, &self.ctx, 0).map_err(|e| {
+        let display = value_to_display_string(&forced, &self.ctx).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
                 error_str.push('\n');

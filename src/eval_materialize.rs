@@ -15,7 +15,7 @@ use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     annotation_has_structural_fields, eval, eval_dict, eval_recursive, format_field_path,
     format_type_for_assert, validate_and_wrap_record, value_matches_type, EvalContext,
-    DEFAULT_ANNOTATION_KEY, MAX_EVAL_DEPTH,
+    DEFAULT_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{eval_call, invoke_function, CallContext};
@@ -57,12 +57,9 @@ pub(crate) fn attach_materialization_context(
 }
 
 /// State restoration data for non-cacheable errors in iterative materialization.
-/// When a non-cacheable error (e.g., DepthExceeded) occurs, the thunk's original
-/// state must be restored so it can be re-evaluated at a shallower depth.
+/// Snapshot of a thunk's pre-materialization state, used to restore the thunk
+/// when a non-cacheable error occurs.
 ///
-/// TODO(iterative-eval): RestoreState duplicates ThunkState data. The full CEK
-/// machine (iterative-eval-b) eliminates this by moving PendingBuiltin/PendingCall
-/// state to Cont variants on the stack, making restoration unnecessary.
 pub(crate) enum RestoreState {
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
@@ -73,7 +70,6 @@ pub(crate) enum RestoreState {
         def: crate::value::BuiltinDef,
         args: Box<Vec<Rc<Thunk>>>,
         named: Option<IndexMap<String, Rc<Thunk>>>,
-        depth: usize,
         call_span: Span,
         ctx: Rc<EvalContext>,
     },
@@ -97,7 +93,6 @@ impl RestoreState {
                 def,
                 args,
                 named,
-                depth,
                 call_span,
                 ctx,
             } => {
@@ -105,7 +100,6 @@ impl RestoreState {
                     def,
                     args,
                     named,
-                    depth,
                     call_span,
                     ctx,
                 });
@@ -155,7 +149,6 @@ pub(crate) struct PendingCallDispatchData {
     pub(crate) origin: Option<Rc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
-    pub(crate) depth: usize,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -172,7 +165,6 @@ pub(crate) struct GuardedValidateData {
     /// EvalContext for flattening Value::Overlay results. None when inner thunk was already
     /// Materialized/Failed at guard-push time (these states can't produce new Overlays).
     pub(crate) ctx: Option<Rc<EvalContext>>,
-    pub(crate) depth: usize,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
 }
 
@@ -184,7 +176,6 @@ pub(crate) struct TypeAssertCheckData {
     pub(crate) thunk_span: Span,
     pub(crate) env: Rc<RefCell<Environment>>,
     pub(crate) ctx: Rc<EvalContext>,
-    pub(crate) depth: usize,
 }
 
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
@@ -193,7 +184,6 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) def: crate::value::BuiltinDef,
     pub(crate) args: Box<Vec<Rc<Thunk>>>,
     pub(crate) named: Option<IndexMap<String, Rc<Thunk>>>,
-    pub(crate) depth: usize,
     pub(crate) call_span: Span,
     pub(crate) ctx: Rc<EvalContext>,
     pub(crate) origin: Option<Rc<str>>,
@@ -213,7 +203,6 @@ pub(crate) struct DotAccessForceData {
     /// bad value was defined, complementing `access_span` (where it was accessed).
     pub(crate) target_def_span: Span,
     pub(crate) ctx: Rc<EvalContext>,
-    pub(crate) depth: usize,
 }
 
 /// Continuation variants for iterative materialization. Each represents
@@ -265,7 +254,6 @@ pub(crate) enum Action {
     Materialize {
         thunk: Rc<Thunk>,
         mat_span: Option<Span>,
-        depth: usize,
     },
     /// Evaluate an expression to a thunk (wrapping, not forcing).
     /// Used by TypeAssert default expression evaluation and other iterative eval paths.
@@ -274,19 +262,7 @@ pub(crate) enum Action {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
         ctx: Rc<EvalContext>,
-        depth: usize,
     },
-}
-
-/// Increment the evaluation depth by one unit.
-/// Each level of thunk forcing consumes one depth unit: when `force_step` or
-/// `apply_cont` transitions from a parent thunk to a child sub-thunk, the
-/// depth passed to the child is `next_depth(parent_depth)`. This mirrors the
-/// `depth + 1` in the old recursive `materialize()` calls and ensures
-/// `MAX_EVAL_DEPTH` is enforced uniformly across all sub-thunk dispatch sites.
-#[inline]
-pub(crate) fn next_depth(d: usize) -> usize {
-    d + 1
 }
 
 /// Process one thunk and return either a result or a sub-thunk to force.
@@ -294,7 +270,6 @@ pub(crate) fn next_depth(d: usize) -> usize {
 pub(crate) fn force_step(
     thunk: &Rc<Thunk>,
     mat_span: Option<Span>,
-    depth: usize,
     stack: &mut Vec<Cont>,
     ctx: &Rc<EvalContext>,
 ) -> Action {
@@ -367,7 +342,7 @@ pub(crate) fn force_step(
     // 2. MONOTONICITY: State transitions are one-way (Unevaluated/PendingBuiltin/
     //    PendingCall/Guarded → InProgress → Materialized/Failed). Exception: DepthExceeded
     //    errors are non-cacheable and trigger state restoration (e.g., InProgress →
-    //    PendingBuiltin) so the computation can be retried at a shallower depth.
+    //    PendingBuiltin) so the computation can be retried.
     //    Failed → Failed self-transition (lines 1006-1024) refines diagnostic metadata
     //    (materialization spans, stack frames) without changing the error's identity.
     //
@@ -382,24 +357,7 @@ pub(crate) fn force_step(
     let origin = thunk.origin.clone();
 
     if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
-        if depth > MAX_EVAL_DEPTH {
-            // All four deferred-state depth-exceeded paths (Unevaluated, PendingBuiltin,
-            // PendingCall, Guarded) must call attach_materialization_context for uniform error reporting.
-            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            let err = attach_materialization_context(
-                err.into(),
-                mat_span.as_ref(),
-                origin.as_deref(),
-                thunk_span,
-            );
-            thunk.set_state(ThunkState::Unevaluated {
-                expr,
-                env,
-                ctx: thunk_ctx,
-            });
-            return Action::Continue(Err(err));
-        }
-        // Push to eval_stack after transitioning to InProgress and passing depth check (for cycle path reconstruction)
+        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
             .borrow_mut()
@@ -419,12 +377,7 @@ pub(crate) fn force_step(
         } = &expr.node
         {
             // Evaluate target expression
-            match eval(
-                Rc::new((**target).clone()),
-                Rc::clone(&env),
-                &thunk_ctx,
-                next_depth(depth),
-            ) {
+            match eval(Rc::new((**target).clone()), Rc::clone(&env), &thunk_ctx) {
                 Ok(target_thunk) => {
                     // Push Memoize for the outer thunk (the access result)
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
@@ -444,13 +397,11 @@ pub(crate) fn force_step(
                         access_span: expr.span,
                         target_def_span: target_thunk.span,
                         ctx: Rc::clone(&thunk_ctx),
-                        depth: next_depth(depth),
                     })));
                     // Force the target
                     return Action::Materialize {
                         thunk: target_thunk,
                         mat_span: Some(expr.span),
-                        depth: next_depth(depth),
                     };
                 }
                 Err(mut e) => {
@@ -473,7 +424,7 @@ pub(crate) fn force_step(
             }
         }
 
-        match eval(expr, Rc::clone(&env), &thunk_ctx, next_depth(depth)) {
+        match eval(expr, Rc::clone(&env), &thunk_ctx) {
             Ok(result_thunk) => {
                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                     thunk: Rc::clone(thunk),
@@ -486,7 +437,6 @@ pub(crate) fn force_step(
                 Action::Materialize {
                     thunk: result_thunk,
                     mat_span,
-                    depth: next_depth(depth),
                 }
             }
             Err(e) => {
@@ -506,29 +456,8 @@ pub(crate) fn force_step(
                 Action::Continue(Err(decorated))
             }
         }
-    } else if let Some((def, args, named, pending_depth, call_span, thunk_ctx)) =
-        thunk.take_pending_builtin()
-    {
-        if depth > MAX_EVAL_DEPTH {
-            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            let err = attach_materialization_context(
-                err.into(),
-                mat_span.as_ref(),
-                origin.as_deref(),
-                thunk_span,
-            );
-            thunk.set_state(ThunkState::PendingBuiltin {
-                def,
-                args: Box::new(args),
-                named,
-                depth: pending_depth,
-                call_span,
-                ctx: thunk_ctx,
-            });
-            return Action::Continue(Err(err));
-        }
-
-        // Push to eval_stack after transitioning to InProgress and passing depth check (for cycle path reconstruction)
+    } else if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
+        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
             .borrow_mut()
@@ -539,7 +468,6 @@ pub(crate) fn force_step(
             def,
             args: Box::new(args.clone()),
             named: named.clone(),
-            depth: pending_depth,
             call_span,
             ctx: thunk_ctx.clone(),
         };
@@ -559,7 +487,6 @@ pub(crate) fn force_step(
                 def,
                 args: Box::new(args),
                 named,
-                depth,
                 call_span,
                 ctx: thunk_ctx,
                 origin,
@@ -571,7 +498,6 @@ pub(crate) fn force_step(
             return Action::Materialize {
                 thunk: arg_thunk,
                 mat_span: None,
-                depth,
             };
         }
 
@@ -580,7 +506,6 @@ pub(crate) fn force_step(
         let builtin_args = crate::value::BuiltinArgs {
             args: &args,
             named: named.as_ref(),
-            depth,
             call_span,
             ctx: Rc::clone(&thunk_ctx),
         };
@@ -602,11 +527,9 @@ pub(crate) fn force_step(
                         restore: Some(restore),
                         ctx: Rc::clone(&thunk_ctx),
                     })));
-                    // TCO: force result at same depth
                     Action::Materialize {
                         thunk: result_thunk,
                         mat_span,
-                        depth,
                     }
                 }
             }
@@ -628,27 +551,11 @@ pub(crate) fn force_step(
             }
         }
     } else if matches!(&*thunk.state(), ThunkState::PendingCall { .. }) {
-        // Depth check before take_pending_call(): thunk stays in PendingCall state on
-        // DepthExceeded, so no clones are needed to restore state. The Ref temporary
-        // from thunk.state() is a non-binding temporary in an if condition, so Rust
-        // drops it before entering the if body (NLL rule: temporaries in if conditions
-        // are not extended to the body).
-        if depth > MAX_EVAL_DEPTH {
-            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            let err = attach_materialization_context(
-                err.into(),
-                mat_span.as_ref(),
-                origin.as_deref(),
-                thunk_span,
-            );
-            // Thunk remains in PendingCall — no restoration clones needed.
-            return Action::Continue(Err(err));
-        }
         let (func_thunk, args, named, call_span, caller_env, thunk_ctx) = thunk
             .take_pending_call()
             .expect("PendingCall state confirmed above; single-threaded execution prevents TOCTOU");
 
-        // Push to eval_stack after transitioning to InProgress and passing depth check (for cycle path reconstruction)
+        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
             .borrow_mut()
@@ -667,42 +574,15 @@ pub(crate) fn force_step(
                 origin,
                 thunk_span,
                 mat_span,
-                depth,
             },
         )));
-        // TCO: if function is already materialized (cached from prior call),
-        // don't increment depth — enables tail recursion to same function.
-        let func_depth = if func_thunk.try_get_materialized().is_some() {
-            depth
-        } else {
-            next_depth(depth)
-        };
         Action::Materialize {
             thunk: Rc::clone(&func_thunk),
             mat_span: Some(call_span),
-            depth: func_depth,
         }
     } else if let Some((inner, expected, field_path, guard_span, blame_label)) =
         thunk.take_guarded()
     {
-        if depth > MAX_EVAL_DEPTH {
-            let err = EvalError::depth_exceeded(MAX_EVAL_DEPTH, thunk_span);
-            let err = attach_materialization_context(
-                err.into(),
-                mat_span.as_ref(),
-                origin.as_deref(),
-                thunk_span,
-            );
-            thunk.set_state(ThunkState::Guarded {
-                inner,
-                expected,
-                field_path: Box::new(field_path),
-                guard_span,
-                blame_label,
-            });
-            return Action::Continue(Err(err));
-        }
-
         let inner_span = inner.span;
         // Extract ctx from the inner thunk's current state for use during GuardedValidate
         // when the materialized result is a Value::Overlay (needs flattening with ctx).
@@ -729,13 +609,11 @@ pub(crate) fn force_step(
             thunk_span,
             mat_span,
             ctx: guard_ctx,
-            depth,
             blame_label,
         })));
         Action::Materialize {
             thunk: Rc::clone(&inner),
             mat_span,
-            depth: next_depth(depth),
         }
     } else {
         unreachable!(
@@ -797,7 +675,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 origin,
                 thunk_span,
                 mat_span,
-                depth,
             } = *data;
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
@@ -824,7 +701,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 named: named.as_ref().expect("named set above").as_deref(),
                                 default_env: &caller_env, // Use caller's environment for default param evaluation
                                 call_span,
-                                depth,
                                 origin: origin.clone(),
                                 ctx: &thunk_ctx,
                             };
@@ -852,11 +728,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     restore: Some(restore),
                                     ctx: thunk_ctx,
                                 })));
-                                // TCO: function return value forced at caller's depth
                                 Action::Materialize {
                                     thunk: result_thunk,
                                     mat_span,
-                                    depth,
                                 }
                             }
                             Err(mut e) => {
@@ -884,14 +758,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         }
                     }
                     Value::Builtin(def) => {
-                        // TCO: use loop depth for builtin arg materialization.
                         // The block scopes the borrows of args/named so the borrow
                         // checker allows args.take()/named.take() in the match arms below.
                         let builtin_result = {
                             let builtin_args = crate::value::BuiltinArgs {
                                 args: args.as_deref().expect("args set above"),
                                 named: named.as_ref().expect("named set above").as_deref(),
-                                depth,
                                 call_span,
                                 ctx: Rc::clone(&thunk_ctx),
                             };
@@ -924,11 +796,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         restore: Some(restore),
                                         ctx: thunk_ctx,
                                     })));
-                                    // TCO: builtin return value forced at caller's depth
                                     Action::Materialize {
                                         thunk: result_thunk,
                                         mat_span,
-                                        depth,
                                     }
                                 }
                             }
@@ -1010,7 +880,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 thunk_span,
                 mat_span,
                 ctx: guard_ctx,
-                depth: guard_depth,
                 blame_label,
             } = *data;
             let decorate = |e| {
@@ -1024,14 +893,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     let value = match value {
                         Value::Overlay(l, r) => {
                             if let Some(ref ctx) = guard_ctx {
-                                match flatten_overlay(
-                                    &l,
-                                    &r,
-                                    "type guard",
-                                    ctx,
-                                    guard_depth,
-                                    guard_span,
-                                ) {
+                                match flatten_overlay(&l, &r, "type guard", ctx, guard_span) {
                                     Ok(map) => Value::Dict(map),
                                     Err(e) => {
                                         let e = decorate(e);
@@ -1170,7 +1032,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 def,
                 args,
                 named,
-                depth,
                 call_span,
                 ctx: thunk_ctx,
                 origin,
@@ -1206,7 +1067,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             def,
                             args,
                             named,
-                            depth,
                             call_span,
                             ctx: thunk_ctx,
                             origin,
@@ -1218,16 +1078,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         return Action::Materialize {
                             thunk: next_arg,
                             mat_span: None,
-                            depth,
                         };
                     }
 
                     // All strict args materialized — call the builtin.
-                    // Use loop depth for builtin arg materialization (TCO).
                     let builtin_args = crate::value::BuiltinArgs {
                         args: &args,
                         named: named.as_ref(),
-                        depth,
                         call_span,
                         ctx: Rc::clone(&thunk_ctx),
                     };
@@ -1250,7 +1107,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 Action::Materialize {
                                     thunk: result_thunk,
                                     mat_span,
-                                    depth,
                                 }
                             }
                         }
@@ -1285,7 +1141,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 access_span,
                 target_def_span,
                 ctx,
-                depth,
             } = *data;
 
             // Convert DotKey to string for error messages and Proxy dispatch.
@@ -1307,7 +1162,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 &r,
                                 &format!(".{field_str}"),
                                 &ctx,
-                                depth,
                                 access_span,
                             ) {
                                 Ok(map) => Value::Dict(map),
@@ -1341,7 +1195,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     Action::Materialize {
                                         thunk,
                                         mat_span: Some(access_span),
-                                        depth,
                                     }
                                 }
                                 None => {
@@ -1367,14 +1220,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 string_val(&field_str),
                                 &ctx,
                                 &access_span,
-                                depth,
                             ) {
                                 Ok(thunk) => {
                                     // TODO: thread outer mat_span through DotAccessForceData (same issue as Dict case above)
                                     Action::Materialize {
                                         thunk,
                                         mat_span: Some(access_span),
-                                        depth,
                                     }
                                 }
                                 Err(mut e) => {
@@ -1412,7 +1263,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 thunk_span,
                 env,
                 ctx,
-                depth,
             } = *data;
             match result {
                 Err(e) => Action::Continue(Err(e)),
@@ -1422,14 +1272,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // Flatten Overlay to Dict before record type assertion.
                             let value = match value {
                                 Value::Overlay(l, r) => {
-                                    match flatten_overlay(
-                                        &l,
-                                        &r,
-                                        "type assert",
-                                        &ctx,
-                                        depth,
-                                        expr_span,
-                                    ) {
+                                    match flatten_overlay(&l, &r, "type assert", &ctx, expr_span) {
                                         Ok(map) => Value::Dict(map),
                                         Err(e) => return Action::Continue(Err(e)),
                                     }
@@ -1460,7 +1303,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                                 expr: default,
                                                 env,
                                                 ctx: Rc::clone(&ctx),
-                                                depth: depth + 1,
                                             }
                                         } else {
                                             Action::Continue(Err(err))
@@ -1477,7 +1319,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         expr: Rc::new(default_expr.clone()),
                                         env,
                                         ctx: Rc::clone(&ctx),
-                                        depth: depth + 1,
                                     }
                                 } else {
                                     Action::Continue(Err(EvalError::type_assert_failed(
@@ -1502,7 +1343,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     expr: Rc::new(default_expr.clone()),
                                     env,
                                     ctx: Rc::clone(&ctx),
-                                    depth: depth + 1,
                                 }
                             } else {
                                 Action::Continue(Err(EvalError::type_assert_failed(
@@ -1547,7 +1387,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         expr: Rc::new(default_expr.clone()),
                                         env,
                                         ctx: Rc::clone(&ctx),
-                                        depth: depth + 1,
                                     };
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
@@ -1573,7 +1412,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         expr: Rc::new(default_expr.clone()),
                                         env,
                                         ctx: Rc::clone(&ctx),
-                                        depth: depth + 1,
                                     };
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
@@ -1603,16 +1441,8 @@ pub(crate) fn eval_step(
     expr: Rc<Spanned<Expr>>,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
-    depth: usize,
     stack: &mut Vec<Cont>,
 ) -> Action {
-    // Depth check at entry point
-    if depth > MAX_EVAL_DEPTH {
-        return Action::Continue(Err(
-            EvalError::depth_exceeded(MAX_EVAL_DEPTH, expr.span).into()
-        ));
-    }
-
     // Helper: wrap a thunk result from helper functions
     let wrap_thunk = |result: EvalResult<Rc<Thunk>>| -> Action {
         match result {
@@ -1621,7 +1451,6 @@ pub(crate) fn eval_step(
                 None => Action::Materialize {
                     thunk,
                     mat_span: Some(expr.span),
-                    depth,
                 },
             },
             Err(e) => Action::Continue(Err(e)),
@@ -1652,7 +1481,7 @@ pub(crate) fn eval_step(
                 }
             }
         }
-        Expr::Dict(entries) => wrap_thunk(eval_dict(entries, &env, ctx, &expr.span, depth + 1)),
+        Expr::Dict(entries) => wrap_thunk(eval_dict(entries, &env, ctx, &expr.span)),
         Expr::DotAccess { .. } => {
             // Return Unevaluated thunk — force_step handles these iteratively via
             // DotAccessForce continuation
@@ -1674,11 +1503,11 @@ pub(crate) fn eval_step(
             // 1. A way to eval to thunk without forcing (can't use Action::Eval which goes through wrap_thunk)
             // 2. Or: restructure to push TypeAssertCheck before eval, then use Action::Eval for inner expr
             // For now, this single recursive call is acceptable - it just wraps without forcing.
-            let inner_thunk =
-                match eval_recursive(Rc::new((**inner).clone()), Rc::clone(&env), ctx, depth + 1) {
-                    Ok(t) => t,
-                    Err(e) => return Action::Continue(Err(e)),
-                };
+            let inner_thunk = match eval_recursive(Rc::new((**inner).clone()), Rc::clone(&env), ctx)
+            {
+                Ok(t) => t,
+                Err(e) => return Action::Continue(Err(e)),
+            };
             let resolved = resolved_type.borrow().clone();
 
             // Fast path: if there is no type to check, skip materialization entirely.
@@ -1707,12 +1536,10 @@ pub(crate) fn eval_step(
                 thunk_span,
                 env,
                 ctx: Rc::clone(ctx),
-                depth,
             })));
             Action::Materialize {
                 thunk: inner_thunk,
                 mat_span: Some(expr.span),
-                depth: depth + 1,
             }
         }
         Expr::Annotated { name, .. } => {
@@ -1732,9 +1559,7 @@ pub(crate) fn eval_step(
             args,
             named_args,
             implied: _,
-        } => wrap_thunk(eval_call(
-            func, args, named_args, &env, ctx, &expr.span, depth,
-        )),
+        } => wrap_thunk(eval_call(func, args, named_args, &env, ctx, &expr.span)),
         // Type alias entries are compile-time-only constructs consumed by the type checker.
         // At runtime, they evaluate to an empty dict to maintain dict structure without
         // contributing runtime values.
@@ -1823,16 +1648,11 @@ pub(crate) fn run(initial: Action, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
                 expr,
                 env,
                 ctx: action_ctx,
-                depth,
             } => {
-                action = eval_step(expr, env, &action_ctx, depth, &mut stack);
+                action = eval_step(expr, env, &action_ctx, &mut stack);
             }
-            Action::Materialize {
-                thunk,
-                mat_span,
-                depth,
-            } => {
-                action = force_step(&thunk, mat_span, depth, &mut stack, ctx);
+            Action::Materialize { thunk, mat_span } => {
+                action = force_step(&thunk, mat_span, &mut stack, ctx);
             }
             Action::Continue(result) => match stack.pop() {
                 None => return result,
@@ -1920,7 +1740,6 @@ mod tests {
             dummy_def,
             args.clone(),
             None,
-            0,
             span,
             Some(Rc::from("test_origin")),
             ctx.clone(),
@@ -1935,7 +1754,6 @@ mod tests {
             def: dummy_def,
             args: Box::new(args),
             named: None,
-            depth: 0,
             call_span: span,
             ctx: ctx.clone(),
         };
@@ -2083,9 +1901,9 @@ mod tests {
                 // Check that the actual arg values are correct
                 use crate::eval::materialize;
                 let ctx_ref = test_ctx();
-                let v0 = materialize(&restored_args[0], None, &ctx_ref, 0).unwrap();
-                let v1 = materialize(&restored_args[1], None, &ctx_ref, 0).unwrap();
-                let v2 = materialize(&restored_args[2], None, &ctx_ref, 0).unwrap();
+                let v0 = materialize(&restored_args[0], None, &ctx_ref).unwrap();
+                let v1 = materialize(&restored_args[1], None, &ctx_ref).unwrap();
+                let v2 = materialize(&restored_args[2], None, &ctx_ref).unwrap();
 
                 assert_eq!(v0, Value::Int(1));
                 assert_eq!(v1, Value::Int(2));
@@ -2099,8 +1917,7 @@ mod tests {
                     "Expected 1 named arg, got {}",
                     named_map.len()
                 );
-                let named_val =
-                    materialize(named_map.get("key").unwrap(), None, &ctx_ref, 0).unwrap();
+                let named_val = materialize(named_map.get("key").unwrap(), None, &ctx_ref).unwrap();
                 assert_eq!(named_val, Value::Bool(true));
             }
             other => panic!("Expected PendingCall state, got {:?}", other),
@@ -2167,7 +1984,7 @@ mod tests {
 
         // Try to materialize - should fail
         let ctx = test_ctx();
-        let result = materialize(&guarded, Some(&guard_span), &ctx, 0);
+        let result = materialize(&guarded, Some(&guard_span), &ctx);
 
         assert!(result.is_err(), "Expected type assertion to fail");
         let err = result.unwrap_err();
@@ -2222,7 +2039,7 @@ mod tests {
         );
 
         let ctx = test_ctx();
-        let result = materialize(&guarded, Some(&same_span), &ctx, 0);
+        let result = materialize(&guarded, Some(&same_span), &ctx);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2231,55 +2048,6 @@ mod tests {
         assert!(
             err.secondary_span.is_none(),
             "Secondary span should be suppressed when same as definition span"
-        );
-    }
-
-    #[test]
-    fn test_eval_stack_cleaned_on_depth_exceeded_error() {
-        // Verify that eval_stack is properly cleaned up when a DepthExceeded error
-        // occurs, ensuring the push/pop imbalance fix is working correctly.
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 10);
-
-        // Create a deeply nested expression that will exceed MAX_EVAL_DEPTH
-        // We'll create a chain of function calls to trigger depth limit
-        let mut expr = sp(Expr::Int(42));
-        for _ in 0..MAX_EVAL_DEPTH + 10 {
-            expr = sp(Expr::Call {
-                func: Box::new(sp(Expr::Fn {
-                    return_ann: None,
-                    params: vec![],
-                    body: Rc::new(expr),
-                    desugared: false,
-                })),
-                args: vec![],
-                named_args: vec![],
-                implied: false,
-            });
-        }
-
-        // Create a thunk that will exceed depth
-        let env = empty_env();
-        let thunk = Thunk::new_unevaluated(Rc::new(expr), env, Rc::clone(&ctx), span);
-
-        // Attempt to materialize - should fail with DepthExceeded
-        let result = crate::eval::materialize(&thunk, None, &ctx, 0);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::DepthExceeded { .. }),
-            "Expected DepthExceeded error, got {:?}",
-            err.kind
-        );
-
-        // Verify eval_stack is empty after the error
-        let eval_stack = ctx.state.borrow().eval_stack.clone();
-        assert!(
-            eval_stack.is_empty(),
-            "eval_stack should be empty after DepthExceeded error, but contains {} entries: {:?}",
-            eval_stack.len(),
-            eval_stack
         );
     }
 
@@ -2309,7 +2077,6 @@ mod tests {
             Action::Materialize {
                 thunk: Rc::clone(&thunk),
                 mat_span: None,
-                depth: 0,
             },
             &ctx,
         );
@@ -2335,7 +2102,6 @@ mod tests {
             Action::Materialize {
                 thunk: Rc::clone(&thunk),
                 mat_span: None,
-                depth: 0,
             },
             &ctx,
         );
@@ -2368,7 +2134,6 @@ mod tests {
             Action::Materialize {
                 thunk: Rc::clone(&thunk),
                 mat_span: None,
-                depth: 0,
             },
             &ctx,
         );
@@ -2402,7 +2167,6 @@ mod tests {
             Action::Materialize {
                 thunk: Rc::clone(&thunk),
                 mat_span: None,
-                depth: 0,
             },
             &ctx,
         );
@@ -2463,7 +2227,6 @@ mod tests {
             Action::Materialize {
                 thunk: access_thunk,
                 mat_span: None,
-                depth: 0,
             },
             &ctx,
         );

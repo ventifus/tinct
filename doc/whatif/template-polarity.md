@@ -198,53 +198,11 @@ parser — uses them as a library.
 
 **Impact:** Minor — documentation only.
 
-## Phased Adoption
-
-### Phase 1: Expression Interpolation
-
-`{{ expr }}` only. No block delimiters. The simplest template case —
-variable substitution and simple expressions.
-
-- `src/template.rs`: scanner + `{{ }}` detection + expression evaluation
-- `src/main.rs`: `tinct template` subcommand
-- Tests: 6+ corpus/CLI tests (simple substitution, nested field access,
-  expression evaluation, multi-substitution, literal `{{{` escaping,
-  missing key error)
-- `doc/12-tooling.md`: `tinct template` documentation
-- `doc/09-documents.md`: Template-Polarity section (alongside Literate)
-
-### Phase 2: Block Delimiters
-
-`{% [if cond] %}` / `{% [else] %}` / `{% [end] %}` conditional blocks.
-Enables conditionally including sections of the template.
-
-- `src/template.rs`: block parsing, conditional evaluation, body emit/suppress
-- Tests: 6+ tests (if-true, if-false, if-else, nested interpolation in body,
-  block with no-data, malformed block error)
-
-### Prerequisites
+## Prerequisites
 
 - Phases 1-3 of `doc/whatif/completed/templating.md` complete (all done as
-  of 2026-05-04)
-- Existing tinct evaluator stable (no dependencies on future type system work)
-
-### Trigger
-
-Adopt when a real user file meets **all three** conditions:
-
-1. The file is **90%+ static text** in a foreign format (nginx.conf,
-   Dockerfile, Makefile, systemd unit, `.env` with comments, HCL)
-2. It has **≤10 dynamic substitutions** that tinct should compute
-3. Maintaining it as a **data-first tinct program would be unreasonably
-   awkward** — because format fidelity, comment preservation, or
-   domain-expert ownership makes reconstruction from structured data
-   impractical
-
-If the dynamic content exceeds ~20% of the file, data-first formatters
-are the better fit. If the expressions are complex (loops, deep
-transformations), data-first is still better. Template-polarity is for
-the "tinct as a preprocessor" niche, not the primary config-generation
-use case.
+  of 2026-05-04).
+- Existing tinct evaluator stable (no dependencies on future type system work).
 
 ## References
 

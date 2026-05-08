@@ -29,7 +29,7 @@ This is documented in `doc/16-architecture.md §Cross-module coupling` as "safe 
 
 ## Design
 
-**Audit import depth first, then choose the boundary.** The circular dependency is currently safe and documented. Breaking it requires understanding what subset of eval.rs builtins actually need.
+The circular dependency is currently safe and documented. The boundary is established by auditing what subset of eval.rs builtins actually need.
 
 ### Import audit (estimated from architecture)
 
@@ -88,7 +88,7 @@ Keep the circular dependency but add `#[cfg(test)]` stubs for the eval functions
 
 ### Estimated diff size
 
-A rough estimate: extracting `EvalContext`, `materialize`, and `invoke_function` from `eval.rs` would touch ~300 lines in eval.rs + ~100 lines of new eval_core.rs + ~50 lines of import changes in builtins.rs. Not trivial. **Only worthwhile if independent builtin testing is a concrete need.**
+Extracting `EvalContext`, `materialize`, and `invoke_function` from `eval.rs` touches ~300 lines in eval.rs + ~100 lines of new eval_core.rs + ~50 lines of import changes in builtins.rs.
 
 ## What Would Change
 
@@ -102,20 +102,9 @@ A rough estimate: extracting `EvalContext`, `materialize`, and `invoke_function`
 **Proposed:** Import changes from `eval.rs` → `eval_core.rs`.
 **Impact:** Minor — only import paths change.
 
-## Phased Adoption
+## Prerequisites
 
-### Phase 1: Audit
-
-Map exactly what builtins.rs imports from eval.rs (grep the actual import list). Confirm the estimated list above is correct. Calculate exact diff size.
-
-### Phase 2: Extract eval_core.rs (if justified)
-
-If Phase 1 confirms the dependency is narrow (~5 items) and independent builtin testing is needed: extract to eval_core.rs.
-
-### Trigger
-
-- Phase 1: immediately (the audit is a grep, not a refactor)
-- Phase 2: when builtin tests are needed that can't link the full evaluator, OR when the evaluator is being refactored and decoupling would reduce the blast radius
+- Audit: grep the actual import list in builtins.rs to map exactly what it imports from eval.rs. Confirm the estimated list above is correct and calculate the exact diff size. If the dependency surface is narrow (~5 items), the extract is straightforward.
 
 ## References
 

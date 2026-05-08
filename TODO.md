@@ -89,20 +89,31 @@ scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
 - [x] Stdlib functions that benefit — `transitions` and `groups` in regex NFA are the primary cases; `stat`/`tls-peer-cert`/`list-dir` are structural Records, not Maps
 - [x] Write proposal — see `doc/whatif/parameterized-dict.md`
 
-## Evaluation
+## Known Bugs (Type Signatures)
 
-### `sequential-strict`: Make Sequential bindings strict + raise depth limit
+### `split-return-type`: `split` typed as `Seq[String]` but returns `Dict`
 
-Fixes the `sequential-lazy` and partially fixes `depth-limit-toml` Known Bugs.
-See Known Bugs section for root cause analysis and panel review findings.
+`type_env.rs` registers `split` with return type `Seq[String]`. At runtime, `builtin_split` builds an integer-keyed `IndexMap` — a `Dict`, not a `Seq`. Every downstream use of `split`'s result with dict operations (`length`, `get`, `builtin-reduce`) produces spurious "cannot unify Seq[String] with [...]" type errors. Confirmed in `samples/versions.llt` errors at lines 18 and 78.
 
-- [ ] Remove `MAX_EVAL_DEPTH` constant, all three depth checks, and the `depth: usize` parameter from `eval()`, `materialize()`, and `deep_materialize()` — update all call sites; remove `EvalError::depth_exceeded` error path; resource bounding via `--max-memory`/`--timeout`; cycle detection (InProgress blackholing) handles self-referential thunks (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] In `Expr::Sequential` loop (`src/eval.rs:667-673`): after extracting `(Key::String(name), val_thunk_id)`, call `materialize(ctx.get_thunk(val_thunk_id), Some(&seq_expr.span), ctx, depth + 1)?` and insert `Rc::new(Thunk::new_materialized(forced_value, seq_expr.span))` into `child_env` instead of the unevaluated thunk; apply only to `Key::String` entries (named bindings); integer-keyed entries remain lazy (`src/eval.rs`)
-- [ ] Same change in `eval_document` (`src/eval_pipeline.rs:149`): force string-keyed binding values eagerly at document-level Sequential step time (`src/eval_pipeline.rs`)
-- [ ] Move depth check in `materialize` inside the `Unevaluated`/`PendingBuiltin` match arms so already-`Materialized` thunks return at O(1) depth without a depth check (`src/eval.rs`)
-- [ ] Add `force` Rust builtin: single-arg, `Strictness::Seq`, calls `materialize` on argument and returns `Thunk::new_materialized`; gives users explicit control in fn-body Sequential (`src/builtins_meta.rs`, `src/builtins.rs`)
-- [ ] Update `doc/09-documents.md` §[SEQ-SCOPE] (line 292): change "values remain lazy" to document strict-binding semantics; note WHNF-only (not deep), dead-but-erroring bindings now fail eagerly (`doc/09-documents.md`)
-- [ ] Corpus tests: verify binding that previously errored lazily (unused) now errors eagerly; verify heavy computation forced at step depth not demand depth; verify `[force expr]` forces its argument (`tests/corpus/eval/`)
-- [ ] Remove stale `TODO(iterative-eval)` comments left in `src/eval.rs` after the completed CEK migration (lines 698, 764, 1363, 8870) — the migration is fully done (sprints a, b1-b5, d all in DONE.md); these comments are dead documentation debt (`src/eval.rs`)
+- [ ] Change `split` return type registration in `type_env.rs` from `Type::Seq(Box::new(Type::Str))` to an open record type (`Type::Record(Row { fields: {}, tail: RowTail::RowVar(fresh) })`), matching the actual `Dict` that `builtin_split` produces (`src/type_env.rs`)
+- [ ] Corpus test: `[length [split "," "a,b,c"]]` type-checks without error (`tests/corpus/eval/`)
+
+### `length-narrow-type`: `length` typed as Dict-only but accepts String and Bytes
+
+`type_env.rs` registers `length` with parameter type `[...]` (open record — Dict only). At runtime, `builtin_length` dispatches on `Value::String` and `Value::Bytes` in addition to `Value::Dict`. Passing a String to `length` produces spurious "cannot unify String with [...]" type errors. Confirmed in `samples/versions.llt` errors at lines 60 and 69.
+
+- [ ] Change `length` parameter type in `type_env.rs` to `Type::Unknown`, matching the dual-dispatch behavior — same strategy used for other polymorphic builtins (`src/type_env.rs`)
+- [ ] Corpus test: `[length "hello"]` and `[length [str-bytes "hi"]]` type-check without error (`tests/corpus/eval/`)
+
+## Macros
+
+### `tmpl-macro`: Migrate `i"..."` string interpolation from parser to `[defmacro tmpl]`
+
+`desugar_interpolated_string()` in `src/parser.rs` converts `i"Hello $name"` tokens directly to `[str "Hello " name]` at parse time. The `[defmacro]` system is now complete — this logic belongs in `stdlib/macros.llt` as `[defmacro tmpl]`, making it corpus-testable and modifiable without recompiling tinct. See `doc/whatif/completed/macro-rewrite.md` for the design.
+
+- [ ] Change parser to emit `[tmpl "Hello $name"]` call node instead of expanding `InterpolatedString` inline; the raw template string is passed as an opaque argument (`src/parser.rs`, `src/lexer.rs`)
+- [ ] Implement `[defmacro tmpl [template] ...]` in `stdlib/macros.llt`: parse the template string char-by-char splitting on `$`, produce `[str segment1 var1 segment2 ...]` (`stdlib/macros.llt`)
+- [ ] Remove `desugar_interpolated_string()` from `src/parser.rs` (`src/parser.rs`)
+- [ ] Corpus tests: `i"Hello $name"` still expands correctly; nested expressions `i"val: $[+ x 1]"` work; empty interpolation `i"plain"` works (`tests/corpus/eval/`)
 
 ## Codebase Health

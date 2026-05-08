@@ -90,17 +90,12 @@ pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String>
     let _ = typecheck::typecheck_file(&formatter_file.node);
 
     // Evaluate formatter with AST as % (pipeline input)
-    let formatter_thunk = eval::eval_file_with_input(
-        &formatter_file.node,
-        Rc::clone(&env),
-        &ctx,
-        Some(ast_thunk),
-        0,
-    )
-    .map_err(|e| format!("formatter eval error: {e}"))?;
+    let formatter_thunk =
+        eval::eval_file_with_input(&formatter_file.node, Rc::clone(&env), &ctx, Some(ast_thunk))
+            .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result (should be a string)
-    let formatted = eval::materialize(&formatter_thunk, None, &ctx, 0)
+    let formatted = eval::materialize(&formatter_thunk, None, &ctx)
         .map_err(|e| format!("formatter materialize error: {e}"))?;
 
     match formatted {
@@ -110,7 +105,7 @@ pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String>
             end,
         } => Ok(source[start..end].to_string()),
         _ => {
-            let display_str = crate::value_to_display_string(&formatted, &ctx, 0)
+            let display_str = crate::value_to_display_string(&formatted, &ctx)
                 .unwrap_or_else(|_| "<error displaying value>".to_string());
             Err(format!(
                 "formatter returned non-string value: {}",

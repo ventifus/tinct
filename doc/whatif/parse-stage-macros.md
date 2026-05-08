@@ -10,9 +10,8 @@ operating only on fully-formed AST dicts?
 context-sensitive key identity for match arms — is no longer applicable.
 Match is implemented as `Expr::Match` (a Rust special form) with dedicated
 parser support for arm syntax. See `doc/whatif/pattern-matching.md` §Why a
-Special Form. This proposal remains valid for future macros that need
-context-sensitive parsing, though its original trigger (match arm syntax) 
-has been resolved via the special-form approach.
+Special Form. This proposal provides the mechanism for user-defined macros
+that need context-sensitive parsing.
 
 ## Current State
 
@@ -76,7 +75,7 @@ forms. (`[match]` achieves this via dedicated parser support instead.)
 2. **Syntax classes** — no way for a macro to declare parse modes for argument
    positions (follows from key identity as a special case)
 3. **New infix operators** — no way to register user-defined operators with
-   precedence (secondary, addressed in Phase 3)
+   precedence
 
 ## Why Parse-Stage Macros Matter for tinct
 
@@ -89,13 +88,13 @@ than bare-name identity for duplicate detection.
 **Regular dicts are unchanged.** `[n@Int: 1  n@String: "2"]` remains a
 duplicate-`n` error in all contexts without a syntax class override.
 
-**Future extensibility.** Once the mechanism exists for context-sensitive
-key identity, it generalizes to other syntax classes and operator precedence
-(Phase 2 and 3 below).
+**Extensibility.** The mechanism for context-sensitive key identity generalizes
+to other syntax classes and operator precedence registration.
 
 **Note:** `[match]` was the original motivating use case but is now handled
-by `Expr::Match` with dedicated parser support. Parse-stage macros remain
-valuable for future user-defined forms that need similar syntax flexibility.
+by `Expr::Match` with dedicated parser support. Parse-stage macros provide
+the general mechanism for user-defined forms that need similar syntax
+flexibility.
 
 ## Design
 
@@ -143,7 +142,7 @@ full key node, not just the extracted name. The macro receives the same AST
 dict shape it always would; the parse-stage change is only in what counts
 as a collision.
 
-**A user-defined macro** could then process the arm dict, dispatching on key shape:
+**A user-defined macro** processes the arm dict, dispatching on key shape:
 - Key `VarRef("_")` → wildcard entry
 - Key `VarRef("n")` (bare, no annotation) → variable binding entry
 - Key `Annotated("n", Simple("Int"))` → type-constrained entry
@@ -163,8 +162,7 @@ as an annotated-arms dict (syntax class `annotated-arms-dict`). A `[regex patter
 declare that `pattern` is parsed in regex mode (different tokenization rules
 than tinct expressions).
 
-For tinct's near-term needs this is secondary to key identity. Capability 2
-generalizes it for future macros.
+Capability 2 generalizes key identity to all argument positions.
 
 ### Capability 3: Operator Registration (Secondary)
 
@@ -244,51 +242,10 @@ Match arm syntax is now handled by the parser's dedicated match-arm parsing
 mode as part of `Expr::Match`. No parse-stage macro interaction needed.
 See `doc/whatif/pattern-matching.md` for current match syntax.
 
-## Phased Adoption
+## Prerequisites
 
-### Phase 1: Syntax Class Registry + Key Identity
-
-Implement the registration pass and the `key-identity: full-annotated-expr`
-syntax class option. Scope: unblock user-defined macros that need annotated
-dict keys with different annotations on the same name.
-
-- `src/parser.rs`: registration pass; `key-identity` dispatch in duplicate detection
-- `stdlib/syntax.llt`: example `[declare-syntax ...]` + `[syntax-class ...]`
-- Tests: `n@Int` and `n@String` coexist in syntax-class context; `n@Int` twice
-  is still duplicate; regular dicts unaffected
-
-### Phase 2: General Syntax Classes
-
-Generalize: any macro can declare a syntax class. Argument-position parse modes
-beyond key identity.
-
-- `stdlib/syntax.llt`: full `[declare-syntax]` / `[syntax-class]` forms
-- Tests: custom user macros with syntax classes
-
-### Phase 3: Operator Registration
-
-Add Pratt precedence layer to the infix loop. `[declare-operator]` for new
-infix operators.
-
-- `src/parser.rs`: Pratt precedence climb; operator registry
-- `stdlib/syntax.llt`: `[declare-operator]` form
-- Tests: precedence relative to `.` and `|`; associativity
-
-### Prerequisites
-
-- **Macros Phase 2** (`[defmacro]`) — parse-stage macros extend, not replace
-- **`doc/whatif/structural-contracts.md`** — `validate` builtin is the throwing boundary-check; `is:` is the Bool-returning predicate convention for annotations
-
-### Trigger
-
-**Phase 1:** When a user-defined macro needs context-sensitive key identity —
-i.e., annotated dict keys where `n@Int` and `n@String` must coexist as
-distinct entries. (The original trigger was `[defmacro match]`, but match
-is now `Expr::Match` with dedicated parser support.)
-
-**Phase 2:** When a second macro needs syntax classes.
-
-**Phase 3:** When library authors need interoperating infix operators.
+- **`[defmacro]`** (`doc/whatif/macros.md`) — parse-stage macros extend, not replace. Fully implemented (`macro-integration` sprint, 2026-05-05).
+- **`doc/whatif/structural-contracts.md`** — `validate` builtin is the throwing boundary-check; `is:` is the Bool-returning predicate convention for annotations.
 
 ## References
 

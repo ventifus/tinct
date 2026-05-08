@@ -53,11 +53,10 @@ pub(crate) fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("emit", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("emit", args, named, &ctx, call_span)?;
     let s = require_string("emit", val, args[0].span)?;
 
     // Write to stdout
@@ -80,11 +79,10 @@ pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("env", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("env", args, named, &ctx, call_span)?;
     let name = require_string("env", val, args[0].span)?;
 
     // Check env_allowed
@@ -127,7 +125,6 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -138,8 +135,8 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("open", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -168,7 +165,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let path = require_string("open", path_val, args[1].span)?;
 
     // Check if third arg is a String (legacy mode) or Variant (new mode)
-    let third_arg_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let third_arg_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Legacy string mode check
     if matches!(third_arg_val, Value::String { .. }) {
@@ -237,7 +234,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let mut has_seekable = false;
 
     for flag_arg in &args[2..] {
-        let flag_val = materialize(flag_arg, Some(&call_span), &ctx, depth)?;
+        let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
 
         match flag_val {
             Value::Variant { ref tag, .. } => match tag.as_str() {
@@ -380,11 +377,10 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("slurp", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("slurp", args, named, &ctx, call_span)?;
 
     // Extract Handle
     let (handle, caps) = match val {
@@ -439,7 +435,6 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -450,8 +445,8 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("narrow", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let subpath_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let subpath_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -497,11 +492,10 @@ pub(crate) fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("revocable", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("revocable", args, named, &ctx, call_span)?;
 
     // Extract DirCap
     let dir = match val {
@@ -541,11 +535,10 @@ pub(crate) fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("revoke-cap", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("revoke-cap", args, named, &ctx, call_span)?;
 
     // Extract RevocableDirCap
     match val {
@@ -571,7 +564,6 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -589,13 +581,13 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("connect", named, call_span)?;
 
-    let cap_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let host_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let port_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let host_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let port_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Extract optional Transport variant (4th arg); default to Tcp
     let transport_tag = if args.len() == 4 {
-        let transport_val = materialize(&args[3], Some(&call_span), &ctx, depth)?;
+        let transport_val = materialize(&args[3], Some(&call_span), &ctx)?;
         match transport_val {
             Value::Variant { tag, .. } => tag,
             other => {
@@ -773,11 +765,10 @@ pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("lines", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("lines", args, named, &ctx, call_span)?;
 
     // Extract Handle
     let (handle, write_inner, caps) = match val {
@@ -810,7 +801,7 @@ pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Wrap the Handle in a new Handle that the step function can use
     // The step function will read one line, then return a Seq with the line as head
     // and a PendingBuiltin thunk for the next line as tail
-    builtin_lines_step(handle, write_inner, caps, depth, call_span, ctx)
+    builtin_lines_step(handle, write_inner, caps, call_span, ctx)
 }
 
 /// Helper for `lines`: reads one line and returns Seq or null.
@@ -818,7 +809,6 @@ pub(crate) fn builtin_lines_step(
     handle: Rc<RefCell<Box<dyn std::io::BufRead>>>,
     write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>>,
     caps: HashMap<String, Value>,
-    depth: usize,
     call_span: Span,
     ctx: Rc<crate::eval::EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
@@ -859,7 +849,6 @@ pub(crate) fn builtin_lines_step(
                 builtin!("lines", builtin_lines),
                 tail_args,
                 None,
-                depth + 1,
                 call_span,
                 Some(Rc::from("call $lines")),
                 Rc::clone(&ctx),
@@ -887,7 +876,6 @@ pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -898,9 +886,9 @@ pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("write", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let content_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let content_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -958,7 +946,6 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -969,9 +956,9 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     }
     reject_named("write-atomic", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let content_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let content_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -1071,7 +1058,6 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -1082,8 +1068,8 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("cap-data", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let cap_name_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let cap_name_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract caps from Handle or WriteHandle
     let caps = match handle_val {
@@ -1127,7 +1113,6 @@ pub(crate) fn builtin_has_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -1138,8 +1123,8 @@ pub(crate) fn builtin_has_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("has-cap?", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let cap_name_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let cap_name_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract caps from Handle or WriteHandle
     let caps = match handle_val {
@@ -1172,7 +1157,6 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -1183,8 +1167,8 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     }
     reject_named("write-handle", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let content_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let content_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Determine the writer and the return value (preserve original handle type for chaining)
     enum HandleKind {
@@ -1310,12 +1294,11 @@ pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("flush", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("flush", args, named, &ctx, call_span)?;
 
     use std::io::Write;
     match val {
@@ -1379,12 +1362,11 @@ pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("close", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("close", args, named, &ctx, call_span)?;
 
     use std::io::Write;
     match val {
@@ -1434,7 +1416,6 @@ pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -1444,8 +1425,8 @@ pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("seek", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let offset_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let offset_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract offset as Int
     let offset = match offset_val {
@@ -1554,12 +1535,11 @@ pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("seek-end", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("seek-end", args, named, &ctx, call_span)?;
 
     // Extract Handle and check for Seekable capability
     match val {
@@ -1651,12 +1631,11 @@ pub(crate) fn builtin_position(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("position", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("position", args, named, &ctx, call_span)?;
 
     // Extract Handle and check for Seekable capability
     match val {
@@ -1715,7 +1694,6 @@ pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -1726,8 +1704,8 @@ pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("list-dir", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -1847,7 +1825,6 @@ pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -1858,8 +1835,8 @@ pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("stat", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -1971,7 +1948,6 @@ pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -1982,8 +1958,8 @@ pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("make-dir", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -2029,7 +2005,6 @@ pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -2040,8 +2015,8 @@ pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("remove", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -2091,7 +2066,6 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -2102,9 +2076,9 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("rename", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let old_path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let new_path_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let old_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let new_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -2153,7 +2127,6 @@ pub(crate) fn builtin_copy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -2164,9 +2137,9 @@ pub(crate) fn builtin_copy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("copy", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let src_path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let dst_path_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let src_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dst_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -2241,7 +2214,6 @@ pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -2252,9 +2224,9 @@ pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("link", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let existing_path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let link_path_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let existing_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let link_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -2304,7 +2276,6 @@ pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -2315,8 +2286,8 @@ pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("read-link", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -2420,7 +2391,6 @@ pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -2430,9 +2400,9 @@ pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     // Determine which form: Handle (3 args) or Connector (4-5 args)
     if args.len() == 3 {
         // Handle form: tls-connect handle sni opts
-        let handle_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-        let sni_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-        let _opts_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+        let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        let sni_val = materialize(&args[1], Some(&call_span), &ctx)?;
+        let _opts_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
         let _sni = require_string("tls-connect", sni_val, args[1].span)?;
 
@@ -2484,13 +2454,13 @@ pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         .into());
     } else if args.len() >= 4 && args.len() <= 5 {
         // Connector form: tls-connect connector Transport host port [opts]
-        let connector_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-        let transport_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-        let host_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
-        let port_val = materialize(&args[3], Some(&call_span), &ctx, depth)?;
+        let connector_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        let transport_val = materialize(&args[1], Some(&call_span), &ctx)?;
+        let host_val = materialize(&args[2], Some(&call_span), &ctx)?;
+        let port_val = materialize(&args[3], Some(&call_span), &ctx)?;
 
         let opts_val = if args.len() == 5 {
-            materialize(&args[4], Some(&call_span), &ctx, depth)?
+            materialize(&args[4], Some(&call_span), &ctx)?
         } else {
             Value::Dict(IndexMap::new()) // empty opts
         };
@@ -2572,7 +2542,6 @@ pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
             &opts_val,
             args.get(4).map(|a| a.span).unwrap_or(call_span),
             &ctx,
-            depth,
         )?;
 
         // Create TLS connection
@@ -2615,14 +2584,8 @@ pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
                 opts_map.get(&crate::value::Key::String("pins".to_string()))
             {
                 let pins_thunk = ctx.get_thunk(*pins_thunk_id);
-                let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx, depth)?;
-                validate_spki_pins(
-                    &shared_stream.borrow().conn,
-                    &pins_val,
-                    call_span,
-                    &ctx,
-                    depth,
-                )?;
+                let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
+                validate_spki_pins(&shared_stream.borrow().conn, &pins_val, call_span, &ctx)?;
             }
         }
 
@@ -2693,7 +2656,6 @@ fn build_tls_config(
     opts_val: &Value,
     opts_span: Span,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
 ) -> EvalResult<rustls::ClientConfig> {
     use rustls::RootCertStore;
 
@@ -2717,7 +2679,7 @@ fn build_tls_config(
         opts_dict.get(&crate::value::Key::String("no-system-roots".to_string()))
     {
         let thunk = ctx.get_thunk(*thunk_id);
-        let val = materialize(&thunk, Some(&opts_span), ctx, depth)?;
+        let val = materialize(&thunk, Some(&opts_span), ctx)?;
         match val {
             Value::Bool(b) => b,
             Value::Dict(ref d) if d.is_empty() => false, // Null
@@ -2759,7 +2721,7 @@ fn build_tls_config(
         opts_dict.get(&crate::value::Key::String("mozilla-roots".to_string()))
     {
         let thunk = ctx.get_thunk(*thunk_id);
-        let val = materialize(&thunk, Some(&opts_span), ctx, depth)?;
+        let val = materialize(&thunk, Some(&opts_span), ctx)?;
         match val {
             Value::Bool(b) => b,
             Value::Dict(ref d) if d.is_empty() => false, // Null
@@ -2784,7 +2746,7 @@ fn build_tls_config(
     // Load ca-bundle if provided
     if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("ca-bundle".to_string())) {
         let thunk = ctx.get_thunk(*thunk_id);
-        let handle_val = materialize(&thunk, Some(&opts_span), ctx, depth)?;
+        let handle_val = materialize(&thunk, Some(&opts_span), ctx)?;
         let pem_bytes = slurp_handle_bytes(&handle_val, opts_span)?;
 
         let mut cursor = std::io::Cursor::new(pem_bytes);
@@ -2827,13 +2789,13 @@ fn build_tls_config(
             .get(&crate::value::Key::String("client-cert".to_string()))
             .unwrap();
         let cert_thunk = ctx.get_thunk(*cert_thunk_id);
-        let cert_handle = materialize(&cert_thunk, Some(&opts_span), ctx, depth)?;
+        let cert_handle = materialize(&cert_thunk, Some(&opts_span), ctx)?;
 
         let key_thunk_id = opts_dict
             .get(&crate::value::Key::String("client-key".to_string()))
             .unwrap();
         let key_thunk = ctx.get_thunk(*key_thunk_id);
-        let key_handle = materialize(&key_thunk, Some(&opts_span), ctx, depth)?;
+        let key_handle = materialize(&key_thunk, Some(&opts_span), ctx)?;
 
         let cert_pem = slurp_handle_bytes(&cert_handle, opts_span)?;
         let key_pem = slurp_handle_bytes(&key_handle, opts_span)?;
@@ -2881,8 +2843,8 @@ fn build_tls_config(
     // Set ALPN protocols
     if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("alpn".to_string())) {
         let thunk = ctx.get_thunk(*thunk_id);
-        let alpn_val = materialize(&thunk, Some(&opts_span), ctx, depth)?;
-        let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx, depth)?;
+        let alpn_val = materialize(&thunk, Some(&opts_span), ctx)?;
+        let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx)?;
         config.alpn_protocols = alpn_protocols;
     } else {
         // Default ALPN: http/1.1
@@ -2897,7 +2859,6 @@ fn extract_alpn_protocols(
     val: &Value,
     span: Span,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
 ) -> EvalResult<Vec<Vec<u8>>> {
     let mut protocols = Vec::new();
     let mut current = val.clone();
@@ -2908,7 +2869,7 @@ fn extract_alpn_protocols(
             Value::Seq { head, tail } => {
                 // Materialize head and tail
                 let head_thunk = ctx.get_thunk(head);
-                let head_val = materialize(&head_thunk, Some(&span), ctx, depth)?;
+                let head_val = materialize(&head_thunk, Some(&span), ctx)?;
 
                 let protocol_str = match head_val {
                     Value::String { source, start, end } => source[start..end].to_string(),
@@ -2925,7 +2886,7 @@ fn extract_alpn_protocols(
                 protocols.push(protocol_str.into_bytes());
 
                 let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, Some(&span), ctx, depth)?;
+                current = materialize(&tail_thunk, Some(&span), ctx)?;
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -2969,7 +2930,6 @@ fn validate_spki_pins(
     pins_val: &Value,
     span: Span,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
 ) -> EvalResult<()> {
     // Extract list of pins
     let mut pins = Vec::new();
@@ -2980,11 +2940,11 @@ fn validate_spki_pins(
             Value::Dict(ref d) if d.is_empty() => break, // Null (end of list)
             Value::Seq { head, tail } => {
                 let head_thunk = ctx.get_thunk(head);
-                let pin_val = materialize(&head_thunk, Some(&span), ctx, depth)?;
+                let pin_val = materialize(&head_thunk, Some(&span), ctx)?;
                 pins.push(pin_val);
 
                 let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, Some(&span), ctx, depth)?;
+                current = materialize(&tail_thunk, Some(&span), ctx)?;
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -3051,7 +3011,7 @@ fn validate_spki_pins(
                 )
             })?;
         let algorithm_thunk = ctx.get_thunk(*algorithm_thunk_id);
-        let algorithm_val = materialize(&algorithm_thunk, Some(&span), ctx, depth)?;
+        let algorithm_val = materialize(&algorithm_thunk, Some(&span), ctx)?;
 
         let fingerprint_thunk_id = pin_dict
             .get(&crate::value::Key::String("fingerprint".to_string()))
@@ -3062,7 +3022,7 @@ fn validate_spki_pins(
                 )
             })?;
         let fingerprint_thunk = ctx.get_thunk(*fingerprint_thunk_id);
-        let fingerprint_val = materialize(&fingerprint_thunk, Some(&span), ctx, depth)?;
+        let fingerprint_val = materialize(&fingerprint_thunk, Some(&span), ctx)?;
 
         let algorithm_tag = match algorithm_val {
             Value::Variant { tag, .. } => tag,
@@ -3176,13 +3136,11 @@ pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val =
-        crate::builtins::expect_one_arg("tls-peer-cert", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("tls-peer-cert", args, named, &ctx, call_span)?;
 
     // Extract Handle and check for Tls capability
     let caps = match val {
@@ -3265,7 +3223,6 @@ pub(crate) fn builtin_spki_pin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -3275,8 +3232,8 @@ pub(crate) fn builtin_spki_pin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("spki-pin", named, call_span)?;
 
-    let algorithm_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let fingerprint_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let algorithm_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let fingerprint_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Validate algorithm is a Variant
     let algorithm_tag = match algorithm_val {
@@ -3366,7 +3323,6 @@ pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -3383,7 +3339,7 @@ pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     }
     reject_named("http-connect", named, call_span)?;
 
-    let url_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let url_val = materialize(&args[0], Some(&call_span), &ctx)?;
 
     // Extract Url dict fields
     let url_dict = match url_val {
@@ -3409,7 +3365,7 @@ pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
             )
         })?;
     let scheme_thunk = ctx.get_thunk(*scheme_thunk_id);
-    let scheme = match materialize(&scheme_thunk, Some(&call_span), &ctx, depth)? {
+    let scheme = match materialize(&scheme_thunk, Some(&call_span), &ctx)? {
         Value::String {
             ref source,
             start,
@@ -3448,7 +3404,7 @@ pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
             )
         })?;
     let host_thunk = ctx.get_thunk(*host_thunk_id);
-    let host = match materialize(&host_thunk, Some(&call_span), &ctx, depth)? {
+    let host = match materialize(&host_thunk, Some(&call_span), &ctx)? {
         Value::String {
             ref source,
             start,
@@ -3475,7 +3431,7 @@ pub(crate) fn builtin_http_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
             )
         })?;
     let port_thunk = ctx.get_thunk(*port_thunk_id);
-    let port = match materialize(&port_thunk, Some(&call_span), &ctx, depth)? {
+    let port = match materialize(&port_thunk, Some(&call_span), &ctx)? {
         Value::Int(p) => {
             if p < 1 || p > 65535 {
                 return Err(EvalError::user_error(
@@ -3528,7 +3484,6 @@ pub(crate) fn builtin_http_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -3545,8 +3500,8 @@ pub(crate) fn builtin_http_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("http-get", named, call_span)?;
 
-    let conn_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let conn_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
     // Extract HttpConn
     let (client, base_url) = match conn_val {

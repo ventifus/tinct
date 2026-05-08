@@ -761,9 +761,9 @@ fields — the ADT discrimination scenario. Merge and intersection of disjoint-f
 records are unaffected and remain precise. The resolution is nominal class tags, which
 make discriminated unions expressible again.
 
-## Prerequisites and Trigger
+## Prerequisites
 
-**Prerequisites — all met (2026-05-07):**
+All prerequisites are met (2026-05-07):
 
 | Prerequisite | Sprint | Status |
 |---|---|---|
@@ -783,16 +783,6 @@ BAS adopts equi-recursive types (μα.A), matching MLstruct's proof foundation. 
 current depth-limit guard becomes a performance heuristic rather than a correctness
 mechanism; the C-Hyp hypothesis caching in the constraint solver handles termination
 for recursive subtyping.
-
-**Trigger — any one of (prerequisites now met; evaluate these):**
-- Narrowing Phase 4 (false-branch narrowing) becomes a concrete need — it is only
-  achievable via BAS, not via D2/Simple-sub
-- The inferred-`Any` problem for `if`/`match` branch types becomes a measurable source
-  of annotation burden in real tinct programs (now evaluatable — `[if cond [ok: v] [err: e]]`
-  infers `Unknown` in branches today)
-- The nominal-variant adoption (C2/C3) has reached the point where nominal-tag ADTs
-  are the default — **this trigger is met**
-- Phase 1 evaluation confirms worst-case subtyping paths are rare on real tinct programs
 
 ## References
 

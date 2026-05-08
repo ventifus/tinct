@@ -21,7 +21,6 @@ pub(crate) fn builtin_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -45,7 +44,7 @@ pub(crate) fn builtin_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let mut result = Vec::new();
 
     for arg_thunk in args {
-        let val = eval::materialize(arg_thunk, Some(&call_span), &ctx, depth + 1)?;
+        let val = eval::materialize(arg_thunk, Some(&call_span), &ctx)?;
         match val.as_bytes() {
             Some(bytes) => {
                 result.extend_from_slice(bytes);
@@ -79,7 +78,6 @@ pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -105,8 +103,8 @@ pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         .into());
     }
 
-    let haystack_val = eval::materialize(&args[0], Some(&call_span), &ctx, depth + 1)?;
-    let needle_val = eval::materialize(&args[1], Some(&call_span), &ctx, depth + 1)?;
+    let haystack_val = eval::materialize(&args[0], Some(&call_span), &ctx)?;
+    let needle_val = eval::materialize(&args[1], Some(&call_span), &ctx)?;
 
     let haystack = match haystack_val.as_bytes() {
         Some(bytes) => bytes,
@@ -166,12 +164,11 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
-    let val = expect_one_arg("bytes-of", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("bytes-of", args, named, &ctx, call_span)?;
 
     let mut bytes = Vec::new();
 
@@ -183,7 +180,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             loop {
                 let head_thunk = ctx.get_thunk(current_head);
-                let head_val = eval::materialize(&head_thunk, Some(&call_span), &ctx, depth + 1)?;
+                let head_val = eval::materialize(&head_thunk, Some(&call_span), &ctx)?;
 
                 match head_val {
                     Value::Int(n) if (0..=255).contains(&n) => {
@@ -208,7 +205,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
 
                 let tail_thunk = ctx.get_thunk(current_tail);
-                let tail_val = eval::materialize(&tail_thunk, Some(&call_span), &ctx, depth + 1)?;
+                let tail_val = eval::materialize(&tail_thunk, Some(&call_span), &ctx)?;
 
                 match tail_val {
                     Value::Dict(map) if map.is_empty() => {
@@ -235,7 +232,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // Iterate dict values in insertion order
             for (_key, thunk_id) in map {
                 let item_thunk = ctx.get_thunk(*thunk_id);
-                let item_val = eval::materialize(&item_thunk, Some(&call_span), &ctx, depth + 1)?;
+                let item_val = eval::materialize(&item_thunk, Some(&call_span), &ctx)?;
 
                 match item_val {
                     Value::Int(n) if (0..=255).contains(&n) => {
@@ -288,7 +285,6 @@ pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -314,8 +310,8 @@ pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         .into());
     }
 
-    let val1 = eval::materialize(&args[0], Some(&call_span), &ctx, depth + 1)?;
-    let val2 = eval::materialize(&args[1], Some(&call_span), &ctx, depth + 1)?;
+    let val1 = eval::materialize(&args[0], Some(&call_span), &ctx)?;
+    let val2 = eval::materialize(&args[1], Some(&call_span), &ctx)?;
 
     let bytes1 = match val1.as_bytes() {
         Some(bytes) => bytes,
@@ -363,7 +359,6 @@ pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -386,8 +381,8 @@ pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
-    let val1 = eval::materialize(&args[0], Some(&call_span), &ctx, depth + 1)?;
-    let val2 = eval::materialize(&args[1], Some(&call_span), &ctx, depth + 1)?;
+    let val1 = eval::materialize(&args[0], Some(&call_span), &ctx)?;
+    let val2 = eval::materialize(&args[1], Some(&call_span), &ctx)?;
 
     let bytes1 = match val1.as_bytes() {
         Some(bytes) => bytes,

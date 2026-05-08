@@ -98,11 +98,10 @@ prices: [
 [get prices [decimal 9.99]]  # → "standard"
 ```
 
-If decimal literals are added to the language
-(`doc/whatif/numeric-types.md`), the syntax becomes more natural:
+With decimal literal syntax (`doc/whatif/numeric-types.md`, `3.99d` suffix), the syntax is more natural:
 
 ```tinct
-# With decimal literal syntax (future)
+# With decimal literal syntax (d suffix)
 prices: [3.99d: "budget"  9.99d: "standard"  29.99d: "premium"]
 ```
 
@@ -241,41 +240,14 @@ string representations in JSON output.
 **Impact:** Minor — no change to JSON number parsing; only key
 serialization is affected.
 
-## Phased Adoption
-
-### Phase 1: Decimal Type ✓ Complete (2026-05-07)
-
-`Value::Decimal(rust_decimal::Decimal)` is implemented (`numeric-decimal`
-sprint). Arithmetic, comparison, and conversion builtins are in place.
-See `doc/whatif/completed/numeric-types.md`.
-
-### Phase 2: Decimal Keys
-
-Extend `Key` to include `Decimal`. Implement normalized equality
-and hashing. Update all key-matching builtins. This phase is
-independently useful even without decimal literal syntax — users
-construct decimal keys via `[decimal ...]`.
-
-### Phase 3: Decimal Literal Syntax (Optional)
-
-Add `3.99d` syntax for decimal literals, making decimal keys as
-concise as integer keys: `[3.99d: "budget"]`. This phase depends
-on parser changes and is optional — Phase 2 is fully functional
-without it.
-
-### Prerequisites
+## Prerequisites
 
 - ~~`Decimal` type~~ ✓ Complete — `Value::Decimal` and `rust_decimal` in place
   (`numeric-decimal` sprint, 2026-05-07).
-- Decision on decimal literal syntax (whether to add `d` suffix or
-  require explicit `decimal` construction).
-
-### Trigger
-
-**Phase 1 prerequisite is met.** Adopt when a use case requires associating
-data with fractional numeric keys (prices, measurements, scientific
-calibration data) or when JSON interop with decimal-heavy data sources
-becomes a concrete need.
+- Decision on decimal literal syntax: `3.99d` suffix adds parser changes but
+  makes decimal keys as concise as integer keys (`[3.99d: "budget"]`). Without
+  the suffix, decimal keys are constructed via `[decimal ...]` expressions in
+  key position — fully functional either way.
 
 ## References
 

@@ -12,20 +12,16 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{Thunk, Value};
 
 /// Invoke a proxy handler with a key value, returning the result thunk.
-///
-/// Proxy-handler-returns-Proxy chains are bounded by MAX_EVAL_DEPTH.
-/// Each invoke_proxy_handler call costs 1 depth level via materialize().
 pub(crate) fn invoke_proxy_handler(
     handler: &Rc<Thunk>,
     key_val: Value,
     ctx: &Rc<EvalContext>,
     access_span: &Span,
-    depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     // Performance: handler thunk is memoized by Launchbury sharing, but each
     // access clones the materialized Value. Consider eager materialization in
     // builtin_proxy for hot proxy access.
-    let handler_val = materialize(handler, Some(access_span), ctx, depth + 1)?;
+    let handler_val = materialize(handler, Some(access_span), ctx)?;
     let key_arg = Rc::new(Thunk::new_materialized(key_val, *access_span));
     match handler_val {
         Value::Function {
@@ -40,7 +36,6 @@ pub(crate) fn invoke_proxy_handler(
             named: None,
             default_env: &closure_env,
             call_span: *access_span,
-            depth: depth + 1,
             origin: Some(Rc::from("proxy field access")),
             ctx,
         }),
@@ -48,7 +43,6 @@ pub(crate) fn invoke_proxy_handler(
             def,
             vec![key_arg],
             None,
-            depth + 1,
             *access_span,
             Some(Rc::from("proxy field access")),
             Rc::clone(ctx),

@@ -118,10 +118,10 @@ impl DocumentState {
             // Attempt evaluation to catch runtime errors early (child scope of cached stdlib env).
             // Always materialize (even when no_fs=true) so that IncludeForbidden errors
             // are reported as diagnostics in the LSP.
-            match eval_file(&file.node, Rc::clone(stdlib_env), eval_ctx, 0) {
+            match eval_file(&file.node, Rc::clone(stdlib_env), eval_ctx) {
                 Err(err) => eval_errors.push(*err),
                 Ok(thunk) => {
-                    if let Err(err) = materialize(&thunk, None, eval_ctx, 0) {
+                    if let Err(err) = materialize(&thunk, None, eval_ctx) {
                         eval_errors.push(*err);
                     }
                 }

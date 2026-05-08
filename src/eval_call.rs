@@ -64,10 +64,9 @@ pub(crate) fn eval_call(
     env: &Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
     call_span: &Span,
-    depth: usize,
 ) -> EvalResult<Rc<Thunk>> {
     // Evaluate the function as a thunk (lazy — no materialization).
-    let func_thunk = eval(Rc::new(func_expr.clone()), Rc::clone(env), ctx, depth + 1)?;
+    let func_thunk = eval(Rc::new(func_expr.clone()), Rc::clone(env), ctx)?;
 
     // Wrap arguments as unevaluated thunks (lazy). This ensures expressions
     // like $xs[$i] in unselected $if branches are never evaluated.
@@ -129,7 +128,6 @@ pub struct CallContext<'a> {
     pub named: Option<&'a IndexMap<String, Rc<Thunk>>>,
     pub default_env: &'a Rc<RefCell<Environment>>,
     pub call_span: Span,
-    pub depth: usize,
     /// Label for stack traces (e.g. "call $f"). `None` for anonymous calls.
     pub origin: Option<Rc<str>>,
     pub ctx: &'a Rc<EvalContext>,
@@ -170,7 +168,7 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
         }
 
         // Extract the tag from the marker
-        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span), ctx.ctx, ctx.depth)?;
+        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span), ctx.ctx)?;
         let tag = match tag_value {
             Value::String {
                 ref source,
@@ -207,7 +205,6 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
         ctx.closure_env,
         ctx.ctx,
         &ctx.call_span,
-        ctx.depth,
     )?;
     let mut thunk = Thunk::new_unevaluated(
         Rc::clone(ctx.body),
@@ -233,10 +230,7 @@ pub(crate) fn bind_args_thunks(
     closure_env: &Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
     call_span: &Span,
-    depth: usize,
 ) -> EvalResult<Rc<RefCell<Environment>>> {
-    // TODO(iterative-eval): frame reuse is unsafe with shared Rc<RefCell<Environment>>
-    // (closure_env mutations visible to re-entrant callers via shared Rc); safe post-flat-env.
     let call_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         closure_env,
     ))));
@@ -284,7 +278,7 @@ pub(crate) fn bind_args_thunks(
             Rc::clone(named_thunk)
         } else if let Some(default_val) = get_default(param) {
             // Case (iii): use default value
-            eval(Rc::new(default_val), Rc::clone(default_env), ctx, depth + 1)?
+            eval(Rc::new(default_val), Rc::clone(default_env), ctx)?
         } else {
             // Unreachable: BIND-ARITY guarantees every required param is covered
             unreachable!(

@@ -1153,6 +1153,14 @@ impl TypeEnv {
             },
         );
         env.insert(
+            "force".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Unknown),
+                variadic: false,
+            },
+        );
+        env.insert(
             "error".to_string(),
             Type::Function {
                 params: vec![Type::Str],

@@ -36,14 +36,13 @@ enum NumPair {
 fn extract_num_pair(
     args: &[Rc<Thunk>],
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: crate::ast::Span,
 ) -> EvalResult<NumPair> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], Some(&call_span), ctx, depth)?;
-    let right = materialize(&args[1], Some(&call_span), ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), ctx)?;
+    let right = materialize(&args[1], Some(&call_span), ctx)?;
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => Ok(NumPair::Ints(*a, *b)),
         (Value::Int(a), Value::Float(b)) => Ok(NumPair::Floats(*a as f64, *b)),
@@ -65,12 +64,11 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
     reject_named("+", named, call_span)?;
-    match extract_num_pair(args, &ctx, depth, call_span)? {
+    match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_add(b)
             .map(|n| ok_val(Value::Int(n), call_span))
@@ -88,12 +86,11 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
     reject_named("-", named, call_span)?;
-    match extract_num_pair(args, &ctx, depth, call_span)? {
+    match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
             .map(|n| ok_val(Value::Int(n), call_span))
@@ -111,12 +108,11 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
     reject_named("*", named, call_span)?;
-    match extract_num_pair(args, &ctx, depth, call_span)? {
+    match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
             .map(|n| ok_val(Value::Int(n), call_span))
@@ -134,12 +130,11 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
     reject_named("/", named, call_span)?;
-    match extract_num_pair(args, &ctx, depth, call_span)? {
+    match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
                 Err(EvalError::division_by_zero("/".to_string(), call_span).into())
@@ -166,7 +161,6 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -174,8 +168,8 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), &ctx)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx)?;
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a == b,
@@ -228,7 +222,6 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -236,8 +229,8 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), &ctx)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx)?;
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a < b,
@@ -284,7 +277,6 @@ pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -294,7 +286,7 @@ pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Materialize only the condition
-    let condition = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let condition = materialize(&args[0], Some(&call_span), &ctx)?;
 
     match condition {
         Value::Bool(true) => Ok(Rc::clone(&args[1])),
@@ -324,14 +316,13 @@ fn extract_single_float(
     args: &[Rc<Thunk>],
     named: Option<&IndexMap<String, Rc<Thunk>>>,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: crate::ast::Span,
 ) -> EvalResult<f64> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let val = materialize(&args[0], Some(&call_span), ctx, depth)?;
+    let val = materialize(&args[0], Some(&call_span), ctx)?;
     match val {
         Value::Int(n) => Ok(n as f64),
         Value::Float(f) => Ok(f),
@@ -351,15 +342,14 @@ fn extract_two_floats(
     args: &[Rc<Thunk>],
     named: Option<&IndexMap<String, Rc<Thunk>>>,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: crate::ast::Span,
 ) -> EvalResult<(f64, f64)> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let left = materialize(&args[0], Some(&call_span), ctx, depth)?;
-    let right = materialize(&args[1], Some(&call_span), ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), ctx)?;
+    let right = materialize(&args[1], Some(&call_span), ctx)?;
 
     let a = match left {
         Value::Int(n) => n as f64,
@@ -398,11 +388,10 @@ pub(crate) fn builtin_pow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let (base, exp) = extract_two_floats("pow", args, named, &ctx, depth, call_span)?;
+    let (base, exp) = extract_two_floats("pow", args, named, &ctx, call_span)?;
     check_float_result(base.powf(exp), "pow", call_span)
 }
 
@@ -413,11 +402,10 @@ pub(crate) fn builtin_sqrt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("sqrt", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("sqrt", args, named, &ctx, call_span)?;
     ok_val(Value::Float(val.sqrt()), call_span)
 }
 
@@ -428,11 +416,10 @@ pub(crate) fn builtin_log(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("log", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("log", args, named, &ctx, call_span)?;
     ok_val(Value::Float(val.ln()), call_span)
 }
 
@@ -442,11 +429,10 @@ pub(crate) fn builtin_log2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("log2", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("log2", args, named, &ctx, call_span)?;
     check_float_result(val.log2(), "log2", call_span)
 }
 
@@ -456,11 +442,10 @@ pub(crate) fn builtin_log10(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("log10", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("log10", args, named, &ctx, call_span)?;
     check_float_result(val.log10(), "log10", call_span)
 }
 
@@ -470,11 +455,10 @@ pub(crate) fn builtin_exp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("exp", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("exp", args, named, &ctx, call_span)?;
     check_float_result(val.exp(), "exp", call_span)
 }
 
@@ -484,11 +468,10 @@ pub(crate) fn builtin_sin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("sin", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("sin", args, named, &ctx, call_span)?;
     check_float_result(val.sin(), "sin", call_span)
 }
 
@@ -498,11 +481,10 @@ pub(crate) fn builtin_cos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("cos", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("cos", args, named, &ctx, call_span)?;
     check_float_result(val.cos(), "cos", call_span)
 }
 
@@ -512,11 +494,10 @@ pub(crate) fn builtin_tan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("tan", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("tan", args, named, &ctx, call_span)?;
     check_float_result(val.tan(), "tan", call_span)
 }
 
@@ -526,11 +507,10 @@ pub(crate) fn builtin_asin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("asin", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("asin", args, named, &ctx, call_span)?;
     check_float_result(val.asin(), "asin", call_span)
 }
 
@@ -540,11 +520,10 @@ pub(crate) fn builtin_acos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("acos", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("acos", args, named, &ctx, call_span)?;
     check_float_result(val.acos(), "acos", call_span)
 }
 
@@ -554,11 +533,10 @@ pub(crate) fn builtin_atan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("atan", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("atan", args, named, &ctx, call_span)?;
     check_float_result(val.atan(), "atan", call_span)
 }
 
@@ -568,11 +546,10 @@ pub(crate) fn builtin_atan2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let (y, x) = extract_two_floats("atan2", args, named, &ctx, depth, call_span)?;
+    let (y, x) = extract_two_floats("atan2", args, named, &ctx, call_span)?;
     check_float_result(y.atan2(x), "atan2", call_span)
 }
 
@@ -582,11 +559,10 @@ pub(crate) fn builtin_nan_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("nan?", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("nan?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(val.is_nan()), call_span)
 }
 
@@ -596,11 +572,10 @@ pub(crate) fn builtin_inf_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("inf?", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("inf?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(val.is_infinite()), call_span)
 }
 
@@ -610,11 +585,10 @@ pub(crate) fn builtin_finite_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = extract_single_float("finite?", args, named, &ctx, depth, call_span)?;
+    let val = extract_single_float("finite?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(val.is_finite()), call_span)
 }
 
@@ -624,15 +598,14 @@ fn extract_int_pair(
     args: &[Rc<Thunk>],
     named: Option<&IndexMap<String, Rc<Thunk>>>,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: crate::ast::Span,
 ) -> EvalResult<(i64, i64)> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let left = materialize(&args[0], Some(&call_span), ctx, depth)?;
-    let right = materialize(&args[1], Some(&call_span), ctx, depth)?;
+    let left = materialize(&args[0], Some(&call_span), ctx)?;
+    let right = materialize(&args[1], Some(&call_span), ctx)?;
 
     let a = match left {
         Value::Int(n) => n,
@@ -669,11 +642,10 @@ pub(crate) fn builtin_band(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let (a, b) = extract_int_pair("band", args, named, &ctx, depth, call_span)?;
+    let (a, b) = extract_int_pair("band", args, named, &ctx, call_span)?;
     ok_val(Value::Int(a & b), call_span)
 }
 
@@ -683,11 +655,10 @@ pub(crate) fn builtin_bor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let (a, b) = extract_int_pair("bor", args, named, &ctx, depth, call_span)?;
+    let (a, b) = extract_int_pair("bor", args, named, &ctx, call_span)?;
     ok_val(Value::Int(a | b), call_span)
 }
 
@@ -697,11 +668,10 @@ pub(crate) fn builtin_bxor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let (a, b) = extract_int_pair("bxor", args, named, &ctx, depth, call_span)?;
+    let (a, b) = extract_int_pair("bxor", args, named, &ctx, call_span)?;
     ok_val(Value::Int(a ^ b), call_span)
 }
 
@@ -711,11 +681,10 @@ pub(crate) fn builtin_shl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let (value, bits) = extract_int_pair("shl", args, named, &ctx, depth, call_span)?;
+    let (value, bits) = extract_int_pair("shl", args, named, &ctx, call_span)?;
 
     // Negative shift is undefined; shifts >= 64 produce 0
     if bits < 0 {
@@ -737,11 +706,10 @@ pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let (value, bits) = extract_int_pair("shr", args, named, &ctx, depth, call_span)?;
+    let (value, bits) = extract_int_pair("shr", args, named, &ctx, call_span)?;
 
     // Negative shift is undefined; shifts >= 64 produce 0
     if bits < 0 {

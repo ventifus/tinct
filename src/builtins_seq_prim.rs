@@ -55,11 +55,10 @@ pub(crate) fn builtin_head(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("head", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("head", args, named, &ctx, call_span)?;
     match val {
         Value::Seq { head, .. } => Ok(ctx.get_thunk(head)),
         Value::Dict(ref map) if map.is_empty() => {
@@ -84,11 +83,10 @@ pub(crate) fn builtin_tail(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("tail", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("tail", args, named, &ctx, call_span)?;
     match val {
         Value::Seq { tail, .. } => Ok(ctx.get_thunk(tail)),
         Value::Dict(ref map) if map.is_empty() => {
@@ -115,13 +113,12 @@ pub(crate) fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
     // Capture arg span before expect_one_arg consumes args.
     let arg_span = args.first().map(|a| a.span).unwrap_or(call_span);
-    let val = expect_one_arg("collect", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("collect", args, named, &ctx, call_span)?;
 
     // Handle empty dict (terminal value) as input
     if let Value::Dict(ref d) = val {
@@ -168,7 +165,7 @@ pub(crate) fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 // Materialize tail to check if we should continue
                 let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, None, &ctx, depth)?;
+                current = materialize(&tail_thunk, None, &ctx)?;
             }
             Value::Dict(ref d) if d.is_empty() => {
                 // Terminal: empty dict
@@ -197,10 +194,9 @@ pub(crate) fn builtin_seq_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("seq?", args, named, &ctx, depth, call_span)?;
+    let val = expect_one_arg("seq?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(matches!(val, Value::Seq { .. })), call_span)
 }

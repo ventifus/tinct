@@ -57,13 +57,28 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("eval", args, named, &ctx, depth, call_span)?;
-    let deep = crate::eval_deep::deep_materialize(&val, &ctx, depth, Some(&call_span))?;
+    let val = crate::builtins::expect_one_arg("eval", args, named, &ctx, call_span)?;
+    let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
     ok_val(deep, call_span)
+}
+
+/// `force`: takes 1 arg, forces it to WHNF and returns it.
+///
+/// Gives users explicit control over evaluation order. Equivalent to `$eval` for
+/// flat values, but only forces to weak head normal form (WHNF) — dicts remain
+/// dicts with unforced entries, not deep-forced. Use `$eval` for deep forcing.
+pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let forced = crate::builtins::expect_one_arg("force", args, named, &ctx, call_span)?;
+    ok_val(forced, call_span)
 }
 
 /// `error`: takes 1 arg (String message), always raises.
@@ -72,11 +87,10 @@ pub(crate) fn builtin_error(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("error", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("error", args, named, &ctx, call_span)?;
     let msg = require_string("error", val, args[0].span)?;
     Err(EvalError::user_error(msg.to_string(), call_span).into())
 }
@@ -88,7 +102,6 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -96,7 +109,7 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let func_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let func_val = materialize(&args[0], Some(&call_span), &ctx)?;
 
     let call_result = match func_val {
         Value::Function {
@@ -121,18 +134,16 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 Rc::clone(&ctx),
                 body.span,
             ));
-            materialize(&body_thunk, Some(&call_span), &ctx, depth)
+            materialize(&body_thunk, Some(&call_span), &ctx)
         }
         Value::Builtin(def) => {
             let builtin_args = BuiltinArgs {
                 args: &[],
                 named: None,
-                depth,
                 call_span,
                 ctx: Rc::clone(&ctx),
             };
-            (def.func)(builtin_args)
-                .and_then(|thunk| materialize(&thunk, Some(&call_span), &ctx, depth))
+            (def.func)(builtin_args).and_then(|thunk| materialize(&thunk, Some(&call_span), &ctx))
         }
         _ => {
             return Err(EvalError::type_mismatch_ctx(
@@ -185,7 +196,6 @@ pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -211,7 +221,7 @@ pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Rc::clone(&ctx),
         ));
 
-        let pred_val = materialize(&pred_result, Some(&call_span), &ctx, depth)?;
+        let pred_val = materialize(&pred_result, Some(&call_span), &ctx)?;
 
         match pred_val {
             Value::Bool(true) => {
@@ -233,7 +243,7 @@ pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
                 // This breaks the thunk chain and prevents stack overflow
-                let f_val = materialize(&f_result, Some(&call_span), &ctx, depth)?;
+                let f_val = materialize(&f_result, Some(&call_span), &ctx)?;
                 val_thunk = Rc::new(Thunk::new_materialized(f_val, call_span));
             }
             _ => {
@@ -256,7 +266,6 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -266,11 +275,10 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     }
     // Both args[0] and args[1] have been pre-materialized by BuiltinForceArg,
     // so these materialize() calls are O(1) cache hits.
-    let func_val = materialize(&args[0], None, &ctx, depth)?;
-    let args_val = materialize(&args[1], None, &ctx, depth)?;
+    let func_val = materialize(&args[0], None, &ctx)?;
+    let args_val = materialize(&args[1], None, &ctx)?;
 
-    let arg_dict =
-        crate::builtins::require_dict("apply", args_val, args[1].span, &ctx, depth, call_span)?;
+    let arg_dict = crate::builtins::require_dict("apply", args_val, args[1].span, &ctx, call_span)?;
 
     // Split dict entries: integer-keyed → positional, string-keyed → named
     let mut int_entries: Vec<(i64, Rc<Thunk>)> = Vec::with_capacity(arg_dict.len());
@@ -306,7 +314,6 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
             default_env: &closure_env,
             ctx: &ctx,
             call_span,
-            depth,
             origin: Some(Rc::from("apply")),
         }),
         Value::Builtin(def) => {
@@ -317,7 +324,6 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
                 } else {
                     Some(&named_args)
                 },
-                depth,
                 call_span,
                 ctx: Rc::clone(&ctx),
             };
@@ -338,7 +344,6 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -357,7 +362,6 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         builtin!("apply", builtin_apply_impl),
         args.to_vec(),
         named_opt,
-        depth,
         call_span,
         Some(Rc::from("apply")),
         ctx,
@@ -371,11 +375,10 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("eval-ast", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("eval-ast", args, named, &ctx, call_span)?;
 
     // Convert the dict to an AST node
     let ast = crate::ast_dict::dict_to_ast(&val, &ctx)
@@ -383,7 +386,7 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Evaluate the reconstructed AST in the stdlib environment
     let env = Rc::clone(&ctx.config.stdlib_env);
-    crate::eval::eval(Rc::new(ast), env, &ctx, depth)
+    crate::eval::eval(Rc::new(ast), env, &ctx)
 }
 
 /// `gensym`: Generate a unique symbol name for macro hygiene.
@@ -421,11 +424,10 @@ pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("decimal", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("decimal", args, named, &ctx, call_span)?;
     match val {
         Value::String {
             ref source,
@@ -453,11 +455,10 @@ pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("big-int", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("big-int", args, named, &ctx, call_span)?;
     match val {
         Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
         Value::String {
@@ -488,11 +489,10 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("type-of", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("type-of", args, named, &ctx, call_span)?;
     let name = match val.type_name() {
         "Builtin" => "Function",
         other => other,
@@ -507,15 +507,14 @@ pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("llt-repr", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("llt-repr", args, named, &ctx, call_span)?;
     // Deep-materialize the value first (value_to_display_string requires it)
-    let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, depth, Some(&call_span))?;
+    let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
     // Convert to display string
-    let display_str = crate::value_to_display_string(&deep_val, &ctx, depth)
+    let display_str = crate::value_to_display_string(&deep_val, &ctx)
         .map_err(|e| EvalError::new(format!("llt-repr: {}", e.message()), call_span))?;
     ok_val(string_val(&display_str), call_span)
 }
@@ -525,11 +524,10 @@ pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("tag-of", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("tag-of", args, named, &ctx, call_span)?;
     match val {
         Value::Variant { tag, .. } => ok_val(string_val(&tag), call_span),
         _ => Err(Box::new(EvalError::type_mismatch(
@@ -545,11 +543,10 @@ pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let tag_val = crate::builtins::expect_one_arg("variant", args, named, &ctx, depth, call_span)?;
+    let tag_val = crate::builtins::expect_one_arg("variant", args, named, &ctx, call_span)?;
     match tag_val {
         Value::String {
             ref source,
@@ -578,11 +575,10 @@ pub(crate) fn builtin_int_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("int?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("int?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(matches!(val, Value::Int(_))), call_span)
 }
 
@@ -591,11 +587,10 @@ pub(crate) fn builtin_float_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("float?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("float?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(matches!(val, Value::Float(_))), call_span)
 }
 
@@ -604,11 +599,10 @@ pub(crate) fn builtin_num_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("num?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("num?", args, named, &ctx, call_span)?;
     ok_val(
         Value::Bool(matches!(val, Value::Int(_) | Value::Float(_))),
         call_span,
@@ -620,11 +614,10 @@ pub(crate) fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("str?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("str?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(matches!(val, Value::String { .. })), call_span)
 }
 
@@ -633,11 +626,10 @@ pub(crate) fn builtin_bool_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("bool?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("bool?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(matches!(val, Value::Bool(_))), call_span)
 }
 
@@ -646,11 +638,10 @@ pub(crate) fn builtin_bytes_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("bytes?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("bytes?", args, named, &ctx, call_span)?;
     ok_val(Value::Bool(matches!(val, Value::Bytes { .. })), call_span)
 }
 
@@ -659,15 +650,14 @@ pub(crate) fn builtin_null_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("null?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("null?", args, named, &ctx, call_span)?;
     let is_null = match val {
         Value::Dict(map) => map.is_empty(),
         Value::Overlay(l, r) => {
-            let map = crate::builtins::flatten_overlay(&l, &r, "null?", &ctx, depth, call_span)?;
+            let map = crate::builtins::flatten_overlay(&l, &r, "null?", &ctx, call_span)?;
             map.is_empty()
         }
         _ => false,
@@ -680,11 +670,10 @@ pub(crate) fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("dict?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("dict?", args, named, &ctx, call_span)?;
     ok_val(
         Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
         call_span,
@@ -696,11 +685,10 @@ pub(crate) fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("fn?", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("fn?", args, named, &ctx, call_span)?;
     ok_val(
         Value::Bool(matches!(val, Value::Function { .. } | Value::Builtin(_))),
         call_span,
@@ -825,15 +813,14 @@ pub(crate) fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("from-json", args, named, &ctx, depth, call_span)?;
+    let val = crate::builtins::expect_one_arg("from-json", args, named, &ctx, call_span)?;
     let json_str = require_string("from-json", val, args[0].span)?;
     let parsed: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
-    json_to_value(&parsed, depth, call_span, &ctx)
+    json_to_value(&parsed, 0, call_span, &ctx)
 }
 
 /// Parse an integrity hash string of the form `"algo:hexdigest"`.
@@ -907,7 +894,6 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
@@ -929,7 +915,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     reject_named("include", named, call_span)?;
 
     // Determine if the first arg is a DirCap or a path string.
-    let first_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let first_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let (dir_cap, path_arg_idx, hash_arg_idx) = match &first_val {
         Value::DirCap(dir) => {
             // New pattern: [include $cap "path"] or [include $cap "path" "hash"]
@@ -973,14 +959,14 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let path_val = if path_arg_idx == 0 {
         first_val
     } else {
-        materialize(&args[path_arg_idx], Some(&call_span), &ctx, depth)?
+        materialize(&args[path_arg_idx], Some(&call_span), &ctx)?
     };
     let file_path_str = require_string("include", path_val, args[path_arg_idx].span)?;
 
     // Parse optional integrity hash from the hash argument position.
     // owned_hash = Some((algo, hexdigest)) when a hash was provided.
     let owned_hash: Option<(String, String)> = if hash_arg_idx < args.len() {
-        let hash_val = materialize(&args[hash_arg_idx], Some(&call_span), &ctx, depth)?;
+        let hash_val = materialize(&args[hash_arg_idx], Some(&call_span), &ctx)?;
         let hash_str = require_string("include", hash_val, args[hash_arg_idx].span)?;
         parse_integrity_hash(&hash_str, call_span)?; // validates format
         let colon_pos = hash_str.find(':').unwrap(); // safe: validated above
@@ -1204,7 +1190,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Evaluate the included file with empty % and the stdlib env.
-    let eval_result = crate::eval::eval_file(&file.node, stdlib_env, &included_ctx, depth + 1);
+    let eval_result = crate::eval::eval_file(&file.node, stdlib_env, &included_ctx);
 
     // Remove from include guard and include chain regardless of success/failure.
     let cleanup = || {
@@ -1218,7 +1204,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // Eagerly materialize: the include guard is only valid while
             // the file's identity is in the set. Returning a lazy thunk
             // would defer evaluation past the guard removal.
-            let val = match crate::eval::materialize(&thunk, None, &included_ctx, depth + 1) {
+            let val = match crate::eval::materialize(&thunk, None, &included_ctx) {
                 Ok(v) => {
                     cleanup();
                     v
@@ -1288,13 +1274,12 @@ pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
-        depth,
         call_span,
         ctx,
     } = ctx_arg;
 
     // Expect exactly 2 args: schema, data
-    let (schema, data) = expect_two_args("validate", args, named, &ctx, depth, call_span)?;
+    let (schema, data) = expect_two_args("validate", args, named, &ctx, call_span)?;
 
     // Schema must be a Dict
     let schema_dict = match schema {
@@ -1304,7 +1289,7 @@ pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let schema_thunk_id =
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(schema.clone(), call_span)));
             let schema_thunk = ctx.get_thunk(schema_thunk_id);
-            let materialized = materialize(&schema_thunk, Some(&call_span), &ctx, depth)?;
+            let materialized = materialize(&schema_thunk, Some(&call_span), &ctx)?;
             match materialized {
                 Value::Dict(d) => d,
                 _ => {
@@ -1326,15 +1311,7 @@ pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Collect violations
     let mut violations = Vec::new();
-    validate_value(
-        &schema_dict,
-        &data,
-        "",
-        &mut violations,
-        &ctx,
-        depth,
-        call_span,
-    )?;
+    validate_value(&schema_dict, &data, "", &mut violations, &ctx, call_span)?;
 
     if violations.is_empty() {
         // Success: return data unchanged
@@ -1351,7 +1328,6 @@ fn expect_two_args(
     args: &[Rc<Thunk>],
     named: Option<&IndexMap<String, Rc<Thunk>>>,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     call_span: Span,
 ) -> EvalResult<(Value, Value)> {
     if args.len() != 2 {
@@ -1361,8 +1337,8 @@ fn expect_two_args(
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
 
-    let val1 = materialize(&args[0], Some(&call_span), &ctx, depth)?;
-    let val2 = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+    let val1 = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val2 = materialize(&args[1], Some(&call_span), &ctx)?;
 
     Ok((val1, val2))
 }
@@ -1377,13 +1353,12 @@ fn validate_value(
     path: &str,
     violations: &mut Vec<(String, String)>,
     ctx: &Rc<crate::eval::EvalContext>,
-    depth: usize,
     span: Span,
 ) -> EvalResult<()> {
     // Check `type` constraint
     if let Some(&type_thunk_id) = schema.get(&Key::String("type".to_string())) {
         let type_thunk = ctx.get_thunk(type_thunk_id);
-        let type_val = materialize(&type_thunk, Some(&span), &ctx, depth)?;
+        let type_val = materialize(&type_thunk, Some(&span), &ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -1404,7 +1379,7 @@ fn validate_value(
     // Check numeric range constraints (min, max)
     if let Some(&min_thunk_id) = schema.get(&Key::String("min".to_string())) {
         let min_thunk = ctx.get_thunk(min_thunk_id);
-        let min_val = materialize(&min_thunk, Some(&span), &ctx, depth)?;
+        let min_val = materialize(&min_thunk, Some(&span), &ctx)?;
         match (data, &min_val) {
             (Value::Int(n), Value::Int(min)) => {
                 if n < min {
@@ -1432,7 +1407,7 @@ fn validate_value(
 
     if let Some(&max_thunk_id) = schema.get(&Key::String("max".to_string())) {
         let max_thunk = ctx.get_thunk(max_thunk_id);
-        let max_val = materialize(&max_thunk, Some(&span), &ctx, depth)?;
+        let max_val = materialize(&max_thunk, Some(&span), &ctx)?;
         match (data, &max_val) {
             (Value::Int(n), Value::Int(max)) => {
                 if n > max {
@@ -1461,7 +1436,7 @@ fn validate_value(
     // Check string/sequence length constraints
     if let Some(&min_len_thunk_id) = schema.get(&Key::String("min-length".to_string())) {
         let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
-        let min_len_val = materialize(&min_len_thunk, Some(&span), &ctx, depth)?;
+        let min_len_val = materialize(&min_len_thunk, Some(&span), &ctx)?;
         if let Value::Int(min_len) = min_len_val {
             let actual_len = match data {
                 Value::String {
@@ -1487,7 +1462,7 @@ fn validate_value(
 
     if let Some(&max_len_thunk_id) = schema.get(&Key::String("max-length".to_string())) {
         let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
-        let max_len_val = materialize(&max_len_thunk, Some(&span), &ctx, depth)?;
+        let max_len_val = materialize(&max_len_thunk, Some(&span), &ctx)?;
         if let Value::Int(max_len) = max_len_val {
             let actual_len = match data {
                 Value::String {
@@ -1510,7 +1485,7 @@ fn validate_value(
     // Check pattern constraint (for strings)
     if let Some(&pattern_thunk_id) = schema.get(&Key::String("pattern".to_string())) {
         let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
-        let pattern_val = materialize(&pattern_thunk, Some(&span), &ctx, depth)?;
+        let pattern_val = materialize(&pattern_thunk, Some(&span), &ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -1542,12 +1517,12 @@ fn validate_value(
     // Check enum constraint
     if let Some(&enum_thunk_id) = schema.get(&Key::String("enum".to_string())) {
         let enum_thunk = ctx.get_thunk(enum_thunk_id);
-        let enum_val = materialize(&enum_thunk, Some(&span), &ctx, depth)?;
+        let enum_val = materialize(&enum_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref enum_dict) = enum_val {
             let mut found = false;
             for (_key, &val_thunk_id) in enum_dict {
                 let val_thunk = ctx.get_thunk(val_thunk_id);
-                let val = materialize(&val_thunk, Some(&span), &ctx, depth)?;
+                let val = materialize(&val_thunk, Some(&span), &ctx)?;
                 if values_equal(&val, data) {
                     found = true;
                     break;
@@ -1562,14 +1537,13 @@ fn validate_value(
     // Check fields constraint (for dicts)
     if let Some(&fields_thunk_id) = schema.get(&Key::String("fields".to_string())) {
         let fields_thunk = ctx.get_thunk(fields_thunk_id);
-        let fields_val = materialize(&fields_thunk, Some(&span), &ctx, depth)?;
+        let fields_val = materialize(&fields_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref fields_schema) = fields_val {
             if let Value::Dict(ref data_dict) = data {
                 // Validate each field in the schema
                 for (field_key, &field_schema_thunk_id) in fields_schema {
                     let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
-                    let field_schema_val =
-                        materialize(&field_schema_thunk, Some(&span), &ctx, depth)?;
+                    let field_schema_val = materialize(&field_schema_thunk, Some(&span), &ctx)?;
                     if let Value::Dict(ref field_schema) = field_schema_val {
                         let field_name = match field_key {
                             Key::String(s) => s.clone(),
@@ -1587,7 +1561,7 @@ fn validate_value(
                             field_schema.get(&Key::String("required".to_string()))
                         {
                             let req_thunk = ctx.get_thunk(req_thunk_id);
-                            let req_val = materialize(&req_thunk, Some(&span), &ctx, depth)?;
+                            let req_val = materialize(&req_thunk, Some(&span), &ctx)?;
                             matches!(req_val, Value::Bool(true))
                         } else {
                             false
@@ -1595,15 +1569,13 @@ fn validate_value(
 
                         if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
                             let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
-                            let field_value =
-                                materialize(&field_value_thunk, Some(&span), &ctx, depth)?;
+                            let field_value = materialize(&field_value_thunk, Some(&span), &ctx)?;
                             validate_value(
                                 field_schema,
                                 &field_value,
                                 &field_path,
                                 violations,
                                 ctx,
-                                depth,
                                 span,
                             )?;
                         } else if is_required {
@@ -1618,27 +1590,19 @@ fn validate_value(
     // Check items constraint (for sequences/dicts with uniform element schema)
     if let Some(&items_thunk_id) = schema.get(&Key::String("items".to_string())) {
         let items_thunk = ctx.get_thunk(items_thunk_id);
-        let items_val = materialize(&items_thunk, Some(&span), &ctx, depth)?;
+        let items_val = materialize(&items_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref items_schema) = items_val {
             match data {
                 Value::Dict(ref data_dict) => {
                     for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
-                        let val = materialize(&val_thunk, Some(&span), &ctx, depth)?;
+                        let val = materialize(&val_thunk, Some(&span), &ctx)?;
                         let item_path = if path.is_empty() {
                             format!("[{}]", idx)
                         } else {
                             format!("{}[{}]", path, idx)
                         };
-                        validate_value(
-                            items_schema,
-                            &val,
-                            &item_path,
-                            violations,
-                            ctx,
-                            depth,
-                            span,
-                        )?;
+                        validate_value(items_schema, &val, &item_path, violations, ctx, span)?;
                     }
                 }
                 Value::Seq { .. } => {
