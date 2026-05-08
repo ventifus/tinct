@@ -5,44 +5,14 @@
 #                   length, to-int, str, get, builtin-eq, builtin-add, error
 #
 # Provides:
-#   parse-url-port        — extract port from colon-split result
-#   parse-url-path        — reconstruct path from slash-split result
-#   parse-url             — "http://host:port/path" -> [scheme: host: port: path:]
 #   build-http-request    — method + path + host -> raw HTTP/1.0 request String
 #   parse-status-line     — "HTTP/1.0 200 OK" -> 200
 #   parse-header-fields   — recursive header dict builder
 #   parse-http-response   — raw response String -> [status: headers: body:]
-#   http-get              — plain TCP: connect + write-handle + slurp + parse
-#   fetch                 — parse-url + http-get (http) or tls-connect (https)
+#   http-get              — url-based HTTP GET (dispatches on url.scheme)
+#   fetch                 — url + http-get (http) or tls-connect (https)
 
 [
-  # Parse optional port from [split ":" host-port] result.
-  # Returns [] (null) if no colon in host-port, else Int.
-  parse-url-port: [fn [colon-parts]
-    [if [builtin-eq [length colon-parts] 1]
-      []
-      [to-int colon-parts.1]]]
-
-  # Reconstruct path string from [rest [split "/" after-scheme]].
-  # Returns "/" if no path segments, else "/" prepended to joined segments.
-  parse-url-path: [fn [path-tail]
-    [if [builtin-eq [length path-tail] 0]
-      "/"
-      [str "/" [join "/" path-tail]]]]
-
-  # Parse "scheme://host[:port][/path]" into components.
-  # Returns [scheme: ... host: ... port: ... path: ...].
-  # port is [] (null) if absent in the URL.
-  parse-url: [fn@Dict [url@String]
-    [scheme-split: [split "://" url]
-    [slash-parts:  [split "/" scheme-split.1]
-    [colon-parts:  [split ":" slash-parts.0]
-    [set [set [set [set []
-      "scheme" scheme-split.0]
-      "host"   colon-parts.0]
-      "port"   [parse-url-port colon-parts]]
-      "path"   [parse-url-path [rest slash-parts]]]]]]]
-
   # Build a minimal HTTP/1.0 GET request string.
   build-http-request: [fn@String [method@String path@String host@String]
     [str method " " path " HTTP/1.0\r\nHost: " host "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]
@@ -77,24 +47,23 @@
         "headers" [parse-header-fields [rest hdr-lines] 0 [length [rest hdr-lines]] []]]
         "body"    sections.1]]]]]
 
-  # Make an HTTP GET request to host:port/path using cap.
+  # Make an HTTP GET request using url@Url.
+  # Dispatches on url.scheme (http or https).
   # Returns parsed response dict.
-  http-get: [fn@Dict [cap@NetCap host@String port@Int path@String]
-    [parse-http-response
-      [bytes-str [slurp [write-handle
-        [connect cap host port]
-        [str-bytes [build-http-request "GET" path host]]]]]]]
-
-  # Parse URL and dispatch to http-get (http) or tls-connect (https).
-  # Default port 80/443, default path "/".
-  fetch: [fn@Dict [cap@NetCap url@String]
-    [parsed: [parse-url url]
-    [if [builtin-eq parsed.scheme "https"]
+  http-get: [fn@Dict [cap@NetCap url@Url]
+    [if [builtin-eq url.scheme "https"]
       [parse-http-response
         [bytes-str [slurp [write-handle
-          [tls-connect cap Tcp parsed.host [or parsed.port 443] []]
-          [str-bytes [build-http-request "GET" [or parsed.path "/"] parsed.host]]]]]]
-      [http-get cap parsed.host [or parsed.port 80] [or parsed.path "/"]]]]]
+          [tls-connect cap Tcp url.host url.port []]
+          [str-bytes [build-http-request "GET" url.path url.host]]]]]]
+      [parse-http-response
+        [bytes-str [slurp [write-handle
+          [connect cap url.host url.port]
+          [str-bytes [build-http-request "GET" url.path url.host]]]]]]]]
+
+  # Parse URL string and call http-get.
+  fetch: [fn@Dict [cap@NetCap url-string@String]
+    [http-get cap [url url-string]]]
 
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.

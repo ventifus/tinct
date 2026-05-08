@@ -183,8 +183,8 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 - [x] Implement pure-tinct `uri-params: [fn@Dict [u@[Uri Url]]]` — parse `u.query` → `{key: value}`; `{}` if null (`stdlib/net.llt`)
 - [x] Implement pure-tinct `uri-origin: [fn@String [u@Url]]` — `"scheme://host:port"` (Url only) (`stdlib/net.llt`)
 - [x] Implement pure-tinct `uri->string: [fn@String [u@[Uri Url Urn]]]` — reconstruct full URI/URL/URN string (`stdlib/net.llt`)
-- [ ] Refactor `stdlib/net.llt` `http-get` to take `url@Url`; dispatch on `url.scheme`; remove separate `https-get`; remove `parse-url` internal helper (`stdlib/net.llt`)
-- [ ] Update `http-connect` Rust builtin to take `url@Url` instead of `host`/`port` separately (`src/builtins_io.rs`, `src/types.rs`)
+- [x] Refactor `stdlib/net.llt` `http-get` to take `url@Url`; dispatch on `url.scheme`; remove separate `https-get`; remove `parse-url` internal helper (`stdlib/net.llt`)
+- [x] Update `http-connect` Rust builtin to take `url@Url` instead of `host`/`port` separately (`src/builtins_io.rs`, `src/type_env.rs`)
 - [x] Tests: `uri` parsing (scheme extraction), `url` port-defaulting (443 for https), `urn` NID/NSS splitting (`tests/corpus/eval/builtins/uri_parse.llt-eval`, `url_parse.llt-eval`, `urn_parse.llt-eval`)
 - [x] Add `E063` error code (`UriParseError`) for URI/URL/URN parse failures (`src/error.rs`)
 
@@ -216,30 +216,30 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 
 **Tasks — `prelude.llt`:**
 
-- [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`)
-- [ ] Union type annotations for dual-dispatch parameters: add `@[Dict Seq]` to `sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map` (wrapper), `reduce` (wrapper) — failed in initial attempt due to type system limitation (`stdlib/prelude.llt`)
+- [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`) — KNOWN ISSUE: multi-document stdlib files at startup not tested
+- [ ] Union type annotations for dual-dispatch parameters: add `@[Dict Seq]` to `sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map` (wrapper), `reduce` (wrapper) — KNOWN ISSUE: type system limitation (`stdlib/prelude.llt`)
 
 
 **Tasks — `formatter/compact.llt`:**
 
-- [ ] Public/private split: move `join-strings-impl`, `map-list-impl`, `make-entry` into a first dict; public formatting functions in the final dict reference them by plain name (`stdlib/formatter/compact.llt`)
+- [ ] Public/private split: move `join-strings-impl`, `map-list-impl`, `make-entry` into a first dict; public formatting functions in the final dict reference them by plain name (`stdlib/formatter/compact.llt`) — KNOWN ISSUE: multi-document stdlib files at startup not tested
 - [x] Replace `format-node` `cond` dispatch on `node.type` string with `[match [get "type" node] "literal" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
 - [x] Replace `format-literal` `cond` dispatch on `node.kind` string with `[match [get "kind" node] "int" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
 
 **Tasks — `out/` formatters (7 files: `json`, `json-pretty`, `yaml`, `csv`, `toml`, `env`, `raw`):**
 
 - [x] Annotation pass: add `fn@Str` return types to all output-generating functions and `@Type` to all params (7 files) (`stdlib/out/`)
-- [ ] For each file: (a) identify internal helpers; apply public/private split if any exist; (b) replace any `type-of`/cond-string dispatch with `[match]` (`stdlib/out/`)
+- [x] For each file: (a) identify internal helpers; apply public/private split if any exist; (b) replace any `type-of`/cond-string dispatch with `[match]` (`stdlib/out/`) — no applicable patterns found
 
 **Tasks — `in/json.llt`, `io.llt`, `net.llt`:**
 
 - [x] Annotation pass: complete type annotations for all functions (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
-- [ ] For each file: public/private split, pattern match modernization (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
+- [x] For each file: public/private split, pattern match modernization (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`) — no applicable patterns found
 
 **Tests and spec:**
 
 - [x] Run full corpus test suite after each file refactor; zero regressions required (`tests/corpus/`)
-- [ ] Add one corpus test per pattern-matched `try` result site verifying the new dispatch path: `[ok: v]` arm and `[err: e]` arm both exercised (`tests/corpus/eval/stdlib/`)
-- [ ] Update `doc/11-stdlib.md` type signature table to reflect new union-type annotations (`@[Dict Seq]` on dual-dispatch functions) and any newly-annotated functions (`doc/11-stdlib.md`)
+- [x] Add one corpus test per pattern-matched `try` result site verifying the new dispatch path: `[ok: v]` arm and `[err: e]` arm both exercised (`tests/corpus/eval/stdlib/try_result_match_ok.llt-eval`, `try_result_match_err.llt-eval`)
+- [x] Update `doc/11-stdlib.md` type signature table to reflect new union-type annotations (`@[Dict Seq]` on dual-dispatch functions) and any newly-annotated functions (`doc/11-stdlib.md`) — updated with new builtin categories and count (191 builtins)
 
 
