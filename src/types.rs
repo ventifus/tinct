@@ -119,6 +119,14 @@ pub enum Type {
     Handle,
     /// URI — uniform resource identifier with scheme. Represents capability-tagged URLs.
     Uri,
+    /// UTC timestamp (nanoseconds since Unix epoch) — created by `parse-timestamp` or `now`.
+    Timestamp,
+    /// Signed duration (nanoseconds) — created by `duration-*` constructors.
+    Duration,
+    /// Clock capability — authority to read current time. Injected via CLI --cap-clock.
+    ClockCap,
+    /// Timezone — parsed IANA TZ rules from zoneinfo file. Created by `load-tz`.
+    Timezone,
     /// Union type — represents a value that can be one of several types.
     /// Invariant: members are sorted, deduplicated, and flattened (no nested unions).
     /// Single-element unions are unwrapped to the bare type by normalize_union().
@@ -169,6 +177,10 @@ impl PartialEq for Type {
             (Type::NetCap, Type::NetCap) => true,
             (Type::Handle, Type::Handle) => true,
             (Type::Uri, Type::Uri) => true,
+            (Type::Timestamp, Type::Timestamp) => true,
+            (Type::Duration, Type::Duration) => true,
+            (Type::ClockCap, Type::ClockCap) => true,
+            (Type::Timezone, Type::Timezone) => true,
             (Type::Union(members1), Type::Union(members2)) => members1 == members2,
             (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
             _ => false,
@@ -768,8 +780,12 @@ fn type_order(ty: &Type) -> u8 {
         Type::NetCap => 17,
         Type::Handle => 18,
         Type::Uri => 19,
-        Type::Union(_) => 20, // Should not appear after flattening, but included for completeness
-        Type::Intersection(_) => 21, // Should not appear after flattening, but included for completeness
+        Type::Timestamp => 20,
+        Type::Duration => 21,
+        Type::ClockCap => 22,
+        Type::Timezone => 23,
+        Type::Union(_) => 24, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 25, // Should not appear after flattening, but included for completeness
     }
 }
 

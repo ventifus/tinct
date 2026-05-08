@@ -1,0 +1,3 @@
+# Date-time helpers (pure tinct, depends on builtins)
+[days-between: [fn [a b] [duration->seconds [timestamp-diff b a]]]
+ timestamp-in-range?: [fn [t start end] [and [timestamp<? start t] [timestamp<? t end]]]]

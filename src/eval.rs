@@ -345,6 +345,10 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::NetCap => matches!(value, Value::NetCap(_)),
         Type::Handle => matches!(value, Value::Handle { .. } | Value::WriteHandle { .. }),
         Type::Uri => matches!(value, Value::Uri { .. }),
+        Type::Timestamp => matches!(value, Value::Timestamp(_)),
+        Type::Duration => matches!(value, Value::Duration(_)),
+        Type::ClockCap => matches!(value, Value::ClockCap(_)),
+        Type::Timezone => matches!(value, Value::Timezone(_)),
         Type::Union(members) => {
             // Value matches union if it matches ANY member type
             members

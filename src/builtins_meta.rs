@@ -728,6 +728,10 @@ fn type_name(val: &Value) -> String {
         Value::Decimal(_) => "Decimal",
         Value::BigInt(_) => "BigInt",
         Value::Uri { .. } => "Uri",
+        Value::Timestamp(_) => "Timestamp",
+        Value::Duration(_) => "Duration",
+        Value::ClockCap(_) => "ClockCap",
+        Value::Timezone(_) => "Timezone",
     }
     .to_string()
 }

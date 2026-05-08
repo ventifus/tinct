@@ -369,6 +369,10 @@ impl fmt::Display for Type {
             Type::NetCap => write!(f, "NetCap"),
             Type::Handle => write!(f, "Handle"),
             Type::Uri => write!(f, "Uri"),
+            Type::Timestamp => write!(f, "Timestamp"),
+            Type::Duration => write!(f, "Duration"),
+            Type::ClockCap => write!(f, "ClockCap"),
+            Type::Timezone => write!(f, "Timezone"),
             Type::Union(members) => {
                 for (i, member) in members.iter().enumerate() {
                     if i > 0 {
@@ -1801,6 +1805,168 @@ impl TypeEnv {
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
+            },
+        );
+
+        // Date-time: timestamps and durations
+        env.insert(
+            "parse-timestamp".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Timestamp),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "format-timestamp".to_string(),
+            Type::Function {
+                params: vec![Type::Timestamp],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "timestamp->unix".to_string(),
+            Type::Function {
+                params: vec![Type::Timestamp],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "unix->timestamp".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                ret: Box::new(Type::Timestamp),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "now".to_string(),
+            Type::Function {
+                params: vec![Type::ClockCap],
+                ret: Box::new(Type::Timestamp),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "fixed-clock".to_string(),
+            Type::Function {
+                params: vec![Type::Timestamp],
+                ret: Box::new(Type::ClockCap),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "timestamp-add".to_string(),
+            Type::Function {
+                params: vec![Type::Timestamp, Type::Duration],
+                ret: Box::new(Type::Timestamp),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "timestamp-diff".to_string(),
+            Type::Function {
+                params: vec![Type::Timestamp, Type::Timestamp],
+                ret: Box::new(Type::Duration),
+                variadic: false,
+            },
+        );
+        for name in ["timestamp<?", "timestamp>?", "timestamp=?"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Timestamp, Type::Timestamp],
+                    ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+            );
+        }
+        for name in [
+            "timestamp-year",
+            "timestamp-month",
+            "timestamp-day",
+            "timestamp-hour",
+            "timestamp-minute",
+            "timestamp-second",
+        ] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Timestamp],
+                    ret: Box::new(Type::Int),
+                    variadic: false,
+                },
+            );
+        }
+        env.insert(
+            "timestamp-parts".to_string(),
+            Type::Function {
+                params: vec![Type::Timestamp],
+                ret: Box::new(Type::Unknown), // Returns Dict with year/month/day/hour/minute/second
+                variadic: false,
+            },
+        );
+        for name in [
+            "duration-nanos",
+            "duration-seconds",
+            "duration-minutes",
+            "duration-hours",
+            "duration-days",
+        ] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Int],
+                    ret: Box::new(Type::Duration),
+                    variadic: false,
+                },
+            );
+        }
+        for name in ["duration->seconds", "duration->nanos"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Duration],
+                    ret: Box::new(Type::Int),
+                    variadic: false,
+                },
+            );
+        }
+        env.insert(
+            "load-tz".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap, Type::Str],
+                ret: Box::new(Type::Timezone),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "timestamp-in-tz".to_string(),
+            Type::Function {
+                params: vec![Type::Timestamp, Type::Timezone],
+                ret: Box::new(Type::Unknown), // Returns Dict with year/month/day/hour/minute/second/offset-seconds/tz-name
+                variadic: false,
+            },
+        );
+        env.insert(
+            "local->timestamp".to_string(),
+            Type::Function {
+                params: vec![
+                    Type::Int, Type::Int, Type::Int, Type::Int, Type::Int, Type::Int,
+                    Type::Timezone,
+                ],
+                ret: Box::new(Type::Timestamp),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "local-tz-name".to_string(),
+            Type::Function {
+                params: vec![Type::DirCap],
+                ret: Box::new(Type::Str),
+                variadic: false,
             },
         );
 

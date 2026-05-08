@@ -143,6 +143,16 @@ pub enum NetCapEntry {
     // Future: IPv4/IPv6 CIDR ranges deferred to Phase 3
 }
 
+/// Clock capability inner implementation (Miller 2006 object capability model).
+/// Allows scripts to read the current time only if they receive a ClockCap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockCapInner {
+    /// Real system clock — reads std::time::SystemTime::now()
+    Real,
+    /// Fixed timestamp — always returns this nanosecond value (for testing)
+    Fixed(i64),
+}
+
 /// A materialized runtime value.
 #[derive(Clone)]
 pub enum Value {
@@ -222,6 +232,18 @@ pub enum Value {
     /// URI — a uniform resource identifier with scheme and URI string.
     /// Used for capability-tagged URLs (e.g., http://, file://, mailto:).
     Uri { scheme: String, uri: String },
+    /// UTC timestamp (nanoseconds since Unix epoch).
+    /// Range: approximately 1678–2262 CE (±292 years from epoch).
+    /// RFC 5280 certificate sentinel dates (9999-12-31) are clamped to i64::MAX.
+    Timestamp(i64),
+    /// Signed duration (nanoseconds).
+    /// Not calendar-aware — no months/years, only seconds/minutes/hours/days.
+    Duration(i64),
+    /// Clock capability for reading current time (object capability model).
+    ClockCap(Rc<ClockCapInner>),
+    /// Timezone (parsed IANA TZ rules from zoneinfo file).
+    /// Opaque — not serializable, consumed by timezone conversion builtins.
+    Timezone(Rc<jiff::tz::TimeZone>),
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
@@ -268,6 +290,10 @@ impl Value {
             Value::BigInt(_) => "BigInt",
             Value::Bytes { .. } => "Bytes",
             Value::Uri { .. } => "Uri",
+            Value::Timestamp(_) => "Timestamp",
+            Value::Duration(_) => "Duration",
+            Value::ClockCap(_) => "ClockCap",
+            Value::Timezone(_) => "Timezone",
         }
     }
 
@@ -335,6 +361,13 @@ impl fmt::Debug for Value {
                 write!(f, "Bytes({} bytes)", bytes.len())
             }
             Value::Uri { scheme, uri } => write!(f, "Uri({scheme}:{uri})"),
+            Value::Timestamp(nanos) => write!(f, "Timestamp({nanos} ns)"),
+            Value::Duration(nanos) => write!(f, "Duration({nanos} ns)"),
+            Value::ClockCap(inner) => match inner.as_ref() {
+                ClockCapInner::Real => write!(f, "ClockCap(Real)"),
+                ClockCapInner::Fixed(nanos) => write!(f, "ClockCap(Fixed({nanos} ns))"),
+            },
+            Value::Timezone(_) => write!(f, "Timezone"),
         }
     }
 }
@@ -398,6 +431,19 @@ impl fmt::Display for Value {
                 write!(f, "<bytes:{} bytes>", bytes.len())
             }
             Value::Uri { uri, .. } => write!(f, "{uri}"),
+            Value::Timestamp(nanos) => {
+                // Convert nanoseconds to jiff::Timestamp for display
+                match jiff::Timestamp::from_nanosecond(*nanos as i128) {
+                    Ok(ts) => write!(f, "{ts}"),
+                    Err(_) => write!(f, "<invalid timestamp>"),
+                }
+            }
+            Value::Duration(nanos) => {
+                // Display as signed nanoseconds
+                write!(f, "{nanos}ns")
+            }
+            Value::ClockCap(_) => write!(f, "<ClockCap>"),
+            Value::Timezone(_) => write!(f, "<Timezone>"),
         }
     }
 }
@@ -475,6 +521,10 @@ impl PartialEq for Value {
                     uri: uri_b,
                 },
             ) => scheme_a == scheme_b && uri_a == uri_b,
+            (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
+            (Value::Duration(a), Value::Duration(b)) => a == b,
+            (Value::ClockCap(a), Value::ClockCap(b)) => a == b,
+            // Timezone is not comparable — opaque parsed TZ data
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
             // Handle and WriteHandle cannot be meaningfully compared (contain RefCell and trait objects).

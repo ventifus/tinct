@@ -533,6 +533,20 @@ pub(crate) use crate::builtins_seq_reduce::{
     builtin_concat, builtin_concat_seq_step, builtin_join, builtin_reduce, builtin_reduce_seq_step,
 };
 
+// Date-time builtins: timestamps, durations, clock capabilities, timezones
+pub(crate) use crate::builtins_datetime::{
+    builtin_duration_days, builtin_duration_hours, builtin_duration_minutes,
+    builtin_duration_nanos, builtin_duration_seconds, builtin_duration_to_nanos,
+    builtin_duration_to_seconds, builtin_fixed_clock, builtin_format_timestamp,
+    builtin_load_tz, builtin_local_to_timestamp, builtin_local_tz_name, builtin_now,
+    builtin_parse_timestamp, builtin_timestamp_add, builtin_timestamp_day,
+    builtin_timestamp_diff, builtin_timestamp_eq, builtin_timestamp_gt,
+    builtin_timestamp_hour, builtin_timestamp_in_tz, builtin_timestamp_lt,
+    builtin_timestamp_minute, builtin_timestamp_month, builtin_timestamp_parts,
+    builtin_timestamp_second, builtin_timestamp_to_unix, builtin_timestamp_year,
+    builtin_unix_to_timestamp,
+};
+
 /// `rest`: Returns all elements of a collection except the first, reindexed 0..n-1.
 ///
 /// - Takes 1 arg: a Dict or Seq.
@@ -1065,6 +1079,36 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("sort", builtin_sort, [Strictness::Spine]),
         // Proxy
         builtin!("proxy", builtin_proxy),
+        // Date-time: timestamps and durations
+        builtin!("parse-timestamp", builtin_parse_timestamp, [Strictness::Seq]),
+        builtin!("format-timestamp", builtin_format_timestamp, [Strictness::Seq]),
+        builtin!("timestamp->unix", builtin_timestamp_to_unix, [Strictness::Seq]),
+        builtin!("unix->timestamp", builtin_unix_to_timestamp, [Strictness::Seq]),
+        builtin!("now", builtin_now, [Strictness::Seq]),
+        builtin!("fixed-clock", builtin_fixed_clock, [Strictness::Seq]),
+        builtin!("timestamp-add", builtin_timestamp_add, [Strictness::Seq, Strictness::Seq]),
+        builtin!("timestamp-diff", builtin_timestamp_diff, [Strictness::Seq, Strictness::Seq]),
+        builtin!("timestamp<?", builtin_timestamp_lt, [Strictness::Seq, Strictness::Seq]),
+        builtin!("timestamp>?", builtin_timestamp_gt, [Strictness::Seq, Strictness::Seq]),
+        builtin!("timestamp=?", builtin_timestamp_eq, [Strictness::Seq, Strictness::Seq]),
+        builtin!("timestamp-year", builtin_timestamp_year, [Strictness::Seq]),
+        builtin!("timestamp-month", builtin_timestamp_month, [Strictness::Seq]),
+        builtin!("timestamp-day", builtin_timestamp_day, [Strictness::Seq]),
+        builtin!("timestamp-hour", builtin_timestamp_hour, [Strictness::Seq]),
+        builtin!("timestamp-minute", builtin_timestamp_minute, [Strictness::Seq]),
+        builtin!("timestamp-second", builtin_timestamp_second, [Strictness::Seq]),
+        builtin!("timestamp-parts", builtin_timestamp_parts, [Strictness::Seq]),
+        builtin!("duration-nanos", builtin_duration_nanos, [Strictness::Seq]),
+        builtin!("duration-seconds", builtin_duration_seconds, [Strictness::Seq]),
+        builtin!("duration-minutes", builtin_duration_minutes, [Strictness::Seq]),
+        builtin!("duration-hours", builtin_duration_hours, [Strictness::Seq]),
+        builtin!("duration-days", builtin_duration_days, [Strictness::Seq]),
+        builtin!("duration->seconds", builtin_duration_to_seconds, [Strictness::Seq]),
+        builtin!("duration->nanos", builtin_duration_to_nanos, [Strictness::Seq]),
+        builtin!("load-tz", builtin_load_tz, [Strictness::Seq, Strictness::Seq]),
+        builtin!("timestamp-in-tz", builtin_timestamp_in_tz, [Strictness::Seq, Strictness::Seq]),
+        builtin!("local->timestamp", builtin_local_to_timestamp),
+        builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq]),
     ]
 }
 
@@ -6146,8 +6190,8 @@ mod tests {
         assert!(names.contains(&"bytes?"), "missing bytes?");
         assert_eq!(
             names.len(),
-            134,
-            "expected 134 builtins, got {}",
+            163,
+            "expected 163 builtins, got {}",
             names.len()
         );
     }
