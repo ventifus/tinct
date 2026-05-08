@@ -123,13 +123,6 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Update `stdlib/io.llt`: add `write-line`; extend `write-file`/`write-file-atomic` to accept `content@[String Bytes]`; remove old `open` mode-string wrappers (`stdlib/io.llt`)
 - [ ] Tests: corpus tests for open with flags (Readable, Writable, Binary), write + slurp round-trip, seek + position, close-then-write error, encoding mismatch error (`tests/corpus/eval/builtins/`)
 
-## Date-Time
-
-### `datetime-cli`: Date-Time CLI Integration (deferred from `datetime` sprint)
-
-- [ ] Add CLI flags: `--cap-clock NAME` (inject real ClockCap), `--cap-clock-fixed "RFC3339" NAME` (inject fixed; validate fits i64 range) (`src/main.rs`)
-- [ ] Tests: CLI tests for --cap-clock and --cap-clock-fixed (`tests/cli_tests.rs`)
-
 ## TLS & HTTP
 
 Accepted from `doc/whatif/lib-tls.md` (2026-05-07).

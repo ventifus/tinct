@@ -3140,3 +3140,110 @@ fn describe_human_readable() {
         "expected 'port' in human-readable output, got: {stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --cap-clock / --cap-clock-fixed tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cap_clock_real() {
+    // Verify --cap-clock injects a real ClockCap that can be used with $now
+    // format-timestamp converts Timestamp → String so json.llt can serialize it
+    let llt_content = r#"[call $format-timestamp [call $now my-clock]]"#;
+    let (path, _dir) = write_temp_llt("cap_clock_real", llt_content);
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--cap-clock",
+            "my-clock",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    // Verify we got a Timestamp value (RFC 3339 string)
+    assert!(
+        json.is_string(),
+        "expected Timestamp string (RFC 3339), got: {json}"
+    );
+    let timestamp_str = json.as_str().unwrap();
+    // Verify it's a valid RFC 3339 timestamp
+    assert!(
+        timestamp_str.contains('T') && timestamp_str.contains('Z'),
+        "expected RFC 3339 format (contains T and Z), got: {timestamp_str}"
+    );
+}
+
+#[test]
+fn cap_clock_fixed() {
+    // Verify --cap-clock-fixed injects a fixed ClockCap returning the specified timestamp
+    // format-timestamp converts Timestamp → String so json.llt can serialize it
+    let llt_content = r#"[call $format-timestamp [call $now test-clock]]"#;
+    let (path, _dir) = write_temp_llt("cap_clock_fixed", llt_content);
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--cap-clock-fixed",
+            "2024-01-01T00:00:00Z",
+            "test-clock",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    // Verify we got the expected fixed timestamp (RFC 3339 string)
+    assert!(
+        json.is_string(),
+        "expected Timestamp string (RFC 3339), got: {json}"
+    );
+    let timestamp_str = json.as_str().unwrap();
+    // Verify it's exactly the timestamp we injected
+    assert_eq!(
+        timestamp_str, "2024-01-01T00:00:00Z",
+        "expected exact timestamp 2024-01-01T00:00:00Z, got: {timestamp_str}"
+    );
+}
+
+#[test]
+fn cap_clock_fixed_invalid_timestamp() {
+    // Verify --cap-clock-fixed with invalid RFC 3339 timestamp errors clearly
+    let llt_content = r#"[x: 1]"#;
+    let (path, _dir) = write_temp_llt("cap_clock_fixed_invalid", llt_content);
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--cap-clock-fixed",
+            "not-a-timestamp",
+            "test-clock",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--cap-clock-fixed") && stderr.contains("invalid"),
+        "expected --cap-clock-fixed error message, got: {stderr}"
+    );
+}

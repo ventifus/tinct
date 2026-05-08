@@ -2,6 +2,10 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## `datetime-cli`: Date-Time CLI Integration
+
+Added `--cap-clock NAME` and `--cap-clock-fixed "RFC3339" NAME` CLI flags to inject ClockCap values into the root environment (`src/main.rs`). `--cap-clock` injects a real system clock ClockCap; `--cap-clock-fixed` parses an RFC 3339 timestamp string via `jiff::Timestamp::from_str`, validates it fits i64 nanosecond range, and injects a fixed ClockCap. Exported `ClockCapInner` from `src/lib.rs` for use in `main.rs`. 3 CLI integration tests: `cap_clock_real` (real clock produces valid RFC 3339 timestamp), `cap_clock_fixed` (fixed clock returns exact injected timestamp), `cap_clock_fixed_invalid_timestamp` (invalid RFC 3339 input errors with clear message). Completes the deferred items from the `datetime` sprint.
+
 ## `connector-tls`: Connector Protocol & TLS (Phase 1 — Stubs)
 
 Added TLS dependencies to `Cargo.toml`: `rustls = "0.23"`, `rustls-native-certs = "0.7"`, `webpki-roots = "0.26"`, `sha3 = "0.10"`. Three new Rust builtins registered in `standard_builtins()`: `tls-connect` (stub — validates arity, returns "not yet implemented" error pending Handle refactoring to preserve TCP stream), `tls-peer-cert` (stub — validates Handle with Tls capability, returns "not yet fully implemented" error), `spki-pin` (fully functional — validates HashAlgorithm variant + Bytes fingerprint, returns `{algorithm, fingerprint}` dict). Type signatures registered in `type_env.rs`. Corpus tests for `spki-pin` valid/invalid algorithm, `tls-connect` arity validation, `tls-peer-cert` type checking. **Deferred:** full TLS implementation (CA root loading, mTLS client certs, SPKI pin matching during handshake, ALPN negotiation), Transport nominal variants (Tcp/Udp), `builtin_connect` generalization (Connector protocol dispatch), `tls-peer-cert` certificate parsing, `--cap-net` CLI documentation, integration tests requiring network access.
