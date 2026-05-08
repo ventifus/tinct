@@ -1,0 +1,6 @@
+# Test cap-data on a file handle
+# open returns a handle with Readable and Text caps (both set to empty Dict)
+[cap-data [open [dir-cap "."] "Cargo.toml" "r"] "Readable"]
+
+=== out
+Dict({})

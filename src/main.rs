@@ -906,12 +906,24 @@ fn run_eval(
     // any reference to `stdin` in the program will fail with "undefined variable".
     if !no_stdin {
         use std::cell::RefCell;
+        use std::collections::HashMap;
         use std::io::BufReader;
         use tinct::Value;
-        let stdin_handle = Value::Handle(Rc::new(RefCell::new(Box::new(BufReader::new(
-            std::io::stdin(),
-        ))
-            as Box<dyn std::io::BufRead>)));
+
+        // Create stdin handle with default caps
+        let mut caps = HashMap::new();
+        caps.insert(
+            "Readable".to_string(),
+            Value::Dict(indexmap::IndexMap::new()),
+        ); // Null
+        caps.insert("Text".to_string(), Value::Dict(indexmap::IndexMap::new())); // Null
+
+        let stdin_handle = Value::Handle {
+            caps,
+            inner: Rc::new(RefCell::new(
+                Box::new(BufReader::new(std::io::stdin())) as Box<dyn std::io::BufRead>
+            )),
+        };
         let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
         env.borrow_mut()
             .insert("stdin".to_string(), Rc::new(stdin_thunk));
@@ -1421,12 +1433,32 @@ fn run_fmt(
 
     let source = read_source(file_path)?;
 
-    // If --strict is set, typecheck the file first and fail if type errors exist
+    // If --strict is set, typecheck the file first and fail if type errors exist.
+    // Parse once and run the type checking pipeline on the parsed AST.
+    // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        if let Err(type_error_msg) = tinct::typecheck_source(&source) {
-            return Err(type_error_msg);
+        let ast = parse(&source).map_err(|e| format!("{e}"))?;
+
+        // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
+        // See also: src/lib.rs:214-225 (typecheck_source pipeline)
+        let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+        let mut ast = expand_result.file;
+
+        tinct::desugar::desugar_file(&mut ast.node);
+        tinct::resolve::resolve_file(&ast.node);
+
+        let env = tinct::build_prelude_env();
+        let (type_errors, _type_map, _doc_map) =
+            tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
+
+        if !type_errors.is_empty() {
+            let error_msgs: Vec<String> = type_errors.iter().map(|e| format!("{}", e)).collect();
+            return Err(error_msgs.join("\n"));
         }
     }
+
+    // Format the source. The formatter re-parses internally; we cannot reuse the
+    // typecheck AST because the formatter needs to preserve comments and layout details.
     let formatted = if tinct_fmt {
         // Use tinct-hosted formatter
         // Compact mode if oneline or nospaces is specified, pretty mode otherwise

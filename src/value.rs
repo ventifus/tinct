@@ -1,6 +1,7 @@
 //! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
 
 use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -180,8 +181,20 @@ pub enum Value {
     DirCap(Rc<cap_std::fs::Dir>),
     /// Network capability — authority to connect to specified hosts/subnets
     NetCap(Rc<Vec<NetCapEntry>>),
-    /// Open file/stream handle (Read-only for Phase 1)
-    Handle(Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>),
+    /// Open file/stream handle with capability metadata.
+    /// `caps`: capability names → associated data (Null for boolean caps, Dict for protocol caps).
+    /// `inner`: the underlying I/O reader (BufRead trait object).
+    Handle {
+        caps: HashMap<String, Value>,
+        inner: Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>,
+    },
+    /// Write-only file/stream handle with capability metadata.
+    /// `caps`: capability names → associated data (Null for boolean caps, Dict for protocol caps).
+    /// `inner`: the underlying I/O writer (Write trait object).
+    WriteHandle {
+        caps: HashMap<String, Value>,
+        inner: Rc<std::cell::RefCell<Box<dyn std::io::Write>>>,
+    },
     /// Revocable directory capability
     RevocableDirCap {
         inner: Rc<cap_std::fs::Dir>,
@@ -244,7 +257,8 @@ impl Value {
             Value::Overlay(..) => "Dict",
             Value::DirCap(_) => "DirCap",
             Value::NetCap(_) => "NetCap",
-            Value::Handle(_) => "Handle",
+            Value::Handle { .. } => "Handle",
+            Value::WriteHandle { .. } => "WriteHandle",
             Value::RevocableDirCap { .. } => "DirCap",
             Value::Variant { .. } => "Variant",
             Value::Decimal(_) => "Decimal",
@@ -294,7 +308,8 @@ impl fmt::Debug for Value {
             Value::Overlay(..) => write!(f, "Overlay(...)"),
             Value::DirCap(_) => write!(f, "DirCap"),
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
-            Value::Handle(_) => write!(f, "Handle"),
+            Value::Handle { caps, .. } => write!(f, "Handle({} caps)", caps.len()),
+            Value::WriteHandle { caps, .. } => write!(f, "WriteHandle({} caps)", caps.len()),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
                     write!(f, "DirCap(revoked)")
@@ -355,7 +370,8 @@ impl fmt::Display for Value {
             Value::Overlay(..) => write!(f, "[<overlay>]"),
             Value::DirCap(_) => write!(f, "<DirCap>"),
             Value::NetCap(_) => write!(f, "<NetCap>"),
-            Value::Handle(_) => write!(f, "<Handle>"),
+            Value::Handle { .. } => write!(f, "<Handle>"),
+            Value::WriteHandle { .. } => write!(f, "<WriteHandle>"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
                     write!(f, "<DirCap (revoked)>")
@@ -443,8 +459,9 @@ impl PartialEq for Value {
                     end: end_b,
                 },
             ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
-            // Dict, Function, Builtin, Seq, Proxy, and Overlay are not structurally compared.
+            // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
+            // Handle and WriteHandle cannot be meaningfully compared (contain RefCell and trait objects).
             _ => false,
         }
     }

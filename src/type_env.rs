@@ -1264,7 +1264,7 @@ impl TypeEnv {
             "slurp".to_string(),
             Type::Function {
                 params: vec![Type::Handle],
-                ret: Box::new(Type::Str),
+                ret: Box::new(Type::Unknown), // Returns Str for Text handles, Bytes for Binary handles
                 variadic: false,
             },
         );
@@ -1341,6 +1341,50 @@ impl TypeEnv {
             Type::Function {
                 params: vec![Type::NetCap, Type::Str, Type::Int],
                 ret: Box::new(Type::Handle),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "cap-data".to_string(),
+            Type::Function {
+                params: vec![Type::Handle, Type::Str],
+                ret: Box::new(Type::Unknown), // Returns the cap value (can be any type)
+                variadic: false,
+            },
+        );
+        env.insert(
+            "has-cap?".to_string(),
+            Type::Function {
+                params: vec![Type::Handle, Type::Str],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "write-handle".to_string(),
+            Type::Function {
+                params: vec![Type::Handle, Type::Unknown], // Handle/WriteHandle, String or Bytes
+                ret: Box::new(Type::Handle),               // Returns WriteHandle
+                variadic: false,
+            },
+        );
+        env.insert(
+            "flush".to_string(),
+            Type::Function {
+                params: vec![Type::Handle],  // WriteHandle
+                ret: Box::new(Type::Handle), // Returns WriteHandle
+                variadic: false,
+            },
+        );
+        env.insert(
+            "close".to_string(),
+            Type::Function {
+                params: vec![Type::Handle], // WriteHandle
+                // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::Empty,
+                })),
                 variadic: false,
             },
         );
