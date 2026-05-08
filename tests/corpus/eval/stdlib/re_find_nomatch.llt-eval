@@ -1,0 +1,9 @@
+[include "stdlib/regex.llt"]
+
+---
+
+[call %.re-find "[0-9]+" "abcdef"]
+
+=== out
+
+Dict({})

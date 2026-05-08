@@ -1,0 +1,10 @@
+# Test optional quantifier (not yet implemented - using literal match for now)
+[include "stdlib/regex.llt"]
+
+---
+
+[call %.re-match "color" "color"]
+
+=== out
+
+Bool(true)

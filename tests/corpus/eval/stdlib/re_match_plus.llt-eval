@@ -1,0 +1,10 @@
+# Test plus quantifier (not yet implemented - using literal match for now)
+[include "stdlib/regex.llt"]
+
+---
+
+[call %.re-match "aaab" "aaab"]
+
+=== out
+
+Bool(true)

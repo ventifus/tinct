@@ -9,14 +9,11 @@
 
 [
 # ============================================================================
-# Utilities
+# Utilities (Internal Helpers)
 # ============================================================================
 
-# Join strings with a separator
-join-strings: [fn [sep items]
-  [join-strings-impl sep items 0 ""]]
-
-join-strings-impl: [fn [sep items i acc]
+# Join strings with a separator (internal implementation)
+join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
   [if [>= i [length items]]
     acc
     [join-strings-impl
@@ -27,26 +24,31 @@ join-strings-impl: [fn [sep items i acc]
         [if [> i 0] sep ""]
         [get i items]]]]]
 
-# Map a function over a list-shaped dict
-map-list: [fn [f xs]
-  [map-list-impl f xs 0]]
+# Join strings with a separator
+join-strings: [fn@Str [sep@Str items@Dict]
+  [join-strings-impl sep items 0 ""]]
 
-map-list-impl: [fn [f xs i]
+# Map a function over a list-shaped dict (internal implementation)
+map-list-impl: [fn@Dict [f@Fn xs@Dict i@Int]
   [if [>= i [length xs]]
     []
     [merge
       [make-entry i [f [get i xs]]]
       [map-list-impl f xs [+ i 1]]]]]
 
-# Helper to construct single-entry dict
-make-entry: [fn [k v] [$k: v]]
+# Map a function over a list-shaped dict
+map-list: [fn@Dict [f@Fn xs@Dict]
+  [map-list-impl f xs 0]]
+
+# Helper to construct single-entry dict (internal)
+make-entry: [fn@Dict [k v] [$k: v]]
 
 # ============================================================================
 # Node Formatters
 # ============================================================================
 
 # Main entry point: dispatch on node.type
-format-node: [fn [node]
+format-node: [fn@Str [node@Dict]
   [cond [
     [[= [get "type" node] "literal"]        [format-literal node]]
     [[= [get "type" node] "var"]            [get "name" node]]
@@ -68,7 +70,7 @@ format-node: [fn [node]
   ]]]
 
 # Format a literal (int, float, bool, str)
-format-literal: [fn [node]
+format-literal: [fn@Str [node@Dict]
   [cond [
     [[= [get "kind" node] "int"]   [str [get "value" node]]]
     [[= [get "kind" node] "float"] [str [get "value" node]]]
@@ -81,7 +83,7 @@ format-literal: [fn [node]
   ]]]
 
 # Format dot access: target.field
-format-dot-access: [fn [node]
+format-dot-access: [fn@Str [node@Dict]
   [str
     [format-node [get "target" node]]
     "."
@@ -90,14 +92,14 @@ format-dot-access: [fn [node]
       [get "field" node]]]]
 
 # Format pipe: lhs | rhs
-format-pipe: [fn [node]
+format-pipe: [fn@Str [node@Dict]
   [str
     [format-node [get "lhs" node]]
     " | "
     [format-node [get "rhs" node]]]]
 
 # Format dict: [key: value ...]
-format-dict: [fn [node]
+format-dict: [fn@Str [node@Dict]
   [if [empty? [get "entries" node]]
     "[]"
     [str "["
@@ -108,7 +110,7 @@ format-dict: [fn [node]
       "]"]]]
 
 # Format a single entry
-format-entry: [fn [entry]
+format-entry: [fn@Str [entry@Dict]
   [if [empty? [get "key" entry]]
     # Auto-indexed entry (no key)
     [format-node [get "value" entry]]
@@ -119,7 +121,7 @@ format-entry: [fn [entry]
       [format-node [get "value" entry]]]]]
 
 # Format call: [fn args...] or [call fn args...]
-format-call: [fn [node]
+format-call: [fn@Str [node@Dict]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
@@ -135,14 +137,14 @@ format-call: [fn [node]
     "]"]]
 
 # Format named argument: name: value
-format-named-arg: [fn [na]
+format-named-arg: [fn@Str [na@Dict]
   [str
     [get "name" na]
     ": "
     [format-node [get "value" na]]]]
 
 # Format function: [fn [params] body]
-format-fn: [fn [node]
+format-fn: [fn@Str [node@Dict]
   [str
     "[fn ["
     [join-strings " "
@@ -152,7 +154,7 @@ format-fn: [fn [node]
     "]"]]
 
 # Format parameter
-format-param: [fn [param]
+format-param: [fn@Str [param@Dict]
   [str
     [get "name" param]
     [if [not [empty? [get "annotation" param]]]
@@ -161,7 +163,7 @@ format-param: [fn [param]
     [if [get "variadic" param] "..." ""]]]
 
 # Format annotation
-format-annotation: [fn [ann]
+format-annotation: [fn@Str [ann@Dict]
   [cond [
     [[= [get "kind" ann] "simple"]
       [get "value" ann]]
@@ -182,18 +184,18 @@ format-annotation: [fn [ann]
   ]]]
 
 # Format type alias: `expr
-format-type-alias: [fn [node]
+format-type-alias: [fn@Str [node@Dict]
   [str "`" [format-node [get "expr" node]]]]
 
 # Format type assert: expr@Ann
-format-type-assert: [fn [node]
+format-type-assert: [fn@Str [node@Dict]
   [str
     [format-node [get "expr" node]]
     "@"
     [format-annotation [get "annotation" node]]]]
 
 # Format annotated: @Name expr
-format-annotated: [fn [node]
+format-annotated: [fn@Str [node@Dict]
   [str
     "@"
     [get "name" node]
@@ -201,25 +203,25 @@ format-annotated: [fn [node]
     [format-annotation [get "annotation" node]]]]
 
 # Format rest: ... or ...name
-format-rest: [fn [node]
+format-rest: [fn@Str [node@Dict]
   [if [empty? [get "name" node]]
     "..."
     [str "..." [get "name" node]]]]
 
 # Format quote: [quote expr]
-format-quote: [fn [node]
+format-quote: [fn@Str [node@Dict]
   [str "[quote " [format-node [get "expr" node]] "]"]]
 
 # Format unquote: [unquote expr]
-format-unquote: [fn [node]
+format-unquote: [fn@Str [node@Dict]
   [str "[unquote " [format-node [get "expr" node]] "]"]]
 
 # Format unquote-splice: [unquote-splice expr]
-format-unquote-splice: [fn [node]
+format-unquote-splice: [fn@Str [node@Dict]
   [str "[unquote-splice " [format-node [get "expr" node]] "]"]]
 
 # Format defmacro: [defmacro name transformer]
-format-defmacro: [fn [node]
+format-defmacro: [fn@Str [node@Dict]
   [str "[defmacro " [get "name" node] " " [format-node [get "transformer" node]] "]"]]
 
 # ============================================================================
@@ -227,15 +229,15 @@ format-defmacro: [fn [node]
 # ============================================================================
 
 # Format a document (list of expressions)
-format-document: [fn [doc]
+format-document: [fn@Str [doc@Dict]
   [join-strings "; "
     [map-list format-node [get "expressions" doc]]]]
 
 # Format a file (list of documents with --- separators)
-format-file: [fn [file]
+format-file: [fn@Str [file@Dict]
   [format-file-impl file [get "documents" file] 0 ""]]
 
-format-file-impl: [fn [file docs i acc]
+format-file-impl: [fn@Str [file@Dict docs@Dict i@Int acc@Str]
   [if [>= i [length docs]]
     [str acc "\n"]
     [format-file-impl
@@ -252,7 +254,7 @@ format-file-impl: [fn [file docs i acc]
         [format-document [get i docs]]]]]]
 
 # Format document header (section name, output type, expects)
-format-doc-header: [fn [doc]
+format-doc-header: [fn@Str [doc@Dict]
   [str
     [if [not [empty? [get "name" doc]]]
       [str " %" [get "name" doc]]
@@ -270,7 +272,7 @@ format-doc-header: [fn [doc]
 
 # Format an AST dict to compact source
 # Expects % to be a file dict from ast_to_dict
-format: [fn [ast]
+format: [fn@Str [ast@Dict]
   [format-file ast]]
 
 # Pipeline mode: receive AST as % and emit formatted source

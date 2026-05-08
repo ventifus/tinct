@@ -1,0 +1,13 @@
+# Test that regex functions are NOT available without include
+
+---
+
+[try [fn [] [re-match "test" "test"]]]
+
+=== out
+
+Dict({"err": String("undefined variable: re-match (did you mean the string \"re-match\"? Use quotes.)")})
+
+=== warn
+
+arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 4:1-4:39

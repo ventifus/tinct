@@ -1954,7 +1954,12 @@ impl TypeEnv {
             "local->timestamp".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Int, Type::Int, Type::Int, Type::Int, Type::Int, Type::Int,
+                    Type::Int,
+                    Type::Int,
+                    Type::Int,
+                    Type::Int,
+                    Type::Int,
+                    Type::Int,
                     Type::Timezone,
                 ],
                 ret: Box::new(Type::Timestamp),

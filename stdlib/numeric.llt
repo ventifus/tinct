@@ -31,6 +31,6 @@ Int32: [type Int@[is: [between -2147483648 2147483647]]]
 # The repr: annotation is a storage hint that guides serialization format
 # in downstream binary encoders. This stub returns the string form.
 # Usage: [to-bytes v] where v has a repr: annotation.
-to-bytes: [fn [v] [str v]]
+to-bytes: [fn@Str [v] [str v]]
 
 ]

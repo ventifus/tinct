@@ -220,127 +220,25 @@ See doc/06-type-inference.md §Type Classes, doc/07-type-extensions.md. **Depend
 
 ## Standard Library
 
-### `stdlib-modernize`
+### `stdlib-modernize` (continued)
 
-Modernize all 14 stdlib `.llt` files to leverage the typing cluster facilities implemented 2026-05-07. Three orthogonal improvements applied uniformly: (1) **encapsulation** — internal helpers scoped to a private first-document, public API in the final document; (2) **pattern matching** — replace `type-of` string comparisons and `try`-result `[first [keys r]]` checks with `[match ...]`; (3) **full type annotations** — every public function carries `fn@ReturnType` and every parameter carries `@Type`. **Applies to:** `prelude.llt`, `numeric.llt`, `formatter/compact.llt`, `formatter/pretty.llt`, `out/json.llt`, `out/json-pretty.llt`, `out/yaml.llt`, `out/csv.llt`, `out/toml.llt`, `out/env.llt`, `out/raw.llt`, `in/json.llt`, `io.llt`, `net.llt`.
-
-**Architecture: public/private encapsulation pattern**
-
-`eval_document` evaluates each expression in a document sequentially: intermediate dicts are materialized and their entries become bindings in a child environment for the next expression; only the **last expression's value is returned**. This gives true encapsulation with no special syntax — internal helpers are simply a separate earlier dict in the same document:
-
-```tinct
-# Internal helpers — in scope for the public dict, but NOT returned
-[
-    make-entry: [fn@Dict [k v] [$k: v]]
-    any?-impl:  [fn@Bool [pred@Fn xs@Dict ks i@Int len@Int] ...]
-    # ... all -impl / -step / -check helpers
-]
-# Public API — last expression, so this is the only value returned/exported
-[
-    any?: [fn@Bool [pred@Fn xs@Dict]
-        [builtin-if [seq? xs]
-            [error "any?: expected Dict, got Seq"]
-            [any?-impl pred xs [keys xs] 0 [length xs]]]]
-    # ... all public functions; reference helpers by plain name
-]
-```
-
-Helpers are reachable by plain name inside the public dict (via the child env chain). They do not appear in the returned dict and are not exported. No `%.fn` or `_impl.fn` prefixes needed.
-
-**Files with no internal helpers** (`numeric.llt` and most `out/` files) remain as a single dict — no split needed.
-
-**Pattern: `try` result dispatch**
-
-Three sites in `prelude.llt` use `[builtin-eq [first [keys result]] "ok"]` to inspect `try` outcomes. Replace all with structural pattern matching:
-
-```tinct
-# Before
-try-or-impl: [fn [try-result@Dict default]
-    [builtin-if [builtin-eq [first [keys try-result]] "ok"]
-        try-result.ok
-        default]]
-
-# After
-try-or-impl: [fn [try-result@Dict default]
-    [match try-result
-        [ok: v]  v
-        [err: _] default]]
-```
-
-Apply to: `has?-impl`, `try-or-impl`, `find-deep-try-check`.
-
-**Pattern: `type-of` string comparison → predicate or `[match]`**
-
-Replace `[builtin-eq [type-of x] "Dict"]` with `[dict? x]` where only a boolean is needed, or with `[match x Dict ... _ ...]` where the dispatch selects between typed branches:
-
-```tinct
-# Before (walk)
-walk: [fn [f@Fn xs]
-    [builtin-if [builtin-eq [type-of xs] "Dict"]
-        [f [walk-dict f xs]]
-        [f xs]]]
-
-# After
-walk: [fn [f@Fn xs]
-    [match xs
-        Dict [f [%.walk-dict f xs]]
-        _    [f xs]]]
-```
-
-Apply to: `walk`, `flatten-step`, `deep-merge-step`, `find-deep-check`.
-
-**Pattern: string-literal dispatch in formatters**
-
-The formatter files use `[cond [[= [get "type" node] "literal"] ...] ...]` chains. Replace with `[match [get "type" node] "literal" ... "var" ... _ [error ...]]`:
-
-```tinct
-# Before (compact.llt format-node)
-format-node: [fn [node]
-  [cond [
-    [[= [get "type" node] "literal"] [format-literal node]]
-    [[= [get "type" node] "var"]     [get "name" node]]
-    ...
-  ]]]
-
-# After
-format-node: [fn [node]
-  [match [get "type" node]
-    "literal"        [format-literal node]
-    "var"            [get "name" node]
-    ...
-    _                [error [str "unknown node type: " [get "type" node]]]]]
-```
-
-Apply to: `format-node` and `format-literal` in `compact.llt` and analogous dispatches in `pretty.llt`.
+Remaining items deferred from the completed `stdlib-modernize` sprint (type annotations + pattern matching done; see DONE.md).
 
 **Tasks — `prelude.llt`:**
 
 - [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`)
-- [ ] `try` result pattern matching: rewrite `has?-impl`, `try-or-impl`, `find-deep-try-check` using `[match result [ok: v] ... [err: _] ...]` (`stdlib/prelude.llt`)
-- [ ] `type-of` → predicate/match: rewrite `walk`, `flatten-step`, `deep-merge-step`, `find-deep-check` to use `[dict? x]` / `[match x Dict ...]` instead of `[builtin-eq [type-of x] "Dict"]` (`stdlib/prelude.llt`)
-- [ ] Union type annotations for dual-dispatch parameters: add `@[Dict Seq]` to `sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map` (wrapper), `reduce` (wrapper) (`stdlib/prelude.llt`)
-- [ ] Complete annotation pass: add missing `fn@ReturnType` and `param@Type` annotations to `find-deep` family (return type missing), `walk` (return type missing), `get-in`/`get-in-or` (return `@Any`), `zip`/`zip-seq-impl` (unannotated), `cond`/`when`/`unless` (return `@Any`) (`stdlib/prelude.llt`)
-- [ ] `sign` → match: replace nested `builtin-if` chain in `sign` with a `[match ...]` expression using a literal 0 arm and guard arms for positive/negative (`stdlib/prelude.llt`)
+- [ ] Union type annotations for dual-dispatch parameters: add `@[Dict Seq]` to `sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map` (wrapper), `reduce` (wrapper) — failed in initial attempt due to type system limitation (`stdlib/prelude.llt`)
 - [ ] `doc:` annotations: add `doc: "..."` to the return-type annotation of every exported function in the second (public) dict, e.g. `fn@[type: Bool  doc: "Returns true if pred holds for any element"]` (`stdlib/prelude.llt`)
-
-**Tasks — `numeric.llt`:**
-
-- [ ] Add return type annotation to `to-bytes`: `fn@Str`; verify type alias entries (`UInt8`, `UInt16`, etc.) carry correct `Int` range constraints (`stdlib/numeric.llt`)
 
 **Tasks — `formatter/compact.llt`:**
 
 - [ ] Public/private split: move `join-strings-impl`, `map-list-impl`, `make-entry` into a first dict; public formatting functions in the final dict reference them by plain name (`stdlib/formatter/compact.llt`)
 - [ ] Replace `format-node` `cond` dispatch on `node.type` string with `[match [get "type" node] "literal" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
 - [ ] Replace `format-literal` `cond` dispatch on `node.kind` string with `[match [get "kind" node] "int" ... _ [error ...]]` (`stdlib/formatter/compact.llt`)
-- [ ] Complete annotation pass: add `fn@Str` return types on all formatting functions; add param annotations for `node@Dict`, `entry@Dict`, `na@Dict` etc. (`stdlib/formatter/compact.llt`)
-
-**Tasks — `formatter/pretty.llt`:**
-
-- [ ] Read file; apply same three improvements: public/private split, string-dispatch → `[match]`, complete annotation pass (`stdlib/formatter/pretty.llt`)
 
 **Tasks — `out/` formatters (7 files: `json`, `json-pretty`, `yaml`, `csv`, `toml`, `env`, `raw`):**
 
-- [ ] For each file: (a) identify internal helpers; apply public/private `---` split if any exist; (b) replace any `type-of`/cond-string dispatch with `[match]`; (c) add `fn@Str` return types to all output-generating functions and `@Type` to all params (`stdlib/out/`)
+- [ ] For each file: (a) identify internal helpers; apply public/private split if any exist; (b) replace any `type-of`/cond-string dispatch with `[match]`; (c) add `fn@Str` return types to all output-generating functions and `@Type` to all params (`stdlib/out/`)
 
 **Tasks — `in/json.llt`, `io.llt`, `net.llt`:**
 

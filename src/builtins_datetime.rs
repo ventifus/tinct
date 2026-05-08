@@ -35,12 +35,8 @@ pub fn builtin_parse_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .ok_or_else(|| dt_err("parse-timestamp requires a String", args.call_span))?;
 
     // Parse RFC 3339 string using jiff
-    let ts = jiff::Timestamp::from_str(s).map_err(|e| {
-        dt_err(
-            format!("invalid RFC 3339 timestamp: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_str(s)
+        .map_err(|e| dt_err(format!("invalid RFC 3339 timestamp: {e}"), args.call_span))?;
 
     // Convert to nanoseconds since epoch
     let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
@@ -72,12 +68,8 @@ pub fn builtin_format_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     // Convert nanoseconds to jiff::Timestamp
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     // Format as RFC 3339 string
     let s = ts.to_string();
@@ -128,12 +120,7 @@ pub fn builtin_unix_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let seconds = match &n_val {
         Value::Int(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "unix->timestamp requires an Int",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("unix->timestamp requires an Int", args.call_span)),
     };
 
     let nanos = seconds
@@ -176,21 +163,13 @@ pub fn builtin_now(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Create a fixed ClockCap that always returns the given timestamp.
 pub fn builtin_fixed_clock(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t_thunk] = args.args else {
-        return Err(dt_err(
-            "fixed-clock requires 1 argument",
-            args.call_span,
-        ));
+        return Err(dt_err("fixed-clock requires 1 argument", args.call_span));
     };
 
     let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "fixed-clock requires a Timestamp",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("fixed-clock requires a Timestamp", args.call_span)),
     };
 
     Ok(Rc::new(Thunk::new_materialized(
@@ -202,10 +181,7 @@ pub fn builtin_fixed_clock(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Add a duration to a timestamp.
 pub fn builtin_timestamp_add(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t_thunk, d_thunk] = args.args else {
-        return Err(dt_err(
-            "timestamp-add requires 2 arguments",
-            args.call_span,
-        ));
+        return Err(dt_err("timestamp-add requires 2 arguments", args.call_span));
     };
 
     let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
@@ -286,10 +262,7 @@ pub fn builtin_timestamp_diff(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Compare two timestamps: t1 < t2
 pub fn builtin_timestamp_lt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t1_thunk, t2_thunk] = args.args else {
-        return Err(dt_err(
-            "timestamp<? requires 2 arguments",
-            args.call_span,
-        ));
+        return Err(dt_err("timestamp<? requires 2 arguments", args.call_span));
     };
 
     let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
@@ -324,10 +297,7 @@ pub fn builtin_timestamp_lt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Compare two timestamps: t1 > t2
 pub fn builtin_timestamp_gt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t1_thunk, t2_thunk] = args.args else {
-        return Err(dt_err(
-            "timestamp>? requires 2 arguments",
-            args.call_span,
-        ));
+        return Err(dt_err("timestamp>? requires 2 arguments", args.call_span));
     };
 
     let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
@@ -362,10 +332,7 @@ pub fn builtin_timestamp_gt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Compare two timestamps for equality: t1 == t2
 pub fn builtin_timestamp_eq(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t1_thunk, t2_thunk] = args.args else {
-        return Err(dt_err(
-            "timestamp=? requires 2 arguments",
-            args.call_span,
-        ));
+        return Err(dt_err("timestamp=? requires 2 arguments", args.call_span));
     };
 
     let t1_val = materialize(t1_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
@@ -400,10 +367,7 @@ pub fn builtin_timestamp_eq(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Extract the UTC year from a timestamp.
 pub fn builtin_timestamp_year(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t_thunk] = args.args else {
-        return Err(dt_err(
-            "timestamp-year requires 1 argument",
-            args.call_span,
-        ));
+        return Err(dt_err("timestamp-year requires 1 argument", args.call_span));
     };
 
     let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
@@ -417,17 +381,16 @@ pub fn builtin_timestamp_year(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let year = dt.year() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(Value::Int(year), args.call_span)))
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Int(year),
+        args.call_span,
+    )))
 }
 
 /// Extract the UTC month (1-12) from a timestamp.
@@ -450,12 +413,8 @@ pub fn builtin_timestamp_month(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let month = dt.month() as i64;
@@ -469,43 +428,31 @@ pub fn builtin_timestamp_month(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Extract the UTC day (1-31) from a timestamp.
 pub fn builtin_timestamp_day(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t_thunk] = args.args else {
-        return Err(dt_err(
-            "timestamp-day requires 1 argument",
-            args.call_span,
-        ));
+        return Err(dt_err("timestamp-day requires 1 argument", args.call_span));
     };
 
     let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let nanos = match &t_val {
         Value::Timestamp(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "timestamp-day requires a Timestamp",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("timestamp-day requires a Timestamp", args.call_span)),
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let day = dt.day() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(Value::Int(day), args.call_span)))
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Int(day),
+        args.call_span,
+    )))
 }
 
 /// Extract the UTC hour (0-23) from a timestamp.
 pub fn builtin_timestamp_hour(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [t_thunk] = args.args else {
-        return Err(dt_err(
-            "timestamp-hour requires 1 argument",
-            args.call_span,
-        ));
+        return Err(dt_err("timestamp-hour requires 1 argument", args.call_span));
     };
 
     let t_val = materialize(t_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
@@ -519,12 +466,8 @@ pub fn builtin_timestamp_hour(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let hour = dt.hour() as i64;
@@ -555,12 +498,8 @@ pub fn builtin_timestamp_minute(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let minute = dt.minute() as i64;
@@ -591,12 +530,8 @@ pub fn builtin_timestamp_second(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let second = dt.second() as i64;
@@ -627,12 +562,8 @@ pub fn builtin_timestamp_parts(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
 
@@ -680,27 +611,22 @@ pub fn builtin_timestamp_parts(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ))),
     );
 
-    Ok(Rc::new(Thunk::new_materialized(Value::Dict(map), args.call_span)))
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Dict(map),
+        args.call_span,
+    )))
 }
 
 /// Create a duration from nanoseconds.
 pub fn builtin_duration_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [n_thunk] = args.args else {
-        return Err(dt_err(
-            "duration-nanos requires 1 argument",
-            args.call_span,
-        ));
+        return Err(dt_err("duration-nanos requires 1 argument", args.call_span));
     };
 
     let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let nanos = match &n_val {
         Value::Int(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "duration-nanos requires an Int",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("duration-nanos requires an Int", args.call_span)),
     };
 
     Ok(Rc::new(Thunk::new_materialized(
@@ -721,12 +647,7 @@ pub fn builtin_duration_seconds(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let seconds = match &n_val {
         Value::Int(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "duration-seconds requires an Int",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("duration-seconds requires an Int", args.call_span)),
     };
 
     let nanos = seconds
@@ -751,12 +672,7 @@ pub fn builtin_duration_minutes(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let minutes = match &n_val {
         Value::Int(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "duration-minutes requires an Int",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("duration-minutes requires an Int", args.call_span)),
     };
 
     let nanos = minutes
@@ -773,21 +689,13 @@ pub fn builtin_duration_minutes(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Create a duration from hours.
 pub fn builtin_duration_hours(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [n_thunk] = args.args else {
-        return Err(dt_err(
-            "duration-hours requires 1 argument",
-            args.call_span,
-        ));
+        return Err(dt_err("duration-hours requires 1 argument", args.call_span));
     };
 
     let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let hours = match &n_val {
         Value::Int(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "duration-hours requires an Int",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("duration-hours requires an Int", args.call_span)),
     };
 
     let nanos = hours
@@ -804,21 +712,13 @@ pub fn builtin_duration_hours(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Create a duration from days.
 pub fn builtin_duration_days(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [n_thunk] = args.args else {
-        return Err(dt_err(
-            "duration-days requires 1 argument",
-            args.call_span,
-        ));
+        return Err(dt_err("duration-days requires 1 argument", args.call_span));
     };
 
     let n_val = materialize(n_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let days = match &n_val {
         Value::Int(n) => *n,
-        _ => {
-            return Err(dt_err(
-                "duration-days requires an Int",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("duration-days requires an Int", args.call_span)),
     };
 
     let nanos = days
@@ -880,16 +780,16 @@ pub fn builtin_duration_to_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    Ok(Rc::new(Thunk::new_materialized(Value::Int(nanos), args.call_span)))
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Int(nanos),
+        args.call_span,
+    )))
 }
 
 /// Load a timezone from a zoneinfo directory (via DirCap).
 pub fn builtin_load_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let [dir_thunk, name_thunk] = args.args else {
-        return Err(dt_err(
-            "load-tz requires 2 arguments",
-            args.call_span,
-        ));
+        return Err(dt_err("load-tz requires 2 arguments", args.call_span));
     };
 
     let dir_val = materialize(dir_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
@@ -974,12 +874,8 @@ pub fn builtin_timestamp_in_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-        dt_err(
-            format!("invalid timestamp value: {e}"),
-            args.call_span,
-        )
-    })?;
+    let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
+        .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), args.call_span))?;
 
     let dt = ts.to_zoned((**tz).clone());
 
@@ -1041,7 +937,10 @@ pub fn builtin_timestamp_in_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ))),
     );
 
-    Ok(Rc::new(Thunk::new_materialized(Value::Dict(map), args.call_span)))
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Dict(map),
+        args.call_span,
+    )))
 }
 
 /// Convert local time components to a UTC timestamp in a timezone.
@@ -1079,23 +978,42 @@ pub fn builtin_local_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
     let minute = match &minute_val {
         Value::Int(n) => *n as i8,
-        _ => return Err(dt_err("local->timestamp minute must be Int", args.call_span)),
+        _ => {
+            return Err(dt_err(
+                "local->timestamp minute must be Int",
+                args.call_span,
+            ))
+        }
     };
     let second = match &second_val {
         Value::Int(n) => *n as i8,
-        _ => return Err(dt_err("local->timestamp second must be Int", args.call_span)),
+        _ => {
+            return Err(dt_err(
+                "local->timestamp second must be Int",
+                args.call_span,
+            ))
+        }
     };
     let tz = match &tz_val {
         Value::Timezone(tz) => tz,
-        _ => return Err(dt_err("local->timestamp timezone must be Timezone", args.call_span)),
+        _ => {
+            return Err(dt_err(
+                "local->timestamp timezone must be Timezone",
+                args.call_span,
+            ))
+        }
     };
 
     // Build a datetime in the given timezone
     let dt = jiff::civil::DateTime::new(year, month, day, hour, minute, second, 0)
         .map_err(|e| dt_err(format!("invalid datetime components: {e}"), args.call_span))?;
 
-    let zoned = dt.to_zoned((**tz).clone())
-        .map_err(|e| dt_err(format!("failed to convert to zoned datetime: {e}"), args.call_span))?;
+    let zoned = dt.to_zoned((**tz).clone()).map_err(|e| {
+        dt_err(
+            format!("failed to convert to zoned datetime: {e}"),
+            args.call_span,
+        )
+    })?;
 
     let ts = zoned.timestamp();
     let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
@@ -1118,12 +1036,7 @@ pub fn builtin_local_tz_name(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(dir_thunk, Some(&args.call_span), &args.ctx, args.depth)?;
     let _dir = match &dir_val {
         Value::DirCap(d) => d,
-        _ => {
-            return Err(dt_err(
-                "local-tz-name requires DirCap",
-                args.call_span,
-            ))
-        }
+        _ => return Err(dt_err("local-tz-name requires DirCap", args.call_span)),
     };
 
     // Try to get the system timezone name

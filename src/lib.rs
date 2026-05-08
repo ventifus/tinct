@@ -497,10 +497,7 @@ impl ValueVisitor for JsonVisitor {
     fn visit_timestamp(&self, nanos: i64) -> Result<serde_json::Value, Box<error::EvalError>> {
         // Convert nanoseconds to jiff::Timestamp and format as RFC 3339
         let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-            error::EvalError::new(
-                format!("invalid timestamp value: {e}"),
-                ast::Span::origin(),
-            )
+            error::EvalError::new(format!("invalid timestamp value: {e}"), ast::Span::origin())
         })?;
         Ok(serde_json::Value::String(ts.to_string()))
     }
@@ -510,18 +507,16 @@ impl ValueVisitor for JsonVisitor {
         serde_json::Value::Number(nanos.into())
     }
     fn visit_clock_cap(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
-        Err(error::EvalError::value_not_serializable(
-            "ClockCap".to_string(),
-            ast::Span::origin(),
+        Err(
+            error::EvalError::value_not_serializable("ClockCap".to_string(), ast::Span::origin())
+                .into(),
         )
-        .into())
     }
     fn visit_timezone(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
-        Err(error::EvalError::value_not_serializable(
-            "Timezone".to_string(),
-            ast::Span::origin(),
+        Err(
+            error::EvalError::value_not_serializable("Timezone".to_string(), ast::Span::origin())
+                .into(),
         )
-        .into())
     }
     fn depth_limit_output(
         &self,
