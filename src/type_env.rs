@@ -847,7 +847,16 @@ impl TypeEnv {
             "length".to_string(),
             Type::Function {
                 // builtin_length dispatches on Value::Dict, Value::String, and Value::Bytes.
-                // Use Unknown so callers with String or Bytes arguments are not rejected.
+                // The ideal type is Union([...], String, Bytes) but the unifier does not support
+                // Union types containing row variables in function parameter positions — it falls
+                // through to the wildcard error arm. Use Unknown so callers with any argument
+                // are accepted at typecheck time; runtime dispatches correctly on the three cases.
+                //
+                // TODO(length-narrow-type): when unify() gains a Union match arm, change to:
+                // params: vec![Type::Union(vec![
+                //     Type::Record(Row { fields: HashMap::new(), tail: RowTail::RowVar("_length_dict", 0) }),
+                //     Type::Str, Type::Bytes,
+                // ])]
                 params: vec![Type::Unknown],
                 ret: Box::new(Type::Int),
                 variadic: false,
@@ -2288,6 +2297,36 @@ impl TypeError {
     pub fn undefined_type(name: &str, span: Span) -> Self {
         Self::new(format!("undefined type: {name}"), span)
     }
+
+    /// Returns the stable type error code for this error, based on message classification.
+    ///
+    /// Codes are parallel to the runtime E0xx codes:
+    /// - T001: arity mismatch (wrong number of arguments at call site)
+    /// - T002: undefined variable or undefined type
+    /// - T003: cannot unify / type mismatch / field not found / not a function / not a record
+    /// - T004: type assert failure (annotation-site mismatch)
+    /// - T000: other type errors not covered above
+    pub fn code(&self) -> &'static str {
+        let msg = &self.message;
+        if msg.starts_with("arity mismatch") {
+            "T001"
+        } else if msg.starts_with("undefined variable")
+            || msg.starts_with("undefined type")
+        {
+            "T002"
+        } else if msg.starts_with("cannot unify")
+            || msg.starts_with("field '")
+            || msg.starts_with("expected record type")
+            || msg.starts_with("expected function type")
+            || msg.starts_with("type mismatch")
+        {
+            "T003"
+        } else if msg.contains("type assert") || msg.starts_with("non-exhaustive match") {
+            "T004"
+        } else {
+            "T000"
+        }
+    }
 }
 
 impl fmt::Display for TypeError {
@@ -2297,3 +2336,79 @@ impl fmt::Display for TypeError {
 }
 
 impl std::error::Error for TypeError {}
+
+/// Format a `TypeError` into the Rust-style diagnostic format with source context.
+///
+/// Produces output like:
+/// ```text
+/// error[T003]: cannot unify Int with String
+///  --> 1:5
+///   |
+///  1 | [call $+ 1 "hello"]
+///    |          ^
+/// ```
+///
+/// When `source` is empty or the span is synthetic (`Span::origin()`),
+/// only the header line is emitted (no snippet).
+///
+/// `file_name` is shown in the ` --> file:line:col` line. Pass `"-"` for stdin input.
+pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> String {
+    use crate::error::render_span_snippet;
+
+    let code = err.code();
+    let line = err.span.start.line;
+    let col = err.span.start.column;
+
+    // Header: error[Txxx]: message
+    let mut out = format!("error[{code}]: {}\n", err.message);
+
+    // Location: --> file:line:col
+    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
+
+    // Snippet: source context with caret
+    if let Some(snippet) = render_span_snippet(source, err.span) {
+        out.push_str("  |\n");
+        out.push_str(&snippet);
+    }
+
+    // Contextual notes
+    let note = type_error_note(err);
+    if let Some(n) = note {
+        out.push('\n');
+        out.push_str(&n);
+    }
+
+    out
+}
+
+/// Generate contextual `= note:` or `= help:` lines for well-known type error patterns.
+fn type_error_note(err: &TypeError) -> Option<String> {
+    let msg = &err.message;
+
+    if msg.starts_with("arity mismatch") {
+        Some("  = note: check that you are passing the correct number of arguments".to_string())
+    } else if msg.starts_with("undefined variable") {
+        // Extract the variable name from "undefined variable: <name>"
+        let name = msg.strip_prefix("undefined variable: ").unwrap_or("").trim();
+        let note = if name.is_empty() {
+            "  = note: variable is not defined in any enclosing scope".to_string()
+        } else {
+            format!("  = note: `{name}` is not defined in any enclosing scope at this point")
+        };
+        Some(note)
+    } else if msg.starts_with("cannot unify") {
+        // Extract types from "cannot unify A with B"
+        let rest = msg.strip_prefix("cannot unify ").unwrap_or("");
+        if let Some(idx) = rest.find(" with ") {
+            let expected = &rest[..idx];
+            let got = &rest[idx + 6..];
+            Some(format!(
+                "  = note: expected `{expected}`\n           found `{got}`"
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}

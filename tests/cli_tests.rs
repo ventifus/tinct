@@ -3257,6 +3257,115 @@ fn cap_clock_fixed_invalid_timestamp() {
 }
 
 // ---------------------------------------------------------------------------
+// --cap-file tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cap_file_readable_slurp() {
+    // Verify --cap-file injects a readable Handle that can be slurped.
+    // The LLT script reads from %cfg (injected as a Handle) via $slurp.
+    let llt_content = r#"[slurp %cfg]"#;
+    let (llt_path, _llt_dir) = write_temp_llt("cap_file_readable_slurp_script", llt_content);
+
+    // Write a target file with known content
+    let data_dir = TempDir::new("cap_file_readable_slurp_data");
+    let data_path = data_dir.path().join("data.txt");
+    fs::write(&data_path, "hello from cap-file").expect("failed to write data file");
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--cap-file",
+            &format!("cfg={}:r", data_path.to_str().unwrap()),
+            llt_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("invalid JSON output");
+    assert_eq!(json, serde_json::json!("hello from cap-file"));
+}
+
+#[test]
+fn cap_file_invalid_mode_errors() {
+    // Verify --cap-file with an invalid mode suffix produces a clear error.
+    let llt_content = "42";
+    let (llt_path, _llt_dir) = write_temp_llt("cap_file_invalid_mode", llt_content);
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--cap-file",
+            "x=/tmp/nonexistent.txt:badmode",
+            llt_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--cap-file") && stderr.contains("invalid mode"),
+        "expected --cap-file mode error, got: {stderr}"
+    );
+}
+
+#[test]
+fn cap_file_missing_file_errors() {
+    // Verify --cap-file with a non-existent path produces a clear error.
+    let llt_content = "42";
+    let (llt_path, _llt_dir) = write_temp_llt("cap_file_missing_file", llt_content);
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--cap-file",
+            "x=/tmp/tinct_nonexistent_test_file_xyz.txt:r",
+            llt_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--cap-file") && stderr.contains("cannot open"),
+        "expected --cap-file I/O error, got: {stderr}"
+    );
+}
+
+#[test]
+fn cap_file_no_fs_suppresses_injection() {
+    // Verify --no-fs suppresses --cap-file Handle injection.
+    // The Handle is not injected, so %cfg is undefined.
+    let llt_content = r#"[slurp %cfg]"#;
+    let (llt_path, _llt_dir) = write_temp_llt("cap_file_no_fs_suppresses", llt_content);
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--no-fs",
+            "--cap-file",
+            "cfg=/dev/null:r",
+            llt_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    // Should fail: %cfg is not injected when --no-fs is set
+    assert!(!output.status.success());
+}
+
+// ---------------------------------------------------------------------------
 // tinct describe — input contract introspection
 // ---------------------------------------------------------------------------
 

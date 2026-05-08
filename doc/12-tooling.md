@@ -474,7 +474,7 @@ Tinct provides multiple unprivileged sandboxing layers to restrict what evaluati
 - **Landlock** (Linux 5.13+): Kernel-enforced filesystem ACLs as defense-in-depth
 - **seccomp-bpf** (Linux): Network/process syscall blocking
 - **rlimit caps**: `--max-memory`, `--max-cpu`, `--max-fds` resource limits
-- **Object capability flags**: `--no-pwd`, `--no-stdin`, `--cap-fs NAME=PATH` (io-phase1, injects as `%NAME`)
+- **Object capability flags**: `--no-pwd`, `--no-stdin`, `--cap-fs NAME=PATH`, `--cap-file NAME=PATH:MODE` (injects as `%NAME`)
 
 ### Object Capability Model (io-phase1)
 
@@ -506,6 +506,24 @@ llt eval --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
 Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program can call `[open %data "config.json" "r"]` but cannot open files outside `/var/data` via `%data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
 
 **`--cap-net NAME=ENTRY`** — Inject a network capability as `%NAME` in the root environment. `ENTRY` is currently a stub; in future it will accept a connector dict or protocol specifier.
+
+**`--cap-file NAME=PATH:MODE`** — Pre-open a single file and inject it as `%NAME` (a Handle) in the root environment. This is a pinpoint capability: the script can only access that one file, not the directory it lives in. Repeatable; each flag adds one Handle.
+
+```bash
+# %config is a readable text Handle for Cargo.toml
+tinct run --cap-file config=Cargo.toml:r script.llt
+
+# %out is a writable binary Handle for /tmp/output.bin
+tinct run --cap-file out=/tmp/output.bin:wb script.llt
+```
+
+Mode suffix:
+- `r` — read-only, text (`$slurp` returns a String)
+- `rb` — read-only, binary (`$slurp` returns Bytes)
+- `w` — write-only, text (`$write-handle` writes a String; file is created/truncated)
+- `wb` — write-only, binary (`$write-handle` writes Bytes; file is created/truncated)
+
+**`--no-fs`** also suppresses `--cap-file` Handle injection — when `--no-fs` is set, no filesystem caps of any kind are available (`%pwd`, `%libdir`, `--cap-fs`, and `--cap-file` are all blocked).
 
 **`--no-env`** and **`--allow-env NAME`** — Control environment variable access via the `$env` builtin. `--no-env` causes `$env` to return `Null` for all names. `--allow-env NAME` (repeatable) creates an explicit allowlist: only the listed names return their values; all others return `Null`. See §Environment Variable Access.
 
