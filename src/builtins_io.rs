@@ -1,10 +1,9 @@
-//! Filesystem and network I/O builtins: dir-cap, open, slurp, write, write-atomic, connect, lines.
+//! Filesystem and network I/O builtins: open, slurp, write, write-atomic, connect, lines.
 //!
 //! These builtins provide capability-based access to filesystems and networks,
 //! implementing object-capability security through DirCap and NetCap values.
 //!
 //! **Filesystem builtins:**
-//! - `dir-cap`: Create a DirCap from a path
 //! - `open`: Open a file within a DirCap
 //! - `slurp`: Read all bytes from a Handle (returns Str for Text, Bytes for Binary)
 //! - `write`: Write a string to a file (DirCap-based)
@@ -14,7 +13,6 @@
 //! - `revoke-cap`: Revoke a RevocableDirCap
 //!
 //! **Network builtins:**
-//! - `net-cap`: Create a NetCap from an allowlist
 //! - `connect`: Open a TCP/UDP connection within a NetCap (supports Transport variants)
 //! - `tls-connect`: Layer TLS on a connection (Connector or Handle form)
 //! - `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle
@@ -108,31 +106,6 @@ pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
-/// `dir-cap`: Create a DirCap from a path string.
-/// Opens the path as a cap_std::fs::Dir (RESOLVE_BENEATH sandbox at OS level).
-/// Returns Value::DirCap.
-pub(crate) fn builtin_dir_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        depth,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("dir-cap", args, named, &ctx, depth, call_span)?;
-    let path = require_string("dir-cap", val, args[0].span)?;
-
-    // Open the directory using cap-std
-    use cap_std::ambient_authority;
-    let dir = cap_std::fs::Dir::open_ambient_dir(&path, ambient_authority()).map_err(|e| {
-        EvalError::user_error(
-            format!("dir-cap: failed to open directory '{}': {}", path, e),
-            call_span,
-        )
-    })?;
-
-    ok_val(Value::DirCap(Rc::new(dir)), call_span)
-}
 
 /// `open`: Open a file within a DirCap.
 ///
@@ -591,121 +564,6 @@ pub(crate) fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     }
 }
 
-/// `net-cap`: Create a NetCap from an allowlist of host patterns.
-/// Takes a Dict or Seq of strings (hostnames, host:port pairs, or CIDR ranges).
-/// Returns Value::NetCap.
-pub(crate) fn builtin_net_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        depth,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("net-cap", args, named, &ctx, depth, call_span)?;
-
-    // Parse allowlist entries from a sequence or dict
-    let mut entries = Vec::new();
-
-    match val {
-        Value::Seq { .. } => {
-            // Collect all elements from the sequence
-            let mut current = val;
-            loop {
-                match current {
-                    Value::Seq { head, tail } => {
-                        let head_thunk = ctx.get_thunk(head);
-                        let head_val = materialize(&head_thunk, Some(&call_span), &ctx, depth)?;
-                        let entry_str = require_string("net-cap", head_val, call_span)?;
-                        entries.push(parse_net_cap_entry(&entry_str, call_span)?);
-
-                        // Move to tail
-                        let tail_thunk = ctx.get_thunk(tail);
-                        current = materialize(&tail_thunk, Some(&call_span), &ctx, depth)?;
-                    }
-                    Value::Dict(map) if map.is_empty() => break, // End of sequence
-                    _ => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "net-cap".to_string(),
-                            "Seq of Str",
-                            current.type_name(),
-                            call_span,
-                        )
-                        .into())
-                    }
-                }
-            }
-        }
-        Value::Dict(map) => {
-            // Dict: iterate over values (keys ignored, just like $collect)
-            for (_key, thunk_id) in map.iter() {
-                let thunk = ctx.get_thunk(*thunk_id);
-                let entry_val = materialize(&thunk, Some(&call_span), &ctx, depth)?;
-                let entry_str = require_string("net-cap", entry_val, call_span)?;
-                entries.push(parse_net_cap_entry(&entry_str, call_span)?);
-            }
-        }
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => {
-            // Single string — wrap in vec
-            let s = &source[start..end];
-            entries.push(parse_net_cap_entry(s, call_span)?);
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "net-cap".to_string(),
-                "Seq or Dict",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    }
-
-    ok_val(Value::NetCap(Rc::new(entries)), call_span)
-}
-
-/// Parse a single NetCapEntry from a string.
-fn parse_net_cap_entry(s: &str, span: Span) -> EvalResult<crate::value::NetCapEntry> {
-    use crate::value::NetCapEntry;
-
-    if let Some((host, port_str)) = s.split_once(':') {
-        // host:port format
-        let port: u16 = port_str.parse().map_err(|_| {
-            EvalError::user_error(
-                format!("net-cap: invalid port number '{}' in '{}'", port_str, s),
-                span,
-            )
-        })?;
-        Ok(NetCapEntry::HostPort(host.to_string(), port))
-    } else if s.contains('*') {
-        // Glob pattern (prefix wildcard only)
-        if !s.starts_with("*.") {
-            return Err(EvalError::user_error(
-                format!(
-                    "net-cap: only prefix wildcards are supported (e.g., '*.internal'), got '{}'",
-                    s
-                ),
-                span,
-            )
-            .into());
-        }
-        Ok(NetCapEntry::HostnameGlob(s.to_string()))
-    } else if s.contains('/') {
-        // CIDR range — deferred to Phase 3
-        Err(EvalError::user_error(
-            format!("net-cap: CIDR ranges are not yet implemented (got '{}')", s),
-            span,
-        )
-        .into())
-    } else {
-        // Plain hostname
-        Ok(NetCapEntry::Hostname(s.to_string()))
-    }
-}
 
 /// `connect`: Open a TCP or UDP connection within a NetCap.
 /// Takes a NetCap, hostname String, port Int, and optional Transport variant (default: Tcp).
@@ -872,6 +730,10 @@ fn check_net_cap_allowlist(
     // Check hostname-based entries first (pre-DNS)
     for entry in entries {
         match entry {
+            NetCapEntry::Any => {
+                // Unrestricted — allow any host/port.
+                return Ok(());
+            }
             NetCapEntry::Hostname(allowed_host) => {
                 if host.eq_ignore_ascii_case(allowed_host) {
                     return Ok(());

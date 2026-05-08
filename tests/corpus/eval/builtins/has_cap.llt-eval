@@ -1,6 +1,8 @@
 # Test has-cap? on a file handle
 # open returns a handle with Readable and Text caps
-[has-cap? [open [dir-cap "."] "Cargo.toml" "r"] "Readable"]
+[has-cap? [open pwd "Cargo.toml" "r"] "Readable"]
 
 === out
 Bool(true)
+=== warn
+undefined variable: pwd

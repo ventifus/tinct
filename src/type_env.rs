@@ -1344,14 +1344,6 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "dir-cap".to_string(),
-            Type::Function {
-                params: vec![Type::Str],
-                ret: Box::new(Type::DirCap),
-                variadic: false,
-            },
-        );
-        env.insert(
             "open".to_string(),
             Type::Function {
                 params: vec![Type::DirCap, Type::Str, Type::Str],
@@ -1424,14 +1416,6 @@ impl TypeEnv {
                     fields: HashMap::new(),
                     tail: RowTail::Empty,
                 })),
-                variadic: false,
-            },
-        );
-        env.insert(
-            "net-cap".to_string(),
-            Type::Function {
-                params: vec![Type::Unknown], // accepts Seq/Dict/Str of allowlist entries
-                ret: Box::new(Type::NetCap),
                 variadic: false,
             },
         );

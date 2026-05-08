@@ -41,7 +41,7 @@ pub(crate) mod imports;
 pub(crate) mod builtins;
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
 pub(crate) mod builtins_dict;
-// I/O builtins: dir-cap, open, slurp, write, connect, lines, emit, env.
+// I/O builtins: open, slurp, write, connect, lines, emit, env.
 pub(crate) mod builtins_io;
 // Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
 pub(crate) mod builtins_math;
@@ -193,6 +193,17 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
+    // Inject `pwd` DirCap for the current directory (mirrors the CLI run_eval behavior).
+    // This allows corpus tests to use `pwd` for file operations without dir-cap.
+    if !no_fs {
+        if let Ok(pwd_dir) =
+            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        {
+            let pwd_val = Value::DirCap(Rc::new(pwd_dir));
+            let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+            env.borrow_mut().insert("pwd".to_string(), pwd_thunk);
+        }
+    }
     let thunk =
         eval::eval_file(&file.node, Rc::clone(&env), &ctx, 0).map_err(&attach_provenance)?;
     let val = eval::materialize(&thunk, None, &ctx, 0).map_err(&attach_provenance)?;

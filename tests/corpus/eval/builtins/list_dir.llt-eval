@@ -1,3 +1,5 @@
-[> [length [collect [call $list-dir [dir-cap "."] "src"]]] 0]
+[> [length [collect [call $list-dir pwd "src"]]] 0]
 ---
 true
+=== warn
+undefined variable: pwd

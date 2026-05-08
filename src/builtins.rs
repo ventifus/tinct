@@ -345,14 +345,14 @@ pub(crate) use crate::builtins_dict::{
     builtin_length, builtin_merge,
 };
 
-// I/O builtins: dir-cap, open, slurp, write, connect, lines, emit, env, list-dir, stat, etc.
+// I/O builtins: open, slurp, write, connect, lines, emit, env, list-dir, stat, etc.
 // Implementations live in builtins_io.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
-    builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_dir_cap, builtin_emit,
+    builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit,
     builtin_env, builtin_flush, builtin_has_cap, builtin_http_connect, builtin_http_get,
     builtin_lines, builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow,
-    builtin_net_cap, builtin_open, builtin_position, builtin_proxy_connect, builtin_read_link,
+    builtin_open, builtin_position, builtin_proxy_connect, builtin_read_link,
     builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
     builtin_seek_end, builtin_slurp, builtin_socks5_connect, builtin_spki_pin, builtin_stat,
     builtin_tls_connect, builtin_tls_peer_cert, builtin_write, builtin_write_atomic,
@@ -1129,7 +1129,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // I/O
         builtin!("emit", builtin_emit, [Strictness::Seq]),
         builtin!("env", builtin_env, [Strictness::Seq]),
-        builtin!("dir-cap", builtin_dir_cap, [Strictness::Seq]),
         builtin!(
             "open",
             builtin_open,
@@ -1139,7 +1138,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("narrow", builtin_narrow, [Strictness::Seq, Strictness::Seq]),
         builtin!("revocable", builtin_revocable, [Strictness::Seq]),
         builtin!("revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
-        builtin!("net-cap", builtin_net_cap, [Strictness::Seq]),
         builtin!(
             "connect",
             builtin_connect,
@@ -1537,31 +1535,11 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     // Create a child env with stdlib entries
     let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(root_env)));
 
-    // Load prelude first (other modules depend on it)
+    // Load prelude — the only module loaded at startup.
+    // strings.llt, math.llt, and encoding.llt are available via
+    // [include libdir "strings.llt"] (etc.) — they are not loaded automatically.
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
-
-    // Create a new context with the stdlib_env (so additional modules can access prelude)
-    let stdlib_ctx = crate::eval::EvalContext::new(
-        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
-            Box::new(crate::error::EvalError::internal(
-                format!("cannot open stdlib base_dir: {e}"),
-                Span::origin(),
-            ))
-        })?,
-        Rc::clone(&stdlib_env),
-        false,
-    );
-
-    // Load additional stdlib modules
-    let strings_source = include_str!("../stdlib/strings.llt");
-    load_stdlib_module(strings_source, "strings", &stdlib_env, &stdlib_ctx)?;
-
-    let math_source = include_str!("../stdlib/math.llt");
-    load_stdlib_module(math_source, "math", &stdlib_env, &stdlib_ctx)?;
-
-    let encoding_source = include_str!("../stdlib/encoding.llt");
-    load_stdlib_module(encoding_source, "encoding", &stdlib_env, &stdlib_ctx)?;
 
     Ok(stdlib_env)
 }
@@ -6398,13 +6376,13 @@ mod tests {
         // I/O
         assert!(names.contains(&"emit"), "missing emit");
         assert!(names.contains(&"env"), "missing env");
-        assert!(names.contains(&"dir-cap"), "missing dir-cap");
+        assert!(!names.contains(&"dir-cap"), "dir-cap was removed (ambient cap creation)");
         assert!(names.contains(&"open"), "missing open");
         assert!(names.contains(&"slurp"), "missing slurp");
         assert!(names.contains(&"narrow"), "missing narrow");
         assert!(names.contains(&"revocable"), "missing revocable");
         assert!(names.contains(&"revoke-cap"), "missing revoke-cap");
-        assert!(names.contains(&"net-cap"), "missing net-cap");
+        assert!(!names.contains(&"net-cap"), "net-cap was removed (ambient cap creation)");
         assert!(names.contains(&"connect"), "missing connect");
         assert!(names.contains(&"lines"), "missing lines");
         assert!(names.contains(&"write"), "missing write");
@@ -6521,8 +6499,8 @@ mod tests {
         assert!(names.contains(&"position"), "missing position");
         assert_eq!(
             names.len(),
-            178,
-            "expected 178 builtins, got {}",
+            176,
+            "expected 176 builtins, got {}",
             names.len()
         );
     }
@@ -7912,29 +7890,18 @@ mod tests {
             env_ref.get("identity").is_some(),
             "missing prelude function identity"
         );
-        // Should have strings module functions
+        // strings/math/encoding are NOT loaded at startup — require explicit include.
         assert!(
-            env_ref.get("pad-left").is_some(),
-            "missing strings function pad-left"
+            env_ref.get("pad-left").is_none(),
+            "pad-left should not be in startup env (requires [include libdir \"strings.llt\"])"
         );
         assert!(
-            env_ref.get("str-reverse").is_some(),
-            "missing strings function str-reverse"
-        );
-        // Should have math module constants and functions
-        assert!(env_ref.get("pi").is_some(), "missing math constant pi");
-        assert!(
-            env_ref.get("hypot").is_some(),
-            "missing math function hypot"
-        );
-        // Should have encoding module functions
-        assert!(
-            env_ref.get("hex-encode").is_some(),
-            "missing encoding function hex-encode"
+            env_ref.get("pi").is_none(),
+            "pi should not be in startup env (requires [include libdir \"math.llt\"])"
         );
         assert!(
-            env_ref.get("base64-encode").is_some(),
-            "missing encoding function base64-encode"
+            env_ref.get("hex-encode").is_none(),
+            "hex-encode should not be in startup env (requires [include libdir \"encoding.llt\"])"
         );
     }
 

@@ -94,26 +94,16 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Start with builtins
     let mut env = TypeEnv::with_builtins();
 
-    // Embed stdlib sources at compile time
+    // Only prelude.llt is loaded at startup.
+    // strings.llt, math.llt, and encoding.llt require explicit [include libdir "module.llt"].
     let prelude_source = include_str!("../stdlib/prelude.llt");
-    let strings_source = include_str!("../stdlib/strings.llt");
-    let math_source = include_str!("../stdlib/math.llt");
-    let encoding_source = include_str!("../stdlib/encoding.llt");
 
-    // Type-check prelude first
+    // Type-check prelude
     let builtins_env = Rc::new(TypeEnv::with_builtins());
     if typecheck_and_merge_stdlib_module(prelude_source, &builtins_env, &mut env).is_err() {
         // Parse/expand error: return builtins-only environment
         return Rc::new(TypeEnv::with_builtins());
     }
-
-    // Create an environment with builtins + prelude for the additional modules
-    let prelude_env = Rc::new(env.clone());
-
-    // Type-check additional modules (silently ignore errors - best effort)
-    let _ = typecheck_and_merge_stdlib_module(strings_source, &prelude_env, &mut env);
-    let _ = typecheck_and_merge_stdlib_module(math_source, &prelude_env, &mut env);
-    let _ = typecheck_and_merge_stdlib_module(encoding_source, &prelude_env, &mut env);
 
     Rc::new(env)
 }
@@ -479,27 +469,18 @@ mod tests {
         );
         assert!(env.get("zip").is_some(), "expected 'zip' in prelude env");
 
-        // Verify stdlib modules (strings, math, encoding) are also loaded
+        // strings/math/encoding are NOT loaded at startup — require explicit [include libdir ...]
         assert!(
-            env.get("pad-left").is_some(),
-            "expected 'pad-left' in prelude env"
+            env.get("pad-left").is_none(),
+            "pad-left should not be in prelude env (requires explicit include)"
         );
         assert!(
-            env.get("str-reverse").is_some(),
-            "expected 'str-reverse' in prelude env"
-        );
-        assert!(env.get("pi").is_some(), "expected 'pi' in prelude env");
-        assert!(
-            env.get("hypot").is_some(),
-            "expected 'hypot' in prelude env"
+            env.get("pi").is_none(),
+            "pi should not be in prelude env (requires explicit include)"
         );
         assert!(
-            env.get("hex-encode").is_some(),
-            "expected 'hex-encode' in prelude env"
-        );
-        assert!(
-            env.get("base64-encode").is_some(),
-            "expected 'base64-encode' in prelude env"
+            env.get("hex-encode").is_none(),
+            "hex-encode should not be in prelude env (requires explicit include)"
         );
     }
 

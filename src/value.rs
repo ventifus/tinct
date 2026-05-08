@@ -140,6 +140,9 @@ pub enum NetCapEntry {
     /// Hostname glob with prefix wildcard only.
     /// Example: "*.internal"
     HostnameGlob(String),
+    /// Unrestricted — allow any host/port.
+    /// Produced by `--cap-net NAME=any` on the CLI.
+    Any,
     // Future: IPv4/IPv6 CIDR ranges deferred to Phase 3
 }
 

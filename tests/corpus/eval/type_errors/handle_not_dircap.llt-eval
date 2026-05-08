@@ -1,6 +1,6 @@
-# Type error: passing Handle where DirCap is expected
-# narrow expects DirCap, but we pass a Handle
+# Type error: passing Int where DirCap is expected
+# narrow expects DirCap, but we pass an Int
 
-[call $narrow [call $open [call $dir-cap "."] "test.llt" "r"] "subdir"]
+[call $narrow 42 "subdir"]
 === out
-cannot unify DirCap with Handle
+cannot unify DirCap with

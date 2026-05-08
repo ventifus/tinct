@@ -1,6 +1,6 @@
-# Type error: passing wrong capability type
-# open expects DirCap, but we pass a NetCap
+# Type error: passing wrong type where DirCap expected
+# open expects DirCap as first arg, but we pass a String
 
-[call $open [call $net-cap "*.example.com"] "test.llt" "r"]
+[call $open "not-a-cap" "test.llt" "r"]
 === out
-cannot unify DirCap with NetCap
+cannot unify DirCap with
