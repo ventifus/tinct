@@ -1,0 +1,18 @@
+# Test that stdlib modules (strings, math, encoding) are loaded at startup
+# without requiring explicit include statements
+
+[
+  # strings module
+  pad-test: [pad-left "hi" 5 " "]
+  reverse-test: [str-reverse "hello"]
+
+  # math module
+  pi-test: pi
+  hypot-test: [hypot 3 4]
+
+  # encoding module
+  hex-test: [hex-encode "A"]
+  base64-test: [base64-encode "a"]
+]
+=== out
+Dict({"pad-test": String("   hi"), "reverse-test": String("olleh"), "pi-test": Float(3.141592653589793), "hypot-test": Float(5), "hex-test": String("41"), "base64-test": String("YQ==")})
