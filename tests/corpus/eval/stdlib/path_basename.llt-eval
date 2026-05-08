@@ -1,0 +1,6 @@
+# basename: get last component of path
+[include "stdlib/path.llt"]
+---
+[call %.basename "/foo/bar.txt"]
+=== out
+String("bar.txt")

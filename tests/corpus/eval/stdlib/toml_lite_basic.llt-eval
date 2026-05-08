@@ -1,0 +1,8 @@
+# toml-lite: basic section and key-value parsing
+[include "stdlib/toml-lite.llt"]
+
+---
+
+[call %.parse-toml-lite "[section]\nkey = \"value\""]
+=== out
+Dict({"section": Dict({"key": String("value")})})

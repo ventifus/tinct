@@ -1,0 +1,8 @@
+# toml-lite: simple array table — assert specific field
+[include "stdlib/toml-lite.llt"]
+
+---
+
+[get "id" [get 0 [get "item" [call %.parse-toml-lite "[[item]]\nid = 1"]]]]
+=== out
+Int(1)

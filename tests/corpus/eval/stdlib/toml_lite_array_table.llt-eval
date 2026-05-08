@@ -1,0 +1,8 @@
+# toml-lite: array table parsing — assert specific fields
+[include "stdlib/toml-lite.llt"]
+
+---
+
+[get "name" [get 1 [get "items" [call %.parse-toml-lite "[[items]]\nname = \"first\"\n[[items]]\nname = \"second\""]]]]
+=== out
+String("second")

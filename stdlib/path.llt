@@ -1,0 +1,81 @@
+# ============================================================================
+# Path Manipulation Library
+# ============================================================================
+#
+# Pure-tinct path manipulation functions. Paths are strings with no OS-specific
+# handling. Always uses "/" as the separator.
+#
+# Depends on prelude functions: split, join, last, length, builtin-if, builtin-eq,
+# builtin-sub, collect, str-slice
+# ============================================================================
+
+[
+
+# ============================================================================
+# Path Component Functions
+# ============================================================================
+
+# Split a path into its components.
+# Type: (String -> Dict String)
+# Example: [path-parts "a/b/c.txt"] => [0: "a" 1: "b" 2: "c.txt"]
+# Example: [path-parts "/foo/bar"] => [0: "" 1: "foo" 2: "bar"]
+# Note: Leading "/" produces empty first component
+path-parts: [fn@Dict [p@String] [split "/" p]]
+
+# Get the last component of a path (filename).
+# Type: (String -> String)
+# Example: [basename "/foo/bar.txt"] => "bar.txt"
+# Example: [basename "file.txt"] => "file.txt"
+# Example: [basename "/"] => ""
+basename: [fn@String [p@String]
+    [last [split "/" p]]]
+
+# Get the directory portion of a path (all but the last component).
+# Type: (String -> String)
+# Example: [dirname "/foo/bar.txt"] => "/foo"
+# Example: [dirname "a/b/c"] => "a/b"
+# Example: [dirname "file.txt"] => ""
+# Example: [dirname "/"] => ""
+dirname: [fn@String [p@String]
+    [dirname-impl [split "/" p]]]
+
+# Internal helper for dirname. Takes a Dict of path components.
+# Type: (Dict String -> String)
+dirname-impl: [fn@String [parts@Dict]
+    [builtin-if [builtin-eq [length parts] 0]
+        ""
+        [builtin-if [builtin-eq [length parts] 1]
+            ""
+            [join "/" [dirname-drop-last parts [keys parts] 0 []]]]]]
+
+# Drop the last element from a dict by iterating through all but the last key.
+# Type: (Dict String -> Dict Int -> Int -> Dict String -> Dict String)
+dirname-drop-last: [fn@Dict [parts@Dict ks i@Int acc@Dict]
+    [builtin-if [builtin-eq i [builtin-sub [length parts] 1]]
+        acc
+        [dirname-drop-last parts ks [builtin-add i 1] [append acc [get [get i ks] parts]]]]]
+
+# Get the file extension (after the last ".").
+# Type: (String -> String)
+# Example: [extension "file.tar.gz"] => "gz"
+# Example: [extension "noext"] => ""
+# Example: [extension ".hidden"] => "hidden"
+extension: [fn@String [p@String]
+    [extension-impl [split "." [basename p]]]]
+
+# Internal helper for extension. Takes a Dict of parts split by ".".
+# Type: (Dict String -> String)
+extension-impl: [fn@String [parts@Dict]
+    [builtin-if [builtin-eq [length parts] 0]
+        ""
+        [builtin-if [builtin-eq [length parts] 1]
+            ""
+            [get [builtin-sub [length parts] 1] parts]]]]
+
+# Join path components with "/".
+# Type: (Dict String -> String)
+# Example: [path-join ["a" "b" "c.txt"]] => "a/b/c.txt"
+# Example: [path-join []] => ""
+path-join: [fn@String [parts@Dict] [join "/" parts]]
+
+]

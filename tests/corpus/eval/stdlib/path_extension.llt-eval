@@ -1,0 +1,6 @@
+# extension: get file extension
+[include "stdlib/path.llt"]
+---
+[call %.extension "file.tar.gz"]
+=== out
+String("gz")

@@ -1,0 +1,8 @@
+# TOML-Lite input formatter
+# Reads stdin and parses as TOML-lite, producing the parsed tinct value as %
+
+[include "stdlib/toml-lite.llt"]
+
+---
+
+[call %.parse-toml-lite [slurp stdin]]

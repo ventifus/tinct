@@ -60,6 +60,10 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Implement `str-slice` Rust builtin: compute byte offsets for char positions, construct `Value::String { source: Rc::clone, start: byte_of(from), end: byte_of(to) }` — O(n) for UTF-8 char walk, O(1) allocation (`src/builtins_string.rs`, `src/types.rs`)
 - [x] Add `starts-with?` and `ends-with?` to prelude scope (loaded at startup alongside `prelude.llt`) (`src/builtins.rs`)
 - [ ] Add Bytes dual-dispatch for `starts-with?` and `ends-with?` (byte-prefix/suffix match) (`src/builtins_string.rs`)
+- [ ] Add Bytes dual-dispatch for `contains?`: byte-pattern search (deferred from `bytes-type` sprint) (`src/builtins.rs`)
+- [ ] Add Bytes dual-dispatch for `length`, `get`, `nth`: byte count and byte-index access (deferred from `bytes-type` sprint) (`src/builtins.rs`, `src/builtins_dict.rs`)
+- [ ] Add Bytes dual-dispatch for `map`, `filter`, `reduce`, `fold`, `first`, `last`, `take`, `drop`, `slice`, `count`, `reverse`: iterate over byte values as Int (0–255); results are Seq (not Bytes); use `bytes-of` to collect back to Bytes (deferred from `bytes-type` sprint) (`src/builtins_seq_reduce.rs`, `src/builtins.rs`)
+- [ ] Add Bytes dual-dispatch for `split`, `replace`, `join`: byte-pattern split/replace, byte-separator join (deferred from `bytes-type` sprint) (`src/builtins_string.rs`)
 - [x] Add Seq dual-dispatch for `starts-with?` and `ends-with?` (element-by-element prefix match) (`src/builtins_string.rs`)
 - [x] Create `stdlib/strings.llt` with pure-tinct functions: `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse` (Note: `str-contains?` is already a Rust builtin, `str-repeat` is in prelude but duplicated here per requirements) (`stdlib/strings.llt`)
 - [ ] Load `stdlib/strings.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
@@ -86,8 +90,6 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Implement 5 bitwise Rust builtins: `band` (i64 &), `bor` (|), `bxor` (^), `shl` (<<), `shr` (logical >>; treat as u64 for zero-fill) (`src/builtins_math.rs`)
 - [x] Implement `char-code` Rust builtin: first char of String → Int codepoint (`src/builtins_string.rs`)
 - [x] Implement `chr` Rust builtin: Int codepoint → single-char String (`src/builtins_string.rs`)
-- [ ] Implement `str-bytes` Rust builtin: String → Bytes (UTF-8 encode) — deferred until `bytes-type` sprint provides `Value::Bytes` (stub with error for now, or implement if bytes-type ships first) (`src/builtins_string.rs`)
-- [ ] Implement `bytes-str` Rust builtin: Bytes → String (UTF-8 decode; error on invalid) — same deferral as str-bytes (`src/builtins_string.rs`)
 - [x] Register all 9 builtins with type signatures (`src/builtins.rs`, `src/types.rs`)
 - [x] Define `HashAlgorithm` type alias as a union of nominal variants: `Sha256 | Sha384 | Sha512 | Sha3-256 | Sha3-384 | Sha3-512 | Blake3` — register in prelude scope (`stdlib/encoding.llt` or `src/builtins.rs`)
 - [x] Create `stdlib/encoding.llt` with pure-tinct functions: `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` (`stdlib/encoding.llt`)
@@ -98,11 +100,13 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 **Spec chapters:** `doc/whatif/lib-supplemental.md` §Streaming File I/O. **Depends on:** `string-view`.
 
-- [ ] Design `Handle` capability row representation in Rust: `HandleFlags` bitset or `HashSet<String>` storing capability variant names (`Readable`, `Writable`, `Seekable`, `Stream`, `Datagram`, `Text`, `Binary`, `Tls`, `Exclusive`, `Sync`, `NoFollow`, `Atomic`, `Linkable`, `Symlinkable`) (`src/value.rs`)
-- [ ] Replace `Value::Handle(Rc<RefCell<Box<dyn BufRead>>>)` with a struct carrying `flags: HandleFlags` + the inner reader/writer (`src/value.rs`)
-- [ ] Add `Value::WriteHandle` variant carrying encoding tag (Text/Binary) + `Box<dyn Write>` (`src/value.rs`)
-- [ ] Redesign `builtin_open`: accept nominal variant capability flags as trailing args (`Readable`, `Writable`, `Appendable`, `Binary`, `Seekable`, `Exclusive`, `Sync`, `NoFollow`); require at least one flag (no-flag = error); set Handle flags from args (`src/builtins_io.rs`)
-- [ ] `open` returns `Value::Handle` for read modes, `Value::WriteHandle` for write modes; encoding (Text/Binary) determined by flag presence (`src/builtins_io.rs`)
+- [x] Decide `Handle` capability representation — `HashMap<String, Value>`: cap name → associated data. Boolean caps (Readable, Writable, etc.) → `Value::Null`; protocol caps (Tls, Quic, user-defined) → `Value::Dict` carrying handshake/session metadata. User-extensible: any Connector can attach arbitrary data to custom cap names. `tls-peer-cert h` reads `handle.caps.get("Tls")` directly, no special-casing needed.
+- [ ] Replace `Value::Handle(Rc<RefCell<Box<dyn BufRead>>>)` with a struct carrying `caps: HashMap<String, Value>` + the inner reader/writer; keep existing `Rc<RefCell<Box<dyn BufRead>>>` as the read-side inner (`src/value.rs`)
+- [ ] Add `Value::WriteHandle` variant carrying `caps: HashMap<String, Value>` + encoding tag (Text/Binary) + `Box<dyn Write>` (`src/value.rs`)
+- [ ] Implement `cap-data` Rust builtin: `Handle → String → Value` — reads associated data for a named capability; errors if cap is absent (`src/builtins_io.rs`, `src/types.rs`)
+- [ ] Implement `has-cap?` Rust builtin: `Handle → String → Bool` — tests whether Handle has a named capability (`src/builtins_io.rs`, `src/types.rs`)
+- [ ] Refactor `builtin_open`: accept nominal variant capability flags as trailing args; each `Value::Variant { tag, payload }` arg inserts `(tag, payload.unwrap_or(Value::Null))` into the caps HashMap; require at least one arg (no-flag = error); derive encoding (Text/Binary) and direction (read/write) from cap presence (`src/builtins_io.rs`)
+- [ ] `open` returns `Value::Handle` when `Readable` is in caps, `Value::WriteHandle` when `Writable` (but not `Readable`) is in caps; both carry the full caps HashMap (`src/builtins_io.rs`)
 - [ ] Implement `write` Rust builtin: polymorphic on WriteHandle encoding — `String` arg for Text, `Bytes` arg for Binary; returns WriteHandle for chaining (`src/builtins_io.rs`)
 - [ ] Implement `flush` Rust builtin: flushes WriteHandle buffer; returns WriteHandle (`src/builtins_io.rs`)
 - [ ] Implement `close` Rust builtin: flushes and closes WriteHandle; returns null; further writes error (`src/builtins_io.rs`)
@@ -111,7 +115,7 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Implement `position` Rust builtin: requires Seekable; returns current byte offset as Int (`src/builtins_io.rs`)
 - [ ] Update `builtin_slurp`: dispatch on Handle encoding — Text → String, Binary → Bytes (`src/builtins_io.rs`)
 - [ ] Update `builtin_lines`: require Text encoding flag; error on Binary handles (`src/builtins_io.rs`)
-- [ ] Update `builtin_connect`: return `Handle` with `{Binary Readable Writable Stream}` flags (not Seekable) (`src/builtins_io.rs`)
+- [ ] Update `builtin_connect`: return `Handle` with caps HashMap `{"Binary": Null, "Readable": Null, "Writable": Null, "Stream": Null}` (no Seekable — streams are sequential); network protocol layers (Tls) insert their cap with `Value::Dict` metadata during handshake (`src/builtins_io.rs`)
 - [ ] Register type signatures for all new builtins (`src/types.rs`)
 - [ ] Update `stdlib/io.llt`: add `write-line`; extend `write-file`/`write-file-atomic` to accept `content@[String Bytes]`; remove old `open` mode-string wrappers (`stdlib/io.llt`)
 - [ ] Tests: corpus tests for open with flags (Readable, Writable, Binary), write + slurp round-trip, seek + position, close-then-write error, encoding mismatch error (`tests/corpus/eval/builtins/`)
@@ -134,17 +138,6 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Register type signatures for all 8 DirCap builtins (`src/types.rs`)
 - [ ] Tests: corpus tests for list-dir, stat, make-dir + remove round-trip, rename atomic, copy, --cap-fs with file:// and s3:// URIs (`tests/corpus/eval/builtins/`, `tests/cli_tests.rs`)
 - [ ] Spec: update `doc/03-data-model.md` §Value Types for Uri; update `doc/12-tooling.md` §CLI for --cap-fs URI
-
-### `toml-lite-path`: TOML-Lite & Path Utilities
-
-**Spec chapters:** `doc/whatif/lib-supplemental.md` §TOML Parsing Lite, §Path Utilities. **Depends on:** `string-utils`.
-
-- [ ] Implement `stdlib/toml-lite.llt`: `parse-toml-lite` function using `starts-with?`, `split`, `trim`, `reduce` with section-tracking accumulator; handle `[section]`, `[[array-table]]`, `key = "string-value"`, comments, blank lines (`stdlib/toml-lite.llt`)
-- [ ] Create `stdlib/in/toml-lite.llt`: `[parse-toml-lite [slurp stdin]]` pipeline wrapper (`stdlib/in/toml-lite.llt`)
-- [ ] Create `stdlib/path.llt`: `path-parts`, `basename`, `dirname`, `extension`, `path-join` (all pure-tinct using `split`/`join`) (`stdlib/path.llt`)
-- [ ] Tests: corpus tests parsing Cargo.toml structure, Cargo.lock `[[package]]` array tables, comments, blank lines, edge cases (`tests/corpus/eval/stdlib/`)
-- [ ] Tests: corpus tests for path.llt functions (`tests/corpus/eval/stdlib/`)
-- [ ] Integration test: parse tinct's own Cargo.toml and verify dep names extracted correctly
 
 ## Date-Time
 
