@@ -1,0 +1,8 @@
+# tmpl macro: basic variable interpolation
+# i"Hello $name" → parser emits [tmpl "Hello $name"] → macro expands to [str "Hello " name]
+[
+  name: "Alice"
+  greeting: i"Hello $name"
+]
+=== out
+Dict({"name": String("Alice"), "greeting": String("Hello Alice")})

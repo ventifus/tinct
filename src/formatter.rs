@@ -959,60 +959,93 @@ impl<'a> Formatter<'a> {
         self.output.push(']');
     }
 
-    /// Return true if this Call node matches the pattern produced by desugaring i"...".
+    /// Return true if this Call node matches the pattern produced by emit_tmpl_call.
     ///
-    /// Pattern: func is a VarRef named "str", no named args, and every positional arg is
-    /// either an Expr::Str (literal segment) or an Expr::VarRef (interpolated variable).
+    /// Pattern: func is a VarRef named "tmpl", no named args, and args[0] is a Str
+    /// (the raw template). Additional args[1..] are the expression args for ${N} slots.
     fn is_interpolated_string_call(
         &self,
         func: &Spanned<Expr>,
         args: &[Rc<Spanned<Expr>>],
     ) -> bool {
-        // Head must be exactly VarRef("str")
+        // Head must be exactly VarRef("tmpl")
         let Expr::VarRef { name, .. } = &func.node else {
             return false;
         };
-        if name != "str" {
+        if name != "tmpl" {
             return false;
         }
-        // Must have at least one arg (empty [str] is not an interpolated string)
+        // Must have at least one arg: the raw template string
         if args.is_empty() {
             return false;
         }
-        // Every arg must be Str or VarRef
-        args.iter()
-            .all(|arg| matches!(&arg.node, Expr::Str(_) | Expr::VarRef { .. }))
+        // args[0] must be a Str (the raw template)
+        matches!(&args[0].node, Expr::Str(_))
     }
 
-    /// Format a desugared interpolated string call as i"..." syntax.
+    /// Format a [tmpl "raw-template" expr0 ...] call as i"..." syntax.
     ///
-    /// Each Str arg is emitted as literal text (with `"` and `\` escaped, and `$` escaped as `$$`).
-    /// Each VarRef arg is emitted as `$name`.
+    /// The raw template uses: `$$` for literal `$`, `$name` for variable refs,
+    /// `${N}` for expression args (where N is 0-based index into args[1..]).
     fn format_as_interpolated_string(&mut self, args: &[Rc<Spanned<Expr>>]) {
+        let raw = match &args[0].node {
+            Expr::Str(s) => s.clone(),
+            _ => return, // Should never happen given is_interpolated_string_call guard
+        };
+        let expr_args = &args[1..];
+
         self.output.push_str("i\"");
-        for arg in args {
-            match &arg.node {
-                Expr::Str(s) => {
-                    for ch in s.chars() {
-                        match ch {
-                            '"' => self.output.push_str("\\\""),
-                            '\\' => self.output.push_str("\\\\"),
-                            '\n' => self.output.push_str("\\n"),
-                            '\t' => self.output.push_str("\\t"),
-                            '\r' => self.output.push_str("\\r"),
-                            '$' => self.output.push_str("$$"),
-                            _ => self.output.push(ch),
+
+        let chars: Vec<char> = raw.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '$' {
+                i += 1;
+                if i >= chars.len() {
+                    // Trailing $ — emit as-is (shouldn't happen in valid templates)
+                    self.output.push('$');
+                } else if chars[i] == '$' {
+                    // $$ → literal $, emit as $$
+                    self.output.push_str("$$");
+                    i += 1;
+                } else if chars[i] == '{' {
+                    // ${N} → expression placeholder; find closing }
+                    i += 1;
+                    let start = i;
+                    while i < chars.len() && chars[i] != '}' {
+                        i += 1;
+                    }
+                    let idx_str: String = chars[start..i].iter().collect();
+                    i += 1; // skip '}'
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if let Some(expr_arg) = expr_args.get(idx) {
+                            // Format the expression inline: ${[expr]}
+                            self.output.push_str("${");
+                            self.format_expr(expr_arg, false);
+                            self.output.push('}');
                         }
                     }
-                }
-                Expr::VarRef { name, .. } => {
+                } else {
+                    // $name → variable reference
+                    let start = i;
+                    while i < chars.len() && !is_tmpl_stop_char(chars[i]) {
+                        i += 1;
+                    }
+                    let var_name: String = chars[start..i].iter().collect();
                     self.output.push('$');
-                    self.output.push_str(name);
+                    self.output.push_str(&var_name);
                 }
-                _ => {
-                    // Should never be reached given is_interpolated_string_call guard,
-                    // but emit a safe fallback rather than panicking.
+            } else {
+                // Literal character — escape special chars for i"..." context
+                match chars[i] {
+                    '"' => self.output.push_str("\\\""),
+                    '\\' => self.output.push_str("\\\\"),
+                    '\n' => self.output.push_str("\\n"),
+                    '\t' => self.output.push_str("\\t"),
+                    '\r' => self.output.push_str("\\r"),
+                    c => self.output.push(c),
                 }
+                i += 1;
             }
         }
         self.output.push('"');
@@ -1244,6 +1277,16 @@ impl<'a> Formatter<'a> {
 /// Used by the `--nospaces` mode to determine when spaces are required.
 fn is_bare_word_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '-' | '_' | '?' | '!' | '/' | '%' | '~')
+}
+
+/// Check if a character is a stop character for variable names in interpolated strings.
+/// Mirrors the stop-char set in `src/lexer.rs` `lex_interpolated_string` VarRef branch
+/// and the `tmpl-is-stop` helper in `stdlib/macros.llt`.
+fn is_tmpl_stop_char(c: char) -> bool {
+    matches!(
+        c,
+        ' ' | '\t' | '\n' | '[' | ']' | ':' | '#' | ';' | '"' | '@' | '.' | ',' | '!' | '?'
+    )
 }
 
 #[cfg(test)]

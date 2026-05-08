@@ -5,5 +5,3 @@
 data | keys | length
 === out
 Int(3)
-=== warn
-cannot unify [...] with Seq[String] at 4:13-4:21

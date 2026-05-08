@@ -2,6 +2,58 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## Research
+
+### `research-parameterized-dict`
+
+Investigate whether tinct's type system should support a parameterized
+`Dict[K V]` type constructor — algebraic type constructors with kind
+`Type → Type → Type`. Motivated by the need to type `transitions` in
+`stdlib/regex.llt` as `Dict[Int Seq@Int]` (char-code → successor state
+ids) rather than the current unparameterized `@Dict` with a runtime
+invariant comment.
+
+**The gap:** BAS (`doc/whatif/boolean-algebraic-subtyping.md`) encodes
+multi-field records as intersections of single-field types and handles
+union/intersection over specific named fields — but cannot express "all
+values in this dict are of type T" because that requires universal
+quantification over field labels (∀f. {f: T}), which is outside BAS's
+scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
+(lib-regex.md) are the concrete cases that remain untyped.
+
+- [x] Survey comparable languages — Nickel `{_: Type}`, TypeScript index signatures, Haskell `Map k v`; see `doc/whatif/parameterized-dict.md` §References
+- [x] Can BAS accommodate `Dict[K V]`? — BAS is only needed for union/intersection *over* map types (Phase 3); annotation and inference are BAS-independent
+- [x] Record vs Map split — yes; `Dict: [type [Record Map]]` is the right model; see `doc/whatif/parameterized-dict.md` §Design
+- [x] Stdlib functions that benefit — `transitions` and `groups` in regex NFA are the primary cases; `stat`/`tls-peer-cert`/`list-dir` are structural Records, not Maps
+- [x] Write proposal — see `doc/whatif/parameterized-dict.md`
+
+## Macros
+
+### `tmpl-macro`: Migrate `i"..."` string interpolation from parser to `[defmacro tmpl]`
+
+`desugar_interpolated_string()` in `src/parser.rs` has been replaced by `emit_tmpl_call()`, which emits `[tmpl "raw-template" expr0 ...]`. The expansion logic lives in `stdlib/macros.llt` as `tmpl-transformer`, pre-registered as the `tmpl` macro by `expand_macros` before processing user code. See `doc/whatif/completed/macro-rewrite.md` for the design.
+
+- [x] Change parser to emit `[tmpl "Hello $name"]` call node instead of expanding `InterpolatedString` inline; the raw template string is passed as an opaque argument (`src/parser.rs`)
+- [x] Implement `tmpl-transformer` in `stdlib/macros.llt`: parse the template string splitting on `$`, produce `[str segment1 var1 segment2 ...]`; pre-registered as `tmpl` macro by `expand_macros` (`stdlib/macros.llt`, `src/expand.rs`, `src/builtins.rs`)
+- [x] Remove `desugar_interpolated_string()` from `src/parser.rs` (`src/parser.rs`)
+- [x] Corpus tests: `i"Hello $name"` still expands correctly; `i"Price: $$$amount"` (dollar escape); `i"plain"` (no vars); `i"result is ${[call $+ x 1]}"` (expr interpolation) (`tests/corpus/eval/macros/tmpl_*.llt-eval`)
+
+## Known Bugs (Type Signatures)
+
+### `split-return-type`: `split` typed as `Seq[String]` but returns `Dict`
+
+`type_env.rs` registered `split` with return type `Seq[String]`. At runtime, `builtin_split` builds an integer-keyed `IndexMap` — a `Dict`, not a `Seq`. Every downstream use of `split`'s result with dict operations (`length`, `get`, `builtin-reduce`) produced spurious "cannot unify Seq[String] with [...]" type errors.
+
+- [x] Changed `split` return type in `type_env.rs` to `Type::Unknown` (`src/type_env.rs`)
+- [x] Corpus test: `[length [split "," "a,b,c"]]` type-checks without error (`tests/corpus/eval/builtins/split_length.llt-eval`)
+
+### `length-narrow-type`: `length` typed as Dict-only but accepts String and Bytes
+
+`type_env.rs` registered `length` with parameter type `[...]` (open record — Dict only). At runtime, `builtin_length` dispatches on `Value::String` and `Value::Bytes` in addition to `Value::Dict`. Passing a String to `length` produced spurious "cannot unify String with [...]" type errors.
+
+- [x] Changed `length` parameter type in `type_env.rs` to `Type::Unknown` (`src/type_env.rs`)
+- [x] Corpus tests: `[length "hello"]` and `[length [1 2 3]]` type-check without error (`tests/corpus/eval/builtins/length_string.llt-eval` updated, `tests/corpus/eval/builtins/length_seq.llt-eval` added)
+
 ## Evaluation
 
 ### `sequential-strict`: Make Sequential bindings strict + raise depth limit

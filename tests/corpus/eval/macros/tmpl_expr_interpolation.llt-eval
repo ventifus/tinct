@@ -1,0 +1,6 @@
+# tmpl macro: ${expr} expression interpolation
+# Parser emits [tmpl "${0}" expr-ast]; macro substitutes the AST node.
+[x: 42]
+i"result is ${[call $+ x 1]}"
+=== out
+String("result is 43")

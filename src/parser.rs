@@ -96,70 +96,81 @@ fn key_to_string(expr: &Expr) -> Option<String> {
     }
 }
 
-/// Desugar an interpolated string into a str call.
+/// Emit a `[tmpl "raw-template" expr0 expr1 ...]` call node for an interpolated string.
 ///
-/// Converts `i"Hello $name"` (represented as InterpolatedString parts) into
-/// `[str "Hello " name]` (a Call expression).
+/// The raw template string encodes the interpolation using:
+/// - `$$`   — literal `$` (re-encoded from `Literal` parts that contained `$`)
+/// - `$name` — variable reference
+/// - `${N}` — expression placeholder, where N is the 0-based index into additional args
 ///
 /// `InterpolatedPart::Expr(raw)` segments (`${expr}`) are re-parsed as tinct expressions
-/// and included inline. If re-parsing fails, the raw text is included as a quoted string
-/// with a TODO comment in the error.
-fn desugar_interpolated_string(
+/// and passed as additional positional args to `[tmpl]`. The macro receives them via
+/// `[get (N+1) macro-args]` (index +1 because arg 0 is the template string itself).
+fn emit_tmpl_call(
     parts: &[lexer::InterpolatedPart],
     span: Span,
 ) -> Result<Spanned<Expr>, ParseError> {
     use std::cell::RefCell;
 
-    let mut args = Vec::new();
+    // Build the raw template string and collect expression args.
+    let mut raw = String::new();
+    let mut expr_args: Vec<Rc<Spanned<Expr>>> = Vec::new();
 
     for part in parts {
         match part {
             lexer::InterpolatedPart::Literal(s) => {
-                args.push(Rc::new(Spanned::new(Expr::Str(s.clone()), span)));
+                // Re-encode literal `$` as `$$` so the macro can distinguish it.
+                for ch in s.chars() {
+                    if ch == '$' {
+                        raw.push_str("$$");
+                    } else {
+                        raw.push(ch);
+                    }
+                }
             }
             lexer::InterpolatedPart::VarRef(name) => {
-                args.push(Rc::new(Spanned::new(
-                    Expr::VarRef {
-                        name: name.clone(),
-                        resolved: RefCell::new(None),
-                    },
-                    span,
-                )));
+                raw.push('$');
+                raw.push_str(name);
             }
-            lexer::InterpolatedPart::Expr(raw) => {
+            lexer::InterpolatedPart::Expr(source) => {
                 // Re-parse the raw expression string as a tinct expression.
-                // TODO: span reporting inside ${...} is approximate — the inner spans
-                // are relative to `raw` not to the outer source, so error locations
+                // Span reporting inside ${...} is approximate — the inner spans are
+                // relative to `source` not to the outer source, so error locations
                 // inside ${...} will point to the start of the interpolated string.
-                match parse_expression(raw) {
+                let expr_index = expr_args.len();
+                raw.push_str(&format!("${{{}}}", expr_index));
+                match parse_expression(source) {
                     Ok(inner_expr) => {
                         // Re-span the inner expression to the outer interpolated string span
                         // so that evaluation errors point to a reasonable location.
-                        args.push(Rc::new(Spanned::new(inner_expr.node, span)));
+                        expr_args.push(Rc::new(Spanned::new(inner_expr.node, span)));
                     }
                     Err(_) => {
                         // Fallback: include the raw text as a quoted string.
-                        // This preserves round-trip output at the cost of incorrect runtime behavior.
-                        // TODO: propagate the inner parse error with adjusted spans.
-                        args.push(Rc::new(Spanned::new(Expr::Str(raw.clone()), span)));
+                        // This preserves output at the cost of incorrect runtime behavior.
+                        expr_args.push(Rc::new(Spanned::new(Expr::Str(source.clone()), span)));
                     }
                 }
             }
         }
     }
 
-    // Build the [str ...] call
-    let str_fn = Box::new(Spanned::new(
+    // Build [tmpl "raw-template" expr0 expr1 ...]
+    let tmpl_fn = Box::new(Spanned::new(
         Expr::VarRef {
-            name: "str".to_string(),
+            name: "tmpl".to_string(),
             resolved: RefCell::new(None),
         },
         span,
     ));
 
+    let mut args = Vec::with_capacity(1 + expr_args.len());
+    args.push(Rc::new(Spanned::new(Expr::Str(raw), span)));
+    args.extend(expr_args);
+
     Ok(Spanned::new(
         Expr::Call {
-            func: str_fn,
+            func: tmpl_fn,
             args,
             named_args: Vec::new(),
             implied: false,
@@ -2646,8 +2657,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::InterpolatedString(parts) => {
-                // Desugar i"Hello $name" to [str "Hello " name]
-                let expr = desugar_interpolated_string(parts, span)?;
+                // Emit [tmpl "raw-template"] call; the [defmacro tmpl] in stdlib/macros.llt
+                // expands this to [str segment1 var1 segment2 ...] at compile time.
+                let expr = emit_tmpl_call(parts, span)?;
                 if let Err(push_err) =
                     push_value(&mut stack, &mut current_document_expressions, expr)
                 {
@@ -6569,9 +6581,9 @@ mod tests {
         }
     }
 
-    // --- Interpolated string desugaring tests ---
+    // --- Interpolated string tmpl-call tests ---
 
-    /// i"Hello $name" desugars to [str "Hello " name].
+    /// i"Hello $name" emits [tmpl "Hello $name"] — the macro expands it at compile time.
     #[test]
     fn test_desugar_interpolated_string_varref() {
         let expr = parse_expr(r#"i"Hello $name""#);
@@ -6585,24 +6597,21 @@ mod tests {
                 assert!(!implied, "expected non-implied call");
                 assert!(named_args.is_empty());
                 match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "str"),
-                    other => panic!("expected func=VarRef(str), got {other:?}"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "tmpl"),
+                    other => panic!("expected func=VarRef(tmpl), got {other:?}"),
                 }
-                assert_eq!(args.len(), 2);
+                // One arg: the raw template string "Hello $name"
+                assert_eq!(args.len(), 1);
                 match &args[0].node {
-                    Expr::Str(s) => assert_eq!(s, "Hello "),
-                    other => panic!("expected args[0]=Str(\"Hello \"), got {other:?}"),
-                }
-                match &args[1].node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "name"),
-                    other => panic!("expected args[1]=VarRef(name), got {other:?}"),
+                    Expr::Str(s) => assert_eq!(s, "Hello $name"),
+                    other => panic!("expected args[0]=Str(\"Hello $name\"), got {other:?}"),
                 }
             }
             other => panic!("expected Call, got {other:?}"),
         }
     }
 
-    /// i"${[+ $x 1]}" desugars to [str [+ $x 1]] — the inner expression is re-parsed.
+    /// i"${[+ $x 1]}" emits [tmpl "${0}" [+ $x 1]] — expr is passed as extra arg.
     #[test]
     fn test_desugar_interpolated_string_expr() {
         let expr = parse_expr(r#"i"${[+ $x 1]}""#);
@@ -6615,12 +6624,17 @@ mod tests {
             } => {
                 assert!(!implied);
                 match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "str"),
-                    other => panic!("expected func=VarRef(str), got {other:?}"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "tmpl"),
+                    other => panic!("expected func=VarRef(tmpl), got {other:?}"),
                 }
-                assert_eq!(args.len(), 1, "expected 1 arg for lone interpolation expr");
-                // The arg should be the re-parsed [+ $x 1] — an implied Call
+                // Two args: raw template string "${0}" and the re-parsed expr [+ $x 1]
+                assert_eq!(args.len(), 2, "expected 2 args: template + expr arg");
                 match &args[0].node {
+                    Expr::Str(s) => assert_eq!(s, "${0}"),
+                    other => panic!("expected args[0]=Str(\"${{0}}\"), got {other:?}"),
+                }
+                // args[1] is the re-parsed [+ $x 1] — an implied Call
+                match &args[1].node {
                     Expr::Call {
                         func: inner_func,
                         args: inner_args,
@@ -6642,7 +6656,7 @@ mod tests {
                             other => panic!("expected Int(1) as arg 1, got {other:?}"),
                         }
                     }
-                    other => panic!("expected inner Call, got {other:?}"),
+                    other => panic!("expected inner Call for expr arg, got {other:?}"),
                 }
             }
             other => panic!("expected Call, got {other:?}"),
@@ -6650,30 +6664,30 @@ mod tests {
     }
 
     /// i"prefix $name suffix ${[+ $x 1]} end" — mixed literal, varref, and expr parts.
+    /// Parser emits [tmpl "prefix $name suffix ${0} end" [+ $x 1]].
     #[test]
     fn test_desugar_interpolated_string_mixed() {
         let expr = parse_expr(r#"i"prefix $name suffix ${[+ $x 1]} end""#);
         match &expr.node {
             Expr::Call { func, args, .. } => {
                 match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "str"),
-                    other => panic!("expected func=VarRef(str), got {other:?}"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "tmpl"),
+                    other => panic!("expected func=VarRef(tmpl), got {other:?}"),
                 }
+                // Two args: raw template + expr arg
                 assert_eq!(
                     args.len(),
-                    5,
-                    "expected 5 parts: literal, varref, literal, expr, literal"
+                    2,
+                    "expected 2 args: template string + one expr arg"
                 );
-                // args[0]: "prefix "
-                assert!(matches!(&args[0].node, Expr::Str(s) if s == "prefix "));
-                // args[1]: VarRef(name)
-                assert!(matches!(&args[1].node, Expr::VarRef { name, .. } if name == "name"));
-                // args[2]: " suffix "
-                assert!(matches!(&args[2].node, Expr::Str(s) if s == " suffix "));
-                // args[3]: re-parsed expression [+ $x 1]
-                assert!(matches!(&args[3].node, Expr::Call { .. }));
-                // args[4]: " end"
-                assert!(matches!(&args[4].node, Expr::Str(s) if s == " end"));
+                // args[0]: raw template with ${0} placeholder
+                assert!(
+                    matches!(&args[0].node, Expr::Str(s) if s == "prefix $name suffix ${0} end"),
+                    "expected raw template string, got {:?}",
+                    &args[0].node
+                );
+                // args[1]: re-parsed expression [+ $x 1]
+                assert!(matches!(&args[1].node, Expr::Call { .. }));
             }
             other => panic!("expected Call, got {other:?}"),
         }

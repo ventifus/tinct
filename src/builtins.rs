@@ -1517,11 +1517,16 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     // Create a child env with stdlib entries
     let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(root_env)));
 
-    // Load prelude — the only module loaded at startup.
+    // Load prelude — provides all public stdlib functions.
     // strings.llt, math.llt, and encoding.llt are available via
     // [include libdir "strings.llt"] (etc.) — they are not loaded automatically.
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
+
+    // Load macros — exports tmpl-transformer and helpers used by expand_macros.
+    // Loaded after prelude so macro helpers can reference prelude functions.
+    let macros_source = include_str!("../stdlib/macros.llt");
+    load_stdlib_module(macros_source, "macros", &stdlib_env, &bootstrap_ctx)?;
 
     Ok(stdlib_env)
 }
@@ -7522,6 +7527,15 @@ mod tests {
     }
 
     #[test]
+    fn macros_parses_without_error() {
+        let macros_source = include_str!("../stdlib/macros.llt");
+        match crate::parser::parse(macros_source) {
+            Ok(_) => {}
+            Err(e) => panic!("macros.llt parse failed: {e}"),
+        }
+    }
+
+    #[test]
     fn create_stdlib_env_has_builtins_and_prelude() {
         let env = create_stdlib_env().expect("stdlib env creation failed");
         let env_ref = env.borrow();
@@ -7538,6 +7552,11 @@ mod tests {
         assert!(
             env_ref.get("identity").is_some(),
             "missing prelude function identity"
+        );
+        // Should have macros exports (tmpl-transformer pre-registered as tmpl macro)
+        assert!(
+            env_ref.get("tmpl-transformer").is_some(),
+            "missing macros export tmpl-transformer"
         );
         // strings/math/encoding are NOT loaded at startup — require explicit include.
         assert!(

@@ -1,6 +1,6 @@
-# Interpolated strings - basic variable interpolation
+# Interpolated strings - parser emits [tmpl "raw-template"]; macro expands to [str ...]
 i"Hello $name"
 === out
-[call str "Hello " name]
+[call tmpl "Hello $name"]
 === warn
-undefined variable: name at 1:1-1:15
+undefined variable: name
