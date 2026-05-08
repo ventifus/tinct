@@ -127,40 +127,33 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 
-### `connector-tls-full`: Connector Protocol & TLS (Full Implementation)
+### `url-type`: Url Type & HTTP Client Redesign
 
-**Spec chapters:** `doc/whatif/lib-tls.md` §Connector Protocol, §Handle Types, §tls-connect, §CA Root Selection, §Client Certificates, §SPKI Pins. **Depends on:** `connector-tls` (Phase 1 stubs — see DONE.md), `handle-caps`.
+**Spec chapters:** `doc/whatif/lib-tls.md` §Type Checker (Url type), §Handle Types (http-get merged). **Depends on:** `string-utils`, `bytes-type`.
 
-- [x] Define `Transport` nominal variants: `Tcp`, `Udp` as unit `Value::Variant` constants registered in `create_root_env()` (`src/builtins.rs`); `Transport` type alias added to `TypeEnv::with_builtins()` (`src/type_env.rs`)
-- [x] Generalize `builtin_connect`: accept `Transport` variant as 4th arg (Tcp default when omitted); Tcp connects via TcpStream; Udp returns "not yet supported" error; caps `{Binary Readable Writable Stream}` for Tcp (`src/builtins_io.rs`) — **partial**: Connector protocol dispatch (NetCap → TCP/UDP, user dict → call connect method) deferred to `connector-tls-full`
-- [x] Refactor Handle to preserve underlying TCP stream (required for TLS layering): add `raw_stream: Option<Rc<RefCell<TcpStream>>>` or use trait objects with downcast (`src/value.rs`)
-- [ ] Implement `tls-connect` full — Connector form: opens via connect then layers TLS via `rustls::ClientConfig`; Handle form: layers TLS on existing stream Handle; both return `Handle[Binary Readable Writable Stream Tls]` with `TlsInfo` (`src/builtins_io.rs`)
-- [ ] Implement CA root loading: default = `rustls-native-certs` system roots; `ca-bundle` Handle → read PEM, add to root store; `no-system-roots: true` → drop system roots; `mozilla-roots: true` → add `webpki-roots` (`src/builtins_io.rs`)
-- [ ] Implement mTLS: read `client-cert` and `client-key` Handle PEM bytes; configure `ClientConfig` with client auth (`src/builtins_io.rs`)
-- [ ] Implement SPKI hash computation for pin matching: SHA-256/384/512 via `ring`, SHA3-256/384/512 via `sha3`, BLAKE3 via `blake3`; validate leaf cert SPKI against `spki-pin` list during TLS handshake (`src/builtins_io.rs`)
-- [ ] Implement ALPN: `alpn` option → `ClientConfig::alpn_protocols`; default `["http/1.1"]` (`src/builtins_io.rs`)
-- [ ] Implement `tls-peer-cert` full: parse leaf certificate, return dict with `subject`, `issuer`, `sans`, `not-before` (@Timestamp), `not-after` (@Timestamp), `spki-sha256` (`src/builtins_io.rs`)
-- [x] Add `--cap-net NAME=ENTRY` CLI documentation for Connector protocol context (`doc/12-tooling.md`)
-- [ ] Tests: corpus tests for connect Tcp/Udp, tls-connect with system roots, tls-connect with custom CA, mTLS, certificate pinning (SpkiPin), ALPN negotiation, tls-peer-cert return shape (`tests/corpus/eval/builtins/`)
+- [ ] Implement `url` Rust builtin: parse URL string → Url dict with all RFC 3986 components (`scheme`, `username`, `password`, `host`, `port`, `path`, `query`, `fragment`); port defaulted from scheme if absent; IPv6 brackets stripped from host (`src/builtins_io.rs` or new `src/builtins_url.rs`)
+- [ ] Register `Url` type alias and `url` builtin type signature: `url: [fn@Url [s@String]]` (`src/types.rs`, `src/builtins.rs`)
+- [ ] Implement pure-tinct `url-params: [fn@Dict [u@Url]]` — parse `u.query` into `{key: value}` dict; returns `{}` if query is null (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `url-origin: [fn@String [u@Url]]` — `"scheme://host:port"` (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `url->string: [fn@String [u@Url]]` — reconstruct full URL string from Url dict (`stdlib/net.llt`)
+- [ ] Refactor `stdlib/net.llt` `http-get` to take `url@Url` instead of `host`/`port`/`path`; dispatch on `url.scheme` to use `tls-connect` (https) or `connect` (http); accept `tls-opts@[TlsOpts Null]` (`stdlib/net.llt`)
+- [ ] Refactor `stdlib/net.llt` `fetch` to take `url@Url`; remove `parse-url` internal helper; `fetch` becomes `[http-get connector url [] null]` (`stdlib/net.llt`)
+- [ ] Remove `https-get` from `stdlib/net.llt` — merged into `http-get` via `url.scheme` dispatch (`stdlib/net.llt`)
+- [ ] Update `http-connect` Rust builtin signature: `http-connect connector url@Url opts` and `http-connect h@Handle url@Url` — takes Url instead of host/port separately (`src/builtins_io.rs`, `src/types.rs`)
+- [ ] Tests: corpus tests for `url` parsing (full URL, missing components, port defaulting, IPv6, username/password); `url-params` with multi-value query; `url->string` round-trip; `http-get` with http:// and https:// Urls (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
 ### `http-net`: HTTP Client & Network Stack
 
-**Spec chapters:** `doc/whatif/lib-tls.md` §HttpConn, §HTTP/2 HTTP/3, §Network Stack Summary. **Depends on:** `connector-tls`, `string-utils`.
+**Spec chapters:** `doc/whatif/lib-tls.md` §HttpConn, §HTTP/2 HTTP/3, §Network Stack Summary. **Depends on:** `connector-tls`, `url-type`.
 
 - [ ] Add `reqwest = { version = "0.12", features = ["http2", "http3", "brotli", "rustls-tls"] }` to `Cargo.toml` (`Cargo.toml`)
-- [x] Implement pure-tinct `http-get` in `stdlib/net.llt`: connect → write HTTP/1.0 request → slurp → parse response (`stdlib/net.llt`)
-- [x] Implement pure-tinct `https-get` in `stdlib/net.llt`: tls-connect → write → slurp → parse (`stdlib/net.llt`)
-- [x] Implement pure-tinct `fetch` in `stdlib/net.llt`: parse URL, dispatch on `starts-with? "https://" url` (`stdlib/net.llt`)
-- [x] Implement pure-tinct `build-http-request` helper: construct HTTP/1.0 GET request with headers (`stdlib/net.llt`)
-- [x] Implement pure-tinct `parse-http-response` helper: split status line / headers / body (`stdlib/net.llt`)
-- [x] Implement pure-tinct `parse-url` helper: extract scheme, host, port, path (`stdlib/net.llt`)
 - [ ] Add `Value::HttpConn` to Value enum (wraps reqwest Client or connection pool) (`src/value.rs`)
-- [ ] Implement `http-connect` Rust builtin — Connector form: `http-connect connector host port opts` → `HttpConn`; Handle form: `http-connect handle host` → `HttpConn`; internally opens Tcp (HTTP/1.1+2) or Udp (HTTP/3) based on ALPN (`src/builtins_io.rs`)
-- [ ] Implement `http-get` overload on `HttpConn`: `http-get conn path headers` → response Dict (`src/builtins_io.rs`)
+- [ ] Implement `http-connect` Rust builtin — Connector form: `http-connect connector url@Url opts` → `HttpConn`; Handle form: `http-connect h@Handle url@Url` → `HttpConn`; internally opens Tcp (HTTP/1.1+2) or Udp (HTTP/3) based on ALPN (`src/builtins_io.rs`)
+- [ ] Implement `http-get` overload on `HttpConn`: `http-get conn url@Url headers` → response Dict (`src/builtins_io.rs`)
 - [ ] Implement `socks5-connect` Rust builtin: SOCKS5 tunnel; takes Handle + host + port + creds → Handle[Stream RW] (`src/builtins_io.rs`)
 - [ ] Implement `proxy-connect` Rust builtin: HTTP CONNECT tunnel; takes Handle + host + port → Handle[Stream RW] (`src/builtins_io.rs`)
 - [ ] Register all type signatures (`src/types.rs`)
-- [ ] Tests: corpus tests for pure-tinct http-get against a local test HTTP server, fetch URL dispatch, HttpConn connection reuse, proxy tunneling (`tests/corpus/eval/builtins/`, integration tests)
+- [ ] Tests: corpus tests for HttpConn connection reuse, proxy tunneling, http-get via HttpConn with Url (`tests/corpus/eval/builtins/`, integration tests)
 
 ---
 
