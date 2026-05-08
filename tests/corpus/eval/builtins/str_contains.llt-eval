@@ -1,0 +1,4 @@
+# str-contains? : check if string contains substring
+[str-contains? "hello world" "world"]
+=== out
+Bool(true)

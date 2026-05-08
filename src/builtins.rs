@@ -343,14 +343,16 @@ pub(crate) use crate::builtins_meta::{
     builtin_until, builtin_validate, builtin_variant,
 };
 
-// String builtins: str, split, replace, upper, lower, trim, str-length.
+// String builtins: str, split, replace, upper, lower, trim, str-length, str-contains?,
+// str-slice, str-chars, starts-with?, ends-with?.
 // Implementations live in builtins_string.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 #[cfg(test)]
 pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 pub(crate) use crate::builtins_string::{
-    builtin_lower, builtin_replace, builtin_split, builtin_str, builtin_str_contains,
-    builtin_str_length, builtin_str_slice, builtin_trim, builtin_upper,
+    builtin_ends_with, builtin_lower, builtin_replace, builtin_split, builtin_starts_with,
+    builtin_str, builtin_str_chars, builtin_str_contains, builtin_str_length, builtin_str_slice,
+    builtin_trim, builtin_upper,
 };
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -838,6 +840,17 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "str-contains?",
             builtin_str_contains,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("str-chars", builtin_str_chars, [Strictness::Seq]),
+        builtin!(
+            "starts-with?",
+            builtin_starts_with,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "ends-with?",
+            builtin_ends_with,
             [Strictness::Seq, Strictness::Seq]
         ),
         // Numeric
@@ -5969,8 +5982,11 @@ mod tests {
         assert!(names.contains(&"str-length"), "missing str-length");
         assert!(names.contains(&"str-slice"), "missing str-slice");
         assert!(names.contains(&"str-contains?"), "missing str-contains?");
+        assert!(names.contains(&"str-chars"), "missing str-chars");
+        assert!(names.contains(&"starts-with?"), "missing starts-with?");
+        assert!(names.contains(&"ends-with?"), "missing ends-with?");
         assert!(names.contains(&"validate"), "missing validate");
-        assert_eq!(names.len(), 86, "expected 86 builtins, got {}", names.len());
+        assert_eq!(names.len(), 89, "expected 89 builtins, got {}", names.len());
     }
 
     #[test]

@@ -1,0 +1,6 @@
+# pad-right: right-pad a string to target width
+[include "stdlib/strings.llt"]
+---
+[call %.pad-right "hi" 5 " "]
+=== out
+String("hi   ")

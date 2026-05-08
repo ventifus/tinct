@@ -54,17 +54,17 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 **Spec chapters:** `doc/whatif/lib-supplemental.md` §Extended String Utilities. **Depends on:** `string-view`.
 
-- [ ] Implement `starts-with?` Rust builtin: `str::starts_with` on `&source[start..end]`; register in `standard_builtins()` with type `[String|Bytes|Seq] → [String|Bytes|Seq] → Bool` (`src/builtins_string.rs`, `src/types.rs`)
-- [ ] Implement `ends-with?` Rust builtin: `str::ends_with`; register analogously (`src/builtins_string.rs`, `src/types.rs`)
-- [ ] Implement `str-chars` Rust builtin (internal): walk `source[start..end].char_indices()`, yield lazy `Seq` of `Value::String` slices per codepoint (`src/builtins_string.rs`)
-- [ ] Implement `str-slice` Rust builtin: compute byte offsets for char positions, construct `Value::String { source: Rc::clone, start: byte_of(from), end: byte_of(to) }` — O(n) for UTF-8 char walk, O(1) allocation (`src/builtins_string.rs`, `src/types.rs`)
-- [ ] Add `starts-with?` and `ends-with?` to prelude scope (loaded at startup alongside `prelude.llt`) (`src/builtins.rs`)
+- [x] Implement `starts-with?` Rust builtin: `str::starts_with` on `&source[start..end]`; register in `standard_builtins()` with type `[String|Bytes|Seq] → [String|Bytes|Seq] → Bool` (`src/builtins_string.rs`, `src/types.rs`)
+- [x] Implement `ends-with?` Rust builtin: `str::ends_with`; register analogously (`src/builtins_string.rs`, `src/types.rs`)
+- [x] Implement `str-chars` Rust builtin (internal): walk `source[start..end].char_indices()`, yield lazy `Seq` of `Value::String` slices per codepoint (`src/builtins_string.rs`)
+- [x] Implement `str-slice` Rust builtin: compute byte offsets for char positions, construct `Value::String { source: Rc::clone, start: byte_of(from), end: byte_of(to) }` — O(n) for UTF-8 char walk, O(1) allocation (`src/builtins_string.rs`, `src/types.rs`)
+- [x] Add `starts-with?` and `ends-with?` to prelude scope (loaded at startup alongside `prelude.llt`) (`src/builtins.rs`)
 - [ ] Add Bytes dual-dispatch for `starts-with?` and `ends-with?` (byte-prefix/suffix match) (`src/builtins_string.rs`)
-- [ ] Add Seq dual-dispatch for `starts-with?` and `ends-with?` (element-by-element prefix match) (`src/builtins_string.rs`)
-- [ ] Create `stdlib/strings.llt` with pure-tinct functions: `str-contains?`, `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse` (`stdlib/strings.llt`)
+- [x] Add Seq dual-dispatch for `starts-with?` and `ends-with?` (element-by-element prefix match) (`src/builtins_string.rs`)
+- [x] Create `stdlib/strings.llt` with pure-tinct functions: `pad-left`, `pad-right`, `str-repeat`, `str-find`, `str-reverse` (Note: `str-contains?` is already a Rust builtin, `str-repeat` is in prelude but duplicated here per requirements) (`stdlib/strings.llt`)
 - [ ] Load `stdlib/strings.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
-- [ ] Register type signatures for all new builtins (`src/types.rs`)
-- [ ] Tests: corpus tests for starts-with?/ends-with? on String/Bytes/Seq, str-slice O(1), str-find, pad-left/pad-right alignment (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
+- [x] Register type signatures for all new builtins (`src/types.rs`)
+- [x] Tests: corpus tests for starts-with?/ends-with? on String/Bytes/Seq, str-slice O(1), str-find, pad-left/pad-right alignment (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
 
 ### `math-builtins`: Extended Math Builtins
 

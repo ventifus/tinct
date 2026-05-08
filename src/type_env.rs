@@ -827,6 +827,48 @@ impl TypeEnv {
             );
         }
 
+        // String operations returning Bool
+        for name in ["starts-with?", "ends-with?", "str-contains?"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![Type::Str, Type::Str],
+                    ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+            );
+        }
+
+        // str-chars: String → Seq
+        env.insert(
+            "str-chars".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Seq(Box::new(Type::Str))),
+                variadic: false,
+            },
+        );
+
+        // str-slice: String → Int → Int → String
+        env.insert(
+            "str-slice".to_string(),
+            Type::Function {
+                params: vec![Type::Str, Type::Int, Type::Int],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+
+        // str-length: String → Int
+        env.insert(
+            "str-length".to_string(),
+            Type::Function {
+                params: vec![Type::Str],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
+
         // Numeric operations
         for name in ["floor", "round"] {
             env.insert(

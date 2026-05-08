@@ -1,7 +1,11 @@
-//! String builtins: `str`, `split`, `replace`, `upper`, `lower`, `trim`, `str-length`.
+//! String builtins: `str`, `split`, `replace`, `upper`, `lower`, `trim`, `str-length`,
+//! `str-contains?`, `str-slice`, `str-chars`, `starts-with?`, `ends-with?`.
 //!
 //! These builtins operate on String values. They are all inherently materializing
 //! because they must inspect string content to compute their results.
+//!
+//! Some builtins (`starts-with?`, `ends-with?`) support dual-dispatch: they work on
+//! both String and Seq values.
 //!
 //! Extracted from `builtins.rs` to keep that file manageable.
 //!
@@ -574,4 +578,309 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         },
         call_span,
     )
+}
+
+/// `starts-with?`: Check if a string or sequence starts with a prefix.
+///
+/// Dual-dispatch:
+/// - String mode: Takes 2 args: `haystack` (String), `prefix` (String).
+///   Returns a Bool indicating whether haystack starts with prefix.
+/// - Seq mode: Takes 2 args: `haystack` (Seq), `prefix` (Seq).
+///   Returns a Bool indicating whether haystack's elements match prefix's elements.
+/// Inherently materializing: must inspect string/seq content to check prefix.
+pub(crate) fn builtin_starts_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("starts-with?", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let haystack_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let prefix_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    match (&haystack_val, &prefix_val) {
+        (Value::String { .. }, Value::String { .. }) => {
+            let haystack = require_string("starts-with?", haystack_val, args[0].span)?;
+            let prefix = require_string("starts-with?", prefix_val, args[1].span)?;
+            ok_val(Value::Bool(haystack.starts_with(&prefix)), call_span)
+        }
+        (Value::Seq { .. }, Value::Seq { .. }) => {
+            // Element-by-element prefix matching
+            let mut haystack_thunk = ctx.get_thunk(match haystack_val {
+                Value::Seq { head: _, tail } => tail,
+                _ => unreachable!(),
+            });
+            let mut prefix_thunk = ctx.get_thunk(match prefix_val {
+                Value::Seq { head: _, tail } => tail,
+                _ => unreachable!(),
+            });
+
+            // Check first elements
+            let haystack_head = ctx.get_thunk(match haystack_val {
+                Value::Seq { head, tail: _ } => head,
+                _ => unreachable!(),
+            });
+            let prefix_head = ctx.get_thunk(match prefix_val {
+                Value::Seq { head, tail: _ } => head,
+                _ => unreachable!(),
+            });
+
+            let haystack_head_val = materialize(&haystack_head, Some(&call_span), &ctx, depth)?;
+            let prefix_head_val = materialize(&prefix_head, Some(&call_span), &ctx, depth)?;
+
+            if haystack_head_val != prefix_head_val {
+                return ok_val(Value::Bool(false), call_span);
+            }
+
+            // Check remaining elements
+            loop {
+                let prefix_tail_val = materialize(&prefix_thunk, Some(&call_span), &ctx, depth)?;
+
+                match prefix_tail_val {
+                    Value::Dict(ref map) if map.is_empty() => {
+                        // Prefix exhausted, match succeeds
+                        return ok_val(Value::Bool(true), call_span);
+                    }
+                    Value::Seq {
+                        head: prefix_h,
+                        tail: prefix_t,
+                    } => {
+                        let haystack_tail_val =
+                            materialize(&haystack_thunk, Some(&call_span), &ctx, depth)?;
+
+                        match haystack_tail_val {
+                            Value::Dict(ref map) if map.is_empty() => {
+                                // Haystack exhausted before prefix, no match
+                                return ok_val(Value::Bool(false), call_span);
+                            }
+                            Value::Seq {
+                                head: haystack_h,
+                                tail: haystack_t,
+                            } => {
+                                let h_val = materialize(
+                                    &ctx.get_thunk(haystack_h),
+                                    Some(&call_span),
+                                    &ctx,
+                                    depth,
+                                )?;
+                                let p_val = materialize(
+                                    &ctx.get_thunk(prefix_h),
+                                    Some(&call_span),
+                                    &ctx,
+                                    depth,
+                                )?;
+
+                                if h_val != p_val {
+                                    return ok_val(Value::Bool(false), call_span);
+                                }
+
+                                haystack_thunk = ctx.get_thunk(haystack_t);
+                                prefix_thunk = ctx.get_thunk(prefix_t);
+                            }
+                            _ => {
+                                return Err(EvalError::type_mismatch_ctx(
+                                    "starts-with?".to_string(),
+                                    "Seq",
+                                    haystack_tail_val.type_name(),
+                                    args[0].span,
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "starts-with?".to_string(),
+                            "Seq",
+                            prefix_tail_val.type_name(),
+                            args[1].span,
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "starts-with?".to_string(),
+            "String or Seq",
+            haystack_val.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// `ends-with?`: Check if a string or sequence ends with a suffix.
+///
+/// Dual-dispatch:
+/// - String mode: Takes 2 args: `haystack` (String), `suffix` (String).
+///   Returns a Bool indicating whether haystack ends with suffix.
+/// - Seq mode: Takes 2 args: `haystack` (Seq), `suffix` (Seq).
+///   Returns a Bool indicating whether haystack's trailing elements match suffix's elements.
+/// Inherently materializing: must inspect string/seq content to check suffix.
+pub(crate) fn builtin_ends_with(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("ends-with?", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let haystack_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
+    let suffix_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
+
+    match (&haystack_val, &suffix_val) {
+        (Value::String { .. }, Value::String { .. }) => {
+            let haystack = require_string("ends-with?", haystack_val, args[0].span)?;
+            let suffix = require_string("ends-with?", suffix_val, args[1].span)?;
+            ok_val(Value::Bool(haystack.ends_with(&suffix)), call_span)
+        }
+        (Value::Seq { .. }, Value::Seq { .. }) => {
+            // Convert both sequences to vectors for easier comparison
+            let mut haystack_vec = Vec::new();
+            let mut current_thunk = Rc::clone(&args[0]);
+            loop {
+                let val = materialize(&current_thunk, Some(&call_span), &ctx, depth)?;
+                match val {
+                    Value::Dict(ref map) if map.is_empty() => break,
+                    Value::Seq { head, tail } => {
+                        haystack_vec.push(ctx.get_thunk(head));
+                        current_thunk = ctx.get_thunk(tail);
+                    }
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "ends-with?".to_string(),
+                            "Seq",
+                            val.type_name(),
+                            args[0].span,
+                        )
+                        .into());
+                    }
+                }
+            }
+
+            let mut suffix_vec = Vec::new();
+            let mut current_thunk = Rc::clone(&args[1]);
+            loop {
+                let val = materialize(&current_thunk, Some(&call_span), &ctx, depth)?;
+                match val {
+                    Value::Dict(ref map) if map.is_empty() => break,
+                    Value::Seq { head, tail } => {
+                        suffix_vec.push(ctx.get_thunk(head));
+                        current_thunk = ctx.get_thunk(tail);
+                    }
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "ends-with?".to_string(),
+                            "Seq",
+                            val.type_name(),
+                            args[1].span,
+                        )
+                        .into());
+                    }
+                }
+            }
+
+            // Check if suffix is longer than haystack
+            if suffix_vec.len() > haystack_vec.len() {
+                return ok_val(Value::Bool(false), call_span);
+            }
+
+            // Compare elements from the end
+            let offset = haystack_vec.len() - suffix_vec.len();
+            for (i, suffix_thunk) in suffix_vec.iter().enumerate() {
+                let haystack_elem =
+                    materialize(&haystack_vec[offset + i], Some(&call_span), &ctx, depth)?;
+                let suffix_elem = materialize(suffix_thunk, Some(&call_span), &ctx, depth)?;
+                if haystack_elem != suffix_elem {
+                    return ok_val(Value::Bool(false), call_span);
+                }
+            }
+
+            ok_val(Value::Bool(true), call_span)
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "ends-with?".to_string(),
+            "String or Seq",
+            haystack_val.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// `str-chars`: Convert a string to a lazy sequence of single-character strings.
+///
+/// Takes 1 arg: `input` (String).
+/// Returns a lazy Seq where each element is a zero-copy String slice of one Unicode codepoint.
+/// Each slice shares the original Rc<str> source.
+/// Inherently materializing: must inspect string content to identify character boundaries.
+pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("str-chars", args, named, &ctx, depth, call_span)?;
+
+    let (input_source, input_start, input_end) = match val {
+        Value::String { source, start, end } => (source, start, end),
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                "str-chars".to_string(),
+                "String",
+                val.type_name(),
+                args[0].span,
+            )
+            .into());
+        }
+    };
+
+    let input_str = &input_source[input_start..input_end];
+
+    // Build character ranges: each character is [start_byte, end_byte)
+    let mut char_ranges: Vec<(usize, usize)> = Vec::new();
+    for (byte_idx, ch) in input_str.char_indices() {
+        char_ranges.push((byte_idx, byte_idx + ch.len_utf8()));
+    }
+
+    // Build the sequence from the end to the beginning (right-to-left)
+    let mut result = Rc::new(Thunk::new_materialized(
+        Value::Dict(indexmap::IndexMap::new()),
+        call_span,
+    ));
+
+    for (char_start, char_end) in char_ranges.into_iter().rev() {
+        let head = Rc::new(Thunk::new_materialized(
+            Value::String {
+                source: Rc::clone(&input_source),
+                start: input_start + char_start,
+                end: input_start + char_end,
+            },
+            call_span,
+        ));
+
+        result = Rc::new(Thunk::new_materialized(
+            Value::Seq {
+                head: ctx.alloc_thunk(head),
+                tail: ctx.alloc_thunk(result),
+            },
+            call_span,
+        ));
+    }
+
+    Ok(result)
 }

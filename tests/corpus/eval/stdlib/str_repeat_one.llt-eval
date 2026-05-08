@@ -1,0 +1,6 @@
+# str-repeat: single repetition returns original
+[include "stdlib/strings.llt"]
+---
+[call %.str-repeat "hello" 1]
+=== out
+String("hello")

@@ -1,0 +1,6 @@
+# pad-left: zero padding
+[include "stdlib/strings.llt"]
+---
+[call %.pad-left "x" 4 "0"]
+=== out
+String("000x")

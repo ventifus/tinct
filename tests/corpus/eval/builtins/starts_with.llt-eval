@@ -1,0 +1,4 @@
+# starts-with? : check if string starts with prefix
+[starts-with? "hello" "hel"]
+=== out
+Bool(true)
