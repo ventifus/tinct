@@ -2310,9 +2310,7 @@ impl TypeError {
         let msg = &self.message;
         if msg.starts_with("arity mismatch") {
             "T001"
-        } else if msg.starts_with("undefined variable")
-            || msg.starts_with("undefined type")
-        {
+        } else if msg.starts_with("undefined variable") || msg.starts_with("undefined type") {
             "T002"
         } else if msg.starts_with("cannot unify")
             || msg.starts_with("field '")
@@ -2389,7 +2387,10 @@ fn type_error_note(err: &TypeError) -> Option<String> {
         Some("  = note: check that you are passing the correct number of arguments".to_string())
     } else if msg.starts_with("undefined variable") {
         // Extract the variable name from "undefined variable: <name>"
-        let name = msg.strip_prefix("undefined variable: ").unwrap_or("").trim();
+        let name = msg
+            .strip_prefix("undefined variable: ")
+            .unwrap_or("")
+            .trim();
         let note = if name.is_empty() {
             "  = note: variable is not defined in any enclosing scope".to_string()
         } else {

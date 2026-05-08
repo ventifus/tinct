@@ -17,7 +17,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Macro-Rewrite](completed/macro-rewrite.md) | Superseded — let-binding done as `Expr::Sequential`, match as `Expr::Match`. One remaining task: migrate `i"..."` to `[defmacro tmpl]` (tracked in TODO.md) |
+| [Macro-Rewrite](completed/macro-rewrite.md) | Superseded — let-binding done as `Expr::Sequential`, match as `Expr::Match`. `i"..."` migrated to `[defmacro tmpl]` (`tmpl-macro` sprint complete, see DONE.md) |
 | [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — user-defined macros can use full-annotated-expression equality for dict keys |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 
@@ -156,15 +156,15 @@ type-predicates ✓ ─── let-binding ✓ ─── pattern-matching ✓ ─
 
 # Macros cluster ✓ Complete
 quasiquoting ✓ ─── macros ✓ ─── call-aliases (adopt now)
-                              ─── macro-rewrite ✓ superseded (tmpl in TODO.md)
+                              ─── macro-rewrite ✓ superseded (tmpl done — see DONE.md)
                               ─── parse-stage-macros
 
 # I/O
 io ✓ Complete ─── templating ✓ Complete ─── template-polarity
-io ✓ Complete ─── lib-tls
+io ✓ Complete ─── lib-tls ✓
 
 # Standard library
-lib-supplemental ─── lib-regex
+lib-supplemental ✓ ─── lib-regex ✓
 
 # Formal verification
 eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
