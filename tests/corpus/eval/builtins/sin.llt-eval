@@ -1,0 +1,4 @@
+# sin : sine of 0 radians
+[sin 0]
+=== out
+Float(0)

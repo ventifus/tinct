@@ -1,0 +1,4 @@
+# sqrt : square root
+[sqrt 4]
+=== out
+Float(2)

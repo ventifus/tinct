@@ -1,0 +1,4 @@
+# inf? : check if result is infinite
+[inf? [log 0]]
+=== out
+Bool(true)

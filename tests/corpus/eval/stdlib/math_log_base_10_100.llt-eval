@@ -1,0 +1,6 @@
+[include "stdlib/math.llt"]
+---
+# log₁₀(100) = 2
+[call %.log-base 10 100]
+=== out
+Float(2)

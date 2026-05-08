@@ -1,0 +1,5 @@
+[include "stdlib/math.llt"]
+---
+%.e
+=== out
+Float(2.718281828459045)

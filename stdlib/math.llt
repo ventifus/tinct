@@ -1,0 +1,65 @@
+# ============================================================================
+# LLT Math Library
+# ============================================================================
+#
+# Mathematical constants and functions implemented in pure LLT.
+#
+# These functions depend on the following Rust-native math builtins:
+#   pow  sqrt  log  log2  log10  exp
+#   sin  cos  tan  asin  acos  atan  atan2
+#   nan?  inf?  finite?
+#
+# All functions in this dict can reference each other (letrec semantics).
+# ============================================================================
+
+[
+
+# ============================================================================
+# Mathematical Constants
+# ============================================================================
+
+# Pi: ratio of a circle's circumference to its diameter
+# Type: Float
+pi: 3.141592653589793
+
+# Euler's number: base of the natural logarithm
+# Type: Float
+e: 2.718281828459045
+
+# Golden ratio: (1 + sqrt(5)) / 2
+# Type: Float
+phi: 1.618033988749895
+
+# ============================================================================
+# Pure-Tinct Math Functions
+# ============================================================================
+
+# Hypotenuse: Euclidean distance sqrt(a² + b²)
+# Type: (Number -> Number -> Float)
+# Example: [hypot 3 4] => 5.0
+# Example: [hypot 1 1] => 1.4142135623730951
+hypot: [fn@Float [a@Number b@Number]
+    [sqrt [+ [pow a 2] [pow b 2]]]]
+
+# Convert degrees to radians: d * (π / 180)
+# Type: (Number -> Float)
+# Example: [deg->rad 180] => 3.141592653589793
+# Example: [deg->rad 90] => 1.5707963267948966
+deg->rad: [fn@Float [d@Number]
+    [* d [/ pi 180.0]]]
+
+# Convert radians to degrees: r * (180 / π)
+# Type: (Number -> Float)
+# Example: [rad->deg 3.141592653589793] => 180.0
+# Example: [rad->deg 1.5707963267948966] => 90.0
+rad->deg: [fn@Float [r@Number]
+    [* r [/ 180.0 pi]]]
+
+# Logarithm with arbitrary base: log_b(x) = ln(x) / ln(b)
+# Type: (Number -> Number -> Float)
+# Example: [log-base 2 8] => 3.0
+# Example: [log-base 10 100] => 2.0
+log-base: [fn@Float [base@Number x@Number]
+    [/ [log x] [log base]]]
+
+]

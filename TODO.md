@@ -70,14 +70,14 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 **Spec chapters:** `doc/whatif/lib-supplemental.md` §Extended Math Builtins. Independent of other sprints.
 
-- [ ] Implement 13 math Rust builtins as `f64` method wrappers: `pow` (powf), `sqrt`, `log` (ln), `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` (`src/builtins_math.rs`)
-- [ ] Implement 3 float predicate builtins: `nan?` (is_nan), `inf?` (is_infinite), `finite?` (is_finite) (`src/builtins_math.rs`)
-- [ ] Register all 16 builtins in `standard_builtins()` with correct `Strictness` (`src/builtins.rs`)
-- [ ] Register type signatures: `pow: Number → Number → Float`, `sqrt/log/sin: Float → Float`, `nan?/inf?/finite?: Float → Bool`, `atan2: Float → Float → Float` (`src/types.rs`)
-- [ ] Create `stdlib/math.llt` with Float literals (`pi`, `e`, `phi`) and pure-tinct functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`) (`stdlib/math.llt`)
+- [x] Implement 13 math Rust builtins as `f64` method wrappers: `pow` (powf), `sqrt`, `log` (ln), `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` (`src/builtins_math.rs`)
+- [x] Implement 3 float predicate builtins: `nan?` (is_nan), `inf?` (is_infinite), `finite?` (is_finite) (`src/builtins_math.rs`)
+- [x] Register all 16 builtins in `standard_builtins()` with correct `Strictness` (`src/builtins.rs`)
+- [x] Register type signatures: `pow: Number → Number → Float`, `sqrt/log/sin: Float → Float`, `nan?/inf?/finite?: Float → Bool`, `atan2: Float → Float → Float` (`src/types.rs`)
+- [x] Create `stdlib/math.llt` with Float literals (`pi`, `e`, `phi`) and pure-tinct functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`) (`stdlib/math.llt`)
 - [ ] Load `stdlib/math.llt` at startup alongside `prelude.llt` (`src/builtins.rs` or `src/lib.rs`)
-- [ ] Tests: corpus tests for each builtin (exact values, NaN/Inf edge cases, `nan?`/`inf?`/`finite?` predicates) (`tests/corpus/eval/builtins/`)
-- [ ] Tests: corpus tests for math.llt pure-tinct functions (`tests/corpus/eval/stdlib/`)
+- [x] Tests: corpus tests for each builtin (exact values, NaN/Inf edge cases, `nan?`/`inf?`/`finite?` predicates) (`tests/corpus/eval/builtins/`)
+- [x] Tests: corpus tests for math.llt pure-tinct functions (`tests/corpus/eval/stdlib/`)
 
 ### `bitwise-encoding`: Bitwise Primitives & Encoding
 

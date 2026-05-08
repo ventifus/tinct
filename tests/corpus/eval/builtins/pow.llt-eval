@@ -1,0 +1,4 @@
+# pow : power function
+[pow 2 3]
+=== out
+Float(8)

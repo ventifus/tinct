@@ -1,0 +1,5 @@
+[include "stdlib/math.llt"]
+---
+[call %.hypot 3 4]
+=== out
+Float(5)
