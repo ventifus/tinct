@@ -134,12 +134,22 @@ pub(crate) fn builtin_dir_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `open`: Open a file within a DirCap.
-/// Takes a DirCap, String filename, and String mode ("r", "w", "a").
-/// Returns Value::Handle.
 ///
-/// **Note:** Future enhancement (deferred): Accept additional Variant args as capability flags
-/// (Readable, Writable, Binary, Seekable, etc.) and populate the caps HashMap accordingly.
-/// For now, this function hardcodes Readable + Text caps for read-only mode.
+/// Accepts two calling patterns:
+/// 1. Legacy (3 args): `[open dir_cap path "r"]` — backward compatibility with string mode
+/// 2. Variant flags (3+ args): `[open dir_cap path Readable Text]` — each arg after path
+///    is a Variant flag that sets a capability in the returned Handle's caps HashMap.
+///
+/// Variant flags:
+/// - `Readable` → read mode (mutually exclusive with Writable)
+/// - `Writable` → write mode (mutually exclusive with Readable)
+/// - `Binary` → binary encoding (mutually exclusive with Text)
+/// - `Text` → text encoding (default if neither Binary nor Text specified)
+///
+/// Returns Value::Handle (read mode) or Value::WriteHandle (write mode).
+///
+/// At least one flag is required in the new pattern. If neither Readable nor Writable is
+/// specified, an error is returned.
 pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -149,15 +159,14 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
 
-    // Expect 3 args: DirCap, String path, String mode
-    if args.len() != 3 {
+    // Require at least 3 args: DirCap, String path, and at least one flag/mode
+    if args.len() < 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
     reject_named("open", named, call_span)?;
 
     let dir_val = materialize(&args[0], Some(&call_span), &ctx, depth)?;
     let path_val = materialize(&args[1], Some(&call_span), &ctx, depth)?;
-    let mode_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
 
     // Extract DirCap
     let dir = match dir_val {
@@ -184,50 +193,188 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     let path = require_string("open", path_val, args[1].span)?;
-    let mode = require_string("open", mode_val, args[2].span)?;
 
-    // Open the file based on mode
-    use std::io::BufReader;
-    let handle: Box<dyn std::io::BufRead> = match mode.as_str() {
-        "r" => {
-            let file = dir.open(&path).map_err(|e| {
-                EvalError::user_error(
-                    format!("open: failed to open file '{}': {}", path, e),
+    // Check if third arg is a String (legacy mode) or Variant (new mode)
+    let third_arg_val = materialize(&args[2], Some(&call_span), &ctx, depth)?;
+
+    // Legacy string mode check
+    if matches!(third_arg_val, Value::String { .. }) {
+        // BACKWARD COMPATIBILITY PATH: 3-arg string mode
+        if args.len() != 3 {
+            return Err(EvalError::user_error(
+                "open: string mode requires exactly 3 arguments (dir, path, mode)".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        let mode = require_string("open", third_arg_val, args[2].span)?;
+
+        // Open the file based on mode
+        use std::io::BufReader;
+        let handle: Box<dyn std::io::BufRead> = match mode.as_str() {
+            "r" => {
+                let file = dir.open(&path).map_err(|e| {
+                    EvalError::user_error(
+                        format!("open: failed to open file '{}': {}", path, e),
+                        call_span,
+                    )
+                })?;
+                Box::new(BufReader::new(file))
+            }
+            "w" | "a" => {
+                return Err(EvalError::user_error(
+                    "open: write and append modes not yet implemented (Phase 1 is read-only)"
+                        .to_string(),
                     call_span,
                 )
-            })?;
-            Box::new(BufReader::new(file))
-        }
-        "w" | "a" => {
-            return Err(EvalError::user_error(
-                "open: write and append modes not yet implemented (Phase 1 is read-only)"
-                    .to_string(),
-                call_span,
-            )
-            .into());
-        }
-        _ => {
-            return Err(EvalError::user_error(
-                format!("open: invalid mode '{}' (expected 'r', 'w', or 'a')", mode),
-                call_span,
-            )
-            .into());
-        }
-    };
+                .into());
+            }
+            _ => {
+                return Err(EvalError::user_error(
+                    format!("open: invalid mode '{}' (expected 'r', 'w', or 'a')", mode),
+                    call_span,
+                )
+                .into());
+            }
+        };
 
-    // Default caps for read-only handle (Phase 1)
+        // Default caps for read-only handle (legacy mode)
+        let mut caps = HashMap::new();
+        caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
+        caps.insert("Text".to_string(), Value::Dict(IndexMap::new())); // Null
+
+        return ok_val(
+            Value::Handle {
+                caps,
+                inner: Rc::new(std::cell::RefCell::new(handle)),
+                write_inner: None,
+            },
+            call_span,
+        );
+    }
+
+    // NEW VARIANT FLAGS PATH: parse flags from args[2..]
     let mut caps = HashMap::new();
-    caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
-    caps.insert("Text".to_string(), Value::Dict(IndexMap::new())); // Null
+    let mut has_readable = false;
+    let mut has_writable = false;
+    let mut has_binary = false;
+    let mut has_text = false;
 
-    ok_val(
-        Value::Handle {
-            caps,
-            inner: Rc::new(std::cell::RefCell::new(handle)),
-            write_inner: None,
-        },
-        call_span,
-    )
+    for flag_arg in &args[2..] {
+        let flag_val = materialize(flag_arg, Some(&call_span), &ctx, depth)?;
+
+        match flag_val {
+            Value::Variant { ref tag, .. } => match tag.as_str() {
+                "Readable" => {
+                    if has_writable {
+                        return Err(EvalError::user_error(
+                            "open: cannot specify both Readable and Writable flags".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    has_readable = true;
+                    caps.insert("Readable".to_string(), Value::Dict(IndexMap::new()));
+                }
+                "Writable" => {
+                    if has_readable {
+                        return Err(EvalError::user_error(
+                            "open: cannot specify both Readable and Writable flags".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    has_writable = true;
+                    caps.insert("Writable".to_string(), Value::Dict(IndexMap::new()));
+                }
+                "Binary" => {
+                    if has_text {
+                        return Err(EvalError::user_error(
+                            "open: cannot specify both Binary and Text flags".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    has_binary = true;
+                    caps.insert("Binary".to_string(), Value::Dict(IndexMap::new()));
+                }
+                "Text" => {
+                    if has_binary {
+                        return Err(EvalError::user_error(
+                            "open: cannot specify both Binary and Text flags".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    has_text = true;
+                    caps.insert("Text".to_string(), Value::Dict(IndexMap::new()));
+                }
+                other => {
+                    return Err(EvalError::user_error(
+                            format!(
+                                "open: unknown capability flag '{}' (expected Readable, Writable, Binary, or Text)",
+                                other
+                            ),
+                            call_span,
+                        )
+                        .into());
+                }
+            },
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "open".to_string(),
+                    "Variant (capability flag)",
+                    other.type_name(),
+                    flag_arg.span,
+                )
+                .into());
+            }
+        }
+    }
+
+    // Require at least one of Readable or Writable
+    if !has_readable && !has_writable {
+        return Err(EvalError::user_error(
+            "open: must specify at least one of Readable or Writable flags".to_string(),
+            call_span,
+        )
+        .into());
+    }
+
+    // Default to Text encoding if neither Binary nor Text specified
+    if !has_binary && !has_text {
+        caps.insert("Text".to_string(), Value::Dict(IndexMap::new()));
+    }
+
+    // Open the file based on flags
+    use std::io::BufReader;
+    if has_readable {
+        // Read mode
+        let file = dir.open(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("open: failed to open file '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+        let handle: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
+
+        ok_val(
+            Value::Handle {
+                caps,
+                inner: Rc::new(std::cell::RefCell::new(handle)),
+                write_inner: None,
+            },
+            call_span,
+        )
+    } else {
+        // Write mode (has_writable == true)
+        return Err(EvalError::user_error(
+            "open: Writable mode not yet implemented (Phase 1 is read-only)".to_string(),
+            call_span,
+        )
+        .into());
+    }
 }
 
 /// `slurp`: Read all bytes from a Handle to a String or Bytes.

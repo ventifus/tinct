@@ -15,7 +15,7 @@
   run-seq: [fn [effects] [fold [fn [acc e] [merge acc e]] [] effects]]
 
   # Pinned Rust version — injected by justfile as RUST_VERSION env var
-  rust-version: [.ok [env "RUST_VERSION"]]
+  rust-version: [get "ok" [env "RUST_VERSION"]]
 
   # Parse local project files
   cargo-toml: [toml.parse-toml-lite [slurp [open root "Cargo.toml" "r"]]]

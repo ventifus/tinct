@@ -1850,6 +1850,18 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let source = read_source(file_path)?;
     let ast = parse(&source).map_err(|e| format!("{e}"))?;
 
+    // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
+    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    let mut ast = expand_result.file;
+
+    tinct::desugar::desugar_file(&mut ast.node);
+    tinct::resolve::resolve_file(&ast.node);
+
+    // Type check to get DocMap (for doc strings)
+    let env = tinct::build_prelude_env();
+    let (_type_errors, _type_map, doc_map) =
+        tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
+
     // Collect contract information from each document section.
     let mut contracts: Vec<serde_json::Value> = Vec::new();
     let mut has_any_contract = false;
@@ -1891,6 +1903,13 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
             doc_contract.insert("schema".into(), serde_json::Value::Object(schema_fields));
         }
 
+        // Include doc strings from DocMap for top-level bindings
+        let doc_strings = extract_doc_strings_from_doc(&doc.node, &doc_map);
+        if !doc_strings.is_empty() {
+            has_any_contract = true;
+            doc_contract.insert("docs".into(), serde_json::Value::Object(doc_strings));
+        }
+
         if doc_contract.len() > 1 {
             // Has more than just "section"
             contracts.push(serde_json::Value::Object(doc_contract));
@@ -1912,7 +1931,7 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
             serde_json::to_string_pretty(&output).map_err(|e| format!("JSON error: {e}"))?;
         println!("{pretty}");
     } else {
-        // Human-readable output: one line per field
+        // Human-readable output: one line per field, with doc strings
         for contract in &contracts {
             if let Some(section) = contract.get("section") {
                 if contracts.len() > 1 {
@@ -1924,18 +1943,90 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
             }
             if let Some(fields) = contract.get("fields").and_then(|f| f.as_object()) {
                 for (name, constraint) in fields {
-                    println!("  {}: {}", name, format_constraint(constraint));
+                    print!("  {}: {}", name, format_constraint(constraint));
+                    // Add doc string if available
+                    if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
+                        if let Some(doc_str) = docs.get(name).and_then(|v| v.as_str()) {
+                            print!(" — {}", doc_str);
+                        }
+                    }
+                    println!();
                 }
             }
             if let Some(schema) = contract.get("schema").and_then(|s| s.as_object()) {
                 for (name, constraint) in schema {
-                    println!("  {}: {}", name, format_constraint(constraint));
+                    print!("  {}: {}", name, format_constraint(constraint));
+                    // Add doc string if available
+                    if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
+                        if let Some(doc_str) = docs.get(name).and_then(|v| v.as_str()) {
+                            print!(" — {}", doc_str);
+                        }
+                    }
+                    println!();
+                }
+            }
+            // If there are doc strings for bindings not in fields/schema, show them
+            if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
+                let field_names: std::collections::HashSet<&String> = contract
+                    .get("fields")
+                    .and_then(|f| f.as_object())
+                    .map(|o| o.keys().collect())
+                    .unwrap_or_default();
+                let schema_names: std::collections::HashSet<&String> = contract
+                    .get("schema")
+                    .and_then(|s| s.as_object())
+                    .map(|o| o.keys().collect())
+                    .unwrap_or_default();
+
+                for (name, doc_str) in docs {
+                    if !field_names.contains(name) && !schema_names.contains(name) {
+                        if let Some(doc_val) = doc_str.as_str() {
+                            println!("  {} — {}", name, doc_val);
+                        }
+                    }
                 }
             }
         }
     }
 
     Ok(())
+}
+
+/// Extract doc strings from a document's top-level bindings.
+/// Scans dict expressions in the document for entries that have doc strings in the DocMap.
+fn extract_doc_strings_from_doc(
+    doc: &tinct::Document,
+    doc_map: &std::collections::HashMap<String, String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut result = serde_json::Map::new();
+
+    for expr in &doc.expressions {
+        if let tinct::Expr::Dict(entries) = &expr.node {
+            for entry in entries {
+                if let Some(ref key_expr) = entry.node.key {
+                    // Extract the binding name from the key expression
+                    // Keys can be:
+                    // - Expr::Str (string literal key)
+                    // - Expr::Annotated { name, .. } (annotated binding like name@[...])
+                    // - Expr::VarRef (bare identifier key)
+                    let name_opt = match &key_expr.node {
+                        tinct::Expr::Str(s) => Some(s.as_str()),
+                        tinct::Expr::Annotated { name, .. } => Some(name.as_str()),
+                        tinct::Expr::VarRef { name, .. } => Some(name.as_str()),
+                        _ => None,
+                    };
+
+                    if let Some(name) = name_opt {
+                        if let Some(doc_str) = doc_map.get(name) {
+                            result.insert(name.to_string(), serde_json::json!(doc_str));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }
 
 /// Turn an annotation value expression into a JSON description.
