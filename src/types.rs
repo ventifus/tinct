@@ -49,12 +49,15 @@ pub struct Row {
 /// Kind for higher-kinded types (Jones 1993)
 /// Kinds classify types: * for proper types, (* -> *) for type constructors
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Scaffolding for future type class implementation
 pub enum Kind {
     /// * — kind of proper types (Int, Str, [name: Str], etc.)
     Type,
     /// k1 -> k2 — kind of type constructors (Seq: * -> *, Mappable: (* -> *) -> Constraint)
+    #[allow(dead_code)] // Scaffolding for higher-kinded types
     Arrow(Box<Kind>, Box<Kind>),
+    /// Kind variable — unification variable for kind inference
+    #[allow(dead_code)] // Scaffolding for kind inference
+    Var(u32),
 }
 
 impl fmt::Display for Kind {
@@ -62,6 +65,26 @@ impl fmt::Display for Kind {
         match self {
             Kind::Type => write!(f, "*"),
             Kind::Arrow(k1, k2) => write!(f, "({} -> {})", k1, k2),
+            Kind::Var(id) => write!(f, "?k{}", id),
+        }
+    }
+}
+
+/// Errors that can occur during kind unification
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Scaffolding for type class implementation
+pub enum KindError {
+    /// Kind mismatch — attempted to unify incompatible kinds
+    Mismatch(Kind, Kind),
+    /// Infinite kind — occurs check failed (kind variable appears in its own definition)
+    InfiniteKind,
+}
+
+impl fmt::Display for KindError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KindError::Mismatch(k1, k2) => write!(f, "Kind mismatch: {} vs {}", k1, k2),
+            KindError::InfiniteKind => write!(f, "Infinite kind"),
         }
     }
 }
@@ -950,10 +973,69 @@ pub struct InferState {
     /// replace equality-based substitution for all type variables.
     #[allow(dead_code)] // Scaffolding for algebraic subtyping migration
     pub bounds: HashMap<String, TypeVarBounds>,
+    /// Type class environment: registry of class declarations.
+    /// Dict-scoped: class declarations are visible in the dict and children.
+    pub class_env: ClassEnv,
+    /// Type class instance environment: registry of instance declarations.
+    /// Globally registered: coherence requires global uniqueness.
+    pub instance_env: InstanceEnv,
 }
 
 impl InferState {
     pub fn new() -> Self {
+        let mut class_env = ClassEnv::new();
+
+        // Register built-in type classes with their superclass relationships
+        // These back the B4 constrained type variables implementation
+
+        // Equatable: base class (no superclasses)
+        class_env.insert(ClassDecl {
+            name: "Equatable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            methods: HashMap::new(),
+        });
+
+        // Numeric: extends Equatable (numbers can be compared for equality)
+        class_env.insert(ClassDecl {
+            name: "Numeric".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec!["Equatable".to_string()],
+            methods: HashMap::new(),
+        });
+
+        // Comparable: extends Equatable (ordered types can be compared for equality)
+        class_env.insert(ClassDecl {
+            name: "Comparable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec!["Equatable".to_string()],
+            methods: HashMap::new(),
+        });
+
+        // Showable: base class (all types except Error can be shown)
+        class_env.insert(ClassDecl {
+            name: "Showable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            methods: HashMap::new(),
+        });
+
+        // Mappable: base class (Record and Seq support map operations)
+        class_env.insert(ClassDecl {
+            name: "Mappable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            methods: HashMap::new(),
+        });
+
+        // Appendable: base class (Str, Record, Seq support append operations)
+        class_env.insert(ClassDecl {
+            name: "Appendable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            methods: HashMap::new(),
+        });
+
         Self {
             name_counter: 0,
             level: 0,
@@ -961,6 +1043,8 @@ impl InferState {
             subst: Substitution::new(),
             constraints: Vec::new(),
             bounds: HashMap::new(),
+            class_env,
+            instance_env: InstanceEnv::new(),
         }
     }
 
@@ -995,6 +1079,147 @@ impl InferState {
 impl Default for InferState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// State for kind inference and unification (Jones 1993)
+///
+/// Kind inference assigns kinds to type constructors and validates their usage.
+/// For example, `Seq` has kind `* -> *` (takes a type, returns a type), while
+/// `Int` has kind `*` (is a proper type). Kind variables (`Kind::Var`) are used
+/// for type constructors whose kind is not yet known.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Scaffolding for type class implementation
+pub struct KindState {
+    /// Monotonic counter for fresh kind variable IDs
+    pub next_var: u32,
+    /// Substitution from kind variables to kinds
+    pub substitution: HashMap<u32, Kind>,
+}
+
+impl KindState {
+    /// Create a new kind inference state
+    pub fn new() -> Self {
+        Self {
+            next_var: 0,
+            substitution: HashMap::new(),
+        }
+    }
+
+    /// Generate a fresh kind variable
+    #[allow(dead_code)] // Scaffolding for kind inference
+    pub fn fresh_var(&mut self) -> Kind {
+        let id = self.next_var;
+        self.next_var = self.next_var.saturating_add(1);
+        Kind::Var(id)
+    }
+
+    /// Apply the current substitution to a kind (chase bindings to fixpoint)
+    pub fn apply(&self, kind: &Kind) -> Kind {
+        match kind {
+            Kind::Type => Kind::Type,
+            Kind::Arrow(k1, k2) => Kind::Arrow(Box::new(self.apply(k1)), Box::new(self.apply(k2))),
+            Kind::Var(id) => {
+                if let Some(k) = self.substitution.get(id) {
+                    self.apply(k) // Chase transitive bindings
+                } else {
+                    Kind::Var(*id)
+                }
+            }
+        }
+    }
+
+    /// Default all unresolved kind variables to `Kind::Type` (Jones 1993, §4)
+    ///
+    /// After kind inference completes, any remaining kind variables represent unconstrained
+    /// type constructors. By convention (and for simplicity), we default them to `*` (proper types).
+    /// This is sound because:
+    /// - If a type constructor has no applied arguments, it must have kind `*`
+    /// - If it has arguments but no kind constraints, defaulting to `*` is the most permissive choice
+    ///
+    /// Example: `[@Seq<$T> [1 2 3]]` infers `Seq: ?k0 -> *`, then defaults `?k0` to `*`, giving `Seq: * -> *`.
+    #[allow(dead_code)] // Scaffolding for kind inference
+    pub fn default_remaining(&mut self) {
+        // Collect all kind variables that appear in the substitution (transitively)
+        let mut all_vars = HashSet::new();
+        for k in self.substitution.values() {
+            self.collect_kind_vars(k, &mut all_vars);
+        }
+
+        // Default any unbound kind variables to Type
+        for id in 0..self.next_var {
+            if !self.substitution.contains_key(&id) && !all_vars.contains(&id) {
+                self.substitution.insert(id, Kind::Type);
+            }
+        }
+    }
+
+    /// Collect all kind variables appearing in a kind (for defaulting)
+    #[allow(dead_code)] // Scaffolding for kind inference
+    fn collect_kind_vars(&self, kind: &Kind, vars: &mut HashSet<u32>) {
+        match kind {
+            Kind::Type => {}
+            Kind::Arrow(k1, k2) => {
+                self.collect_kind_vars(k1, vars);
+                self.collect_kind_vars(k2, vars);
+            }
+            Kind::Var(id) => {
+                if vars.insert(*id) {
+                    // Only recurse if we haven't seen this variable before
+                    if let Some(k) = self.substitution.get(id) {
+                        self.collect_kind_vars(k, vars);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Default for KindState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Occurs check for kind unification — does kind variable `v` appear in kind `k`?
+///
+/// Prevents infinite kinds like `?k0 = ?k0 -> *`, which would create cycles in the kind structure.
+#[allow(dead_code)] // Scaffolding for type class implementation
+fn occurs_in_kind(v: u32, k: &Kind, state: &KindState) -> bool {
+    match state.apply(k) {
+        Kind::Type => false,
+        Kind::Arrow(k1, k2) => occurs_in_kind(v, &k1, state) || occurs_in_kind(v, &k2, state),
+        Kind::Var(id) => id == v,
+    }
+}
+
+/// Unify two kinds, updating the kind substitution (Robinson's Algorithm U for kinds)
+///
+/// Kind unification is simpler than type unification because kinds don't have rows,
+/// literals, or subtyping. It's pure structural unification:
+/// - `*` unifies with `*`
+/// - `k1 -> k2` unifies with `k3 -> k4` if `k1 ~ k3` and `k2 ~ k4`
+/// - `?k` unifies with any kind `k` (if occurs check passes)
+#[allow(dead_code)] // Scaffolding for type class implementation
+pub fn unify_kind(k1: &Kind, k2: &Kind, state: &mut KindState) -> Result<(), KindError> {
+    let k1 = state.apply(k1);
+    let k2 = state.apply(k2);
+
+    match (&k1, &k2) {
+        (Kind::Type, Kind::Type) => Ok(()),
+        (Kind::Arrow(a1, r1), Kind::Arrow(a2, r2)) => {
+            unify_kind(a1, a2, state)?;
+            unify_kind(r1, r2, state)
+        }
+        (Kind::Var(v), k) | (k, Kind::Var(v)) => {
+            // Occurs check: prevent infinite kinds
+            if occurs_in_kind(*v, k, state) {
+                return Err(KindError::InfiniteKind);
+            }
+            state.substitution.insert(*v, k.clone());
+            Ok(())
+        }
+        _ => Err(KindError::Mismatch(k1, k2)),
     }
 }
 
@@ -6260,5 +6485,138 @@ mod tests {
         let union = Type::Union(vec![Type::Bool, Type::Float]);
         let complex = Type::Intersection(vec![Type::Int, union]);
         assert_eq!(format!("{}", complex), "Int & (Bool | Float)");
+    }
+
+    #[test]
+    fn test_entails_direct() {
+        // Direct entailment: constraint is in context
+        let state = InferState::new();
+        let context = vec![Constraint::new("Equatable", "a")];
+        let target = Constraint::new("Equatable", "a");
+
+        assert!(entails(&state.class_env, &context, &target));
+    }
+
+    #[test]
+    fn test_entails_superclass() {
+        // Superclass entailment: Numeric has Equatable as superclass
+        let state = InferState::new();
+        let context = vec![Constraint::new("Numeric", "a")];
+        let target = Constraint::new("Equatable", "a");
+
+        assert!(entails(&state.class_env, &context, &target));
+    }
+
+    #[test]
+    fn test_entails_superclass_comparable() {
+        // Superclass entailment: Comparable has Equatable as superclass
+        let state = InferState::new();
+        let context = vec![Constraint::new("Comparable", "a")];
+        let target = Constraint::new("Equatable", "a");
+
+        assert!(entails(&state.class_env, &context, &target));
+    }
+
+    #[test]
+    fn test_entails_not_entailed() {
+        // Not entailed: Equatable does not imply Numeric
+        let state = InferState::new();
+        let context = vec![Constraint::new("Equatable", "a")];
+        let target = Constraint::new("Numeric", "a");
+
+        assert!(!entails(&state.class_env, &context, &target));
+    }
+
+    #[test]
+    fn test_entails_different_vars() {
+        // Not entailed: different type variables
+        let state = InferState::new();
+        let context = vec![Constraint::new("Numeric", "a")];
+        let target = Constraint::new("Equatable", "b");
+
+        assert!(!entails(&state.class_env, &context, &target));
+    }
+
+    #[test]
+    fn test_builtin_classes_registered() {
+        // Test that built-in classes are registered at initialization
+        let state = InferState::new();
+
+        assert!(state.class_env.get("Equatable").is_some());
+        assert!(state.class_env.get("Numeric").is_some());
+        assert!(state.class_env.get("Comparable").is_some());
+        assert!(state.class_env.get("Showable").is_some());
+        assert!(state.class_env.get("Mappable").is_some());
+        assert!(state.class_env.get("Appendable").is_some());
+    }
+
+    #[test]
+    fn test_numeric_superclass() {
+        // Test that Numeric has Equatable as a superclass
+        let state = InferState::new();
+        let numeric = state.class_env.get("Numeric").unwrap();
+
+        assert_eq!(numeric.superclasses, vec!["Equatable".to_string()]);
+    }
+
+    #[test]
+    fn test_comparable_superclass() {
+        // Test that Comparable has Equatable as a superclass
+        let state = InferState::new();
+        let comparable = state.class_env.get("Comparable").unwrap();
+
+        assert_eq!(comparable.superclasses, vec!["Equatable".to_string()]);
+    }
+
+    #[test]
+    fn test_constraint_simplification() {
+        // Test that constraint simplification removes redundant constraints
+        let state = InferState::new();
+
+        // Both Numeric and Equatable on the same var — Equatable is redundant
+        let mut constraints = vec![
+            Constraint::new("Numeric", "a"),
+            Constraint::new("Equatable", "a"),
+        ];
+
+        simplify_constraints(&state.class_env, &mut constraints);
+
+        // Only Numeric should remain (it entails Equatable)
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].class, "Numeric");
+        assert_eq!(constraints[0].var, "a");
+    }
+
+    #[test]
+    fn test_constraint_simplification_comparable() {
+        // Test that Comparable entails Equatable
+        let state = InferState::new();
+
+        let mut constraints = vec![
+            Constraint::new("Comparable", "a"),
+            Constraint::new("Equatable", "a"),
+        ];
+
+        simplify_constraints(&state.class_env, &mut constraints);
+
+        // Only Comparable should remain
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].class, "Comparable");
+    }
+
+    #[test]
+    fn test_constraint_simplification_no_redundancy() {
+        // Test that non-redundant constraints are preserved
+        let state = InferState::new();
+
+        let mut constraints = vec![
+            Constraint::new("Numeric", "a"),
+            Constraint::new("Showable", "b"),
+        ];
+
+        simplify_constraints(&state.class_env, &mut constraints);
+
+        // Both should remain (different vars, no entailment)
+        assert_eq!(constraints.len(), 2);
     }
 }

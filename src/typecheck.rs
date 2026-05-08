@@ -1506,33 +1506,125 @@ fn infer_expr(
             )])
         }
 
-        Expr::ClassDecl { methods, .. } => {
-            // TODO: Type-check class methods and register in ClassEnv
-            // For now, infer all method signatures and return Unknown
+        Expr::ClassDecl {
+            name,
+            params,
+            superclasses,
+            methods,
+        } => {
+            use crate::types::{ClassDecl, Kind};
+
+            // Parse method signatures and build ClassDecl
+            let mut method_types = HashMap::new();
+
             for method in methods {
-                if let Some(key) = &method.node.key {
-                    let _ = infer_expr(key, env, state, type_map);
-                }
-                let _ = infer_expr(&method.node.value, env, state, type_map);
+                // Extract method name from key (must be a string literal or identifier)
+                let method_name = match &method.node.key {
+                    Some(key_expr) => match &key_expr.node {
+                        Expr::Str(s) => s.clone(),
+                        Expr::VarRef { name, .. } => name.clone(),
+                        _ => {
+                            return Err(vec![TypeError::new(
+                                "class method name must be a string or identifier",
+                                key_expr.span,
+                            )]);
+                        }
+                    },
+                    None => {
+                        return Err(vec![TypeError::new(
+                            "class method must have a name",
+                            method.span,
+                        )]);
+                    }
+                };
+
+                // Resolve method signature type from value expression
+                // Method signatures are type expressions, not runtime values
+                let method_type =
+                    resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
+                        .map_err(|e| vec![e])?;
+
+                // Wrap in a monomorphic TypeScheme (class methods don't have their own quantifiers)
+                method_types.insert(method_name, TypeScheme::mono(method_type));
             }
-            Ok(Type::Unknown)
+
+            // Build class declaration with Kind::Type for all params
+            // (higher-kinded types deferred to future work)
+            let class_decl = ClassDecl {
+                name: name.clone(),
+                params: params.iter().map(|p| (p.clone(), Kind::Type)).collect(),
+                superclasses: superclasses.clone(),
+                methods: method_types,
+            };
+
+            // Register in ClassEnv
+            state.class_env.insert(class_decl);
+
+            // ClassDecl expressions evaluate to empty record (see eval.rs)
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+                tail: RowTail::Empty,
+            }))
         }
 
         Expr::InstanceDecl {
+            class_name,
             instance_type,
             methods,
-            ..
         } => {
-            // TODO: Type-check instance and register in InstanceEnv
-            // For now, infer instance type and all method implementations, return Unknown
-            let _ = infer_expr(instance_type, env, state, type_map);
+            use crate::types::InstanceDecl;
+
+            // Resolve the instance type from the type expression
+            let inst_type = resolve_type_expr(instance_type, env, state, &mut None, &mut None)
+                .map_err(|e| vec![e])?;
+
+            // Infer types for all method implementations
+            let mut method_types = HashMap::new();
+
             for method in methods {
-                if let Some(key) = &method.node.key {
-                    let _ = infer_expr(key, env, state, type_map);
-                }
-                let _ = infer_expr(&method.node.value, env, state, type_map);
+                // Extract method name from key
+                let method_name = match &method.node.key {
+                    Some(key_expr) => match &key_expr.node {
+                        Expr::Str(s) => s.clone(),
+                        Expr::VarRef { name, .. } => name.clone(),
+                        _ => {
+                            return Err(vec![TypeError::new(
+                                "instance method name must be a string or identifier",
+                                key_expr.span,
+                            )]);
+                        }
+                    },
+                    None => {
+                        return Err(vec![TypeError::new(
+                            "instance method must have a name",
+                            method.span,
+                        )]);
+                    }
+                };
+
+                // Infer the type of the method implementation
+                let method_impl_type = infer_expr(&method.node.value, env, state, type_map)?;
+
+                method_types.insert(method_name, method_impl_type);
             }
-            Ok(Type::Unknown)
+
+            // Build instance declaration
+            let instance_decl = InstanceDecl {
+                class_name: class_name.clone(),
+                instance_type: inst_type,
+                method_types,
+            };
+
+            // Register in InstanceEnv (check for overlapping instances)
+            if let Err(msg) = state.instance_env.insert(instance_decl) {
+                return Err(vec![TypeError::new(msg, expr.span)]);
+            }
+
+            // InstanceDecl expressions evaluate to empty record (see eval.rs)
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+                tail: RowTail::Empty,
+            }))
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(

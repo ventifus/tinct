@@ -49,26 +49,114 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     }
 }
 
+/// Check if a constraint is entailed by a context (set of constraints).
+/// Returns true if the target constraint is directly present in the context,
+/// or if it is implied via superclass relationships.
+///
+/// For example, if the context contains `Comparable a`, then `Equatable a` is
+/// entailed because Comparable has Equatable as a superclass.
+///
+/// This implements superclass entailment for constraint simplification during
+/// let-generalization. See Jones (1992) "Type Classes: Exploring the Design Space".
+pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint) -> bool {
+    // Direct check: is target directly in context?
+    if context.contains(target) {
+        return true;
+    }
+
+    // Superclass check: is there a constraint C in context such that
+    // C has target.class as a superclass (transitively)?
+    for constraint in context {
+        if constraint.var == target.var {
+            if is_superclass_of(class_env, &constraint.class, &target.class) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if `subclass` has `superclass` as a superclass (transitively).
+///
+/// For example:
+/// - `is_superclass_of(env, "Numeric", "Equatable")` returns true because
+///   Numeric has Equatable in its superclass list.
+/// - `is_superclass_of(env, "Equatable", "Numeric")` returns false (wrong direction).
+///
+/// This computes the transitive closure of the superclass relation.
+fn is_superclass_of(class_env: &ClassEnv, subclass: &str, superclass: &str) -> bool {
+    // If they're the same, trivially true
+    if subclass == superclass {
+        return true;
+    }
+
+    // Get the subclass declaration
+    let Some(subclass_decl) = class_env.get(subclass) else {
+        return false;
+    };
+
+    // Check direct superclasses
+    if subclass_decl.superclasses.contains(&superclass.to_string()) {
+        return true;
+    }
+
+    // Check transitive superclasses (recursively)
+    for direct_super in &subclass_decl.superclasses {
+        if is_superclass_of(class_env, direct_super, superclass) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Check all constraints on a type variable when it gets bound to a concrete type.
 /// Returns an error if any constraint is violated.
+///
+/// This function performs two checks:
+/// 1. For concrete types (Int, Str, etc.), check against the fixed instance sets
+///    using `satisfies_constraint`.
+/// 2. For type constructors and user-defined types, attempt instance resolution
+///    using `InstanceEnv::resolve_instance`.
+///
+/// If no instance is found and the type is not in the fixed instance set,
+/// a type error is returned.
 fn check_constraints_on_var(
     var_name: &str,
     concrete_ty: &Type,
-    state: &InferState,
+    state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
     // Find all constraints on this variable
-    for constraint in &state.constraints {
+    for constraint in &state.constraints.clone() {
         if constraint.var == var_name {
-            if !satisfies_constraint(concrete_ty, &constraint.class) {
-                return Err(TypeError::new(
-                    format!(
-                        "type {} does not satisfy constraint {}",
-                        concrete_ty, constraint.class
-                    ),
-                    span,
-                ));
+            // First, check the fixed instance sets (B4 constrained type variables)
+            if satisfies_constraint(concrete_ty, &constraint.class) {
+                continue;
             }
+
+            // If not in fixed instance set, try instance resolution
+            // This enables user-defined instances (future work: dictionary construction)
+            // Clone instance_env to avoid borrowing state both immutably (for the
+            // field access) and mutably (as the unify parameter) at the same time.
+            let inst_env = state.instance_env.clone();
+            if inst_env
+                .resolve_instance(&constraint.class, concrete_ty, state)
+                .is_some()
+            {
+                // Instance found - constraint satisfied
+                continue;
+            }
+
+            // No instance found - constraint violated
+            return Err(TypeError::new(
+                format!(
+                    "type {} does not satisfy constraint {}",
+                    concrete_ty, constraint.class
+                ),
+                span,
+            ));
         }
     }
     Ok(())

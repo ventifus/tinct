@@ -135,7 +135,24 @@ pub struct EvalState {
     ///
     /// Upper bound: MAX_EVAL_DEPTH (256) entries × ~80 bytes/entry ≈ 20 KB.
     pub eval_stack: Vec<(String, Span)>,
+    /// Runtime class registry: class_name -> (params, superclasses, method_defaults)
+    /// Stores default method implementations for filling in instance dictionaries.
+    pub class_registry: HashMap<String, RuntimeClassDecl>,
+    /// Runtime instance registry: (class_name, type_string) -> instance_dict
+    /// Stores materialized method dictionaries for each instance.
+    pub instance_registry: HashMap<(String, String), Rc<Thunk>>,
     // future: trace_log, eval_stats
+}
+
+/// Runtime representation of a class declaration.
+/// Stores information needed to construct instance dictionaries.
+#[derive(Debug, Clone)]
+pub struct RuntimeClassDecl {
+    pub params: Vec<String>,
+    pub superclasses: Vec<String>,
+    /// Default method implementations: method_name -> thunk
+    /// These are wrapped as thunks to preserve laziness.
+    pub method_defaults: IndexMap<String, Rc<Thunk>>,
 }
 
 /// Evaluation infrastructure context: separates session config from variable bindings.
@@ -244,6 +261,8 @@ impl EvalContext {
                 include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
+                class_registry: HashMap::new(),
+                instance_registry: HashMap::new(),
             })),
             thunk_arena: Rc::new(RefCell::new(ThunkArena::new())),
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
@@ -1082,30 +1101,113 @@ pub(crate) fn eval_recursive(
             )
             .into())
         }
-        Expr::ClassDecl { name, .. } => {
-            // TODO: Register the class in a class registry
-            // For now, just return a placeholder marker dict
-            let mut map = IndexMap::new();
-            let name_thunk = Rc::new(Thunk::new_materialized(string_val(name), expr.span));
-            map.insert(Key::String("__class__".into()), ctx.alloc_thunk(name_thunk));
+        Expr::ClassDecl {
+            name,
+            params,
+            superclasses,
+            methods,
+        } => {
+            // Register the class in the runtime registry
+            // Default method implementations are stored as thunks
+            let mut method_defaults = IndexMap::new();
+
+            // Wrap method default implementations as unevaluated thunks (preserve laziness)
+            for method_entry in methods {
+                if let Some(ref key_expr) = method_entry.node.key {
+                    // Extract method name
+                    let method_name = match &key_expr.node {
+                        Expr::Str(s) => s.clone(),
+                        _ => continue, // Skip non-string keys
+                    };
+
+                    // Wrap the method implementation as an unevaluated thunk (no materialization)
+                    let method_thunk = Rc::new(Thunk::new_unevaluated(
+                        Rc::clone(&method_entry.node.value),
+                        Rc::clone(&env),
+                        Rc::clone(ctx),
+                        method_entry.span,
+                    ));
+                    method_defaults.insert(method_name, method_thunk);
+                }
+            }
+
+            // Store class declaration in runtime registry
+            let class_decl = RuntimeClassDecl {
+                params: params.clone(),
+                superclasses: superclasses.clone(),
+                method_defaults,
+            };
+
+            ctx.state
+                .borrow_mut()
+                .class_registry
+                .insert(name.clone(), class_decl);
+
+            // ClassDecl expressions evaluate to an empty dict (marker value)
             Ok(Rc::new(Thunk::new_materialized(
-                Value::Dict(map),
+                Value::Dict(IndexMap::new()),
                 expr.span,
             )))
         }
-        Expr::InstanceDecl { class_name, .. } => {
-            // TODO: Register the instance in an instance registry
-            // For now, just return a placeholder marker dict
-            let mut map = IndexMap::new();
-            let name_thunk = Rc::new(Thunk::new_materialized(string_val(class_name), expr.span));
-            map.insert(
-                Key::String("__instance__".into()),
-                ctx.alloc_thunk(name_thunk),
-            );
-            Ok(Rc::new(Thunk::new_materialized(
-                Value::Dict(map),
+        Expr::InstanceDecl {
+            class_name,
+            instance_type,
+            methods,
+        } => {
+            // Build the instance dictionary with method implementations
+
+            // Look up the class declaration to get defaults
+            let class_decl = ctx.state.borrow().class_registry.get(class_name).cloned();
+
+            // Start with default methods from class (if any)
+            let mut method_dict = if let Some(ref decl) = class_decl {
+                decl.method_defaults.clone()
+            } else {
+                IndexMap::new()
+            };
+
+            // Override with instance-specific implementations (wrapped as unevaluated thunks)
+            for method_entry in methods {
+                if let Some(ref key_expr) = method_entry.node.key {
+                    // Extract method name
+                    let method_name = match &key_expr.node {
+                        Expr::Str(s) => s.clone(),
+                        _ => continue, // Skip non-string keys
+                    };
+
+                    // Wrap the method implementation as an unevaluated thunk (no materialization)
+                    let method_thunk = Rc::new(Thunk::new_unevaluated(
+                        Rc::clone(&method_entry.node.value),
+                        Rc::clone(&env),
+                        Rc::clone(ctx),
+                        method_entry.span,
+                    ));
+                    method_dict.insert(method_name, method_thunk);
+                }
+            }
+
+            // Convert IndexMap<String, Rc<Thunk>> to IndexMap<Key, Rc<Thunk>>
+            let mut instance_dict_map = IndexMap::new();
+            for (name, thunk) in method_dict {
+                instance_dict_map.insert(Key::String(name), ctx.alloc_thunk(thunk));
+            }
+
+            // Eagerly materialize the dict (per task requirement)
+            let instance_dict_thunk = Rc::new(Thunk::new_materialized(
+                Value::Dict(instance_dict_map),
                 expr.span,
-            )))
+            ));
+
+            // Register the instance in the runtime registry
+            // Use a simple string representation of the instance type for now
+            let type_string = format!("{:?}", instance_type.node);
+            ctx.state.borrow_mut().instance_registry.insert(
+                (class_name.clone(), type_string),
+                Rc::clone(&instance_dict_thunk),
+            );
+
+            // Return the instance dictionary
+            Ok(instance_dict_thunk)
         }
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
