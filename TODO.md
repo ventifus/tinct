@@ -108,14 +108,14 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [x] Add `Value::WriteHandle` variant carrying `caps: HashMap<String, Value>` + encoding tag (Text/Binary) + `Box<dyn Write>` (`src/value.rs`)
 - [x] Implement `cap-data` Rust builtin: `Handle → String → Value` — reads associated data for a named capability; errors if cap is absent (`src/builtins_io.rs`, `src/types.rs`)
 - [x] Implement `has-cap?` Rust builtin: `Handle → String → Bool` — tests whether Handle has a named capability (`src/builtins_io.rs`, `src/types.rs`)
-- [ ] Refactor `builtin_open`: accept nominal variant capability flags as trailing args; each `Value::Variant { tag, payload }` arg inserts `(tag, payload.unwrap_or(Value::Null))` into the caps HashMap; require at least one arg (no-flag = error); derive encoding (Text/Binary) and direction (read/write) from cap presence (deferred — existing open works, caps HashMap is populated) (`src/builtins_io.rs`)
-- [ ] `open` returns `Value::Handle` when `Readable` is in caps, `Value::WriteHandle` when `Writable` (but not `Readable`) is in caps; both carry the full caps HashMap (deferred — requires Variant-based open refactor) (`src/builtins_io.rs`)
+- [ ] Refactor `builtin_open`: replace 3-arg (DirCap, path, mode-string) signature with variadic Variant flags; each `Value::Variant { tag, payload }` arg inserts `(tag, payload.unwrap_or(Value::Null))` into the caps HashMap; require at least one flag (error otherwise); derive encoding (Text/Binary) and direction from cap presence (`src/builtins_io.rs`)
+- [ ] `open` returns `Value::Handle` when `Readable` is in caps, `Value::WriteHandle` when `Writable` (but not `Readable`) is in caps; both carry the full caps HashMap (`src/builtins_io.rs`)
 - [x] Implement `write` Rust builtin: polymorphic on WriteHandle encoding — `String` arg for Text, `Bytes` arg for Binary; returns WriteHandle for chaining (`src/builtins_io.rs`)
 - [x] Implement `flush` Rust builtin: flushes WriteHandle buffer; returns WriteHandle (`src/builtins_io.rs`)
 - [x] Implement `close` Rust builtin: flushes and closes WriteHandle; returns null; further writes error (`src/builtins_io.rs`)
-- [ ] Implement `seek` Rust builtin: requires Seekable flag; `lseek` to offset; returns Handle (deferred — inner Box<dyn BufRead> can't Seek without downcast) (`src/builtins_io.rs`)
-- [ ] Implement `seek-end` Rust builtin: requires Seekable; seek to end (deferred — inner Box<dyn BufRead> can't Seek without downcast) (`src/builtins_io.rs`)
-- [ ] Implement `position` Rust builtin: requires Seekable; returns current byte offset as Int (deferred — inner Box<dyn BufRead> can't Seek without downcast) (`src/builtins_io.rs`)
+- [ ] Implement `seek` Rust builtin: requires Seekable in caps; change inner read type from `Box<dyn BufRead>` to `Box<dyn Read + Seek>` for Seekable handles (non-Seekable handles keep BufRead); `lseek` to byte offset; returns Handle (`src/builtins_io.rs`, `src/value.rs`)
+- [ ] Implement `seek-end` Rust builtin: requires Seekable; seek to end (`src/builtins_io.rs`)
+- [ ] Implement `position` Rust builtin: requires Seekable; returns current byte offset as Int (`src/builtins_io.rs`)
 - [x] Update `builtin_slurp`: dispatch on Handle encoding — Text → String, Binary → Bytes (`src/builtins_io.rs`)
 - [x] Update `builtin_lines`: require Text encoding flag; error on Binary handles (`src/builtins_io.rs`)
 - [x] Update `builtin_connect`: return `Handle` with caps HashMap `{"Binary": Null, "Readable": Null, "Writable": Null, "Stream": Null}` (no Seekable — streams are sequential); network protocol layers (Tls) insert their cap with `Value::Dict` metadata during handshake (`src/builtins_io.rs`)
@@ -133,7 +133,7 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 
 - [x] Define `Transport` nominal variants: `Tcp`, `Udp` as unit `Value::Variant` constants registered in `create_root_env()` (`src/builtins.rs`); `Transport` type alias added to `TypeEnv::with_builtins()` (`src/type_env.rs`)
 - [x] Generalize `builtin_connect`: accept `Transport` variant as 4th arg (Tcp default when omitted); Tcp connects via TcpStream; Udp returns "not yet supported" error; caps `{Binary Readable Writable Stream}` for Tcp (`src/builtins_io.rs`) — **partial**: Connector protocol dispatch (NetCap → TCP/UDP, user dict → call connect method) deferred to `connector-tls-full`
-- [ ] Refactor Handle to preserve underlying TCP stream (required for TLS layering): add `raw_stream: Option<Rc<RefCell<TcpStream>>>` or use trait objects with downcast (`src/value.rs`)
+- [x] Refactor Handle to preserve underlying TCP stream (required for TLS layering): add `raw_stream: Option<Rc<RefCell<TcpStream>>>` or use trait objects with downcast (`src/value.rs`)
 - [ ] Implement `tls-connect` full — Connector form: opens via connect then layers TLS via `rustls::ClientConfig`; Handle form: layers TLS on existing stream Handle; both return `Handle[Binary Readable Writable Stream Tls]` with `TlsInfo` (`src/builtins_io.rs`)
 - [ ] Implement CA root loading: default = `rustls-native-certs` system roots; `ca-bundle` Handle → read PEM, add to root store; `no-system-roots: true` → drop system roots; `mozilla-roots: true` → add `webpki-roots` (`src/builtins_io.rs`)
 - [ ] Implement mTLS: read `client-cert` and `client-key` Handle PEM bytes; configure `ClientConfig` with client auth (`src/builtins_io.rs`)
@@ -148,12 +148,12 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 **Spec chapters:** `doc/whatif/lib-tls.md` §HttpConn, §HTTP/2 HTTP/3, §Network Stack Summary. **Depends on:** `connector-tls`, `string-utils`.
 
 - [ ] Add `reqwest = { version = "0.12", features = ["http2", "http3", "brotli", "rustls-tls"] }` to `Cargo.toml` (`Cargo.toml`)
-- [ ] Implement pure-tinct `http-get` in `stdlib/net.llt`: connect → write HTTP/1.0 request → slurp → parse response (`stdlib/net.llt`)
-- [ ] Implement pure-tinct `https-get` in `stdlib/net.llt`: tls-connect → write → slurp → parse (`stdlib/net.llt`)
-- [ ] Implement pure-tinct `fetch` in `stdlib/net.llt`: parse URL, dispatch on `starts-with? "https://" url` (`stdlib/net.llt`)
-- [ ] Implement pure-tinct `build-http-request` helper: construct HTTP/1.0 GET request with headers (`stdlib/net.llt`)
-- [ ] Implement pure-tinct `parse-http-response` helper: split status line / headers / body (`stdlib/net.llt`)
-- [ ] Implement pure-tinct `parse-url` helper: extract scheme, host, port, path (`stdlib/net.llt`)
+- [x] Implement pure-tinct `http-get` in `stdlib/net.llt`: connect → write HTTP/1.0 request → slurp → parse response (`stdlib/net.llt`)
+- [x] Implement pure-tinct `https-get` in `stdlib/net.llt`: tls-connect → write → slurp → parse (`stdlib/net.llt`)
+- [x] Implement pure-tinct `fetch` in `stdlib/net.llt`: parse URL, dispatch on `starts-with? "https://" url` (`stdlib/net.llt`)
+- [x] Implement pure-tinct `build-http-request` helper: construct HTTP/1.0 GET request with headers (`stdlib/net.llt`)
+- [x] Implement pure-tinct `parse-http-response` helper: split status line / headers / body (`stdlib/net.llt`)
+- [x] Implement pure-tinct `parse-url` helper: extract scheme, host, port, path (`stdlib/net.llt`)
 - [ ] Add `Value::HttpConn` to Value enum (wraps reqwest Client or connection pool) (`src/value.rs`)
 - [ ] Implement `http-connect` Rust builtin — Connector form: `http-connect connector host port opts` → `HttpConn`; Handle form: `http-connect handle host` → `HttpConn`; internally opens Tcp (HTTP/1.1+2) or Udp (HTTP/3) based on ALPN (`src/builtins_io.rs`)
 - [ ] Implement `http-get` overload on `HttpConn`: `http-get conn path headers` → response Dict (`src/builtins_io.rs`)
@@ -163,6 +163,23 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 - [ ] Tests: corpus tests for pure-tinct http-get against a local test HTTP server, fetch URL dispatch, HttpConn connection reuse, proxy tunneling (`tests/corpus/eval/builtins/`, integration tests)
 
 ---
+
+## Tooling
+
+### `doc-annotations`: Inline Documentation via `@[doc: "..."]`
+
+Extend the existing `DocMap` infrastructure (already wired into LSP hover) to cover dict entry bindings and fn return annotations, add `:describe` to the REPL, and surface doc strings in `tinct describe`. See `src/typecheck.rs` (`extract_doc_strings`) and `src/lsp/analysis.rs` (`doc_suffix`, `hover_at`).
+
+- [ ] Extend `extract_doc_from_expr` to extract `doc:` from **dict entry key annotations**: `name@[doc: "..."]: value` — insert `name → doc_string` into DocMap. Currently only param annotations are extracted. (`src/typecheck.rs`)
+- [ ] Extend `extract_doc_from_expr` to extract `doc:` from **fn return-type PropertyDict**: `fn@[type: T  doc: "..."]` — thread the enclosing dict entry name down through recursion to key the doc string. (`src/typecheck.rs`)
+- [ ] Add REPL meta-command infrastructure: detect lines starting with `:` before passing to `eval_input`; dispatch to a `handle_meta_command` function. (`src/repl.rs`)
+- [ ] Implement `:describe <name>` REPL command: look up `name` in the session's DocMap and TypeMap; format and print type signature + doc string. Output format mirrors LSP hover: `name : TypeSignature\n\nDoc string here.` (`src/repl.rs`)
+- [ ] Implement `:type <name>` REPL command: type signature only, no doc. (`src/repl.rs`)
+- [ ] Implement `:help` REPL command: list available meta-commands with one-line descriptions. (`src/repl.rs`)
+- [ ] Extend `run_describe` (`tinct describe`): include doc strings from DocMap alongside type signatures in both text and JSON output modes. (`src/main.rs`)
+- [ ] Add `@[doc: "..."]` annotations to 10 representative prelude functions as working examples and adoption seed: `map`, `filter`, `reduce`, `sort`, `contains?`, `empty?`, `get`, `get-or`, `first`, `last`. (`stdlib/prelude.llt`)
+- [ ] Tests: corpus test verifying `doc:` on a dict entry binding is parsed and available; corpus test for `doc:` on a function param; `=== error` test that `doc:` without a string value is a parse or type error. (`tests/corpus/eval/`)
+- [ ] Tests: CLI test for `tinct describe` output including doc string when annotation is present. (`tests/cli_tests.rs`)
 
 ## Phase D: Advanced Typing
 
@@ -219,7 +236,7 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 
 - [ ] Public/private split: move all `-impl`, `-step`, `-check` helpers (≈30 functions) into a first dict in the same document; move all public functions into a second (final) dict; helpers are reachable by plain name from the public dict and are not exported (`stdlib/prelude.llt`)
 - [ ] Union type annotations for dual-dispatch parameters: add `@[Dict Seq]` to `sorted`, `sorted-by`, `zip`, `contains?`, `flat-map`, `partition`, `group-by`, `fold`, `map` (wrapper), `reduce` (wrapper) — failed in initial attempt due to type system limitation (`stdlib/prelude.llt`)
-- [ ] `doc:` annotations: add `doc: "..."` to the return-type annotation of every exported function in the second (public) dict, e.g. `fn@[type: Bool  doc: "Returns true if pred holds for any element"]` (`stdlib/prelude.llt`) — KNOWN ISSUE: deferred; too many functions (~30+) to annotate mechanically, and the `doc:` field syntax in type annotations is not yet finalized in the type system spec.
+
 
 **Tasks — `formatter/compact.llt`:**
 
@@ -230,12 +247,12 @@ Remaining items deferred from the completed `stdlib-modernize` sprint (type anno
 **Tasks — `out/` formatters (7 files: `json`, `json-pretty`, `yaml`, `csv`, `toml`, `env`, `raw`):**
 
 - [x] Annotation pass: add `fn@Str` return types to all output-generating functions and `@Type` to all params (7 files) (`stdlib/out/`)
-- [ ] For each file: (a) identify internal helpers; apply public/private split if any exist (KNOWN ISSUE); (b) replace any `type-of`/cond-string dispatch with `[match]` (`stdlib/out/`)
+- [ ] For each file: (a) identify internal helpers; apply public/private split if any exist; (b) replace any `type-of`/cond-string dispatch with `[match]` (`stdlib/out/`)
 
 **Tasks — `in/json.llt`, `io.llt`, `net.llt`:**
 
 - [x] Annotation pass: complete type annotations for all functions (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
-- [ ] For each file: public/private split (KNOWN ISSUE), pattern match modernization (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
+- [ ] For each file: public/private split, pattern match modernization (`stdlib/in/json.llt`, `stdlib/io.llt`, `stdlib/net.llt`)
 
 **Tests and spec:**
 

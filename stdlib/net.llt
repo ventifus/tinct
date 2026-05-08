@@ -1,67 +1,92 @@
 # Network utilities — depends on io-phase2 builtins
-# Requires: net-cap, connect (io-phase2) and write, slurp (io-phase1)
+# Requires: net-cap, connect (io-phase2); write-handle, slurp (io-phase1)
+# Requires prelude: if, or, make-entry, merge, set, split, join, rest,
+#                   length, to-int, str, get, builtin-eq, builtin-add, error
 #
-# Note: This module provides the foundation for HTTP client code.
-# Full HTTP fetch requires the `write` builtin from io-phase1, which
-# writes data to a Handle and returns the Handle for sequencing.
-#
-# Phase 2 provides: net-cap (create NetCap), connect (TCP connection)
-# Deferred to io-phase1 completion: write builtin, working fetch
+# Provides:
+#   parse-url-port        — extract port from colon-split result
+#   parse-url-path        — reconstruct path from slash-split result
+#   parse-url             — "http://host:port/path" -> [scheme: host: port: path:]
+#   build-http-request    — method + path + host -> raw HTTP/1.0 request String
+#   parse-status-line     — "HTTP/1.0 200 OK" -> 200
+#   parse-header-fields   — recursive header dict builder
+#   parse-http-response   — raw response String -> [status: headers: body:]
+#   http-get              — connect + write-handle + slurp + parse
+#   fetch                 — parse-url + http-get
 
-# Placeholder fetch — will work once $write builtin is implemented (io-phase1)
-# For now, demonstrates the pattern:
-#   1. Parse URL to extract host, port, path
-#   2. Open TCP connection via $connect
-#   3. Send HTTP request via $write (NOT YET AVAILABLE)
-#   4. Read response via $slurp
-#   5. Parse response to extract body
+[
+  # Parse optional port from [split ":" host-port] result.
+  # Returns [] (null) if no colon in host-port, else Int.
+  parse-url-port: [fn [colon-parts]
+    [if [builtin-eq [length colon-parts] 1]
+      []
+      [to-int colon-parts.1]]]
 
-[fetch: [fn@String [cap@NetCap url@String]
-  # TODO(io-phase1): requires $write builtin to send HTTP request
-  [error "fetch: requires $write builtin from io-phase1 (not yet implemented)"]
-]]
+  # Reconstruct path string from [rest [split "/" after-scheme]].
+  # Returns "/" if no path segments, else "/" prepended to joined segments.
+  parse-url-path: [fn [path-tail]
+    [if [builtin-eq [length path-tail] 0]
+      "/"
+      [str "/" [join "/" path-tail]]]]
 
-# When io-phase1 is complete, fetch will be implemented as:
-#
-# fetch: [fn [cap url]
-#   # Parse URL (assume http://host:port/path format)
-#   # For Phase 2, this is a simplified parser
-#   [parts: [split url "://"]]
-#   [scheme: [head parts]]
-#   [rest: [head [tail parts]]]
-#
-#   [if [not [= scheme "http"]]
-#     [error "fetch: only HTTP is supported (HTTPS requires lib-tls.md)"]
-#     [
-#       # Split host:port from path
-#       [host-path: [split rest "/"]]
-#       [host-port: [head host-path]]
-#       [path: [str "/" [join "/" [tail host-path]]]]
-#
-#       # Split host from port (default 80)
-#       [host-parts: [split host-port ":"]]
-#       [host: [head host-parts]]
-#       [port: [if [= [length host-parts] 1] 80 [to-int [head [tail host-parts]]]]]
-#
-#       # Open connection
-#       [conn: [connect cap host port]]
-#
-#       # Build HTTP/1.0 request
-#       [request: [str
-#         "GET " path " HTTP/1.0\r\n"
-#         "Host: " host "\r\n"
-#         "Connection: close\r\n"
-#         "\r\n"]]
-#
-#       # Send request (write returns handle for sequencing)
-#       # Read response
-#       [response: [slurp [write conn request]]]
-#
-#       # Parse response (extract body after blank line)
-#       # Simplified: split on \r\n\r\n and return second part
-#       [parts: [split response "\r\n\r\n"]]
-#       [if [= [length parts] 1]
-#         response  # No body separator — return whole response
-#         [head [tail parts]]]  # Return body
-#     ]]
-# ]
+  # Parse "scheme://host[:port][/path]" into components.
+  # Returns [scheme: ... host: ... port: ... path: ...].
+  # port is [] (null) if absent in the URL.
+  parse-url: [fn@Dict [url@String]
+    [scheme-split: [split "://" url]
+    [slash-parts:  [split "/" scheme-split.1]
+    [colon-parts:  [split ":" slash-parts.0]
+    [set [set [set [set []
+      "scheme" scheme-split.0]
+      "host"   colon-parts.0]
+      "port"   [parse-url-port colon-parts]]
+      "path"   [parse-url-path [rest slash-parts]]]]]]]
+
+  # Build a minimal HTTP/1.0 GET request string.
+  build-http-request: [fn@String [method@String path@String host@String]
+    [str method " " path " HTTP/1.0\r\nHost: " host "\r\nConnection: close\r\n\r\n"]]
+
+  # Extract HTTP status code Int from the first response line.
+  # "HTTP/1.0 200 OK" -> 200
+  parse-status-line: [fn@Int [line@String]
+    [to-int [get 1 [split " " line]]]]
+
+  # Recursively parse header lines into accumulator dict.
+  # Each line "Name: value" — skips malformed lines.
+  parse-header-fields: [fn@Dict [lines@Dict i@Int n@Int acc@Dict]
+    [if [builtin-eq i n]
+      acc
+      [if [builtin-eq [length [split ": " [get i lines]]] 1]
+        [parse-header-fields lines [builtin-add i 1] n acc]
+        [parse-header-fields lines [builtin-add i 1] n
+          [merge acc
+            [make-entry
+              [get 0 [split ": " [get i lines]]]
+              [join ": " [rest [split ": " [get i lines]]]]]]]]]]
+
+  # Parse raw HTTP response string into {status headers body}.
+  # Returns status 0 and body=response if no header/body separator found.
+  parse-http-response: [fn@Dict [response@String]
+    [sections: [split "\r\n\r\n" response]
+    [if [builtin-eq [length sections] 1]
+      [set [set [set [] "status" 0] "headers" []] "body" response]
+      [hdr-lines: [split "\r\n" sections.0]
+      [set [set [set []
+        "status"  [parse-status-line hdr-lines.0]]
+        "headers" [parse-header-fields [rest hdr-lines] 0 [length [rest hdr-lines]] []]]
+        "body"    sections.1]]]]]
+
+  # Make an HTTP GET request to host:port/path using cap.
+  # Returns parsed response dict.
+  http-get: [fn@Dict [cap@NetCap host@String port@Int path@String]
+    [parse-http-response
+      [slurp [write-handle [connect cap host port] [build-http-request "GET" path host]]]]]
+
+  # Parse URL and dispatch to http-get. Only http:// is supported.
+  # Default port 80, default path "/".
+  fetch: [fn@Dict [cap@NetCap url@String]
+    [parsed: [parse-url url]
+    [if [builtin-eq parsed.scheme "https"]
+      [error "fetch: HTTPS not yet supported (requires TLS; see doc/whatif/lib-tls.md)"]
+      [http-get cap parsed.host [or parsed.port 80] [or parsed.path "/"]]]]]
+]
