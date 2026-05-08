@@ -127,29 +127,29 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 
-### `url-type`: Url Type & HTTP Client Redesign
+### `uri-type`: Uri/Url/Urn Types & HTTP Client Redesign
 
-**Spec chapters:** `doc/whatif/lib-tls.md` §Type Checker (Url type), §Handle Types (http-get merged). **Depends on:** `string-utils`, `bytes-type`.
+**Spec chapters:** `doc/whatif/lib-tls.md` §Type Checker (Uri/Url/Urn types, http-get merged). **Depends on:** `string-utils`, `bytes-type`.
 
-- [ ] Implement `url` Rust builtin: parse URL string → Url dict with all RFC 3986 components (`scheme`, `username`, `password`, `host`, `port`, `path`, `query`, `fragment`); port defaulted from scheme if absent; IPv6 brackets stripped from host (`src/builtins_io.rs` or new `src/builtins_url.rs`)
-- [ ] Register `Url` type alias and `url` builtin type signature: `url: [fn@Url [s@String]]` (`src/types.rs`, `src/builtins.rs`)
-- [ ] Implement pure-tinct `url-params: [fn@Dict [u@Url]]` — parse `u.query` into `{key: value}` dict; returns `{}` if query is null (`stdlib/net.llt`)
-- [ ] Implement pure-tinct `url-origin: [fn@String [u@Url]]` — `"scheme://host:port"` (`stdlib/net.llt`)
-- [ ] Implement pure-tinct `url->string: [fn@String [u@Url]]` — reconstruct full URL string from Url dict (`stdlib/net.llt`)
-- [ ] Refactor `stdlib/net.llt` `http-get` to take `url@Url` instead of `host`/`port`/`path`; dispatch on `url.scheme` to use `tls-connect` (https) or `connect` (http); accept `tls-opts@[TlsOpts Null]` (`stdlib/net.llt`)
-- [ ] Refactor `stdlib/net.llt` `fetch` to take `url@Url`; remove `parse-url` internal helper; `fetch` becomes `[http-get connector url [] null]` (`stdlib/net.llt`)
-- [ ] Remove `https-get` from `stdlib/net.llt` — merged into `http-get` via `url.scheme` dispatch (`stdlib/net.llt`)
-- [ ] Update `http-connect` Rust builtin signature: `http-connect connector url@Url opts` and `http-connect h@Handle url@Url` — takes Url instead of host/port separately (`src/builtins_io.rs`, `src/types.rs`)
-- [ ] Tests: corpus tests for `url` parsing (full URL, missing components, port defaulting, IPv6, username/password); `url-params` with multi-value query; `url->string` round-trip; `http-get` with http:// and https:// Urls (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
+- [ ] Implement `uri` Rust builtin: parse any URI string → Uri; `host`/`port` nullable — null for non-hierarchical (mailto:, tel:, urn:, news:); IPv6 brackets stripped; query/fragment separated (`src/builtins_uri.rs`)
+- [ ] Implement `url` Rust builtin: parse hierarchical URL → Url; error if no authority (no host); port scheme-defaulted (80 for http, 443 for https, etc.) if absent (`src/builtins_uri.rs`)
+- [ ] Implement `urn` Rust builtin: parse URN → Urn per RFC 8141; error if scheme is not "urn"; split NID and NSS; parse `?+r-component` and `?=q-component` as separate fields (distinct from standard query); empty r-component silently accepted (`src/builtins_uri.rs`)
+- [ ] Register `Uri`, `Url`, `Urn` type aliases and builtin signatures in `TypeEnv` (`src/types.rs`, `src/builtins.rs`)
+- [ ] Implement pure-tinct `uri-params: [fn@Dict [u@[Uri Url]]]` — parse `u.query` → `{key: value}`; `{}` if null (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `uri-origin: [fn@String [u@Url]]` — `"scheme://host:port"` (Url only) (`stdlib/net.llt`)
+- [ ] Implement pure-tinct `uri->string: [fn@String [u@[Uri Url Urn]]]` — reconstruct full URI/URL/URN string (`stdlib/net.llt`)
+- [ ] Refactor `stdlib/net.llt` `http-get` to take `url@Url`; dispatch on `url.scheme`; remove separate `https-get`; remove `parse-url` internal helper (`stdlib/net.llt`)
+- [ ] Update `http-connect` Rust builtin to take `url@Url` instead of `host`/`port` separately (`src/builtins_io.rs`, `src/types.rs`)
+- [ ] Tests: `uri` parsing of hierarchical (https, postgres, s3) and non-hierarchical (mailto, tel, urn) URIs; `url` error on non-hierarchical; `urn` NID/NSS splitting; `uri-params` multi-value; `uri->string` round-trip; `http-get` dispatching on url.scheme (`tests/corpus/eval/builtins/`)
 
 ### `http-net`: HTTP Client & Network Stack
 
-**Spec chapters:** `doc/whatif/lib-tls.md` §HttpConn, §HTTP/2 HTTP/3, §Network Stack Summary. **Depends on:** `connector-tls`, `url-type`.
+**Spec chapters:** `doc/whatif/lib-tls.md` §HttpConn, §HTTP/2 HTTP/3, §Network Stack Summary. **Depends on:** `connector-tls`, `uri-type`.
 
 - [ ] Add `reqwest = { version = "0.12", features = ["http2", "http3", "brotli", "rustls-tls"] }` to `Cargo.toml` (`Cargo.toml`)
 - [ ] Add `Value::HttpConn` to Value enum (wraps reqwest Client or connection pool) (`src/value.rs`)
-- [ ] Implement `http-connect` Rust builtin — Connector form: `http-connect connector url@Url opts` → `HttpConn`; Handle form: `http-connect h@Handle url@Url` → `HttpConn`; internally opens Tcp (HTTP/1.1+2) or Udp (HTTP/3) based on ALPN (`src/builtins_io.rs`)
-- [ ] Implement `http-get` overload on `HttpConn`: `http-get conn url@Url headers` → response Dict (`src/builtins_io.rs`)
+- [ ] Implement `http-connect` Rust builtin — Connector form: `http-connect connector uri@Uri opts` → `HttpConn`; Handle form: `http-connect h@Handle uri@Uri` → `HttpConn`; internally opens Tcp (HTTP/1.1+2) or Udp (HTTP/3) based on ALPN (`src/builtins_io.rs`)
+- [ ] Implement `http-get` overload on `HttpConn`: `http-get conn uri@Uri headers` → response Dict (`src/builtins_io.rs`)
 - [ ] Implement `socks5-connect` Rust builtin: SOCKS5 tunnel; takes Handle + host + port + creds → Handle[Stream RW] (`src/builtins_io.rs`)
 - [ ] Implement `proxy-connect` Rust builtin: HTTP CONNECT tunnel; takes Handle + host + port → Handle[Stream RW] (`src/builtins_io.rs`)
 - [ ] Register all type signatures (`src/types.rs`)
@@ -163,15 +163,15 @@ Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
 
 Extend the existing `DocMap` infrastructure (already wired into LSP hover) to cover dict entry bindings and fn return annotations, add `:describe` to the REPL, and surface doc strings in `tinct describe`. See `src/typecheck.rs` (`extract_doc_strings`) and `src/lsp/analysis.rs` (`doc_suffix`, `hover_at`).
 
-- [ ] Extend `extract_doc_from_expr` to extract `doc:` from **dict entry key annotations**: `name@[doc: "..."]: value` — insert `name → doc_string` into DocMap. Currently only param annotations are extracted. (`src/typecheck.rs`)
-- [ ] Extend `extract_doc_from_expr` to extract `doc:` from **fn return-type PropertyDict**: `fn@[type: T  doc: "..."]` — thread the enclosing dict entry name down through recursion to key the doc string. (`src/typecheck.rs`)
-- [ ] Add REPL meta-command infrastructure: detect lines starting with `:` before passing to `eval_input`; dispatch to a `handle_meta_command` function. (`src/repl.rs`)
-- [ ] Implement `:describe <name>` REPL command: look up `name` in the session's DocMap and TypeMap; format and print type signature + doc string. Output format mirrors LSP hover: `name : TypeSignature\n\nDoc string here.` (`src/repl.rs`)
-- [ ] Implement `:type <name>` REPL command: type signature only, no doc. (`src/repl.rs`)
-- [ ] Implement `:help` REPL command: list available meta-commands with one-line descriptions. (`src/repl.rs`)
+- [x] Extend `extract_doc_from_expr` to extract `doc:` from **dict entry key annotations**: `name@[doc: "..."]: value` — insert `name → doc_string` into DocMap. Currently only param annotations are extracted. (`src/typecheck.rs`)
+- [x] Extend `extract_doc_from_expr` to extract `doc:` from **fn return-type PropertyDict**: `fn@[type: T  doc: "..."]` — thread the enclosing dict entry name down through recursion to key the doc string. (`src/typecheck.rs`)
+- [x] Add REPL meta-command infrastructure: detect lines starting with `:` before passing to `eval_input`; dispatch to a `handle_meta_command` function. (`src/repl.rs`)
+- [x] Implement `:describe <name>` REPL command: look up `name` in the session's DocMap and TypeMap; format and print type signature + doc string. Output format mirrors LSP hover: `name : TypeSignature\n\nDoc string here.` (`src/repl.rs`)
+- [x] Implement `:type <name>` REPL command: type signature only, no doc. (`src/repl.rs`)
+- [x] Implement `:help` REPL command: list available meta-commands with one-line descriptions. (`src/repl.rs`)
 - [ ] Extend `run_describe` (`tinct describe`): include doc strings from DocMap alongside type signatures in both text and JSON output modes. (`src/main.rs`)
-- [ ] Add `@[doc: "..."]` annotations to 10 representative prelude functions as working examples and adoption seed: `map`, `filter`, `reduce`, `sort`, `contains?`, `empty?`, `get`, `get-or`, `first`, `last`. (`stdlib/prelude.llt`)
-- [ ] Tests: corpus test verifying `doc:` on a dict entry binding is parsed and available; corpus test for `doc:` on a function param; `=== error` test that `doc:` without a string value is a parse or type error. (`tests/corpus/eval/`)
+- [x] Add `@[doc: "..."]` annotations to 8 representative prelude functions as working examples and adoption seed: `map`, `filter`, `reduce`, `sorted`, `contains?`, `empty?`, `get`, `get-or`. (`stdlib/prelude.llt`; `first`/`last` are Rust builtins, not in prelude)
+- [x] Tests: unit tests verifying `doc:` on dict entry binding, function param, and fn return annotation are parsed and available. (`src/typecheck.rs`)
 - [ ] Tests: CLI test for `tinct describe` output including doc string when annotation is present. (`tests/cli_tests.rs`)
 
 ## Phase D: Advanced Typing

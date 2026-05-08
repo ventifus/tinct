@@ -23,6 +23,7 @@ use crate::ast::Span;
 use crate::builtins::{create_stdlib_env, MAX_FILE_SIZE};
 use crate::eval::{deep_materialize, eval_file_with_input, materialize};
 use crate::parser::parse2;
+use crate::typecheck::{DocMap, TypeMap};
 use crate::value::{Environment, Key, Thunk, Value};
 use crate::value_to_display_string;
 
@@ -83,6 +84,10 @@ pub struct ReplSession {
     prev_result: Rc<Thunk>,
     /// Evaluation context for session (include guard, etc.)
     ctx: Rc<crate::eval::EvalContext>,
+    /// Type information from the most recent type check.
+    type_map: TypeMap,
+    /// Documentation strings extracted from annotations.
+    doc_map: DocMap,
 }
 
 /// The outcome of a single REPL evaluation step.
@@ -127,6 +132,8 @@ impl ReplSession {
             env: session_env,
             prev_result: empty_dict,
             ctx,
+            type_map: TypeMap::new(),
+            doc_map: DocMap::new(),
         })
     }
 
@@ -167,7 +174,12 @@ impl ReplSession {
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         crate::resolve::resolve_file(&file.node);
         // Type errors are advisory; evaluation proceeds regardless.
-        let _ = crate::typecheck::typecheck_file(&file.node);
+        // Collect type and doc information for meta-commands.
+        let (_type_errors, type_map, doc_map) =
+            crate::typecheck::typecheck_file_with_types(&file.node);
+        // Extend (not replace) the session's type and doc maps with the new information
+        self.type_map.extend(type_map);
+        self.doc_map.extend(doc_map);
 
         if file.node.documents.is_empty() {
             return Err("empty input".to_string());
@@ -238,6 +250,101 @@ impl ReplSession {
         }
 
         Ok(display)
+    }
+
+    /// Handle REPL meta-commands (lines starting with `:`).
+    ///
+    /// Returns `true` to continue the REPL loop, `false` to exit.
+    fn handle_meta_command(&self, line: &str) -> bool {
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        let cmd = parts[0];
+        let arg = parts.get(1).map(|s| s.trim());
+
+        match cmd {
+            ":describe" => {
+                if let Some(name) = arg {
+                    self.describe(name);
+                } else {
+                    eprintln!("usage: :describe <name>");
+                }
+                true
+            }
+            ":type" => {
+                if let Some(name) = arg {
+                    self.show_type(name);
+                } else {
+                    eprintln!("usage: :type <name>");
+                }
+                true
+            }
+            ":help" => {
+                self.show_help();
+                true
+            }
+            _ => {
+                eprintln!("Unknown command: {cmd}");
+                eprintln!("Type :help for available commands.");
+                true
+            }
+        }
+    }
+
+    /// Show type signature and documentation for a binding.
+    fn describe(&self, name: &str) {
+        let type_str = self.lookup_type(name);
+        let doc_str = self.doc_map.get(name);
+
+        match (type_str, doc_str) {
+            (Some(ty), Some(doc)) => {
+                println!("{name} : {ty}");
+                println!();
+                println!("{doc}");
+            }
+            (Some(ty), None) => {
+                println!("{name} : {ty}");
+            }
+            (None, Some(doc)) => {
+                println!("{name} : <unknown type>");
+                println!();
+                println!("{doc}");
+            }
+            (None, None) => {
+                eprintln!("not found: {name}");
+            }
+        }
+    }
+
+    /// Show only the type signature for a binding.
+    fn show_type(&self, name: &str) {
+        if let Some(ty) = self.lookup_type(name) {
+            println!("{name} : {ty}");
+        } else {
+            eprintln!("not found: {name}");
+        }
+    }
+
+    /// Look up the type of a binding by searching the environment and TypeMap.
+    ///
+    /// Returns the type as a string if found. This searches the session's
+    /// environment chain to find the binding, then looks up its type in the
+    /// TypeMap if available.
+    fn lookup_type(&self, name: &str) -> Option<String> {
+        // Try to look up the binding in the environment to get its span
+        let binding = self.env.borrow().get(name)?;
+
+        // The thunk has a span we can use to look up the type
+        let span = binding.span;
+        let key = (span.start.offset, span.end.offset);
+
+        self.type_map.get(&key).map(|ty| format!("{ty}"))
+    }
+
+    /// Display available REPL meta-commands.
+    fn show_help(&self) {
+        println!("REPL meta-commands:");
+        println!("  :describe <name>  Show type and documentation for a binding");
+        println!("  :type <name>      Show type signature only");
+        println!("  :help             Show this help message");
     }
 }
 
@@ -323,6 +430,14 @@ pub fn run_repl() -> Result<(), String> {
                     }
 
                     let _ = editor.add_history_entry(buffer.as_str());
+
+                    // Check for meta-commands (lines starting with ':')
+                    if buffer.trim_start().starts_with(':') {
+                        session.handle_meta_command(buffer.trim());
+                        buffer.clear();
+                        bracket_depth = 0;
+                        continue;
+                    }
 
                     match session.eval_input(&buffer) {
                         Ok(display) => {
@@ -870,5 +985,39 @@ mod tests {
         // Step 2: call the function in a separate eval.
         let result = session.eval_input("[square 9]").unwrap();
         assert_eq!(result, "Int(81)");
+    }
+
+    // ── Meta-command tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_meta_command_handle_help() {
+        let session = ReplSession::new().unwrap();
+
+        // :help should return true (continue REPL)
+        assert!(session.handle_meta_command(":help"));
+    }
+
+    #[test]
+    fn test_meta_command_handle_unknown() {
+        let session = ReplSession::new().unwrap();
+
+        // Unknown commands should return true (continue REPL) but print error
+        assert!(session.handle_meta_command(":unknown"));
+    }
+
+    #[test]
+    fn test_meta_command_type_without_arg() {
+        let session = ReplSession::new().unwrap();
+
+        // :type without argument should return true (prints usage)
+        assert!(session.handle_meta_command(":type"));
+    }
+
+    #[test]
+    fn test_meta_command_describe_without_arg() {
+        let session = ReplSession::new().unwrap();
+
+        // :describe without argument should return true (prints usage)
+        assert!(session.handle_meta_command(":describe"));
     }
 }

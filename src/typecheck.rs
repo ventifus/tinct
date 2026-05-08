@@ -313,15 +313,23 @@ pub fn typecheck_file_with_types_and_env(
 fn extract_doc_strings(file: &File, doc_map: &mut DocMap) {
     for document in &file.documents {
         for expr in &document.node.expressions {
-            extract_doc_from_expr(&expr.node, doc_map);
+            extract_doc_from_expr(&expr.node, doc_map, None);
         }
     }
 }
 
 /// Recursively extract doc strings from an expression tree.
-fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap) {
+///
+/// `binding_name`: When recursing into a dict entry value, this is the entry's binding name
+/// (used to key function-level doc strings extracted from return annotations).
+fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap, binding_name: Option<&str>) {
     match expr {
-        Expr::Fn { params, body, .. } => {
+        Expr::Fn {
+            return_ann,
+            params,
+            body,
+            ..
+        } => {
             // Extract doc strings from parameter annotations
             for param in params {
                 if let Some(ref ann) = param.node.annotation {
@@ -332,12 +340,42 @@ fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap) {
                     }
                 }
             }
+            // Extract doc from return annotation if present (function-level doc)
+            if let Some(binding) = binding_name {
+                if let Some(ref ann) = return_ann {
+                    if let Some(doc_value) = ann.node.get_property("doc") {
+                        if let Expr::Str(doc_string) = &doc_value.node {
+                            doc_map.insert(binding.to_string(), doc_string.clone());
+                        }
+                    }
+                }
+            }
             // Recurse into function body
-            extract_doc_from_expr(&body.node, doc_map);
+            extract_doc_from_expr(&body.node, doc_map, None);
         }
         Expr::Dict(entries) => {
             for entry in entries {
-                extract_doc_from_expr(&entry.node.value.node, doc_map);
+                // Extract doc from key annotation (e.g., name@[doc: "..."])
+                if let Some(ref key_expr) = entry.node.key {
+                    if let Expr::Annotated { name, annotation } = &key_expr.node {
+                        if let Some(doc_value) = annotation.node.get_property("doc") {
+                            if let Expr::Str(doc_string) = &doc_value.node {
+                                doc_map.insert(name.clone(), doc_string.clone());
+                            }
+                        }
+                        // Thread the binding name when recursing into the value
+                        extract_doc_from_expr(&entry.node.value.node, doc_map, Some(name));
+                        continue;
+                    }
+                    // Plain VarRef key (e.g., `calc: [fn@[doc: "..."] ...]`)
+                    // Thread the binding name so fn return annotations can be keyed
+                    if let Expr::VarRef { name, .. } = &key_expr.node {
+                        extract_doc_from_expr(&entry.node.value.node, doc_map, Some(name));
+                        continue;
+                    }
+                }
+                // No annotation on key, recurse without binding name
+                extract_doc_from_expr(&entry.node.value.node, doc_map, None);
             }
         }
         Expr::Call {
@@ -346,26 +384,26 @@ fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap) {
             named_args,
             ..
         } => {
-            extract_doc_from_expr(&func.node, doc_map);
+            extract_doc_from_expr(&func.node, doc_map, None);
             for arg in args {
-                extract_doc_from_expr(&arg.node, doc_map);
+                extract_doc_from_expr(&arg.node, doc_map, None);
             }
             for named_arg in named_args {
-                extract_doc_from_expr(&named_arg.node.value.node, doc_map);
+                extract_doc_from_expr(&named_arg.node.value.node, doc_map, None);
             }
         }
         Expr::DotAccess { expr: target, .. } => {
-            extract_doc_from_expr(&target.node, doc_map);
+            extract_doc_from_expr(&target.node, doc_map, None);
         }
         Expr::TypeAssert { expr: inner, .. } => {
-            extract_doc_from_expr(&inner.node, doc_map);
+            extract_doc_from_expr(&inner.node, doc_map, None);
         }
         Expr::TypeAlias { body, .. } => {
-            extract_doc_from_expr(&body.node, doc_map);
+            extract_doc_from_expr(&body.node, doc_map, None);
         }
         Expr::Pipe { lhs, rhs } => {
-            extract_doc_from_expr(&lhs.node, doc_map);
-            extract_doc_from_expr(&rhs.node, doc_map);
+            extract_doc_from_expr(&lhs.node, doc_map, None);
+            extract_doc_from_expr(&rhs.node, doc_map, None);
         }
         // Literals and VarRef have no children to recurse into
         _ => {}
@@ -9047,4 +9085,55 @@ mod tests {
             other => panic!("expected Record type for Point, got {other}"),
         }
     }
+
+    // ========== DocMap Extraction Tests ==========
+
+    #[test]
+    fn test_doc_extraction_from_param_annotation() {
+        // Test existing functionality: extract doc from parameter annotations
+        let input = "[f: [fn [x@[doc: \"The input value\"]] x]]";
+        let file = crate::parse(input).unwrap();
+        let (_errors, _type_map, doc_map) = typecheck_file_with_types(&file.node);
+
+        assert_eq!(doc_map.get("x"), Some(&"The input value".to_string()));
+    }
+
+    #[test]
+    fn test_doc_extraction_from_dict_entry_key() {
+        // Test Task 1: extract doc from dict entry key annotation
+        let input = "[myFunc@[doc: \"My function\"]: [fn [] 42]]";
+        let file = crate::parse(input).unwrap();
+        let (_errors, _type_map, doc_map) = typecheck_file_with_types(&file.node);
+
+        assert_eq!(doc_map.get("myFunc"), Some(&"My function".to_string()));
+    }
+
+    #[test]
+    fn test_doc_extraction_from_fn_return_annotation() {
+        // Test Task 2: extract doc from function return annotation
+        let input = "[count@[]: [fn@[type: Int  doc: \"Returns the count\"] [] 42]]";
+        let file = crate::parse(input).unwrap();
+        let (_errors, _type_map, doc_map) = typecheck_file_with_types(&file.node);
+
+        assert_eq!(doc_map.get("count"), Some(&"Returns the count".to_string()));
+    }
+
+    #[test]
+    fn test_doc_extraction_combined() {
+        // Test all three extraction patterns together
+        let input = r#"
+[helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
+        "#;
+        let file = crate::parse(input).unwrap();
+        let (_errors, _type_map, doc_map) = typecheck_file_with_types(&file.node);
+
+        // When both key annotation and return annotation have doc:, the return annotation
+        // wins because it is extracted later during recursion (overwrite semantics).
+        assert_eq!(doc_map.get("helper"), Some(&"Adds two numbers".to_string()));
+        assert_eq!(doc_map.get("a"), Some(&"First number".to_string()));
+        assert_eq!(doc_map.get("b"), Some(&"Second number".to_string()));
+    }
+
+    // test_doc_extraction_fn_return_only: covered by test_doc_extraction_from_fn_return_annotation
+    // which uses count@[]: syntax to thread the binding name via Annotated key.
 }

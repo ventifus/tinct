@@ -138,25 +138,22 @@ tls-connect h@Handle[...Stream RW...] sni opts → Handle[Binary Readable Writab
 The SNI hostname must always be provided explicitly (it may differ from
 the IP actually connected to, e.g. when bypassing DNS or using a proxy).
 
-With `Handle[Binary Readable Writable Stream]`, HTTP/1.0 is pure-tinct:
+With `Handle[Binary Readable Writable Stream]`, HTTP/1.0 is pure-tinct.
+`http-get` handles both `http://` and `https://` by dispatching on `url.scheme`;
+`https-get` no longer exists as a separate function:
 
 ```tinct
 # stdlib/net.llt — HTTP/1.0 over any Readable Writable Stream Handle
-http-get: [fn [connector@Connector host@String port@Int path@String headers@Dict]
-  [conn: [connect connector Tcp host port]]
-  [write conn [str-bytes [build-http-request "GET" path headers]]]
+http-get: [fn [connector@Connector url@Url headers@Dict tls-opts@[TlsOpts Null]]
+  [conn: [match url.scheme
+    "https" [tls-connect connector Tcp url.host url.port [tls-opts or []]]
+    "http"  [connect connector Tcp url.host url.port]
+    _       [error [str "http-get: unsupported scheme: " url.scheme]]]]
+  [write conn [str-bytes [build-http-request "GET" url.path headers]]]
   [parse-http-response [slurp conn]]]
 
-https-get: [fn [connector@Connector host@String port@Int path@String headers@Dict tls-opts@Dict]
-  [conn: [tls-connect connector Tcp host port tls-opts]]
-  [write conn [str-bytes [build-http-request "GET" path headers]]]
-  [parse-http-response [slurp conn]]]
-
-fetch: [fn [connector@Connector url@String]
-  [parsed: [parse-url url]]
-  [if [starts-with? "https://" url]
-    [https-get connector parsed.host parsed.port parsed.path [] []]
-    [http-get  connector parsed.host parsed.port parsed.path []]]]
+fetch: [fn [connector@Connector url@Url]
+  [http-get connector url [] null]]
 ```
 
 ### `HttpConn` and Connection Reuse
@@ -451,14 +448,14 @@ returning a response dict:
 |------|-------------|----------------|
 | Transport | `connect connector Transport host port` | Connector protocol; `NetCap` is stdlib impl |
 | TLS | `tls-connect connector\|Handle host port opts` | Rust (rustls); two forms |
-| HTTP/1.0 | `http-get`, `https-get`, `fetch` | **pure-tinct** stdlib/net.llt |
-| HTTP sessions | `http-connect connector\|Handle host port opts` | Rust (reqwest); returns `HttpConn` |
+| HTTP/1.0 | `http-get connector url headers tls-opts`, `fetch` | **pure-tinct** stdlib/net.llt; dispatches on `url.scheme` |
+| HTTP sessions | `http-connect connector\|Handle url opts` | Rust (reqwest); returns `HttpConn` |
 | Proxy tunnels | `socks5-connect`, `proxy-connect` | Rust; return `Handle[...Stream RW]` |
 
-`http-get`/`https-get`/`fetch` are pure-tinct because
-`Handle[Binary Readable Writable Stream]` supports both reads and
-writes. `http-connect` is Rust because HTTP/2 and HTTP/3 protocol
-engines can't be expressed as Handle streams.
+`http-get` and `fetch` are pure-tinct. `http-get` handles both `http://`
+and `https://` by dispatching on `url.scheme` — `https-get` does not
+exist as a separate function. `http-connect` is Rust because HTTP/2 and
+HTTP/3 require protocol engines that can't be expressed as Handle streams.
 
 ## What Would Change
 
@@ -567,6 +564,57 @@ available at runtime without recompilation.
 # Type aliases declared in stdlib/net.llt
 
 [
+  # Uri — generic RFC 3986 URI (RFC 3986 §3); covers all URI forms.
+  # Use when you need to parse or store arbitrary URIs including non-hierarchical ones.
+  # Constructed via: [uri "https://host/path"]
+  #                  [uri "mailto:user@example.com"]
+  #                  [uri "urn:isbn:978-0-306-40615-7"]
+  #                  [uri "tel:+1-816-555-1212"]
+  Uri: [type [
+    scheme:   @String            # lowercase scheme
+    username: @[String Null]     # null if absent or non-hierarchical; splitting userinfo on ":"
+    password: @[String Null]     # is a practical convention — RFC 3986 §3.2.1 treats userinfo
+                                 # as opaque. Password in URIs is deprecated per §7.5.
+    host:     @[String Null]     # null for non-hierarchical (mailto:, tel:, urn:, news:)
+    port:     @[Int Null]        # null for non-hierarchical or unspecified; empty port string
+                                 # (e.g. "http://host:/path") parsed as null, not error
+    path:     @String            # always present per RFC 3986 §3.3 ("though may be empty")
+    query:    @[String Null]     # raw query string without "?"; null if absent
+    fragment: @[String Null]     # fragment without "#"; null if absent
+  ]]
+
+  # Url — hierarchical URI with required authority (RFC 3986 §3.2).
+  # All network functions (http-get, http-connect, tls-connect) accept Url, not Uri.
+  # Constructed via: [url "https://user:pass@host:443/path?q=1"]
+  #                  [url "postgres://user:pass@localhost:5432/mydb"]
+  #                  [url "s3://bucket/key?region=us-east-1"]
+  Url: [type [
+    scheme:   @String            # lowercase: "https", "http", "postgres", "s3", "amqp", etc.
+    username: @[String Null]     # null if absent
+    password: @[String Null]     # null if absent; splitting userinfo on ":" is a convention
+                                 # not mandated by RFC 3986 §3.2.1; deprecated for HTTP (§7.5)
+    host:     @String            # always present (validated at parse time); IPv6 without brackets
+    port:     @Int               # always present; scheme-defaulted if absent; empty port string
+                                 # ("http://host:/path") treated as absent → defaulted
+    path:     @String            # always present per RFC 3986 §3.3; "/" if absent in string
+    query:    @[String Null]     # raw query string without "?"; null if absent
+    fragment: @[String Null]     # fragment without "#"; null if absent
+  ]]
+
+  # Urn — URN per RFC 8141: urn:NID:NSS[?+r][?=q][#f]
+  # Constructed via: [urn "urn:isbn:978-0-306-40615-7"]
+  #                  [urn "urn:uuid:6e8bc430-9c3a-11d9-9669-0800200c9a66"]
+  #                  [urn "urn:oasis:names:specification:docbook:dtd:xml:4.1.2"]
+  Urn: [type [
+    nid:         @String            # Namespace Identifier: "isbn", "uuid", "oasis", etc.
+    nss:         @String            # Namespace Specific String
+    r-component: @[String Null]     # RFC 8141 §2.3: resolution parameters (?+...); null if absent
+    q-component: @[String Null]     # RFC 8141 §2.3: query parameters (?=...); null if absent
+    fragment:    @[String Null]     # fragment (#...); null if absent
+  ]]
+  # Note: r-component is SHOULD NOT be used per RFC 8141 §2.3.1 ("reserved for future use").
+  # It is included for completeness; parsers should silently accept it.
+
   # TLS options dict — passed as fifth arg to tls-connect
   TlsOpts: [type [
     ca-bundle:      @[Handle Null]   # PEM file via [open cap path Readable]
@@ -606,17 +654,28 @@ tls-connect : [fn@Handle      [h@Handle  sni@String  opts@TlsOpts]]
 
 tls-peer-cert : [fn@PeerCert  [h@Handle]]   # h must carry Tls capability
 
-http-connect  : [fn@HttpConn  [connector@Connector  host@String  port@Int  opts@Any]]
-http-connect  : [fn@HttpConn  [h@Handle  host@String]]
+http-connect  : [fn@HttpConn  [connector@Connector  uri@Uri  opts@Any]]
+http-connect  : [fn@HttpConn  [h@Handle  uri@Uri]]
 
 socks5-connect : [fn@Handle   [h@Handle  host@String  port@Int  creds@Any]]
 proxy-connect  : [fn@Handle   [h@Handle  host@String  port@Int]]
 
+# Uri/Url/Urn builtins:
+uri           : [fn@Uri     [s@String]]    # parse any URI string → Uri (generic)
+url           : [fn@Url     [s@String]]    # parse hierarchical URL → Url; error if no authority
+urn           : [fn@Urn     [s@String]]    # parse URN → Urn; error if not urn: scheme
+uri-params    : [fn@Dict    [u@[Uri Url]]] # parse u.query → {key: value, ...}; {} if null
+uri-origin    : [fn@String  [u@Url]]       # "scheme://host:port" (Url only — host is required)
+uri->string   : [fn@String  [u@[Uri Url Urn]]] # reconstruct full URI/URL/URN string
+
 # In stdlib/net.llt:
-http-get   : [fn@Dict  [connector@Connector  host@String  port@Int  path@String  headers@Dict]]
-https-get  : [fn@Dict  [connector@Connector  host@String  port@Int  path@String  headers@Dict  tls-opts@TlsOpts]]
-fetch      : [fn@Dict  [connector@Connector  url@String]]
-             # returns [status: @Int  headers: @Dict  body: @String]
+# http-get handles both http:// and https:// via url.scheme dispatch
+# https-get does not exist — use http-get with an https:// Uri
+http-get      : [fn@Dict  [connector@Connector  uri@Uri  headers@Dict  tls-opts@[TlsOpts Null]]]
+                # dispatches on url.scheme; tls-opts ignored for http://, used for https://
+                # returns [status: @Int  headers: @Dict  body: @String]
+fetch         : [fn@Dict  [connector@Connector  uri@Uri]]
+                # convenience: http-get with empty headers and null tls-opts
 ```
 
 ## Dependencies

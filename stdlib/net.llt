@@ -1,5 +1,6 @@
 # Network utilities — depends on io-phase2 builtins
-# Requires: net-cap, connect (io-phase2); write-handle, slurp (io-phase1)
+# Requires: net-cap, connect, tls-connect (io-phase2)
+# Requires: write-handle, slurp, str-bytes, bytes-str (io-phase1)
 # Requires prelude: if, or, make-entry, merge, set, split, join, rest,
 #                   length, to-int, str, get, builtin-eq, builtin-add, error
 #
@@ -11,8 +12,8 @@
 #   parse-status-line     — "HTTP/1.0 200 OK" -> 200
 #   parse-header-fields   — recursive header dict builder
 #   parse-http-response   — raw response String -> [status: headers: body:]
-#   http-get              — connect + write-handle + slurp + parse
-#   fetch                 — parse-url + http-get
+#   http-get              — plain TCP: connect + write-handle + slurp + parse
+#   fetch                 — parse-url + http-get (http) or tls-connect (https)
 
 [
   # Parse optional port from [split ":" host-port] result.
@@ -44,7 +45,7 @@
 
   # Build a minimal HTTP/1.0 GET request string.
   build-http-request: [fn@String [method@String path@String host@String]
-    [str method " " path " HTTP/1.0\r\nHost: " host "\r\nConnection: close\r\n\r\n"]]
+    [str method " " path " HTTP/1.0\r\nHost: " host "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]
 
   # Extract HTTP status code Int from the first response line.
   # "HTTP/1.0 200 OK" -> 200
@@ -80,13 +81,18 @@
   # Returns parsed response dict.
   http-get: [fn@Dict [cap@NetCap host@String port@Int path@String]
     [parse-http-response
-      [slurp [write-handle [connect cap host port] [build-http-request "GET" path host]]]]]
+      [bytes-str [slurp [write-handle
+        [connect cap host port]
+        [str-bytes [build-http-request "GET" path host]]]]]]]
 
-  # Parse URL and dispatch to http-get. Only http:// is supported.
-  # Default port 80, default path "/".
+  # Parse URL and dispatch to http-get (http) or tls-connect (https).
+  # Default port 80/443, default path "/".
   fetch: [fn@Dict [cap@NetCap url@String]
     [parsed: [parse-url url]
     [if [builtin-eq parsed.scheme "https"]
-      [error "fetch: HTTPS not yet supported (requires TLS; see doc/whatif/lib-tls.md)"]
+      [parse-http-response
+        [bytes-str [slurp [write-handle
+          [tls-connect cap Tcp parsed.host [or parsed.port 443] []]
+          [str-bytes [build-http-request "GET" [or parsed.path "/"] parsed.host]]]]]]
       [http-get cap parsed.host [or parsed.port 80] [or parsed.path "/"]]]]]
 ]
