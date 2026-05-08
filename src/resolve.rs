@@ -301,10 +301,75 @@ impl Resolver {
         }
     }
 
+    /// Extract the static string-keyed names from a dict expression.
+    ///
+    /// Returns the same set of names that `walk_expr` for `Expr::Dict` would push as a scope.
+    /// Used by `walk_document` to model `eval_document`'s scope-chain semantics.
+    fn dict_static_keys(expr: &Spanned<Expr>) -> Vec<String> {
+        match &expr.node {
+            Expr::Dict(entries) => entries
+                .iter()
+                .filter_map(|entry| {
+                    entry.node.key.as_ref().and_then(|key_expr| {
+                        match &key_expr.node {
+                            Expr::Str(s) => Some(s.clone()),
+                            Expr::Annotated { name, .. } => Some(name.clone()),
+                            _ => None,
+                        }
+                    })
+                })
+                .collect(),
+            // Non-dict expressions don't inject any scope bindings.
+            _ => Vec::new(),
+        }
+    }
+
     /// Walk a document and resolve all VarRef nodes in its expressions.
+    ///
+    /// Models `eval_document`'s scope-chain semantics: each intermediate dict expression's
+    /// string-keyed entries become scope bindings for subsequent expressions. This mirrors
+    /// the runtime behaviour where `eval_document` materialises the first dict and injects
+    /// its entries into a child environment for the next expression.
+    ///
+    /// For the prelude public/private split pattern:
+    /// ```text
+    /// [helper-fn: ...]          # first expression (private)
+    /// [public-fn: [fn [] [helper-fn ...]]]  # second expression (public)
+    /// ```
+    /// `helper-fn` is resolved correctly in the second expression because its name is
+    /// injected as a scope binding between the two dict expressions.
     fn walk_document(&mut self, document: &Document) {
-        for expr in &document.expressions {
+        let exprs = &document.expressions;
+
+        if exprs.is_empty() {
+            return;
+        }
+
+        // Stack of "scope-chain" scope depths pushed by intermediate dict expressions.
+        // Each time we inject scope bindings from an intermediate dict, we push a scope
+        // that must be popped after the document is fully resolved.
+        let mut injected_scopes: usize = 0;
+
+        for (i, expr) in exprs.iter().enumerate() {
+            let is_last = i == exprs.len() - 1;
+
             self.walk_expr(expr);
+
+            // After resolving an intermediate (non-last) dict expression, inject its
+            // static keys into a new scope so subsequent expressions can reference them.
+            // This models eval_document's child-environment injection.
+            if !is_last {
+                let keys = Self::dict_static_keys(expr);
+                if !keys.is_empty() {
+                    self.enter_scope(&keys);
+                    injected_scopes += 1;
+                }
+            }
+        }
+
+        // Pop all injected scopes in reverse order.
+        for _ in 0..injected_scopes {
+            self.exit_scope();
         }
     }
 }
@@ -691,6 +756,147 @@ mod tests {
 
         // Second resolution must panic: old value is Some(None), which is_some() == true
         resolve_file(&file.node);
+    }
+
+    /// Multi-expression document scope chain: the second dict expression can reference
+    /// names defined in the first dict expression of the same document.
+    ///
+    /// This models eval_document's scope-chain semantics where intermediate dict entries
+    /// are injected into a child environment for subsequent expressions.
+    #[test]
+    fn test_multi_expr_scope_chain_resolves() {
+        use crate::parser::parse;
+
+        // Two dict expressions in one document: second references first's keys.
+        let source = "[helper: 1]\n[public: $helper]";
+        let file = parse(source).expect("parse failed");
+        resolve_file(&file.node);
+
+        let doc = &file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 2);
+
+        // In the second dict expression, $helper should resolve (not be unresolvable).
+        let second_dict = &doc.expressions[1].node;
+        match second_dict {
+            Expr::Dict(entries) => {
+                // Entry: public: $helper
+                let value = &entries[0].node.value.node;
+                match value {
+                    Expr::VarRef { name, resolved } => {
+                        assert_eq!(name, "helper");
+                        // Must resolve — not Some(None).
+                        // The exact level depends on scope stack depth:
+                        //   level 0: synthetic % scope
+                        //   level 1: injected scope-chain scope (first dict's keys)
+                        //   level 2: second dict's own scope
+                        // $helper is in the injected scope at level 1.
+                        let coords = resolved.borrow().flatten();
+                        assert!(
+                            coords.is_some(),
+                            "expected $helper to resolve, got Some(None) (unresolvable)"
+                        );
+                        assert_eq!(coords, Some((1, 0)));
+                    }
+                    other => panic!("expected VarRef for public value, got {:?}", other),
+                }
+            }
+            other => panic!("expected Dict for second expression, got {:?}", other),
+        }
+    }
+
+    /// Multi-expression scope chain: first dict's keys are NOT visible as siblings within
+    /// the first dict itself (they're only injected for SUBSEQUENT expressions).
+    #[test]
+    fn test_multi_expr_first_dict_sees_own_scope_only() {
+        use crate::parser::parse;
+
+        // First dict: a and b are siblings (letrec — both visible to each other).
+        // $b in the first dict resolves to slot 1 in level 1 (the dict's own scope).
+        let source = "[a: 1  b: $a]\n[c: $b]";
+        let file = parse(source).expect("parse failed");
+        resolve_file(&file.node);
+
+        let doc = &file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 2);
+
+        // In the first dict, $a (in b's value) should resolve to (1, 0) — level 1 = dict scope.
+        let first_dict = &doc.expressions[0].node;
+        match first_dict {
+            Expr::Dict(entries) => {
+                let b_value = &entries[1].node.value.node;
+                match b_value {
+                    Expr::VarRef { name, resolved } => {
+                        assert_eq!(name, "a");
+                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                    }
+                    other => panic!("expected VarRef for b value, got {:?}", other),
+                }
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+
+        // In the second dict, $b should resolve to the injected scope (level 1, slot 1).
+        let second_dict = &doc.expressions[1].node;
+        match second_dict {
+            Expr::Dict(entries) => {
+                let c_value = &entries[0].node.value.node;
+                match c_value {
+                    Expr::VarRef { name, resolved } => {
+                        assert_eq!(name, "b");
+                        assert_eq!(resolved.borrow().flatten(), Some((1, 1)));
+                    }
+                    other => panic!("expected VarRef for c value, got {:?}", other),
+                }
+            }
+            other => panic!("expected Dict, got {:?}", other),
+        }
+    }
+
+    /// Multi-expression scope chain: three expressions chain correctly.
+    #[test]
+    fn test_multi_expr_three_expressions_chain() {
+        use crate::parser::parse;
+
+        // Three dicts: third sees both first and second dict's keys.
+        let source = "[a: 1]\n[b: 2]\n[c: $a  d: $b]";
+        let file = parse(source).expect("parse failed");
+        resolve_file(&file.node);
+
+        let doc = &file.node.documents[0].node;
+        assert_eq!(doc.expressions.len(), 3);
+
+        let third_dict = &doc.expressions[2].node;
+        match third_dict {
+            Expr::Dict(entries) => {
+                // c: $a — $a is in first dict's keys, injected at level 1, slot 0.
+                // After first dict: injected scope at level 1 with [a].
+                // After second dict: injected scope at level 2 with [b].
+                // Second dict's own scope is level 3; third dict's own scope is... wait.
+                // Scope stack when resolving third dict:
+                //   level 0: synthetic % scope
+                //   level 1: injected scope from first dict [a]
+                //   level 2: injected scope from second dict [b]
+                //   level 3: third dict's own scope [c, d]
+                let c_value = &entries[0].node.value.node;
+                match c_value {
+                    Expr::VarRef { name, resolved } => {
+                        assert_eq!(name, "a");
+                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                    }
+                    other => panic!("expected VarRef for c value, got {:?}", other),
+                }
+
+                let d_value = &entries[1].node.value.node;
+                match d_value {
+                    Expr::VarRef { name, resolved } => {
+                        assert_eq!(name, "b");
+                        assert_eq!(resolved.borrow().flatten(), Some((2, 0)));
+                    }
+                    other => panic!("expected VarRef for d value, got {:?}", other),
+                }
+            }
+            other => panic!("expected Dict for third expression, got {:?}", other),
+        }
     }
 
     /// Fix 7: bindings from document 1 must not resolve in document 2.

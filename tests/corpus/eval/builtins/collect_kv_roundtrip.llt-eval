@@ -2,5 +2,3 @@
 [collect-kv [each-kv [a: 1  b: 2  c: 3]]]
 === out
 Dict({"a": Int(1), "b": Int(2), "c": Int(3)})
-=== warn
-undefined variable: each-kv at 1:14-1:21
