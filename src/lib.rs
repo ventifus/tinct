@@ -120,7 +120,7 @@ pub use repl::run_repl;
 pub use lsp::run_lsp;
 
 /// Runtime value types: values, thunks, environments, and dict keys.
-pub use value::{Environment, Key, NetCapEntry, Thunk, Value};
+pub use value::{ClockCapInner, Environment, Key, NetCapEntry, Thunk, Value};
 
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
 /// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) -- not JSON.

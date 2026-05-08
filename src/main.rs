@@ -5,6 +5,7 @@ use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::process;
 use std::rc::Rc;
+use std::str::FromStr;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_source, format_with_json_llt,
     json_to_value, literate, materialize, parse, value_to_json, EvalContext, Span, Thunk,
@@ -118,6 +119,18 @@ enum Commands {
         /// Example: --cap-net api=api.internal --cap-net api=10.42.0.0/16
         #[arg(long, value_name = "NAME=ENTRY")]
         cap_net: Vec<String>,
+
+        /// Inject a named ClockCap (real system clock) into the root environment.
+        /// Format: NAME — binds $NAME to a ClockCap reading the system clock.
+        /// Example: --cap-clock my-clock injects $my-clock as a real ClockCap.
+        #[arg(long, value_name = "NAME")]
+        cap_clock: Vec<String>,
+
+        /// Inject a named ClockCap (fixed timestamp) into the root environment.
+        /// Format: "RFC3339" NAME — binds $NAME to a ClockCap returning the fixed timestamp.
+        /// Example: --cap-clock-fixed "2024-01-01T00:00:00Z" test-clock injects $test-clock.
+        #[arg(long, value_name = "RFC3339 NAME", num_args = 2)]
+        cap_clock_fixed: Vec<String>,
 
         /// Evaluate an inline tinct expression (may be repeated).
         /// Each -e occurrence inserts a pipeline stage at that position in the command line,
@@ -247,6 +260,8 @@ fn main() {
             no_libdir,
             cap_fs,
             cap_net,
+            cap_clock,
+            cap_clock_fixed,
             expr,
             input,
             output,
@@ -269,6 +284,8 @@ fn main() {
             no_libdir,
             cap_fs,
             cap_net,
+            cap_clock,
+            cap_clock_fixed,
             expr,
             input,
             output,
@@ -704,6 +721,8 @@ fn run_eval(
     no_libdir: bool,
     cap_fs: Vec<String>,
     cap_net: Vec<String>,
+    cap_clock: Vec<String>,
+    cap_clock_fixed: Vec<String>,
     expr: Vec<String>,
     input: Option<String>,
     output: Option<String>,
@@ -999,6 +1018,58 @@ fn run_eval(
             let cap_value = Value::NetCap(Rc::new(entries));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
             env.borrow_mut().insert(name, Rc::new(cap_thunk));
+        }
+    }
+
+    // Inject --cap-clock NAME entries into the root environment
+    {
+        use tinct::{ClockCapInner, Value};
+        for name in &cap_clock {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("--cap-clock: NAME must not be empty".to_string());
+            }
+            let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Real));
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            env.borrow_mut()
+                .insert(name.to_string(), Rc::new(cap_thunk));
+        }
+    }
+
+    // Inject --cap-clock-fixed "RFC3339" NAME entries into the root environment
+    {
+        use tinct::{ClockCapInner, Value};
+        // cap_clock_fixed is a Vec<String> where pairs of consecutive entries are (timestamp, name)
+        if cap_clock_fixed.len() % 2 != 0 {
+            return Err(
+                "--cap-clock-fixed requires pairs of RFC3339 and NAME arguments".to_string(),
+            );
+        }
+        for chunk in cap_clock_fixed.chunks(2) {
+            let timestamp_str = &chunk[0];
+            let name = &chunk[1];
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("--cap-clock-fixed: NAME must not be empty".to_string());
+            }
+            // Parse the RFC 3339 timestamp using jiff
+            let timestamp = jiff::Timestamp::from_str(timestamp_str).map_err(|e| {
+                format!(
+                    "--cap-clock-fixed: invalid RFC 3339 timestamp '{}': {}",
+                    timestamp_str, e
+                )
+            })?;
+            // Convert to nanoseconds (i64)
+            let nanos = i64::try_from(timestamp.as_nanosecond()).map_err(|_| {
+                format!(
+                    "--cap-clock-fixed: timestamp '{}' is out of i64 range",
+                    timestamp_str
+                )
+            })?;
+            let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            env.borrow_mut()
+                .insert(name.to_string(), Rc::new(cap_thunk));
         }
     }
 
