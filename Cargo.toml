@@ -40,6 +40,7 @@ url = { version = "2", optional = true }
 regex = "1"  # Pattern matching for schema validation
 rust_decimal = "1"  # Exact base-10 decimal arithmetic (96-bit software decimal)
 num-bigint = "0.4"  # Arbitrary-precision integer arithmetic
+subtle = "1"  # Constant-time comparison for cryptographic operations
 rustyline = { version = "18.0", optional = true }
 serde_json = "1.0"
 strsim = "0.11"

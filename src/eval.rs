@@ -333,6 +333,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Number => matches!(value, Value::Int(_) | Value::Float(_)),
         Type::Str => matches!(value, Value::String { .. }),
         Type::Bool => matches!(value, Value::Bool(_)),
+        Type::Bytes => matches!(value, Value::Bytes { .. }),
         Type::IntLiteral(n) => matches!(value, Value::Int(v) if v == n),
         Type::StringLiteral(s) => value.as_str().map_or(false, |v| v == s),
         Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin(_)),

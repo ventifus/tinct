@@ -2,6 +2,10 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## `bytes-type`: Bytes Type
+
+`Value::Bytes { source: Rc<[u8]>, start, end }` added to Value enum with `Type::Bytes` in the type system and `bytes?` predicate. 6 new Rust builtins: `bytes` (variadic concat), `bytes-find` (byte-pattern search returning index or -1), `bytes-of` (collect `Seq@Int` or `Dict` of ints 0-255 into Bytes), `bytes-equal?` (fast structural equality), `ct-equal?` (constant-time via `subtle::ConstantTimeEq`), `bytes?` (type predicate). Wired `str-bytes` and `bytes-str` stubs from `bitwise-encoding` sprint to produce/consume `Value::Bytes`. JSON serialization emits hex-encoded string. Type signatures registered in `type_env.rs`. Corpus tests for all builtins. **Deferred:** Bytes dual-dispatch in collection functions (`map`, `filter`, `fold`, etc.) — tracked in `string-utils` and future sprint.
+
 ## `bitwise-encoding`: Bitwise Primitives & Encoding
 
 9 Rust builtins: `band`, `bor`, `bxor`, `shl`, `shr` (bitwise ops on i64, with logical right shift via u64 cast) + `char-code` (String -> Int codepoint), `chr` (Int -> String), `str-bytes` and `bytes-str` (stubs pending `bytes-type` sprint). Registered in `standard_builtins()` with type signatures in `type_env.rs`. Pure-tinct `stdlib/encoding.llt`: `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` (RFC 4648), `mask-apply` (XOR repeating-key cipher). Corpus tests for all bitwise builtins, char-code/chr, and encoding functions. **Deferred:** `str-bytes`/`bytes-str` are stubs (error until `Value::Bytes` exists); `stdlib/encoding.llt` not auto-loaded at startup (requires explicit `[include]`); `HashAlgorithm` type alias defined but not yet registered.

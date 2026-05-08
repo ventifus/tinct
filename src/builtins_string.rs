@@ -960,26 +960,79 @@ pub(crate) fn builtin_chr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
-/// `str-bytes`: Convert a string to a sequence of byte values (stub).
+/// `str-bytes`: Convert a string to Bytes (UTF-8 encoding).
 ///
-/// This is a placeholder for the bytes-type sprint. Currently returns an error.
+/// Takes 1 arg: a String.
+/// Returns Bytes containing the UTF-8 encoding of the string.
+///
+/// # Example
+///
+/// ```llt
+/// (str-bytes "Hello")  // Bytes of UTF-8 encoding
+/// ```
 pub(crate) fn builtin_str_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let call_span = ctx_arg.call_span;
-    Err(EvalError::new(
-        "str-bytes requires Value::Bytes from bytes-type sprint".to_string(),
+    use crate::value::bytes_val;
+
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
         call_span,
-    )
-    .into())
+        ctx,
+    } = ctx_arg;
+
+    let val = crate::builtins::expect_one_arg("str-bytes", args, named, &ctx, depth, call_span)?;
+
+    match val.as_str() {
+        Some(s) => ok_val(bytes_val(s.as_bytes()), call_span),
+        None => Err(EvalError::type_mismatch_ctx(
+            "str-bytes".to_string(),
+            "String",
+            val.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
 }
 
-/// `bytes-str`: Convert a sequence of byte values to a string (stub).
+/// `bytes-str`: Convert Bytes to a string (UTF-8 decoding).
 ///
-/// This is a placeholder for the bytes-type sprint. Currently returns an error.
+/// Takes 1 arg: Bytes.
+/// Returns String if valid UTF-8, otherwise returns an error.
+///
+/// # Example
+///
+/// ```llt
+/// (bytes-str some-bytes)  // String if valid UTF-8
+/// ```
 pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let call_span = ctx_arg.call_span;
-    Err(EvalError::new(
-        "bytes-str requires Value::Bytes from bytes-type sprint".to_string(),
+    use crate::value::string_val;
+
+    let BuiltinArgs {
+        args,
+        named,
+        depth,
         call_span,
-    )
-    .into())
+        ctx,
+    } = ctx_arg;
+
+    let val = crate::builtins::expect_one_arg("bytes-str", args, named, &ctx, depth, call_span)?;
+
+    match val.as_bytes() {
+        Some(bytes) => match std::str::from_utf8(bytes) {
+            Ok(s) => ok_val(string_val(s), call_span),
+            Err(e) => Err(EvalError::new(
+                format!("bytes-str: invalid UTF-8 sequence: {}", e),
+                call_span,
+            )
+            .into()),
+        },
+        None => Err(EvalError::type_mismatch_ctx(
+            "bytes-str".to_string(),
+            "Bytes",
+            val.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
 }

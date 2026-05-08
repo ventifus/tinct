@@ -198,6 +198,14 @@ pub enum Value {
     /// Arbitrary-precision integer (num_bigint::BigInt).
     /// Created via `big-int` builtin or arithmetic overflow promotion.
     BigInt(num_bigint::BigInt),
+    /// Byte sequence (opaque binary data).
+    /// Stored as a shared slice with byte offsets, enabling zero-copy subslicing.
+    /// Used for binary I/O, cryptographic operations, and encoding conversions.
+    Bytes {
+        source: Rc<[u8]>,
+        start: usize,
+        end: usize,
+    },
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
@@ -207,6 +215,16 @@ pub fn string_val(s: &str) -> Value {
         source: Rc::from(s),
         start: 0,
         end: s.len(),
+    }
+}
+
+/// Helper function to construct a `Value::Bytes` from a byte slice.
+/// Creates a new `Rc<[u8]>` and uses the full range (0..len).
+pub fn bytes_val(data: &[u8]) -> Value {
+    Value::Bytes {
+        source: Rc::from(data),
+        start: 0,
+        end: data.len(),
     }
 }
 
@@ -231,6 +249,7 @@ impl Value {
             Value::Variant { .. } => "Variant",
             Value::Decimal(_) => "Decimal",
             Value::BigInt(_) => "BigInt",
+            Value::Bytes { .. } => "Bytes",
         }
     }
 
@@ -238,6 +257,14 @@ impl Value {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String { source, start, end } => Some(&source[*start..*end]),
+            _ => None,
+        }
+    }
+
+    /// Extract a byte slice from a `Value::Bytes`, or `None` if not bytes.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Value::Bytes { source, start, end } => Some(&source[*start..*end]),
             _ => None,
         }
     }
@@ -284,6 +311,10 @@ impl fmt::Debug for Value {
             }
             Value::Decimal(d) => write!(f, "Decimal({d})"),
             Value::BigInt(n) => write!(f, "BigInt({n})"),
+            Value::Bytes { source, start, end } => {
+                let bytes = &source[*start..*end];
+                write!(f, "Bytes({} bytes)", bytes.len())
+            }
         }
     }
 }
@@ -341,6 +372,10 @@ impl fmt::Display for Value {
             }
             Value::Decimal(d) => write!(f, "{d}"),
             Value::BigInt(n) => write!(f, "{n}"),
+            Value::Bytes { source, start, end } => {
+                let bytes = &source[*start..*end];
+                write!(f, "<bytes:{} bytes>", bytes.len())
+            }
         }
     }
 }
@@ -396,6 +431,18 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
+            (
+                Value::Bytes {
+                    source: src_a,
+                    start: start_a,
+                    end: end_a,
+                },
+                Value::Bytes {
+                    source: src_b,
+                    start: start_b,
+                    end: end_b,
+                },
+            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
             // Dict, Function, Builtin, Seq, Proxy, and Overlay are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
             _ => false,

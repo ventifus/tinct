@@ -57,6 +57,8 @@ pub(crate) mod builtins_seq_reduce;
 pub(crate) mod builtins_seq_xform;
 // String builtins: str, split, replace, upper, lower, trim.
 pub(crate) mod builtins_string;
+// Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
+pub(crate) mod builtins_bytes;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // Macro expansion (pre-desugar AST transformation).
@@ -252,6 +254,7 @@ pub trait ValueVisitor {
     fn visit_float(&self, v: f64) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_bool(&self, v: bool) -> Self::Output;
     fn visit_str(&self, v: &str) -> Self::Output;
+    fn visit_bytes(&self, v: &[u8]) -> Self::Output;
     fn visit_null(&self) -> Self::Output;
     fn visit_dict(&self, entries: Vec<(value::Key, Self::Output)>) -> Self::Output;
     fn visit_seq_head(&self, head: Self::Output) -> Result<Self::Output, Box<error::EvalError>>;
@@ -297,6 +300,14 @@ pub fn visit_value<V: ValueVisitor>(
             Ok(visitor.visit_str(s))
         }
         value::Value::Bool(b) => Ok(visitor.visit_bool(*b)),
+        value::Value::Bytes {
+            ref source,
+            start,
+            end,
+        } => {
+            let bytes = &source[*start..*end];
+            Ok(visitor.visit_bytes(bytes))
+        }
         value::Value::Dict(map) => {
             let mut entries = Vec::with_capacity(map.len());
             for (key, thunk_id) in map {
@@ -381,6 +392,11 @@ impl ValueVisitor for JsonVisitor {
     }
     fn visit_str(&self, v: &str) -> serde_json::Value {
         serde_json::Value::String(v.to_owned())
+    }
+    fn visit_bytes(&self, v: &[u8]) -> serde_json::Value {
+        // Hex encode bytes for JSON output (lowercase hex string)
+        let hex_string = v.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        serde_json::Value::String(hex_string)
     }
     fn visit_null(&self) -> serde_json::Value {
         serde_json::Value::Null
@@ -496,6 +512,9 @@ impl ValueVisitor for DisplayVisitor {
     }
     fn visit_str(&self, v: &str) -> String {
         format!("String({v:?})")
+    }
+    fn visit_bytes(&self, v: &[u8]) -> String {
+        format!("Bytes({} bytes)", v.len())
     }
     fn visit_null(&self) -> String {
         "Null".to_string()

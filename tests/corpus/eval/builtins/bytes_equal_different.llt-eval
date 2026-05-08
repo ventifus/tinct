@@ -1,0 +1,4 @@
+# bytes-equal?: different bytes
+[bytes-equal? [bytes-of [1 2 3]] [bytes-of [1 2 4]]]
+=== out
+Bool(false)

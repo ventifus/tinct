@@ -340,11 +340,11 @@ pub(crate) use crate::builtins_io::{
 pub(crate) use crate::builtins_meta::blake3_hex;
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
-    builtin_apply, builtin_big_int, builtin_bool_check, builtin_decimal, builtin_dict_check,
-    builtin_error, builtin_eval, builtin_eval_ast, builtin_float_check, builtin_fn_check,
-    builtin_from_json, builtin_gensym, builtin_include, builtin_int_check, builtin_null_check,
-    builtin_num_check, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of,
-    builtin_until, builtin_validate, builtin_variant,
+    builtin_apply, builtin_big_int, builtin_bool_check, builtin_bytes_check, builtin_decimal,
+    builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast, builtin_float_check,
+    builtin_fn_check, builtin_from_json, builtin_gensym, builtin_include, builtin_int_check,
+    builtin_null_check, builtin_num_check, builtin_str_check, builtin_tag_of, builtin_try,
+    builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, upper, lower, trim, str-length, str-contains?,
@@ -358,6 +358,12 @@ pub(crate) use crate::builtins_string::{
     builtin_replace, builtin_split, builtin_starts_with, builtin_str, builtin_str_bytes,
     builtin_str_chars, builtin_str_contains, builtin_str_length, builtin_str_slice, builtin_trim,
     builtin_upper,
+};
+
+// Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
+// Implementations live in builtins_bytes.rs.
+pub(crate) use crate::builtins_bytes::{
+    builtin_bytes, builtin_bytes_equal, builtin_bytes_find, builtin_bytes_of, builtin_ct_equal,
 };
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -862,6 +868,24 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("chr", builtin_chr, [Strictness::Seq]),
         builtin!("str-bytes", builtin_str_bytes, [Strictness::Seq]),
         builtin!("bytes-str", builtin_bytes_str, [Strictness::Seq]),
+        // Bytes
+        builtin!("bytes", builtin_bytes, []),
+        builtin!(
+            "bytes-find",
+            builtin_bytes_find,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("bytes-of", builtin_bytes_of, [Strictness::Seq]),
+        builtin!(
+            "bytes-equal?",
+            builtin_bytes_equal,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "ct-equal?",
+            builtin_ct_equal,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         // Numeric
         builtin!("floor", builtin_floor, [Strictness::Seq]),
         builtin!("round", builtin_round, [Strictness::Seq]),
@@ -910,6 +934,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("num?", builtin_num_check, [Strictness::Seq]),
         builtin!("str?", builtin_str_check, [Strictness::Seq]),
         builtin!("bool?", builtin_bool_check, [Strictness::Seq]),
+        builtin!("bytes?", builtin_bytes_check, [Strictness::Seq]),
         builtin!("null?", builtin_null_check, [Strictness::Seq]),
         builtin!("dict?", builtin_dict_check, [Strictness::Seq]),
         builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
@@ -6046,10 +6071,17 @@ mod tests {
         // Bytes stubs
         assert!(names.contains(&"str-bytes"), "missing str-bytes");
         assert!(names.contains(&"bytes-str"), "missing bytes-str");
+        // Bytes builtins
+        assert!(names.contains(&"bytes"), "missing bytes");
+        assert!(names.contains(&"bytes-find"), "missing bytes-find");
+        assert!(names.contains(&"bytes-of"), "missing bytes-of");
+        assert!(names.contains(&"bytes-equal?"), "missing bytes-equal?");
+        assert!(names.contains(&"ct-equal?"), "missing ct-equal?");
+        assert!(names.contains(&"bytes?"), "missing bytes?");
         assert_eq!(
             names.len(),
-            114,
-            "expected 114 builtins, got {}",
+            120,
+            "expected 120 builtins, got {}",
             names.len()
         );
     }

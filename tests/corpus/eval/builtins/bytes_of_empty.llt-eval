@@ -1,0 +1,4 @@
+# bytes-of: empty sequence
+[bytes-of []]
+=== out
+Bytes(0 bytes)
