@@ -5,122 +5,113 @@
 #     --cap-net nc=crates.io:443 \
 #     samples/versions.llt
 #
-# pwd   — CWD DirCap, injected at startup
-# nc    — NetCap injected via --cap-net nc=...
-# libdir — stdlib DirCap, injected at startup
+# %pwd    — CWD DirCap, injected at startup
+# %nc     — NetCap injected via --cap-net nc=...
+# %libdir — stdlib DirCap, injected at startup
 
-[include libdir "strings.llt"]
+[include %libdir "strings.llt"]
 
-[emit
-  [call [fn []
+[http-body: [fn@String [raw@String]
+  [parts: [split "\r\n\r\n" raw]]
+  [builtin-if [builtin-lt [length parts] 2] "" [get 1 parts]]]]
 
-    # Strip HTTP response headers.
-    [http-body: [fn [raw]
-      [parts: [split "\r\n\r\n" raw]]
-      [builtin-if [builtin-lt [length parts] 2] "" [get 1 parts]]]]
+[https-get: [fn@String [host@String port@Int path@String]
+  [r: [try [fn@String []
+    [bytes-str [slurp [write-handle
+      [tls-connect %nc Tcp host port []]
+      [str-bytes [str "GET " path " HTTP/1.0\r\nHost: " host
+        "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]]]]]]]
+  [builtin-if [builtin-eq [first [keys r]] "ok"]
+    [http-body r.ok]
+    ""]]]
 
-    # HTTPS GET — returns body string, or "" on any failure.
-    # Uses nc (NetCap) from closure.
-    [https-get: [fn [host port path]
-      [r: [try [fn []
-        [bytes-str [slurp [write-handle
-          [tls-connect nc Tcp host port []]
-          [str-bytes [str "GET " path " HTTP/1.0\r\nHost: " host
-            "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]]]]]]]
-      [builtin-if [builtin-eq [first [keys r]] "ok"]
-        [http-body r.ok]
-        ""]]]
+[rust-version:    [env "RUST_VERSION"]]
+[cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]]
+[cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]]
 
-    # Uses pwd (DirCap) from closure.
-    [rust-version:    [env "RUST_VERSION"]]
-    [cargo-toml-text: [slurp [open pwd "Cargo.toml" "r"]]]
-    [cargo-lock-text: [slurp [open pwd "Cargo.lock" "r"]]]
-
-    # Latest Rust version — scan channel TOML for the version line in [pkg.rust].
-    [rust-toml-raw: [https-get "static.rust-lang.org" 443
-                       "/dist/channel-rust-stable.toml"]]
-    [latest-rust: [builtin-if [builtin-eq [length rust-toml-raw] 0]
-      "?"
-      [builtin-reduce
-        [fn [state line]
-          [t: [trim line]]
-          [builtin-if [builtin-eq state.version ""]
-            [builtin-if [str-contains? t "[pkg.rust]"]
-              [set state "in-pkg-rust" true]
-              [builtin-if [and state.in-pkg-rust [starts-with? t "version = \""]]
-                [set state "version" [str-slice t 11 [builtin-sub [length t] 1]]]
-                state]]
+[rust-toml-raw: [https-get "static.rust-lang.org" 443
+                   "/dist/channel-rust-stable.toml"]]
+[latest-rust: [builtin-if [builtin-eq [length rust-toml-raw] 0]
+  "?"
+  [builtin-reduce
+    [fn@Dict [state@Dict line@String]
+      [t: [trim line]]
+      [builtin-if [builtin-eq state.version ""]
+        [builtin-if [str-contains? t "[pkg.rust]"]
+          [set state "in-pkg-rust" true]
+          [builtin-if [and state.in-pkg-rust [starts-with? t "version = \""]]
+            [set state "version" [str-slice t 11 [builtin-sub [length t] 1]]]
             state]]
-        [set [set [] "in-pkg-rust" false] "version" ""]
-        [split "\n" rust-toml-raw]].version]]
-    [latest-rust-short: [builtin-if [builtin-eq [length latest-rust] 0]
-      "?"
-      [first [split " " latest-rust]]]]
+        state]]
+    [set [set [] "in-pkg-rust" false] "version" ""]
+    [split "\n" rust-toml-raw]].version]]
+[latest-rust-short: [builtin-if [builtin-eq [length latest-rust] 0]
+  "?"
+  [first [split " " latest-rust]]]]
 
-    # Dep names — scan Cargo.toml tracking [*dependencies*] sections.
-    [dep-name-from: [fn [t]
-      [raw: [first [split "=" t]]]
-      [trim raw]]]
+[dep-name-from: [fn@String [t@String]
+  [raw: [first [split "=" t]]]
+  [trim raw]]]
 
-    [dep-name-append: [fn [state t]
-      [name: [dep-name-from t]]
-      [builtin-if [builtin-eq [length name] 0]
-        state
-        [set state "names" [append state.names name]]]]]
+[dep-name-append: [fn@Dict [state@Dict t@String]
+  [name: [dep-name-from t]]
+  [builtin-if [builtin-eq [length name] 0]
+    state
+    [set state "names" [append state.names name]]]]]
 
-    [dep-names: [sorted [builtin-reduce
-      [fn [state line]
-        [t: [trim line]]
-        [builtin-if [starts-with? t "["]
-          [set [set [] "in-deps" [str-contains? t "dependencies"]] "names" state.names]
-          [builtin-if [and state.in-deps [builtin-lt 0 [length t]]]
-            [builtin-if [starts-with? t "#"]
-              state
-              [dep-name-append state t]]
-            state]]]
-      [set [set [] "in-deps" false] "names" []]
-      [split "\n" cargo-toml-text]].names]]
+[dep-names: [sorted [builtin-reduce
+  [fn@Dict [state@Dict line@String]
+    [t: [trim line]]
+    [builtin-if [starts-with? t "["]
+      [set [set [] "in-deps" [str-contains? t "dependencies"]] "names" state.names]
+      [builtin-if [and state.in-deps [builtin-lt 0 [length t]]]
+        [builtin-if [starts-with? t "#"]
+          state
+          [dep-name-append state t]]
+        state]]]
+  [set [set [] "in-deps" false] "names" []]
+  [split "\n" cargo-toml-text]].names]]
 
-    # Find locked version by string-searching Cargo.lock (avoids deep thunk chains).
-    [ver-after: [fn [after]
-      [ver-line: [trim [get 1 [split "\n" after]]]]
-      [str-slice ver-line 11 [builtin-sub [length ver-line] 1]]]]
+[ver-after: [fn@String [after@String]
+  [ver-line: [trim [get 1 [split "\n" after]]]]
+  [str-slice ver-line 11 [builtin-sub [length ver-line] 1]]]]
 
-    [find-locked: [fn [name]
-      [pattern: [str "\nname = \"" name "\""]]
-      [builtin-if [str-contains? cargo-lock-text pattern]
-        [ver-after [get 1 [split pattern cargo-lock-text]]]
-        "—"]]]
+[find-locked: [fn@String [name@String]
+  [pattern: [str "\nname = \"" name "\""]]
+  [builtin-if [str-contains? cargo-lock-text pattern]
+    [ver-after [get 1 [split pattern cargo-lock-text]]]
+    "—"]]]
 
-    [crate-latest: [fn [name]
-      [body: [https-get "crates.io" 443 [str "/api/v1/crates/" name]]]
-      [builtin-if [builtin-eq [length body] 0]
-        "?"
-        [get "max_stable_version" [get "crate" [from-json body]]]]]]
+[crate-latest: [fn@String [name@String]
+  [body: [https-get "crates.io" 443 [str "/api/v1/crates/" name]]]
+  [builtin-if [builtin-eq [length body] 0]
+    "?"
+    [get "max_stable_version" [get "crate" [from-json body]]]]]]
 
-    [mark: [fn [a b] [if [builtin-eq a b] "✓" "←"]]]
+[mark: [fn@String [a@String b@String]
+  [if [builtin-eq a b] "✓" "←"]]]
 
-    [dep-row: [fn [name]
-      [locked: [find-locked name]]
-      [latest: [crate-latest name]]
-      [str
-        "  " [pad-right name   22 " "]
-        "  " [pad-right locked 12 " "]
-        "  " [pad-right latest 12 " "]
-        "  " [mark locked latest]
-        "\n"]]]
+[dep-row: [fn@String [name@String]
+  [locked: [find-locked name]]
+  [latest: [crate-latest name]]
+  [str
+    "  " [pad-right name   22 " "]
+    "  " [pad-right locked 12 " "]
+    "  " [pad-right latest 12 " "]
+    "  " [mark locked latest]
+    "\n"]]]
 
-    [str
-      "\nRust toolchain\n"
-      "  " [pad-right "pinned:" 10 " "] " " rust-version "\n"
-      "  " [pad-right "latest:" 10 " "] " " latest-rust-short
-        "  " [mark rust-version latest-rust-short] "\n"
-      "\nDirect dependencies (Cargo.lock → crates.io latest)\n"
-      "  " [pad-right "crate"                 22 " "]
-        "  " [pad-right "locked" 12 " "]
-        "  " [pad-right "latest" 12 " "] "\n"
-      "  " [pad-right "─────────────────────" 22 " "]
-        "  " [pad-right "──────────" 12 " "]
-        "  " [pad-right "──────────" 12 " "] "\n"
-      [join "" [map dep-row dep-names]]
-      "\n"]]]]
+[emit [str
+  "\nRust toolchain\n"
+  "  " [pad-right "pinned:" 10 " "] " " rust-version "\n"
+  "  " [pad-right "latest:" 10 " "] " " latest-rust-short
+    "  " [mark rust-version latest-rust-short] "\n"
+  "\nDirect dependencies (Cargo.lock → crates.io latest)\n"
+  "  " [pad-right "crate"                 22 " "]
+    "  " [pad-right "locked" 12 " "]
+    "  " [pad-right "latest" 12 " "] "\n"
+  "  " [pad-right "─────────────────────" 22 " "]
+    "  " [pad-right "──────────" 12 " "]
+    "  " [pad-right "──────────" 12 " "] "\n"
+  [join "" [map dep-row dep-names]]
+  "\n"]]

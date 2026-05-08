@@ -1,5 +1,5 @@
-[builtin-get "is-file" [call $stat pwd "Cargo.toml"]]
+[builtin-get "is-file" [call $stat %pwd "Cargo.toml"]]
 ---
 true
 === warn
-undefined variable: pwd
+undefined variable: %pwd

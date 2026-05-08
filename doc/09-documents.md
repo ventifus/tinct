@@ -456,6 +456,8 @@ DOC-PIPELINE (with `d = 0`, `Σ₀ = {}`):
 
 Data flows between documents via `%`, a variable injected into each document's root scope containing the previous document's output. For the first document in a file, `%` is `[]` (empty dict). `%` is `VarRef("%")` — an ordinary identifier with no grammar special case.
 
+**`%name` identifiers** are plain bare-word identifiers that happen to start with `%`. The `%` prefix is a convention: the CLI uses it to mark injected capability variables (`%pwd`, `%libdir`, `%stdin`, `%nc`, etc.) so they are visually distinct from user-defined variables. Named pipeline sections also bind as `%name`. User programs may define `%`-prefixed variables freely — the prefix has no special meaning to the evaluator.
+
 **Named sections** bind a document's output as `%name` for use by all subsequent documents:
 
 ```tinct

@@ -364,12 +364,11 @@ impl<'a> Lexer<'a> {
                 self.lex_var_ref()
             }
             '%' => {
-                // % starts a pipeline-variable identifier.
-                // Lexed like an EscapedRef (stops at '.' so %.x → Identifier("%") Dot Identifier("x")),
-                // but emits Identifier (not EscapedRef) because % is not a $ sigil.
-                // Note: lex_percent_word sets last_was_identifier = true (% words can be annotated).
-                self.after_access_dot = false;
-                self.lex_percent_word()
+                // % is a plain bare-word character. `%`, `%pwd`, `%nc` all lex as
+                // Identifier tokens through the normal bare-word path — no special case.
+                // is_var_ident_char does not list '%' in its denylist, so lex_bare_word_or_number
+                // consumes the entire `%word` as a single Identifier token.
+                self.lex_bare_word_or_number()
             }
             '|' => {
                 self.after_access_dot = false;
@@ -758,34 +757,6 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         self.tokens
             .push(Spanned::new(Token::EscapedRef(name), Span::new(start, end)));
-        Ok(())
-    }
-
-    /// Lex a `%`-prefixed pipeline variable identifier.
-    ///
-    /// Reads `%` plus identifier characters (stopping at `.` so that `%.x` tokenises as
-    /// `Identifier("%")`, `Dot`, `Identifier("x")` rather than `Identifier("%.x")`).
-    /// Emits `Identifier` (not `EscapedRef`) because `%` is not a `$` sigil.
-    fn lex_percent_word(&mut self) -> Result<(), LexError> {
-        let start = self.current_position();
-        let word_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-        // Consume '%'
-        self.advance();
-        // Consume identifier characters (same denylist as EscapedRef, stops at '.')
-        while let Some(c) = self.peek_char() {
-            if self.is_var_ident_char(c) {
-                self.advance();
-            } else {
-                break;
-            }
-        }
-        let word_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-        let name = self.input[word_start..word_end].to_string();
-        let end = self.current_position();
-        self.tokens
-            .push(Spanned::new(Token::Identifier(name), Span::new(start, end)));
-        // % words set last_was_identifier = true so that `%name@Annotation` triggers ImmediateAt.
-        self.last_was_identifier = true;
         Ok(())
     }
 
@@ -1270,24 +1241,29 @@ mod tests {
 
     #[test]
     fn test_percent_bare_words() {
-        // % is a valid identifier char, so %defaults lexes as Identifier via lex_percent_word
+        // % is a plain bare-word character — no special-case path.
+        // %defaults, %, %+ all lex as Identifier through the normal bare-word scanner.
         assert_eq!(
             tok("%defaults"),
             vec![Token::Identifier("%defaults".into())]
         );
         assert_eq!(tok("%"), vec![Token::Identifier("%".into())]);
         assert_eq!(tok("%+"), vec![Token::Identifier("%+".into())]);
-        // %name should also work with various characters
         assert_eq!(tok("%config"), vec![Token::Identifier("%config".into())]);
         assert_eq!(
             tok("%raw_data"),
             vec![Token::Identifier("%raw_data".into())]
         );
+        // Injected cap names
+        assert_eq!(tok("%pwd"), vec![Token::Identifier("%pwd".into())]);
+        assert_eq!(tok("%libdir"), vec![Token::Identifier("%libdir".into())]);
+        assert_eq!(tok("%stdin"), vec![Token::Identifier("%stdin".into())]);
+        assert_eq!(tok("%nc"), vec![Token::Identifier("%nc".into())]);
     }
 
     #[test]
     fn test_percent_word_dot_access() {
-        // lex_percent_word stops at '.' (is_var_ident_char excludes '.').
+        // is_var_ident_char excludes '.', so %base.x tokenizes as three tokens.
         // %base.x  →  Identifier("%base"), Dot, Identifier("x")
         assert_eq!(
             tok("%base.x"),
@@ -1306,6 +1282,15 @@ mod tests {
                 Token::Identifier("server".into()),
                 Token::Dot,
                 Token::Identifier("port".into()),
+            ]
+        );
+        // %pwd.field — injected cap dot access
+        assert_eq!(
+            tok("%pwd.field"),
+            vec![
+                Token::Identifier("%pwd".into()),
+                Token::Dot,
+                Token::Identifier("field".into()),
             ]
         );
         // Whitespace before dot: permitted. '.' always emits a Dot token regardless of preceding whitespace.

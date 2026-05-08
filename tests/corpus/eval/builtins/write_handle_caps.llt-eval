@@ -1,11 +1,11 @@
 # write returns null; verify that slurp reads back the written content
 # and that the read handle has the expected Readable cap
 # % is used as an intermediate expression to force the write side-effect.
-[write [narrow pwd "target"] "tinct-test-write-caps.txt" "caps check"]
+[write [narrow %pwd "target"] "tinct-test-write-caps.txt" "caps check"]
 ---
 %
-[has-cap? [open [narrow pwd "target"] "tinct-test-write-caps.txt" "r"] "Readable"]
+[has-cap? [open [narrow %pwd "target"] "tinct-test-write-caps.txt" "r"] "Readable"]
 === out
 Bool(true)
 === warn
-undefined variable: pwd
+undefined variable: %pwd

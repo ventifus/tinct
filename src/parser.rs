@@ -6725,6 +6725,75 @@ mod tests {
         }
     }
 
+    /// `%pwd` in value position parses as `VarRef("%pwd")`.
+    /// `%` is a plain bare-word character — no special-case path in the lexer or parser.
+    #[test]
+    fn test_percent_pwd_as_varref() {
+        let expr = parse_expr("%pwd");
+        match &expr.node {
+            Expr::VarRef { name, .. } => assert_eq!(name, "%pwd"),
+            other => panic!("expected VarRef(\"%pwd\"), got {other:?}"),
+        }
+    }
+
+    /// `%nc` parses as `VarRef("%nc")` — injected cap names work uniformly.
+    #[test]
+    fn test_percent_nc_as_varref() {
+        let expr = parse_expr("%nc");
+        match &expr.node {
+            Expr::VarRef { name, .. } => assert_eq!(name, "%nc"),
+            other => panic!("expected VarRef(\"%nc\"), got {other:?}"),
+        }
+    }
+
+    /// Bare `%` parses as `VarRef("%")` — the pipeline input variable.
+    #[test]
+    fn test_percent_bare_as_varref() {
+        let expr = parse_expr("%");
+        match &expr.node {
+            Expr::VarRef { name, .. } => assert_eq!(name, "%"),
+            other => panic!("expected VarRef(\"%\"), got {other:?}"),
+        }
+    }
+
+    /// `%pwd.field` parses as `DotAccess { expr: VarRef("%pwd"), field: DotKey::Ident("field") }`.
+    /// The `%pwd` identifier is consumed as one token; `.` emits Dot; `field` is the access field.
+    #[test]
+    fn test_percent_pwd_dot_access() {
+        let expr = parse_expr("%pwd.field");
+        match &expr.node {
+            Expr::DotAccess { expr: inner, field } => {
+                assert_eq!(*field, DotKey::Ident("field".to_string()));
+                match &inner.node {
+                    Expr::VarRef { name, .. } => assert_eq!(name, "%pwd"),
+                    other => panic!("expected VarRef(\"%pwd\") inside DotAccess, got {other:?}"),
+                }
+            }
+            other => panic!("expected DotAccess, got {other:?}"),
+        }
+    }
+
+    /// `[open %pwd "Cargo.toml" "r"]` parses as a Call with `%pwd` as a positional arg.
+    #[test]
+    fn test_percent_pwd_as_call_arg() {
+        let expr = parse_expr("[open %pwd \"Cargo.toml\" \"r\"]");
+        match &expr.node {
+            Expr::Call { func, args, .. } => {
+                match &func.node {
+                    Expr::VarRef { name, .. } => assert_eq!(name, "open"),
+                    other => panic!("expected VarRef(\"open\") as func, got {other:?}"),
+                }
+                assert_eq!(args.len(), 3);
+                // First arg: %pwd (args contains Rc<Spanned<Expr>> directly)
+                match &args[0].node {
+                    Expr::VarRef { name, .. } => assert_eq!(name, "%pwd"),
+                    other => panic!("expected VarRef(\"%pwd\") as first arg, got {other:?}"),
+                }
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
     /// `$a.0.1` parses as chained DotAccess with two Int keys (not Float 0.1).
     /// Regression test: the lexer must suppress float detection after access-dot,
     /// otherwise `0.1` would be lexed as a single Float token.

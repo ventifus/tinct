@@ -97,38 +97,38 @@ enum Commands {
         #[arg(long, value_name = "NAME")]
         allow_env: Vec<String>,
 
-        /// Do not inject `pwd` DirCap into the root environment.
-        /// When set, [open pwd ...] and [include pwd ...] fail with undefined variable.
+        /// Do not inject `%pwd` DirCap into the root environment.
+        /// When set, [open %pwd ...] and [include %pwd ...] fail with undefined variable.
         #[arg(long)]
         no_pwd: bool,
 
-        /// Do not inject `libdir` DirCap into the root environment.
-        /// When set, [include libdir ...] fails with undefined variable.
+        /// Do not inject `%libdir` DirCap into the root environment.
+        /// When set, [include %libdir ...] fails with undefined variable.
         #[arg(long)]
         no_libdir: bool,
 
         /// Inject a named DirCap into the root environment (may be repeated).
-        /// Format: NAME=PATH — binds $NAME to a DirCap for PATH.
-        /// Example: --cap-fs data=/var/data injects $data as a DirCap for /var/data.
+        /// Format: NAME=PATH — binds %NAME to a DirCap for PATH.
+        /// Example: --cap-fs data=/var/data injects %data as a DirCap for /var/data.
         #[arg(long, value_name = "NAME=PATH")]
         cap_fs: Vec<String>,
 
         /// Inject a named NetCap into the root environment (may be repeated).
-        /// Format: NAME=ENTRY — binds $NAME to a NetCap.
+        /// Format: NAME=ENTRY — binds %NAME to a NetCap.
         /// Multiple uses of the same NAME accumulate into one NetCap allowlist.
         /// Example: --cap-net api=api.internal --cap-net api=10.42.0.0/16
         #[arg(long, value_name = "NAME=ENTRY")]
         cap_net: Vec<String>,
 
         /// Inject a named ClockCap (real system clock) into the root environment.
-        /// Format: NAME — binds $NAME to a ClockCap reading the system clock.
-        /// Example: --cap-clock my-clock injects $my-clock as a real ClockCap.
+        /// Format: NAME — binds %NAME to a ClockCap reading the system clock.
+        /// Example: --cap-clock my-clock injects %my-clock as a real ClockCap.
         #[arg(long, value_name = "NAME")]
         cap_clock: Vec<String>,
 
         /// Inject a named ClockCap (fixed timestamp) into the root environment.
-        /// Format: "RFC3339" NAME — binds $NAME to a ClockCap returning the fixed timestamp.
-        /// Example: --cap-clock-fixed "2024-01-01T00:00:00Z" test-clock injects $test-clock.
+        /// Format: "RFC3339" NAME — binds %NAME to a ClockCap returning the fixed timestamp.
+        /// Example: --cap-clock-fixed "2024-01-01T00:00:00Z" test-clock injects %test-clock.
         #[arg(long, value_name = "RFC3339 NAME", num_args = 2)]
         cap_clock_fixed: Vec<String>,
 
@@ -889,23 +889,23 @@ fn run_eval(
         eprintln!("warning: seccomp sandbox not active: {e}");
     }
 
-    // Inject `pwd` DirCap into the root environment (unless --no-pwd is set).
-    // --no-pwd enforcement: when the flag is set, `pwd` is NOT injected, so
-    // any reference to `pwd` in the program will fail with "undefined variable".
+    // Inject `%pwd` DirCap into the root environment (unless --no-pwd is set).
+    // --no-pwd enforcement: when the flag is set, `%pwd` is NOT injected, so
+    // any reference to `%pwd` in the program will fail with "undefined variable".
     // This is the correct enforcement mechanism — no special runtime checks needed.
     if !no_pwd {
         use tinct::Value;
         let pwd_path = std::env::current_dir()
-            .map_err(|e| format!("cannot determine working directory for pwd: {e}"))?;
+            .map_err(|e| format!("cannot determine working directory for %pwd: {e}"))?;
         let pwd_dir = cap_std::fs::Dir::open_ambient_dir(&pwd_path, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open pwd directory: {e}"))?;
+            .map_err(|e| format!("cannot open %pwd directory: {e}"))?;
         let pwd_value = Value::DirCap(Rc::new(pwd_dir));
         let pwd_thunk = tinct::Thunk::new_materialized(pwd_value, tinct::Span::origin());
         env.borrow_mut()
-            .insert("pwd".to_string(), Rc::new(pwd_thunk));
+            .insert("%pwd".to_string(), Rc::new(pwd_thunk));
     }
 
-    // Inject `stdin` Handle for fd 0 into the root environment only when `-i` is present.
+    // Inject `%stdin` Handle for fd 0 into the root environment only when `-i` is present.
     // When `-i` is not present, stdin is read for JSON auto-detection instead.
     if input.is_some() {
         use std::cell::RefCell;
@@ -931,14 +931,14 @@ fn run_eval(
         };
         let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
         env.borrow_mut()
-            .insert("stdin".to_string(), Rc::new(stdin_thunk));
+            .insert("%stdin".to_string(), Rc::new(stdin_thunk));
     }
 
-    // Inject `libdir` DirCap for the stdlib directory (unless --no-libdir is set).
-    // --no-libdir enforcement: when the flag is set, `libdir` is NOT injected, so
-    // any reference to `libdir` in the program will fail with "undefined variable".
-    // Phase 1: resolve libdir from the binary's location or a well-known relative path.
-    // If resolution fails, libdir is not injected (stdlib is embedded at compile time anyway).
+    // Inject `%libdir` DirCap for the stdlib directory (unless --no-libdir is set).
+    // --no-libdir enforcement: when the flag is set, `%libdir` is NOT injected, so
+    // any reference to `%libdir` in the program will fail with "undefined variable".
+    // Phase 1: resolve %libdir from the binary's location or a well-known relative path.
+    // If resolution fails, %libdir is not injected (stdlib is embedded at compile time anyway).
     // The resolved path is also saved for the JSON output path (format_with_json_llt).
     let resolved_libdir_path: Option<std::path::PathBuf> =
         if !no_libdir { find_libdir_path() } else { None };
@@ -952,14 +952,15 @@ fn run_eval(
                 let libdir_thunk =
                     tinct::Thunk::new_materialized(libdir_value, tinct::Span::origin());
                 env.borrow_mut()
-                    .insert("libdir".to_string(), Rc::new(libdir_thunk));
+                    .insert("%libdir".to_string(), Rc::new(libdir_thunk));
             }
             // If the dir can't be opened, silently skip — stdlib is embedded anyway.
         }
         // TODO(io-phase2): --libdir-path PATH override for custom installations
     }
 
-    // Inject --cap-fs NAME=PATH entries into the root environment
+    // Inject --cap-fs NAME=PATH entries into the root environment as `%NAME`.
+    // The `%` prefix makes injected caps visually distinct from user-defined variables.
     {
         use tinct::Value;
         for cap_fs_entry in &cap_fs {
@@ -987,13 +988,19 @@ fn run_eval(
                     })?;
             let cap_value = Value::DirCap(Rc::new(cap_dir));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            // Inject as `%NAME` (auto-prefix %).
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
             env.borrow_mut()
-                .insert(name.to_string(), Rc::new(cap_thunk));
+                .insert(scoped_name, Rc::new(cap_thunk));
         }
     }
 
-    // Inject --cap-net NAME=ENTRY entries into the root environment
-    // Multiple uses of the same NAME accumulate into one NetCap allowlist
+    // Inject --cap-net NAME=ENTRY entries into the root environment as `%NAME`.
+    // Multiple uses of the same NAME accumulate into one NetCap allowlist.
     {
         use std::collections::HashMap;
         use tinct::NetCapEntry;
@@ -1017,12 +1024,18 @@ fn run_eval(
             }
             let entry_str = entry_str.trim();
 
-            // Parse the entry using parse_cli_net_cap_entry
+            // Parse the entry using parse_cli_net_cap_entry.
+            // Key is stored with % prefix so accumulation works correctly.
             let entry = parse_cli_net_cap_entry(entry_str)?;
-            net_caps.entry(name.to_string()).or_default().push(entry);
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
+            net_caps.entry(scoped_name).or_default().push(entry);
         }
 
-        // Create NetCap values and inject them
+        // Create NetCap values and inject them as `%NAME`.
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
@@ -1030,7 +1043,7 @@ fn run_eval(
         }
     }
 
-    // Inject --cap-clock NAME entries into the root environment
+    // Inject --cap-clock NAME entries into the root environment as `%NAME`.
     {
         use tinct::{ClockCapInner, Value};
         for name in &cap_clock {
@@ -1040,12 +1053,18 @@ fn run_eval(
             }
             let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Real));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            // Inject as `%NAME` (auto-prefix %).
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
             env.borrow_mut()
-                .insert(name.to_string(), Rc::new(cap_thunk));
+                .insert(scoped_name, Rc::new(cap_thunk));
         }
     }
 
-    // Inject --cap-clock-fixed "RFC3339" NAME entries into the root environment
+    // Inject --cap-clock-fixed "RFC3339" NAME entries into the root environment as `%NAME`.
     {
         use tinct::{ClockCapInner, Value};
         // cap_clock_fixed is a Vec<String> where pairs of consecutive entries are (timestamp, name)
@@ -1077,8 +1096,14 @@ fn run_eval(
             })?;
             let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            // Inject as `%NAME` (auto-prefix %).
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
             env.borrow_mut()
-                .insert(name.to_string(), Rc::new(cap_thunk));
+                .insert(scoped_name, Rc::new(cap_thunk));
         }
     }
 

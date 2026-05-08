@@ -278,15 +278,16 @@ Every cap must narrow an existing cap. `dir-cap` and `net-cap` create authority 
 
 All runtime-injected capabilities and ambient handles get a `%` prefix as a visual convention: `%pwd`, `%libdir`, `%stdin`. `--cap-fs` and `--cap-net` auto-prefix the user-supplied name: `--cap-net nc=any` injects `%nc`. The `%` sigil is not enforced — user code may define `%`-prefixed names freely — it is purely a visual marker that the variable was granted by the operator, not defined in the program.
 
-No lexer change required: `%` is already a valid `bare_word_char` (not in the exclusion denylist). `lex_percent_word()` in `src/lexer.rs` already handles `%name` as a single `BareWord("%name")` token, stopping at `.` for dot-access. The `new-syntax-a` sprint already added atom-parsing: `BareWord(s) if s.starts_with('%')` → `Expr::VarRef(s)`. So `%pwd` in user code already resolves as a variable reference.
+`%` is not a special character — it is a plain bare-word character and the variable literally named `%` is the pipeline input by convention. Remove the `lex_percent_word()` special path; `%` should flow through the normal bare-word scanner so `%pwd`, `%nc`, and `%` all lex uniformly as `BareWord` tokens. The `new-syntax-a` sprint already added atom-parsing: `BareWord(s) if s.starts_with('%')` → `Expr::VarRef(s)`.
 
-- [ ] Verify: add a unit test confirming `%pwd`, `%nc`, `%libdir` lex as `BareWord("%pwd")` etc. and parse as `Expr::VarRef` in value position (`src/lexer.rs`, `src/parser.rs`)
-- [ ] `src/main.rs`: rename injected variables — `pwd` → `%pwd`, `libdir` → `%libdir`, `stdin` → `%stdin` in all `env.insert(...)` calls (`src/main.rs`)
-- [ ] `src/main.rs`: auto-prefix `%` in `--cap-fs NAME=PATH` and `--cap-net NAME=ENTRY` parsing — inject as `%NAME` rather than `NAME` (`src/main.rs`)
-- [ ] Update `--no-pwd` / `--no-libdir` / `--no-stdin` error messages to use the new `%`-prefixed names in any user-visible text (`src/main.rs`)
-- [ ] Update all corpus tests that reference `pwd`, `libdir`, or `stdin` as variable names to use `%pwd`, `%libdir`, `%stdin` (`tests/corpus/`)
-- [ ] Update `samples/versions.llt`: `pwd` → `%pwd`; justfile `--cap-net nc=...` already correct (injected as `%nc` after this change) (`samples/versions.llt`)
-- [ ] Update `doc/12-tooling.md`: all references to `pwd`, `libdir`, `stdin` as injected variable names; update `--cap-fs` and `--cap-net` docs to show `%NAME` as the resulting binding (`doc/12-tooling.md`)
-- [ ] Update `doc/09-documents.md` §Pipeline variable: clarify that bare `%` is the pipeline input; `%name` (no space) is an identifier that conventionally marks injected caps (`doc/09-documents.md`)
-- [ ] LSP: update hover/completion for `%pwd`, `%libdir`, `%stdin` if the LSP seeds these names for the root document scope (`src/lsp/`)
+- [x] Remove `lex_percent_word()` special-case in the lexer; let `%` flow through the normal bare-word path so `%`, `%pwd`, `%nc` all lex as `BareWord` tokens consistently (`src/lexer.rs`)
+- [x] Add unit tests confirming `%`, `%pwd`, `%nc` all lex as `BareWord` and parse as `Expr::VarRef` in value position; confirm `%pwd.field` parses as dot-access on `VarRef("%pwd")` (`src/lexer.rs`, `src/parser.rs`)
+- [x] `src/main.rs`: rename injected variables — `pwd` → `%pwd`, `libdir` → `%libdir`, `stdin` → `%stdin` in all `env.insert(...)` calls (`src/main.rs`)
+- [x] `src/main.rs`: auto-prefix `%` in `--cap-fs NAME=PATH` and `--cap-net NAME=ENTRY` parsing — inject as `%NAME` rather than `NAME` (`src/main.rs`)
+- [x] Update `--no-pwd` / `--no-libdir` / `--no-stdin` error messages to use the new `%`-prefixed names in any user-visible text (`src/main.rs`)
+- [x] Update all corpus tests that reference `pwd`, `libdir`, or `stdin` as variable names to use `%pwd`, `%libdir`, `%stdin` (`tests/corpus/`)
+- [x] Update `samples/versions.llt`: `pwd` → `%pwd`; justfile `--cap-net nc=...` already correct (injected as `%nc` after this change) (`samples/versions.llt`)
+- [x] Update `doc/12-tooling.md`: all references to `pwd`, `libdir`, `stdin` as injected variable names; update `--cap-fs` and `--cap-net` docs to show `%NAME` as the resulting binding (`doc/12-tooling.md`)
+- [x] Update `doc/09-documents.md` §Pipeline variable: clarify that bare `%` is the pipeline input; `%name` (no space) is an identifier that conventionally marks injected caps (`doc/09-documents.md`)
+- [x] LSP: update hover/completion for `%pwd`, `%libdir`, `%stdin` if the LSP seeds these names for the root document scope (`src/lsp/`) — LSP does not seed these names; no change needed
 
