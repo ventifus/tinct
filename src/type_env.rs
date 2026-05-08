@@ -136,6 +136,18 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
         Type::Seq(elem) => Type::Seq(Box::new(rename_single_type_var(
             elem, old_name, fresh_name, level,
         ))),
+        Type::Union(members) => Type::Union(
+            members
+                .iter()
+                .map(|m| rename_single_type_var(m, old_name, fresh_name, level))
+                .collect(),
+        ),
+        Type::Intersection(members) => Type::Intersection(
+            members
+                .iter()
+                .map(|m| rename_single_type_var(m, old_name, fresh_name, level))
+                .collect(),
+        ),
         // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
     }

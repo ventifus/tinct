@@ -19,7 +19,8 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Record(f₁:τ₁...fₙ:τₙ, ρ)  record with row rest ρ
     | Proxy                      opaque proxy (field access dispatches to handler)
     | α                          type variable
-    | Any                        dynamic/unknown type
+    | Unknown                    gradual typing escape hatch (don't know the type)
+    | Top                        universal supertype ⊤ (supertype of everything)
 
 ρ ::= Closed                     no additional fields (Empty)
     | RowVar(r)                  named row variable (see [Type System Extensions](07-type-extensions.md) §Row-Variable Unification)
@@ -77,7 +78,7 @@ Implementation:
 | Variable references | Instantiated type scheme (VAR-POLY) |
 | Dict values | Record type from letrec inference |
 | Function definitions | `Fn(params → ret)` |
-| Access chains (dot, bracket, range) | Field type or `Any` |
+| Access chains (dot, bracket, range) | Field type or `Unknown` |
 
 **Confluence.** CALL-POLY uses unification (not `check_expr`) for argument checking because type variables need binding. After substitution application resolves a type variable to a concrete type, subsequent unification attempts against that concrete type use [U-SUBSUME] — a bidirectional subsumption fallback that checks `is_subtype` in both directions. This ensures argument ordering does not affect whether type checking succeeds. See the Unification section for details.
 
@@ -118,9 +119,9 @@ Dicts are inferred in five sequential passes using the [DICT-GEN] rule — see �
 
 ```
 For each param pᵢ:
-    if variadic (...pᵢ): σᵢ = Any                   (see Limitation #4)
+    if variadic (...pᵢ): σᵢ = Unknown                   (see Limitation #4)
     else if annotated pᵢ@σᵢ: use σᵢ
-    else: σᵢ = Any
+    else: σᵢ = Unknown
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
 If return annotation @σᵣ given:
     if has_type_vars(σᵣ):
@@ -141,7 +142,7 @@ Else:
 Γ ⊢ [fn@σᵣ [p₁@τ₁ ... pₙ@τₙ] body] ⇐ Fn(σ₁...σₙ → σ_exp)
     where ¬has_type_vars(Fn(σ₁...σₙ → σ_exp))       (expected type fully concrete)
 For each param pᵢ:
-    if variadic: use Any
+    if variadic: use Unknown
     else if annotated pᵢ@τᵢ:
         if has_type_vars(τᵢ): unify(σᵢ, τᵢ, S)       (annotation with TypeVars)
         else: check σᵢ <: τᵢ                         (contravariant check)
@@ -159,7 +160,7 @@ Else:
 
 **Substitution note:** σ_exp is substitution-applied (S(σ_exp)) before comparison via `state.subst.apply`, ensuring that any type variables bound during parameter checking are resolved before the subsumption check. σᵣ (the declared return annotation) is guaranteed to be concrete — no TypeVars — at the `else: check σᵣ <: σ_exp` sub-branch (the concrete-return-annotation path), because the `!declared.has_inference_vars()` guard has already fired. Applying the current substitution to σᵣ would therefore be a no-op; the code omits it correctly.
 
-Unannotated non-variadic params get type Any. This is the source of the "Any escape hatch" — without annotations, functions have monomorphic type Fn(Any...Any → τᵣ). Polymorphism requires explicit type variable annotations (e.g., `x@a`).
+Unannotated non-variadic params get type Unknown. This is the gradual typing escape hatch — without annotations, functions have monomorphic type Fn(Unknown...Unknown → τᵣ). Polymorphism requires explicit type variable annotations (e.g., `x@a`).
 
 When a return annotation is present, the dispatch depends on whether σᵣ contains type variables. If σᵣ is fully concrete (no type variables), the body is **checked** against it (⇐ mode): the body is synthesized, then subsumption verifies the inferred type is a subtype of the declared type. If σᵣ contains type variables (e.g., `fn@a`), the body is **synthesized** and then **unified** with σᵣ. This is necessary because type variables are not ground — `is_subtype` treats them as opaque and only matches reflexively, so `is_subtype(IntLiteral(42), TypeVar("_t5"))` would incorrectly reject valid code. Unification mode binds the type variables via constraint solving (Damas & Milner, 1982), which is the correct mechanism for annotations that introduce polymorphism.
 
@@ -208,12 +209,12 @@ Note: CALL-POLY does NOT use `check_expr` because type variables require binding
 In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. The [U-SUBSUME] fallback in `unify()` checks `is_subtype` in both directions for concrete type pairs, producing the same result as the explicit promotion arms for all valid subtype relationships. The `IntLiteral`/`Float` pair correctly fails under [U-SUBSUME] because they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`, but no `IntLiteral <: Float` rule exists). Full divergence elimination (making CALL-MONO and CALL-POLY agree on all cases) requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
 
 ```
-Γ ⊢ f ⇒ Any
-────────────────────────────────── [CALL-ANY]
-Γ ⊢ [f a₁...aₙ] ⇒ Any
+Γ ⊢ f ⇒ Unknown
+────────────────────────────────── [CALL-UNKNOWN]
+Γ ⊢ [f a₁...aₙ] ⇒ Unknown
 ```
 
-Calling a value typed as Any returns Any. Arguments are still synthesized (for type map population and nested error detection) but not checked against parameter types.
+Calling a value typed as Unknown returns Unknown. Arguments are still synthesized (for type map population and nested error detection) but not checked against parameter types.
 
 Named arguments are synthesized but not checked against parameter types — `Type::Function` has only a `Vec<Type>` for parameters with no name field. Named argument checking against parameter types is unimplemented; see [Type System Extensions](07-type-extensions.md) §Completeness for the planned extension.
 
@@ -248,17 +249,17 @@ S[ρ ↦ Row({k: β}, RowVar(ρ'))]
 ────────────────────────────────── [BRACKET-LIT]
 Γ ⊢ e[key] : τ
 
-Γ ⊢ e : Record(F, ρ),  Γ ⊢ key : Str | Int | Any
+Γ ⊢ e : Record(F, ρ),  Γ ⊢ key : Str | Int | Unknown
 ────────────────────────────────── [BRACKET-DYN]
-Γ ⊢ e[key] : Any
+Γ ⊢ e[key] : Unknown
 
-Γ ⊢ e : Record(F, ρ),  bounds : Int | Str | Any
+Γ ⊢ e : Record(F, ρ),  bounds : Int | Str | Unknown
 ────────────────────────────────── [RANGE]
 Γ ⊢ e[start..end] : Record(F, ρ)
 
-Γ ⊢ e : Any
-────────────────────────────────── [ACCESS-ANY]
-Γ ⊢ e.k : Any,  Γ ⊢ e[key] : Any,  Γ ⊢ e[start..end] : Any
+Γ ⊢ e : Unknown
+────────────────────────────────── [ACCESS-UNKNOWN]
+Γ ⊢ e.k : Unknown,  Γ ⊢ e[key] : Unknown,  Γ ⊢ e[start..end] : Unknown
 ```
 
 **Type assertion (checking mode):**
@@ -282,7 +283,7 @@ Type assertions use checking mode: the inner expression is checked against the a
 ```
 resolve(inner) = τ,  register alias in Γ
 ────────────────────────────────── [ALIAS]
-Γ ⊢ [type inner] : Any
+Γ ⊢ [type inner] : Unknown
 ```
 
 **Annotated expression:**
@@ -295,7 +296,7 @@ resolve(ann) = τ
 
 When name = "Fn": interpret as function type constructor.
 
-**`@Fn` vs `Fn@T` parameter annotation behavior:** Bare `@Fn` in a parameter annotation position (e.g., `f@Fn`) resolves to `Type::Any` via `resolve_type_name` — any value is accepted at type-check time and at any `[@Fn expr]` TypeAssert site. No callability check is performed by TypeAssert; `Type::Any` matches all values unconditionally, including non-callables. Callability is enforced only when the parameter is actually invoked as a function, which raises a `NotAFunction` error at the call site. `Fn@ReturnType` in a function return annotation position resolves to `Type::Function` with the specified return type via `resolve_fn_type`, which recursively resolves the return annotation and parameter types. This distinction arises from the annotation resolution dispatch: `@Fn` alone has no type parameters, so it cannot construct a `Type::Function` (which requires both params and ret); `Fn@ReturnType [ParamTypes]` has the necessary structure for full function type resolution.
+**`@Fn` vs `Fn@T` parameter annotation behavior:** Bare `@Fn` in a parameter annotation position (e.g., `f@Fn`) resolves to `Type::Unknown` via `resolve_type_name` — any value is accepted at type-check time and at any `[@Fn expr]` TypeAssert site. No callability check is performed by TypeAssert; `Type::Unknown` matches all values unconditionally, including non-callables. Callability is enforced only when the parameter is actually invoked as a function, which raises a `NotAFunction` error at the call site. `Fn@ReturnType` in a function return annotation position resolves to `Type::Function` with the specified return type via `resolve_fn_type`, which recursively resolves the return annotation and parameter types. This distinction arises from the annotation resolution dispatch: `@Fn` alone has no type parameters, so it cannot construct a `Type::Function` (which requires both params and ret); `Fn@ReturnType [ParamTypes]` has the necessary structure for full function type resolution.
 
 **Seq types:** `Seq(τ)` exists in the type grammar and is handled by unification and subtyping. Sequence constructors (`$seq`, `$range`, etc.) infer as `Seq(τ)` — see [Type System Extensions](07-type-extensions.md) §Precision.
 
@@ -305,13 +306,13 @@ Unification finds a most general substitution S such that S(τ₁) = S(τ₂). B
 
 ```
 unify(τ, τ, S) = S                              [U-REFL]
-unify(Any, τ, S) = S                             [U-ANY-L]
-unify(τ, Any, S) = S                             [U-ANY-R]
+unify(Unknown, τ, S) = S                         [U-UNKNOWN-L]
+unify(τ, Unknown, S) = S                         [U-UNKNOWN-R]
 unify(α, τ, S) = S[α ↦ τ]   if α ∉ FV(τ)       [U-VAR-L]
 unify(τ, α, S) = S[α ↦ τ]   if α ∉ FV(τ)       [U-VAR-R]
 ```
 
-**Note:** When one side is a type variable α and the other is `Any`, the implementation fires specialized TypeVar rules ([U-ANY-VAR]/[U-VAR-ANY], see §Let-Generalization) first, which zero ℓ(α) to prevent unsound generalization of Any-unified variables. The general [U-ANY-L]/[U-ANY-R] rules above apply only when neither side is a TypeVar.
+**Note:** When one side is a type variable α and the other is `Unknown`, the implementation fires specialized TypeVar rules ([U-UNKNOWN-VAR]/[U-VAR-UNKNOWN], see §Let-Generalization) first, which zero ℓ(α) to prevent unsound generalization of Unknown-unified variables. The general [U-UNKNOWN-L]/[U-UNKNOWN-R] rules above apply only when neither side is a TypeVar.
 
 Literal identity (same literal value = same type):
 
@@ -499,18 +500,18 @@ unify(τ, α, S) = S[α ↦ τ]
 
 Both rules lower levels symmetrically: when binding α to τ, every type variable β and every row variable ρ inside τ has its level lowered to `min(ℓ(β or ρ), ℓ(α))`. This prevents variables from escaping their scope through either side of a unification. Row variables must be lowered because τ may contain row variables through Record nesting (e.g., τ = Record({x: Int, ...ρ})).
 
-**Any-unification and generalization.** When a type variable α is unified with `Any`, the current [U-ANY] rules succeed without binding α. To prevent incorrect generalization of the unbound α, `unify(α, Any)` sets `ℓ(α) = 0` (below all binding levels):
+**Unknown-unification and generalization.** When a type variable α is unified with `Unknown`, the current [U-UNKNOWN] rules succeed without binding α. To prevent incorrect generalization of the unbound α, `unify(α, Unknown)` sets `ℓ(α) = 0` (below all binding levels):
 
 ```
-unify(α, Any, S) = S,  set ℓ(α) = 0               [U-ANY-VAR]
-unify(Any, α, S) = S,  set ℓ(α) = 0               [U-VAR-ANY]
-unify(Any, τ, S) = S,  set ℓ(β) = 0
-    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-ANY-COMPLEX]
-unify(τ, Any, S) = S,  set ℓ(β) = 0
-    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-COMPLEX-ANY]
+unify(α, Unknown, S) = S,  set ℓ(α) = 0               [U-UNKNOWN-VAR]
+unify(Unknown, α, S) = S,  set ℓ(α) = 0               [U-VAR-UNKNOWN]
+unify(Unknown, τ, S) = S,  set ℓ(β) = 0
+    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-UNKNOWN-COMPLEX]
+unify(τ, Unknown, S) = S,  set ℓ(β) = 0
+    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-COMPLEX-UNKNOWN]
 ```
 
-This ensures Any-touched variables are never generalized (since `ℓ(β) = 0` is never `> ℓ` for any binding level). The [U-ANY-VAR] and [U-VAR-ANY] rules are special cases of the complex rules where FTV(α) = {α}. The [U-ANY-COMPLEX] and [U-COMPLEX-ANY] rules handle cases like `unify(Any, Fn(β → Int))` where β must also be zeroed to prevent over-generalization.
+This ensures Unknown-touched variables are never generalized (since `ℓ(β) = 0` is never `> ℓ` for any binding level). The [U-UNKNOWN-VAR] and [U-VAR-UNKNOWN] rules are special cases of the complex rules where FTV(α) = {α}. The [U-UNKNOWN-COMPLEX] and [U-COMPLEX-UNKNOWN] rules handle cases like `unify(Unknown, Fn(β → Int))` where β must also be zeroed to prevent over-generalization.
 
 **Generalization.** At a dict boundary at level ℓ, after all entries in the letrec group are inferred:
 
@@ -551,7 +552,7 @@ Pass 0 — Key resolution: unchanged
 Pass 1 — Bind all: Γ' = Γ, k₁:α₁, ..., kₙ:αₙ
          where each αᵢ is a fresh type variable at level ℓ+1.
          Forward references see αᵢ (participates in unification,
-         unlike the previous Any which silently matched everything).
+         unlike the previous Unknown which silently matched everything).
 Pass 2 — Type aliases: unchanged. Aliases remain monomorphic
          (IndexMap<String, Type>, not TypeScheme).
 Pass 3 — Infer values: at level ℓ+1, for each non-alias
@@ -622,10 +623,10 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 **Document-level scheme threading.** `typecheck_document` splats dict Record fields into the parent environment for downstream document expressions. To preserve polymorphism across `---` boundaries, the splat must carry type schemes alongside the Record type. Implementation: `infer_dict` returns both the `Record` type (for structural checks) and a `HashMap<String, TypeScheme>` (for environment threading). `typecheck_document` inserts the schemes into the parent `TypeEnv`.
 
-**Interaction with `Any` and unannotated parameters:**
+**Interaction with `Unknown` and unannotated parameters:**
 
-- Unannotated function parameters still receive type `Any` (not a fresh type variable). `[fn [x] x]` remains `Fn(Any → Any)`.
-- `Any` in unification acts as a universal match ([U-ANY-L], [U-ANY-R]) but sets ℓ(α) = 0 for any type variable α it touches ([U-ANY-VAR], [U-VAR-ANY]), preventing generalization.
+- Unannotated function parameters still receive type `Unknown` (not a fresh type variable). `[fn [x] x]` remains `Fn(Unknown → Unknown)`.
+- `Unknown` in unification acts as a universal match ([U-UNKNOWN-L], [U-UNKNOWN-R]) but sets ℓ(α) = 0 for any type variable α it touches ([U-UNKNOWN-VAR], [U-VAR-UNKNOWN]), preventing generalization.
 - Annotated type variables (e.g., `x@a`) create fresh type variables at ℓ_current. These participate in generalization normally.
 - The practical effect: let-generalization benefits code that uses type annotations. `[id: [fn [x@a] x]]` generalizes `id` to `∀a. Fn(a → a)`; subsequent `[id 42]` and `[id "hello"]` each get independent instantiations.
 
@@ -637,12 +638,12 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 **Substitution name uniqueness.** `Substitution::type_map` and `Substitution::row_map` are keyed by variable name, routing type and row variable bindings to their respective maps. User-annotated type variables (e.g., `@a`) are mapped to fresh `_tN` names by `resolve_type_name` during Pass 3 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different `_tN` than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same `_tN` variable (ensuring constraints are shared as intended). After Pass 4 generalization produces `TypeScheme`s, `instantiate_scheme()` renames the quantified variables to fresh `_tM` names at each call site, preventing cross-call-site interference.
 
-**Error recovery.** If Pass 3 inference fails for an entry, `Type::Any` is inserted for that entry (matching current behavior). Level lowering from partial unification before the failure is retained in `InferState.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries get `TypeScheme::mono(Type::Any)`.
+**Error recovery.** If Pass 3 inference fails for an entry, `Type::Unknown` is inserted for that entry (matching current behavior). Level lowering from partial unification before the failure is retained in `InferState.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries get `TypeScheme::mono(Type::Unknown)`.
 
 **Key invariants:**
 
 1. **Level monotonicity:** ℓ_current only increases when entering binding scopes. Fresh variables are always created at ℓ_current.
-2. **Generalization soundness:** Only variables with ℓ(α) > ℓ_enclosing are generalized, ensuring no variable escapes its scope. Level lowering during unification ([U-VAR-LEVEL], symmetric) prevents variables from being captured at too high a level. Any-touched variables have ℓ = 0, preventing generalization.
+2. **Generalization soundness:** Only variables with ℓ(α) > ℓ_enclosing are generalized, ensuring no variable escapes its scope. Level lowering during unification ([U-VAR-LEVEL], symmetric) prevents variables from being captured at too high a level. Unknown-touched variables have ℓ = 0, preventing generalization.
 3. **Value restriction (not needed):** Tinct does not have mutable references, so the value restriction (Wright, 1995) is unnecessary. All bindings can be generalized safely.
 4. **Occurs check:** Unchanged — prevents infinite types regardless of levels.
 5. **Substitution idempotence:** Unchanged — transitive chasing is orthogonal to levels.
@@ -817,14 +818,14 @@ result: [= [fn [] 1] [fn [] 2]]
 
 1. **Named args not unified.** Named arguments in call expressions are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
 
-2. **Any is both top and bottom.** `Any <: τ` and `τ <: Any` for all τ. In subtyping theory, this makes `Any` simultaneously the top and bottom element of the type lattice, which is unsound in general (antisymmetry fails: `Any <: Int` and `Int <: Any` but `Any ≠ Int`). In tinct's advisory type system this is intentional — `Any` marks the boundary between typed and untyped code, and `[@Type expr]` is the explicit narrowing mechanism.
+2. **Unknown behaves as both top and bottom (pre-AGT migration).** In the current implementation (before full Gradual Typing migration), `Unknown` acts like both a supertype and subtype of all types during unification. In proper gradual typing (Abstract Gradual Typing, Garcia et al. 2016), `Unknown` (the `?` type) uses a **consistency** relation `~` (symmetric, non-transitive) that triggers runtime casts at boundaries, not subtyping. The current behavior is a known deviation from the AGT model.
 
-   **Concrete consequence — TypeAssert escape via Any.** An unannotated function `f` has type `Fn(Any → Any)`. Calling `f` returns `Any`. A TypeAssert `[@Int [f "hello"]]` passes type checking because `Any <: Int` ([S-ANY-BOT]), but the runtime value is a string. The type annotation is misleading — it narrows `Any` to `Int` statically while the runtime value may be anything. This is the primary way tinct's type system fails the Damas-Milner principal type guarantee (Damas & Milner, 1982): the type `Int` is assigned to an expression whose runtime value has type `String`. Corpus test: `tests/corpus/eval/typecheck/principal_type_any_escape.llt-eval`.
+   **Concrete consequence — TypeAssert escape via Unknown.** An unannotated function `f` has type `Fn(Unknown → Unknown)`. Calling `f` returns `Unknown`. A TypeAssert `[@Int [f "hello"]]` passes type checking because `Unknown` unifies with `Int`, but the runtime value is a string. The type annotation is misleading — it narrows `Unknown` to `Int` statically while the runtime value may be anything. This is the primary way tinct's type system fails the Damas-Milner principal type guarantee (Damas & Milner, 1982): the type `Int` is assigned to an expression whose runtime value has type `String`. Corpus test: `tests/corpus/eval/typecheck/principal_type_any_escape.llt-eval`.
 
    **Mitigation path:** Garcia et al. (2016) show how to systematically derive a gradual type system from a static one. The key insight is replacing `Any <: τ` (unsound bottom) with a **consistency** relation `Any ~ τ` (symmetric, non-transitive) that triggers runtime casts at the `Any`/concrete boundary. Under AGT, `[@Int [f "hello"]]` would insert a runtime cast that fails when the actual value is a string — making the TypeAssert a true contract rather than a static-only assertion. This is tracked in TODO.md (gradual typing migration).
 
 3. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 
-4. **Variadic params typed as Any.** Variadic parameters (`...args`) are assigned type `Any`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
+4. **Variadic params typed as Unknown.** Variadic parameters (`...args`) are assigned type `Unknown`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
 
 5. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.

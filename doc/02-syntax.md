@@ -494,7 +494,7 @@ bracket_expr = {
 
 Special forms are recognized when the first token in a `[]` is a bare keyword (not followed by `:`). The parser tries each form before falling back to `dict_entries`.
 
-**Horizontal-only lookahead:** The `colon_ahead` rule uses horizontal lookahead via `peek_next_horizontal`, which operates on the token stream and skips `Token::Semicolon` and `Token::Comment(_)` tokens, but stops immediately at `Token::Newline`. This means `[call\n: x]` is a malformed implied call (the newline token halts the scan before the colon is found), not a dict entry. Note: `ws_chars = " " | "\t"` is the grammar-level character-class definition in this document's EBNF appendix — it describes the same horizontal-only intent at the PEG level, but `peek_next_horizontal` implements this intent at the token-stream level, where raw whitespace characters no longer exist.
+**Horizontal-only lookahead:** The parser's `peek_next_horizontal` skips horizontal whitespace (spaces and tabs), semicolons, and comments, but stops at newlines. This means `[call\n: x]` is a malformed implied call (the newline halts the scan before the colon is found), not a dict entry. The `colon_ahead` check operates on the token stream where whitespace has already been classified — `Token::Semicolon` and `Token::Comment(_)` are skipped, but `Token::Newline` immediately stops the lookahead.
 
 ```ebnf
 special_form = {
@@ -628,6 +628,65 @@ Examples:
 ```tinct
 [type [Fn@b [a]]]
 [type [name: String  age: Number]]
+```
+
+#### 3.3.4 `match` — Pattern Matching
+
+```ebnf
+match_form = { keyword_match ~ value ~ (pattern ~ value)+ }
+```
+
+Structural pattern matching on values. Patterns include wildcards, variable bindings, literals, type tags, pins, and dict/list destructuring.
+
+Examples:
+```tinct
+[match x
+  0 "zero"
+  1 "one"
+  _ "other"]
+
+[match response
+  [ok: result] result
+  [err: msg] [error msg]]
+```
+
+#### 3.3.5 `class` — Type Class Declaration
+
+```ebnf
+class_form = { keyword_class ~ class_head ~ class_body* }
+class_head = { "[" ~ identifier ~ identifier* ~ "]" }
+class_body = { entry }
+```
+
+Declares a type class with type parameters and method signatures. Part of the type classes system (Phase 3/D1).
+
+Examples:
+```tinct
+[class [Eq a]
+  eq: [Fn@Bool [a a]]]
+
+[class [Ord a] [Eq a]
+  lt: [Fn@Bool [a a]]
+  gt: [Fn@Bool [a a]]]
+```
+
+#### 3.3.6 `instance` — Type Class Instance
+
+```ebnf
+instance_form = { keyword_instance ~ instance_head ~ instance_body* }
+instance_head = { "[" ~ identifier ~ value ~ "]" }
+instance_body = { entry }
+```
+
+Provides method implementations for a specific type's membership in a type class.
+
+Examples:
+```tinct
+[instance [Eq Int]
+  eq: [fn [x y] [= x y]]]
+
+[instance [Eq [name: String age: Int]]
+  eq: [fn [a b] [and [= a.name b.name] [= a.age b.age]]]]
 ```
 
 ### 3.4 Access Chains

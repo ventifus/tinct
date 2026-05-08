@@ -184,6 +184,7 @@ enum Annotation {
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
 | `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the post-parse AST and eliminated by the desugar pass (`src/desugar.rs`) before type checking and evaluation. The evaluator and type checker never see `Expr::Pipe`.** See §Pipe Desugaring below for the three desugar rules (WRAP-PIPE, CALL-EXTEND, CALL-WRAP). |
+| `Sequential(exprs)` | Multi-expression fn body | Sequential expressions with let\* semantics; each expression's result dict extends environment for subsequent expressions |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
 | `Fn` | `[fn [x] body]` | Function definition |
@@ -192,6 +193,13 @@ enum Annotation {
 | `Annotated` | `Fn@Number` | Annotated bare word |
 | `Rest(None)` | `...` | Open record marker |
 | `Rest(Some("r"))` | `...r` | Named row variable |
+| `Quote(expr)` | `[quote expr]` | Quote special form — prevents evaluation of expr |
+| `Unquote(expr)` | `[unquote expr]` | Unquote inside quote — evaluates expr and splices result into quoted AST |
+| `UnquoteSplice(expr)` | `[unquote-splice expr]` | Unquote-splice inside quote — evaluates expr (must be list) and splices each element into enclosing list |
+| `DefMacro { name, transformer }` | `[defmacro name fn]` | Macro definition — registers compile-time transformer function |
+| `Match { scrutinee, arms }` | `[match val pat1 body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
+| `ClassDecl { name, params, superclasses, methods }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters and method signatures |
+| `InstanceDecl { class_name, instance_type, methods }` | `[instance [Name Type] methods...]` | Type class instance with method implementations |
 
 ---
 

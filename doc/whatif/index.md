@@ -111,6 +111,8 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 
 These proposals have no gating conditions and deliver standalone value at low cost.
 
+**[Record/Map Split and Parameterized Maps](parameterized-dict.md)** — `Record` vs `Map[K V]` type split; `Dict: [type [Record Map]]` union alias; `@Map[Int Seq@Int]` annotation for homogeneous maps. Phase 1 (annotation support) is independent of BAS — prerequisite is parameterized type aliases (complete).
+
 **[Custom Call Aliases](call-aliases.md)** — `[timed f ...]` macro-defined call forms. Macros cluster is complete — prerequisite met.
 
 **[Macro-Rewrite](macro-rewrite.md) Phase 1** — `[defmacro tmpl]` to migrate `i"..."` string interpolation out of `src/parser.rs`. `[defmacro]` is stable (trigger met). All typing-cluster prerequisites done. Scoped `[defmacro let]` still open once tmpl ships.

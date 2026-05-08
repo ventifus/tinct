@@ -1182,14 +1182,14 @@ fn infer_if(
 
     // Join the types using LUB (least upper bound)
     // Without union types, this is often the shared base type or Unknown
-    let result_ty = least_upper_bound(&then_ty, &else_ty);
+    let result_ty = least_upper_bound(&then_ty, &else_ty, state);
 
     Ok(result_ty)
 }
 
 /// Compute the least upper bound of two types.
 /// Without union types, this is conservative — often returns the shared base type or Unknown.
-fn least_upper_bound(ty1: &Type, ty2: &Type) -> Type {
+fn least_upper_bound(ty1: &Type, ty2: &Type, state: &mut InferState) -> Type {
     // If the types are identical, return either one
     if ty1 == ty2 {
         return ty1.clone();
@@ -1211,10 +1211,13 @@ fn least_upper_bound(ty1: &Type, ty2: &Type) -> Type {
         | (Type::Number, Type::Float)
         | (Type::Float, Type::Number) => Type::Number,
         // Both are records: conservative open record
-        (Type::Record(_), Type::Record(_)) => Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::RowVar("_lub".to_string(), 0),
-        }),
+        (Type::Record(_), Type::Record(_)) => {
+            let (fresh_name, level) = state.fresh_row_var_name();
+            Type::Record(Row {
+                fields: HashMap::new(),
+                tail: RowTail::RowVar(fresh_name, level),
+            })
+        }
         // Otherwise, fall back to Unknown
         _ => Type::Unknown,
     }

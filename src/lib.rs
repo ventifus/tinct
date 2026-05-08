@@ -171,6 +171,12 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
                     }
                 }
             }
+            // Check secondary span
+            if found.is_none() {
+                if let Some((sec_span, _)) = e.secondary_span {
+                    found = provenance.get(&expand::SpanKey::from(sec_span));
+                }
+            }
             if let Some(prov) = found {
                 e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
             }
