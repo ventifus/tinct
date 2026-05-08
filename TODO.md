@@ -130,29 +130,6 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 - [ ] Add CLI flags: `--cap-clock NAME` (inject real ClockCap), `--cap-clock-fixed "RFC3339" NAME` (inject fixed; validate fits i64 range) (`src/main.rs`)
 - [ ] Tests: CLI tests for --cap-clock and --cap-clock-fixed (`tests/cli_tests.rs`)
 
-## Regex
-
-Accepted from `doc/whatif/lib-regex.md` (2026-05-07).
-
-### `regex`: Pure-Tinct Regex Engine
-
-**Spec chapters:** `doc/whatif/lib-regex.md`. **Depends on:** `string-view` (string dual-dispatch for fold), `bitwise-encoding` (char-code).
-
-- [ ] Implement regex parser in pure-tinct: pattern string → AST dict (recursive descent over chars; handles `.`, `*`, `+`, `?`, `{n,m}`, `[a-z]`, `[^...]`, `|`, `()`, `(?P<name>...)`, `^`, `$`) (`stdlib/regex.llt`)
-- [ ] Implement Thompson NFA compiler in pure-tinct: AST → NFA dict via `nfa-char`, `nfa-concat`, `nfa-alt`, `nfa-star`, `nfa-plus`, `nfa-opt`, `nfa-repeat`, `nfa-group` (`stdlib/regex.llt`)
-- [ ] Implement NFA simulator in pure-tinct: `nfa-step` (advance active states on one char via char-code transition lookup + epsilon closure), `nfa-run` (fold over input string), `nfa-accepts` (`stdlib/regex.llt`)
-- [ ] Implement character class matching: ranges via `char-code` comparison (`[a-z]` = code 97-122); negated classes (`[^...]`); predefined `\d`, `\w`, `\s` (`stdlib/regex.llt`)
-- [ ] Implement capture group tracking: `nfa-run` carries `Dict[group-id → [start end]]` snapshots through active state set (`stdlib/regex.llt`)
-- [ ] Implement `re-compile`: parse + compile → `Value::Variant { tag: "Pattern", payload: nfa-dict }` (`stdlib/regex.llt`, register Pattern variant)
-- [ ] Implement `re-match`: `[String|Pattern] → String → Bool`; compile if String; simulate NFA (`stdlib/regex.llt`)
-- [ ] Implement `re-find`: `[String|Pattern] → String → MatchResult | []`; return first match with `match`/`start`/`end` + named capture group keys (`stdlib/regex.llt`)
-- [ ] Implement `re-findall`: `[String|Pattern] → String → Seq@MatchResult`; all non-overlapping matches (`stdlib/regex.llt`)
-- [ ] Implement `re-replace`: `[String|Pattern] → String → String → String`; back-references `\1`, `\2`, `\k<name>`, `\0` in replacement string (`stdlib/regex.llt`)
-- [ ] Implement `re-split`: `[String|Pattern] → String → Seq@String`; zero-length match policy: skip at boundary of previous match (Python 3.7+ semantics) (`stdlib/regex.llt`)
-- [ ] Implement `re-escape-replacement`: escape backslashes in replacement strings to prevent injection (`stdlib/regex.llt`)
-- [ ] Tests: verify `re-compile`, `re-match` are NOT in scope without `[include "stdlib/regex.llt"]`; verify available after include (`tests/corpus/eval/stdlib/`)
-- [ ] Tests: corpus tests for literal matching, character classes, quantifiers, alternation, anchors, groups, named groups, re-find/findall/replace/split, zero-length match edge cases, re-escape-replacement (`tests/corpus/eval/stdlib/`)
-
 ## TLS & HTTP
 
 Accepted from `doc/whatif/lib-tls.md` (2026-05-07).
