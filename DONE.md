@@ -4525,3 +4525,39 @@ The `strict-mode` sprint wired up `=== error` in `test_eval_corpus()`. The secti
 
 - [x] Audit unit test helpers in `src/lib.rs` and `src/typecheck.rs` that call `eval` or `typecheck` directly on hand-constructed ASTs; add `expand_macros` calls where needed to preserve the pipeline invariant (`src/lib.rs`, `src/typecheck.rs`)
 - [x] Refactor `run_fmt` to parse once and pass the AST to both the formatter and the type checker when `--strict` is active (`src/main.rs`)
+
+### `corpus-section-consistency`
+
+Enforce one semantic per labeled section and unify all corpus runners behind a single shared enforcement engine. The canonical contract after this sprint:
+
+- `=== out` — eval succeeds; output matches substring. Never used for error messages.
+- `=== error` — eval fails; message matches substring. Must be non-empty. Every `=== error` file must also produce a runtime error message containing `[EXXX]`.
+- `=== warn` — type warnings match substring. Orthogonal to `out`/`error`. Absent section asserts zero warnings. Enforced uniformly by the shared runner regardless of pipeline.
+
+The `valid/` and `eval/` directory distinction is load-bearing: `valid/` = parse-only tests (some files reference undefined vars that parse legally but would fail eval); `eval/` = full evaluation tests. The runner is unified; the pipeline passed to it differs.
+
+**Shared runner infrastructure (`tests/test_helpers.rs`):**
+
+- [x] Extract `split_test_file` into `tests/test_helpers.rs`; reconcile `String`-vs-`&str` return type (favor owned `String`); re-export for use by `corpus_tests.rs` and `lsp_corpus_tests.rs` (`tests/test_helpers.rs`)
+- [x] Add `run_corpus_dir(dir: &Path, pipeline: impl Fn(&TestFile) -> CorpusOutcome) -> Vec<Failure>` to `tests/test_helpers.rs`; `CorpusOutcome { output: Option<String>, warnings: Vec<String>, error: Option<String> }`; the function handles: find files, split, mutual-exclusivity guard (`=== out` + `=== error` rejected), call pipeline, compare each channel against expectations, collect failures (`tests/test_helpers.rs`)
+- [x] Add runner guard inside `run_corpus_dir`: `=== error` section must be non-empty; `=== warn` section must be non-empty; blank labeled sections are a test-file authoring error (`tests/test_helpers.rs`)
+- [x] Add `[EXXX]` runtime check inside `run_corpus_dir`: when `CorpusOutcome.error` is `Some`, assert it contains an `[EXXX]` prefix — preserves the check currently in `test_eval_error_corpus:721` and applies it universally (`tests/test_helpers.rs`)
+
+**Rewrite `test_eval_corpus` using shared runner:**
+
+- [x] Replace the inline enforcement logic in `test_eval_corpus` with a call to `run_corpus_dir`; the eval pipeline closure calls `eval_source_with_config` and `typecheck_source`, returning `CorpusOutcome { output, warnings, error }` (`tests/corpus_tests.rs`)
+- [x] Remove the `errors_dir` exclusion filter — `eval/errors/` runs through the unified runner once its files use `=== error` (`tests/corpus_tests.rs`)
+- [x] Delete `test_eval_error_corpus` and `test_eval_error_corpus_has_error_codes` — fully superseded (`tests/corpus_tests.rs`)
+
+**Rewrite `test_valid_corpus` using shared runner:**
+
+- [x] Replace `test_valid_corpus` with a call to `run_corpus_dir` using a parse-only pipeline: `parse()` + `typecheck_source()`, returning `CorpusOutcome { output: None, warnings, error: None }`; parse failure maps to a `Failure` directly; `=== out` and `=== error` sections in `valid/` files are rejected as authoring errors (`tests/corpus_tests.rs`)
+- [x] This gives `valid/` files full `=== warn` enforcement for free — the shared runner applies the same warn-channel logic regardless of pipeline
+
+**`=== error` migration — `eval/errors/` (113 files):**
+
+- [x] Rename `=== out` → `=== error` in all 113 files under `tests/corpus/eval/errors/` (scripted: `sed -i 's/^=== out$/=== error/' tests/corpus/eval/errors/**/*.llt-eval`); verify with `cargo test` (`tests/corpus/eval/errors/`)
+
+**LSP runner:**
+
+- [x] Update `lsp_corpus_tests.rs` to use `split_test_file` from `tests/test_helpers.rs` — the LSP runner has its own enforcement logic and keeps it, but shares the file parsing step (`tests/lsp_corpus_tests.rs`)
