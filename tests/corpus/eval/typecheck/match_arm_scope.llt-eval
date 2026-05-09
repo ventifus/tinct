@@ -1,0 +1,11 @@
+# Pattern-bound variables are injected into the TypeEnv for match arm bodies.
+# [ok: v] binds v to the value of the ok field.
+# The type checker must not emit "undefined variable: v" — v is in scope.
+# With type narrowing: v gets the type of the ok field from the scrutinee Record.
+[f: [fn [x]
+  [match x
+    [ok: v]  [+ v 1]
+    _        0]]
+ result: [f [ok: 41]]]
+=== out
+Dict({"f": Function(x), "result": Int(42)})

@@ -237,6 +237,29 @@ pub struct ExpandResult {
 /// Register stdlib macros from the stdlib env into a fresh MacroEnv.
 ///
 /// Each stdlib macro is exported from `stdlib/macros.llt` as a `<name>-transformer`
+/// Register the built-in `tmpl` macro that expands string interpolation.
+///
+/// The parser emits `[tmpl "raw_template" expr0 expr1 ...]` for `i"..."` literals.
+/// - `raw_template`: the original template string with `$name` → `$name`, `${...}` → `${N}`
+/// - `exprN`: extra positional args for `${N}` expression placeholders
+///
+/// This expands to `[str "seg1" name "seg2" expr0 ...]` at macro-expansion time.
+/// Implemented in Rust to avoid a circular dependency with create_stdlib_env.
+#[allow(dead_code)]
+fn register_tmpl_macro(env_macro: &mut MacroEnv) {
+    // We can't register a Rust closure as a macro (the MacroEnv expects a Thunk/Value::Function).
+    // Instead, emit the [tmpl ...] call as a Call node that the evaluator handles at runtime.
+    // The evaluator finds `tmpl-transformer` in the stdlib env loaded by create_stdlib_env.
+    // This works because macro expansion only needs to handle [defmacro] user macros here;
+    // the `tmpl` builtin is handled by the evaluator via the stdlib env.
+    //
+    // We do NOT register tmpl here; instead, leave [tmpl "..."] calls unchanged.
+    // The evaluator will call `tmpl-transformer` from the stdlib env at runtime.
+    let _ = env_macro; // intentionally unused — no registration needed
+}
+
+/// Register stdlib LLT macro transformers (legacy path, kept for reference).
+///
 /// function. This function looks them up and pre-registers them so that macro calls
 /// like `[tmpl "Hello $name"]` are expanded before any user-defined `[defmacro]` nodes
 /// are processed.
@@ -244,6 +267,7 @@ pub struct ExpandResult {
 /// Stdlib macro names must NOT collide with registered Rust builtins (the same check
 /// that `register_macro` performs). This is guaranteed by design: the `tmpl` macro
 /// cannot shadow any builtin since no builtin is named `tmpl`.
+#[allow(dead_code)]
 fn register_stdlib_macros(
     env_macro: &mut MacroEnv,
     stdlib_env: &Rc<RefCell<Environment>>,
@@ -267,7 +291,24 @@ fn register_stdlib_macros(
     }
 }
 
+// Reentrance depth guard for expand_macros → create_stdlib_env calls.
+// When depth > 0, we're in a re-entrant call and must use create_root_env
+// to avoid infinite recursion through the stdlib loading path.
+std::thread_local! {
+    static EXPAND_MACROS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResult> {
+    // Detect infinite recursion
+    let em_depth = EXPAND_MACROS_DEPTH.get();
+    if em_depth > 10 {
+        panic!(
+            "expand_macros: infinite recursion detected (depth={})",
+            em_depth
+        );
+    }
+
     let mut env_macro = MacroEnv::new();
 
     // Create a minimal eval context for macro expansion
@@ -284,15 +325,36 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
             )
         })?;
 
-    let stdlib_env = builtins::create_stdlib_env().map_err(|e| {
-        EvalError::internal(
-            format!("cannot create stdlib env for macro expansion: {e}"),
-            file.span,
-        )
-    })?;
-
-    // Pre-register stdlib macros (e.g. tmpl) from macros.llt before processing user code.
-    register_stdlib_macros(&mut env_macro, &stdlib_env, file.span);
+    // Create the stdlib env for macro expansion. Provides prelude functions for [defmacro]
+    // transformer bodies, and tmpl-transformer for i"..." string interpolation.
+    // The depth guard prevents infinite recursion when create_stdlib_env calls expand_macros:
+    //   expand_macros(user_code) → create_stdlib_env() → load_stdlib_module(prelude.llt) →
+    //   build_prelude_env → expand_macros(prelude.llt) [depth=1 → use create_root_env]
+    let depth = EXPAND_MACROS_DEPTH.get();
+    EXPAND_MACROS_DEPTH.set(depth + 1);
+    let stdlib_env = if depth == 0 {
+        match builtins::create_stdlib_env() {
+            Ok(env) => {
+                // Register stdlib macros (tmpl) only at the outermost level.
+                register_stdlib_macros(&mut env_macro, &env, file.span);
+                env
+            }
+            Err(e) => {
+                EXPAND_MACROS_DEPTH.set(depth);
+                return Err(EvalError::internal(
+                    format!("cannot create stdlib env for macro expansion: {e}"),
+                    file.span,
+                )
+                .into());
+            }
+        }
+    } else {
+        // Re-entrant call: use bare root env to break the cycle.
+        // [defmacro] macros in stdlib files won't have access to prelude, but
+        // stdlib files don't define user [defmacro] macros so this is fine.
+        builtins::create_root_env()
+    };
+    EXPAND_MACROS_DEPTH.set(depth);
 
     let ctx = Rc::new(EvalContext::new(base_dir, Rc::clone(&stdlib_env), no_fs));
 
@@ -347,6 +409,26 @@ fn expand_document(
 
 /// Expand macros in an expression (fixpoint loop).
 fn expand_expr(
+    expr: Spanned<Expr>,
+    env: &mut MacroEnv,
+    ctx: &Rc<EvalContext>,
+    stdlib_env: &Rc<RefCell<Environment>>,
+) -> EvalResult<Spanned<Expr>> {
+    let ee_depth = EXPAND_EXPR_DEPTH.get();
+    if ee_depth > 10_000 {
+        return Err(EvalError::resource_limit_exceeded(
+            format!("macro expansion: AST recursion depth {ee_depth} exceeds limit (10000)"),
+            expr.span,
+        )
+        .into());
+    }
+    EXPAND_EXPR_DEPTH.set(ee_depth + 1);
+    let result = expand_expr_inner(expr, env, ctx, stdlib_env);
+    EXPAND_EXPR_DEPTH.set(ee_depth);
+    result
+}
+
+fn expand_expr_inner(
     expr: Spanned<Expr>,
     env: &mut MacroEnv,
     ctx: &Rc<EvalContext>,

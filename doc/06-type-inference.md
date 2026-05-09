@@ -216,7 +216,13 @@ In practice, this divergence rarely surfaces because CALL-MONO only fires for mo
 
 Calling a value typed as Unknown returns Unknown. Arguments are still synthesized (for type map population and nested error detection) but not checked against parameter types.
 
-Named arguments are synthesized but not checked against parameter types — `Type::Function` has only a `Vec<Type>` for parameters with no name field. Named argument checking against parameter types is unimplemented; see [Type System Extensions](07-type-extensions.md) §Completeness for the planned extension.
+Named argument type checking is implemented. `Type::Function` carries `params: Vec<(Option<String>, Type)>` where `Some(name)` is a user-defined function parameter name extracted from the AST and `None` is a builtin parameter (no name exposed at the type level). Three paths check named args:
+
+- **CALL-MONO**: for each named arg, the matching parameter is found by name via `params.iter().find_map(|(pname, pty)| if pname.as_ref() == Some(arg_name) { Some(pty) })`, the arg is inferred with `infer_expr`, and the type is unified against the parameter type. Unknown names and type mismatches emit `TypeError`.
+- **CALL-POLY** (`check_call`): same name-based lookup and unify on the instantiated params.
+- **`check_call_with_scheme`** Function arm: same name-based lookup and unify, applied after the positional arg unification loop, using the already-instantiated `params` from `instantiate_scheme`.
+
+Known gap: when the callee is a letrec forward reference (same-dict scope), the type resolves to an unbound `TypeVar` and falls through to the `TypeVar` arm, which skips named-arg validation. See [Type System Extensions](07-type-extensions.md) §Completeness for the remaining gaps.
 
 **Access chains:**
 
@@ -816,16 +822,14 @@ result: [= [fn [] 1] [fn [] 2]]
 
 ## Limitations and Non-Guarantees
 
-1. **Named args not unified.** Named arguments in call expressions are type-checked (values inferred) but not unified against function parameter types. Requires extending `Type::Function` to carry parameter names.
-
-2. **Unknown behaves as both top and bottom (pre-AGT migration).** In the current implementation (before full Gradual Typing migration), `Unknown` acts like both a supertype and subtype of all types during unification. In proper gradual typing (Abstract Gradual Typing, Garcia et al. 2016), `Unknown` (the `?` type) uses a **consistency** relation `~` (symmetric, non-transitive) that triggers runtime casts at boundaries, not subtyping. The current behavior is a known deviation from the AGT model.
+1. **Unknown behaves as both top and bottom (pre-AGT migration).** In the current implementation (before full Gradual Typing migration), `Unknown` acts like both a supertype and subtype of all types during unification. In proper gradual typing (Abstract Gradual Typing, Garcia et al. 2016), `Unknown` (the `?` type) uses a **consistency** relation `~` (symmetric, non-transitive) that triggers runtime casts at boundaries, not subtyping. The current behavior is a known deviation from the AGT model.
 
    **Concrete consequence — TypeAssert escape via Unknown.** An unannotated function `f` has type `Fn(Unknown → Unknown)`. Calling `f` returns `Unknown`. A TypeAssert `[@Int [f "hello"]]` passes type checking because `Unknown` unifies with `Int`, but the runtime value is a string. The type annotation is misleading — it narrows `Unknown` to `Int` statically while the runtime value may be anything. This is the primary way tinct's type system fails the Damas-Milner principal type guarantee (Damas & Milner, 1982): the type `Int` is assigned to an expression whose runtime value has type `String`. Corpus test: `tests/corpus/eval/typecheck/principal_type_any_escape.llt-eval`.
 
    **Mitigation path:** Garcia et al. (2016) show how to systematically derive a gradual type system from a static one. The key insight is replacing `Any <: τ` (unsound bottom) with a **consistency** relation `Any ~ τ` (symmetric, non-transitive) that triggers runtime casts at the `Any`/concrete boundary. Under AGT, `[@Int [f "hello"]]` would insert a runtime cast that fails when the actual value is a string — making the TypeAssert a true contract rather than a static-only assertion. This is tracked in TODO.md (gradual typing migration).
 
-3. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
+2. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 
-4. **Variadic params typed as Unknown.** Variadic parameters (`...args`) are assigned type `Unknown`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
+3. **Variadic params typed as Unknown.** Variadic parameters (`...args`) are assigned type `Unknown`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
 
-5. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.
+4. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.

@@ -5,7 +5,7 @@
 //! collection to dispatch on Dict vs Seq, then produce lazy or inherently-eager
 //! results depending on the operation.
 //!
-//! - `reduce`: fully lazy (PendingCall chain for Dict, PendingBuiltin recursion for Seq)
+//! - `reduce`: eagerly iterative (materializes each accumulator step to avoid O(N) Rust stack depth)
 //! - `join`: inherently eager (must stringify all elements)
 //! - `concat`: lazy for Seq (PendingBuiltin step chain), eager for Dict (full merge)
 //!
@@ -60,13 +60,16 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
     match xs {
         Value::Dict(ref map) => {
-            // Dict path: build a chain of PendingCall thunks
+            // Eagerly iterate: materialize each f(acc, elem) step before the next.
+            // A lazy PendingCall chain would build O(N) nested thunks that, when
+            // forced, recurse N levels deep in the Rust call stack — overflowing for
+            // large collections (e.g. reducing over thousands of lines of text).
             let mut acc = init_thunk;
             for (_key, value_thunk_id) in map.iter() {
                 let value_thunk = ctx.get_thunk(*value_thunk_id);
-                acc = Rc::new(Thunk::new_pending_call(
+                let step_thunk = Rc::new(Thunk::new_pending_call(
                     Rc::clone(&f_thunk),
-                    vec![acc, Rc::clone(&value_thunk)],
+                    vec![Rc::clone(&acc), Rc::clone(&value_thunk)],
                     IndexMap::new(),
                     call_span,
                     Rc::clone(&ctx.config.stdlib_env),
@@ -74,95 +77,53 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     Some(Rc::from("reduce")),
                     Rc::clone(&ctx),
                 ));
+                let step_val = materialize(&step_thunk, Some(&call_span), &ctx)?;
+                acc = Rc::new(Thunk::new_materialized(step_val, call_span));
             }
             Ok(acc)
         }
         Value::Seq { head, tail } => {
-            // Seq path: use recursive step function
-            let head_thunk = ctx.get_thunk(head);
-            let tail_thunk = ctx.get_thunk(tail);
-            let step_args = vec![
-                Rc::clone(&f_thunk),
-                init_thunk,
-                Rc::clone(&head_thunk),
-                Rc::clone(&tail_thunk),
-            ];
-            Ok(Rc::new(Thunk::new_pending_builtin(
-                builtin!("reduce", builtin_reduce_seq_step),
-                step_args,
-                None,
-                call_span,
-                Some(Rc::from("call $reduce")),
-                Rc::clone(&ctx),
-            )))
-        }
-        other => Err(EvalError::type_mismatch_ctx(
-            "reduce".to_string(),
-            "Dict or Seq",
-            other.type_name(),
-            call_span,
-        )
-        .into()),
-    }
-}
+            // Eagerly iterate the Seq head/tail chain, materializing each step.
+            // Same rationale as Dict: lazy accumulator thunks recurse O(N) deep.
+            let mut acc = init_thunk;
+            let mut current_head = ctx.get_thunk(head);
+            let mut current_tail = ctx.get_thunk(tail);
+            loop {
+                let step_thunk = Rc::new(Thunk::new_pending_call(
+                    Rc::clone(&f_thunk),
+                    vec![Rc::clone(&acc), Rc::clone(&current_head)],
+                    IndexMap::new(),
+                    call_span,
+                    Rc::clone(&ctx.config.stdlib_env),
+                    current_head.span,
+                    Some(Rc::from("reduce")),
+                    Rc::clone(&ctx),
+                ));
+                let step_val = materialize(&step_thunk, Some(&call_span), &ctx)?;
+                acc = Rc::new(Thunk::new_materialized(step_val, call_span));
 
-/// Helper for `reduce` on Seq: process one element and recurse.
-///
-/// Args: (f, acc, head, tail)
-pub(crate) fn builtin_reduce_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    reject_named("reduce_seq_step", named, call_span)?;
-    if args.len() != 4 {
-        return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
-    }
-
-    let f_thunk = Rc::clone(&args[0]);
-    let acc_thunk = Rc::clone(&args[1]);
-    let head_thunk = Rc::clone(&args[2]);
-    let tail_thunk = Rc::clone(&args[3]);
-
-    // Create new accumulator: f(acc, head)
-    let new_acc = Rc::new(Thunk::new_pending_call(
-        Rc::clone(&f_thunk),
-        vec![acc_thunk, head_thunk],
-        IndexMap::new(),
-        call_span,
-        Rc::clone(&ctx.config.stdlib_env),
-        tail_thunk.span,
-        Some(Rc::from("reduce")),
-        Rc::clone(&ctx),
-    ));
-
-    // Check if tail is empty (sequence end)
-    let tail_val = materialize(&tail_thunk, None, &ctx)?;
-    match tail_val {
-        Value::Dict(_) => {
-            // Empty dict = end of sequence, return accumulator
-            Ok(new_acc)
-        }
-        Value::Seq { head, tail } => {
-            // Continue reducing
-            let head_thunk = ctx.get_thunk(head);
-            let tail_thunk = ctx.get_thunk(tail);
-            let step_args = vec![
-                Rc::clone(&f_thunk),
-                new_acc,
-                Rc::clone(&head_thunk),
-                Rc::clone(&tail_thunk),
-            ];
-            Ok(Rc::new(Thunk::new_pending_builtin(
-                builtin!("reduce", builtin_reduce_seq_step),
-                step_args,
-                None,
-                call_span,
-                Some(Rc::from("call $reduce")),
-                Rc::clone(&ctx),
-            )))
+                let tail_val = materialize(&current_tail, Some(&call_span), &ctx)?;
+                match tail_val {
+                    Value::Dict(_) => break, // empty dict = end of Seq
+                    Value::Seq {
+                        head: next_head,
+                        tail: next_tail,
+                    } => {
+                        current_head = ctx.get_thunk(next_head);
+                        current_tail = ctx.get_thunk(next_tail);
+                    }
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "reduce".to_string(),
+                            "Dict or Seq",
+                            other.type_name(),
+                            call_span,
+                        )
+                        .into());
+                    }
+                }
+            }
+            Ok(acc)
         }
         other => Err(EvalError::type_mismatch_ctx(
             "reduce".to_string(),

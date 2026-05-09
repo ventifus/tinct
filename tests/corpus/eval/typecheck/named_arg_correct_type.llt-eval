@@ -1,0 +1,6 @@
+[
+    f: [fn [x@Int y@Int] [call $+ $x $y]]
+    result: [call $f 42 y: 10]
+]
+=== out
+Dict({"f": Function(x, y), "result": Int(52)})

@@ -1232,33 +1232,63 @@ fn promote_literal(ty: &Type) -> Type {
     }
 }
 
-/// Collect all variable names bound by a pattern, recursively.
-/// Used to extend the TypeEnv before type-checking a match arm body,
-/// so that pattern-bound variables do not produce "undefined variable" errors.
-/// All bindings receive Type::Unknown (the gradual type) since the type checker
-/// does not yet perform per-arm narrowing (match-arm-scope sprint).
-fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
+/// Collect variable bindings introduced by a pattern, with their types.
+///
+/// Returns `Vec<(name, type)>` pairs used to extend the TypeEnv before
+/// type-checking a match arm body, so that pattern-bound variables are in scope
+/// and have the best type available from the scrutinee's static type.
+///
+/// Type narrowing rules (match-arm-scope sprint):
+/// - `Pattern::Variable(name)`: binds `name` to the full scrutinee type.
+/// - `Pattern::Dict { fields }`: for each `(key, Pattern::Variable(sub_name))` field,
+///   look up `key` in the scrutinee Record type and bind `sub_name` to that field's
+///   type. Falls back to `Unknown` when the scrutinee type is not a concrete Record
+///   or the key is absent (open rows may carry the field at runtime).
+/// - `Pattern::Seq { head, tail }`: head gets `Unknown`, tail gets `Seq(Unknown)`.
+/// - `Pattern::Constructor { binding }`: payload gets `Unknown` (no payload narrowing yet).
+/// - `Pattern::Or(alts)`: collect from the first alternative only (all alts must bind
+///   the same variable set by parser invariant).
+/// - `Pattern::Wildcard | Literal | TypeTag | Pin`: no bindings.
+fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(String, Type)>) {
     match pat {
-        Pattern::Variable(name) => out.push(name.clone()),
+        Pattern::Variable(name) => {
+            out.push((name.clone(), scrutinee_ty.clone()));
+        }
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {}
         Pattern::Dict { fields, .. } => {
-            for (_key, sub_pat) in fields {
-                collect_pattern_vars(&sub_pat.node, out);
+            for (key, sub_pat) in fields {
+                // Narrow the sub-pattern's scrutinee type using the record field type.
+                let field_ty = match scrutinee_ty {
+                    Type::Record(row) => row.fields.get(key).cloned().unwrap_or(Type::Unknown),
+                    // Union: if all members that are Records agree on the field type, use it.
+                    // For now fall through to Unknown — union narrowing deferred.
+                    _ => Type::Unknown,
+                };
+                collect_pattern_bindings(&sub_pat.node, &field_ty, out);
             }
         }
         Pattern::Seq { head, tail } => {
-            collect_pattern_vars(&head.node, out);
-            collect_pattern_vars(&tail.node, out);
+            // Head is the element type; tail is the remaining Seq.
+            let elem_ty = match scrutinee_ty {
+                Type::Seq(elem) => (**elem).clone(),
+                _ => Type::Unknown,
+            };
+            collect_pattern_bindings(&head.node, &elem_ty, out);
+            // Tail is always a Seq of the same element type.
+            let tail_ty = Type::Seq(Box::new(elem_ty));
+            collect_pattern_bindings(&tail.node, &tail_ty, out);
         }
         Pattern::Constructor { binding, .. } => {
+            // No payload type narrowing for constructors yet.
             if let Some(b) = binding {
-                collect_pattern_vars(&b.node, out);
+                collect_pattern_bindings(&b.node, &Type::Unknown, out);
             }
         }
         Pattern::Or(alts) => {
-            // Or-patterns: only collect from the first alternative (all alts must bind the same vars).
+            // Or-patterns: only collect from the first alternative (all alts must bind
+            // the same set of variables, so any choice is equivalent for scoping).
             if let Some(first) = alts.first() {
-                collect_pattern_vars(&first.node, out);
+                collect_pattern_bindings(&first.node, scrutinee_ty, out);
             }
         }
     }
@@ -1490,20 +1520,20 @@ fn infer_expr(
             let scrutinee_ty = state.subst.apply(&scrutinee_ty);
 
             // Infer each arm's guard (if present) and body type.
-            // Extend the TypeEnv with pattern-bound variables (Unknown type) so that
-            // references to pattern variables in arm bodies don't produce "undefined variable"
-            // warnings. Full per-arm narrowing (match-arm-scope sprint) is deferred.
+            // Extend the TypeEnv with pattern-bound variables and their inferred types
+            // so that references inside the arm body are in scope and carry precise types
+            // derived from the scrutinee type and pattern shape (match-arm-scope sprint).
             for arm in arms {
-                let mut pat_vars: Vec<String> = Vec::new();
-                collect_pattern_vars(&arm.pattern.node, &mut pat_vars);
-                let arm_env = if pat_vars.is_empty() {
+                let mut pat_bindings: Vec<(String, Type)> = Vec::new();
+                collect_pattern_bindings(&arm.pattern.node, &scrutinee_ty, &mut pat_bindings);
+                let arm_env = if pat_bindings.is_empty() {
                     env.clone()
                 } else {
-                    let mut extended = (**env).clone();
-                    for var in &pat_vars {
-                        extended.insert(var.clone(), Type::Unknown);
+                    let mut child = TypeEnv::with_parent(env);
+                    for (name, ty) in pat_bindings {
+                        child.insert(name, ty);
                     }
-                    Rc::new(extended)
+                    Rc::new(child)
                 };
                 if let Some(guard) = &arm.guard {
                     let _guard_ty = infer_expr(guard, &arm_env, state, type_map)?;
@@ -1748,7 +1778,7 @@ fn contains_unknown_or_top(ty: &Type) -> bool {
     match ty {
         Type::Unknown | Type::Top => true,
         Type::Function { params, ret, .. } => {
-            params.iter().any(contains_unknown_or_top) || contains_unknown_or_top(ret)
+            params.iter().any(|(_, t)| contains_unknown_or_top(t)) || contains_unknown_or_top(ret)
         }
         Type::Seq(elem) => contains_unknown_or_top(elem),
         Type::Record(row) => row.fields.values().any(contains_unknown_or_top),
@@ -1836,7 +1866,7 @@ fn check_expr(
                     let param_types: Vec<Type> = params
                         .iter()
                         .zip(expected_params.iter())
-                        .map(|(p, expected_ty)| match &p.node.annotation {
+                        .map(|(p, (_, expected_ty))| match &p.node.annotation {
                             Some(ann) => {
                                 let resolved = resolve_annotation(
                                     &ann.node,
@@ -2255,29 +2285,6 @@ fn check_call_with_scheme(
         tm.insert(key, func_ty.clone());
     }
 
-    // Infer named args for type map population and error propagation.
-    // Named arg errors (e.g., undefined variable in a named arg value) must be propagated —
-    // cascade prevention only applies to positional args where an Error arg would cause
-    // spurious "wrong argument type" unification errors.
-    //
-    // TODO(named-arg-types): Named arg types are not unified against the corresponding param types.
-    // This requires `Type::Function` to carry param names alongside param types so that a named
-    // arg `x: e` can be matched to the param at the index where `param.name == "x"`. Until
-    // `Type::Function` is extended to `params: Vec<(String, Type)>` (or equivalent), type
-    // mismatches in named args are silently accepted by the type checker even though the evaluator
-    // validates them at runtime (see `eval_call.rs` C-NAMED-VALID check).
-    if !named_args.is_empty() {
-        let mut named_arg_errors: Vec<TypeError> = Vec::new();
-        for na in named_args {
-            if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
-                named_arg_errors.append(&mut errs);
-            }
-        }
-        if !named_arg_errors.is_empty() {
-            return Err(named_arg_errors);
-        }
-    }
-
     match &func_ty {
         Type::Function {
             params,
@@ -2286,8 +2293,6 @@ fn check_call_with_scheme(
         } => {
             // Arity check: named args fill remaining parameter slots by name (Kotlin model in
             // eval_call.rs), so count positional + named against total params.
-            // TODO(named-arg-types): When Type::Function carries param names, validate that each
-            // named arg targets a real param and doesn't overlap a positional arg position.
             let total_supplied = args.len() + named_args.len();
             // For variadic functions, the last param accepts arbitrary extra args.
             // Require at least (params.len() - 1) args for variadic functions.
@@ -2356,11 +2361,60 @@ fn check_call_with_scheme(
                     type_map: state.subst.type_map.clone(),
                     row_map: state.subst.row_map.clone(),
                 };
-                for (param_ty, arg_ty) in params.iter().zip(arg_types.iter()) {
+                for ((_, param_ty), arg_ty) in params.iter().zip(arg_types.iter()) {
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
                     if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
+                    }
+                }
+                // Unify named args by matching them to params by name.
+                // Mirrors check_call CALL-POLY named-arg loop (same pattern, same error messages).
+                // `params` here are already the instantiated params from instantiate_scheme above.
+                for na in named_args {
+                    let arg_name = &na.node.name;
+                    // Find the param with matching name
+                    let param_ty_opt = params.iter().find_map(|(pname, pty)| {
+                        if pname.as_ref() == Some(arg_name) {
+                            Some(pty)
+                        } else {
+                            None
+                        }
+                    });
+
+                    match param_ty_opt {
+                        Some(param_ty) => {
+                            // Infer named arg type and unify
+                            match infer_expr(&na.node.value, env, state, type_map) {
+                                Ok(arg_ty) => {
+                                    if let Err(e) =
+                                        unify(&arg_ty, param_ty, &mut subst, state, na.span)
+                                    {
+                                        arg_errors.get_or_insert_with(Vec::new).push(
+                                            TypeError::new(
+                                                format!(
+                                                    "named argument '{}' type mismatch: {}",
+                                                    arg_name, e.message
+                                                ),
+                                                na.span,
+                                            ),
+                                        );
+                                    }
+                                }
+                                Err(mut errs) => {
+                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                                }
+                            }
+                        }
+                        None => {
+                            arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                format!(
+                                    "unknown named argument: function has no parameter named '{}'",
+                                    arg_name
+                                ),
+                                na.span,
+                            ));
+                        }
                     }
                 }
                 if let Some(errors) = arg_errors {
@@ -2404,6 +2458,19 @@ fn check_call_with_scheme(
             for arg in args {
                 let _ = infer_expr(arg, env, state, type_map);
             }
+            // Infer named arg values exactly once here for type map population and error propagation.
+            // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
+            // caused double-inference when the function type was resolved (CALL-POLY arm infers named
+            // args again). Moving inference to each arm ensures single-pass Algorithm W.
+            let mut named_arg_errors: Vec<TypeError> = Vec::new();
+            for na in named_args {
+                if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+                    named_arg_errors.append(&mut errs);
+                }
+            }
+            if !named_arg_errors.is_empty() {
+                return Err(named_arg_errors);
+            }
             Ok(Type::Unknown)
         }
         _ => Err(vec![TypeError::not_a_function(&func_ty, func_span)]),
@@ -2421,10 +2488,15 @@ fn check_call_with_scheme(
 /// constraints. The `check_call_with_scheme` optimization (instantiate once) only applies
 /// to `VarRef` callees where the scheme is looked up from the environment.
 ///
-/// Note: Named argument type checking is partial — this function infers named arg value types for
-/// LSP hover and error propagation, and counts named args toward arity, but cannot verify that
-/// each named arg's name matches a real parameter (or unify the arg type against the param type).
-/// Both require `Type::Function` to carry param names. See TODO(named-arg-types) inline comments.
+/// Named argument type checking fires in three paths:
+/// - CALL-MONO (here): for each named arg, finds the matching parameter by name in `params`
+///   and unifies the arg type against the parameter type via `infer_expr` + `unify`; emits
+///   `TypeError` on name mismatch ("unknown named argument") or type mismatch.
+/// - CALL-POLY (here): same name-based lookup and unify on the instantiated params.
+/// - `check_call_with_scheme` Function arm: same name-based lookup and unify after positional
+///   arg unification; uses `params` from the already-instantiated `func_ty`.
+/// Note: named-arg checking fires only for resolved function types; same-dict letrec forward
+/// references fall through to the `TypeVar` arm and skip named-arg validation.
 fn check_call(
     func: &Spanned<Expr>,
     args: &[Rc<Spanned<Expr>>],
@@ -2444,29 +2516,6 @@ fn check_call(
         state.subst.apply(&func_ty)
     };
 
-    // Infer named args for type map population and error propagation.
-    // Named arg errors (e.g., undefined variable in a named arg value) must be propagated —
-    // cascade prevention only applies to positional args where an Error arg would cause
-    // spurious "wrong argument type" unification errors.
-    //
-    // TODO(named-arg-types): Named arg types are not unified against the corresponding param types.
-    // This requires `Type::Function` to carry param names alongside param types so that a named
-    // arg `x: e` can be matched to the param at the index where `param.name == "x"`. Until
-    // `Type::Function` is extended to `params: Vec<(String, Type)>` (or equivalent), type
-    // mismatches in named args are silently accepted by the type checker even though the evaluator
-    // validates them at runtime (see `eval_call.rs` C-NAMED-VALID check).
-    if !named_args.is_empty() {
-        let mut named_arg_errors: Vec<TypeError> = Vec::new();
-        for na in named_args {
-            if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
-                named_arg_errors.append(&mut errs);
-            }
-        }
-        if !named_arg_errors.is_empty() {
-            return Err(named_arg_errors);
-        }
-    }
-
     match &func_ty {
         Type::Function {
             params,
@@ -2475,8 +2524,6 @@ fn check_call(
         } => {
             // Arity check: named args fill remaining parameter slots by name (Kotlin model in
             // eval_call.rs), so count positional + named against total params.
-            // TODO(named-arg-types): When Type::Function carries param names, validate that each
-            // named arg targets a real param and doesn't overlap a positional arg position.
             let total_supplied = args.len() + named_args.len();
             // For variadic functions, the last param accepts arbitrary extra args.
             // Require at least (params.len() - 1) args for variadic functions.
@@ -2511,9 +2558,50 @@ fn check_call(
             // collect CALL-POLY errors too, but requires constraint-based solving (see comment below).
             if !func_ty.has_inference_vars() {
                 let mut errors = Vec::new();
-                for (arg, param_ty) in args.iter().zip(params.iter()) {
+                // Check positional args
+                for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
                         errors.append(&mut errs);
+                    }
+                }
+                // Check named args by matching them to params by name
+                for na in named_args {
+                    let arg_name = &na.node.name;
+                    // Find the param with matching name
+                    let param_ty_opt = params.iter().find_map(|(pname, pty)| {
+                        if pname.as_ref() == Some(arg_name) {
+                            Some(pty)
+                        } else {
+                            None
+                        }
+                    });
+
+                    match param_ty_opt {
+                        Some(param_ty) => {
+                            // Unify the named arg type against the param type
+                            let arg_ty = infer_expr(&na.node.value, env, state, type_map)?;
+                            let mut subst = std::mem::take(&mut state.subst);
+                            let result = unify(&arg_ty, param_ty, &mut subst, state, na.span);
+                            state.subst = subst;
+                            if let Err(e) = result {
+                                errors.push(TypeError::new(
+                                    format!(
+                                        "named argument '{}' type mismatch: {}",
+                                        arg_name, e.message
+                                    ),
+                                    na.span,
+                                ));
+                            }
+                        }
+                        None => {
+                            errors.push(TypeError::new(
+                                format!(
+                                    "unknown named argument: function has no parameter named '{}'",
+                                    arg_name
+                                ),
+                                na.span,
+                            ));
+                        }
                     }
                 }
                 if !errors.is_empty() {
@@ -2615,11 +2703,59 @@ fn check_call(
                     type_map: state.subst.type_map.clone(),
                     row_map: state.subst.row_map.clone(),
                 };
-                for (param_ty, arg_ty) in inst_params.iter().zip(arg_types.iter()) {
+                // Unify positional args
+                for ((_param_name, param_ty), arg_ty) in inst_params.iter().zip(arg_types.iter()) {
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
                     if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
+                    }
+                }
+                // Unify named args by matching them to params by name
+                for na in named_args {
+                    let arg_name = &na.node.name;
+                    // Find the param with matching name
+                    let param_ty_opt = inst_params.iter().find_map(|(pname, pty)| {
+                        if pname.as_ref() == Some(arg_name) {
+                            Some(pty)
+                        } else {
+                            None
+                        }
+                    });
+
+                    match param_ty_opt {
+                        Some(param_ty) => {
+                            // Infer named arg type and unify
+                            match infer_expr(&na.node.value, env, state, type_map) {
+                                Ok(arg_ty) => {
+                                    if let Err(e) =
+                                        unify(&arg_ty, param_ty, &mut subst, state, na.span)
+                                    {
+                                        arg_errors.get_or_insert_with(Vec::new).push(
+                                            TypeError::new(
+                                                format!(
+                                                    "named argument '{}' type mismatch: {}",
+                                                    arg_name, e.message
+                                                ),
+                                                na.span,
+                                            ),
+                                        );
+                                    }
+                                }
+                                Err(mut errs) => {
+                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                                }
+                            }
+                        }
+                        None => {
+                            arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                format!(
+                                    "unknown named argument: function has no parameter named '{}'",
+                                    arg_name
+                                ),
+                                na.span,
+                            ));
+                        }
                     }
                 }
                 if let Some(errors) = arg_errors {
@@ -2662,6 +2798,19 @@ fn check_call(
             for arg in args {
                 let _ = infer_expr(arg, env, state, type_map);
             }
+            // Infer named arg values exactly once here for type map population and error propagation.
+            // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
+            // caused double-inference when the function type was resolved (CALL-MONO/CALL-POLY arms
+            // infer named args again). Moving inference to each arm ensures single-pass Algorithm W.
+            let mut named_arg_errors: Vec<TypeError> = Vec::new();
+            for na in named_args {
+                if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+                    named_arg_errors.append(&mut errs);
+                }
+            }
+            if !named_arg_errors.is_empty() {
+                return Err(named_arg_errors);
+            }
             Ok(Type::Unknown)
         }
         Type::Unknown => {
@@ -2673,6 +2822,16 @@ fn check_call(
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
                 let _ = infer_expr(arg, env, state, type_map);
+            }
+            // Infer named arg values exactly once here for type map population and error propagation.
+            let mut named_arg_errors: Vec<TypeError> = Vec::new();
+            for na in named_args {
+                if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+                    named_arg_errors.append(&mut errs);
+                }
+            }
+            if !named_arg_errors.is_empty() {
+                return Err(named_arg_errors);
             }
             Ok(Type::Unknown)
         }
@@ -2713,18 +2872,21 @@ fn infer_fn(
     };
     let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
 
-    let mut param_types: Vec<Type> = params
+    let mut param_types: Vec<(Option<String>, Type)> = params
         .iter()
-        .map(|p| match &p.node.annotation {
-            Some(ann) => resolve_annotation(
-                &ann.node,
-                env,
-                ann.span,
-                state,
-                &mut ann_mapping_opt,
-                &mut row_ann_mapping_opt,
-            ),
-            None => Ok(Type::Unknown),
+        .map(|p| {
+            let ty = match &p.node.annotation {
+                Some(ann) => resolve_annotation(
+                    &ann.node,
+                    env,
+                    ann.span,
+                    state,
+                    &mut ann_mapping_opt,
+                    &mut row_ann_mapping_opt,
+                ),
+                None => Ok(Type::Unknown),
+            }?;
+            Ok((Some(p.node.name.clone()), ty))
         })
         .collect::<Result<_, _>>()
         .map_err(|e| vec![e])?;
@@ -2735,10 +2897,10 @@ fn infer_fn(
             let variadic_ty = Type::Unknown;
             // Variadic params accept arbitrary fields, typed as Any.
             // Update param_types[i] to match the env binding so the function signature is accurate.
-            param_types[i] = variadic_ty.clone();
+            param_types[i].1 = variadic_ty.clone();
             fn_env.insert(param.node.name.clone(), variadic_ty);
         } else {
-            fn_env.insert(param.node.name.clone(), param_types[i].clone());
+            fn_env.insert(param.node.name.clone(), param_types[i].1.clone());
         }
     }
     let fn_env = Rc::new(fn_env);
@@ -3429,7 +3591,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Unknown]);
+                assert_eq!(params, vec![(Some("x".to_string()), Type::Unknown)]);
                 assert_eq!(*ret, Type::IntLiteral(42));
             }
             other => panic!("expected Function, got {other}"),
@@ -3445,7 +3607,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Number]);
+                assert_eq!(params, vec![(Some("x".to_string()), Type::Number)]);
                 assert_eq!(*ret, Type::Number);
             }
             other => panic!("expected Function, got {other}"),
@@ -3638,7 +3800,10 @@ mod tests {
         let ty = infer("[fn [xs@Seq] $xs]");
         match ty {
             Type::Function { params, .. } => {
-                assert_eq!(params[0], Type::Seq(Box::new(Type::Unknown)));
+                assert_eq!(
+                    params[0],
+                    (Some("xs".to_string()), Type::Seq(Box::new(Type::Unknown)))
+                );
             }
             other => panic!("expected Function, got {other}"),
         }
@@ -3662,7 +3827,7 @@ mod tests {
         // Bare @Null resolves to Type::Record(Row::Empty) in resolve_type_name
         let ty = infer("[fn [x@Null] $x]");
         match ty {
-            Type::Function { params, .. } => match &params[0] {
+            Type::Function { params, .. } => match &params[0].1 {
                 Type::Record(Row { fields, tail }) => {
                     assert!(fields.is_empty());
                     assert_eq!(*tail, RowTail::Empty);
@@ -3698,10 +3863,10 @@ mod tests {
             Type::Function { params, ret, .. } => {
                 // Parameter should be String
                 assert_eq!(
-                    params[0],
+                    params[0].1,
                     Type::Str,
                     "param @String should resolve to Type::Str, got {:?}",
-                    params[0]
+                    params[0].1
                 );
                 // Return type should be Null = empty closed record
                 match *ret {
@@ -4071,7 +4236,9 @@ mod tests {
     fn test_annotation_property_dict_with_type() {
         let ty = infer("[fn [x@[type: Number  default: 0]] $x]");
         match ty {
-            Type::Function { params, .. } => assert_eq!(params, vec![Type::Number]),
+            Type::Function { params, .. } => {
+                assert_eq!(params, vec![(Some("x".to_string()), Type::Number)])
+            }
             other => panic!("expected Function, got {other}"),
         }
     }
@@ -4301,13 +4468,13 @@ mod tests {
                 variadic: _,
             } => {
                 assert_eq!(params.len(), 1);
-                match &params[0] {
+                match &params[0].1 {
                     Type::Function {
                         params: inner_params,
                         ret: inner_ret,
                         variadic: _,
                     } => {
-                        assert_eq!(*inner_params, vec![Type::Int]);
+                        assert_eq!(*inner_params, vec![(None, Type::Int)]);
                         assert_eq!(**inner_ret, Type::Number);
                     }
                     other => panic!("expected Function param, got {other}"),
@@ -4330,7 +4497,7 @@ mod tests {
                 variadic: _,
             } => {
                 assert_eq!(params.len(), 1);
-                match &params[0] {
+                match &params[0].1 {
                     Type::Record(row) => {
                         assert_eq!(row.fields.get("name"), Some(&Type::Str));
                         assert_eq!(row.fields.get("age"), Some(&Type::Number));
@@ -4357,7 +4524,7 @@ mod tests {
                 ret,
                 variadic: _,
             }) => {
-                assert_eq!(params, vec![Type::Int]);
+                assert_eq!(params, vec![(None, Type::Int)]);
                 assert_eq!(*ret, Type::Number);
             }
             other => panic!("expected Function for result field, got {other:?}"),
@@ -4383,13 +4550,13 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 1);
                 // param type: Fn(Int -> Fn(Int -> Int))
-                match &params[0] {
+                match &params[0].1 {
                     Type::Function {
                         params: outer_params,
                         ret: outer_ret,
                         variadic: _,
                     } => {
-                        assert_eq!(*outer_params, vec![Type::Int]);
+                        assert_eq!(*outer_params, vec![(None, Type::Int)]);
                         // return type: Fn(Int -> Int)
                         match outer_ret.as_ref() {
                             Type::Function {
@@ -4397,7 +4564,7 @@ mod tests {
                                 ret: inner_ret,
                                 variadic: _,
                             } => {
-                                assert_eq!(*inner_params, vec![Type::Int]);
+                                assert_eq!(*inner_params, vec![(None, Type::Int)]);
                                 assert_eq!(**inner_ret, Type::Int);
                             }
                             other => panic!("expected Fn(Int -> Int) as outer return, got {other}"),
@@ -4412,7 +4579,7 @@ mod tests {
                         ret: ret_ret,
                         variadic: _,
                     } => {
-                        assert_eq!(*ret_params, vec![Type::Int]);
+                        assert_eq!(*ret_params, vec![(None, Type::Int)]);
                         assert_eq!(**ret_ret, Type::Int);
                     }
                     other => panic!("expected Fn(Int -> Int) return, got {other}"),
@@ -4497,7 +4664,7 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "param should be a TypeVar, got {:?}",
                     params[0]
                 );
@@ -4507,7 +4674,7 @@ mod tests {
                 );
                 // The param var and return var must be DIFFERENT (a ≠ b in [Fn@b [a]])
                 assert_ne!(
-                    params[0], *ret,
+                    params[0].1, *ret,
                     "param and return TypeVars must be distinct"
                 );
             }
@@ -4531,12 +4698,12 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 2, "expected 2 params");
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "params[0] should be TypeVar, got {:?}",
                     params[0]
                 );
                 assert!(
-                    matches!(params[1], Type::TypeVar(_, _)),
+                    matches!(&params[1].1, Type::TypeVar(_, _)),
                     "params[1] should be TypeVar, got {:?}",
                     params[1]
                 );
@@ -4546,8 +4713,8 @@ mod tests {
                 );
                 // All three annotation names (a, b, c) are distinct → three distinct TypeVars
                 assert_ne!(params[0], params[1], "params[0] and params[1] must differ");
-                assert_ne!(params[1], *ret, "params[1] and ret must differ");
-                assert_ne!(params[0], *ret, "params[0] and ret must differ");
+                assert_ne!(params[1].1, *ret, "params[1] and ret must differ");
+                assert_ne!(params[0].1, *ret, "params[0] and ret must differ");
             }
             other => panic!("expected Function, got {other}"),
         }
@@ -4565,7 +4732,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Number, Type::Number]);
+                assert_eq!(params, vec![(None, Type::Number), (None, Type::Number)]);
                 assert_eq!(*ret, Type::Number);
             }
             other => panic!("expected Function, got {other}"),
@@ -4588,7 +4755,7 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "param should be a TypeVar, got {:?}",
                     params[0]
                 );
@@ -4615,7 +4782,7 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 1, "outer should have 1 param");
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "outer param should be TypeVar, got {:?}",
                     params[0]
                 );
@@ -4627,7 +4794,7 @@ mod tests {
                     } => {
                         assert_eq!(inner_params.len(), 1, "inner should have 1 param");
                         assert!(
-                            matches!(inner_params[0], Type::TypeVar(_, _)),
+                            matches!(&inner_params[0].1, Type::TypeVar(_, _)),
                             "inner param should be TypeVar, got {:?}",
                             inner_params[0]
                         );
@@ -4637,7 +4804,7 @@ mod tests {
                         );
                         // All three annotation names (a, b, c) are distinct
                         assert_ne!(params[0], inner_params[0], "outer param != inner param");
-                        assert_ne!(inner_params[0], *inner_ret, "inner param != inner ret");
+                        assert_ne!(inner_params[0].1, *inner_ret, "inner param != inner ret");
                     }
                     other => panic!("expected inner Function, got {other}"),
                 }
@@ -4699,7 +4866,7 @@ mod tests {
             Type::Function { params, .. } => {
                 assert_eq!(
                     params,
-                    vec![Type::Unknown],
+                    vec![(Some("f".to_string()), Type::Unknown)],
                     "@Fn param must resolve to Type::Unknown, not a pseudo-Function type"
                 );
             }
@@ -4734,7 +4901,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Number]);
+                assert_eq!(params, vec![(None, Type::Number)]);
                 assert_eq!(*ret, Type::Number);
             }
             other => panic!("expected Function, got {other}"),
@@ -4744,7 +4911,10 @@ mod tests {
     #[test]
     fn test_fn_type_display_round_trip() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            params: vec![
+                (None, Type::TypeVar("a".into(), 0)),
+                (None, Type::TypeVar("b".into(), 0)),
+            ],
             ret: Box::new(Type::TypeVar("c".into(), 0)),
             variadic: false,
         };
@@ -4858,8 +5028,7 @@ mod tests {
     fn test_call_polymorphic_with_named_arg() {
         // Polymorphic function called with only named args (no positional args).
         // The function has 1 param; 1 named arg fills it → total_supplied = 1 = params.len() → ok.
-        // Named arg types are inferred for LSP hover but not unified with param types
-        // (TODO(named-arg-types): requires param names in Type::Function).
+        // Multi-document form ensures $f is fully resolved before the call site is type-checked.
         let result = check(
             "[f: [fn [x@a] $x]]
              ---
@@ -4869,6 +5038,34 @@ mod tests {
             result.is_ok(),
             "call with 1 named arg filling 1 param slot should not produce arity error, got: {:?}",
             result.unwrap_err()
+        );
+
+        // Wrong-type named arg: $f expects `x@Int`; passing a string should produce a type error.
+        let errors = check_err(
+            "[f: [fn [x@Int] $x]]
+             ---
+             [result: [call $f x: \"wrong-type\"]]",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("named argument") && e.message.contains("mismatch")),
+            "expected named-arg type mismatch error, got: {:?}",
+            errors
+        );
+
+        // Unknown named arg: $f has no parameter named `z`; should produce an "unknown named argument" error.
+        let errors = check_err(
+            "[f: [fn [x@Int] $x]]
+             ---
+             [result: [call $f z: 42]]",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("unknown named argument")),
+            "expected unknown named argument error, got: {:?}",
+            errors
         );
     }
 
@@ -4892,8 +5089,14 @@ mod tests {
     #[test]
     fn test_call_polymorphic_named_arg_bad_value_errors() {
         // A named arg whose value references an undefined variable should produce
-        // a type error even in a polymorphic call context.
-        let errors = check_err("[f: [fn [x@a y@b] $x]]\n[result: [call $f 42 hello y: $missing]]");
+        // a type error. Use multi-document form so $f is fully resolved (CALL-MONO path)
+        // before the call, avoiding the letrec TypeVar-arm bypass.
+        // 1 positional + 1 named = 2 total matches the 2-param function (x, y).
+        let errors = check_err(
+            "[f: [fn [x@Int y@Int] [call $+ $x $y]]]\n\
+             ---\n\
+             [result: [call $f 42 y: $missing]]",
+        );
         assert!(
             errors
                 .iter()
@@ -4948,11 +5151,11 @@ mod tests {
                 assert_eq!(params.len(), 1, "Identity should have 1 param");
                 // The param and return must be the SAME TypeVar (both reference annotation `a`)
                 assert_eq!(
-                    params[0], **ret,
+                    params[0].1, **ret,
                     "Identity function: param and return must be the same TypeVar (both use `a`)"
                 );
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "param should be TypeVar, got {:?}",
                     params[0]
                 );
@@ -4976,16 +5179,16 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 2, "Mapper should have 2 params");
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "params[0] (a) should be TypeVar"
                 );
                 assert!(
-                    matches!(params[1], Type::TypeVar(_, _)),
+                    matches!(&params[1].1, Type::TypeVar(_, _)),
                     "params[1] (b) should be TypeVar"
                 );
                 // params[1] and ret both reference annotation `b`, so they must be equal
                 assert_eq!(
-                    params[1], **ret,
+                    params[1].1, **ret,
                     "params[1] and ret must be the same TypeVar (both use `b`)"
                 );
                 // params[0] (a) and params[1] (b) must be distinct
@@ -5008,7 +5211,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, &vec![Type::Number, Type::Number]);
+                assert_eq!(params, &vec![(None, Type::Number), (None, Type::Number)]);
                 assert_eq!(**ret, Type::Number);
             }
             other => panic!("expected Function type alias, got {other:?}"),
@@ -5029,7 +5232,7 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 1, "Pred should have 1 param");
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "param (a) should be TypeVar, got {:?}",
                     params[0]
                 );
@@ -5122,7 +5325,7 @@ mod tests {
         match ty {
             Type::Function { params, .. } => {
                 // Extract the row variable names from both parameters
-                let (row_var_x, row_var_y) = match (&params[0], &params[1]) {
+                let (row_var_x, row_var_y) = match (&params[0].1, &params[1].1) {
                     (
                         Type::Record(Row {
                             tail: RowTail::RowVar(name_x, _),
@@ -5179,7 +5382,7 @@ mod tests {
         let ty_g = result_field(code, "g");
 
         let row_var_f = match ty_f {
-            Type::Function { params, .. } => match &params[0] {
+            Type::Function { params, .. } => match &params[0].1 {
                 Type::Record(Row {
                     tail: RowTail::RowVar(name, _),
                     ..
@@ -5190,7 +5393,7 @@ mod tests {
         };
 
         let row_var_g = match ty_g {
-            Type::Function { params, .. } => match &params[0] {
+            Type::Function { params, .. } => match &params[0].1 {
                 Type::Record(Row {
                     tail: RowTail::RowVar(name, _),
                     ..
@@ -5247,7 +5450,7 @@ mod tests {
         let ty = result_field(code, "f");
         match ty {
             Type::Function { params, .. } => {
-                let (row_var_x, row_var_y) = match (&params[0], &params[1]) {
+                let (row_var_x, row_var_y) = match (&params[0].1, &params[1].1) {
                     (
                         Type::Record(Row {
                             tail: RowTail::RowVar(name_x, _),
@@ -5608,7 +5811,7 @@ mod tests {
                     } => {
                         // Params and return should involve type variables (from annotation @a)
                         assert!(
-                            matches!(params.get(0), Some(Type::TypeVar(_, _))),
+                            matches!(params.get(0).map(|(_, t)| t), Some(Type::TypeVar(_, _))),
                             "id param should be TypeVar, got {:?}",
                             params
                         );
@@ -5807,7 +6010,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, &vec![Type::Int]);
+                assert_eq!(params, &vec![(None, Type::Int)]);
                 assert_eq!(**ret, Type::Int);
             }
             other => panic!("expected Function, got {other}"),
@@ -5837,7 +6040,7 @@ mod tests {
                 // We can't check specific names (they're fresh), just that they're TypeVars.
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
-                    matches!(params[0], Type::TypeVar(_, _)),
+                    matches!(&params[0].1, Type::TypeVar(_, _)),
                     "param should be TypeVar, got {:?}",
                     params[0]
                 );
@@ -6009,7 +6212,7 @@ mod tests {
                 // Lambda checking mode propagates expected param type Int
                 assert_eq!(
                     params,
-                    vec![Type::Int],
+                    vec![(None, Type::Int)],
                     "param should be Int from expected type"
                 );
                 // The recorded function type is the expected Fn(Int→Number), ret = Number
@@ -6085,7 +6288,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Int], "param from expected type");
+                assert_eq!(params, vec![(None, Type::Int)], "param from expected type");
                 assert_eq!(*ret, Type::Int, "return from expected type");
             }
             other => panic!("expected Function type, got {other}"),
@@ -6134,7 +6337,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Int], "param from expected type");
+                assert_eq!(params, vec![(None, Type::Int)], "param from expected type");
                 assert_eq!(*ret, Type::Int, "return from expected type");
             }
             other => panic!("expected Function type, got {other}"),
@@ -6179,7 +6382,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Int], "concrete param propagated");
+                assert_eq!(params, vec![(None, Type::Int)], "concrete param propagated");
                 assert_eq!(*ret, Type::Int, "concrete ret propagated");
             }
             other => panic!("expected Function type, got {other}"),
@@ -6197,7 +6400,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![Type::Int], "param from expected type");
+                assert_eq!(params, vec![(None, Type::Int)], "param from expected type");
                 assert_eq!(*ret, Type::Int, "ret from expected type");
             }
             other => panic!("expected Function type, got {other}"),
@@ -6483,8 +6686,9 @@ mod tests {
                         // Both params should unify to the same type variable
                         assert_eq!(params.len(), 2, "function should have 2 params");
                         // They should be the same TypeVar (same name after unification)
+                        // Compare only the type component, since param names differ ("x" vs "y")
                         assert_eq!(
-                            params[0], params[1],
+                            params[0].1, params[1].1,
                             "both params should have same type (unified via shared annotation)"
                         );
                     }
@@ -6506,7 +6710,7 @@ mod tests {
                     }) => {
                         // Param and return should unify to the same type variable
                         assert_eq!(
-                            params[0], **ret,
+                            params[0].1, **ret,
                             "param and return should have same type (unified via shared annotation)"
                         );
                     }
@@ -6840,7 +7044,7 @@ mod tests {
             Type::Function { params, .. } => {
                 assert_eq!(params.len(), 1, "variadic function should have 1 param");
                 assert!(
-                    matches!(&params[0], Type::Unknown),
+                    matches!(&params[0].1, Type::Unknown),
                     "variadic param should have type Any, got: {:?}",
                     params[0]
                 );
@@ -6856,13 +7060,13 @@ mod tests {
                 assert_eq!(params.len(), 3, "function should have 3 params");
                 // First two params have annotation-derived types
                 assert!(
-                    matches!(&params[0], Type::Int),
+                    matches!(&params[0].1, Type::Int),
                     "annotated param 'a' should be Int, got: {:?}",
                     params[0]
                 );
                 // Third param (variadic) must be Any
                 assert!(
-                    matches!(&params[2], Type::Unknown),
+                    matches!(&params[2].1, Type::Unknown),
                     "variadic param 'rest' should have type Any, got: {:?}",
                     params[2]
                 );
@@ -7280,8 +7484,6 @@ mod tests {
         // 1 param, 0 positional args, 1 named arg → total_supplied = 1 = params.len() → no error.
         //
         // Uses multi-document input so f's type is fully resolved before the call site.
-        // TODO(named-arg-types): Once Type::Function carries param names, this test should
-        // additionally verify that the named arg type is unified against the param type.
         let result = check(
             "[f: [fn [x] $x]]
              ---
@@ -7292,6 +7494,20 @@ mod tests {
             result.is_ok(),
             "call with named arg filling all param slots should not produce arity error, got: {:?}",
             result.unwrap_err()
+        );
+
+        // With an annotated param type, a wrong-type named arg should produce a type error.
+        let errors = check_err(
+            "[f: [fn [x@Int] $x]]
+             ---
+             [result: [call $f x: \"wrong-type\"]]",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("named argument") && e.message.contains("mismatch")),
+            "expected named-arg type mismatch error for annotated param, got: {:?}",
+            errors
         );
     }
 
@@ -7746,7 +7962,7 @@ mod tests {
 
         // Expected type: Fn(String -> Int) — a 1-param function type
         let expected_ty = Type::Function {
-            params: vec![Type::Str],
+            params: vec![(None, Type::Str)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
@@ -8138,13 +8354,13 @@ mod tests {
         );
         match ty {
             Type::Function { params, ret, .. } => {
-                let param_row_var = match &params[0] {
+                let param_row_var = match &params[0].1 {
                     Type::Record(Row {
                         tail: RowTail::RowVar(name, _),
                         ..
                     }) => name.clone(),
                     other => {
-                        panic!("expected param to be open record with RowVar tail, got {other}")
+                        panic!("expected param to be open record with RowVar tail, got {other:?}")
                     }
                 };
                 let ret_row_var = match ret.as_ref() {
@@ -9298,4 +9514,168 @@ mod tests {
 
     // test_doc_extraction_fn_return_only: covered by test_doc_extraction_from_fn_return_annotation
     // which uses count@[]: syntax to thread the binding name via Annotated key.
+
+    // ========== Match Arm Scope Tests (match-arm-scope sprint) ==========
+
+    #[test]
+    fn test_match_arm_variable_pattern_binds_scrutinee_type() {
+        // Pattern::Variable(name) binds the whole scrutinee type.
+        // [match 42 n n] — n is bound to IntLiteral(42), arm body returns it.
+        let result = check("[x: [match 42 n n]]");
+        assert!(
+            result.is_ok(),
+            "variable pattern binding should type-check: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_match_arm_dict_pattern_in_scope() {
+        // Pattern::Dict with Variable sub-patterns injects field bindings.
+        // [match [ok: 42] [ok: v] v _ 0] — v is in scope in the arm body.
+        // Without env extension, v would be "undefined variable".
+        let result = check("[x: [match [ok: 42] [ok: v] v _ 0]]");
+        assert!(
+            result.is_ok(),
+            "dict pattern-bound variable should be in scope in arm body: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_match_arm_dict_pattern_field_type_narrowed() {
+        // For a concrete scrutinee Record, dict pattern fields get the field's type.
+        // [match [ok: 42] [ok: v] v _ 0] — scrutinee is Record({ok: IntLiteral(42)}).
+        // v should receive IntLiteral(42), so [+ v 1] type-checks as IntLiteral arithmetic.
+        let result = check("[x: [match [ok: 42] [ok: v] [+ v 1] _ 0]]");
+        assert!(
+            result.is_ok(),
+            "dict pattern variable with concrete field type should allow arithmetic: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_match_arm_wildcard_no_bindings() {
+        // Pattern::Wildcard introduces no bindings — no undefined variable errors.
+        let result = check("[x: [match 42 _ 99]]");
+        assert!(
+            result.is_ok(),
+            "wildcard pattern with no bindings should type-check: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_match_arm_nested_dict_pattern_bindings() {
+        // Nested patterns: [a: v1  b: v2] binds both v1 and v2.
+        let result = check("[x: [match [a: 1  b: 2] [a: v1  b: v2] [+ v1 v2] _ 0]]");
+        assert!(
+            result.is_ok(),
+            "nested dict pattern variables should both be in scope: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_collect_pattern_bindings_variable() {
+        // Unit test for collect_pattern_bindings: Variable pattern
+        let mut out = Vec::new();
+        collect_pattern_bindings(&Pattern::Variable("x".into()), &Type::Int, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "x");
+        assert_eq!(out[0].1, Type::Int);
+    }
+
+    #[test]
+    fn test_collect_pattern_bindings_dict_field_narrowed() {
+        // Unit test: Dict pattern on a concrete Record type narrows field type
+        let scrutinee = Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("ok".into(), Type::Int);
+                m
+            },
+            tail: RowTail::Empty,
+        });
+        let mut out = Vec::new();
+        collect_pattern_bindings(
+            &Pattern::Dict {
+                fields: vec![(
+                    "ok".into(),
+                    Spanned::new(Pattern::Variable("v".into()), Span::origin()),
+                )],
+                rest: false,
+            },
+            &scrutinee,
+            &mut out,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "v");
+        assert_eq!(
+            out[0].1,
+            Type::Int,
+            "field 'ok: Int' should narrow v to Int"
+        );
+    }
+
+    #[test]
+    fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
+        // Dict pattern with key not present in Record → Unknown fallback
+        let scrutinee = Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        });
+        let mut out = Vec::new();
+        collect_pattern_bindings(
+            &Pattern::Dict {
+                fields: vec![(
+                    "missing".into(),
+                    Spanned::new(Pattern::Variable("v".into()), Span::origin()),
+                )],
+                rest: false,
+            },
+            &scrutinee,
+            &mut out,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "v");
+        assert_eq!(
+            out[0].1,
+            Type::Unknown,
+            "field not in Record → Unknown fallback"
+        );
+    }
+
+    #[test]
+    fn test_collect_pattern_bindings_wildcard_no_bindings() {
+        // Wildcard pattern introduces no bindings
+        let mut out = Vec::new();
+        collect_pattern_bindings(&Pattern::Wildcard, &Type::Int, &mut out);
+        assert!(out.is_empty(), "wildcard should introduce no bindings");
+    }
+
+    #[test]
+    fn test_collect_pattern_bindings_seq_head_tail() {
+        // Seq pattern: head gets element type, tail gets Seq(element type)
+        let scrutinee = Type::Seq(Box::new(Type::Int));
+        let mut out = Vec::new();
+        collect_pattern_bindings(
+            &Pattern::Seq {
+                head: Box::new(Spanned::new(Pattern::Variable("h".into()), Span::origin())),
+                tail: Box::new(Spanned::new(Pattern::Variable("t".into()), Span::origin())),
+            },
+            &scrutinee,
+            &mut out,
+        );
+        assert_eq!(out.len(), 2);
+        let h = out.iter().find(|(n, _)| n == "h").expect("h binding");
+        let t = out.iter().find(|(n, _)| n == "t").expect("t binding");
+        assert_eq!(h.1, Type::Int, "head should get element type");
+        assert_eq!(
+            t.1,
+            Type::Seq(Box::new(Type::Int)),
+            "tail should get Seq(element type)"
+        );
+    }
 }

@@ -128,7 +128,12 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
         } => Type::Function {
             params: params
                 .iter()
-                .map(|p| rename_single_type_var(p, old_name, fresh_name, level))
+                .map(|(name, p_ty)| {
+                    (
+                        name.clone(),
+                        rename_single_type_var(p_ty, old_name, fresh_name, level),
+                    )
+                })
                 .collect(),
             ret: Box::new(rename_single_type_var(ret, old_name, fresh_name, level)),
             variadic: *variadic,
@@ -387,14 +392,14 @@ impl fmt::Display for Type {
                     Type::Function { .. } => write!(f, "Fn@({ret}) [")?,
                     _ => write!(f, "Fn@{ret} [")?,
                 }
-                for (i, p) in params.iter().enumerate() {
+                for (i, (_name, p_ty)) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, " ")?;
                     }
                     // Parenthesize nested function types in parameter position
-                    match p {
-                        Type::Function { .. } => write!(f, "({p})")?,
-                        _ => write!(f, "{p}")?,
+                    match p_ty {
+                        Type::Function { .. } => write!(f, "({p_ty})")?,
+                        _ => write!(f, "{p_ty}")?,
                     }
                 }
                 write!(f, "]")
@@ -757,8 +762,8 @@ impl TypeEnv {
                     constraints: vec![Constraint::new("Numeric", "a")],
                     body: Type::Function {
                         params: vec![
-                            Type::TypeVar("a".to_string(), 0),
-                            Type::TypeVar("a".to_string(), 0),
+                            (None, Type::TypeVar("a".to_string(), 0)),
+                            (None, Type::TypeVar("a".to_string(), 0)),
                         ],
                         ret: Box::new(Type::TypeVar("a".to_string(), 0)),
                         variadic: false,
@@ -776,8 +781,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::new("Numeric", "a")],
                 body: Type::Function {
                     params: vec![
-                        Type::TypeVar("a".to_string(), 0),
-                        Type::TypeVar("a".to_string(), 0),
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("a".to_string(), 0)),
                     ],
                     ret: Box::new(Type::Float),
                     variadic: false,
@@ -794,8 +799,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::new("Equatable", "a")],
                 body: Type::Function {
                     params: vec![
-                        Type::TypeVar("a".to_string(), 0),
-                        Type::TypeVar("a".to_string(), 0),
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("a".to_string(), 0)),
                     ],
                     ret: Box::new(Type::Bool),
                     variadic: false,
@@ -812,8 +817,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::new("Comparable", "a")],
                 body: Type::Function {
                     params: vec![
-                        Type::TypeVar("a".to_string(), 0),
-                        Type::TypeVar("a".to_string(), 0),
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("a".to_string(), 0)),
                     ],
                     ret: Box::new(Type::Bool),
                     variadic: false,
@@ -825,7 +830,11 @@ impl TypeEnv {
         env.insert(
             "if".to_string(),
             Type::Function {
-                params: vec![Type::Bool, Type::Unknown, Type::Unknown],
+                params: vec![
+                    (None, Type::Bool),
+                    (None, Type::Unknown),
+                    (None, Type::Unknown),
+                ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -835,10 +844,13 @@ impl TypeEnv {
         env.insert(
             "keys".to_string(),
             Type::Function {
-                params: vec![Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_dict".to_string(), 0),
-                })],
+                params: vec![(
+                    None,
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_dict".to_string(), 0),
+                    }),
+                )],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
             },
@@ -857,7 +869,7 @@ impl TypeEnv {
                 //     Type::Record(Row { fields: HashMap::new(), tail: RowTail::RowVar("_length_dict", 0) }),
                 //     Type::Str, Type::Bytes,
                 // ])]
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -866,14 +878,20 @@ impl TypeEnv {
             "merge".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_merge_a".to_string(), 0),
-                    }),
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_merge_b".to_string(), 0),
-                    }),
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                            tail: RowTail::RowVar("_merge_a".to_string(), 0),
+                        }),
+                    ),
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                            tail: RowTail::RowVar("_merge_b".to_string(), 0),
+                        }),
+                    ),
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -886,11 +904,14 @@ impl TypeEnv {
             "append".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_append_a".to_string(), 0),
-                    }),
-                    Type::Unknown,
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                            tail: RowTail::RowVar("_append_a".to_string(), 0),
+                        }),
+                    ),
+                    (None, Type::Unknown),
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -908,7 +929,7 @@ impl TypeEnv {
                 row_vars: vec![],
                 constraints: vec![Constraint::new("Showable", "a")],
                 body: Type::Function {
-                    params: vec![Type::TypeVar("a".to_string(), 0)],
+                    params: vec![(None, Type::TypeVar("a".to_string(), 0))],
                     ret: Box::new(Type::Str),
                     variadic: true,
                 },
@@ -917,7 +938,7 @@ impl TypeEnv {
         env.insert(
             "split".to_string(),
             Type::Function {
-                params: vec![Type::Str, Type::Str],
+                params: vec![(None, Type::Str), (None, Type::Str)],
                 // split returns an integer-keyed Dict, not a Seq. Use Unknown to avoid
                 // spurious "cannot unify Seq[String] with [...]" errors when downstream
                 // code passes the result to dict operations (length, get, builtin-reduce).
@@ -928,7 +949,7 @@ impl TypeEnv {
         env.insert(
             "replace".to_string(),
             Type::Function {
-                params: vec![Type::Str, Type::Str],
+                params: vec![(None, Type::Str), (None, Type::Str)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -937,7 +958,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Str],
+                    params: vec![(None, Type::Str)],
                     ret: Box::new(Type::Str),
                     variadic: false,
                 },
@@ -949,7 +970,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Str, Type::Str],
+                    params: vec![(None, Type::Str), (None, Type::Str)],
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
@@ -960,7 +981,7 @@ impl TypeEnv {
         env.insert(
             "str-chars".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
             },
@@ -970,7 +991,7 @@ impl TypeEnv {
         env.insert(
             "char-code".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -980,7 +1001,7 @@ impl TypeEnv {
         env.insert(
             "chr".to_string(),
             Type::Function {
-                params: vec![Type::Int],
+                params: vec![(None, Type::Int)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -990,7 +1011,7 @@ impl TypeEnv {
         env.insert(
             "str-bytes".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Bytes),
                 variadic: false,
             },
@@ -1000,7 +1021,7 @@ impl TypeEnv {
         env.insert(
             "bytes-str".to_string(),
             Type::Function {
-                params: vec![Type::Bytes],
+                params: vec![(None, Type::Bytes)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -1020,7 +1041,7 @@ impl TypeEnv {
         env.insert(
             "bytes-find".to_string(),
             Type::Function {
-                params: vec![Type::Bytes, Type::Bytes],
+                params: vec![(None, Type::Bytes), (None, Type::Bytes)],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -1030,7 +1051,7 @@ impl TypeEnv {
         env.insert(
             "bytes-of".to_string(),
             Type::Function {
-                params: vec![Type::Top], // Accepts Seq or Dict
+                params: vec![(None, Type::Top)], // Accepts Seq or Dict
                 ret: Box::new(Type::Bytes),
                 variadic: false,
             },
@@ -1040,7 +1061,7 @@ impl TypeEnv {
         env.insert(
             "bytes-equal?".to_string(),
             Type::Function {
-                params: vec![Type::Bytes, Type::Bytes],
+                params: vec![(None, Type::Bytes), (None, Type::Bytes)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1050,7 +1071,7 @@ impl TypeEnv {
         env.insert(
             "ct-equal?".to_string(),
             Type::Function {
-                params: vec![Type::Bytes, Type::Bytes],
+                params: vec![(None, Type::Bytes), (None, Type::Bytes)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1060,7 +1081,7 @@ impl TypeEnv {
         env.insert(
             "str-slice".to_string(),
             Type::Function {
-                params: vec![Type::Str, Type::Int, Type::Int],
+                params: vec![(None, Type::Str), (None, Type::Int), (None, Type::Int)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -1070,7 +1091,7 @@ impl TypeEnv {
         env.insert(
             "str-length".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -1081,7 +1102,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Number],
+                    params: vec![(None, Type::Number)],
                     ret: Box::new(Type::Int),
                     variadic: false,
                 },
@@ -1095,7 +1116,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Number],
+                    params: vec![(None, Type::Number)],
                     ret: Box::new(Type::Float),
                     variadic: false,
                 },
@@ -1107,7 +1128,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Number, Type::Number],
+                    params: vec![(None, Type::Number), (None, Type::Number)],
                     ret: Box::new(Type::Float),
                     variadic: false,
                 },
@@ -1119,7 +1140,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Float],
+                    params: vec![(None, Type::Float)],
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
@@ -1131,7 +1152,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Int, Type::Int],
+                    params: vec![(None, Type::Int), (None, Type::Int)],
                     ret: Box::new(Type::Int),
                     variadic: false,
                 },
@@ -1142,7 +1163,7 @@ impl TypeEnv {
         env.insert(
             "to-int".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -1150,7 +1171,7 @@ impl TypeEnv {
         env.insert(
             "to-float".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Float),
                 variadic: false,
             },
@@ -1160,7 +1181,7 @@ impl TypeEnv {
         env.insert(
             "eval".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -1168,7 +1189,7 @@ impl TypeEnv {
         env.insert(
             "force".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -1176,7 +1197,7 @@ impl TypeEnv {
         env.insert(
             "error".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -1186,11 +1207,14 @@ impl TypeEnv {
         env.insert(
             "try".to_string(),
             Type::Function {
-                params: vec![Type::Function {
-                    params: vec![],
-                    ret: Box::new(Type::Unknown),
-                    variadic: false,
-                }],
+                params: vec![(
+                    None,
+                    Type::Function {
+                        params: vec![],
+                        ret: Box::new(Type::Unknown),
+                        variadic: false,
+                    },
+                )],
                 ret: Box::new(Type::normalize_union(vec![
                     // [ok: a] variant
                     Type::Record(Row {
@@ -1218,15 +1242,21 @@ impl TypeEnv {
             "apply".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Function {
-                        params: vec![Type::Unknown],
-                        ret: Box::new(Type::Unknown),
-                        variadic: false,
-                    },
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_dict".to_string(), 0),
-                    }),
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown)],
+                            ret: Box::new(Type::Unknown),
+                            variadic: false,
+                        },
+                    ),
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                            tail: RowTail::RowVar("_dict".to_string(), 0),
+                        }),
+                    ),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -1238,17 +1268,23 @@ impl TypeEnv {
             "until".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Function {
-                        params: vec![Type::Unknown],
-                        ret: Box::new(Type::Bool),
-                        variadic: false,
-                    },
-                    Type::Function {
-                        params: vec![Type::Unknown],
-                        ret: Box::new(Type::Unknown),
-                        variadic: false,
-                    },
-                    Type::Unknown,
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown)],
+                            ret: Box::new(Type::Bool),
+                            variadic: false,
+                        },
+                    ),
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown)],
+                            ret: Box::new(Type::Unknown),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Unknown),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -1259,7 +1295,7 @@ impl TypeEnv {
         env.insert(
             "type-of".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -1267,7 +1303,7 @@ impl TypeEnv {
         env.insert(
             "llt-repr".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -1275,7 +1311,7 @@ impl TypeEnv {
         env.insert(
             "tag-of".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -1283,7 +1319,7 @@ impl TypeEnv {
         env.insert(
             "variant".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Unknown), // Returns a Variant, but we don't have Type::Variant yet
                 variadic: false,
             },
@@ -1291,7 +1327,7 @@ impl TypeEnv {
         env.insert(
             "int?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1299,7 +1335,7 @@ impl TypeEnv {
         env.insert(
             "float?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1307,7 +1343,7 @@ impl TypeEnv {
         env.insert(
             "num?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1315,7 +1351,7 @@ impl TypeEnv {
         env.insert(
             "str?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1323,7 +1359,7 @@ impl TypeEnv {
         env.insert(
             "bool?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1331,7 +1367,7 @@ impl TypeEnv {
         env.insert(
             "bytes?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1339,7 +1375,7 @@ impl TypeEnv {
         env.insert(
             "null?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1347,7 +1383,7 @@ impl TypeEnv {
         env.insert(
             "dict?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1355,7 +1391,7 @@ impl TypeEnv {
         env.insert(
             "fn?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1365,7 +1401,7 @@ impl TypeEnv {
         env.insert(
             "emit".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1377,7 +1413,7 @@ impl TypeEnv {
         env.insert(
             "env".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Unknown), // returns Str or Null
                 variadic: false,
             },
@@ -1385,7 +1421,7 @@ impl TypeEnv {
         env.insert(
             "open".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 ret: Box::new(Type::Handle),
                 variadic: false,
             },
@@ -1393,7 +1429,7 @@ impl TypeEnv {
         env.insert(
             "slurp".to_string(),
             Type::Function {
-                params: vec![Type::Handle],
+                params: vec![(None, Type::Handle)],
                 ret: Box::new(Type::Unknown), // Returns Str for Text handles, Bytes for Binary handles
                 variadic: false,
             },
@@ -1401,7 +1437,7 @@ impl TypeEnv {
         env.insert(
             "lines".to_string(),
             Type::Function {
-                params: vec![Type::Handle],
+                params: vec![(None, Type::Handle)],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
             },
@@ -1409,7 +1445,7 @@ impl TypeEnv {
         env.insert(
             "narrow".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
                 ret: Box::new(Type::DirCap),
                 variadic: false,
             },
@@ -1417,7 +1453,7 @@ impl TypeEnv {
         env.insert(
             "write".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1429,7 +1465,7 @@ impl TypeEnv {
         env.insert(
             "write-atomic".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1441,7 +1477,7 @@ impl TypeEnv {
         env.insert(
             "revocable".to_string(),
             Type::Function {
-                params: vec![Type::DirCap],
+                params: vec![(None, Type::DirCap)],
                 ret: Box::new(Type::Unknown), // returns dict with cap and revoke fields
                 variadic: false,
             },
@@ -1449,7 +1485,7 @@ impl TypeEnv {
         env.insert(
             "revoke-cap".to_string(),
             Type::Function {
-                params: vec![Type::DirCap],
+                params: vec![(None, Type::DirCap)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1461,7 +1497,7 @@ impl TypeEnv {
         env.insert(
             "connect".to_string(),
             Type::Function {
-                params: vec![Type::NetCap, Type::Str, Type::Int],
+                params: vec![(None, Type::NetCap), (None, Type::Str), (None, Type::Int)],
                 ret: Box::new(Type::Handle),
                 variadic: false,
             },
@@ -1470,7 +1506,11 @@ impl TypeEnv {
         env.insert(
             "tls-connect".to_string(),
             Type::Function {
-                params: vec![Type::Unknown, Type::Unknown, Type::Unknown],
+                params: vec![
+                    (None, Type::Unknown),
+                    (None, Type::Unknown),
+                    (None, Type::Unknown),
+                ],
                 ret: Box::new(Type::Handle),
                 variadic: true, // 3-5 args depending on form
             },
@@ -1478,7 +1518,7 @@ impl TypeEnv {
         env.insert(
             "tls-peer-cert".to_string(),
             Type::Function {
-                params: vec![Type::Handle],
+                params: vec![(None, Type::Handle)],
                 ret: Box::new(Type::Unknown), // Returns Dict with subject, issuer, sans, etc.
                 variadic: false,
             },
@@ -1486,31 +1526,31 @@ impl TypeEnv {
         env.insert(
             "spki-pin".to_string(),
             Type::Function {
-                params: vec![Type::Unknown, Type::Bytes], // HashAlgorithm variant, Bytes fingerprint
-                ret: Box::new(Type::Unknown),             // Returns Dict {algorithm, fingerprint}
+                params: vec![(None, Type::Unknown), (None, Type::Bytes)], // HashAlgorithm variant, Bytes fingerprint
+                ret: Box::new(Type::Unknown), // Returns Dict {algorithm, fingerprint}
                 variadic: false,
             },
         );
         env.insert(
             "http-connect".to_string(),
             Type::Function {
-                params: vec![Type::Unknown], // Url dict (from url builtin; no dedicated type)
-                ret: Box::new(Type::Unknown), // Returns HttpConn
+                params: vec![(None, Type::Unknown)], // Url dict (from url builtin; no dedicated type)
+                ret: Box::new(Type::Unknown),        // Returns HttpConn
                 variadic: false,
             },
         );
         env.insert(
             "http-get".to_string(),
             Type::Function {
-                params: vec![Type::Unknown, Type::Str], // HttpConn, path String
-                ret: Box::new(Type::Unknown),           // Returns Dict {status, headers, body}
+                params: vec![(None, Type::Unknown), (None, Type::Str)], // HttpConn, path String
+                ret: Box::new(Type::Unknown), // Returns Dict {status, headers, body}
                 variadic: false,
             },
         );
         env.insert(
             "socks5-connect".to_string(),
             Type::Function {
-                params: vec![Type::Handle, Type::Str, Type::Int], // Handle, host, port
+                params: vec![(None, Type::Handle), (None, Type::Str), (None, Type::Int)], // Handle, host, port
                 ret: Box::new(Type::Handle),
                 variadic: false,
             },
@@ -1518,7 +1558,7 @@ impl TypeEnv {
         env.insert(
             "proxy-connect".to_string(),
             Type::Function {
-                params: vec![Type::Handle, Type::Str, Type::Int], // Handle, host, port
+                params: vec![(None, Type::Handle), (None, Type::Str), (None, Type::Int)], // Handle, host, port
                 ret: Box::new(Type::Handle),
                 variadic: false,
             },
@@ -1526,7 +1566,7 @@ impl TypeEnv {
         env.insert(
             "cap-data".to_string(),
             Type::Function {
-                params: vec![Type::Handle, Type::Str],
+                params: vec![(None, Type::Handle), (None, Type::Str)],
                 ret: Box::new(Type::Unknown), // Returns the cap value (can be any type)
                 variadic: false,
             },
@@ -1534,7 +1574,7 @@ impl TypeEnv {
         env.insert(
             "has-cap?".to_string(),
             Type::Function {
-                params: vec![Type::Handle, Type::Str],
+                params: vec![(None, Type::Handle), (None, Type::Str)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1542,23 +1582,23 @@ impl TypeEnv {
         env.insert(
             "write-handle".to_string(),
             Type::Function {
-                params: vec![Type::Handle, Type::Unknown], // Handle/WriteHandle, String or Bytes
-                ret: Box::new(Type::Handle),               // Returns WriteHandle
+                params: vec![(None, Type::Handle), (None, Type::Unknown)], // Handle/WriteHandle, String or Bytes
+                ret: Box::new(Type::Handle),                               // Returns WriteHandle
                 variadic: false,
             },
         );
         env.insert(
             "flush".to_string(),
             Type::Function {
-                params: vec![Type::Handle],  // WriteHandle
-                ret: Box::new(Type::Handle), // Returns WriteHandle
+                params: vec![(None, Type::Handle)], // WriteHandle
+                ret: Box::new(Type::Handle),        // Returns WriteHandle
                 variadic: false,
             },
         );
         env.insert(
             "close".to_string(),
             Type::Function {
-                params: vec![Type::Handle], // WriteHandle
+                params: vec![(None, Type::Handle)], // WriteHandle
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1570,31 +1610,31 @@ impl TypeEnv {
         env.insert(
             "seek".to_string(),
             Type::Function {
-                params: vec![Type::Handle, Type::Int], // Handle, byte offset
-                ret: Box::new(Type::Handle),           // Returns Handle for chaining
+                params: vec![(None, Type::Handle), (None, Type::Int)], // Handle, byte offset
+                ret: Box::new(Type::Handle), // Returns Handle for chaining
                 variadic: false,
             },
         );
         env.insert(
             "seek-end".to_string(),
             Type::Function {
-                params: vec![Type::Handle],  // Handle
-                ret: Box::new(Type::Handle), // Returns Handle for chaining
+                params: vec![(None, Type::Handle)], // Handle
+                ret: Box::new(Type::Handle),        // Returns Handle for chaining
                 variadic: false,
             },
         );
         env.insert(
             "position".to_string(),
             Type::Function {
-                params: vec![Type::Handle], // Handle
-                ret: Box::new(Type::Int),   // Current byte offset
+                params: vec![(None, Type::Handle)], // Handle
+                ret: Box::new(Type::Int),           // Current byte offset
                 variadic: false,
             },
         );
         env.insert(
             "list-dir".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
                 ret: Box::new(Type::Unknown), // Returns Seq of metadata Dicts
                 variadic: false,
             },
@@ -1602,7 +1642,7 @@ impl TypeEnv {
         env.insert(
             "stat".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
                 ret: Box::new(Type::Unknown), // Returns metadata Dict
                 variadic: false,
             },
@@ -1610,7 +1650,7 @@ impl TypeEnv {
         env.insert(
             "make-dir".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1622,7 +1662,7 @@ impl TypeEnv {
         env.insert(
             "remove".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1634,7 +1674,7 @@ impl TypeEnv {
         env.insert(
             "rename".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1646,7 +1686,7 @@ impl TypeEnv {
         env.insert(
             "copy".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1658,7 +1698,7 @@ impl TypeEnv {
         env.insert(
             "link".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1670,7 +1710,7 @@ impl TypeEnv {
         env.insert(
             "read-link".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
                 ret: Box::new(Type::Str), // Returns target path as String
                 variadic: false,
             },
@@ -1678,7 +1718,7 @@ impl TypeEnv {
         env.insert(
             "from-json".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -1692,7 +1732,7 @@ impl TypeEnv {
         env.insert(
             "include".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: true,
             },
@@ -1702,7 +1742,7 @@ impl TypeEnv {
         env.insert(
             "seq".to_string(),
             Type::Function {
-                params: vec![Type::Unknown, Type::Unknown],
+                params: vec![(None, Type::Unknown), (None, Type::Unknown)],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -1710,7 +1750,7 @@ impl TypeEnv {
         env.insert(
             "head".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Unknown))],
+                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -1718,7 +1758,7 @@ impl TypeEnv {
         env.insert(
             "tail".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Unknown))],
+                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -1726,7 +1766,7 @@ impl TypeEnv {
         env.insert(
             "collect".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Unknown))],
+                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_dict".to_string(), 0),
@@ -1737,7 +1777,7 @@ impl TypeEnv {
         env.insert(
             "seq?".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -1747,7 +1787,7 @@ impl TypeEnv {
         env.insert(
             "range".to_string(),
             Type::Function {
-                params: vec![Type::Int, Type::Int],
+                params: vec![(None, Type::Int), (None, Type::Int)],
                 ret: Box::new(Type::Seq(Box::new(Type::Int))),
                 variadic: false,
             },
@@ -1755,7 +1795,7 @@ impl TypeEnv {
         env.insert(
             "repeat".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -1763,7 +1803,7 @@ impl TypeEnv {
         env.insert(
             "cycle".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Unknown))],
+                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -1772,12 +1812,15 @@ impl TypeEnv {
             "iterate".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Function {
-                        params: vec![Type::Unknown],
-                        ret: Box::new(Type::Unknown),
-                        variadic: false,
-                    },
-                    Type::Unknown,
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown)],
+                            ret: Box::new(Type::Unknown),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Unknown),
                 ],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
@@ -1787,12 +1830,15 @@ impl TypeEnv {
             "unfold".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Function {
-                        params: vec![Type::Unknown],
-                        ret: Box::new(Type::Unknown),
-                        variadic: false,
-                    },
-                    Type::Unknown,
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown)],
+                            ret: Box::new(Type::Unknown),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Unknown),
                 ],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
@@ -1806,12 +1852,15 @@ impl TypeEnv {
             "map".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Function {
-                        params: vec![Type::Unknown],
-                        ret: Box::new(Type::Unknown),
-                        variadic: false,
-                    },
-                    Type::Unknown,
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown)],
+                            ret: Box::new(Type::Unknown),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Unknown),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -1821,12 +1870,15 @@ impl TypeEnv {
             "filter".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Function {
-                        params: vec![Type::Unknown],
-                        ret: Box::new(Type::Bool),
-                        variadic: false,
-                    },
-                    Type::Unknown,
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown)],
+                            ret: Box::new(Type::Bool),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Unknown),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -1835,7 +1887,10 @@ impl TypeEnv {
         env.insert(
             "take".to_string(),
             Type::Function {
-                params: vec![Type::Int, Type::Seq(Box::new(Type::Unknown))],
+                params: vec![
+                    (None, Type::Int),
+                    (None, Type::Seq(Box::new(Type::Unknown))),
+                ],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -1843,7 +1898,10 @@ impl TypeEnv {
         env.insert(
             "drop".to_string(),
             Type::Function {
-                params: vec![Type::Int, Type::Seq(Box::new(Type::Unknown))],
+                params: vec![
+                    (None, Type::Int),
+                    (None, Type::Seq(Box::new(Type::Unknown))),
+                ],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -1854,13 +1912,16 @@ impl TypeEnv {
             "reduce".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Function {
-                        params: vec![Type::Unknown, Type::Unknown],
-                        ret: Box::new(Type::Unknown),
-                        variadic: false,
-                    },
-                    Type::Unknown,
-                    Type::Seq(Box::new(Type::Unknown)),
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+                            ret: Box::new(Type::Unknown),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Unknown),
+                    (None, Type::Seq(Box::new(Type::Unknown))),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -1869,7 +1930,10 @@ impl TypeEnv {
         env.insert(
             "join".to_string(),
             Type::Function {
-                params: vec![Type::Str, Type::Seq(Box::new(Type::Unknown))],
+                params: vec![
+                    (None, Type::Str),
+                    (None, Type::Seq(Box::new(Type::Unknown))),
+                ],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -1877,7 +1941,10 @@ impl TypeEnv {
         env.insert(
             "concat".to_string(),
             Type::Function {
-                params: vec![Type::Seq(Box::new(Type::Seq(Box::new(Type::Unknown))))],
+                params: vec![(
+                    None,
+                    Type::Seq(Box::new(Type::Seq(Box::new(Type::Unknown)))),
+                )],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -1888,10 +1955,13 @@ impl TypeEnv {
         env.insert(
             "rest".to_string(),
             Type::Function {
-                params: vec![Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_rest_a".to_string(), 0),
-                })],
+                params: vec![(
+                    None,
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_rest_a".to_string(), 0),
+                    }),
+                )],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_rest_r".to_string(), 0),
@@ -1904,11 +1974,14 @@ impl TypeEnv {
             "cons".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Unknown,
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_cons_a".to_string(), 0),
-                    }),
+                    (None, Type::Unknown),
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                            tail: RowTail::RowVar("_cons_a".to_string(), 0),
+                        }),
+                    ),
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1921,10 +1994,13 @@ impl TypeEnv {
         env.insert(
             "reverse".to_string(),
             Type::Function {
-                params: vec![Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_reverse_a".to_string(), 0),
-                })],
+                params: vec![(
+                    None,
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_reverse_a".to_string(), 0),
+                    }),
+                )],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_reverse_r".to_string(), 0),
@@ -1936,10 +2012,13 @@ impl TypeEnv {
         env.insert(
             "sort".to_string(),
             Type::Function {
-                params: vec![Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_sort_a".to_string(), 0),
-                })],
+                params: vec![(
+                    None,
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                        tail: RowTail::RowVar("_sort_a".to_string(), 0),
+                    }),
+                )],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                     tail: RowTail::RowVar("_sort_r".to_string(), 0),
@@ -1952,11 +2031,14 @@ impl TypeEnv {
         env.insert(
             "proxy".to_string(),
             Type::Function {
-                params: vec![Type::Function {
-                    params: vec![Type::Str],
-                    ret: Box::new(Type::Unknown),
-                    variadic: false,
-                }],
+                params: vec![(
+                    None,
+                    Type::Function {
+                        params: vec![(None, Type::Str)],
+                        ret: Box::new(Type::Unknown),
+                        variadic: false,
+                    },
+                )],
                 ret: Box::new(Type::Proxy),
                 variadic: false,
             },
@@ -1997,7 +2079,7 @@ impl TypeEnv {
                 row_vars: vec![],
                 constraints: vec![],
                 body: Type::Function {
-                    params: vec![Type::Unknown, Type::Unknown],
+                    params: vec![(None, Type::Unknown), (None, Type::Unknown)],
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
@@ -2008,7 +2090,7 @@ impl TypeEnv {
         env.insert(
             "parse-timestamp".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Timestamp),
                 variadic: false,
             },
@@ -2016,7 +2098,7 @@ impl TypeEnv {
         env.insert(
             "format-timestamp".to_string(),
             Type::Function {
-                params: vec![Type::Timestamp],
+                params: vec![(None, Type::Timestamp)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -2024,7 +2106,7 @@ impl TypeEnv {
         env.insert(
             "timestamp->unix".to_string(),
             Type::Function {
-                params: vec![Type::Timestamp],
+                params: vec![(None, Type::Timestamp)],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -2032,7 +2114,7 @@ impl TypeEnv {
         env.insert(
             "unix->timestamp".to_string(),
             Type::Function {
-                params: vec![Type::Int],
+                params: vec![(None, Type::Int)],
                 ret: Box::new(Type::Timestamp),
                 variadic: false,
             },
@@ -2040,7 +2122,7 @@ impl TypeEnv {
         env.insert(
             "now".to_string(),
             Type::Function {
-                params: vec![Type::ClockCap],
+                params: vec![(None, Type::ClockCap)],
                 ret: Box::new(Type::Timestamp),
                 variadic: false,
             },
@@ -2048,7 +2130,7 @@ impl TypeEnv {
         env.insert(
             "fixed-clock".to_string(),
             Type::Function {
-                params: vec![Type::Timestamp],
+                params: vec![(None, Type::Timestamp)],
                 ret: Box::new(Type::ClockCap),
                 variadic: false,
             },
@@ -2056,7 +2138,7 @@ impl TypeEnv {
         env.insert(
             "timestamp-add".to_string(),
             Type::Function {
-                params: vec![Type::Timestamp, Type::Duration],
+                params: vec![(None, Type::Timestamp), (None, Type::Duration)],
                 ret: Box::new(Type::Timestamp),
                 variadic: false,
             },
@@ -2064,7 +2146,7 @@ impl TypeEnv {
         env.insert(
             "timestamp-diff".to_string(),
             Type::Function {
-                params: vec![Type::Timestamp, Type::Timestamp],
+                params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
                 ret: Box::new(Type::Duration),
                 variadic: false,
             },
@@ -2073,7 +2155,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Timestamp, Type::Timestamp],
+                    params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
@@ -2090,7 +2172,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Timestamp],
+                    params: vec![(None, Type::Timestamp)],
                     ret: Box::new(Type::Int),
                     variadic: false,
                 },
@@ -2099,7 +2181,7 @@ impl TypeEnv {
         env.insert(
             "timestamp-parts".to_string(),
             Type::Function {
-                params: vec![Type::Timestamp],
+                params: vec![(None, Type::Timestamp)],
                 ret: Box::new(Type::Unknown), // Returns Dict with year/month/day/hour/minute/second
                 variadic: false,
             },
@@ -2114,7 +2196,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Int],
+                    params: vec![(None, Type::Int)],
                     ret: Box::new(Type::Duration),
                     variadic: false,
                 },
@@ -2124,7 +2206,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Duration],
+                    params: vec![(None, Type::Duration)],
                     ret: Box::new(Type::Int),
                     variadic: false,
                 },
@@ -2133,7 +2215,7 @@ impl TypeEnv {
         env.insert(
             "load-tz".to_string(),
             Type::Function {
-                params: vec![Type::DirCap, Type::Str],
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
                 ret: Box::new(Type::Timezone),
                 variadic: false,
             },
@@ -2141,7 +2223,7 @@ impl TypeEnv {
         env.insert(
             "timestamp-in-tz".to_string(),
             Type::Function {
-                params: vec![Type::Timestamp, Type::Timezone],
+                params: vec![(None, Type::Timestamp), (None, Type::Timezone)],
                 ret: Box::new(Type::Unknown), // Returns Dict with year/month/day/hour/minute/second/offset-seconds/tz-name
                 variadic: false,
             },
@@ -2150,13 +2232,13 @@ impl TypeEnv {
             "local->timestamp".to_string(),
             Type::Function {
                 params: vec![
-                    Type::Int,
-                    Type::Int,
-                    Type::Int,
-                    Type::Int,
-                    Type::Int,
-                    Type::Int,
-                    Type::Timezone,
+                    (None, Type::Int),
+                    (None, Type::Int),
+                    (None, Type::Int),
+                    (None, Type::Int),
+                    (None, Type::Int),
+                    (None, Type::Int),
+                    (None, Type::Timezone),
                 ],
                 ret: Box::new(Type::Timestamp),
                 variadic: false,
@@ -2165,7 +2247,7 @@ impl TypeEnv {
         env.insert(
             "local-tz-name".to_string(),
             Type::Function {
-                params: vec![Type::DirCap],
+                params: vec![(None, Type::DirCap)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -2175,7 +2257,7 @@ impl TypeEnv {
         env.insert(
             "first".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -2184,7 +2266,7 @@ impl TypeEnv {
         env.insert(
             "last".to_string(),
             Type::Function {
-                params: vec![Type::Unknown],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -2259,7 +2341,7 @@ impl TypeEnv {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![Type::Str],
+                    params: vec![(None, Type::Str)],
                     ret: Box::new(Type::Record(Row {
                         fields: HashMap::new(),
                         tail: RowTail::RowVar("_uri".to_string(), 0),

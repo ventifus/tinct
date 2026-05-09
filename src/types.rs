@@ -106,7 +106,7 @@ pub enum Type {
     Number,
     Record(Row),
     Function {
-        params: Vec<Type>,
+        params: Vec<(Option<String>, Type)>, // (param_name, param_type) — None = positional-only
         ret: Box<Type>,
         variadic: bool,
     },
@@ -316,10 +316,9 @@ impl Type {
             ) => {
                 sv == pv
                     && sub_p.len() == sup_p.len()
-                    && sub_p
-                        .iter()
-                        .zip(sup_p.iter())
-                        .all(|(sp, pp)| Type::is_subtype(pp, sp))
+                    && sub_p.iter().zip(sup_p.iter()).all(
+                        |((_sp_name, sp_ty), (_pp_name, pp_ty))| Type::is_subtype(pp_ty, sp_ty),
+                    )
                     && Type::is_subtype(sub_r, sup_r)
             }
             _ => false,
@@ -372,7 +371,7 @@ impl Type {
                     && p1
                         .iter()
                         .zip(p2.iter())
-                        .all(|(a, b)| Type::is_consistent(a, b))
+                        .all(|((_n1, ty1), (_n2, ty2))| Type::is_consistent(ty1, ty2))
                     && Type::is_consistent(r1, r2)
             }
             (Type::Record(row1), Type::Record(row2)) => {
@@ -556,8 +555,8 @@ impl Type {
                 ret,
                 variadic: _,
             } => {
-                for p in params {
-                    p.collect_type_vars(vars);
+                for (_name, p_ty) in params {
+                    p_ty.collect_type_vars(vars);
                 }
                 ret.collect_type_vars(vars);
             }
@@ -589,7 +588,10 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
-            } => params.iter().any(|p| p.has_inference_vars()) || ret.has_inference_vars(),
+            } => {
+                params.iter().any(|(_name, p_ty)| p_ty.has_inference_vars())
+                    || ret.has_inference_vars()
+            }
             Type::Seq(elem) => elem.has_inference_vars(),
             Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Intersection(members) => members.iter().any(|m| m.has_inference_vars()),
@@ -614,8 +616,8 @@ impl Type {
                 ret,
                 variadic: _,
             } => {
-                for p in params {
-                    p.collect_row_vars(vars);
+                for (_name, p_ty) in params {
+                    p_ty.collect_row_vars(vars);
                 }
                 ret.collect_row_vars(vars);
             }
@@ -658,8 +660,8 @@ impl Type {
                 ret,
                 variadic: _,
             } => {
-                for p in params {
-                    p.collect_all_vars(type_vars, row_vars);
+                for (_name, p_ty) in params {
+                    p_ty.collect_all_vars(type_vars, row_vars);
                 }
                 ret.collect_all_vars(type_vars, row_vars);
             }
@@ -712,8 +714,8 @@ impl Type {
                 variadic: _,
             } => {
                 let mut found = false;
-                for p in params {
-                    found |= p.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                for (_name, p_ty) in params {
+                    found |= p_ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
                 }
                 found |= ret.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
                 found
@@ -759,8 +761,8 @@ impl Type {
                 ret,
                 variadic: _,
             } => {
-                for p in params {
-                    p.collect_all_vars_vec(type_vars, row_vars);
+                for (_name, p_ty) in params {
+                    p_ty.collect_all_vars_vec(type_vars, row_vars);
                 }
                 ret.collect_all_vars_vec(type_vars, row_vars);
             }
@@ -1322,7 +1324,7 @@ mod tests {
     #[test]
     fn test_display_function() {
         let ty = Type::Function {
-            params: vec![Type::Int, Type::Str],
+            params: vec![(None, Type::Int), (None, Type::Str)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -1501,12 +1503,12 @@ mod tests {
     #[test]
     fn test_subtype_function_covariant_return() {
         let sub = Type::Function {
-            params: vec![Type::Number],
+            params: vec![(None, Type::Number)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
         let sup = Type::Function {
-            params: vec![Type::Number],
+            params: vec![(None, Type::Number)],
             ret: Box::new(Type::Number),
             variadic: false,
         };
@@ -1560,12 +1562,12 @@ mod tests {
     #[test]
     fn test_subtype_function_contravariant_params() {
         let sub = Type::Function {
-            params: vec![Type::Number],
+            params: vec![(None, Type::Number)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
         let sup = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -1575,12 +1577,12 @@ mod tests {
     #[test]
     fn test_subtype_function_arity_mismatch() {
         let sub = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
         let sup = Type::Function {
-            params: vec![Type::Int, Type::Int],
+            params: vec![(None, Type::Int), (None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -1761,17 +1763,17 @@ mod tests {
     #[test]
     fn test_function_variance_transitivity() {
         let p = Type::Function {
-            params: vec![Type::Number],
+            params: vec![(None, Type::Number)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
         let q = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
         let r = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Number),
             variadic: false,
         };
@@ -1799,12 +1801,12 @@ mod tests {
     fn test_function_variance_not_symmetric() {
         // Fn(Number → Int) <: Fn(Int → Int) but NOT vice versa
         let broader_param = Type::Function {
-            params: vec![Type::Number],
+            params: vec![(None, Type::Number)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
         let narrower_param = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
@@ -1831,12 +1833,12 @@ mod tests {
     #[test]
     fn test_has_inference_vars_function() {
         let with = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0)],
+            params: vec![(None, Type::TypeVar("a".into(), 0))],
             ret: Box::new(Type::Int),
             variadic: false,
         };
         let without = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Str),
             variadic: false,
         };
@@ -1854,7 +1856,10 @@ mod tests {
     #[test]
     fn test_collect_type_vars() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            params: vec![
+                (None, Type::TypeVar("a".into(), 0)),
+                (None, Type::TypeVar("b".into(), 0)),
+            ],
             ret: Box::new(Type::TypeVar("a".into(), 0)),
             variadic: false,
         };
@@ -1893,7 +1898,10 @@ mod tests {
 
         // Function type produces type_vars from params and return
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            params: vec![
+                (None, Type::TypeVar("a".into(), 0)),
+                (None, Type::TypeVar("b".into(), 0)),
+            ],
             ret: Box::new(Type::TypeVar("c".into(), 0)),
             variadic: false,
         };
@@ -2074,8 +2082,8 @@ mod tests {
                 variadic: _,
             } => {
                 assert_eq!(params.len(), 2);
-                assert_eq!(params[0], Type::TypeVar("a".into(), 0));
-                assert_eq!(params[1], Type::TypeVar("a".into(), 0));
+                assert_eq!(params[0].1, Type::TypeVar("a".into(), 0));
+                assert_eq!(params[1].1, Type::TypeVar("a".into(), 0));
                 assert_eq!(&**ret, &Type::TypeVar("a".into(), 0));
             }
             other => panic!("expected Function type for +, got {other}"),
@@ -2092,8 +2100,8 @@ mod tests {
         match &div_scheme.body {
             Type::Function { params, ret, .. } => {
                 assert_eq!(params.len(), 2);
-                assert_eq!(params[0], Type::TypeVar("a".into(), 0));
-                assert_eq!(params[1], Type::TypeVar("a".into(), 0));
+                assert_eq!(params[0].1, Type::TypeVar("a".into(), 0));
+                assert_eq!(params[1].1, Type::TypeVar("a".into(), 0));
                 assert_eq!(&**ret, &Type::Float);
             }
             other => panic!("expected Function type for /, got {other}"),
@@ -2115,8 +2123,8 @@ mod tests {
                 variadic: _,
             } => {
                 assert_eq!(params.len(), 2);
-                assert_eq!(params[0], Type::TypeVar("a".into(), 0));
-                assert_eq!(params[1], Type::TypeVar("a".into(), 0));
+                assert_eq!(params[0].1, Type::TypeVar("a".into(), 0));
+                assert_eq!(params[1].1, Type::TypeVar("a".into(), 0));
                 assert_eq!(&**ret, &Type::Bool);
             }
             other => panic!("expected Function type for =, got {other}"),
@@ -2228,14 +2236,14 @@ mod tests {
         subst.type_map.insert("a".into(), Type::Int);
         subst.type_map.insert("b".into(), Type::Str);
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0)],
+            params: vec![(None, Type::TypeVar("a".into(), 0))],
             ret: Box::new(Type::TypeVar("b".into(), 0)),
             variadic: false,
         };
         assert_eq!(
             subst.apply(&ty),
             Type::Function {
-                params: vec![Type::Int],
+                params: vec![(None, Type::Int)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             }
@@ -2407,12 +2415,12 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
         let f1 = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0)],
+            params: vec![(None, Type::TypeVar("a".into(), 0))],
             ret: Box::new(Type::TypeVar("b".into(), 0)),
             variadic: false,
         };
         let f2 = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Str),
             variadic: false,
         };
@@ -2427,12 +2435,12 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
         let f1 = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
         let f2 = Type::Function {
-            params: vec![Type::Int, Type::Int],
+            params: vec![(None, Type::Int), (None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -2725,7 +2733,7 @@ mod tests {
     #[test]
     fn test_instantiate_no_vars() {
         let ty = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Str),
             variadic: false,
         };
@@ -2738,7 +2746,7 @@ mod tests {
     #[test]
     fn test_instantiate_with_vars() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0)],
+            params: vec![(None, Type::TypeVar("a".into(), 0))],
             ret: Box::new(Type::TypeVar("a".into(), 0)),
             variadic: false,
         };
@@ -2746,13 +2754,13 @@ mod tests {
         let (result, _) = instantiate(&ty, &mut counter);
         assert_eq!(counter, 1);
         assert!(!matches!(&result, Type::Function { params, .. }
-            if params[0] == Type::TypeVar("a".into(), 0)));
+            if params[0].1 == Type::TypeVar("a".into(), 0)));
         match &result {
             Type::Function {
                 params,
                 ret,
                 variadic: _,
-            } => assert_eq!(params[0], **ret),
+            } => assert_eq!(params[0].1, **ret),
             _ => panic!("expected Function"),
         }
     }
@@ -2760,7 +2768,10 @@ mod tests {
     #[test]
     fn test_instantiate_multiple_vars() {
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+            params: vec![
+                (None, Type::TypeVar("a".into(), 0)),
+                (None, Type::TypeVar("b".into(), 0)),
+            ],
             ret: Box::new(Type::TypeVar("a".into(), 0)),
             variadic: false,
         };
@@ -2773,8 +2784,8 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_ne!(params[0], params[1]);
-                assert_eq!(params[0], **ret);
+                assert_ne!(params[0].1, params[1].1);
+                assert_eq!(params[0].1, **ret);
             }
             _ => panic!("expected Function"),
         }
@@ -2795,18 +2806,18 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
         let f1 = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 0)],
+            params: vec![(None, Type::TypeVar("a".into(), 0))],
             ret: Box::new(Type::Function {
-                params: vec![Type::TypeVar("a".into(), 0)],
+                params: vec![(None, Type::TypeVar("a".into(), 0))],
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
                 variadic: false,
             }),
             variadic: false,
         };
         let f2 = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Function {
-                params: vec![Type::Int],
+                params: vec![(None, Type::Int)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             }),
@@ -2825,7 +2836,7 @@ mod tests {
         let result = unify(
             &Type::TypeVar("a".into(), 0),
             &Type::Function {
-                params: vec![Type::TypeVar("a".into(), 0)],
+                params: vec![(None, Type::TypeVar("a".into(), 0))],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -2862,7 +2873,7 @@ mod tests {
         let mut state = InferState::new();
         let result = unify(
             &Type::Function {
-                params: vec![Type::TypeVar("a".into(), 0)],
+                params: vec![(None, Type::TypeVar("a".into(), 0))],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -3236,7 +3247,7 @@ mod tests {
     #[test]
     fn test_type_scheme_mono_wraps_body() {
         let body = Type::Function {
-            params: vec![Type::Str],
+            params: vec![(None, Type::Str)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -3259,7 +3270,10 @@ mod tests {
             row_vars: vec![],
             constraints: vec![],
             body: Type::Function {
-                params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("b".into(), 0)],
+                params: vec![
+                    (None, Type::TypeVar("a".into(), 0)),
+                    (None, Type::TypeVar("b".into(), 0)),
+                ],
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
                 variadic: false,
             },
@@ -3447,7 +3461,7 @@ mod tests {
             row_vars: vec![],
             constraints: vec![],
             body: Type::Function {
-                params: vec![Type::TypeVar("a".into(), 0)],
+                params: vec![(None, Type::TypeVar("a".into(), 0))],
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
                 variadic: false,
             },
@@ -3463,7 +3477,7 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                match &params[0] {
+                match &params[0].1 {
                     Type::TypeVar(name, level) => {
                         assert_eq!(*level, 3);
                         assert!(name.starts_with("_t"));
@@ -3597,7 +3611,10 @@ mod tests {
         state.levels.insert("b".into(), 1);
         state.levels.insert("c".into(), 3);
         let ty = Type::Function {
-            params: vec![Type::TypeVar("a".into(), 2), Type::TypeVar("b".into(), 1)],
+            params: vec![
+                (None, Type::TypeVar("a".into(), 2)),
+                (None, Type::TypeVar("b".into(), 1)),
+            ],
             ret: Box::new(Type::TypeVar("c".into(), 3)),
             variadic: false,
         };
@@ -3689,7 +3706,7 @@ mod tests {
 
         let mut subst = Substitution::new();
         let complex = Type::Function {
-            params: vec![Type::TypeVar("b".into(), 3)],
+            params: vec![(None, Type::TypeVar("b".into(), 3))],
             ret: Box::new(Type::TypeVar("c".into(), 4)),
             variadic: false,
         };
@@ -3757,7 +3774,7 @@ mod tests {
         state.levels.insert("b".into(), 3);
 
         let fn_ty = Type::Function {
-            params: vec![Type::TypeVar("b".into(), 3)],
+            params: vec![(None, Type::TypeVar("b".into(), 3))],
             ret: Box::new(Type::Int),
             variadic: false,
         };
@@ -3811,7 +3828,7 @@ mod tests {
         state.levels.insert("e".into(), 4);
 
         let fn_ty = Type::Function {
-            params: vec![Type::TypeVar("d".into(), 4)],
+            params: vec![(None, Type::TypeVar("d".into(), 4))],
             ret: Box::new(Type::Seq(Box::new(Type::TypeVar("e".into(), 4)))),
             variadic: false,
         };
@@ -3897,7 +3914,7 @@ mod tests {
             row_vars: vec![],
             constraints: vec![],
             body: Type::Function {
-                params: vec![Type::TypeVar("a".into(), 1)],
+                params: vec![(None, Type::TypeVar("a".into(), 1))],
                 ret: Box::new(Type::TypeVar("b".into(), 1)),
                 variadic: false,
             },
@@ -3914,7 +3931,7 @@ mod tests {
                 variadic: _,
             } => {
                 // "a" should get a fresh name (e.g., "_t0")
-                match &params[0] {
+                match &params[0].1 {
                     Type::TypeVar(a_name, a_level) => {
                         assert!(
                             a_name.starts_with("_t"),
@@ -5774,12 +5791,12 @@ mod tests {
     fn test_function_partial_eq_includes_variadic() {
         // variadic=true and variadic=false must not be equal even with identical params/ret.
         let f_variadic = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: true,
         };
         let f_non_variadic = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -5789,7 +5806,7 @@ mod tests {
         );
         // Same variadic flag must still be equal.
         let f_variadic2 = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: true,
         };
@@ -5807,12 +5824,12 @@ mod tests {
         let mut subst = Substitution::new();
         let mut state = InferState::new();
         let f_variadic = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: true,
         };
         let f_non_variadic = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -5831,12 +5848,12 @@ mod tests {
     fn test_is_subtype_variadic_mismatch() {
         // is_subtype must return false when variadic flags differ.
         let f_v = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: true,
         };
         let f_nv = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Bool),
             variadic: false,
         };
@@ -6054,7 +6071,7 @@ mod tests {
     #[test]
     fn test_constraint_equatable_not_satisfied_by_function() {
         let func_ty = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
@@ -6107,7 +6124,10 @@ mod tests {
             row_vars: vec![],
             constraints: vec![Constraint::new("Numeric", "a")],
             body: Type::Function {
-                params: vec![Type::TypeVar("a".into(), 0), Type::TypeVar("a".into(), 0)],
+                params: vec![
+                    (None, Type::TypeVar("a".into(), 0)),
+                    (None, Type::TypeVar("a".into(), 0)),
+                ],
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
                 variadic: false,
             },
@@ -6157,7 +6177,7 @@ mod tests {
 
         // Try to unify a with Function (should fail - Function doesn't satisfy Equatable)
         let func_ty = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
@@ -6248,12 +6268,12 @@ mod tests {
         // Fn(Number → Int) <: Fn(Int → Number)
         // requires: Int <: Number (param contravariant) and Int <: Number (return covariant)
         let sub_fn = Type::Function {
-            params: vec![Type::Number],
+            params: vec![(None, Type::Number)],
             ret: Box::new(Type::Int),
             variadic: false,
         };
         let sup_fn = Type::Function {
-            params: vec![Type::Int],
+            params: vec![(None, Type::Int)],
             ret: Box::new(Type::Number),
             variadic: false,
         };

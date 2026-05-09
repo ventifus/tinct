@@ -2659,6 +2659,10 @@ fn build_tls_config(
 ) -> EvalResult<rustls::ClientConfig> {
     use rustls::RootCertStore;
 
+    // Install the ring crypto provider if not already installed.
+    // rustls 0.23 requires an explicit provider; ring is the default for tinct.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let opts_dict = match opts_val {
         Value::Dict(d) => d,
         other => {
