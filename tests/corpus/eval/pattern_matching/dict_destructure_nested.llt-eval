@@ -3,5 +3,3 @@
     _                   "unknown"]
 === out
 String("alice")
-=== warn
-undefined variable: n at 2:24-2:25

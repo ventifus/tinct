@@ -4,5 +4,3 @@
     _             0]
 === out
 Int(42)
-=== warn
-undefined variable: v at 2:18-2:19

@@ -1181,10 +1181,16 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // try: takes 1 arg — a zero-argument function. Returns [ok: v] or [err: String].
+        // Runtime (builtins_meta.rs:builtin_try) enforces exactly 1 arg.
         env.insert(
             "try".to_string(),
             Type::Function {
-                params: vec![Type::Unknown, Type::Unknown],
+                params: vec![Type::Function {
+                    params: vec![],
+                    ret: Box::new(Type::Unknown),
+                    variadic: false,
+                }],
                 ret: Box::new(Type::normalize_union(vec![
                     // [ok: a] variant
                     Type::Record(Row {
@@ -1677,12 +1683,18 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // include: accepts 1–3 positional args (runtime: builtins_meta.rs:builtin_include).
+        //   [include "path"]               — 1 arg: path String
+        //   [include "path" "hash"]        — 2 args: path + integrity hash
+        //   [include $cap "path"]          — 2 args: DirCap + path
+        //   [include $cap "path" "hash"]   — 3 args: DirCap + path + hash
+        // First arg is Unknown to accept both DirCap and String; variadic covers 2- and 3-arg forms.
         env.insert(
             "include".to_string(),
             Type::Function {
-                params: vec![Type::Str],
+                params: vec![Type::Unknown],
                 ret: Box::new(Type::Unknown),
-                variadic: false,
+                variadic: true,
             },
         );
 
@@ -2210,6 +2222,14 @@ impl TypeEnv {
                 ]),
             },
         );
+
+        // Transport variant constants: Tcp and Udp.
+        // Runtime builtins.rs inserts these as Value::Variant { tag, payload: None }.
+        // The type system has no Type::Variant yet, so we use Unknown to allow passing
+        // these values to tls-connect / connect without a type error in --strict mode.
+        for tag in ["Tcp", "Udp"] {
+            env.insert(tag.to_string(), Type::Unknown);
+        }
 
         // builtin-* aliases: same types as canonical counterparts.
         // Used by stdlib/prelude to call builtins when canonical names may be shadowed.

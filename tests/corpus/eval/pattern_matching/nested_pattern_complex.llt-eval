@@ -4,5 +4,3 @@
     _                                   "unknown"]
 === out
 String("button1")
-=== warn
-undefined variable: id at 2:40-2:42

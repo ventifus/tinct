@@ -62,6 +62,12 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Date-Time Support](completed/lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
 | [Pure-Tinct Regex Engine](completed/lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
 
+## Type System Extensions
+
+| Proposal | Summary |
+|----------|---------|
+| [Record/Map Split and Parameterized Maps](parameterized-dict.md) | `Record` vs `Map[K V]` type split; `Dict: [type [Record Map]]` BAS union alias; `@Map[Int Seq@Int]` annotation for homogeneous maps; `get` returns `V \| Null` on typed maps. Requires BAS adoption. |
+
 
 ---
 
@@ -171,6 +177,7 @@ eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 
 # Post typing-cluster type system research
 union-types ✓ ─── boolean-algebraic-subtyping (prerequisites ✓ met — evaluate trigger)
+                 ─── record-map-split (parameterized-dict) — requires BAS
 
 # Profile-gated (no deps, waiting for profiling data)
 string-interning, union-find-substitution
