@@ -1,0 +1,9 @@
+[r: [try [fn []
+  [slurp [write-handle
+    [tls-connect %nc Tcp "static.rust-lang.org" 443 []]
+    [str-bytes "GET /dist/channel-rust-stable.toml HTTP/1.0\r\nHost: static.rust-lang.org\r\nConnection: close\r\n\r\n"]
+  ]]
+]]]
+[match r
+  [ok: body] [str "OK: " [length body] " bytes"]
+  [err: msg] [str "FAIL: " msg]]

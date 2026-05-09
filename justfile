@@ -183,8 +183,7 @@ version:
 # Runs on host (no container overhead) — requires tinct in PATH (just install).
 versions:
     RUST_VERSION={{rust_version}} tinct run --strict \
-        --cap-net nc=static.rust-lang.org:443 \
-        --cap-net nc=crates.io:443 \
+        --cap-net nc=any \
         samples/versions.llt
 
 # Build documentation
@@ -286,6 +285,13 @@ download-rfcs:
     curl -sSL https://www.rfc-editor.org/rfc/rfc8141.txt -o .training/rfcs/rfc8141.txt
     curl -sSL https://www.rfc-editor.org/rfc/rfc3987.txt -o .training/rfcs/rfc3987.txt
     @echo "Downloaded RFCs to .training/rfcs/"
+
+# Temporary test targets — TLS connectivity smoke tests
+tls-test1:
+    ~/.local/bin/tinct run --cap-net nc=static.rust-lang.org:443 samples/tls_test1.llt
+
+tls-test2:
+    ~/.local/bin/tinct run --cap-net nc=static.rust-lang.org:443 samples/tls_test2.llt
 
 # Add === warn sections to corpus files that produce type warnings
 add-warn-sections:

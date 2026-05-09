@@ -1,9 +1,8 @@
 # versions.llt — check Rust toolchain and dependency versions
 # Run from project root:
-#   RUST_VERSION=<pinned> tinct run \
-#     --cap-net nc=static.rust-lang.org:443 \
-#     --cap-net nc=crates.io:443 \
-#     samples/versions.llt
+#   RUST_VERSION=<pinned> tinct run --strict --cap-net nc=any samples/versions.llt
+# or via justfile:
+#   just versions
 
 --- caps: [%nc: @NetCap]
 
@@ -24,7 +23,7 @@
       [str-bytes [str "GET " path " HTTP/1.0\r\nHost: " host
         "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]]]]]]
     [ok: body] [http-body body]
-    [err: _] ""]]]
+    [err: msg] [str "ERR:" msg]]]]
 
 [rust-version:    [env "RUST_VERSION"]]
 [cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]]
@@ -32,8 +31,8 @@
 
 [rust-toml-raw: [https-get "static.rust-lang.org" 443
                    "/dist/channel-rust-stable.toml"]]
-[latest-rust: [builtin-if [builtin-eq [length rust-toml-raw] 0]
-  "?"
+[latest-rust: [builtin-if [or [builtin-eq [length rust-toml-raw] 0] [starts-with? rust-toml-raw "ERR:"]]
+  [builtin-if [starts-with? rust-toml-raw "ERR:"] rust-toml-raw "?"]
   [builtin-reduce
     [fn@RustVerState [state@RustVerState line@String]
       [t: [trim line]]
@@ -85,8 +84,8 @@
 
 [crate-latest: [fn@String [name@String]
   [body: [https-get "crates.io" 443 [str "/api/v1/crates/" name]]]
-  [builtin-if [builtin-eq [length body] 0]
-    "?"
+  [builtin-if [or [builtin-eq [length body] 0] [starts-with? body "ERR:"]]
+    [builtin-if [starts-with? body "ERR:"] body "?"]
     [get "max_stable_version" [get "crate" [from-json body]]]]]]
 
 [mark: [fn@String [a@String b@String]
