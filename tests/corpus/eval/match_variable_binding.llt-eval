@@ -2,5 +2,3 @@
     n    [+ n 1]]
 === out
 Int(43)
-=== warn
-undefined variable: n at 2:13-2:14

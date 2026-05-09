@@ -18,14 +18,13 @@
   [builtin-if [builtin-lt [length parts] 2] "" [get 1 parts]]]]
 
 [https-get: [fn@String [host@String port@Int path@String]
-  [r: [try [fn@String []
+  [match [try [fn@String []
     [bytes-str [slurp [write-handle
       [tls-connect %nc Tcp host port []]
       [str-bytes [str "GET " path " HTTP/1.0\r\nHost: " host
-        "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]]]]]]]
-  [builtin-if [builtin-eq [first [keys r]] "ok"]
-    [http-body r.ok]
-    ""]]]
+        "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]]]]]]
+    [ok: body] [http-body body]
+    [err: _] ""]]]
 
 [rust-version:    [env "RUST_VERSION"]]
 [cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]]

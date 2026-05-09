@@ -4,5 +4,3 @@
     _           "unknown"]
 === out
 String("failure")
-=== warn
-undefined variable: v at 2:17-2:18

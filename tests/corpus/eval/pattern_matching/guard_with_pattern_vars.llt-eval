@@ -3,6 +3,3 @@
     _                                 "out of range"]
 === out
 String("in range: 10")
-=== warn
-undefined variable: n at 2:20-2:21
-undefined variable: n at 2:28-2:29

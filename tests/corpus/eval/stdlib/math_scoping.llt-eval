@@ -5,4 +5,4 @@
 === out
 Dict({"err": String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)")})
 === warn
-arity mismatch
+undefined variable: pi

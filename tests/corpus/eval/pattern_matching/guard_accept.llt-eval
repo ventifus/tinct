@@ -3,5 +3,3 @@
     _                  "other"]
 === out
 String("positive")
-=== warn
-undefined variable: n at 2:15-2:16

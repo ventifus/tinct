@@ -5,4 +5,4 @@
 === out
 Dict({"err": String("undefined variable: hex-encode (did you mean the string \"hex-encode\"? Use quotes.)")})
 === warn
-arity mismatch
+undefined variable: hex-encode

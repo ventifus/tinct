@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Span, Spanned};
+use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Pattern, Span, Spanned};
 use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, lower_row_var_levels_pub,
@@ -1232,6 +1232,38 @@ fn promote_literal(ty: &Type) -> Type {
     }
 }
 
+/// Collect all variable names bound by a pattern, recursively.
+/// Used to extend the TypeEnv before type-checking a match arm body,
+/// so that pattern-bound variables do not produce "undefined variable" errors.
+/// All bindings receive Type::Unknown (the gradual type) since the type checker
+/// does not yet perform per-arm narrowing (match-arm-scope sprint).
+fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
+    match pat {
+        Pattern::Variable(name) => out.push(name.clone()),
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {}
+        Pattern::Dict { fields, .. } => {
+            for (_key, sub_pat) in fields {
+                collect_pattern_vars(&sub_pat.node, out);
+            }
+        }
+        Pattern::Seq { head, tail } => {
+            collect_pattern_vars(&head.node, out);
+            collect_pattern_vars(&tail.node, out);
+        }
+        Pattern::Constructor { binding, .. } => {
+            if let Some(b) = binding {
+                collect_pattern_vars(&b.node, out);
+            }
+        }
+        Pattern::Or(alts) => {
+            // Or-patterns: only collect from the first alternative (all alts must bind the same vars).
+            if let Some(first) = alts.first() {
+                collect_pattern_vars(&first.node, out);
+            }
+        }
+    }
+}
+
 fn infer_expr(
     expr: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
@@ -1458,11 +1490,25 @@ fn infer_expr(
             let scrutinee_ty = state.subst.apply(&scrutinee_ty);
 
             // Infer each arm's guard (if present) and body type.
+            // Extend the TypeEnv with pattern-bound variables (Unknown type) so that
+            // references to pattern variables in arm bodies don't produce "undefined variable"
+            // warnings. Full per-arm narrowing (match-arm-scope sprint) is deferred.
             for arm in arms {
+                let mut pat_vars: Vec<String> = Vec::new();
+                collect_pattern_vars(&arm.pattern.node, &mut pat_vars);
+                let arm_env = if pat_vars.is_empty() {
+                    env.clone()
+                } else {
+                    let mut extended = (**env).clone();
+                    for var in &pat_vars {
+                        extended.insert(var.clone(), Type::Unknown);
+                    }
+                    Rc::new(extended)
+                };
                 if let Some(guard) = &arm.guard {
-                    let _guard_ty = infer_expr(guard, env, state, type_map)?;
+                    let _guard_ty = infer_expr(guard, &arm_env, state, type_map)?;
                 }
-                let _arm_ty = infer_expr(&arm.body, env, state, type_map)?;
+                let _arm_ty = infer_expr(&arm.body, &arm_env, state, type_map)?;
             }
 
             // Exhaustiveness checking: when scrutinee type is a union, run the
