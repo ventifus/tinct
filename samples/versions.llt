@@ -1,6 +1,6 @@
 # versions.llt — check Rust toolchain and dependency versions
 # Run from project root:
-#   RUST_VERSION=<pinned> tinct run --strict --cap-net nc=any samples/versions.llt
+#   tinct run --strict --cap-net nc=any samples/versions.llt
 # or via justfile:
 #   just versions
 
@@ -8,88 +8,83 @@
 
 [include %libdir "strings.llt"]
 
-# State types for reduce accumulators
-[RustVerState: [type [in-pkg-rust: Bool  version: String]]]
-[DepScanState: [type [in-deps: Bool  names: Dict]]]
+[cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]]
+[cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]]
 
+# Extract body from a raw HTTP response (part after first blank line).
 [http-body: [fn@String [raw@String]
   [parts: [split "\r\n\r\n" raw]]
-  [builtin-if [builtin-lt [length parts] 2] "" [get 1 parts]]]]
+  [if [< [length parts] 2] "" [get 1 parts]]]]
 
+# Make an HTTPS GET and return the response body as String, or "ERR:..." on failure.
 [https-get: [fn@String [host@String port@Int path@String]
   [match [try [fn@String []
     [bytes-str [slurp [write-handle
       [tls-connect %nc Tcp host port []]
       [str-bytes [str "GET " path " HTTP/1.0\r\nHost: " host
         "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]]]]]]
-    [ok: body] [http-body body]
+    [ok: raw] [http-body raw]
     [err: msg] [str "ERR:" msg]]]]
 
-[rust-version:    [env "RUST_VERSION"]]
-[cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]]
-[cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]]
+# Fetch Rust stable channel TOML and extract the version string.
+[rust-toml-raw: [https-get "static.rust-lang.org" 443 "/dist/channel-rust-stable.toml"]]
 
-[rust-toml-raw: [https-get "static.rust-lang.org" 443
-                   "/dist/channel-rust-stable.toml"]]
-[latest-rust: [builtin-if [or [builtin-eq [length rust-toml-raw] 0] [starts-with? rust-toml-raw "ERR:"]]
-  [builtin-if [starts-with? rust-toml-raw "ERR:"] rust-toml-raw "?"]
-  [builtin-reduce
-    [fn@RustVerState [state@RustVerState line@String]
+[latest-rust: [if [or [= [length rust-toml-raw] 0] [starts-with? rust-toml-raw "ERR:"]]
+  [if [starts-with? rust-toml-raw "ERR:"] rust-toml-raw "?"]
+  [reduce
+    [fn [state line]
       [t: [trim line]]
-      [builtin-if [builtin-eq state.version ""]
-        [builtin-if [str-contains? t "[pkg.rust]"]
+      [if [= state.version ""]
+        [if [str-contains? t "[pkg.rust]"]
           [set state "in-pkg-rust" true]
-          [builtin-if [and state.in-pkg-rust [starts-with? t "version = \""]]
-            [set state "version" [str-slice t 11 [builtin-sub [length t] 1]]]
+          [if [and state.in-pkg-rust [starts-with? t "version = \""]]
+            [set state "version" [str-slice t 11 [trunc [- [length t] 1]]]]
             state]]
         state]]
     [set [set [] "in-pkg-rust" false] "version" ""]
     [split "\n" rust-toml-raw]].version]]
-[latest-rust-short: [builtin-if [builtin-eq [length latest-rust] 0]
-  "?"
-  [first [split " " latest-rust]]]]
 
+[latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]]
+
+# Collect direct dep names from all dependency sections in Cargo.toml.
 [dep-name-from: [fn@String [t@String]
-  [raw: [first [split "=" t]]]
-  [trim raw]]]
+  [trim [first [split "=" t]]]]]
 
-[dep-name-append: [fn@DepScanState [state@DepScanState t@String]
+[dep-name-append: [fn@Dict [state t@String]
   [name: [dep-name-from t]]
-  [builtin-if [builtin-eq [length name] 0]
-    state
-    [set state "names" [append state.names name]]]]]
+  [if [= [length name] 0] state [set state "names" [append state.names name]]]]]
 
-[dep-names: [sorted [builtin-reduce
-  [fn@DepScanState [state@DepScanState line@String]
+[dep-names: [sorted [reduce
+  [fn [state line]
     [t: [trim line]]
-    [builtin-if [starts-with? t "["]
-      [set [set [] "in-deps" [str-contains? t "dependencies"]] "names" state.names]
-      [builtin-if [and state.in-deps [builtin-lt 0 [length t]]]
-        [builtin-if [starts-with? t "#"]
-          state
-          [dep-name-append state t]]
+    [if [starts-with? t "["]
+      [set state "in-deps" [str-contains? t "dependencies"]]
+      [if [and state.in-deps [and [< 0 [length t]] [not [starts-with? t "#"]]]]
+        [dep-name-append state t]
         state]]]
   [set [set [] "in-deps" false] "names" []]
   [split "\n" cargo-toml-text]].names]]
 
+# Find a package's locked version in Cargo.lock.
 [ver-after: [fn@String [after@String]
   [ver-line: [trim [get 1 [split "\n" after]]]]
-  [str-slice ver-line 11 [builtin-sub [length ver-line] 1]]]]
+  [str-slice ver-line 11 [trunc [- [length ver-line] 1]]]]]
 
 [find-locked: [fn@String [name@String]
   [pattern: [str "\nname = \"" name "\""]]
-  [builtin-if [str-contains? cargo-lock-text pattern]
+  [if [str-contains? cargo-lock-text pattern]
     [ver-after [get 1 [split pattern cargo-lock-text]]]
     "—"]]]
 
+# Fetch the latest stable version for a crate from crates.io.
 [crate-latest: [fn@String [name@String]
   [body: [https-get "crates.io" 443 [str "/api/v1/crates/" name]]]
-  [builtin-if [or [builtin-eq [length body] 0] [starts-with? body "ERR:"]]
-    [builtin-if [starts-with? body "ERR:"] body "?"]
+  [if [or [= [length body] 0] [starts-with? body "ERR:"]]
+    [if [starts-with? body "ERR:"] body "?"]
     [get "max_stable_version" [get "crate" [from-json body]]]]]]
 
-[mark: [fn@String [a@String b@String]
-  [if [builtin-eq a b] "✓" "←"]]]
+[rust-version: [env "RUST_VERSION"]]
+[mark: [fn@String [a@String b@String] [if [= a b] "✓" "←"]]]
 
 [dep-row: [fn@String [name@String]
   [locked: [find-locked name]]

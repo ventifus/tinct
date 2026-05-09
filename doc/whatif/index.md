@@ -13,6 +13,18 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Boolean-Algebraic Subtyping](boolean-algebraic-subtyping.md) | Replace Rémy row variables with BAS (Chau & Parreaux 2026); eliminates row variables and closes the algebraic-subtyping soundness gap |
 
+## Internal Integrity
+
+| Proposal | Summary |
+|----------|---------|
+| [builtin-* Privacy](builtin-privacy.md) | Restrict `builtin-*` stable aliases to prelude evaluation context; env-layer isolation + type-checker warning; migrate macros.llt, path.llt, toml-lite.llt first |
+
+## Error Handling
+
+| Proposal | Summary |
+|----------|---------|
+| [Consistent Error Handling](error-patterns.md) | Structural `{ok: T}\|{err: String}` Result + `and-then` combinator + `[do monad ...]` macro with bind-field dispatch; fallible I/O returns Result, pure functions propagate |
+
 ## Syntax and Ergonomics
 
 | Proposal | Summary |

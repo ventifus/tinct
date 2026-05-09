@@ -368,11 +368,13 @@ pub struct Substitution {
 
 **Application** (`apply`) walks types and rows, replacing bound variables from the appropriate map:
 
+**Note on `Function` param representation:** `Type::Function` stores params as `Vec<(Option<String>, Type)>` — each entry is a `(name, type)` pair where `name` is `Some(param_name)` for user-defined functions and `None` for builtins. All traversals (apply, occurs check, substitution) must destructure each tuple as `(_name, ty)` and recurse only into `ty`; the name component is never a type and is never traversed. Implementors adding new traversal sites must follow this pattern.
+
 ```
 apply_type(τ, S):
   TypeVar(α)      → if α ∈ S.type_map then apply_type(S.type_map[α], S) else TypeVar(α)
   Record(r)       → Record(apply_row(r, S))
-  Function(ps, r) → Function(map(apply_type, ps), apply_type(r, S))
+  Function(ps, r) → Function(map((_name, ty) → (_name, apply_type(ty, S)), ps), apply_type(r, S))
   Seq(τ)          → Seq(apply_type(τ, S))
   otherwise       → τ  (Int, Float, Str, Bool, Number, Unknown, literals)
 
@@ -395,7 +397,7 @@ The `merge` is **left-biased**: explicit fields (from `fields'`) take precedence
 type_var_occurs(α, τ):
   TypeVar(β)        → α == β
   Record(r)         → type_var_occurs_in_row(α, r)
-  Function(ps, r)   → any(type_var_occurs(α, p) for p in ps) ∨ type_var_occurs(α, r)
+  Function(ps, r)   → any(type_var_occurs(α, ty) for (_name, ty) in ps) ∨ type_var_occurs(α, r)
   Seq(τ)            → type_var_occurs(α, τ)
   otherwise         → false
 
@@ -410,7 +412,7 @@ row_var_occurs(ρ, Row { fields, tail }):
 row_var_occurs_in_type(ρ, τ):
   # S = ambient substitution (implicit parameter — passed through from the call site)
   Record(r)       → row_var_occurs(ρ, r)
-  Function(ps, r) → any(row_var_occurs_in_type(ρ, p) for p in ps)
+  Function(ps, r) → any(row_var_occurs_in_type(ρ, ty) for (_name, ty) in ps)
                      ∨ row_var_occurs_in_type(ρ, r)
   Seq(τ)          → row_var_occurs_in_type(ρ, τ)
   TypeVar(α)      → if α ∈ S.type_map: row_var_occurs_in_type(ρ, S.type_map[α])
@@ -741,12 +743,12 @@ The Precision area does not change any inference rules or subtyping relationship
 
 **Completeness.** Extend type inference to cover named arguments, detect polymorphic recursion, and fix the function variance inconsistency.
 
-- Named arg unification — extend `Type::Function` to carry param names: `Function { params: Vec<(Option<String>, Type)>, ret: Box<Type> }`. Named args are matched **positionally** (by index, matching current evaluation semantics where named args fill positional parameter slots). After positional unification, named args are unified against their corresponding param types. This resolves the "named args not type-checked" limitation.
+- Named arg unification — **implemented**. `Type::Function` carries `params: Vec<(Option<String>, Type)>`. Named args are matched **by name lookup** (`params.iter().find_map(|(pname, pty)| if pname.as_ref() == Some(arg_name) { Some(pty) })`), not positionally by index. Checking fires in CALL-MONO, `check_call` CALL-POLY, and `check_call_with_scheme` Function arm. Partial gaps remain (tracked in TODO.md): same-dict letrec forward references fall through to the TypeVar arm and skip named-arg validation; the positional-zip arity model does not account for named-arg slot reservation.
 - Polymorphic recursion detection — forbid with a clear error message ("polymorphic recursion requires explicit type annotation"), rather than silently diverging during inference. Detection is immediate (depth 1): if a recursive call site instantiates a type variable that was bound by an outer call to the same function, report the error. No partial polymorphic recursion is allowed. This item assumes let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) is implemented — without let-polymorphism, every recursive call is monomorphic by definition and the detection is vacuous.
 - CALL-MONO/CALL-POLY divergence fix — the current dual-path design (unify for CALL-POLY, is_subtype for CALL-MONO) gives different verdicts for the same literal type pair depending on whether type variables are present (see [Type Inference](06-type-inference.md) §CALL-MONO/CALL-POLY literal type divergence). The structural recursive `check_expr` from the bidirectional typing design ([Type Inference](06-type-inference.md) §Bidirectional Typing) resolves this by applying [SUB] at leaves and unification only at actual type variable positions. Note: this is unrelated to function subtyping variance rules (contravariant parameters, covariant return), which are already correctly implemented in `src/types.rs:177-196`.
 - Formalize `Unknown` semantics (documentation only) — document the consistency relation that `Unknown` actually implements, distinguishing it from true subtyping. Define what the Gradual Guarantee means for tinct. Identify blame boundaries (TypeAssert, builtin return types, function annotations). See `doc/whatif/gradual-typing.md` for the full analysis.
 
-Completeness's named arg unification depends on Precision (builtin type signatures must exist before named args can be checked against them). Other Completeness items (polymorphic recursion detection, CALL-MONO/CALL-POLY divergence fix, `Unknown` formalization) may proceed in parallel with Precision.
+Other Completeness items (polymorphic recursion detection, CALL-MONO/CALL-POLY divergence fix, `Unknown` formalization) may proceed in parallel with Precision.
 
 **Relationship to other work.** The §Row-Variable Unification and let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) are separate infrastructure areas, not part of this roadmap. Completeness's polymorphic recursion detection assumes let-generalization is implemented. Row variable binding is complete as of row-unification-e.
 

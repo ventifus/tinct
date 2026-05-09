@@ -478,7 +478,12 @@ fn apply_type_alias_substitution(
         } => Type::Function {
             params: params
                 .iter()
-                .map(|p| apply_type_alias_substitution(p, subst, state))
+                .map(|(name, p_ty)| {
+                    (
+                        name.clone(),
+                        apply_type_alias_substitution(p_ty, subst, state),
+                    )
+                })
                 .collect(),
             ret: Box::new(apply_type_alias_substitution(ret, subst, state)),
             variadic: *variadic,
@@ -751,18 +756,21 @@ fn expand_alias_body_guarded(
         } => {
             let new_params = params
                 .iter()
-                .map(|p| {
-                    expand_alias_body_guarded(
-                        p,
-                        env,
-                        state,
-                        ann_mapping,
-                        row_ann_mapping,
-                        alias_guard,
-                        current_alias,
-                        depth,
-                        span,
-                    )
+                .map(|(name, p_ty)| {
+                    Ok((
+                        name.clone(),
+                        expand_alias_body_guarded(
+                            p_ty,
+                            env,
+                            state,
+                            ann_mapping,
+                            row_ann_mapping,
+                            alias_guard,
+                            current_alias,
+                            depth,
+                            span,
+                        )?,
+                    ))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let new_ret = Box::new(expand_alias_body_guarded(
@@ -991,13 +999,14 @@ pub(crate) fn resolve_type_expr(
                         match &param_list.node {
                             Expr::Dict(param_entries) => {
                                 for entry in param_entries {
-                                    params.push(resolve_type_expr(
+                                    let param_ty = resolve_type_expr(
                                         &entry.node.value,
                                         env,
                                         state,
                                         ann_mapping,
                                         row_ann_mapping,
-                                    )?);
+                                    )?;
+                                    params.push((None, param_ty));
                                 }
                             }
                             Expr::Call {
@@ -1007,32 +1016,35 @@ pub(crate) fn resolve_type_expr(
                                 ..
                             } => {
                                 // Param list itself is an implied call: [a b c] → VarRef("a") + args
-                                params.push(resolve_type_expr(
+                                let param_ty = resolve_type_expr(
                                     inner_func,
                                     env,
                                     state,
                                     ann_mapping,
                                     row_ann_mapping,
-                                )?);
+                                )?;
+                                params.push((None, param_ty));
                                 for a in inner_args.iter() {
-                                    params.push(resolve_type_expr(
+                                    let param_ty = resolve_type_expr(
                                         a,
                                         env,
                                         state,
                                         ann_mapping,
                                         row_ann_mapping,
-                                    )?);
+                                    )?;
+                                    params.push((None, param_ty));
                                 }
                             }
                             _ => {
                                 // Single param that's not a Dict
-                                params.push(resolve_type_expr(
+                                let param_ty = resolve_type_expr(
                                     param_list,
                                     env,
                                     state,
                                     ann_mapping,
                                     row_ann_mapping,
-                                )?);
+                                )?;
+                                params.push((None, param_ty));
                             }
                         }
                     }
@@ -1328,13 +1340,9 @@ fn try_resolve_fn_type_expr(
                         entry.span,
                     ));
                 }
-                params.push(resolve_type_expr(
-                    &entry.node.value,
-                    env,
-                    state,
-                    ann_mapping,
-                    row_ann_mapping,
-                )?);
+                let param_ty =
+                    resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                params.push((None, param_ty));
             }
         }
         Expr::Call {
@@ -1345,21 +1353,11 @@ fn try_resolve_fn_type_expr(
         } => {
             // New syntax: [TypeA TypeB] parses as an implied call.
             // Treat func as the first param, args as remaining params.
-            params.push(resolve_type_expr(
-                func,
-                env,
-                state,
-                ann_mapping,
-                row_ann_mapping,
-            )?);
+            let param_ty = resolve_type_expr(func, env, state, ann_mapping, row_ann_mapping)?;
+            params.push((None, param_ty));
             for arg in args.iter() {
-                params.push(resolve_type_expr(
-                    arg,
-                    env,
-                    state,
-                    ann_mapping,
-                    row_ann_mapping,
-                )?);
+                let param_ty = resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                params.push((None, param_ty));
             }
         }
         _ => {

@@ -4908,3 +4908,36 @@ All runtime-injected capabilities and ambient handles get a `%` prefix as a visu
 - [x] LSP: update hover/completion for `%pwd`, `%libdir`, `%stdin` if the LSP seeds these names for the root document scope (`src/lsp/`) — LSP does not seed these names; no change needed
 
 **Deferred:** public/private split (prelude.llt — `-impl`/`-step`/`-check` helpers into first dict; out/ formatters; in/json.llt, io.llt, net.llt); union type annotations for dual-dispatch parameters (`@[Dict Seq]` — KNOWN ISSUE, type system limitation); `doc:` annotations on all exported functions; `formatter/compact.llt` public/private split and `[match]` dispatch; `out/` formatters `[match]` dispatch; corpus tests for pattern-matched `try` result sites; `doc/11-stdlib.md` type signature table update.
+
+## Known Bugs (Type System)
+
+### `typecheck-bugs`: Type checker correctness fixes
+
+Fixes for type checker issues: named arg types, Sequential scoping, match arm scoping, and `length` type signature. See `doc/05-type-system.md`, `doc/06-type-inference.md`.
+
+**named-arg-types** — FIXED. `Type::Function` extended to `params: Vec<(Option<String>, Type)>`; `check_call` and `check_call_with_scheme` now validate named arg names and unify types.
+
+- [x] Extend `Type::Function` to carry param names alongside param types: `params: Vec<(Option<String>, Type)>` where `None` = positional-only; update all construction and matching sites (`src/types.rs`, `src/typecheck.rs`)
+- [x] In `check_call` and `check_call_with_scheme`: for each named arg `x: expr`, find the param with matching name and unify the arg type against the param type; emit `TypeError` on mismatch or unknown name (`src/typecheck.rs`)
+- [x] Corpus tests: named arg with wrong type produces a type error; unknown named arg name produces a type error (`tests/corpus/eval/typecheck/`)
+
+**sequential-doc-scope** — FIXED. `extract_bindings_from_file` now processes all expressions in a `Sequential` chain.
+
+- [x] In `extract_bindings_from_file` (`src/imports.rs`): process all expressions in order, extracting string-keyed bindings before moving to the next expression (`src/imports.rs`)
+- [x] Corpus tests: document-level `[name: val]` binding visible to type checker in a later Sequential step (`tests/corpus/`)
+
+**match-arm-scope** — FIXED. `collect_pattern_bindings` with type narrowing injects pattern vars into arm body TypeEnv.
+
+- [x] In `Expr::Match` inference (`src/typecheck.rs`), replaced `collect_pattern_vars` with `collect_pattern_bindings` that narrows types from the scrutinee (`src/typecheck.rs`)
+- [x] Corpus test: `v` is in scope in arm body with correct type (`tests/corpus/eval/typecheck/match_arm_scope.llt-eval`)
+
+**length-narrow-type** — Blocked: `length` should be typed as `Dict | String | Bytes` but requires Union unification.
+
+- [ ] Change `length` parameter type in `type_env.rs` to `Type::Union(...)` — **blocked** on `unify()` Union support in `type_unify.rs` (`src/type_env.rs`)
+- [x] Corpus test: `[length "hello"]` and `[length [str-bytes "hi"]]` eval correctly (`tests/corpus/eval/builtins/`)
+
+### `dict-equality`: Dict structural equality
+
+- [x] Decide: implement structural dict equality — order-insensitive structural equality, bundled with parameterized-dict acceptance
+- [x] If implementing: handle cycles, lazy thunk forcing, key ordering — documented in `doc/whatif/parameterized-dict.md`
+- [x] Document in `doc/03-data-model.md` §Equality — deferred to parameterized-dict acceptance sprint

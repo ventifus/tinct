@@ -317,9 +317,12 @@ impl Substitution {
             } => Cow::Owned(Type::Function {
                 params: params
                     .iter()
-                    .map(|p| {
-                        self.apply_type(p, depth + 1, visited_types, visited_rows)
-                            .into_owned()
+                    .map(|(name, p_ty)| {
+                        (
+                            name.clone(),
+                            self.apply_type(p_ty, depth + 1, visited_types, visited_rows)
+                                .into_owned(),
+                        )
                     })
                     .collect(),
                 ret: Box::new(
@@ -520,7 +523,7 @@ fn row_var_occurs_in_type_impl(
         } => {
             params
                 .iter()
-                .any(|p| row_var_occurs_in_type_impl(var_name, p, subst, visited))
+                .any(|(_name, p_ty)| row_var_occurs_in_type_impl(var_name, p_ty, subst, visited))
                 || row_var_occurs_in_type_impl(var_name, ret, subst, visited)
         }
         Type::Seq(elem) => row_var_occurs_in_type_impl(var_name, elem, subst, visited),
@@ -1070,8 +1073,8 @@ fn lower_levels_check_occurs(
             variadic: _,
         } => {
             let mut found = false;
-            for p in params {
-                found |= lower_levels_check_occurs(p, occurs_name, cap_level, state);
+            for (_name, p_ty) in params {
+                found |= lower_levels_check_occurs(p_ty, occurs_name, cap_level, state);
             }
             found |= lower_levels_check_occurs(ret, occurs_name, cap_level, state);
             found
@@ -1290,10 +1293,12 @@ pub fn constrain(
             }
 
             // Parameters are CONTRAVARIANT: Fn(A->...) <: Fn(B->...) requires B <: A
-            for (sub_param, sup_param) in sub_params.iter().zip(sup_params.iter()) {
+            for ((_sub_name, sub_param_ty), (_sup_name, sup_param_ty)) in
+                sub_params.iter().zip(sup_params.iter())
+            {
                 constrain(
-                    sup_param,
-                    sub_param,
+                    sup_param_ty,
+                    sub_param_ty,
                     state,
                     span,
                     "function parameter (contravariant)",
@@ -1615,8 +1620,8 @@ pub fn unify(
             // own entry (via apply_with_visited at the top of this function). Bindings
             // from earlier parameter unifications are therefore visible to later ones via
             // the shared `subst` -- this is correct Robinson (1965) unification.
-            for (pa, pb) in p1.iter().zip(p2.iter()) {
-                unify(pa, pb, subst, state, span)?;
+            for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
+                unify(ty_a, ty_b, subst, state, span)?;
             }
             unify(r1, r2, subst, state, span)
         }

@@ -1,4 +1,6 @@
 # $proxy does not accept named arguments
 [proxy handler: [fn [k] k]]
+=== warn
+unknown named argument: function has no parameter named 'handler'
 === error
 [E023] proxy does not accept named arguments

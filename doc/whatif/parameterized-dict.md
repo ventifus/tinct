@@ -193,6 +193,27 @@ BAS refinement in `match` arms narrows from annotated types:
 
 The empty dict `[]` has type `Null = Record(Row{fields:{}, tail:Empty})` — the closed empty record. In set-theoretic terms, the empty map is a valid map of any key/value type. The proposal adopts: **`Null <: Map[K V]` for all K, V** — the empty dict is a valid homogeneous map of any type. This is consistent with the rule that the empty collection is trivially homogeneous.
 
+### Structural Equality
+
+Dict equality (`=`) is **order-insensitive structural equality** for both `Record` and `Map[K V]`. The two forms derive this from independent first principles that happen to agree.
+
+**Record equality** follows from the labeled-product definition (Pierce 2002, §11): two records are equal iff they have the same field names and equal values at each name. Field names are the identity of a record entry — insertion order is not part of the labeled-product semantics. `[= [a: 1 b: 2] [b: 2 a: 1]]` is `true` because the labeled product `{a → 1, b → 2}` is identical regardless of which field is written first. This is consistent with Rémy row types, where the row `{a: T, b: U | ρ}` is defined as a set of field bindings, not a sequence.
+
+**Map equality** follows from the finite-function definition: `Map[K V]` is a partial function `K → V`, and two partial functions are equal iff they have the same domain and agree at every point (extensional equality). Insertion order is a representation detail of the underlying `IndexMap`, not part of the function's identity. `[= map1 map2]` checks `dom(map1) = dom(map2)` and `map1(k) = map2(k)` for all `k`.
+
+Both forms reduce to the same algorithm at runtime: sort keys canonically, then compare key-by-key and value-by-value recursively.
+
+**Implementation** (`src/builtins_math.rs`):
+
+1. Extract and sort keys from both dicts (string keys lexicographically, integer keys numerically, string keys sort after integer keys)
+2. If key sequences differ, return `false`
+3. For each key pair, force both value thunks and recurse
+4. Cycle detection via a visited set of `(ThunkId, ThunkId)` pairs — if the pair is already in the set, treat as equal (structural coinduction)
+
+**Cross-form comparison** (`[= record map]` where one operand is typed `Record` and the other `Map[K V]`): a type error at the `=` call site post-split, because the type checker sees different constructors. At runtime, both are `Value::Dict` and the structural walk applies; the type system prevents this case from arising in well-typed code.
+
+**Functions and builtins** are not equal to anything (no meaningful closure equality). `[= f g]` returns `false` for all function values.
+
 ## What Would Change
 
 ### Type System (`src/types.rs`)
@@ -222,14 +243,15 @@ The empty dict `[]` has type `Null = Record(Row{fields:{}, tail:Empty})` — the
 
 ### Builtins (`src/builtins.rs`)
 
-**Current:** No `get?` builtin. `get` errors on missing key.
+**Current:** No `get?` builtin. `get` errors on missing key. `=` on dicts silently returns `false`.
 
 **Proposed:**
 - Add `get?`: returns the value or `[]` (Null) on missing key — no error
 - Add `record?`, `map?` type-narrowing predicates (returning Bool)
 - Update `dict?` to narrow to `Dict` (union)
+- Implement structural dict equality in `builtin_eq` (`src/builtins_math.rs`): sorted-key recursive walk, cycle detection via `(ThunkId, ThunkId)` visited set
 
-**Impact:** Minor — new builtins.
+**Impact:** Minor — new builtins; equality fix closes a silent correctness gap.
 
 ### Standard Library
 

@@ -250,6 +250,32 @@ enum LiterateMode {
 fn main() {
     let cli = Cli::parse();
 
+    // Raise the process stack soft limit to match the hard limit (or 512MB if
+    // the hard limit is higher). This allows large eval thread stacks in debug
+    // builds where stdlib Rc<Environment> drop chains require ~100MB+.
+    // Without this, pthread ignores stack_size() requests above RLIMIT_STACK.
+    #[cfg(unix)]
+    unsafe {
+        let mut rl = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_STACK, &mut rl) == 0 {
+            // Raise soft limit to max(hard_limit, 512MB) without changing hard limit
+            let target: u64 = 512 * 1024 * 1024;
+            let new_cur = if rl.rlim_max == libc::RLIM_INFINITY || rl.rlim_max >= target {
+                target
+            } else {
+                rl.rlim_max
+            };
+            let new_rl = libc::rlimit {
+                rlim_cur: new_cur,
+                rlim_max: rl.rlim_max,
+            };
+            let _ = libc::setrlimit(libc::RLIMIT_STACK, &new_rl);
+        }
+    }
+
     // Materialize is iterative (materialize_rc loop); no large worker stack needed.
     // The REPL spawns its own 128MB thread for eval when needed (src/repl.rs).
     let result = match cli.command {

@@ -547,7 +547,7 @@ pub(crate) use crate::builtins_seq_xform::{
 // `use super::*`, not directly in this file, so suppress the unused-import lint.
 #[allow(unused_imports)]
 pub(crate) use crate::builtins_seq_reduce::{
-    builtin_concat, builtin_concat_seq_step, builtin_join, builtin_reduce, builtin_reduce_seq_step,
+    builtin_concat, builtin_concat_seq_step, builtin_join, builtin_reduce,
 };
 
 // Date-time builtins: timestamps, durations, clock capabilities, timezones
@@ -1500,7 +1500,26 @@ fn load_stdlib_module(
     Ok(())
 }
 
+// Reentrance guard for create_stdlib_env to detect unexpected recursive calls.
+std::thread_local! {
+    static STDLIB_ENV_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
+    let d = STDLIB_ENV_DEPTH.get();
+    if d > 5 {
+        panic!(
+            "create_stdlib_env: infinite recursion detected (depth={})",
+            d
+        );
+    }
+    STDLIB_ENV_DEPTH.set(d + 1);
+    let result = create_stdlib_env_inner();
+    STDLIB_ENV_DEPTH.set(d);
+    result
+}
+
+fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
     let root_env = create_root_env();
 
     // Create a bootstrap EvalContext with just the root env (before stdlib is loaded)

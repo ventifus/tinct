@@ -126,11 +126,18 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
 /// Walks the File's documents and expressions, looking for dict entries that
 /// represent top-level bindings. For each binding, extracts its inferred type
 /// from the type_map and inserts it into the provided TypeEnv.
+///
+/// This mirrors the evaluator's `eval_document` behavior: ALL expressions in a
+/// document are processed in order, and each intermediate dict/record extends
+/// the environment for subsequent expressions. The last expression's bindings
+/// are also extracted (if it's a dict).
 fn extract_bindings_from_file(file: &File, type_map: &TypeMap, env: &mut TypeEnv) {
     for doc in &file.documents {
-        // The last expression in a document is the result dict
-        if let Some(last_expr) = doc.node.expressions.last() {
-            extract_bindings_from_expr(&last_expr.node, type_map, env);
+        // Process ALL expressions in the document (not just the last one).
+        // This matches what the evaluator does in eval_document: each intermediate
+        // expression that produces a dict extends the scope for later expressions.
+        for expr in &doc.node.expressions {
+            extract_bindings_from_expr(&expr.node, type_map, env);
         }
     }
 }
@@ -164,10 +171,11 @@ fn extract_bindings_from_expr(expr: &Expr, type_map: &TypeMap, env: &mut TypeEnv
                 }
             }
         }
-        // Sequential expressions: process the last expression (the result)
+        // Sequential expressions: process ALL expressions in order.
+        // Each intermediate dict extends the environment, just like in eval_document.
         Expr::Sequential(exprs) => {
-            if let Some(last) = exprs.last() {
-                extract_bindings_from_expr(&last.node, type_map, env);
+            for expr in exprs {
+                extract_bindings_from_expr(&expr.node, type_map, env);
             }
         }
         _ => {

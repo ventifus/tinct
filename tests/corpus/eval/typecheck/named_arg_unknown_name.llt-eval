@@ -1,0 +1,10 @@
+# Named arg type checking: unknown param name emits type-checker warning
+# Multi-document form ensures $f is fully resolved before check_call inspects it.
+# The type checker warns about the unknown named argument (CALL-MONO path).
+[f: [fn [x@Int y@Int] [call $+ $x $y]]]
+---
+[result: [call $f 42 z: 999]]
+=== warn
+unknown named argument: function has no parameter named 'z'
+=== error
+[E002] undefined variable: f
