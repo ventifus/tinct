@@ -1,0 +1,4 @@
+[r: [try [fn []
+  [tls-connect %nc Tcp "static.rust-lang.org" 443 []]
+]]]
+r
