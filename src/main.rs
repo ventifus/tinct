@@ -512,7 +512,7 @@ fn setup_rlimits(
 /// old or seccomp is disabled), the error is printed as a warning and evaluation
 /// continues. This matches the Landlock degradation model used above.
 #[cfg(target_os = "linux")]
-fn setup_seccomp() -> Result<(), String> {
+fn setup_seccomp(allow_network: bool) -> Result<(), String> {
     use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
     use std::collections::BTreeMap;
 
@@ -533,18 +533,19 @@ fn setup_seccomp() -> Result<(), String> {
     // (EPERM) fires for every invocation of that syscall.
     let mut rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = BTreeMap::new();
 
-    // Network syscalls — block all network socket operations.
-    // LLT has no networking features; blocking these prevents any future
-    // accidental or malicious use.
-    for &nr in &[
-        libc::SYS_socket,
-        libc::SYS_connect,
-        libc::SYS_bind,
-        libc::SYS_listen,
-        libc::SYS_accept,
-        libc::SYS_accept4,
-    ] {
-        rules.insert(nr, vec![]);
+    // Network syscalls — block all network socket operations unless --cap-net
+    // is present (allow_network=true), which grants explicit network authority.
+    if !allow_network {
+        for &nr in &[
+            libc::SYS_socket,
+            libc::SYS_connect,
+            libc::SYS_bind,
+            libc::SYS_listen,
+            libc::SYS_accept,
+            libc::SYS_accept4,
+        ] {
+            rules.insert(nr, vec![]);
+        }
     }
 
     // Process-creation syscalls — block spawning child processes.
@@ -875,10 +876,14 @@ fn run_eval(
     // Install seccomp-bpf network and process sandbox (Linux only).
     // Applied after Landlock so that both kernel-level defenses are active before
     // eval. Gracefully degrades on unsupported kernels (prints warning, continues).
+    // Network syscalls are allowed when --cap-net is present (explicit network authority).
+    let allow_network = !cap_net.is_empty();
     #[cfg(target_os = "linux")]
-    if let Err(e) = setup_seccomp() {
+    if let Err(e) = setup_seccomp(allow_network) {
         eprintln!("warning: seccomp sandbox not active: {e}");
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = allow_network;
 
     // Inject `%pwd` DirCap into the root environment (unless --no-pwd is set).
     // --no-pwd enforcement: when the flag is set, `%pwd` is NOT injected, so
