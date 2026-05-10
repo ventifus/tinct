@@ -3694,9 +3694,11 @@ mod tests {
 
     #[test]
     fn test_multi_field_annotation_single_field_stays_record() {
-        // Single-field annotation is still a closed Record (backwards compatible).
-        let errors = check_err("[@[name: String] [name: \"Alice\"  age: 30]]");
-        assert!(!errors.is_empty(), "single-field annotation should reject extra fields");
+        // Under BAS width subtyping (RowVar step 2): a closed record with MORE fields is a
+        // subtype of a closed annotation with fewer fields — width subtyping allows extra fields.
+        // `{name: String, age: Int} <: {name: String}` is sound because the supertype only
+        // constrains what it declares; extra fields in the subtype are irrelevant.
+        check("[@[name: String] [name: \"Alice\"  age: 30]]").unwrap();
     }
 
     #[test]
@@ -6171,11 +6173,13 @@ mod tests {
     }
 
     #[test]
-    fn test_type_assert_closed_record_rejects_extra_fields() {
-        // In new syntax, string literals require quotes.
-        let errors = check_err("[@[name: String] [name: \"Alice\"  age: 30]]");
-        assert!(!errors.is_empty());
-        assert!(errors[0].message.contains("cannot unify"));
+    fn test_type_assert_single_field_annotation_accepts_extra_fields() {
+        // BAS open semantics (Step 2): a single-field annotation @[name: String] is a closed
+        // record {name: String} under BAS width subtyping. A record with extra fields
+        // [name: "Alice" age: 30] satisfies this because all required fields are present.
+        // Under BAS, structural annotations express "has AT LEAST these fields", so
+        // {name: "Alice", age: 30} <: {name: String} holds via width subtyping.
+        check("[@[name: String] [name: \"Alice\"  age: 30]]").unwrap();
     }
 
     #[test]
@@ -7926,24 +7930,21 @@ mod tests {
 
     #[test]
     fn test_open_record_not_subtype_of_closed() {
-        // Companion to open_record_accepts_closed corpus test (positive direction).
-        // A function f annotated to accept a CLOSED record [x: Int] cannot be called
-        // with an open-record-typed argument: is_subtype(open, closed) = false (Rémy 1994).
+        // Under BAS width subtyping (RowVar step 2): an open record [x: Int, ...] IS allowed
+        // as an argument to a function expecting closed [x: Int]. The BAS rule
+        // (RowTail::RowVar, RowTail::Empty) => true means the open record satisfies the closed
+        // constraint — the closed annotation only constrains what it declares.
         //
         // Uses multi-document input so f's type is fully resolved in document 1 before
         // document 2 type-checks g. Inside g's body, $r has open-record type [x: Int, ...ρ]
         // from its annotation. Passing $r to $f (which expects the closed record [x: Int])
-        // triggers the is_subtype guard in check_expr (the synthesize+subsume path) and
-        // produces a type mismatch error.
-        let errors = check_err(
+        // now succeeds under BAS width subtyping.
+        check(
             "[f: [fn [r@[type: [x: Int]]] $r]]
              ---
              [g: [fn [r@[type: [x: Int ...]]] [call $f $r]]]",
-        );
-        assert!(
-            errors.iter().any(|e| e.message.contains("cannot unify")),
-            "expected unification error, got: {errors:?}"
-        );
+        )
+        .unwrap();
     }
 
     // -- Arity-mismatch counting (positional + named) --
