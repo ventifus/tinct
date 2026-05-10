@@ -30,7 +30,7 @@ use crate::ast::{Annotation, Expr, LiteralPattern, Param, Pattern, Span, Spanned
 use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
 
 use crate::error::{EvalError, EvalResult};
-use crate::types::{Row, RowTail, Type};
+use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -409,11 +409,12 @@ pub(crate) fn format_type_for_assert(ty: &Type) -> String {
 
 /// Extract a merged Record row from a type for eval-time validation.
 ///
-/// Multi-field annotations produce `Intersection([{f1: T1, ...ρ1}, {f2: T2, ...ρ2}])`.
+/// Multi-field annotations produce `Intersection([{f1: T1}, {f2: T2}])`.
 /// For runtime validation and proxy wrapping we need a single `Row` that collects all
-/// required fields.  The merged row:
-///   - fields: union of all fields across all Record members (first definition wins on conflict)
-///   - tail: RowVar (open) if ANY member is open, Empty only if ALL members are closed
+/// required fields.
+///
+/// Under BAS, all tails are Empty. The merged row's tail is also Empty.
+/// The cardinality check in validate_and_wrap_record is REMOVED — BAS allows extra fields.
 ///
 /// Returns `Some(&Row)` for `Type::Record` (trivial) or `Type::Intersection` whose members
 /// are all Records.  Returns `None` for anything else (scalar types, Union, etc.).
@@ -422,29 +423,14 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
         Type::Record(row) => Some(Cow::Borrowed(row)),
         Type::Intersection(members) if members.iter().all(|m| matches!(m, Type::Record(_))) => {
             let mut merged_fields: HashMap<String, Type> = HashMap::new();
-            let mut any_open = false;
             for m in members {
                 if let Type::Record(row) = m {
                     for (k, v) in &row.fields {
                         merged_fields.entry(k.clone()).or_insert_with(|| v.clone());
                     }
-                    if matches!(row.tail, RowTail::RowVar(_, _)) {
-                        any_open = true;
-                    }
                 }
             }
-            Some(Cow::Owned(Row {
-                fields: merged_fields,
-                tail: if any_open {
-                    // Use a stable dummy name for the merged open tail.
-                    // This sentinel name won't be looked up in state.levels at eval time;
-                    // it merely signals to validate_and_wrap_record that extra fields are OK
-                    // (the cardinality check is skipped when tail is RowVar).
-                    RowTail::RowVar("_merged".to_string(), 0)
-                } else {
-                    RowTail::Empty
-                },
-            }))
+            Some(Cow::Owned(Row { fields: merged_fields }))
         }
         _ => None,
     }
@@ -522,45 +508,9 @@ pub(crate) fn validate_and_wrap_record(
         }
     }
 
-    // Cardinality check for closed records
-    // Per review finding #5: iterate keys directly, no Vec allocation
-    // Key::Int(n) entries are checked against their string representation (n.to_string())
-    // since Row.fields uses String keys; an entry [0: v] matches a field named "0".
-    if matches!(row.tail, RowTail::Empty) {
-        for key in entries.keys() {
-            let extra_field_name = match key {
-                Key::String(s) if !row.fields.contains_key(s) => Some(s.clone()),
-                Key::Int(n) => {
-                    // Check if the integer key matches a string field name (e.g., field "0")
-                    let s = n.to_string();
-                    if !row.fields.contains_key(&s) {
-                        Some(s)
-                    } else {
-                        None
-                    }
-                }
-                _ => None, // Key::String that IS in row.fields — valid
-            };
-
-            if let Some(field_name) = extra_field_name {
-                let field_path_prefix = if field_path.is_empty() {
-                    String::new()
-                } else {
-                    format!("field {}: ", format_field_path(field_path))
-                };
-
-                return Err(EvalError::type_assert_failed(
-                    &format!("{}closed record (no extra fields)", field_path_prefix),
-                    &format!(
-                        "{}record with unexpected field \"{}\"",
-                        field_path_prefix, field_name
-                    ),
-                    data_span,
-                )
-                .into());
-            }
-        }
-    }
+    // Cardinality check REMOVED under BAS:
+    // BAS width subtyping allows a value with MORE fields to satisfy an annotation with FEWER.
+    // Extra fields are never an error — `validate_and_wrap_record` only checks required fields.
 
     // Guard wrapping: wrap each typed field thunk.
     // Use a for loop with push/pop on field_path to avoid cloning the full path
@@ -7058,10 +7008,7 @@ mod tests {
         // The record type check is immediate (shape check), field guard wrapping deferred.
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Record(Row {
-            fields,
-            tail: RowTail::RowVar("_open".to_string(), 0),
-        });
+        let record_type = Type::Record(Row { fields });
 
         let entries = vec![
             sp(Entry {
@@ -7097,10 +7044,7 @@ mod tests {
         // Structural path: record type requires field "id", dict doesn't have it -> error
         let mut fields = HashMap::new();
         fields.insert("id".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
-            fields,
-            tail: RowTail::RowVar("_open".to_string(), 0),
-        });
+        let record_type = Type::Record(Row { fields });
 
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("name".into()))),
@@ -7122,14 +7066,13 @@ mod tests {
     }
 
     #[test]
-    fn test_typeassert_structural_closed_record_extra_field() {
-        // Structural path: closed record (RowTail::Empty), dict has extra field -> error
+    fn test_typeassert_structural_record_extra_field_accepted() {
+        // BAS width subtyping: under BAS, extra fields are ALWAYS accepted.
+        // A dict with {x: 1, extra: 2} satisfies the annotation @[x: Int]
+        // because the annotation only constrains what it declares.
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
-            fields,
-            tail: RowTail::Empty,
-        });
+        let record_type = Type::Record(Row { fields });
 
         let entries = vec![
             sp(Entry {
@@ -7148,13 +7091,19 @@ mod tests {
             resolved_type: RefCell::new(Some(record_type)),
         });
 
-        let err = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap_err();
-        assert!(
-            err.message()
-                .contains("record with unexpected field \"extra\""),
-            "got: {}",
-            err.message()
-        );
+        // BAS: should PASS — extra fields accepted
+        let thunk = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let val = materialize(&thunk, None, &test_ctx()).unwrap();
+        match &val {
+            Value::Dict(map) => {
+                assert!(map.contains_key(&Key::String("x".into())));
+                assert!(
+                    map.contains_key(&Key::String("extra".into())),
+                    "extra field should be preserved"
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7162,10 +7111,7 @@ mod tests {
         // Structural path: closed record, dict has exactly the required fields -> pass
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
-            fields,
-            tail: RowTail::Empty,
-        });
+        let record_type = Type::Record(Row { fields });
 
         let entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("x".into()))),
@@ -7194,10 +7140,7 @@ mod tests {
         // Structural path: resolved_type = Some(Type::Record(...)), value is Int -> error
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
-            fields,
-            tail: RowTail::RowVar("_open".to_string(), 0),
-        });
+        let record_type = Type::Record(Row { fields });
 
         let inner_expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::Simple("Record".into())),
@@ -7551,10 +7494,7 @@ mod tests {
         // validate_and_wrap_record, not value_matches_type.
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
-            fields,
-            tail: RowTail::Empty,
-        });
+        let record_type = Type::Record(Row { fields });
         // Even a non-Dict value returns true here — record validation is done separately
         assert!(value_matches_type(&Value::Int(99), &record_type));
         assert!(value_matches_type(
@@ -7591,10 +7531,7 @@ mod tests {
         // Create a row type requiring field "y"
         let mut fields = HashMap::new();
         fields.insert("y".to_string(), Type::Int);
-        let row = Row {
-            fields,
-            tail: RowTail::Empty,
-        };
+        let row = Row { fields };
 
         // Create entries that are missing field "y"
         let entries: IndexMap<Key, ThunkId> = IndexMap::new();
@@ -7645,22 +7582,16 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_and_wrap_record_nested_field_path_extra_field_error() {
-        // Test that validate_and_wrap_record generates correct error messages
-        // for unexpected fields in closed records when field_path is non-empty.
-        //
-        // This exercises the code path at eval.rs:202-216 where field_path_prefix
-        // is built for cardinality check errors.
+    fn test_validate_and_wrap_record_nested_field_path_extra_field_accepted() {
+        // BAS width subtyping: extra fields in closed records are ACCEPTED.
+        // Under BAS, a value with more fields satisfies an annotation with fewer fields.
 
-        // Create a closed row type (Empty tail) requiring only field "x"
+        // Create a row type requiring only field "x"
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let row = Row {
-            fields,
-            tail: RowTail::Empty, // Closed record
-        };
+        let row = Row { fields };
 
-        // Create entries with "x" plus an unexpected field "z"
+        // Create entries with "x" plus an extra field "z"
         let ctx = test_ctx();
         let mut entries: IndexMap<Key, ThunkId> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
@@ -7673,7 +7604,6 @@ mod tests {
             ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(99), span))),
         );
 
-        // Call validate_and_wrap_record with nested field_path ["config"]
         let mut field_path = vec!["config".to_string()];
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
@@ -7688,33 +7618,11 @@ mod tests {
             None,
         );
 
-        // Should error with field path prefix in the message
+        // BAS: should SUCCEED — extra fields accepted under width subtyping
         assert!(
-            result.is_err(),
-            "Expected error for unexpected field in closed record"
-        );
-        let err = result.unwrap_err();
-        let msg = err.message();
-        // definition_span should be data_span (where the invalid dict was constructed/bound),
-        // not guard_span (the annotation site). validate_and_wrap_record uses data_span as the
-        // definition site so errors point at the value, not at the type annotation.
-        assert_eq!(
-            err.definition_span, data_span,
-            "definition_span should be data_span (value site), not guard_span (annotation site)"
-        );
-
-        // Verify the error message contains the field path prefix
-        assert!(
-            msg.contains("field `config`:"),
-            "Expected field path prefix 'field `config`:' in error message, got: {}",
-            msg
-        );
-
-        // Verify the error message describes the unexpected field
-        assert!(
-            msg.contains("record with unexpected field \"z\""),
-            "Expected 'record with unexpected field \"z\"' in error message, got: {}",
-            msg
+            result.is_ok(),
+            "BAS: extra fields should be accepted, got: {:?}",
+            result.err()
         );
     }
 
@@ -7726,10 +7634,7 @@ mod tests {
         // Create a row type requiring field "name"
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let row = Row {
-            fields,
-            tail: RowTail::Empty,
-        };
+        let row = Row { fields };
 
         // Create empty entries (missing "name")
         let entries: IndexMap<Key, ThunkId> = IndexMap::new();
@@ -7779,23 +7684,15 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_and_wrap_record_rejects_int_key_in_closed_record() {
-        // Integer-keyed entries (Key::Int) should be rejected by closed record types.
-        // Row.fields is HashMap<String, Type>, so Key::Int entries are by definition
-        // not in the expected field set and must trigger the cardinality check.
-        //
-        // Example: dict [0: "x"  name: "y"] against type @{name: String} should fail
-        // because the 0: "x" entry is not in the closed record's field set.
+    fn test_validate_and_wrap_record_accepts_int_key_bas() {
+        // BAS width subtyping: integer-keyed entries are extra fields and are ACCEPTED.
+        // Under BAS, a value with more fields (including int-keyed) satisfies the annotation.
 
-        // Create a closed row type requiring only field "name"
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let row = Row {
-            fields,
-            tail: RowTail::Empty, // Closed record
-        };
+        let row = Row { fields };
 
-        // Create entries with "name" (valid) plus an integer-keyed entry (invalid)
+        // Create entries with "name" (valid) plus an integer-keyed entry
         let ctx = test_ctx();
         let mut entries: IndexMap<Key, ThunkId> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
@@ -7828,36 +7725,22 @@ mod tests {
             None,
         );
 
-        // Should error: Key::Int(0) is not in the closed record's field set
+        // BAS: should SUCCEED — extra int-keyed fields accepted under width subtyping
         assert!(
-            result.is_err(),
-            "Expected error for integer-keyed entry in closed record"
-        );
-        let err = result.unwrap_err();
-        let msg = err.message();
-        assert!(
-            msg.contains("unexpected field \"0\""),
-            "Expected 'unexpected field \"0\"' in error message, got: {}",
-            msg
-        );
-        assert!(
-            msg.contains("closed record"),
-            "Expected 'closed record' in error message, got: {}",
-            msg
+            result.is_ok(),
+            "BAS: integer-keyed extra fields should be accepted, got: {:?}",
+            result.err()
         );
     }
 
     #[test]
     fn test_validate_and_wrap_record_allows_int_key_in_open_record() {
-        // Integer-keyed entries should NOT be rejected by open record types (RowVar tail).
-        // Open records permit additional fields beyond those in the known field set.
+        // BAS: Integer-keyed entries are extra fields and are accepted by width subtyping.
+        // All records are closed (RowTail::Empty) but BAS allows extra fields.
 
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let row = Row {
-            fields,
-            tail: RowTail::RowVar("r".to_string(), 0), // Open record
-        };
+        let row = Row { fields };
 
         let ctx = test_ctx();
         let mut entries: IndexMap<Key, ThunkId> = IndexMap::new();

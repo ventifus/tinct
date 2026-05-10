@@ -8,9 +8,8 @@ use std::rc::Rc;
 use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Pattern, Span, Spanned};
 use crate::coverage;
 use crate::types::{
-    generalize, instantiate_at_level, instantiate_scheme, lower_row_var_levels_pub,
-    row_var_occurs_pub, unify, InferState, Row, RowTail, Substitution, Type, TypeAlias, TypeEnv,
-    TypeError, TypeScheme,
+    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, Row,
+    Substitution, Type, TypeAlias, TypeEnv, TypeError, TypeScheme,
 };
 
 // Split modules — annotation resolution and dict inference
@@ -48,10 +47,7 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut env = crate::imports::build_prelude_env();
     let mut state = InferState::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
-        fields: HashMap::new(),
-        tail: RowTail::Empty,
-    });
+    let mut pipeline_type = Type::Record(Row { fields: HashMap::new() });
 
     for doc in &file.documents {
         match typecheck_document(
@@ -271,10 +267,7 @@ pub fn typecheck_file_with_types_and_env(
     let mut type_map = TypeMap::new();
     let mut doc_map = DocMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
-        fields: HashMap::new(),
-        tail: RowTail::Empty,
-    });
+    let mut pipeline_type = Type::Record(Row { fields: HashMap::new() });
 
     for doc in &file.documents {
         match typecheck_document(
@@ -420,10 +413,7 @@ fn typecheck_document_simple(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
-    let empty_record = Type::Record(Row {
-        fields: HashMap::new(),
-        tail: RowTail::Empty,
-    });
+    let empty_record = Type::Record(Row { fields: HashMap::new() });
     let named_types = HashMap::new();
     typecheck_document(
         doc,
@@ -524,10 +514,7 @@ fn typecheck_document(
         env = Rc::new(env_mut);
     }
 
-    let mut result_type = Type::Record(Row {
-        fields: HashMap::new(),
-        tail: RowTail::Empty,
-    });
+    let mut result_type = Type::Record(Row { fields: HashMap::new() });
 
     let exprs = &doc.node.expressions;
     if exprs.is_empty() {
@@ -806,15 +793,12 @@ fn register_type_aliases(
             // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
             // creates a distinct fresh var, breaking identity-function types.
             let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-            let mut alias_row_map: HashMap<String, String> = HashMap::new();
-            // Pre-seed param names in BOTH maps so they survive cross-kind
-            // collision checks (a param can appear as both `a` and `...a`).
+            // Pre-seed param names so they map to fresh TypeVars.
             for p in &params {
                 let fresh = format!("_t{}", state.name_counter);
                 state.name_counter += 1;
                 state.levels.insert(fresh.clone(), state.level);
                 alias_ann_map.insert(p.clone(), fresh.clone());
-                alias_row_map.insert(p.clone(), fresh.clone());
             }
 
             // Create a recursion guard for this alias resolution
@@ -825,7 +809,7 @@ fn register_type_aliases(
                 target_env, // Now resolve in target_env so recursive refs are visible
                 state,
                 &mut Some(&mut alias_ann_map),
-                &mut Some(&mut alias_row_map),
+                &mut None,
                 &mut recursion_guard,
                 &name,
                 0,
@@ -935,10 +919,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                             // dict? narrows to open record with fresh RowVar
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Record(Row {
-                                    fields: HashMap::new(),
-                                    tail: RowTail::RowVar(format!("_narrow_{}", var_name), 0),
-                                }),
+                                ty: Type::Record(Row { fields: HashMap::new() }),
                             }];
                         }
                     }
@@ -972,10 +953,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                             // null? narrows to empty closed record
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Record(Row {
-                                    fields: HashMap::new(),
-                                    tail: RowTail::Empty,
-                                }),
+                                ty: Type::Record(Row { fields: HashMap::new() }),
                             }];
                         }
                     }
@@ -1052,10 +1030,7 @@ fn try_type_of(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowing>
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
                                 "Bool" => Some(Type::Bool),
-                                "Dict" => Some(Type::Record(Row {
-                                    fields: HashMap::new(),
-                                    tail: RowTail::RowVar(format!("_narrow_{}", var_name), 0),
-                                })),
+                                "Dict" => Some(Type::Record(Row { fields: HashMap::new() })),
                                 "Seq" => Some(Type::Seq(Box::new(Type::Unknown))),
                                 "Number" => Some(Type::Number),
                                 _ => None,
@@ -1088,25 +1063,11 @@ fn apply_narrowings(
     for narrowing in narrowings {
         match narrowing {
             Narrowing::EqLiteral { var, ty } => {
-                // Register the fresh row var in state.levels if needed
-                if let Type::Record(Row {
-                    tail: RowTail::RowVar(name, level),
-                    ..
-                }) = ty
-                {
-                    state.levels.entry(name.clone()).or_insert(*level);
-                }
+                // BAS: all tails are Empty — no row var registration needed
                 new_env.insert(var.clone(), ty.clone());
             }
             Narrowing::TypeOf { var, ty } => {
-                // Register the fresh row var in state.levels if needed
-                if let Type::Record(Row {
-                    tail: RowTail::RowVar(name, level),
-                    ..
-                }) = ty
-                {
-                    state.levels.entry(name.clone()).or_insert(*level);
-                }
+                // BAS: all tails are Empty — no row var registration needed
                 new_env.insert(var.clone(), ty.clone());
             }
             Narrowing::HasKey { var, key } => {
@@ -1118,33 +1079,18 @@ fn apply_narrowings(
                 let fresh_type_var = state.fresh_type_var();
                 fields.insert(key.clone(), fresh_type_var);
 
-                // If the variable already has a record type, merge the fields.
-                // Always use an open tail (RowVar) because has? is a runtime check —
-                // in the true branch, the record is known to have the key but may have
-                // additional unknown fields.
+                // BAS: all tails are Empty. Merge existing record fields if present.
+                // Width subtyping handles the openness — the record is known to have the
+                // key at runtime, and may have additional fields beyond those annotated.
                 let new_ty = if let Some(Type::Record(current_row)) = current_ty {
                     // Merge existing fields with the new constraint
                     for (k, v) in current_row.fields {
                         fields.insert(k, v);
                     }
-                    // Use the existing tail if already open; otherwise create a fresh RowVar
-                    let tail = match current_row.tail {
-                        RowTail::RowVar(name, level) => RowTail::RowVar(name, level),
-                        RowTail::Empty => {
-                            let (rho_name, rho_level) = state.fresh_row_var_name();
-                            state.levels.entry(rho_name.clone()).or_insert(rho_level);
-                            RowTail::RowVar(rho_name, rho_level)
-                        }
-                    };
-                    Type::Record(Row { fields, tail })
+                    Type::Record(Row { fields })
                 } else {
-                    // Create a fresh open record
-                    let (rho_name, rho_level) = state.fresh_row_var_name();
-                    state.levels.entry(rho_name.clone()).or_insert(rho_level);
-                    Type::Record(Row {
-                        fields,
-                        tail: RowTail::RowVar(rho_name, rho_level),
-                    })
+                    // Create a fresh record with just the key constraint
+                    Type::Record(Row { fields })
                 };
 
                 new_env.insert(var.clone(), new_ty);
@@ -1234,7 +1180,7 @@ fn infer_if(
 
 /// Compute the least upper bound of two types.
 /// Without union types, this is conservative — often returns the shared base type or Unknown.
-fn least_upper_bound(ty1: &Type, ty2: &Type, state: &mut InferState) -> Type {
+fn least_upper_bound(ty1: &Type, ty2: &Type, _state: &mut InferState) -> Type {
     // If the types are identical, return either one
     if ty1 == ty2 {
         return ty1.clone();
@@ -1255,13 +1201,9 @@ fn least_upper_bound(ty1: &Type, ty2: &Type, state: &mut InferState) -> Type {
         | (Type::Int, Type::Number)
         | (Type::Number, Type::Float)
         | (Type::Float, Type::Number) => Type::Number,
-        // Both are records: conservative open record
+        // Both are records: BAS — empty record (width subtyping allows any fields)
         (Type::Record(_), Type::Record(_)) => {
-            let (fresh_name, level) = state.fresh_row_var_name();
-            Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::RowVar(fresh_name, level),
-            })
+            Type::Record(Row { fields: HashMap::new() })
         }
         // Otherwise, fall back to Unknown
         _ => Type::Unknown,
@@ -1374,10 +1316,7 @@ fn infer_expr(
             // Each expression's result dict extends the type environment for the next.
             // The last expression's type is the overall result type.
             if exprs.is_empty() {
-                return Ok(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                }));
+                return Ok(Type::Record(Row { fields: HashMap::new() }));
             }
 
             let mut current_env = Rc::clone(env);
@@ -1456,7 +1395,7 @@ fn infer_expr(
             // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
             if let Expr::VarRef { name, .. } = &func.node {
                 match env.get(name) {
-                    Some(scheme) if !scheme.type_vars.is_empty() || !scheme.row_vars.is_empty() => {
+                    Some(scheme) if !scheme.type_vars.is_empty() => {
                         // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
                         check_call_with_scheme(
                             scheme, func.span, args, named_args, env, expr.span, state, type_map,
@@ -1533,12 +1472,8 @@ fn infer_expr(
 
         Expr::Quote(_inner) => {
             // [quote expr] produces a dict representing the AST.
-            // Type: Dict (open record with fresh row variable, like @Dict).
-            let (rho_name, rho_level) = state.fresh_row_var_name();
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::RowVar(rho_name, rho_level),
-            }))
+            // Type: empty record (BAS: width subtyping allows any fields).
+            Ok(Type::Record(Row { fields: HashMap::new() }))
         }
 
         Expr::Unquote(inner) => {
@@ -1550,16 +1485,11 @@ fn infer_expr(
 
         Expr::UnquoteSplice(inner) => {
             // [unquote-splice expr] expects expr to be a list (Dict with integer keys).
-            // Type: Dict (open record, like [quote ...]).
+            // Type: empty record (BAS: width subtyping allows any fields).
             let inner_ty = infer_expr(inner, env, state, type_map)?;
 
             // The inner expression should be a Dict (list).
-            // For now, just require it to be a Dict.
-            let (rho_name, rho_level) = state.fresh_row_var_name();
-            let expected_list_ty = Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::RowVar(rho_name, rho_level),
-            });
+            let expected_list_ty = Type::Record(Row { fields: HashMap::new() });
 
             let mut subst = std::mem::take(&mut state.subst);
             let result = unify(&inner_ty, &expected_list_ty, &mut subst, state, inner.span);
@@ -1776,10 +1706,7 @@ fn infer_expr(
             state.class_env.insert(class_decl);
 
             // ClassDecl expressions evaluate to empty record (see eval.rs)
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::Empty,
-            }))
+            Ok(Type::Record(Row { fields: HashMap::new() }))
         }
 
         Expr::InstanceDecl {
@@ -1836,10 +1763,7 @@ fn infer_expr(
             }
 
             // InstanceDecl expressions evaluate to empty record (see eval.rs)
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::Empty,
-            }))
+            Ok(Type::Record(Row { fields: HashMap::new() }))
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(
@@ -2090,9 +2014,7 @@ fn check_expr(
                             // (from the resolved type) has no TypeVars. Annotation unification
                             // binds annotation-fresh TypeVars, not expected_ret TypeVars. Retained
                             // as a safety net per Algorithm W substitution threading invariant.
-                            let applied_ret = if state.subst.type_map.is_empty()
-                                && state.subst.row_map.is_empty()
-                            {
+                            let applied_ret = if state.subst.type_map.is_empty() {
                                 *expected_ret.clone()
                             } else {
                                 state.subst.apply(expected_ret)
@@ -2185,10 +2107,7 @@ fn check_get(
         let dict_ty = state.subst.apply(&dict_ty);
 
         // Null type: empty closed record (Value::Dict(empty) at runtime).
-        let null_ty = Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::Empty,
-        });
+        let null_ty = Type::Record(Row { fields: HashMap::new() });
 
         let make_nullable = |ty: Type| -> Type {
             if is_optional {
@@ -2268,103 +2187,25 @@ fn check_dot_access(
     match target_ty {
         Type::Record(Row {
             ref fields,
-            ref tail,
+            ..
         }) => match fields.get(field_str) {
             Some(ty) => Ok(ty.clone()),
-            None => match tail {
-                // Open record (RowVar tail) and field not found: bind ρ → Row({field_str: β}, RowVar(ρ_fresh))
-                // This records the constraint "ρ must contain field_str with type β".
-                RowTail::RowVar(rho, rho_level_creation) => {
-                    // Get the current level from state.levels (the source of truth after level lowering).
-                    // The level in RowTail is the creation-time level; state.levels is the current (possibly lowered) level.
-                    // See doc/06-type-inference.md §Let-Generalization (Levels-Based).
-                    let rho_level = state.levels.get(rho).copied().unwrap_or(0);
-
-                    // Invariant check: current level should be ≤ creation-time level (level lowering can only decrease levels)
-                    debug_assert!(
-                        rho_level <= *rho_level_creation,
-                        "RowVar current level ({}) should be ≤ creation level ({}). \
-                         Level lowering can only decrease levels, never increase. \
-                         RowVar: {}, state.levels: {:?}",
-                        rho_level,
-                        rho_level_creation,
-                        rho,
-                        &state.levels
-                    );
-
-                    // Create fresh type var β for the field type
-                    let beta = state.fresh_type_var();
-                    // Create fresh row var ρ_fresh for the remaining tail
-                    let (rho_fresh_name, rho_fresh_level) = state.fresh_row_var_name();
-
-                    // Build the row to bind: Row({ field_str: β }, RowVar(ρ_fresh))
-                    let mut new_fields = HashMap::new();
-                    new_fields.insert(field_str.to_string(), beta.clone());
-                    let binding = Row {
-                        fields: new_fields,
-                        tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
-                    };
-
-                    // Occurs check: ρ must not appear in the row being bound
-                    // (uses state.subst to chase through any existing bindings)
-                    //
-                    // PROOF SKETCH (why this is unreachable with fresh variables):
-                    //   For ρ to occur in Row({field: β}, RowVar(ρ_fresh)), either:
-                    //     (a) β contains ρ in its structure, OR
-                    //     (b) ρ_fresh = ρ
-                    //
-                    //   Both are impossible:
-                    //     - β is fresh (line 696) with no prior bindings → cannot contain ρ
-                    //     - ρ_fresh is fresh (line 698) → ρ_fresh ≠ ρ by uniqueness
-                    //
-                    //   Therefore, this check is defensive programming that documents the invariant
-                    //   but cannot fail when the binding uses only fresh variables.
-                    //
-                    // Defense-in-depth: Keep the check to guard against future refactorings.
-                    if row_var_occurs_pub(rho, &binding, &state.subst) {
-                        debug_assert!(
-                            false,
-                            "unreachable: fresh row var ρ_fresh and fresh type var β cannot contain ρ. \
-                             If this fires, check_dot_access was modified to use non-fresh variables."
-                        );
-                        return Err(vec![TypeError::new(
-                            format!("infinite row type: {rho} occurs in its own binding"),
-                            span,
-                        )]);
-                    }
-
-                    // Level lowering: lower all vars in the binding to ρ's current level (from state.levels)
-                    lower_row_var_levels_pub(&binding, rho_level, state);
-
-                    // Bind ρ → binding in the global substitution
-                    state.subst.row_map.insert(rho.clone(), binding);
-                    state.subst.check_size(span).map_err(|e| vec![e])?;
-
-                    Ok(beta)
-                }
-                // Closed record (Empty tail) and field not found: error
-                RowTail::Empty => Err(vec![TypeError::field_not_found(
-                    field_str, &target_ty, span,
-                )]),
-            },
+            // BAS: field not found in known fields — return Unknown (width subtyping:
+            // the field may be present in the concrete value via extra fields).
+            None => Ok(Type::Unknown),
         },
-        // Unknown type (TypeVar α): generate constraint α = Record({field: β}, RowVar(ρ))
-        // This records "α must be a record with at least this field".
+        // TypeVar α: generate constraint α = Record({field: β}).
+        // Under BAS, no row variable needed — empty record type covers the requirement.
         Type::TypeVar(ref alpha, alpha_level) => {
-            // Create fresh β for the field type and ρ for the remaining row
+            // Create fresh β for the field type
             let beta = state.fresh_type_var();
-            let (rho_name, rho_level) = state.fresh_row_var_name();
 
-            // Build the record type to unify α with
+            // Build the record type to unify α with (BAS: no RowVar tail)
             let mut fields = HashMap::new();
             fields.insert(field_str.to_string(), beta.clone());
-            let record_ty = Type::Record(Row {
-                fields,
-                tail: RowTail::RowVar(rho_name, rho_level),
-            });
+            let record_ty = Type::Record(Row { fields });
 
-            // Unify TypeVar(α) with Record({field: β}, RowVar(ρ)) using the global substitution.
-            // Use mem::take to work around borrow checker (unify needs &mut subst and &mut state)
+            // Unify TypeVar(α) with Record({field: β})
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
             let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
@@ -2414,65 +2255,20 @@ fn check_dot_access_int(
     let field_name = index.to_string();
 
     match &target_ty {
-        Type::Record(Row {
-            ref fields,
-            ref tail,
-        }) => {
+        Type::Record(Row { ref fields, .. }) => {
             if let Some(ty) = fields.get(field_name.as_str()) {
                 return Ok(ty.clone());
             }
-            // Field not found — dispatch on tail (mirrors check_dot_access).
-            match tail {
-                RowTail::RowVar(rho, rho_level_creation) => {
-                    let rho_level = state.levels.get(rho).copied().unwrap_or(0);
-                    debug_assert!(
-                        rho_level <= *rho_level_creation,
-                        "RowVar current level ({}) should be ≤ creation level ({})",
-                        rho_level,
-                        rho_level_creation
-                    );
-
-                    let beta = state.fresh_type_var();
-                    let (rho_fresh_name, rho_fresh_level) = state.fresh_row_var_name();
-
-                    let mut new_fields = HashMap::new();
-                    new_fields.insert(field_name.clone(), beta.clone());
-                    let binding = Row {
-                        fields: new_fields,
-                        tail: RowTail::RowVar(rho_fresh_name, rho_fresh_level),
-                    };
-
-                    if row_var_occurs_pub(rho, &binding, &state.subst) {
-                        debug_assert!(false, "unreachable: fresh row var cannot occur in binding");
-                        return Err(vec![TypeError::new(
-                            format!("infinite row type: {rho} occurs in its own binding"),
-                            span,
-                        )]);
-                    }
-
-                    lower_row_var_levels_pub(&binding, rho_level, state);
-                    state.subst.row_map.insert(rho.clone(), binding);
-                    state.subst.check_size(span).map_err(|e| vec![e])?;
-
-                    Ok(beta)
-                }
-                RowTail::Empty => Err(vec![TypeError::field_not_found(
-                    &field_name,
-                    &target_ty,
-                    span,
-                )]),
-            }
+            // BAS: field not found in known fields — return Unknown
+            // (width subtyping: the field may be present in the concrete value)
+            Ok(Type::Unknown)
         }
         Type::TypeVar(ref alpha, alpha_level) => {
             let beta = state.fresh_type_var();
-            let (rho_name, rho_level) = state.fresh_row_var_name();
 
             let mut fields = HashMap::new();
             fields.insert(field_name, beta.clone());
-            let record_ty = Type::Record(Row {
-                fields,
-                tail: RowTail::RowVar(rho_name, rho_level),
-            });
+            let record_ty = Type::Record(Row { fields });
 
             let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
@@ -2603,7 +2399,6 @@ fn check_call_with_scheme(
                 // into state.subst at lines 1475-1480) need to be visible to downstream inference.
                 let mut subst = Substitution {
                     type_map: state.subst.type_map.clone(),
-                    row_map: state.subst.row_map.clone(),
                 };
                 // Track consumed param indices to prevent named args from overlapping with positional args.
                 // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
@@ -2664,7 +2459,6 @@ fn check_call_with_scheme(
                                 Ok(arg_ty) => {
                                     // Task 2: merge state.subst updates from infer_expr into local subst
                                     subst.type_map.extend(state.subst.type_map.clone());
-                                    subst.row_map.extend(state.subst.row_map.clone());
                                     if let Err(e) =
                                         unify(&arg_ty, param_ty, &mut subst, state, na.span)
                                     {
@@ -2705,9 +2499,6 @@ fn check_call_with_scheme(
                 // letrec group. This mirrors infer_dict Pass 3d (lines 764-773).
                 for (k, v) in &subst.type_map {
                     state.subst.type_map.insert(k.clone(), v.clone());
-                }
-                for (k, row) in &subst.row_map {
-                    state.subst.row_map.insert(k.clone(), row.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
                 // After merging local subst into state.subst, state.subst is a superset of subst.
@@ -3020,7 +2811,6 @@ fn check_call(
                 // that state.subst already resolved (Damas & Milner 1982, Theorem 2).
                 let mut subst = Substitution {
                     type_map: state.subst.type_map.clone(),
-                    row_map: state.subst.row_map.clone(),
                 };
                 // Track consumed param indices to prevent named args from overlapping with positional args.
                 // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
@@ -3084,7 +2874,6 @@ fn check_call(
                                 Ok(arg_ty) => {
                                     // Task 2: merge state.subst updates from infer_expr into local subst
                                     subst.type_map.extend(state.subst.type_map.clone());
-                                    subst.row_map.extend(state.subst.row_map.clone());
                                     if let Err(e) =
                                         unify(&arg_ty, param_ty, &mut subst, state, na.span)
                                     {
@@ -3126,9 +2915,6 @@ fn check_call(
                 // infer_dict Pass 3d (lines 764-773).
                 for (k, v) in &subst.type_map {
                     state.subst.type_map.insert(k.clone(), v.clone());
-                }
-                for (k, row) in &subst.row_map {
-                    state.subst.row_map.insert(k.clone(), row.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
                 // After merging local subst into state.subst, state.subst is a superset of subst.
@@ -3414,10 +3200,7 @@ mod tests {
         };
         let mut state = InferState::new();
         let mut named_types: HashMap<String, Type> = HashMap::new();
-        let mut pipeline_type = Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::Empty,
-        });
+        let mut pipeline_type = Type::Record(Row { fields: HashMap::new() });
         for doc in &file.node.documents {
             match typecheck_document(
                 doc,
@@ -3592,11 +3375,16 @@ mod tests {
 
     #[test]
     fn test_dot_access_missing_field() {
+        // BAS: accessing a field not in the static type returns Unknown (gradual typing).
+        // Under BAS open-world semantics, we don't error statically for unknown fields
+        // because the concrete value may have extra fields (width subtyping). Runtime will
+        // signal a missing-field error if the field is truly absent.
         // In new syntax, string literals require quotes.
-        let errors = check_err("[person: [name: \"Andrew\"]]\n[result: $person.age]");
-        assert!(errors
-            .iter()
-            .any(|e| e.message.contains("field 'age' not found")));
+        let ty = result_field("[person: [name: \"Andrew\"]]\n[result: $person.age]", "result");
+        assert!(
+            matches!(ty, Type::Unknown),
+            "BAS: missing field access returns Unknown (not an error), got {ty}"
+        );
     }
 
     #[test]
@@ -3724,25 +3512,20 @@ mod tests {
 
     #[test]
     fn test_dot_access_open_record_extends_tail() {
-        // When `$p` has type Record({name: Str}, RowVar(ρ)) (an open record via type annotation)
-        // and we access `$p.unknown` (field not in known fields), the RowVar case generates
-        // constraint ρ → Row({unknown: β}, RowVar(ρ_fresh)) and returns β.
-        // This extends the known tail rather than falling back to Any.
-        //
-        // Two accesses on the same open record accumulate constraints:
-        // first access binds ρ → Row({f1: β₁}, RowVar(ρ₁))
-        // second access sees ρ already bound, extracts from ρ₁ → Row({f2: β₂}, RowVar(ρ₂))
+        // BAS: all records are closed (no RowVar tails). `@Open` with `...` becomes a
+        // closed record. Accessing unknown fields returns Unknown (gradual typing), not TypeVar.
+        // Width subtyping allows extra fields at runtime; static type doesn't track them.
         // In new syntax, string literals require quotes.
         let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
-        // r1 and r2 should both be TypeVars (fresh inferred types, not Any)
+        // r1 and r2 should be Unknown (field not in static type, BAS returns Unknown)
         match env.get("r1").map(|s| &s.body) {
-            Some(Type::TypeVar(_, _)) => {}
-            Some(other) => panic!("expected TypeVar for first unknown field, got {other}"),
+            Some(Type::Unknown) => {}
+            Some(other) => panic!("BAS: expected Unknown for unknown field, got {other}"),
             None => panic!("field 'r1' not found in env"),
         }
         match env.get("r2").map(|s| &s.body) {
-            Some(Type::TypeVar(_, _)) => {}
-            Some(other) => panic!("expected TypeVar for second unknown field, got {other}"),
+            Some(Type::Unknown) => {}
+            Some(other) => panic!("BAS: expected Unknown for unknown field, got {other}"),
             None => panic!("field 'r2' not found in env"),
         }
     }
@@ -3783,15 +3566,15 @@ mod tests {
         // field ("unknown") is absent from the concrete type is a type error — accessing
         // a non-existent field is correctly detected by Pass 3b unification.
 
-        // Test: Accessing a non-existent field on a letrec forward-reference now produces
-        // a type error via Pass 3b constraint unification. The constraint IS generated
-        // (check_dot_access binds γ_data → Record({unknown: β}, RowVar(ρ)) in state.subst)
-        // and then correctly checked against the concrete type of `data`.
+        // BAS: Accessing a non-existent field on a letrec forward-reference returns Unknown.
+        // Under BAS, check_dot_access generates constraint γ_data → Record({unknown: β})
+        // in state.subst, but unify_rows ignores non-shared fields (BAS width subtyping).
+        // No type error is produced; the caller sees Unknown for the unknown field.
         let result = check("[result: $data.unknown  data: [known: 1]]");
         assert!(
-            result.is_err(),
-            "Accessing non-existent field 'unknown' on a letrec forward reference should \
-             produce a type error via Pass 3b constraint unification; got Ok"
+            result.is_ok(),
+            "BAS: accessing unknown field on forward reference returns Unknown, not an error; \
+             got: {:?}", result.unwrap_err()
         );
 
         // Note: The types.rs row occurs checks ARE tested (see test_row_occurs_check_direct_tail_cycle
@@ -3865,33 +3648,21 @@ mod tests {
 
     #[test]
     fn test_dot_access_open_record_extends_tail_distinct_vars() {
-        // Task 4: Strengthen test_dot_access_open_record_extends_tail
-        // Original test at line 1684 verifies r1 and r2 are TypeVars but not that they're DISTINCT.
-        // This test adds the distinctness assertion.
-
+        // BAS: all records are closed. Unknown field accesses return Unknown (gradual typing).
+        // Both r1 and r2 get Unknown for unknown fields — there are no distinct TypeVars for rows.
         // In new syntax, string literals require quotes.
         let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
 
-        // Get r1 and r2 types (should both be TypeVars)
-        let r1_var_name = match env.get("r1").map(|s| &s.body) {
-            Some(Type::TypeVar(name, _)) => name.clone(),
-            Some(other) => panic!("expected TypeVar for r1, got {other}"),
+        match env.get("r1").map(|s| &s.body) {
+            Some(Type::Unknown) => {}
+            Some(other) => panic!("BAS: expected Unknown for unknown field r1, got {other}"),
             None => panic!("field 'r1' not found in env"),
-        };
-
-        let r2_var_name = match env.get("r2").map(|s| &s.body) {
-            Some(Type::TypeVar(name, _)) => name.clone(),
-            Some(other) => panic!("expected TypeVar for r2, got {other}"),
+        }
+        match env.get("r2").map(|s| &s.body) {
+            Some(Type::Unknown) => {}
+            Some(other) => panic!("BAS: expected Unknown for unknown field r2, got {other}"),
             None => panic!("field 'r2' not found in env"),
-        };
-
-        // Assert that r1 and r2 are DISTINCT TypeVars
-        assert_ne!(
-            r1_var_name, r2_var_name,
-            "r1 and r2 should be distinct TypeVars (different field accesses should get fresh variables). \
-             Got r1={}, r2={}",
-            r1_var_name, r2_var_name
-        );
+        }
     }
 
     #[test]
@@ -4174,7 +3945,6 @@ mod tests {
             "f".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                row_vars: vec![],
                 constraints: vec![],
                 body: Type::Int,
             },
@@ -4329,11 +4099,10 @@ mod tests {
         let ty = infer("[fn [x@Null] $x]");
         match ty {
             Type::Function { params, .. } => match &params[0].1 {
-                Type::Record(Row { fields, tail }) => {
+                Type::Record(Row { fields }) => {
                     assert!(fields.is_empty());
-                    assert_eq!(*tail, RowTail::Empty);
                 }
-                other => panic!("expected Record(Row::Empty), got {other}"),
+                other => panic!("expected Record(Row::empty), got {other}"),
             },
             other => panic!("expected Function, got {other}"),
         }
@@ -4344,21 +4113,20 @@ mod tests {
         // [@Null []] should succeed (empty dict matches Null)
         let ty = infer("[@Null []]");
         match ty {
-            Type::Record(Row { fields, tail }) => {
+            Type::Record(Row { fields }) => {
                 assert!(fields.is_empty());
-                assert_eq!(tail, RowTail::Empty);
             }
-            other => panic!("expected Record(Row::Empty), got {other}"),
+            other => panic!("expected Record(Row::empty), got {other}"),
         }
     }
 
     #[test]
     fn test_null_return_annotation() {
         // [fn@Null [s@String] []] exercises the resolve_annotation(Simple("Null")) path
-        // in infer_fn (typecheck.rs:1978) for the return annotation.
-        // Null resolves to Type::Record(Row { fields: {}, tail: RowTail::Empty }),
-        // so check_expr checks that the body [] (empty dict) satisfies that type.
-        // The function return type should be the declared Null type (empty closed record).
+        // in infer_fn for the return annotation.
+        // Null resolves to Type::Record(Row { fields: {} }), so check_expr checks
+        // that the body [] (empty dict) satisfies that type.
+        // The function return type should be the declared Null type (empty record).
         let ty = result_field("[f: [fn@Null [s@String] []]]", "f");
         match ty {
             Type::Function { params, ret, .. } => {
@@ -4369,26 +4137,17 @@ mod tests {
                     "param @String should resolve to Type::Str, got {:?}",
                     params[0].1
                 );
-                // Return type should be Null = empty closed record
+                // Return type should be Null = empty record
                 match *ret {
-                    Type::Record(Row {
-                        ref fields,
-                        ref tail,
-                    }) => {
+                    Type::Record(Row { ref fields }) => {
                         assert!(
                             fields.is_empty(),
                             "fn@Null return type should have no fields, got {:?}",
                             fields
                         );
-                        assert_eq!(
-                            *tail,
-                            RowTail::Empty,
-                            "fn@Null return type should be closed (RowTail::Empty), got {:?}",
-                            tail
-                        );
                     }
                     other => {
-                        panic!("fn@Null return type should be Record(Row::Empty), got {other}")
+                        panic!("fn@Null return type should be Record(Row::empty), got {other}")
                     }
                 }
             }
@@ -4600,24 +4359,16 @@ mod tests {
 
     #[test]
     fn test_ann_cross_kind_type_then_row_errors() {
-        // Cross-kind collision: annotation name `a` used first as a type variable (@a on param x)
-        // and then as a row variable (...a in the record annotation on param y).
-        // resolve_type_dict detects this and emits a TypeError: "already used as a type variable".
-        //
-        // The cross-kind check is in the type→row direction: when a name that is already in
-        // ann_mapping (TypeVar) is encountered as a row-variable tail in row_ann_mapping.
+        // BAS: row variables (RowVar) are removed. The `...a` rest annotation is syntactically
+        // accepted but has no row variable semantics — it just sets has_rest=true.
+        // Cross-kind collision detection (TypeVar vs RowVar) is no longer possible since
+        // row_ann_mapping is always None. The annotation is valid and accepted.
+        // `@[name: Int ...a]` resolves to Record({name: Int}) (closed, ...a ignored).
         let result = check("[fn [x@a y@[name: Int ...a]] $x]");
         assert!(
-            result.is_err(),
-            "cross-kind annotation collision (TypeVar then RowVar) must produce a TypeError"
-        );
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("already used as a type variable")),
-            "cross-kind collision must produce descriptive error; got: {:?}",
-            errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+            result.is_ok(),
+            "BAS: cross-kind annotations no longer error since row vars are removed; got: {:?}",
+            result.unwrap_err()
         );
     }
 
@@ -4669,21 +4420,16 @@ mod tests {
 
     #[test]
     fn test_fix2_cross_kind_row_then_type_errors() {
-        // Cross-kind collision: annotation name `r` used first as a row variable (`...r`
-        // in a record type annotation on param x), then as a type variable (`@r` on param y).
-        // resolve_type_name must detect that `r` is already in row_ann_mapping and reject.
+        // BAS: row variables (RowVar) are removed. The `...r` rest annotation has no row
+        // variable semantics — it just sets has_rest=true.
+        // Cross-kind collision detection (RowVar→TypeVar) no longer fires since row_ann_mapping
+        // is always None. `y@r` creates a fresh TypeVar for `r`, and `...r` is silently ignored.
+        // `@[name: Int ...r]` resolves to Record({name: Int}) (closed, ...r ignored).
         let result = check("[fn [x@[name: Int ...r] y@r] $x]");
         assert!(
-            result.is_err(),
-            "cross-kind annotation collision (RowVar then TypeVar) must produce a TypeError"
-        );
-        let errors = result.unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("already used as a row variable")),
-            "cross-kind collision (row→type direction) must produce descriptive error; got: {:?}",
-            errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+            result.is_ok(),
+            "BAS: cross-kind annotations no longer error since row vars are removed; got: {:?}",
+            result.unwrap_err()
         );
     }
 
@@ -5089,14 +4835,10 @@ mod tests {
 
     #[test]
     fn test_non_dict_record_open_row_scheme_preservation() {
-        // Row polymorphism in non-Dict Record scheme preservation.
-        // The make-record function returns a record containing a function `project`
-        // that is polymorphic over the row tail (open record annotation `...`).
-        // When [call $make-record] appears at a document boundary, typecheck_document
-        // must preserve the row-polymorphic scheme for `project`, not monomorphize it.
-        //
-        // project: [fn [r@[x: Int ...]] $r.x] has type ∀ρ. Fn(Record{x: Int | ρ} → Int)
-        // It can be called with different record shapes (open row tail).
+        // BAS: all records are closed. `@[x: Int ...]` resolves to Record({x: Int}) (closed).
+        // `project: [fn [r@[x: Int ...]] $r.x]` has type Fn@Int [Record({x:Int})].
+        // It is called with records that have extra fields — this works via BAS width subtyping:
+        //   Record({x:1, y:"hello"}) <: Record({x:Int}) = true (extra "y" allowed).
         let input = r#"
             [make-record: [fn [] [project: [fn [r@[x: Int ...]] $r.x]]]]
             ---
@@ -5105,37 +4847,8 @@ mod tests {
             [r1: [call $project [x: 1  y: "hello"]]
              r2: [call $project [x: 2  z: true]]]
         "#;
-        // Both r1 and r2 should typecheck successfully with different extra fields.
-        // If project were monomorphized, the row tail would be fixed and the second
-        // call with different extra fields might fail.
-        check(input).expect("row-polymorphic non-Dict Record scheme should be preserved");
-
-        // Additionally verify the scheme is not monomorphized by calling doc_env
-        // on just the first two documents and checking the `project` scheme.
-        let two_doc_input = r#"
-            [make-record: [fn [] [project: [fn [r@[x: Int ...]] $r.x]]]]
-            ---
-            [call $make-record]
-        "#;
-        let env = {
-            let mut file = crate::parse(two_doc_input).unwrap();
-            crate::desugar::desugar_file(&mut file.node);
-            let mut env = Rc::new(TypeEnv::new());
-            let mut state = InferState::new();
-            for doc in &file.node.documents {
-                env = typecheck_document_simple(doc, &env, &mut state, &mut None).unwrap();
-            }
-            env
-        };
-        // project should be in scope as a polymorphic scheme (has_bound_vars)
-        let project_scheme = env
-            .get("project")
-            .expect("project should be threaded into env from non-Dict Record");
-        assert!(
-            !project_scheme.type_vars.is_empty() || !project_scheme.row_vars.is_empty(),
-            "project scheme should be polymorphic (open row tail), got monomorphic: {:?}",
-            project_scheme
-        );
+        // Both r1 and r2 should typecheck successfully — BAS width subtyping allows extra fields.
+        check(input).expect("BAS width subtyping: calls with extra fields should succeed");
     }
 
     #[test]
@@ -5744,46 +5457,36 @@ mod tests {
 
     #[test]
     fn test_type_expr_open_record() {
+        // BAS: all records are closed (RowTail::Empty). The "..." annotation in [type [name: String ...]]
+        // is treated as user-explicit openness, but under BAS Step 1, multi-field annotations
+        // use RowTail::Empty. Single-field open annotations also collapse to Empty.
         // In new syntax, string literals require quotes.
         let ty = result_field(
             "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  age: 30]]]",
             "p",
         );
         match ty {
-            Type::Record(Row {
-                fields,
-                tail: RowTail::RowVar(name, _),
-            }) if name.starts_with("_open") => {
+            Type::Record(Row { fields, .. }) => {
+                // BAS: all records are closed; field "name" should be String
                 assert_eq!(fields.get("name"), Some(&Type::Str));
             }
-            other => panic!("expected open Record with fresh row var, got {other}"),
+            other => panic!("expected Record, got {other}"),
         }
     }
 
     #[test]
     fn test_type_expr_row_var_record() {
-        // [WithName: [type [name: String ...rest]]] — record type with a named row variable.
-        // After Fix 1: row variable names in type aliases become fresh internal vars (e.g., _t1)
-        // rather than keeping the user-visible name "rest". The structural shape must still be
-        // correct: a Record with a RowVar tail.
+        // BAS: named row variable "...rest" in type annotations — under BAS, all tails are Empty.
         // In new syntax, string literals require quotes.
         let ty = result_field(
             "[WithName: [type [name: String ...rest]]]\n[p: [@WithName [name: \"Alice\"]]]",
             "p",
         );
         match ty {
-            Type::Record(Row {
-                fields,
-                tail: RowTail::RowVar(name, _),
-            }) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("name"), Some(&Type::Str));
-                // The internal name is a fresh var — check it starts with the fresh-var prefix
-                assert!(
-                    name.starts_with("_t") || name == "rest",
-                    "row var name should be a fresh internal var, got: {name}"
-                );
             }
-            other => panic!("expected record with row var, got {other}"),
+            other => panic!("expected record, got {other}"),
         }
     }
 
@@ -5795,18 +5498,15 @@ mod tests {
             "p",
         );
         match ty {
-            Type::Record(Row {
-                tail: RowTail::Empty,
-                ..
-            }) => {}
-            other => panic!("expected closed Record, got {other}"),
+            Type::Record(_) => {}
+            other => panic!("expected Record, got {other}"),
         }
     }
 
     #[test]
     fn test_anonymous_open_record_annotations_get_fresh_vars() {
-        // Each anonymous open record annotation should get a distinct row variable
-        // Use inline open record annotations in function parameters
+        // BAS: anonymous open record annotations "..." are treated as closed under BAS.
+        // Both params are records (RowTail::Empty); the function type-checks correctly.
         let code = r#"
             [f: [fn [x@[a: Int ...]  y@[b: String ...]]
                  [x: $x  y: $y]]]
@@ -5814,45 +5514,22 @@ mod tests {
         let result = check(code);
         assert!(
             result.is_ok(),
-            "type check should succeed with distinct row vars: {:?}",
+            "type check should succeed: {:?}",
             result
         );
 
-        // Verify the inferred type has distinct row variables for x and y
+        // Verify the inferred type has record params
         let ty = result_field(code, "f");
         match ty {
             Type::Function { params, .. } => {
-                // Extract the row variable names from both parameters
-                let (row_var_x, row_var_y) = match (&params[0].1, &params[1].1) {
-                    (
-                        Type::Record(Row {
-                            tail: RowTail::RowVar(name_x, _),
-                            ..
-                        }),
-                        Type::Record(Row {
-                            tail: RowTail::RowVar(name_y, _),
-                            ..
-                        }),
-                    ) => (name_x, name_y),
-                    other => panic!("expected both params to be open records, got {:?}", other),
-                };
-
-                // The row variables should be distinct (different fresh names were generated)
-                assert_ne!(
-                    row_var_x, row_var_y,
-                    "anonymous open record annotations must generate distinct row variables"
-                );
-
-                // Both should start with "_open" prefix
+                // BAS: both params should be record types
                 assert!(
-                    row_var_x.starts_with("_open"),
-                    "expected row var name to start with _open, got {}",
-                    row_var_x
+                    matches!(&params[0].1, Type::Record(_)),
+                    "x param should be Record type, got {:?}", params[0].1
                 );
                 assert!(
-                    row_var_y.starts_with("_open"),
-                    "expected row var name to start with _open, got {}",
-                    row_var_y
+                    matches!(&params[1].1, Type::Record(_)),
+                    "y param should be Record type, got {:?}", params[1].1
                 );
             }
             other => panic!("expected function type, got {other}"),
@@ -5861,9 +5538,7 @@ mod tests {
 
     #[test]
     fn test_cross_function_anonymous_open_records_get_fresh_vars() {
-        // Two separate functions using anonymous open record annotations
-        // should NOT share the same row variable (the bug that fresh name generation fixed)
-        // Each function gets its own independent open record constraint
+        // BAS: anonymous open record annotations are independent between functions.
         let code = r#"
             [f: [fn [x@[a: Int ...]] $x.a]
              g: [fn [y@[b: String ...]] $y.b]]
@@ -5871,68 +5546,28 @@ mod tests {
         let result = check(code);
         assert!(
             result.is_ok(),
-            "type check should succeed with independent open record constraints: {:?}",
+            "type check should succeed: {:?}",
             result
         );
 
-        // Verify that f and g have distinct row variables
+        // Under BAS: both f and g should have record params (RowTail::Empty)
         let ty_f = result_field(code, "f");
         let ty_g = result_field(code, "g");
 
-        let row_var_f = match ty_f {
-            Type::Function { params, .. } => match &params[0].1 {
-                Type::Record(Row {
-                    tail: RowTail::RowVar(name, _),
-                    ..
-                }) => name.clone(),
-                other => panic!("expected f param to be open record, got {:?}", other),
-            },
-            other => panic!("expected f to be function type, got {other}"),
-        };
-
-        let row_var_g = match ty_g {
-            Type::Function { params, .. } => match &params[0].1 {
-                Type::Record(Row {
-                    tail: RowTail::RowVar(name, _),
-                    ..
-                }) => name.clone(),
-                other => panic!("expected g param to be open record, got {:?}", other),
-            },
-            other => panic!("expected g to be function type, got {other}"),
-        };
-
-        // The two functions must have distinct row variables
-        // If they incorrectly shared RowVar("_open", 0), this assertion would fail
-        assert_ne!(
-            row_var_f, row_var_g,
-            "cross-function anonymous open records must generate distinct row variables"
-        );
-
-        // Both should be fresh _open names
         assert!(
-            row_var_f.starts_with("_open"),
-            "expected row var name to start with _open, got {}",
-            row_var_f
+            matches!(ty_f, Type::Function { .. }),
+            "f should be a function type, got {ty_f}"
         );
         assert!(
-            row_var_g.starts_with("_open"),
-            "expected row var name to start with _open, got {}",
-            row_var_g
+            matches!(ty_g, Type::Function { .. }),
+            "g should be a function type, got {ty_g}"
         );
     }
 
     #[test]
     fn test_named_row_var_level_monotonicity() {
-        // Test for the row variable level monotonicity bug fix (computer-scientist-c31).
-        // When a function has multiple parameters sharing a named row variable tail
-        // (e.g., [fn [x@[a: Int ...r] y@[b: Str ...r]] body]), the second reference
-        // to ...r should NOT reset r's level in state.levels. This mirrors the
-        // resolve_type_name monotonicity fix from C71.
-        //
-        // Before the fix, state.levels.insert(fresh_name.clone(), state.level) ran
-        // unconditionally on every ...r reference, resetting the level even if
-        // unification had lowered it. After the fix, we check if the row variable
-        // is already mapped and preserve its current level from state.levels.
+        // BAS: named row variables "...r" in type annotations are treated as closed (Empty).
+        // This test verifies the function type-checks correctly even with named row vars.
         let code = r#"
             [f: [fn [x@[a: Int ...r]  y@[b: String ...r]]
                  [x: $x  y: $y]]]
@@ -5944,36 +5579,17 @@ mod tests {
             result
         );
 
-        // Verify both parameters share the same row variable
+        // BAS: both parameters are record types (RowTail::Empty)
         let ty = result_field(code, "f");
         match ty {
             Type::Function { params, .. } => {
-                let (row_var_x, row_var_y) = match (&params[0].1, &params[1].1) {
-                    (
-                        Type::Record(Row {
-                            tail: RowTail::RowVar(name_x, _),
-                            ..
-                        }),
-                        Type::Record(Row {
-                            tail: RowTail::RowVar(name_y, _),
-                            ..
-                        }),
-                    ) => (name_x, name_y),
-                    other => panic!("expected both params to be open records, got {:?}", other),
-                };
-
-                // Both parameters should share the same row variable name
-                // (both map to the same fresh variable _tN through the ann_mapping)
-                assert_eq!(
-                    row_var_x, row_var_y,
-                    "named row variable ...r should be shared between parameters"
-                );
-
-                // The shared row variable should have a fresh name (from ann_mapping)
                 assert!(
-                    row_var_x.starts_with("_t"),
-                    "expected fresh row var name to start with _t, got {}",
-                    row_var_x
+                    matches!(&params[0].1, Type::Record(_)),
+                    "x param should be Record, got {:?}", params[0].1
+                );
+                assert!(
+                    matches!(&params[1].1, Type::Record(_)),
+                    "y param should be Record, got {:?}", params[1].1
                 );
             }
             other => panic!("expected function type, got {other}"),
@@ -5981,47 +5597,10 @@ mod tests {
     }
 
     #[test]
-    fn test_check_dot_access_lowers_row_var_levels() {
-        // Test that check_dot_access correctly lowers inner type variable levels when
-        // accessing an unknown field on an open record with a RowVar tail.
-        //
-        // SCENARIO:
-        //   When check_dot_access handles a RowVar tail (typecheck.rs:695-761), it creates
-        //   fresh type var β and fresh row var ρ_fresh at the current state.level, then
-        //   calls lower_row_var_levels_pub(&binding, rho_level, state) at line 755.
-        //
-        //   ρ must be at an OUTER level (lower number) than β and ρ_fresh for the lowering
-        //   to be non-trivial. We use three separate document expressions so that p's type
-        //   is fully resolved into state.subst before $p.unknown is checked. The Open alias
-        //   is registered at document level (state.level=0), so ρ is at level 0. The access
-        //   $p.unknown happens inside a nested dict (level 2), so β and ρ_fresh are created
-        //   at level 2, then lowered to ρ's level (0). Without the lowering call, the
-        //   assertions below fail (2 ≤ 0 is false).
-        //
-        // WHY THREE EXPRESSIONS (NOT ONE OR TWO):
-        //   In a single dict (letrec), p and result are siblings. p's type binding is in the
-        //   local letrec subst, not in state.subst. So when check_dot_access processes $p,
-        //   state.subst.apply(TypeVar(_tA)) returns TypeVar(_tA) — the TypeVar path is taken
-        //   instead of the RowVar path, and ρ from Open is never directly bound.
-        //   Using three expressions ensures p's type (Record({name: String}, RowVar(ρ))) is
-        //   exported into state.subst via Pass 3d before expression 3 processes $p.unknown.
-        //
-        // TEST CASE (single document, three top-level expressions):
-        //   [Open: [type [name: String ...]]]    -- expr 1: registers Open alias; ρ at level 0
-        //   [p: [@Open [name: Alice]]]           -- expr 2: p : Record({name: String}, RowVar(ρ))
-        //   [result: [inner: $p.unknown]]        -- expr 3: nested dict forces $p.unknown at level 2
-        //
-        //   When we access $p.unknown at level 2:
-        //   1. $p has type Record({name: String}, RowVar(ρ, level=0)) — from state.subst
-        //   2. check_dot_access sees "unknown" not in {name}, tail is RowVar(ρ) at level 0
-        //   3. It creates fresh β at level 2 and ρ_fresh at level 2
-        //   4. It calls lower_row_var_levels_pub to lower β and ρ_fresh to ρ's level (0)
-        //   5. It binds ρ → Row({unknown: β}, RowVar(ρ_fresh)) in state.subst
-        //   6. After lowering: beta_level = 0, rho_fresh_level = 0
-        //
-        //   The assertions `beta_level <= rho_level` and `rho_fresh_level <= rho_level` are
-        //   non-trivial: they pass only because lowering reduced the levels from 2 to 0.
-        //   Deleting the lower_row_var_levels_pub call would leave them at 2, failing 2 ≤ 0.
+    fn test_check_dot_access_unknown_field_returns_unknown() {
+        // BAS: accessing a field not in the record's known fields returns Unknown.
+        // Under BAS width subtyping, the field may be present in the concrete value.
+        // No row bindings are created — BAS handles openness via is_subtype, not unification.
         // In new syntax, string literals require quotes.
         let code = r#"
             [Open: [type [name: String ...]]]
@@ -6032,12 +5611,11 @@ mod tests {
         let result = check(code);
         assert!(
             result.is_ok(),
-            "type check should succeed with dot access on open record inside nested dict: {:?}",
+            "type check should succeed — unknown field access returns Unknown under BAS: {:?}",
             result
         );
 
-        // Verify that the `inner` field of `result` has type TypeVar (the fresh β from
-        // constraint generation). result : Record({inner: TypeVar(β)}) after inference.
+        // Verify that the `inner` field of `result` has type Unknown
         let result_ty = result_field(code, "result");
         let inner_ty = match result_ty {
             Type::Record(Row { ref fields, .. }) => fields
@@ -6046,123 +5624,10 @@ mod tests {
                 .expect("result record should have 'inner' field"),
             other => panic!("expected result to be a Record type, got {other}"),
         };
-        match inner_ty {
-            Type::TypeVar(name, _level) => {
-                assert!(
-                    name.starts_with("_t"),
-                    "expected fresh type var name to start with _t, got {}",
-                    name
-                );
-            }
-            other => panic!("expected TypeVar for $p.unknown inside nested dict, got {other}"),
-        }
-
-        // Core verification: inspect InferState to confirm level lowering occurred.
-        //
-        // ρ is created at level 0 (document level) when register_type_aliases runs for
-        // expression 1 (state.level = 0 after infer_dict returns and restores the level).
-        // β and ρ_fresh are created at level 2 (expression 3's inner dict) when $p.unknown
-        // is checked. lower_row_var_levels_pub must lower them to level 0 (ρ's level).
-        //
-        // NON-VACUOUSNESS: if lower_row_var_levels_pub is deleted, β and ρ_fresh stay at
-        // level 2 and the assertions below become "2 ≤ 0", which is false → test fails.
-        let mut file = crate::parse(code).unwrap();
-        crate::desugar::desugar_file(&mut file.node);
-        let env = Rc::new(TypeEnv::new());
-        let mut state = InferState::new();
-
-        let doc_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .unwrap();
-
-        // Find the row variable ρ from the Open type alias
-        let open_ty = match doc_env.get_type_alias("Open") {
-            Some(alias) => &alias.body,
-            None => panic!("Open type alias not found in doc_env"),
-        };
-
-        let rho_name = match open_ty {
-            Type::Record(Row {
-                tail: RowTail::RowVar(name, _),
-                ..
-            }) => name.clone(),
-            other => panic!("expected Open to be an open record type, got {other:?}"),
-        };
-
-        // ρ must be bound in state.subst.row_map after dot access on the open record
-        let bound_row = state
-            .subst
-            .row_map
-            .get(&rho_name)
-            .expect("ρ must be bound in subst after unknown-field dot access on open record");
-
+        // BAS: unknown field access → Unknown
         assert!(
-            bound_row.fields.contains_key("unknown"),
-            "bound row should contain 'unknown' field"
-        );
-
-        // ρ's current level (from state.levels, authoritative after any lowering)
-        let rho_level = state
-            .levels
-            .get(&rho_name)
-            .copied()
-            .expect("ρ should be in state.levels after dot access");
-
-        // ρ was created at document level (state.level = 0 when register_type_aliases runs).
-        // Confirm this expectation so the non-vacuousness of the assertion is explicit.
-        assert_eq!(
-            rho_level, 0,
-            "ρ (Open's row var) should be at level 0 (created at document level by register_type_aliases)"
-        );
-
-        // Check β's level — must be TypeVar; panic if not
-        let Type::TypeVar(beta_name, _) = bound_row
-            .fields
-            .get("unknown")
-            .expect("β must be present in bound row for 'unknown' field")
-        else {
-            panic!(
-                "expected TypeVar for 'unknown' field in bound row, got {:?}",
-                bound_row.fields.get("unknown")
-            )
-        };
-        let beta_level = state
-            .levels
-            .get(beta_name)
-            .copied()
-            .expect("β should be in state.levels after dot access");
-
-        // β was originally created at level 2 (inside the nested inner dict) and lowered to 0.
-        // Without lowering: beta_level = 2, assertion 2 ≤ 0 would fail.
-        assert!(
-            beta_level <= rho_level,
-            "β level ({}) should be ≤ ρ level ({}) after lower_row_var_levels_pub; \
-             β is created at the inner dict level (2) and must be lowered to ρ's level (0)",
-            beta_level,
-            rho_level
-        );
-
-        // Check ρ_fresh's level — must be RowVar; panic if not
-        let RowTail::RowVar(rho_fresh_name, _) = &bound_row.tail else {
-            panic!(
-                "expected RowVar tail in bound row, got {:?}",
-                bound_row.tail
-            )
-        };
-        let rho_fresh_level = state
-            .levels
-            .get(rho_fresh_name)
-            .copied()
-            .expect("ρ_fresh should be in state.levels after dot access");
-
-        // ρ_fresh was originally created at level 2 and lowered to 0.
-        // Without lowering: rho_fresh_level = 2, assertion 2 ≤ 0 would fail.
-        assert!(
-            rho_fresh_level <= rho_level,
-            "ρ_fresh level ({}) should be ≤ ρ level ({}) after lower_row_var_levels_pub; \
-             ρ_fresh is created at the inner dict level (2) and must be lowered to ρ's level (0)",
-            rho_fresh_level,
-            rho_level
+            matches!(inner_ty, Type::Unknown | Type::TypeVar(_, _)),
+            "expected Unknown or TypeVar for $p.unknown under BAS, got {inner_ty}"
         );
     }
 
@@ -6203,41 +5668,31 @@ mod tests {
 
     #[test]
     fn test_dot_access_on_open_record_unknown_field() {
-        // Accessing an unknown field on an open record (RowVar tail) now generates a
-        // constraint binding ρ → Row({unknown: β}, RowVar(ρ_fresh)) and returns β.
-        // The result is a TypeVar (the fresh field type), not Any.
-        // See doc/07-type-extensions.md Part 5 (RowVar case).
+        // BAS: all records are closed. `@Open` with `...` resolves to Record({name: Str}).
+        // Accessing `$p.unknown` (not in static type) returns Unknown (gradual typing).
+        // Under BAS, no RowVar constraint generation — width subtyping handles openness.
         // In new syntax, string literals require quotes.
         let ty = result_field(
             "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"]]]\n[result: $p.unknown]",
             "result",
         );
         assert!(
-            matches!(ty, Type::TypeVar(_, _)),
-            "expected TypeVar for unknown open-record field, got {ty}"
+            matches!(ty, Type::Unknown),
+            "BAS: expected Unknown for unknown field on closed record, got {ty}"
         );
     }
 
     #[test]
     fn test_data_dict_always_closed() {
         let ty = infer("[a: 1  b: 2]");
-        match ty {
-            Type::Record(Row {
-                tail: RowTail::Empty,
-                ..
-            }) => {}
-            other => panic!("expected closed Record for data dict, got {other}"),
-        }
+        assert!(matches!(ty, Type::Record(_)), "expected Record, got {ty}");
     }
 
     #[test]
     fn test_rest_in_data_dict_ignored() {
         let ty = infer("[a: 1 ...]");
         match ty {
-            Type::Record(Row {
-                fields,
-                tail: RowTail::Empty,
-            }) => {
+            Type::Record(Row { fields }) => {
                 assert_eq!(fields.len(), 1);
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
             }
@@ -6340,7 +5795,7 @@ mod tests {
 
         // Verify the scheme has type variables (polymorphic)
         assert!(
-            !id_scheme.type_vars.is_empty() || !id_scheme.row_vars.is_empty(),
+            !id_scheme.type_vars.is_empty(),
             "id's scheme should have type variables (polymorphic)"
         );
 
@@ -8851,41 +8306,22 @@ mod tests {
             result.err()
         );
 
-        // Verify the resulting function type has matching row var names in param and return.
-        // Both the parameter open-record type and the return open-record type should have
-        // the same row variable name (because both map to the same ...r in row_ann_mapping).
+        // BAS: all records are closed (RowTail::Empty). Under BAS, the named row variable "...r"
+        // is handled by closure in the annotation but the tail is always Empty.
+        // Verify the param and return are both records.
         let ty = result_field(
             "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [x@[input: String ...r]] [result: 42]]]]",
             "f"
         );
         match ty {
             Type::Function { params, ret, .. } => {
-                let param_row_var = match &params[0].1 {
-                    Type::Record(Row {
-                        tail: RowTail::RowVar(name, _),
-                        ..
-                    }) => name.clone(),
-                    other => {
-                        panic!("expected param to be open record with RowVar tail, got {other:?}")
-                    }
-                };
-                let ret_row_var = match ret.as_ref() {
-                    Type::Record(Row {
-                        tail: RowTail::RowVar(name, _),
-                        ..
-                    }) => name.clone(),
-                    other => {
-                        panic!("expected return to be open record with RowVar tail, got {other}")
-                    }
-                };
-                // Both ...r occurrences in the annotation should produce the same fresh name.
-                // If row_ann_mapping were None (un-threaded), each would get an independent
-                // anonymous row var and the names would differ.
-                assert_eq!(
-                    param_row_var, ret_row_var,
-                    "named row variable ...r in param and return of the same TypeAssert annotation \
-                     should resolve to the same row variable (row_ann_mapping threading); \
-                     param row var: {param_row_var}, ret row var: {ret_row_var}"
+                assert!(
+                    matches!(&params[0].1, Type::Record(_)),
+                    "param should be Record type, got {:?}", params[0].1
+                );
+                assert!(
+                    matches!(ret.as_ref(), Type::Record(_)),
+                    "return should be Record type, got {ret}"
                 );
             }
             other => panic!("expected Function type, got {other}"),
@@ -9141,10 +8577,7 @@ mod tests {
     #[test]
     fn test_union_nullable_pattern() {
         // Union(Int, Record(Empty)) — nullable integer pattern
-        let null_type = Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::Empty,
-        });
+        let null_type = Type::Record(Row { fields: HashMap::new() });
         let union = Type::normalize_union(vec![Type::Int, null_type.clone()]);
         match union {
             Type::Union(members) => {
@@ -9464,7 +8897,7 @@ mod tests {
         // After `[null? x]`, the true branch knows `x : Record(Empty)` (Null = empty closed record)
         let env = doc_env_with_builtins("[x: []]\n[result: [if [null? x] x []]]");
         match env.get("result").map(|s| &s.body) {
-            Some(Type::Record(row)) if matches!(row.tail, RowTail::Empty) => {}
+            Some(Type::Record(_)) => {}
             Some(other) => panic!("expected closed Record for null? narrowing, got {other}"),
             None => panic!("field 'result' not found in env"),
         }
@@ -10082,7 +9515,6 @@ mod tests {
                 m.insert("ok".into(), Type::Int);
                 m
             },
-            tail: RowTail::Empty,
         });
         let mut out = Vec::new();
         collect_pattern_bindings(
@@ -10108,10 +9540,7 @@ mod tests {
     #[test]
     fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
         // Dict pattern with key not present in Record → Unknown fallback
-        let scrutinee = Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::Empty,
-        });
+        let scrutinee = Type::Record(Row { fields: HashMap::new() });
         let mut out = Vec::new();
         collect_pattern_bindings(
             &Pattern::Dict {
@@ -10448,10 +9877,7 @@ mod tests {
         let result_env =
             typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
                 .unwrap();
-        let null_ty = Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::Empty,
-        });
+        let null_ty = Type::Record(Row { fields: HashMap::new() });
         match result_env.get("result").map(|s| &s.body) {
             Some(Type::Union(members)) => {
                 assert!(
@@ -10491,10 +9917,7 @@ mod tests {
             "[rec: [a: 42]]\n\
              [result: [get? \"a\" rec]]",
         );
-        let null_ty = Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::Empty,
-        });
+        let null_ty = Type::Record(Row { fields: HashMap::new() });
         match env.get("result").map(|s| &s.body) {
             Some(Type::Union(members)) => {
                 let has_int = members

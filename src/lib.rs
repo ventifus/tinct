@@ -216,6 +216,113 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
 }
 
+/// Parse, eval, and materialize LLT source with optional NetCap injections.
+///
+/// Like `eval_source_with_config` but additionally injects named NetCap values
+/// into the root environment before evaluation. Each `cap_net` entry is a pair
+/// `(name, entry_string)` where `name` is the cap variable name (injected as `%name`)
+/// and `entry_string` is an allowlist entry string (same format as `--cap-net NAME=ENTRY`).
+///
+/// Multiple entries with the same name accumulate into one NetCap allowlist.
+pub fn eval_source_with_cap_net(
+    input: &str,
+    no_fs: bool,
+    cap_net: &[(String, String)],
+) -> Result<String, String> {
+    use std::collections::HashMap;
+
+    // Parse cap_net entries into grouped allowlists
+    let mut grouped: HashMap<String, Vec<crate::value::NetCapEntry>> = HashMap::new();
+    for (name, entry_str) in cap_net {
+        let entry = parse_net_cap_entry(entry_str)
+            .map_err(|e| format!("cap_net directive error: {e}"))?;
+        grouped.entry(name.clone()).or_default().push(entry);
+    }
+
+    // Use the standard config path, then inject caps after env creation
+    let file = parse(input).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(file, no_fs).map_err(|e| format!("{e}"))?;
+    let mut file = expand_result.file;
+    let provenance = expand_result.provenance;
+
+    let attach_provenance = |mut e: Box<error::EvalError>| -> String {
+        if e.macro_expansion.is_none() {
+            let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
+            if found.is_none() {
+                if let Some(mat_span) = e.materialization_span {
+                    found = provenance.get(&expand::SpanKey::from(mat_span));
+                }
+            }
+            if let Some(prov) = found {
+                e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
+            }
+        }
+        format!("{e}")
+    };
+
+    desugar::desugar_file(&mut file.node);
+    resolve::resolve_file(&file.node);
+    let _ = typecheck::typecheck_file(&file.node);
+    let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
+
+    let base_dir_path = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.canonicalize().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory: {e}"))?;
+    let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
+
+    if !no_fs {
+        if let Ok(pwd_dir) =
+            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+        {
+            let pwd_val = Value::DirCap(Rc::new(pwd_dir));
+            let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+            env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+    }
+
+    // Inject NetCap values for each named cap
+    for (name, entries) in grouped {
+        let cap_val = Value::NetCap(Rc::new(entries));
+        let cap_thunk = Rc::new(Thunk::new_materialized(cap_val, Span::origin()));
+        env.borrow_mut().insert(format!("%{}", name), cap_thunk);
+    }
+
+    let thunk = eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
+    let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
+    let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
+    value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
+}
+
+/// Parse a NetCap allowlist entry string (same logic as CLI `--cap-net NAME=ENTRY`).
+fn parse_net_cap_entry(s: &str) -> Result<crate::value::NetCapEntry, String> {
+    use crate::value::NetCapEntry;
+    if s == "any" {
+        return Ok(NetCapEntry::Any);
+    }
+    if let Some((host, port_str)) = s.split_once(':') {
+        let port: u16 = port_str
+            .parse()
+            .map_err(|_| format!("invalid port '{}' in '{}'", port_str, s))?;
+        return Ok(NetCapEntry::HostPort(host.to_string(), port));
+    }
+    if s.contains('*') {
+        if !s.starts_with("*.") {
+            return Err(format!("only prefix wildcards supported (e.g. '*.internal'), got '{}'", s));
+        }
+        return Ok(NetCapEntry::HostnameGlob(s.to_string()));
+    }
+    if s.contains('/') {
+        use std::str::FromStr;
+        let net = ipnet::IpNet::from_str(s)
+            .map_err(|_| format!("invalid CIDR '{}' — expected e.g. '10.0.0.0/8'", s))?;
+        return Ok(NetCapEntry::Cidr(net));
+    }
+    Ok(NetCapEntry::Hostname(s.to_string()))
+}
+
 /// Parse and type-check LLT source code.
 ///
 /// Returns `Ok(())` if type checking succeeds, or `Err(errors)` with a formatted

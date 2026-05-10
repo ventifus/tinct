@@ -1,0 +1,11 @@
+# Access chain on forward-referenced dict: under BAS, dot-access on a TypeVar unifies
+# the TypeVar with a single-field closed record. Subsequent accesses see the TypeVar already
+# bound to a closed record and return Unknown for missing fields. No type warning is emitted
+# because Unknown is consistent with all types (gradual typing escape hatch).
+# Eval evaluates correctly at runtime regardless of type inference.
+[first_name: data.first
+ last_name: data.last
+ age_plus_one: [+ data.age 1]
+ data: [first: "Alice"  last: "Smith"  age: 30]]
+=== out
+Dict({"first_name": String("Alice"), "last_name": String("Smith"), "age_plus_one": Int(31), "data": Dict({"first": String("Alice"), "last": String("Smith"), "age": Int(30)})})

@@ -1,4 +1,4 @@
-# merge with two distinct open records; type-checks correctly with distinct RowVars (Wand 1987 Case 4).
+# merge with two records; type-checks correctly with BAS width subtyping.
 [merge [a: 1] [b: 2]]
 === out
 Dict({"a": Int(1), "b": Int(2)})

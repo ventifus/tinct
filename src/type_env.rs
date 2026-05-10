@@ -24,7 +24,7 @@ use super::*;
 #[cfg(test)]
 pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     let mut type_vars = HashSet::new();
-    let mut row_vars = HashSet::new();
+    let mut row_vars = HashSet::new(); // always empty under BAS
     ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
     let mut renaming = Substitution::new();
@@ -32,18 +32,6 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
         let fresh = format!("_t{counter}");
         *counter += 1;
         renaming.type_map.insert(var, Type::TypeVar(fresh, 0));
-    }
-
-    for var in row_vars {
-        let fresh = format!("_t{counter}");
-        *counter += 1;
-        renaming.row_map.insert(
-            var,
-            Row {
-                fields: HashMap::new(),
-                tail: RowTail::RowVar(fresh, 0),
-            },
-        );
     }
 
     (renaming.apply(ty), renaming)
@@ -61,21 +49,20 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // Deduplication is handled by the contains_key guard below: only the first occurrence
     // of each type/row var generates a fresh variable. Subsequent occurrences are skipped.
     let mut type_vars = Vec::new();
-    let mut row_vars = Vec::new();
+    let mut row_vars = Vec::new(); // always empty under BAS
     ty.collect_all_vars_vec(&mut type_vars, &mut row_vars);
 
-    // Monomorphic fast-path: if no type/row vars, return ty directly (saves 2 HashMap allocations)
-    if type_vars.is_empty() && row_vars.is_empty() {
+    // Monomorphic fast-path: if no type vars, return ty directly (saves HashMap allocation)
+    if type_vars.is_empty() {
         return ty.clone();
     }
 
-    // Use with_capacity so the HashMap internal arrays are allocated exactly once,
-    // avoiding a resize when the type/row var counts are known upfront (CALL-POLY hot path).
+    // Use with_capacity so the HashMap internal array is allocated exactly once,
+    // avoiding a resize when the type var count is known upfront (CALL-POLY hot path).
     // Note: capacity hint may be larger than actual unique count if there are duplicates,
     // but this wastes at most a few slots and is cheaper than deduplicating first.
     let mut renaming = Substitution {
         type_map: HashMap::with_capacity(type_vars.len()),
-        row_map: HashMap::with_capacity(row_vars.len()),
     };
     for var in type_vars {
         // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
@@ -86,21 +73,6 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
             renaming
                 .type_map
                 .insert(var, Type::TypeVar(fresh_name, state.level));
-        }
-    }
-
-    for var in row_vars {
-        if !renaming.row_map.contains_key(&var) {
-            let fresh_name = format!("_t{}", state.name_counter);
-            state.name_counter = state.name_counter.saturating_add(1);
-            state.levels.insert(fresh_name.clone(), state.level);
-            renaming.row_map.insert(
-                var,
-                Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar(fresh_name, state.level),
-                },
-            );
         }
     }
 
@@ -174,14 +146,13 @@ fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, le
                 )
             })
             .collect(),
-        tail: row.tail.clone(),
     }
 }
 
 /// Instantiate a type scheme by creating fresh type variables at the given level.
 /// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
 pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferState) -> Type {
-    if scheme.type_vars.is_empty() && scheme.row_vars.is_empty() {
+    if scheme.type_vars.is_empty() {
         // Monomorphic scheme: return body directly
         return scheme.body.clone();
     }
@@ -189,10 +160,9 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     // Build variable renaming map (old names -> fresh names)
     let mut var_renaming: HashMap<String, String> = HashMap::new();
 
-    // Fast path: single type variable, no row variables -- avoid building Substitution
-    // (2 HashMaps) and the apply() HashSet pair. Inline rename is allocation-free
-    // aside from the string format for the fresh name.
-    if scheme.type_vars.len() == 1 && scheme.row_vars.is_empty() {
+    // Fast path: single type variable -- avoid building Substitution (HashMap + apply HashSet).
+    // Inline rename is allocation-free aside from the string format for the fresh name.
+    if scheme.type_vars.len() == 1 {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
@@ -208,11 +178,9 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
     }
 
-    // General path: multiple variables or row variables -- build a full Substitution.
-    // Create fresh type variables at the specified level for each quantified var
+    // General path: multiple type variables -- build a full Substitution.
     let mut renaming = Substitution {
         type_map: HashMap::with_capacity(scheme.type_vars.len()),
-        row_map: HashMap::with_capacity(scheme.row_vars.len()),
     };
     for var in &scheme.type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
@@ -222,22 +190,6 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         renaming
             .type_map
             .insert(var.clone(), Type::TypeVar(fresh_name, level));
-    }
-
-    // Create fresh row variables -- row vars bind to Row, not Type
-    // Row variables and type variables share the same naming counter (`_t{n}`)
-    for var in &scheme.row_vars {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter = state.name_counter.saturating_add(1);
-        state.levels.insert(fresh_name.clone(), level);
-        var_renaming.insert(var.clone(), fresh_name.clone());
-        renaming.row_map.insert(
-            var.clone(),
-            Row {
-                fields: HashMap::new(),
-                tail: RowTail::RowVar(fresh_name, level),
-            },
-        );
     }
 
     // Copy constraints with renamed variables
@@ -288,7 +240,7 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
     }
 
     let mut all_type_vars = Vec::new();
-    let mut all_row_vars = Vec::new();
+    let mut all_row_vars = Vec::new(); // always empty under BAS
     ty.collect_all_vars_vec(&mut all_type_vars, &mut all_row_vars);
 
     // Filter: keep only vars where levels[var] > level.
@@ -304,25 +256,11 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
         })
         .collect();
 
-    seen.clear();
-    let generalizable_row_vars: Vec<String> = all_row_vars
-        .into_iter()
-        .filter(|var| {
-            let var_level = state.levels.get(var).copied().unwrap_or(0);
-            let is_generalizable = var_level > level;
-            is_generalizable && seen.insert(var.clone())
-        })
-        .collect();
-
-    if generalizable_type_vars.is_empty() && generalizable_row_vars.is_empty() {
+    if generalizable_type_vars.is_empty() {
         TypeScheme::mono(ty.clone())
     } else {
         // Filter constraints: keep only those on generalized variables
-        let generalizable_vars: HashSet<String> = generalizable_type_vars
-            .iter()
-            .chain(generalizable_row_vars.iter())
-            .cloned()
-            .collect();
+        let generalizable_vars: HashSet<String> = generalizable_type_vars.iter().cloned().collect();
 
         let mut generalizable_constraints: Vec<Constraint> = state
             .constraints
@@ -338,7 +276,6 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
 
         TypeScheme {
             type_vars: generalizable_type_vars,
-            row_vars: generalizable_row_vars,
             constraints: generalizable_constraints,
             body: ty.clone(),
         }
@@ -369,20 +306,6 @@ impl fmt::Display for Type {
                         write!(f, " ")?;
                     }
                     write!(f, "{key}: {ty}")?;
-                }
-                match &row.tail {
-                    RowTail::Empty => {}
-                    RowTail::RowVar(name, _level) => {
-                        if !row.fields.is_empty() {
-                            write!(f, " ")?;
-                        }
-                        // Hide generated names (starting with _) -- display as bare "..."
-                        if name.starts_with('_') {
-                            write!(f, "...")?;
-                        } else {
-                            write!(f, "...{name}")?;
-                        }
-                    }
                 }
                 write!(f, "]")
             }
@@ -777,8 +700,7 @@ impl TypeEnv {
                 name.to_string(),
                 TypeScheme {
                     type_vars: vec!["a".to_string()],
-                    row_vars: vec![],
-                    constraints: vec![Constraint::new("Numeric", "a")],
+                        constraints: vec![Constraint::new("Numeric", "a")],
                     body: Type::Function {
                         params: vec![
                             (None, Type::TypeVar("a".to_string(), 0)),
@@ -796,7 +718,6 @@ impl TypeEnv {
             "/".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                row_vars: vec![],
                 constraints: vec![Constraint::new("Numeric", "a")],
                 body: Type::Function {
                     params: vec![
@@ -814,7 +735,6 @@ impl TypeEnv {
             "=".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                row_vars: vec![],
                 constraints: vec![Constraint::new("Equatable", "a")],
                 body: Type::Function {
                     params: vec![
@@ -832,7 +752,6 @@ impl TypeEnv {
             "<".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                row_vars: vec![],
                 constraints: vec![Constraint::new("Comparable", "a")],
                 body: Type::Function {
                     params: vec![
@@ -865,10 +784,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_dict".to_string(), 0),
-                    }),
+                    Type::Record(Row { fields: HashMap::new() }),
                 )],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
@@ -899,23 +815,14 @@ impl TypeEnv {
                 params: vec![
                     (
                         None,
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                            tail: RowTail::RowVar("_merge_a".to_string(), 0),
-                        }),
+                        Type::Record(Row { fields: HashMap::new() }),
                     ),
                     (
                         None,
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                            tail: RowTail::RowVar("_merge_b".to_string(), 0),
-                        }),
+                        Type::Record(Row { fields: HashMap::new() }),
                     ),
                 ],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_merge_r".to_string(), 0),
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -925,17 +832,11 @@ impl TypeEnv {
                 params: vec![
                     (
                         None,
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                            tail: RowTail::RowVar("_append_a".to_string(), 0),
-                        }),
+                        Type::Record(Row { fields: HashMap::new() }),
                     ),
                     (None, Type::Unknown),
                 ],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_append_r".to_string(), 0),
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -945,7 +846,6 @@ impl TypeEnv {
             "str".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                row_vars: vec![],
                 constraints: vec![Constraint::new("Showable", "a")],
                 body: Type::Function {
                     params: vec![(None, Type::TypeVar("a".to_string(), 0))],
@@ -1237,21 +1137,11 @@ impl TypeEnv {
                 ret: Box::new(Type::normalize_union(vec![
                     // [ok: a] variant
                     Type::Record(Row {
-                        fields: {
-                            let mut f = HashMap::new();
-                            f.insert("ok".to_string(), Type::Unknown);
-                            f
-                        },
-                        tail: RowTail::Empty,
+                        fields: { let mut f = HashMap::new(); f.insert("ok".to_string(), Type::Unknown); f },
                     }),
                     // [err: Str] variant
                     Type::Record(Row {
-                        fields: {
-                            let mut f = HashMap::new();
-                            f.insert("err".to_string(), Type::Str);
-                            f
-                        },
-                        tail: RowTail::Empty,
+                        fields: { let mut f = HashMap::new(); f.insert("err".to_string(), Type::Str); f },
                     }),
                 ])),
                 variadic: false,
@@ -1271,10 +1161,7 @@ impl TypeEnv {
                     ),
                     (
                         None,
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                            tail: RowTail::RowVar("_dict".to_string(), 0),
-                        }),
+                        Type::Record(Row { fields: HashMap::new() }),
                     ),
                 ],
                 ret: Box::new(Type::Unknown),
@@ -1422,10 +1309,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1474,10 +1358,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1486,10 +1367,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1506,10 +1384,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1534,10 +1409,7 @@ impl TypeEnv {
                     (None, Type::DatagramHandle), // socket
                     (None, Type::Unknown),        // String or Bytes
                 ],
-                ret: Box::new(Type::Record(crate::types::Row {
-                    fields: std::collections::HashMap::new(),
-                    tail: crate::types::RowTail::Empty,
-                })), // null
+                ret: Box::new(Type::Record(crate::types::Row { fields: std::collections::HashMap::new() })), // null
                 variadic: false,
             },
         );
@@ -1717,10 +1589,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::Handle)], // WriteHandle
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1769,10 +1638,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1781,10 +1647,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1793,10 +1656,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1805,10 +1665,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1817,10 +1674,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::Empty,
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -1884,10 +1738,7 @@ impl TypeEnv {
             "collect".to_string(),
             Type::Function {
                 params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_dict".to_string(), 0),
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -2074,15 +1925,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_rest_a".to_string(), 0),
-                    }),
+                    Type::Record(Row { fields: HashMap::new() }),
                 )],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_rest_r".to_string(), 0),
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -2094,16 +1939,10 @@ impl TypeEnv {
                     (None, Type::Unknown),
                     (
                         None,
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                            tail: RowTail::RowVar("_cons_a".to_string(), 0),
-                        }),
+                        Type::Record(Row { fields: HashMap::new() }),
                     ),
                 ],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_cons_r".to_string(), 0),
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -2113,15 +1952,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_reverse_a".to_string(), 0),
-                    }),
+                    Type::Record(Row { fields: HashMap::new() }),
                 )],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_reverse_r".to_string(), 0),
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -2131,15 +1964,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_sort_a".to_string(), 0),
-                    }),
+                    Type::Record(Row { fields: HashMap::new() }),
                 )],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_sort_r".to_string(), 0),
-                })),
+                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                 variadic: false,
             },
         );
@@ -2221,7 +2048,6 @@ impl TypeEnv {
             "builtin-get".to_string(),
             TypeScheme {
                 type_vars: vec![],
-                row_vars: vec![],
                 constraints: vec![],
                 body: Type::Function {
                     params: vec![(None, Type::Unknown), (None, Type::Unknown)],
@@ -2239,7 +2065,6 @@ impl TypeEnv {
             "get?".to_string(),
             TypeScheme {
                 type_vars: vec![],
-                row_vars: vec![],
                 constraints: vec![],
                 body: Type::Function {
                     params: vec![(None, Type::Unknown), (None, Type::Unknown)],
@@ -2493,10 +2318,7 @@ impl TypeEnv {
             "Url".to_string(),
             TypeAlias {
                 params: vec![],
-                body: Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: RowTail::RowVar("_uri".to_string(), 0),
-                }),
+                body: Type::Record(Row { fields: HashMap::new() }),
             },
         );
 
@@ -2529,10 +2351,7 @@ impl TypeEnv {
                 name.to_string(),
                 Type::Function {
                     params: vec![(None, Type::Str)],
-                    ret: Box::new(Type::Record(Row {
-                        fields: HashMap::new(),
-                        tail: RowTail::RowVar("_uri".to_string(), 0),
-                    })),
+                    ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
                     variadic: false,
                 },
             );
