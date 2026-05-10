@@ -264,29 +264,4 @@ toml-append-array-impl: [fn@Dict [root@Dict path depth@Int]
                 path
                 [+ depth 1]]]]]]
 
-# ============================================================================
-# Utility Functions
-# ============================================================================
-
-# Find the first occurrence of a substring. Returns character index or -1.
-# Simplified version from stdlib/strings.llt, inlined to avoid include complexity.
-str-find: [fn@Int [haystack@String needle@String]
-    [if [str-contains? haystack needle]
-        [str-find-impl haystack needle 0 [length needle] [length haystack]]
-        [- 0 1]]]
-
-str-find-impl: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
-    [if [< i haystack-len]
-        [str-find-check haystack needle i needle-len haystack-len]
-        [- 0 1]]]
-
-str-find-check: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
-    [if [= needle-len 0]
-        0
-        [if [< [+ i needle-len] [+ haystack-len 1]]
-            [if [= [str-slice haystack i [+ i needle-len]] needle]
-                i
-                [str-find-impl haystack needle [+ i 1] needle-len haystack-len]]
-            [str-find-impl haystack needle [+ i 1] needle-len haystack-len]]]]
-
 ]

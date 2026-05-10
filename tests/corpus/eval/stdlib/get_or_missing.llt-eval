@@ -1,6 +1,4 @@
 # get-or: returns default when key is missing
-[get-or [a: 1] b 99]
+[get-or [a: 1] "b" 99]
 === out
 Int(99)
-=== warn
-undefined variable: b at 1:16-1:17

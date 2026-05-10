@@ -321,8 +321,8 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [x] `tests/corpus/eval/typecheck/bas_width_subtyping.llt-eval` — output changed after RowTail removal; update expected output to match new format
 
 *Test bugs — fix the corpus test itself:*
-- [ ] `tests/corpus/eval/stdlib/get_or_missing.llt-eval` — uses bare `b` (undefined variable) instead of `"b"` (string key); fix to `[get-or [a: 1] "b" 99]` and remove `=== warn` section
-- [ ] `tests/corpus/eval/stdlib/encoding_scoping.llt-eval` (and `path_scoping`, `re_scoping`, `strings_scoping`, `toml_scoping`, `math_scoping`) — test intentionally calls undefined functions inside `[try ...]` to verify they're not in scope without `include`; the `=== warn` section is technically expected but these tests belong in `tests/corpus/eval/stdlib/errors/` not the clean stdlib directory; reorganize
+- [x] `tests/corpus/eval/stdlib/get_or_missing.llt-eval` — uses bare `b` (undefined variable) instead of `"b"` (string key); fix to `[get-or [a: 1] "b" 99]` and remove `=== warn` section
+- [x] `tests/corpus/eval/stdlib/encoding_scoping.llt-eval` (and `path_scoping`, `re_scoping`, `strings_scoping`, `toml_scoping`, `math_scoping`) — moved to `tests/corpus/eval/stdlib/errors/`
 
 *Tinct type checker bugs — causing spurious warnings on correct code:*
 - See `typeenv-wrapper-pattern` sprint below for the root cause and fix.
@@ -330,14 +330,14 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 
 **bas-get-seq-unknown** — BAS regression: `[get N seq]` returns `_` (Unknown) instead of the Seq element type. When `seq: Seq[String]`, `[get 0 seq]` should return `String`, but the type checker infers `_`. This causes false T003 errors in functions annotated with a concrete return type that use `get` on a Seq inside an `if` expression: the `if` body becomes e.g. `"" | _` instead of `String`. Observed in `samples/versions.llt:15` (http-body, `cannot unify String with "" | _`) and `samples/versions.llt:57` (dep-name-append, `cannot unify [] with [] | _`). Root cause: either `split` is typed as `Seq` (no element type) in TypeEnv, or `check_get` doesn't propagate the element type for integer-indexed Seq access. Investigate `TypeEnv::with_builtins()` entry for `split` and the `check_get` Seq arm in `src/typecheck.rs`.
 
-- [ ] Diagnose: add a minimal test `[parts: [split "x" "a x b"]]  [result: [get 0 parts]]` and check whether `result` infers `String` or `_` (`src/typecheck.rs`)
-- [ ] Fix `split` TypeEnv entry to return `Seq[String]` (if it currently returns bare `Seq`) OR fix `check_get` to return element type `T` when called on `Seq[T]` with an integer key (`src/type_env.rs`, `src/typecheck.rs`)
-- [ ] Verify `samples/versions.llt` T003 errors at lines 15 and 57 disappear after fix
+- [x] Diagnose: `[get 0 [split sep s]]` now returns `Str` via `Seq[Str]` element type propagation
+- [x] Fixed `split` TypeEnv entry to return `Seq[Str]`; fixed `check_get` to return element type `T` when called on `Seq[T]` with an integer key (`src/type_env.rs`, `src/typecheck.rs`)
+- [ ] Verify `samples/versions.llt` T003 errors at lines 15 and 57 disappear after fix (requires net.llt rewrite to test cleanly)
 
 **bas-narrowing-union-regression** — BAS RDNF step 1 removed `least_upper_bound` from `infer_if`, replacing it with `normalize_union + simplify_type`. This regresses 5 unit tests: the `if` expression now produces literal union types (`42 | 0`, `"hello" | "world"`) where narrowed concrete types (`Int`, `Str`) were previously inferred. Specifically: `test_narrowing_equality_literal_int`, `test_narrowing_equality_literal_reversed_operands`, `test_narrowing_equality_literal_string`, `test_narrowing_no_false_branch_narrowing`, `test_false_branch_narrowing_int_predicate` (`src/typecheck.rs:8625`, `8637`, `8648`, `8728`, `9777`).
 
-- [ ] Determine whether `simplify_type` should promote `n | m` (two IntLiterals) to `Int` as the RDNF literal-promotion rule intends — if so, the rule may not be firing on if-expression results (`src/types.rs`)
-- [ ] Fix the 5 failing narrowing unit tests to pass (`src/typecheck.rs`)
+- [x] `simplify_type` promotes `n | m` (two IntLiterals) to `Int` correctly — literal-promotion rule fires on if-expression results (`src/types.rs`)
+- [x] 5 narrowing unit tests all pass — `simplify_type` promotion working correctly (`src/typecheck.rs`)
 
 ### `typeenv-wrapper-pattern`: Apply private builtin-NAME + public prelude wrapper consistently
 
@@ -421,10 +421,10 @@ Organizing principles for `stdlib/`:
 4. **Protocol libraries** (`protocols/`) — low-level RFC wire format helpers; self-contained; no prelude duplication.
 
 *Document principles:*
-- [ ] Add `§Organization` section to `doc/11-stdlib.md` documenting the four principles above and the module taxonomy table (`doc/11-stdlib.md`)
+- [x] Add `§Organization` section to `doc/11-stdlib.md` documenting the four principles above and the module taxonomy table (`doc/11-stdlib.md`)
 
 *Move `str-find` to prelude* — toml-lite.llt and strings.llt both define it; consolidate in prelude (same pattern as str-repeat in cycle-196):
-- [ ] Move `str-find-impl`, `str-find-check` to `prelude.llt` private dict; add `str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1"]` to public dict; remove from `strings.llt` (`stdlib/prelude.llt`, `stdlib/strings.llt`)
+- [x] Move `str-find-impl`, `str-find-check` to `prelude.llt` private dict; add `str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1"]` to public dict; remove from `strings.llt` and `toml-lite.llt` (`stdlib/prelude.llt`, `stdlib/strings.llt`, `stdlib/toml-lite.llt`)
 
 *Export `make-entry` from prelude* — needed by toml-lite.llt and currently inaccessible from the public dict:
 - [x] Add `make-entry@[doc: "Construct a single-entry dict from key and value"]: make-entry` to prelude public dict (re-exports the private helper) (`stdlib/prelude.llt`)
@@ -449,9 +449,9 @@ Organizing principles for `stdlib/`:
 - [x] Replace `builtin-*` calls in `macros.llt` private helpers with prelude wrappers (`if`/`=`/`+`/`get`) where the prelude call is equivalent — the macro expander runs with prelude in scope (`stdlib/macros.llt`)
 
 *Update corpus tests:*
-- [ ] Move `tests/corpus/eval/stdlib/encoding_scoping.llt-eval`, `path_scoping.llt-eval`, `re_scoping.llt-eval`, `strings_scoping.llt-eval`, `toml_scoping.llt-eval`, `math_scoping.llt-eval` to `tests/corpus/eval/stdlib/errors/` — scoping-denial tests belong with error tests, not success-path tests (`tests/corpus/eval/stdlib/`)
-- [ ] Update `strings_scoping.llt-eval` to remove `str-find` from the "not-in-scope" list once it is in prelude; verify existing `str_find*.llt-eval` tests pass without any changes (`tests/corpus/eval/stdlib/`)
-- [ ] `just test` passes after all changes (`tests/`)
+- [x] Move `tests/corpus/eval/stdlib/encoding_scoping.llt-eval`, `path_scoping.llt-eval`, `re_scoping.llt-eval`, `strings_scoping.llt-eval`, `toml_scoping.llt-eval`, `math_scoping.llt-eval` to `tests/corpus/eval/stdlib/errors/` (`tests/corpus/eval/stdlib/`)
+- [x] `str_find*.llt-eval` tests updated to call `[str-find ...]` directly (no include needed); `strings_scoping` only tests `pad-right` (`tests/corpus/eval/stdlib/`)
+- [x] `just test` passes after all changes (`tests/`)
 
 ## Codebase Health
 

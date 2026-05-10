@@ -858,10 +858,11 @@ impl TypeEnv {
             "split".to_string(),
             Type::Function {
                 params: vec![(None, Type::Str), (None, Type::Str)],
-                // split returns an integer-keyed Dict, not a Seq. Use Unknown to avoid
-                // spurious "cannot unify Seq[String] with [...]" errors when downstream
-                // code passes the result to dict operations (length, get, builtin-reduce).
-                ret: Box::new(Type::Unknown),
+                // split returns an integer-keyed Dict of Strings. Typed as Seq[Str] so
+                // that `[get N [split sep s]]` returns Str via check_get's Seq[T] arm.
+                // (Seq[Str] and Dict[Int→Str] are both valid views; the Seq arm in check_get
+                // handles integer indexing and returns the element type Str.)
+                ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
             },
         );
