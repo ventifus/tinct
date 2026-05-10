@@ -1,0 +1,10 @@
+# parse-grpc-frame-header round-trip: build a frame for "hello" then parse
+# the header. Expected: compressed=false, length=5, header-len=5.
+
+[include "stdlib/protocols/grpc.llt"]
+---
+[call [fn [frame]
+    [call %.parse-grpc-frame-header [str-slice frame 0 5]]]
+    [call %.build-grpc-frame "hello" false]]
+=== out
+Dict({"compressed": Bool(false), "length": Int(5), "header-len": Int(5)})

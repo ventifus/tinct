@@ -1,0 +1,9 @@
+# encode-dns-name "example.com":
+# chr(7)+"example" = 8 bytes, chr(3)+"com" = 4 bytes, chr(0) = 1 byte.
+# Total: 13 bytes.
+
+[include "stdlib/protocols/dns.llt"]
+---
+[length [call %.encode-dns-name "example.com"]]
+=== out
+Int(13)
