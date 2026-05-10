@@ -1,0 +1,14 @@
+# BAS I-Case3 three-arm narrowing: after the Int arm, remaining_scrutinee becomes
+# scrutinee ∩ ~Int (Negation accumulation). After the Str arm it becomes
+# scrutinee ∩ ~Int ∩ ~Str. The wildcard arm sees the fully narrowed remaining type.
+# normalize_intersection handles the negation accumulation correctly.
+[describe: [fn [x]
+  [match x
+    Int  "integer"
+    Str  "string"
+    _    "other"]]
+ r1: [describe 42]
+ r2: [describe "hello"]
+ r3: [describe true]]
+=== out
+Dict({"describe": Function(x), "r1": String("integer"), "r2": String("string"), "r3": String("other")})
