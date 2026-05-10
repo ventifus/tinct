@@ -1,8 +1,8 @@
-# Test that quic-session exists and returns "not yet implemented"
+# Test that quic-session exists and checks its arity
 [quic-session "placeholder"]
 
 === error
-[E080] quic-session: QUIC not yet implemented
+[E080] quic-session: expected 4 arguments (cap host port opts), got 1
 
 === warn
 arity mismatch: expected 4 argument(s), got 1

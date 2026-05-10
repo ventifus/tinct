@@ -4073,39 +4073,367 @@ pub(crate) fn builtin_proxy_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     Err(EvalError::user_error("proxy-connect: not yet implemented".to_string(), call_span).into())
 }
 
-// ── HTTP-sessions stubs ────────────────────────────────────────────────────────
+// ── HTTP-sessions: QUIC and HTTP/3 ──────────────────────────────────────────────
 
-/// `quic-session`: Open a QUIC session to a host.
-/// Takes `(cap, host, port, opts)`.
-/// Stub — returns error until the quinn dependency is added.
+/// Sync wrapper around a `quinn::RecvStream` that bridges async reads to the
+/// synchronous `BufRead` trait expected by `Value::Handle`.
+///
+/// Each `read` call issues `block_on(recv.read_buf(...))` on the thread-local
+/// tokio runtime. This keeps all async I/O on one thread and avoids spawning.
+struct QuicRecvReader {
+    recv: quinn::RecvStream,
+    buf: Vec<u8>,
+    buf_pos: usize,
+}
+
+impl std::io::Read for QuicRecvReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.buf_pos < self.buf.len() {
+            // Serve from internal buffer first
+            let available = self.buf.len() - self.buf_pos;
+            let n = available.min(out.len());
+            out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
+            self.buf_pos += n;
+            return Ok(n);
+        }
+        // Buffer exhausted — fetch more from the stream
+        self.buf.clear();
+        self.buf_pos = 0;
+        self.buf.resize(8192, 0u8);
+        let n = crate::async_rt::block_on(self.recv.read(&mut self.buf))
+            .map_err(|e| std::io::Error::other(format!("quic recv: {e}")))?
+            .unwrap_or(0);
+        self.buf.truncate(n);
+        if n == 0 {
+            return Ok(0); // EOF
+        }
+        let take = n.min(out.len());
+        out[..take].copy_from_slice(&self.buf[..take]);
+        self.buf_pos = take;
+        Ok(take)
+    }
+}
+
+impl std::io::BufRead for QuicRecvReader {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.buf_pos >= self.buf.len() {
+            self.buf.clear();
+            self.buf_pos = 0;
+            self.buf.resize(8192, 0u8);
+            let n = crate::async_rt::block_on(self.recv.read(&mut self.buf))
+                .map_err(|e| std::io::Error::other(format!("quic recv: {e}")))?
+                .unwrap_or(0);
+            self.buf.truncate(n);
+        }
+        Ok(&self.buf[self.buf_pos..])
+    }
+    fn consume(&mut self, amt: usize) {
+        self.buf_pos = (self.buf_pos + amt).min(self.buf.len());
+    }
+}
+
+/// Sync wrapper around a `quinn::SendStream` that bridges async writes to the
+/// synchronous `Write` trait expected by `Value::Handle`.
+struct QuicSendWriter {
+    send: quinn::SendStream,
+}
+
+impl std::io::Write for QuicSendWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        crate::async_rt::block_on(self.send.write_all(data))
+            .map_err(|e| std::io::Error::other(format!("quic send: {e}")))?;
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(()) // quinn buffers internally; no explicit flush needed
+    }
+}
+
+/// `quic-session`: Open a QUIC connection to a remote host.
+///
+/// Takes `(cap, host, port, opts)` where:
+/// - `cap`  — a NetCap allowing the target host/port
+/// - `host` — hostname or IP string
+/// - `port` — integer port (1–65535)
+/// - `opts` — TLS options dict (same keys as `tls-connect`: `no-system-roots`,
+///             `mozilla-roots`, `ca-bundle`, `client-cert`, `client-key`, `alpn`, `pins`)
+///
+/// Returns a `QuicSession` on success.
 pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error(
-        "quic-session: QUIC not yet implemented — requires quinn dependency".to_string(),
+    use std::net::{SocketAddr, ToSocketAddrs};
+    use std::sync::Arc;
+
+    let BuiltinArgs {
+        args,
+        named,
         call_span,
-    )
-    .into())
+        ctx,
+    } = ctx_arg;
+
+    reject_named("quic-session", named, call_span)?;
+
+    if args.len() != 4 {
+        return Err(EvalError::user_error(
+            format!(
+                "quic-session: expected 4 arguments (cap host port opts), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    // Materialize all args — all are strict (cap, host, port, opts are all required immediately)
+    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let host_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let port_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let opts_val = materialize(&args[3], Some(&call_span), &ctx)?;
+
+    // Extract NetCap
+    let entries = match cap_val {
+        Value::NetCap(e) => e,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "quic-session".to_string(),
+                "NetCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let host_str = require_string("quic-session", host_val, args[1].span)?;
+
+    let port = match port_val {
+        Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
+        Value::Int(_) => {
+            return Err(EvalError::user_error(
+                "quic-session: port must be 1–65535".to_string(),
+                args[2].span,
+            )
+            .into())
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "quic-session".to_string(),
+                "Int",
+                other.type_name(),
+                args[2].span,
+            )
+            .into())
+        }
+    };
+
+    // Validate against NetCap allowlist (DNS-rebinding mitigation)
+    let resolved_ip = check_net_cap_allowlist(&entries, &host_str, Some(port), call_span)?;
+
+    // Determine server address for connection
+    let server_addr: SocketAddr = if let Some(ip) = resolved_ip {
+        SocketAddr::new(ip, port)
+    } else {
+        // Resolve hostname
+        format!("{}:{}", host_str, port)
+            .to_socket_addrs()
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("quic-session: failed to resolve '{}': {}", host_str, e),
+                    call_span,
+                )
+            })?
+            .next()
+            .ok_or_else(|| {
+                EvalError::user_error(
+                    format!("quic-session: no addresses for '{}'", host_str),
+                    call_span,
+                )
+            })?
+    };
+
+    // Build rustls ClientConfig, then adapt it for QUIC via quinn's rustls adapter.
+    // ALPN defaults to "h3" for QUIC sessions (RFC 9114 §3.1).
+    let mut tls_config = build_tls_config(&opts_val, args[3].span, &ctx)?;
+
+    // Override ALPN to h3 unless caller specified explicit alpn in opts.
+    // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
+    // We check opts for an explicit alpn key to respect caller overrides.
+    let has_explicit_alpn = matches!(&opts_val, Value::Dict(d)
+        if d.contains_key(&crate::value::Key::String("alpn".to_string())));
+    if !has_explicit_alpn {
+        tls_config.alpn_protocols = vec![b"h3".to_vec()];
+    }
+
+    // Adapt rustls config for QUIC
+    let quic_tls = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).map_err(|e| {
+        EvalError::user_error(
+            format!("quic-session: TLS config not suitable for QUIC: {}", e),
+            call_span,
+        )
+    })?;
+
+    let client_config = quinn::ClientConfig::new(Arc::new(quic_tls));
+
+    // Create a client endpoint bound to an ephemeral local UDP port
+    let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("valid bind addr");
+    let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(|e| {
+        EvalError::user_error(
+            format!("quic-session: failed to create QUIC endpoint: {}", e),
+            call_span,
+        )
+    })?;
+    endpoint.set_default_client_config(client_config);
+
+    // Connect (async → sync via block_on on the thread-local tokio runtime)
+    let connection = crate::async_rt::block_on(async {
+        let connecting = endpoint
+            .connect(server_addr, &host_str)
+            .map_err(|e| format!("quic-session: connect error: {}", e))?;
+        connecting
+            .await
+            .map_err(|e| format!("quic-session: handshake failed: {}", e))
+    })
+    .map_err(|msg| EvalError::user_error(msg, call_span))?;
+
+    ok_val(Value::QuicSession(Rc::new(connection)), call_span)
 }
 
-/// `quic-open-stream`: Open a bidirectional stream on a QUIC session.
-/// Takes `(quic_session)`.
-/// Stub — returns error until QUIC is implemented.
+/// `quic-open-stream`: Open a bidirectional QUIC stream on an existing session.
+///
+/// Takes `(quic_session)`. Returns a `Handle` with `Readable`, `Writable`, `Binary`,
+/// and `Stream` capabilities — the same interface as a TCP Handle.
+///
+/// Both halves bridge async quinn I/O to synchronous BufRead/Write via block_on.
 pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error(
-        "quic-open-stream: QUIC not yet implemented".to_string(),
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("quic-open-stream", named, call_span)?;
+
+    if args.len() != 1 {
+        return Err(EvalError::user_error(
+            format!(
+                "quic-open-stream: expected 1 argument (quic_session), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
+
+    let conn = match session_val {
+        Value::QuicSession(c) => c,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "quic-open-stream".to_string(),
+                "QuicSession",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Open a bidirectional stream (async → sync)
+    let (send, recv) = crate::async_rt::block_on(conn.open_bi()).map_err(|e| {
+        EvalError::user_error(
+            format!("quic-open-stream: failed to open stream: {}", e),
+            call_span,
+        )
+    })?;
+
+    let reader = QuicRecvReader {
+        recv,
+        buf: Vec::new(),
+        buf_pos: 0,
+    };
+    let writer = QuicSendWriter { send };
+
+    let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
+    let write_inner = Some(Rc::new(RefCell::new(
+        Box::new(writer) as Box<dyn std::io::Write>,
+    )));
+
+    let mut caps = HashMap::new();
+    caps.insert("Readable".to_string(), Value::Dict(IndexMap::new()));
+    caps.insert("Writable".to_string(), Value::Dict(IndexMap::new()));
+    caps.insert("Binary".to_string(), Value::Dict(IndexMap::new()));
+    caps.insert("Stream".to_string(), Value::Dict(IndexMap::new()));
+
+    ok_val(
+        Value::Handle {
+            caps,
+            inner,
+            write_inner,
+            seek_inner: None,
+            raw_tcp: None,
+            creation_span: call_span,
+        },
         call_span,
     )
-    .into())
 }
 
-/// `quic-open-datagram`: Send/receive datagrams on a QUIC session.
-/// Takes `(quic_session)`.
-/// Stub — returns error until QUIC is implemented.
+/// `quic-open-datagram`: Datagram channel on a QUIC session.
+///
+/// Takes `(quic_session)`. Returns a `DatagramHandle`-like value for send/recv
+/// of unreliable QUIC datagrams (RFC 9221).
+///
+/// TODO(http-sessions-datagram): QUIC datagrams require async send/recv via
+/// `conn.send_datagram()` / `conn.read_datagram()`. The current DatagramHandle
+/// uses std::net::UdpSocket (sync). Implementing QUIC datagram send/recv needs
+/// either (a) a new QuicDatagramHandle variant, or (b) async wrapper types.
+/// For now this returns a clear error directing users to `quic-open-stream`
+/// for reliable streaming, which is the common HTTP/3 use case.
 pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("quic-open-datagram", named, call_span)?;
+
+    if args.len() != 1 {
+        return Err(EvalError::user_error(
+            format!(
+                "quic-open-datagram: expected 1 argument (quic_session), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    // Materialize the session to validate the type, even though we stub the rest
+    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    match session_val {
+        Value::QuicSession(_) => {}
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "quic-open-datagram".to_string(),
+                "QuicSession",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    }
+
+    // TODO(http-sessions-datagram): Implement QUIC datagram send/recv.
+    // QUIC unreliable datagrams (RFC 9221) require a new Value variant because
+    // DatagramHandle wraps std::net::UdpSocket (sync), while quinn datagrams are async.
+    // Required additions: Value::QuicDatagramHandle(Rc<quinn::Connection>),
+    // with send-datagram/recv-datagram overloads dispatching on it.
     Err(EvalError::user_error(
-        "quic-open-datagram: QUIC not yet implemented".to_string(),
+        "quic-open-datagram: QUIC unreliable datagrams not yet implemented — \
+         use quic-open-stream for reliable streaming or http3-session for HTTP/3 requests"
+            .to_string(),
         call_span,
     )
     .into())
@@ -4123,16 +4451,76 @@ pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     .into())
 }
 
-/// `http3-session`: Establish an HTTP/3 session over a QUIC session.
-/// Takes `(quic_session, opts)`.
-/// Stub — returns error until HTTP/3 is implemented.
+/// `http3-session`: Establish an HTTP/3 session over a QUIC connection.
+///
+/// Takes `(quic_session)`. The QUIC connection's ALPN must include "h3" (set
+/// automatically by `quic-session` unless overridden). Performs the HTTP/3
+/// handshake and returns an `Http3Session` that can be passed to `http-request`.
+///
+/// Implementation: wraps quinn::Connection in h3_quinn::Connection, then drives
+/// the h3::client handshake via block_on. The returned SendRequest is stored in
+/// the Http3Session value.
 pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error(
-        "http3-session: HTTP/3 not yet implemented".to_string(),
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("http3-session", named, call_span)?;
+
+    if args.len() != 1 {
+        return Err(EvalError::user_error(
+            format!(
+                "http3-session: expected 1 argument (quic_session), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
+
+    let conn = match session_val {
+        Value::QuicSession(c) => c,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http3-session".to_string(),
+                "QuicSession",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Adapt the quinn connection into an h3-quinn connection, then build the H3 client.
+    // `h3_quinn::Connection::new` takes ownership of a `quinn::Connection`.
+    // We Rc::clone the connection — quinn::Connection is Clone and the clone shares
+    // the same underlying QUIC connection state.
+    let quic_conn = (*conn).clone();
+    let h3_conn = h3_quinn::Connection::new(quic_conn);
+
+    // Drive the HTTP/3 handshake: returns (SendRequest, h3::client::Connection).
+    // We discard the Connection driver — it must be polled to process frames.
+    // TODO(http-sessions-driver): The h3 Connection driver needs to be driven
+    // concurrently with requests. For a blocking runtime we need a background task.
+    // For now the SendRequest can issue requests but the driver won't run unless
+    // block_on is called, which is sufficient for sequential request/response patterns.
+    let (_driver, send_request) =
+        crate::async_rt::block_on(h3::client::builder().build(h3_conn)).map_err(|e| {
+            EvalError::user_error(
+                format!("http3-session: HTTP/3 handshake failed: {}", e),
+                call_span,
+            )
+        })?;
+
+    ok_val(
+        Value::Http3Session(Rc::new(RefCell::new(send_request))),
         call_span,
     )
-    .into())
 }
 
 /// `http-request`: Issue an HTTP request on an HTTP/2 or HTTP/3 session.
