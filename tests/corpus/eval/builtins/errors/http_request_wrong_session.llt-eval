@@ -4,3 +4,6 @@
 
 === error
 [E010] http-request: expected Http2Session or Http3Session, got String
+
+=== warn
+cannot unify Http2Session | Http3Session with "not-a-session"
