@@ -1,6 +1,4 @@
 # str-find: return -1 when substring not found
-[include "stdlib/strings.llt"]
----
-[call %.str-find "hello world" "x"]
+[str-find "hello world" "x"]
 === out
 Int(-1)

@@ -1,6 +1,4 @@
-# str-find: find substring in string
-[include "stdlib/strings.llt"]
----
-[call %.str-find "hello world" "world"]
+# str-find is now in prelude — no include needed
+[str-find "hello world" "world"]
 === out
 Int(6)

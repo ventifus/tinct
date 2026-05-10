@@ -27,59 +27,11 @@
 #
 # ============================================================================
 
+# ============================================================================
+# FIRST DICT: Private helpers (not exported)
+# ============================================================================
+
 [
-
-# ============================================================================
-# Main Parser Entry Point
-# ============================================================================
-
-# Parse a TOML-lite document into a nested dict structure.
-# Type: (String -> Result Dict)
-# Example: [parse-toml-lite "key = \"value\""] => [Ok [key: "value"]]
-# Example: [parse-toml-lite "[section]\nkey = 42"] => [Ok [section: [key: 42]]]
-# Returns: [Ok dict] or [Err message]
-parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn [text@String]
-    [try [fn [] [parse-toml-lines
-        [collect
-            [filter [fn [line] [not-blank-or-comment line]]
-                [map [fn [line] [trim line]]
-                    [split "\n" text]]]]]]]]
-
-# ============================================================================
-# Line-by-Line Parser
-# ============================================================================
-
-# Process a list of non-blank, non-comment lines.
-# Type: (Dict String -> Dict)
-parse-toml-lines: [fn@Dict [lines]
-    [parse-lines-impl lines 0 [length lines] [] []]]
-
-# Recursive line processor with accumulator.
-# Type: (Dict String -> Int -> Int -> Dict -> Dict String -> Dict)
-parse-lines-impl: [fn@Dict [lines i@Int len@Int acc@Dict current-path]
-    [if [>= i len]
-        acc
-        [parse-line-dispatch lines i len acc current-path [get i lines]]]]
-
-# Dispatch on line type: [section], [[array-table]], or key = value.
-# Type: (Dict String -> Int -> Int -> Dict -> Dict String -> String -> Dict)
-parse-line-dispatch: [fn@Dict [lines i@Int len@Int acc@Dict current-path line@String]
-    [if [starts-with? line "[["]
-        # Array table: [[name]]
-        [parse-lines-impl lines [+ i 1] len
-            [toml-append-array-table acc [parse-array-table-header line]]
-            [parse-array-table-header line]]
-        [if [starts-with? line "["]
-            # Section: [name]
-            [parse-lines-impl lines [+ i 1] len acc [parse-section-header line]]
-            # Key-value pair
-            [parse-lines-impl lines [+ i 1] len
-                [toml-set-at-path acc current-path [parse-key-value line]]
-                current-path]]]]
-
-# ============================================================================
-# Line Predicates
-# ============================================================================
 
 # Check if a line is blank or a comment.
 # Type: (String -> Bool)
@@ -88,17 +40,6 @@ not-blank-or-comment: [fn@Bool [line@String]
         false
         [not [starts-with? line "#"]]]]
 
-# ============================================================================
-# Section Header Parsing
-# ============================================================================
-
-# Parse a [section] header into a path list.
-# Type: (String -> Dict String)
-# Example: "[server]" => ["server"]
-# Example: "[database.options]" => ["database" "options"]
-parse-section-header: [fn@Dict [line@String]
-    [parse-section-name [trim [str-slice line 1 [- [length line] 1]]]]]
-
 # Parse section name, splitting on dots for nested sections.
 # Type: (String -> Dict String)
 parse-section-name: [fn@Dict [name@String]
@@ -106,26 +47,10 @@ parse-section-name: [fn@Dict [name@String]
         [collect [split "." name]]
         [0: name]]]
 
-# ============================================================================
-# Array Table Header Parsing
-# ============================================================================
-
 # Parse a [[array-table]] header into a path list.
 # Type: (String -> Dict String)
-# Example: "[[items]]" => ["items"]
 parse-array-table-header: [fn@Dict [line@String]
     [parse-section-name [trim [str-slice line 2 [- [length line] 2]]]]]
-
-# ============================================================================
-# Key-Value Parsing
-# ============================================================================
-
-# Parse a key = value line into a single-entry dict.
-# Type: (String -> Dict)
-# Example: "key = \"value\"" => [key: "value"]
-# Example: "count = 42" => [count: 42]
-parse-key-value: [fn@Dict [line@String]
-    [parse-kv-split line [str-find line "="]]]
 
 # Split on = and build the key-value entry.
 # Type: (String -> Int -> Dict)
@@ -137,23 +62,7 @@ parse-kv-split: [fn@Dict [line@String eq-pos@Int]
 # Build the key-value dict entry.
 # Type: (String -> String -> Dict)
 parse-kv-build: [fn@Dict [key@String value@String]
-    [make-entry key [parse-value value]]]
-
-# ============================================================================
-# Value Parsing
-# ============================================================================
-
-# Parse a TOML value (string, integer, boolean, or bare string).
-# Type: (String -> Any)
-# Example: "\"hello\"" => "hello"
-# Example: "42" => 42
-# Example: "true" => true
-parse-value: [fn [value@String]
-    [if [starts-with? value "\""]
-        # Quoted string: strip quotes
-        [str-slice value 1 [- [length value] 1]]
-        # Try parsing as integer
-        [parse-value-try-int value]]]
+    [make-entry key [parse-value-impl value]]]
 
 # Try parsing as integer, fall back to boolean or bare string.
 # Type: (String -> Any)
@@ -171,31 +80,67 @@ parse-value-try-bool: [fn [value@String]
             false
             value]]]
 
-# ============================================================================
-# Path-Based Dict Mutation
-# ============================================================================
+# Parse a TOML value — internal impl.
+# Type: (String -> Any)
+parse-value-impl: [fn [value@String]
+    [if [starts-with? value "\""]
+        [str-slice value 1 [- [length value] 1]]
+        [parse-value-try-int value]]]
 
-# Set a key-value pair at a nested path.
+# Parse a key = value line into a single-entry dict — internal impl.
+# Type: (String -> Dict)
+parse-key-value-impl: [fn@Dict [line@String]
+    [parse-kv-split line [str-find line "="]]]
+
+# Recursive line processor with accumulator.
+# Type: (Dict String -> Int -> Int -> Dict -> Dict String -> Dict)
+parse-lines-impl: [fn@Dict [lines i@Int len@Int acc@Dict current-path]
+    [if [>= i len]
+        acc
+        [parse-line-dispatch lines i len acc current-path [get i lines]]]]
+
+# Dispatch on line type: [section], [[array-table]], or key = value.
+# Type: (Dict String -> Int -> Int -> Dict -> Dict String -> String -> Dict)
+parse-line-dispatch: [fn@Dict [lines i@Int len@Int acc@Dict current-path line@String]
+    [if [starts-with? line "[["]
+        # Array table: [[name]]
+        [parse-lines-impl lines [+ i 1] len
+            [toml-append-array-table-impl acc [parse-array-table-header line]]
+            [parse-array-table-header line]]
+        [if [starts-with? line "["]
+            # Section: [name]
+            [parse-lines-impl lines [+ i 1] len acc [parse-section-header-impl line]]
+            # Key-value pair
+            [parse-lines-impl lines [+ i 1] len
+                [toml-set-at-path-impl-entry acc current-path [parse-key-value-impl line]]
+                current-path]]]]
+
+# Parse a [section] header into a path list — internal impl.
+# Type: (String -> Dict String)
+parse-section-header-impl: [fn@Dict [line@String]
+    [parse-section-name [trim [str-slice line 1 [- [length line] 1]]]]]
+
+# Process a list of non-blank, non-comment lines — internal impl.
+# Type: (Dict String -> Dict)
+parse-toml-lines-impl: [fn@Dict [lines]
+    [parse-lines-impl lines 0 [length lines] [] []]]
+
+# Recursive path setter — entry point.
 # Type: (Dict -> Dict String -> Dict -> Dict)
-# Example: [toml-set-at-path [] ["server"] [port: 8080]] => [server: [port: 8080]]
-toml-set-at-path: [fn@Dict [root@Dict path kv@Dict]
+toml-set-at-path-impl-entry: [fn@Dict [root@Dict path kv@Dict]
     [if [= [type-of path] "String"]
-        # Single-key path (leaf)
         [merge root kv]
-        # Multi-level path (nested)
         [if [= [length path] 0]
             [merge root kv]
-            [toml-set-at-path-impl root path kv 0]]]]
+            [toml-set-at-path-rec root path kv 0]]]]
 
-# Recursive path setter.
+# Recursive path setter — recursive step.
 # Type: (Dict -> Dict String -> Dict -> Int -> Dict)
-toml-set-at-path-impl: [fn@Dict [root@Dict path kv@Dict depth@Int]
+toml-set-at-path-rec: [fn@Dict [root@Dict path kv@Dict depth@Int]
     [if [= depth [- [length path] 1]]
-        # Last segment: check if target is an array table, merge into last element if so
         [toml-set-at-path-final root [get depth path] kv]
-        # Intermediate segment: recurse
         [merge root [make-entry [get depth path]
-            [toml-set-at-path-impl
+            [toml-set-at-path-rec
                 [get-or root [get depth path] []]
                 path
                 kv
@@ -208,21 +153,13 @@ toml-set-at-path-final: [fn@Dict [root@Dict key@String kv@Dict]
 
 toml-set-at-path-final-check: [fn@Dict [root@Dict key@String kv@Dict target]
     [if [is-array? target]
-        # Target is an array: merge kv into last element (if non-empty)
         [if [> [length target] 0]
-            [merge root [make-entry key [toml-merge-into-last target kv]]]
-            # Empty array: just merge kv directly (shouldn't happen in valid TOML)
+            [merge root [make-entry key [toml-merge-into-last-impl target kv]]]
             [merge root [make-entry key [merge target kv]]]]
-        # Target is not an array: merge kv directly
         [merge root [make-entry key [merge target kv]]]]]
 
-# Merge kv into the last element of an array (integer-keyed dict).
-# Type: (Dict -> Dict -> Dict)
-toml-merge-into-last: [fn@Dict [arr@Dict kv@Dict]
-    [toml-merge-into-last-impl arr kv [- [length arr] 1]]]
-
-toml-merge-into-last-impl: [fn@Dict [arr@Dict kv@Dict last-idx@Int]
-    [merge arr [make-entry last-idx [merge [get last-idx arr] kv]]]]
+toml-merge-into-last-impl: [fn@Dict [arr@Dict kv@Dict]
+    [merge arr [make-entry [- [length arr] 1] [merge [get [- [length arr] 1] arr] kv]]]]
 
 # Check if a value is an array (dict with all integer keys and non-empty).
 # Type: (Any -> Bool)
@@ -231,37 +168,89 @@ is-array?: [fn@Bool [xs]
 
 is-array?-check-keys: [fn@Bool [xs@Dict]
     [if [= [length xs] 0]
-        false  # Empty dicts are not considered arrays
+        false
         [all? int? [keys xs]]]]
 
+# Recursive array table appender — recursive step.
+# Type: (Dict -> Dict String -> Int -> Dict)
+toml-append-array-rec: [fn@Dict [root@Dict path depth@Int]
+    [if [= depth [- [length path] 1]]
+        [merge root [make-entry [get depth path]
+            [append [get-or root [get depth path] []] []]]]
+        [merge root [make-entry [get depth path]
+            [toml-append-array-rec
+                [get-or root [get depth path] []]
+                path
+                [+ depth 1]]]]]]
+
+# Append a new dict to an array table at the given path — internal impl.
+# Type: (Dict -> Dict String -> Dict)
+toml-append-array-table-impl: [fn@Dict [root@Dict path]
+    [if [= [type-of path] "String"]
+        [merge root [make-entry path [append [get-or root path []] []]]]
+        [if [= [length path] 0]
+            root
+            [toml-append-array-rec root path 0]]]]
+
+]
+
 # ============================================================================
-# Array Table Support
+# SECOND DICT: Public API (exported)
 # ============================================================================
+
+[
+
+# Parse a TOML-lite document into a nested dict structure.
+# Returns: [Ok dict] or [Err message]
+parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn [text@String]
+    [try [fn [] [parse-toml-lines-impl
+        [collect
+            [filter [fn [line] [not-blank-or-comment line]]
+                [map [fn [line] [trim line]]
+                    [split "\n" text]]]]]]]]
+
+# Process a list of non-blank, non-comment lines.
+# Type: (Dict String -> Dict)
+parse-toml-lines: [fn@Dict [lines]
+    [parse-toml-lines-impl lines]]
+
+# Parse a [section] header into a path list.
+# Type: (String -> Dict String)
+# Example: "[server]" => ["server"]
+# Example: "[database.options]" => ["database" "options"]
+parse-section-header: [fn@Dict [line@String]
+    [parse-section-header-impl line]]
+
+# Parse a key = value line into a single-entry dict.
+# Type: (String -> Dict)
+# Example: "key = \"value\"" => [key: "value"]
+# Example: "count = 42" => [count: 42]
+parse-key-value: [fn@Dict [line@String]
+    [parse-key-value-impl line]]
+
+# Parse a TOML value (string, integer, boolean, or bare string).
+# Type: (String -> Any)
+# Example: "\"hello\"" => "hello"
+# Example: "42" => 42
+# Example: "true" => true
+parse-value: [fn [value@String]
+    [parse-value-impl value]]
+
+# Set a key-value pair at a nested path.
+# Type: (Dict -> Dict String -> Dict -> Dict)
+# Example: [toml-set-at-path [] ["server"] [port: 8080]] => [server: [port: 8080]]
+toml-set-at-path: [fn@Dict [root@Dict path kv@Dict]
+    [toml-set-at-path-impl-entry root path kv]]
+
+# Merge kv into the last element of an array (integer-keyed dict).
+# Type: (Dict -> Dict -> Dict)
+toml-merge-into-last: [fn@Dict [arr@Dict kv@Dict]
+    [toml-merge-into-last-impl arr kv]]
 
 # Append a new dict to an array table at the given path.
 # Type: (Dict -> Dict String -> Dict)
 # Example: [toml-append-array-table [] ["items"]] => [items: [[]]]
 toml-append-array-table: [fn@Dict [root@Dict path]
-    [if [= [type-of path] "String"]
-        # Single-key path
-        [merge root [make-entry path [append [get-or root path []] []]]]
-        # Multi-level path
-        [if [= [length path] 0]
-            root
-            [toml-append-array-impl root path 0]]]]
-
-# Recursive array table appender.
-# Type: (Dict -> Dict String -> Int -> Dict)
-toml-append-array-impl: [fn@Dict [root@Dict path depth@Int]
-    [if [= depth [- [length path] 1]]
-        # Last segment: append empty dict to array
-        [merge root [make-entry [get depth path]
-            [append [get-or root [get depth path] []] []]]]
-        # Intermediate segment: recurse
-        [merge root [make-entry [get depth path]
-            [toml-append-array-impl
-                [get-or root [get depth path] []]
-                path
-                [+ depth 1]]]]]]
+    [toml-append-array-table-impl root path]]
 
 ]
