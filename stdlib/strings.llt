@@ -66,7 +66,7 @@ str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
 # Example: [pad-left "hi" 5 " "] => "   hi"
 # Example: [pad-left "hello" 3 " "] => "hello"
 # Example: [pad-left "x" 4 "0"] => "000x"
-pad-left: [fn@String [s@String width@Int pad-char@String]
+pad-left@[doc: "Left-pad a string to a target width with a padding character"]: [fn@String [s@String width@Int pad-char@String]
     [builtin-if [builtin-lt [length s] width]
         [str [str-repeat pad-char [builtin-sub width [length s]]] s]
         s]]
@@ -77,7 +77,7 @@ pad-left: [fn@String [s@String width@Int pad-char@String]
 # Example: [pad-right "hi" 5 " "] => "hi   "
 # Example: [pad-right "hello" 3 " "] => "hello"
 # Example: [pad-right "x" 4 "0"] => "x000"
-pad-right: [fn@String [s@String width@Int pad-char@String]
+pad-right@[doc: "Right-pad a string to a target width with a padding character"]: [fn@String [s@String width@Int pad-char@String]
     [builtin-if [builtin-lt [length s] width]
         [str s [str-repeat pad-char [builtin-sub width [length s]]]]
         s]]
@@ -99,7 +99,7 @@ pad-right: [fn@String [s@String width@Int pad-char@String]
 # - If found, iterate through positions 0..length(haystack) and check if
 #   str-slice(haystack, i, i+needle_len) == needle
 # - Return the first matching position
-str-find: [fn@Int [haystack@String needle@String]
+str-find@[doc: "Find the first occurrence of a substring (needle) in a string (haystack)"]: [fn@Int [haystack@String needle@String]
     [builtin-if [str-contains? haystack needle]
         [str-find-impl haystack needle 0 [length needle] [length haystack]]
         [builtin-sub 0 1]]]
@@ -118,7 +118,7 @@ str-find: [fn@Int [haystack@String needle@String]
 # - Build a dict of characters by extracting single-char substrings
 # - Reverse the dict using the builtin reverse function
 # - Concatenate the reversed characters back into a string
-str-reverse: [fn@String [s@String]
+str-reverse@[doc: "Reverse a string by characters"]: [fn@String [s@String]
     [str-reverse-impl s 0 [length s] ""]]
 
 ]

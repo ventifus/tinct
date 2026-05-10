@@ -303,13 +303,13 @@ try-or-impl: [fn [try-result@Dict default]
 # Returns its argument unchanged.
 # Type: (a -> a)
 # Example: [identity 42] => 42
-identity: [fn [x] x]
+identity@[doc: "Return argument unchanged"]: [fn [x] x]
 
 # Returns first argument, ignores second. Classic K combinator (K in SKI combinatorics).
 # Type: (a -> b -> a)
 # Example: [const "hello" "ignored"] => "hello"
 # Example: [map [const 0] [1 2 3]] => [0 0 0]
-const: [fn [x] [fn [y] x]]
+const@[doc: "Return first argument, ignore second (K combinator)"]: [fn [x] [fn [y] x]]
 
 # ============================================================================
 # Logic
@@ -319,13 +319,13 @@ const: [fn [x] [fn [y] x]]
 # Type: (Any -> Bool)
 # Example: [not true] => false
 # Example: [not 0] => true
-not: [fn@Bool [x] [builtin-if x false true]]
+not@[doc: "Boolean negation"]: [fn@Bool [x] [builtin-if x false true]]
 
 # Short-circuit AND: if a is false, b is never evaluated.
 # Type: (Any -> Any -> Any)
 # Example: [and true "yes"] => "yes"
 # Example: [and false [expensive]] => false   (expensive never called)
-and: [fn [a b] [builtin-if a b false]]
+and@[doc: "Short-circuit AND"]: [fn [a b] [builtin-if a b false]]
 
 # Short-circuit OR: if a is truthy, returns a; otherwise returns b.
 # Type: (Any -> Any -> Any)
@@ -334,14 +334,14 @@ and: [fn [a b] [builtin-if a b false]]
 # NOTE: Both references to `a` in `[builtin-if a a b]` are bound to
 # the same parameter — the parameter binding is shared, so the thunk is forced
 # at most once (Launchbury 1993). The second reference is a cache hit.
-or: [fn [a b] [builtin-if a a b]]
+or@[doc: "Short-circuit OR"]: [fn [a b] [builtin-if a a b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.
 # Type: ((a -> Bool) -> Dict a -> Bool)
 # Errors if xs is a Seq (collect first).
 # Example: [any? [fn [x] [> x 0]] [1 -2 3]] => true
 # Inherently materializing: short-circuits but materializes elements until condition met.
-any?: [fn@Bool [pred@Fn xs@Dict]
+any?@[doc: "True if any element satisfies predicate"]: [fn@Bool [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "any?: expected Dict, got Seq -- collect the Seq first"]
         [any?-impl pred xs [keys xs] 0 [length xs]]]]
@@ -351,7 +351,7 @@ any?: [fn@Bool [pred@Fn xs@Dict]
 # Errors if xs is a Seq (collect first).
 # Example: [all? [fn [x] [> x 0]] [1 2 3]] => true
 # Inherently materializing: short-circuits but materializes elements until condition failed.
-all?: [fn@Bool [pred@Fn xs@Dict]
+all?@[doc: "True if all elements satisfy predicate"]: [fn@Bool [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "all?: expected Dict, got Seq -- collect the Seq first"]
         [all?-impl pred xs [keys xs] 0 [length xs]]]]
@@ -362,15 +362,15 @@ all?: [fn@Bool [pred@Fn xs@Dict]
 
 # Greater than. Derived by swapping arguments of builtin-lt.
 # Type: (Comparable -> Comparable -> Bool)
->: [fn@Bool [a b] [builtin-lt b a]]
+>@[doc: "Greater than"]: [fn@Bool [a b] [builtin-lt b a]]
 
 # Less than or equal. Derived as negation of >.
 # Type: (Comparable -> Comparable -> Bool)
-<=: [fn@Bool [a b] [not [builtin-lt b a]]]
+<=@[doc: "Less than or equal"]: [fn@Bool [a b] [not [builtin-lt b a]]]
 
 # Greater than or equal. Derived as negation of <.
 # Type: (Comparable -> Comparable -> Bool)
->=: [fn@Bool [a b] [not [builtin-lt a b]]]
+>=@[doc: "Greater than or equal"]: [fn@Bool [a b] [not [builtin-lt a b]]]
 
 # ============================================================================
 # Arithmetic (derived from builtin-add, builtin-sub, builtin-mul, builtin-div)
@@ -383,7 +383,7 @@ all?: [fn@Bool [pred@Fn xs@Dict]
 # Example: [quot -7 2] => -3
 # Contrast with floor-div (truncates toward negative infinity) which does not exist in LLT.
 # Inherently materializing: derived from arithmetic operations.
-quot: [fn@Int [a@Number b@Number] [trunc [builtin-div a b]]]
+quot@[doc: "Integer quotient (truncate toward zero)"]: [fn@Int [a@Number b@Number] [trunc [builtin-div a b]]]
 
 # Integer remainder with the same sign as the dividend (a), NOT the divisor.
 # Type: (Number -> Number -> Number)
@@ -393,7 +393,7 @@ quot: [fn@Int [a@Number b@Number] [trunc [builtin-div a b]]]
 # Example: [mod -7 3] => -1
 # Example: [mod 7 -3] => 1
 # Inherently materializing: derived from arithmetic operations.
-mod: [fn@Number [a@Number b@Number] [builtin-sub a [builtin-mul [quot a b] b]]]
+mod@[doc: "Integer remainder (sign of dividend)"]: [fn@Number [a@Number b@Number] [builtin-sub a [builtin-mul [quot a b] b]]]
 
 # ============================================================================
 # Numeric Conversion (derived from floor, round, builtin-add, builtin-sub)
@@ -404,21 +404,21 @@ mod: [fn@Number [a@Number b@Number] [builtin-sub a [builtin-mul [quot a b] b]]]
 # Example: [ceil 3.2] => 4
 # Example: [ceil -3.2] => -3
 # Inherently materializing: derived from arithmetic operations.
-ceil: [fn@Int [x@Number] [builtin-sub 0 [floor [builtin-sub 0 x]]]]
+ceil@[doc: "Ceiling (smallest integer >= x)"]: [fn@Int [x@Number] [builtin-sub 0 [floor [builtin-sub 0 x]]]]
 
 # Truncate toward zero: floor for non-negative, ceil for negative.
 # Type: (Number -> Int)
 # Example: [trunc 3.7] => 3
 # Example: [trunc -3.7] => -3
 # Inherently materializing: derived from arithmetic operations.
-trunc: [fn@Int [x@Number] [builtin-if [gte-impl x 0] [floor x] [ceil x]]]
+trunc@[doc: "Truncate toward zero"]: [fn@Int [x@Number] [builtin-if [gte-impl x 0] [floor x] [ceil x]]]
 
 # Absolute value: non-negative magnitude. Returns -x for negative, x otherwise.
 # Type: (Number -> Number)
 # Example: [abs -5] => 5
 # Example: [abs 3.14] => 3.14
 # Inherently materializing: derived from comparison and arithmetic.
-abs: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]
+abs@[doc: "Absolute value"]: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]
 
 # Sign of a number: -1 for negative, 0 for zero, 1 for positive.
 # Type: (Number -> Int)
@@ -426,7 +426,7 @@ abs: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]
 # Example: [sign 0] => 0
 # Example: [sign 3.14] => 1
 # Inherently materializing: derived from comparison and arithmetic.
-sign: [fn@Int [x@Number]
+sign@[doc: "Sign of number (-1, 0, or 1)"]: [fn@Int [x@Number]
     [cond [
         [[builtin-lt x 0] [builtin-sub 0 1]]
         [[builtin-eq x 0] 0]
@@ -439,7 +439,7 @@ sign: [fn@Int [x@Number]
 # Example: [clamp 0 10 15] => 10
 # Example: [clamp 0 10 7] => 7
 # Inherently materializing: derived from comparison operations.
-clamp: [fn@Number [lo@Number hi@Number x@Number]
+clamp@[doc: "Clamp value between bounds (inclusive)"]: [fn@Number [lo@Number hi@Number x@Number]
     [builtin-if [builtin-lt x lo]
         lo
         [builtin-if [builtin-lt hi x]
@@ -460,7 +460,7 @@ clamp: [fn@Number [lo@Number hi@Number x@Number]
 # Example: [collect [words "hello world"]] => ["hello" "world"]
 # Example: [collect [words "  spaces  "]] => ["spaces"]
 # Inherently materializing: splits string content, derived from split.
-words: [fn@Seq [s@String]
+words@[doc: "Split string on spaces into words"]: [fn@Seq [s@String]
     [builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]]
 
 # ============================================================================
@@ -470,12 +470,12 @@ words: [fn@Seq [s@String]
 # Evaluates body if pred is true, otherwise returns [].
 # assert: [when true result] => result
 # assert: [when false result] => []
-when: [fn@Any [pred body] [builtin-if pred body []]]
+when@[doc: "Evaluate body if predicate is true"]: [fn@Any [pred body] [builtin-if pred body []]]
 
 # Evaluates body if pred is false, otherwise returns [].
 # assert: [unless false result] => result
 # assert: [unless true result] => []
-unless: [fn@Any [pred body] [builtin-if pred [] body]]
+unless@[doc: "Evaluate body if predicate is false"]: [fn@Any [pred body] [builtin-if pred [] body]]
 
 # Multi-branch conditional. Takes a list of [condition result] pairs.
 # Returns [] (empty dict) when no branch matches.
@@ -484,7 +484,7 @@ unless: [fn@Any [pred body] [builtin-if pred [] body]]
 #   [[> x 0]  "positive"]
 #   [true     "other"]
 # ]]
-cond: [fn@Any [pairs@Dict] [cond-impl pairs 0]]
+cond@[doc: "Multi-branch conditional"]: [fn@Any [pairs@Dict] [cond-impl pairs 0]]
 
 # until: Moved to Rust builtin to avoid recursion depth limit.
 # The LLT recursive version hit MAX_EVAL_DEPTH at ~230 iterations.
@@ -502,7 +502,7 @@ get@[doc: "Get value by key with error if missing"]: [fn [k xs@Dict] [builtin-ge
 # Check if a key exists in a dict. Uses try around get access.
 # assert: [has? [x: 1] "x"] => true
 # assert: [has? [x: 1] "y"] => false
-has?: [fn@Bool [xs@Dict k]
+has?@[doc: "Check if dict has key"]: [fn@Bool [xs@Dict k]
     [has?-impl [try [fn [] [get k xs]]]]]
 
 # Get value by key with a default if key is missing.
@@ -516,7 +516,7 @@ get-or@[doc: "Get value by key with default"]: [fn [xs@Dict k default]
 # Use get-in-or for a default fallback on missing keys.
 # Usage: [get-in data [key1 key2 key3]]
 # Inherently materializing: must traverse nested dict path, accessing each level.
-get-in: [fn@Any [xs path@Dict]
+get-in@[doc: "Get nested value by path"]: [fn@Any [xs path@Dict]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
@@ -527,7 +527,7 @@ get-in: [fn@Any [xs path@Dict]
 # Returns default when any intermediate key is missing.
 # Usage: [get-in-or data [key1 key2 key3] fallback]
 # Inherently materializing: must traverse nested dict path, accessing each level.
-get-in-or: [fn@Any [xs path@Dict default]
+get-in-or@[doc: "Get nested value by path with default"]: [fn@Any [xs path@Dict default]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
@@ -543,28 +543,28 @@ empty?@[doc: "Check if collection is empty"]: [fn@Bool [xs] [builtin-if [seq? xs
 
 # Set a key in a dict (returns new dict with key added/updated).
 # assert: [set [a: 1] "b" 2] => [a: 1  b: 2]
-set: [fn@Dict [xs@Dict k v] [merge xs [make-entry k v]]]
+set@[doc: "Set key in dict"]: [fn@Dict [xs@Dict k v] [merge xs [make-entry k v]]]
 
 # Remove a key from a dict (preserves remaining keys).
 # assert: [remove [a: 1  b: 2  c: 3] "b"] => [a: 1  c: 3]
-remove: [fn@Dict [xs@Dict k] [remove-impl xs [keys xs] k 0 []]]
+remove@[doc: "Remove key from dict"]: [fn@Dict [xs@Dict k] [remove-impl xs [keys xs] k 0 []]]
 
 # Update a key by applying a function to its current value.
 # assert: [update [x: 5] "x" [fn [v] [+ v 1]]] => [x: 6]
-update: [fn@Dict [xs@Dict k f@Fn]
+update@[doc: "Update dict value by applying function"]: [fn@Dict [xs@Dict k f@Fn]
     [set xs k [f [get k xs]]]]
 
 # Get all values from a dict as an integer-indexed list.
 # Preserves dict insertion order: values are returned in the same order as keys.
 # assert: [values [a: 10  b: 20]] => [10 20]
-values: [fn@Dict [xs@Dict] [values-impl xs [keys xs] 0 []]]
+values@[doc: "Get all dict values as list"]: [fn@Dict [xs@Dict] [values-impl xs [keys xs] 0 []]]
 
 # Get all entries as a list of [key: k  value: v] dicts.
 # Preserves dict insertion order: entries appear in the same order as the source dict.
-entries: [fn@Dict [xs@Dict] [entries-impl xs [keys xs] 0 []]]
+entries@[doc: "Get all entries as key-value pairs"]: [fn@Dict [xs@Dict] [entries-impl xs [keys xs] 0 []]]
 
 # Reconstruct a dict from a list of [key: k value: v] pairs. Inverse of entries.
-from-entries: [fn@Dict [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
+from-entries@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
 
 # ============================================================================
 # List Operations (integer keys, dense 0..n output)
@@ -580,7 +580,7 @@ from-entries: [fn@Dict [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-e
 # Supports negative indices: -1 is last, -2 is second-to-last, etc.
 # assert: [nth [10 20 30] 1] => 20
 # assert: [nth [10 20 30] -1] => 30
-nth: [fn [xs@Dict n@Int]
+nth@[doc: "Get nth element (supports negative indices)"]: [fn [xs@Dict n@Int]
     [nth-impl xs [keys xs] n [length xs]]]
 
 # Get the last element by insertion-order position, last character of a string, or last byte of Bytes (as Int).
@@ -598,7 +598,7 @@ nth: [fn [xs@Dict n@Int]
 # Append an element to the end of a list. Delegates to append.
 # Type: (Dict a -> a -> Dict a)
 # Example: [conj [1 2 3] 4] => [1 2 3 4]
-conj: [fn@Dict [xs@Dict x] [append xs x]]
+conj@[doc: "Append element to end of list"]: [fn@Dict [xs@Dict x] [append xs x]]
 
 # concat is a Rust-native builtin (dual-dispatch on Dict/Seq).
 
@@ -610,7 +610,7 @@ conj: [fn@Dict [xs@Dict x] [append xs x]]
 # Type: (Dict a -> Dict a)
 # Example: [reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]
 # Inherently materializing: must traverse all entries.
-reindex: [fn@Dict [xs@Dict] [reindex-impl xs [keys xs] 0 []]]
+reindex@[doc: "Rebuild with dense 0..n integer keys"]: [fn@Dict [xs@Dict] [reindex-impl xs [keys xs] 0 []]]
 
 # ============================================================================
 # Sorting (Mergesort)
@@ -625,7 +625,7 @@ reindex: [fn@Dict [xs@Dict] [reindex-impl xs [keys xs] 0 []]]
 # See src/builtins.rs for implementation.
 
 # sort-merge depends on empty? (public) — lives in the public dict for mutual recursion.
-sort-merge: [fn@Dict [cmp@Fn left@Dict right@Dict]
+sort-merge@[doc: "Merge two sorted lists (internal helper)"]: [fn@Dict [cmp@Fn left@Dict right@Dict]
     [builtin-if [empty? left]
         right
         [builtin-if [empty? right]
@@ -639,7 +639,7 @@ sort-merge: [fn@Dict [cmp@Fn left@Dict right@Dict]
 # cmp is a less-than function: [cmp a b] returns true if a should come before b.
 # Example: [sort-by [fn [a b] [> a b]] [3 1 2]] => [3 2 1]  (descending)
 # Inherently materializing: must compare values to determine order.
-sort-by: [fn@Dict [cmp@Fn xs@Dict]
+sort-by@[doc: "Sort with custom comparator"]: [fn@Dict [cmp@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "sort-by: expected Dict, got Seq -- collect the Seq first"]
         [builtin-if [<= [length xs] 1]
@@ -658,7 +658,7 @@ sorted@[doc: "Sort collection in ascending order"]: [fn@Dict [xs]
 # Like sorted, with a custom comparator.
 # Type: ((a -> a -> Bool) -> Seq a | Dict a -> Dict a)
 # Example: [sorted-by [fn [a b] [> a b]] [filter [fn [x] [> x 0]] [-1 3 -2 4]]] => [4 3]
-sorted-by: [fn@Dict [cmp@Fn xs]
+sorted-by@[doc: "Sort with custom comparator (accepts Seq or Dict)"]: [fn@Dict [cmp@Fn xs]
     [sort-by cmp [builtin-if [seq? xs] [collect xs] xs]]]
 
 # ============================================================================
@@ -673,7 +673,7 @@ sorted-by: [fn@Dict [cmp@Fn xs]
 # Returns the longest prefix of xs where all elements satisfy pred.
 # Example: [take-while [fn [x] [< x 3]] [1 2 3 4]] => [0: 1  1: 2]
 # Inherently materializing: must check elements until predicate fails.
-take-while: [fn@Dict [pred@Fn xs@Dict]
+take-while@[doc: "Take elements while predicate holds"]: [fn@Dict [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
         [take-while-impl pred xs [keys xs] 0 []]]]
@@ -683,7 +683,7 @@ take-while: [fn@Dict [pred@Fn xs@Dict]
 # Returns the remaining suffix starting from the first element that fails pred.
 # Example: [drop-while [fn [x] [< x 3]] [1 2 3 4]] => [2: 3  3: 4]
 # Inherently materializing: must check elements until predicate fails.
-drop-while: [fn@Dict [pred@Fn xs@Dict]
+drop-while@[doc: "Drop elements while predicate holds"]: [fn@Dict [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
         [drop-while-impl pred xs [keys xs] 0 [] true]]]
@@ -694,7 +694,7 @@ drop-while: [fn@Dict [pred@Fn xs@Dict]
 # Keys are preserved unchanged.
 # Example: [map-entries [fn [e] [* e.value 2]] [a: 1 b: 2]] => [a: 2 b: 4]
 # Example: [map-entries [fn [e] e.key] [x: 10 y: 20]] => [x: "x" y: "y"]
-map-entries: [fn@Dict [f@Fn xs@Dict] [map-entries-impl f xs [keys xs] 0 []]]
+map-entries@[doc: "Apply function to each key-value entry"]: [fn@Dict [f@Fn xs@Dict] [map-entries-impl f xs [keys xs] 0 []]]
 
 # Left fold: alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
 # Type: ((b -> a -> b) -> b -> Dict a -> b)
@@ -702,29 +702,29 @@ map-entries: [fn@Dict [f@Fn xs@Dict] [map-entries-impl f xs [keys xs] 0 []]]
 # Both are left folds: f receives (accumulator, element) and the result becomes
 # the new accumulator. Starting accumulator is init.
 # Example: [fold [fn [acc x] [+ acc x]] 0 [1 2 3 4]] => 10
-fold: [fn [f@Fn init xs] [builtin-reduce f init xs]]
+fold@[doc: "Left fold (alias for reduce)"]: [fn [f@Fn init xs] [builtin-reduce f init xs]]
 
 # Take a slice by position (start inclusive, end exclusive). Preserves original keys.
 # Type: (Dict a -> Int -> Int -> Dict a)
 # Example: [slice [a: 1 b: 2 c: 3 d: 4] 1 3] => [b: 2 c: 3]
 # slice-impl and slice-step depend on and (public) — live in the public dict.
-slice-impl: [fn@Dict [xs@Dict ks start@Int end@Int i@Int acc@Dict]
+slice-impl@[doc: "Slice implementation (internal helper)"]: [fn@Dict [xs@Dict ks start@Int end@Int i@Int acc@Dict]
     [builtin-if [gte-impl i [length ks]]
         acc
         [builtin-if [and [gte-impl i start] [builtin-lt i end]]
             [slice-step xs ks start end i acc [get i ks]]
             [slice-impl xs ks start end [builtin-add i 1] acc]]]]
 
-slice-step: [fn@Dict [xs@Dict ks start@Int end@Int i@Int acc@Dict current-key]
+slice-step@[doc: "Slice step (internal helper)"]: [fn@Dict [xs@Dict ks start@Int end@Int i@Int acc@Dict current-key]
     [slice-impl xs ks start end [builtin-add i 1]
         [merge acc [make-entry current-key [get current-key xs]]]]]
 
-slice: [fn@Dict [xs@Dict start@Int end@Int] [slice-impl xs [keys xs] start end 0 []]]
+slice@[doc: "Take slice by position (preserves keys)"]: [fn@Dict [xs@Dict start@Int end@Int] [slice-impl xs [keys xs] start end 0 []]]
 
 # Pair entries from two collections by position. Returns a list of pairs.
 # If both xs and ys are Seq: lazy Seq of pairs.
 # Otherwise: collect Seqs to Dicts, then use eager zip-dict-impl.
-zip: [fn@Any [xs ys]
+zip@[doc: "Pair entries from two collections by position"]: [fn@Any [xs ys]
     [builtin-if [and [seq? xs] [seq? ys]]
         [zip-seq-impl xs ys]
         [zip-dict-impl
@@ -734,19 +734,19 @@ zip: [fn@Any [xs ys]
 # Flatten nested lists one level deep.
 # flatten-impl/flatten-step depend on reindex (public) — live in public dict.
 # Inherently materializing: must inspect each value to check if it is a list.
-flatten-impl: [fn@Dict [xs@Dict ks i@Int acc@Dict]
+flatten-impl@[doc: "Flatten implementation (internal helper)"]: [fn@Dict [xs@Dict ks i@Int acc@Dict]
     [builtin-if [gte-impl i [length ks]]
         acc
         [flatten-step xs ks i acc [get i ks]]]]
 
-flatten-step: [fn@Dict [xs@Dict ks i@Int acc@Dict current-key]
+flatten-step@[doc: "Flatten step (internal helper)"]: [fn@Dict [xs@Dict ks i@Int acc@Dict current-key]
     [builtin-if [dict? [get current-key xs]]
         [flatten-impl xs ks [builtin-add i 1]
             [concat acc [reindex [get current-key xs]]]]
         [flatten-impl xs ks [builtin-add i 1]
             [append acc [get current-key xs]]]]]
 
-flatten: [fn@Dict [xs@Dict]
+flatten@[doc: "Flatten nested lists one level deep"]: [fn@Dict [xs@Dict]
     [builtin-if [seq? xs]
         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
         [flatten-impl xs [keys xs] 0 []]]]
@@ -754,29 +754,29 @@ flatten: [fn@Dict [xs@Dict]
 # Recursively search for a key in nested dicts.
 # find-deep helpers depend on find-deep and get (public) — live in public dict.
 # Inherently materializing: must traverse nested structure recursively to search.
-find-deep-impl: [fn@Any [xs@Dict target ks i@Int]
+find-deep-impl@[doc: "Find-deep implementation (internal helper)"]: [fn@Any [xs@Dict target ks i@Int]
     [builtin-if [gte-impl i [length ks]]
         [error [str "key not found: " target]]
         [find-deep-check xs target ks i [get i ks]]]]
 
-find-deep-check: [fn@Any [xs@Dict target ks i@Int current-key]
+find-deep-check@[doc: "Find-deep check (internal helper)"]: [fn@Any [xs@Dict target ks i@Int current-key]
     [builtin-if [builtin-eq current-key target]
         [get current-key xs]
         [builtin-if [dict? [get current-key xs]]
             [find-deep-try [get current-key xs] target xs ks i]
             [find-deep-impl xs target ks [builtin-add i 1]]]]]
 
-find-deep-try: [fn@Any [subtree@Dict target parent@Dict ks i@Int]
+find-deep-try@[doc: "Find-deep try (internal helper)"]: [fn@Any [subtree@Dict target parent@Dict ks i@Int]
     [find-deep-try-check
         [try [fn [] [find-deep subtree target]]]
         parent target ks i]]
 
-find-deep-try-check: [fn@Any [result@Dict parent@Dict target ks i@Int]
+find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [result@Dict parent@Dict target ks i@Int]
     [match result
         [ok: v] v
         [err: _] [find-deep-impl parent target ks [builtin-add i 1]]]]
 
-find-deep: [fn@Any [xs@Dict target]
+find-deep@[doc: "Recursively search for key in nested dicts"]: [fn@Any [xs@Dict target]
     [find-deep-impl xs target [keys xs] 0]]
 
 # ============================================================================
@@ -785,14 +785,14 @@ find-deep: [fn@Any [xs@Dict target]
 
 # Transform a dict via entries: entries → map(f) → from-entries.
 # Each entry passed to f has the shape [key: k value: v].
-with-entries: [fn@Dict [xs@Dict f@Fn] [from-entries [builtin-map f [entries xs]]]]
+with-entries@[doc: "Transform dict via entries pipeline"]: [fn@Dict [xs@Dict f@Fn] [from-entries [builtin-map f [entries xs]]]]
 
 # Split a collection into two groups: elements satisfying pred and those that do not.
 # Type: ((a -> Bool) -> Dict a -> [pass: Dict a  fail: Dict a])
 # Returns a dict with keys `pass` (matching) and `fail` (non-matching).
 # Both groups are integer-keyed dicts (eager, not Seqs) for predictable downstream use.
 # Example: [partition [fn [x] [> x 0]] [1 -2 3 -4]] => [pass: [1 3]  fail: [-2 -4]]
-partition: [fn@Dict [pred@Fn xs]
+partition@[doc: "Split collection into pass/fail groups"]: [fn@Dict [pred@Fn xs]
     [builtin-reduce
         [fn [acc e]
             [partition-step acc e [pred e]]]
@@ -805,27 +805,27 @@ partition: [fn@Dict [pred@Fn xs]
 # Example: [flat-map [fn [x] [$x [* x 2]]] [1 2 3]] => [1 2 2 4 3 6]
 # Uses concat to accumulate the results of f, avoiding Seq/Dict flush issues.
 # Inherently materializing: f must return collections that can be concatenated.
-flat-map: [fn@Dict [f@Fn xs]
+flat-map@[doc: "Map and flatten results"]: [fn@Dict [f@Fn xs]
     [builtin-reduce [fn [acc x] [concat acc [f x]]] [] xs]]
 
 # Return the first element satisfying pred, or error if none found.
 # filter on Dict returns a Seq; head gets the first element (errors if Seq is empty).
-find-first: [fn [pred@Fn xs] [head [builtin-filter pred xs]]]
+find-first@[doc: "Find first element matching predicate"]: [fn [pred@Fn xs] [head [builtin-filter pred xs]]]
 
 # Return the first element satisfying pred, or default if none found.
-find-first-or: [fn [pred@Fn default xs]
+find-first-or@[doc: "Find first matching element or return default"]: [fn [pred@Fn default xs]
     [try-or [fn [] [find-first pred xs]] default]]
 
 # Group elements of xs into a dict of lists, keyed by the result of applying f.
 # Elements with the same key are collected together (insertion order preserved).
 # Inherently materializing: must inspect all elements.
 # group-by-step depends on get-or (public) — lives in public dict.
-group-by-step: [fn@Dict [acc@Dict x k]
+group-by-step@[doc: "Group-by step (internal helper)"]: [fn@Dict [acc@Dict x k]
     [merge acc
         [make-entry k
             [append [get-or acc k []] x]]]]
 
-group-by: [fn@Dict [f@Fn xs]
+group-by@[doc: "Group elements by function result"]: [fn@Dict [f@Fn xs]
     [builtin-reduce
         [fn [acc x]
             [group-by-step acc x [f x]]]
@@ -836,7 +836,7 @@ group-by: [fn@Dict [f@Fn xs]
 # all other values from b override a (right-biased at each level).
 # Inherently materializing: must inspect values to determine if they are dicts.
 # deep-merge-step depends on has?/get/deep-merge (public) — lives in public dict.
-deep-merge-step: [fn@Dict [acc@Dict a@Dict b@Dict k]
+deep-merge-step@[doc: "Deep-merge step (internal helper)"]: [fn@Dict [acc@Dict a@Dict b@Dict k]
     [merge acc
         [make-entry k
             [builtin-if
@@ -848,7 +848,7 @@ deep-merge-step: [fn@Dict [acc@Dict a@Dict b@Dict k]
                 [deep-merge [get k a] [get k b]]
                 [get k b]]]]]
 
-deep-merge: [fn@Dict [a@Dict b@Dict]
+deep-merge@[doc: "Merge dicts recursively"]: [fn@Dict [a@Dict b@Dict]
     [builtin-reduce
         [fn [acc k]
             [deep-merge-step acc a b k]]
@@ -860,14 +860,14 @@ deep-merge: [fn@Dict [a@Dict b@Dict]
 # For non-dicts: apply f directly to the value.
 # Inherently materializing: must traverse entire structure.
 # walk-dict depends on walk (public) — lives in public dict.
-walk-dict: [fn@Dict [f@Fn xs@Dict]
+walk-dict@[doc: "Walk nested dict structure (internal helper)"]: [fn@Dict [f@Fn xs@Dict]
     [builtin-reduce
         [fn [acc k]
             [merge acc [make-entry k [walk f [get k xs]]]]]
         []
         [keys xs]]]
 
-walk: [fn@Any [f@Fn xs]
+walk@[doc: "Apply function bottom-up to nested structure"]: [fn@Any [f@Fn xs]
     [builtin-if [dict? xs]
         [f [walk-dict f xs]]
         [f xs]]]
@@ -875,7 +875,7 @@ walk: [fn@Any [f@Fn xs]
 # Unzip a list of pairs into a pair of lists.
 # Takes a list of 2-element dicts [0: a 1: b] and returns [a: [0: a0 1: a1 ...] b: [0: b0 1: b1 ...]].
 # Inherently materializing: must map over the entire collection.
-unzip: [fn@Dict [pairs]
+unzip@[doc: "Unzip list of pairs into pair of lists"]: [fn@Dict [pairs]
     [a: [builtin-map [fn [p] p.0] pairs]
      b: [builtin-map [fn [p] p.1] pairs]]]
 
@@ -883,7 +883,7 @@ unzip: [fn@Dict [pairs]
 # Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]].
 # All inner dicts must have the same keys.
 # Inherently materializing: must iterate over all rows and columns.
-transpose: [fn@Dict [rows@Dict]
+transpose@[doc: "Transpose 2D dict (flip rows and columns)"]: [fn@Dict [rows@Dict]
     [builtin-if [empty? rows]
         []
         [transpose-impl rows [keys [first [values rows]]]]]]
@@ -894,15 +894,15 @@ transpose: [fn@Dict [rows@Dict]
 
 # Sum all elements of a numeric collection.
 # Inherently materializing: must reduce all elements.
-sum: [fn@Number [xs] [builtin-reduce [fn [a b] [builtin-add a b]] 0 xs]]
+sum@[doc: "Sum all elements"]: [fn@Number [xs] [builtin-reduce [fn [a b] [builtin-add a b]] 0 xs]]
 
 # Product of all elements in a numeric collection.
 # Inherently materializing: must reduce all elements.
-product: [fn@Number [xs] [builtin-reduce [fn [a b] [builtin-mul a b]] 1 xs]]
+product@[doc: "Product of all elements"]: [fn@Number [xs] [builtin-reduce [fn [a b] [builtin-mul a b]] 1 xs]]
 
 # Return the minimum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic min).
-min: [fn [xs]
+min@[doc: "Minimum element"]: [fn [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] a b]]
         [first xs]
@@ -910,7 +910,7 @@ min: [fn [xs]
 
 # Return the maximum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic max).
-max: [fn [xs]
+max@[doc: "Maximum element"]: [fn [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] b a]]
         [first xs]
@@ -918,7 +918,7 @@ max: [fn [xs]
 
 # Count elements satisfying pred.
 # Uses reduce to count, avoiding the Seq→length issue (filter on Dict returns Seq).
-count: [fn@Int [pred@Fn xs]
+count@[doc: "Count elements satisfying predicate"]: [fn@Int [pred@Fn xs]
     [builtin-reduce
         [fn [acc x] [builtin-if [pred x] [builtin-add acc 1] acc]]
         0
@@ -947,33 +947,33 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [xs val]
 # Remove duplicate elements, keeping the first occurrence of each.
 # Inherently materializing: O(n²) due to sequential contains? checks.
 # uniq-impl/uniq-step depend on contains? (public) — live in public dict.
-uniq-impl: [fn@Dict [ks xs@Dict acc@Dict seen@Dict i@Int]
+uniq-impl@[doc: "Uniq implementation (internal helper)"]: [fn@Dict [ks xs@Dict acc@Dict seen@Dict i@Int]
     [builtin-if [gte-impl i [length ks]]
         acc
         [uniq-step ks xs acc seen i [builtin-get [builtin-get i ks] xs]]]]
 
-uniq-step: [fn@Dict [ks xs@Dict acc@Dict seen@Dict i@Int v]
+uniq-step@[doc: "Uniq step (internal helper)"]: [fn@Dict [ks xs@Dict acc@Dict seen@Dict i@Int v]
     [builtin-if [contains? seen v]
         [uniq-impl ks xs acc seen [builtin-add i 1]]
         [uniq-impl ks xs [append acc v] [append seen v] [builtin-add i 1]]]]
 
-uniq: [fn@Dict [xs@Dict]
+uniq@[doc: "Remove duplicates (keep first occurrence)"]: [fn@Dict [xs@Dict]
     [uniq-impl [keys xs] xs [] [] 0]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
-foldr: [fn [f@Fn acc xs] [builtin-reduce f acc [reverse xs]]]
+foldr@[doc: "Right fold"]: [fn [f@Fn acc xs] [builtin-reduce f acc [reverse xs]]]
 
 # ============================================================================
 # Composition
 # ============================================================================
 
 # Compose two functions: (compose f g)(x) = f(g(x)).
-compose: [fn@Fn [f@Fn g@Fn] [fn [x] [f [g x]]]]
+compose@[doc: "Compose two functions"]: [fn@Fn [f@Fn g@Fn] [fn [x] [f [g x]]]]
 
 # Thread a value through a series of functions.
 # Usage: [-> data step1 step2 step3]
-->: [fn [x ...stages] [builtin-reduce [fn [acc f] [f acc]] x stages]]
+->@[doc: "Thread value through functions"]: [fn [x ...stages] [builtin-reduce [fn [acc f] [f acc]] x stages]]
 
 # ============================================================================
 # Type Predicates
@@ -989,7 +989,7 @@ compose: [fn@Fn [f@Fn g@Fn] [fn [x] [f [g x]]]]
 # Example: [list? [1 2 3]] => true (keys 0, 1, 2 are all ints)
 # Example: [list? [a: 1 b: 2]] => false (string keys)
 # Inherently materializing: must check all keys via all?.
-list?: [fn@Bool [xs]
+list?@[doc: "Check if dict has all integer keys"]: [fn@Bool [xs]
     [and [dict? xs] [all? [fn [k] [int? k]] [keys xs]]]]
 
 # ============================================================================
@@ -998,7 +998,7 @@ list?: [fn@Bool [xs]
 
 # Call a function; if it errors, return the default value.
 # Inherently materializing: must materialize body to catch errors.
-try-or: [fn [f@Fn default]
+try-or@[doc: "Call function; return default on error"]: [fn [f@Fn default]
     [try-or-impl [try f] default]]
 
 # ============================================================================
@@ -1014,7 +1014,7 @@ try-or: [fn [f@Fn default]
 
 # Assert a condition; if false, raise an error with the given message.
 # Inherently materializing: must materialize condition to check.
-assert: [fn@Bool [cond msg@String] [builtin-if cond true [error msg]]]
+assert@[doc: "Assert condition with error message"]: [fn@Bool [cond msg@String] [builtin-if cond true [error msg]]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
@@ -1037,37 +1037,37 @@ assert: [fn@Bool [cond msg@String] [builtin-if cond true [error msg]]]
 # builtins. This is an accepted trade-off of the overridable-ops design.
 
 # Comparison operators
-<: [fn@Bool [a b] [builtin-lt a b]]
-=: [fn@Bool [a b] [builtin-eq a b]]
+<@[doc: "Less than"]: [fn@Bool [a b] [builtin-lt a b]]
+=@[doc: "Equality"]: [fn@Bool [a b] [builtin-eq a b]]
 
 # Arithmetic operators
-+: [fn@Number [a@Number b@Number] [builtin-add a b]]
--: [fn@Number [a@Number b@Number] [builtin-sub a b]]
-*: [fn@Number [a@Number b@Number] [builtin-mul a b]]
-/: [fn@Number [a@Number b@Number] [builtin-div a b]]
++@[doc: "Addition"]: [fn@Number [a@Number b@Number] [builtin-add a b]]
+-@[doc: "Subtraction"]: [fn@Number [a@Number b@Number] [builtin-sub a b]]
+*@[doc: "Multiplication"]: [fn@Number [a@Number b@Number] [builtin-mul a b]]
+/@[doc: "Division"]: [fn@Number [a@Number b@Number] [builtin-div a b]]
 
 # Control flow
-if: [fn [c t e] [builtin-if c t e]]
+if@[doc: "Conditional (select branch by condition)"]: [fn [c t e] [builtin-if c t e]]
 
 # Higher-order collection functions
 filter@[doc: "Keep elements matching predicate"]: [fn [pred@Fn xs] [builtin-filter pred xs]]
 map@[doc: "Apply function to each element"]: [fn [f@Fn xs] [builtin-map f xs]]
 reduce@[doc: "Reduce collection with binary function"]: [fn [f@Fn init xs] [builtin-reduce f init xs]]
-take: [fn [n@Int xs] [builtin-take n xs]]
-drop: [fn [n@Int xs] [builtin-drop n xs]]
+take@[doc: "Take first n elements"]: [fn [n@Int xs] [builtin-take n xs]]
+drop@[doc: "Drop first n elements"]: [fn [n@Int xs] [builtin-drop n xs]]
 
 # Reconstruct a Dict from a Seq of key-value pair dicts.
 # Takes a Seq of [key: K, value: V] dicts (as produced by each-kv).
 # Returns a Dict with those key-value mappings.
 # assert: [collect-kv [[key: "a" value: 1] [key: "b" value: 2]]] => [a: 1 b: 2]
-collect-kv: [fn@Dict [xs] [builtin-reduce [fn [acc kv] [merge acc [make-entry kv.key kv.value]]] [] xs]]
+collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [xs] [builtin-reduce [fn [acc kv] [merge acc [make-entry kv.key kv.value]]] [] xs]]
 
 # Repeat a string n times.
 # str-repeat: Str -> Int -> Str
 # assert: [str-repeat "x" 3] => "xxx"
 # assert: [str-repeat "ab" 2] => "abab"
 # assert: [str-repeat "x" 0] => ""
-str-repeat: [fn@Str [s@Str n@Int]
+str-repeat@[doc: "Repeat string n times"]: [fn@Str [s@Str n@Int]
   [builtin-reduce [fn [acc _] [str acc s]] "" [range 0 n]]]
 
 # ============================================================================
@@ -1079,20 +1079,20 @@ str-repeat: [fn@Str [s@Str n@Int]
 # assert: [[between 0 255] 42] => true
 # assert: [[between 0 255] -1] => false
 # assert: [[between 0 255] 256] => false
-between: [fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
+between@[doc: "Predicate factory for range check (inclusive)"]: [fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
 
 # non-negative: predicate — checks v >= 0.
 # non-negative: Int -> Bool
 # assert: [non-negative 0] => true
 # assert: [non-negative 42] => true
 # assert: [non-negative -1] => false
-non-negative: [fn [v] [>= v 0]]
+non-negative@[doc: "Check if value is non-negative"]: [fn [v] [>= v 0]]
 
 # positive: predicate — checks v > 0.
 # positive: Int -> Bool
 # assert: [positive 1] => true
 # assert: [positive 0] => false
 # assert: [positive -1] => false
-positive: [fn [v] [> v 0]]
+positive@[doc: "Check if value is positive"]: [fn [v] [> v 0]]
 
 ]

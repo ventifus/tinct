@@ -170,7 +170,7 @@ tmpl-step-literal: [fn [acc piece]
 # Pre-registered as the "tmpl" macro by expand_macros before processing user code.
 # Receives macro-args dict: {0: template-str-ast, 1?: expr-ast-0, 2?: expr-ast-1, ...}
 # Returns an AST call dict for [str ...].
-tmpl-transformer: [fn [macro-args]
+tmpl-transformer@[doc: "String interpolation macro transformer (i\"...$var...\" syntax)"]: [fn [macro-args]
   [tmpl-expand
     [builtin-get "value" [builtin-get 0 macro-args]]
     macro-args]]

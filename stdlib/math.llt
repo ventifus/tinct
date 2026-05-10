@@ -20,15 +20,15 @@
 
 # Pi: ratio of a circle's circumference to its diameter
 # Type: Float
-pi: 3.141592653589793
+pi@[doc: "Pi: ratio of a circle's circumference to its diameter"]: 3.141592653589793
 
 # Euler's number: base of the natural logarithm
 # Type: Float
-e: 2.718281828459045
+e@[doc: "Euler's number: base of the natural logarithm"]: 2.718281828459045
 
 # Golden ratio: (1 + sqrt(5)) / 2
 # Type: Float
-phi: 1.618033988749895
+phi@[doc: "Golden ratio: (1 + sqrt(5)) / 2"]: 1.618033988749895
 
 # ============================================================================
 # Pure-Tinct Math Functions
@@ -38,28 +38,28 @@ phi: 1.618033988749895
 # Type: (Number -> Number -> Float)
 # Example: [hypot 3 4] => 5.0
 # Example: [hypot 1 1] => 1.4142135623730951
-hypot: [fn@Float [a@Number b@Number]
+hypot@[doc: "Hypotenuse: Euclidean distance sqrt(a² + b²)"]: [fn@Float [a@Number b@Number]
     [sqrt [+ [pow a 2] [pow b 2]]]]
 
 # Convert degrees to radians: d * (π / 180)
 # Type: (Number -> Float)
 # Example: [deg->rad 180] => 3.141592653589793
 # Example: [deg->rad 90] => 1.5707963267948966
-deg->rad: [fn@Float [d@Number]
+deg->rad@[doc: "Convert degrees to radians"]: [fn@Float [d@Number]
     [* d [/ pi 180.0]]]
 
 # Convert radians to degrees: r * (180 / π)
 # Type: (Number -> Float)
 # Example: [rad->deg 3.141592653589793] => 180.0
 # Example: [rad->deg 1.5707963267948966] => 90.0
-rad->deg: [fn@Float [r@Number]
+rad->deg@[doc: "Convert radians to degrees"]: [fn@Float [r@Number]
     [* r [/ 180.0 pi]]]
 
 # Logarithm with arbitrary base: log_b(x) = ln(x) / ln(b)
 # Type: (Number -> Number -> Float)
 # Example: [log-base 2 8] => 3.0
 # Example: [log-base 10 100] => 2.0
-log-base: [fn@Float [base@Number x@Number]
+log-base@[doc: "Logarithm with arbitrary base"]: [fn@Float [base@Number x@Number]
     [/ [log x] [log base]]]
 
 ]

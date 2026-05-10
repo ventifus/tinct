@@ -99,7 +99,7 @@ yaml-dict-value: [fn@String [val@Any indent@Int]
     [yaml-value val indent]]]
 
 # Public API: format value to YAML
-yaml: [fn@String [val@Any]
+yaml@[doc: "Convert value to YAML 1.2 string"]: [fn@String [val@Any]
   [if [dict? val]
     [if [yaml-list? val]
       [str [yaml-list val 0] "\n"]

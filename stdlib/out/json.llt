@@ -75,7 +75,7 @@ json-dict-entries: [fn@String [d@Dict ks@Dict i@Int]
       [json-dict-entries d ks [+ i 1]]]]]
 
 # Public API: format value to compact JSON (returns String)
-json: [fn@String [val@Any]
+json@[doc: "Convert value to compact JSON string"]: [fn@String [val@Any]
   [json-value val]]
 
 # When used as a formatter pipeline stage: emit the result

@@ -20,14 +20,14 @@
 # Example: [path-parts "a/b/c.txt"] => [0: "a" 1: "b" 2: "c.txt"]
 # Example: [path-parts "/foo/bar"] => [0: "" 1: "foo" 2: "bar"]
 # Note: Leading "/" produces empty first component
-path-parts: [fn@Dict [p@String] [split "/" p]]
+path-parts@[doc: "Split a path into its components"]: [fn@Dict [p@String] [split "/" p]]
 
 # Get the last component of a path (filename).
 # Type: (String -> String)
 # Example: [basename "/foo/bar.txt"] => "bar.txt"
 # Example: [basename "file.txt"] => "file.txt"
 # Example: [basename "/"] => ""
-basename: [fn@String [p@String]
+basename@[doc: "Get the last component of a path (filename)"]: [fn@String [p@String]
     [last [split "/" p]]]
 
 # Get the directory portion of a path (all but the last component).
@@ -36,7 +36,7 @@ basename: [fn@String [p@String]
 # Example: [dirname "a/b/c"] => "a/b"
 # Example: [dirname "file.txt"] => ""
 # Example: [dirname "/"] => ""
-dirname: [fn@String [p@String]
+dirname@[doc: "Get the directory portion of a path (all but the last component)"]: [fn@String [p@String]
     [dirname-impl [split "/" p]]]
 
 # Internal helper for dirname. Takes a Dict of path components.
@@ -60,7 +60,7 @@ dirname-drop-last: [fn@Dict [parts@Dict ks i@Int acc@Dict]
 # Example: [extension "file.tar.gz"] => "gz"
 # Example: [extension "noext"] => ""
 # Example: [extension ".hidden"] => "hidden"
-extension: [fn@String [p@String]
+extension@[doc: "Get the file extension (after the last .)"]: [fn@String [p@String]
     [extension-impl [split "." [basename p]]]]
 
 # Internal helper for extension. Takes a Dict of parts split by ".".
@@ -76,6 +76,6 @@ extension-impl: [fn@String [parts@Dict]
 # Type: (Dict String -> String)
 # Example: [path-join ["a" "b" "c.txt"]] => "a/b/c.txt"
 # Example: [path-join []] => ""
-path-join: [fn@String [parts@Dict] [join "/" parts]]
+path-join@[doc: "Join path components with /"]: [fn@String [parts@Dict] [join "/" parts]]
 
 ]
