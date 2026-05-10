@@ -2991,9 +2991,9 @@ mod tests {
         match entry {
             NetCapEntry::Cidr(net) => {
                 assert_eq!(net.to_string(), "192.168.1.0/24");
-                assert!(net.contains(&"192.168.1.1".parse().unwrap()));
-                assert!(net.contains(&"192.168.1.254".parse().unwrap()));
-                assert!(!net.contains(&"192.168.2.1".parse().unwrap()));
+                assert!(net.contains(&"192.168.1.1".parse::<std::net::IpAddr>().unwrap()));
+                assert!(net.contains(&"192.168.1.254".parse::<std::net::IpAddr>().unwrap()));
+                assert!(!net.contains(&"192.168.2.1".parse::<std::net::IpAddr>().unwrap()));
             }
             _ => panic!("Expected Cidr variant"),
         }
@@ -3006,9 +3006,13 @@ mod tests {
         match entry {
             NetCapEntry::Cidr(net) => {
                 assert_eq!(net.to_string(), "2001:db8::/32");
-                assert!(net.contains(&"2001:db8::1".parse().unwrap()));
-                assert!(net.contains(&"2001:db8:ffff:ffff:ffff:ffff:ffff:ffff".parse().unwrap()));
-                assert!(!net.contains(&"2001:db9::1".parse().unwrap()));
+                assert!(net.contains(&"2001:db8::1".parse::<std::net::IpAddr>().unwrap()));
+                assert!(net.contains(
+                    &"2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"
+                        .parse::<std::net::IpAddr>()
+                        .unwrap()
+                ));
+                assert!(!net.contains(&"2001:db9::1".parse::<std::net::IpAddr>().unwrap()));
             }
             _ => panic!("Expected Cidr variant"),
         }
@@ -3020,8 +3024,8 @@ mod tests {
         let entry = parse_cli_net_cap_entry("10.0.0.5/32").unwrap();
         match entry {
             NetCapEntry::Cidr(net) => {
-                assert!(net.contains(&"10.0.0.5".parse().unwrap()));
-                assert!(!net.contains(&"10.0.0.6".parse().unwrap()));
+                assert!(net.contains(&"10.0.0.5".parse::<std::net::IpAddr>().unwrap()));
+                assert!(!net.contains(&"10.0.0.6".parse::<std::net::IpAddr>().unwrap()));
             }
             _ => panic!("Expected Cidr variant"),
         }

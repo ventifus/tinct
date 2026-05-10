@@ -76,7 +76,7 @@ enum Expr {
     // References and access
     //
     // `VarRef(name)` shorthand used in doc examples represents:
-    //   `VarRef { name, resolved: RefCell::new(None) }`
+    //   `VarRef { name, escaped: false, resolved: RefCell::new(None) }`
     // The `resolved` field is a three-state sentinel populated by the variable
     // resolution pass (Phase 1 of arena allocation, src/resolve.rs):
     //   - Outer None              = not yet processed (initial state)
@@ -84,6 +84,10 @@ enum Expr {
     //   - Outer Some(Some((l,s))) = resolved to (level, slot) de Bruijn coordinates
     VarRef {
         name: String,
+        // True if written as `$name`, false if written as bare `name`.
+        // Used by expr_to_pattern (src/parser.rs) to distinguish pin patterns ($x)
+        // from bind patterns (x).
+        escaped: bool,
         resolved: RefCell<Option<Option<(u32, u32)>>>,
     },
     DotAccess {

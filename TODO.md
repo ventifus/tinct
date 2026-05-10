@@ -305,6 +305,20 @@ Annotation format: `fn-name@[doc: "One-line description"]: [fn ...]` for public 
 
 ## Codebase Health
 
+### cycle-201-findings: Cycle #201 analysis findings
+
+From the 9-agent codebase review on 2026-05-09.
+
+**[Major] Duplicate named args bypass Robinson idempotency** (computer-scientist):
+- [x] Robinson idempotency: `consumed_params.insert(param_idx)` in CALL-POLY and check_call_with_scheme (`src/typecheck.rs`)
+- [x] CALL-POLY substitution threading: merge `state.subst` into local `subst` after `infer_expr` (`src/typecheck.rs`)
+- [x] VarRef.escaped audit: field IS used by `expr_to_pattern()` for pin patterns (`Pattern::Pin` vs `Pattern::Variable`); not dead code
+- [x] ErrorKind E-code exhaustiveness test added (`src/error.rs::test_error_code_exhaustiveness`)
+- [x] doc/15-ast.md: added `escaped: bool` to VarRef entry; `desugared`/`resolved_type` already correct
+- [x] Error corpus `[EXXX]` codes: audited and updated (`tests/corpus/eval/errors/`)
+- [x] desugar_file: returns `()` (in-place mutation), `#[must_use]` not applicable
+- [x] Corpus test count minimums: updated to 37/120/195/123 (`tests/corpus_tests.rs`)
+
 ### cycle-196-findings: Cycle #196 analysis findings
 
 From the 9-agent codebase review on 2026-05-09.
