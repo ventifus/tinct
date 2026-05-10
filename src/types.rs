@@ -111,6 +111,7 @@ pub enum Type {
         variadic: bool,
     },
     Seq(Box<Type>),
+    Map(Box<Type>, Box<Type>), // Map[K V] — homogeneous map with key type and value type
     Proxy,
     #[allow(clippy::enum_variant_names)]
     TypeVar(String, u32),
@@ -211,6 +212,7 @@ impl PartialEq for Type {
                     && v1 == v2
             }
             (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => k1 == k2 && v1 == v2,
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             (Type::Unknown, Type::Unknown) => true,
@@ -267,6 +269,8 @@ impl Type {
         match (sub, sup) {
             (a, b) if a == b => true,
             (Type::Seq(sub_elem), Type::Seq(sup_elem)) => Type::is_subtype(sub_elem, sup_elem),
+            // Map[K V1] <: Map[K V2] when V1 <: V2 (V covariant, K invariant via ==)
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => k1 == k2 && Type::is_subtype(v1, v2),
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
@@ -386,6 +390,9 @@ impl Type {
         // Structural decomposition
         match (a, b) {
             (Type::Seq(e1), Type::Seq(e2)) => Type::is_consistent(e1, e2),
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => {
+                Type::is_consistent(k1, k2) && Type::is_consistent(v1, v2)
+            }
             (
                 Type::Function {
                     params: p1,
@@ -597,6 +604,10 @@ impl Type {
                 ret.collect_type_vars(vars);
             }
             Type::Seq(elem) => elem.collect_type_vars(vars),
+            Type::Map(key, val) => {
+                key.collect_type_vars(vars);
+                val.collect_type_vars(vars);
+            }
             Type::Union(members) => {
                 for member in members {
                     member.collect_type_vars(vars);
@@ -629,6 +640,7 @@ impl Type {
                     || ret.has_inference_vars()
             }
             Type::Seq(elem) => elem.has_inference_vars(),
+            Type::Map(key, val) => key.has_inference_vars() || val.has_inference_vars(),
             Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Intersection(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Negation(inner) => inner.has_inference_vars(),
@@ -659,6 +671,10 @@ impl Type {
                 ret.collect_row_vars(vars);
             }
             Type::Seq(elem) => elem.collect_row_vars(vars),
+            Type::Map(key, val) => {
+                key.collect_row_vars(vars);
+                val.collect_row_vars(vars);
+            }
             Type::Union(members) => {
                 for member in members {
                     member.collect_row_vars(vars);
@@ -706,6 +722,10 @@ impl Type {
                 ret.collect_all_vars(type_vars, row_vars);
             }
             Type::Seq(elem) => elem.collect_all_vars(type_vars, row_vars),
+            Type::Map(key, val) => {
+                key.collect_all_vars(type_vars, row_vars);
+                val.collect_all_vars(type_vars, row_vars);
+            }
             Type::Union(members) => {
                 for member in members {
                     member.collect_all_vars(type_vars, row_vars);
@@ -764,6 +784,12 @@ impl Type {
                 found
             }
             Type::Seq(elem) => elem.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars),
+            Type::Map(key, val) => {
+                let mut found = false;
+                found |= key.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found |= val.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found
+            }
             Type::Union(members) => {
                 let mut found = false;
                 for member in members {
@@ -813,6 +839,10 @@ impl Type {
                 ret.collect_all_vars_vec(type_vars, row_vars);
             }
             Type::Seq(elem) => elem.collect_all_vars_vec(type_vars, row_vars),
+            Type::Map(key, val) => {
+                key.collect_all_vars_vec(type_vars, row_vars);
+                val.collect_all_vars_vec(type_vars, row_vars);
+            }
             Type::Union(members) => {
                 for member in members {
                     member.collect_all_vars_vec(type_vars, row_vars);
@@ -845,26 +875,27 @@ fn type_order(ty: &Type) -> u8 {
         Type::Record(_) => 8,
         Type::Function { .. } => 9,
         Type::Seq(_) => 10,
-        Type::Proxy => 11,
-        Type::TypeVar(_, _) => 12,
-        Type::Unknown => 13,
-        Type::Top => 14,
-        Type::Error => 15,
-        Type::DirCap => 16,
-        Type::NetCap => 17,
-        Type::Handle => 18,
-        Type::Uri => 19,
-        Type::Timestamp => 20,
-        Type::Duration => 21,
-        Type::ClockCap => 22,
-        Type::Timezone => 23,
-        Type::QuicSession => 24,
-        Type::Http2Session => 25,
-        Type::Http3Session => 26,
-        Type::Union(_) => 27, // Should not appear after flattening, but included for completeness
-        Type::Intersection(_) => 28, // Should not appear after flattening, but included for completeness
-        Type::Negation(_) => 29,
-        Type::Never => 30,
+        Type::Map(_, _) => 11,
+        Type::Proxy => 12,
+        Type::TypeVar(_, _) => 13,
+        Type::Unknown => 14,
+        Type::Top => 15,
+        Type::Error => 16,
+        Type::DirCap => 17,
+        Type::NetCap => 18,
+        Type::Handle => 19,
+        Type::Uri => 20,
+        Type::Timestamp => 21,
+        Type::Duration => 22,
+        Type::ClockCap => 23,
+        Type::Timezone => 24,
+        Type::QuicSession => 25,
+        Type::Http2Session => 26,
+        Type::Http3Session => 27,
+        Type::Union(_) => 28, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 29, // Should not appear after flattening, but included for completeness
+        Type::Negation(_) => 30,
+        Type::Never => 31,
     }
 }
 
@@ -875,11 +906,12 @@ fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
         (Type::IntLiteral(n1), Type::IntLiteral(n2)) => n1.cmp(n2),
         (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1.cmp(s2),
         (Type::TypeVar(name1, _), Type::TypeVar(name2, _)) => name1.cmp(name2),
-        // For complex types (Record, Function, Seq), use Display representation
+        // For complex types (Record, Function, Seq, Map), use Display representation
         // This is not ideal but ensures stability
         (Type::Record(_), Type::Record(_))
         | (Type::Function { .. }, Type::Function { .. })
-        | (Type::Seq(_), Type::Seq(_)) => a.to_string().cmp(&b.to_string()),
+        | (Type::Seq(_), Type::Seq(_))
+        | (Type::Map(_, _), Type::Map(_, _)) => a.to_string().cmp(&b.to_string()),
         _ => Ordering::Equal,
     }
 }

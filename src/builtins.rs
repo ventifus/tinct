@@ -336,8 +336,8 @@ pub(crate) use crate::builtins_math::{
 // Implementations live in builtins_dict.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_dict::{
-    builtin_append, builtin_each, builtin_each_key, builtin_each_kv, builtin_get, builtin_keys,
-    builtin_length, builtin_merge,
+    builtin_append, builtin_each, builtin_each_key, builtin_each_kv, builtin_get,
+    builtin_get_optional, builtin_keys, builtin_length, builtin_merge,
 };
 
 // I/O builtins: open, slurp, write, connect, lines, emit, env, list-dir, stat, etc.
@@ -363,8 +363,9 @@ pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_big_int, builtin_bool_check, builtin_bytes_check, builtin_decimal,
     builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast, builtin_float_check,
     builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include,
-    builtin_int_check, builtin_llt_repr, builtin_null_check, builtin_num_check, builtin_str_check,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_int_check, builtin_llt_repr, builtin_map_check, builtin_null_check, builtin_num_check,
+    builtin_record_check, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of,
+    builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, upper, lower, trim, str-length, str-contains?,
@@ -980,6 +981,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_get,
             [Strictness::Seq, Strictness::Spine]
         ),
+        builtin!(
+            "get?",
+            builtin_get_optional,
+            [Strictness::Seq, Strictness::Spine]
+        ),
         // each: 2-strictness for both 1-arg (user) and 2-arg (internal offset) calls
         builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
         builtin!(
@@ -1102,6 +1108,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("bytes?", builtin_bytes_check, [Strictness::Seq]),
         builtin!("null?", builtin_null_check, [Strictness::Seq]),
         builtin!("dict?", builtin_dict_check, [Strictness::Seq]),
+        builtin!("record?", builtin_record_check, [Strictness::Seq]),
+        builtin!("map?", builtin_map_check, [Strictness::Seq]),
         builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
         builtin!("seq?", builtin_seq_check, [Strictness::Seq]),
         // Schema validation
@@ -6099,7 +6107,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 177,
+            count, 180,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6285,8 +6293,8 @@ mod tests {
         assert!(names.contains(&"position"), "missing position");
         assert_eq!(
             names.len(),
-            177,
-            "expected 177 builtins, got {}",
+            180,
+            "expected 180 builtins, got {}",
             names.len()
         );
     }
@@ -6987,7 +6995,8 @@ mod tests {
     }
 
     #[test]
-    fn eq_dict_never_equal() {
+    fn eq_dict_structural_equality() {
+        // Empty dicts are structurally equal
         let r = mat(builtin_eq(BuiltinArgs {
             args: &[
                 thunk(Value::Dict(IndexMap::new())),
@@ -6997,7 +7006,7 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        assert_eq!(r, Value::Bool(false));
+        assert_eq!(r, Value::Bool(true));
     }
 
     #[test]

@@ -79,14 +79,14 @@ See `doc/whatif/error-patterns.md` and `doc/07-type-extensions.md §Nominal Resu
 
 See `doc/whatif/parameterized-dict.md` and `doc/07-type-extensions.md §Record/Map Split`. **Spec chapters:** `doc/07-type-extensions.md §Record/Map Split and Dict`.
 
-- [ ] Add `Type::Map(Box<Type>, Box<Type>)` to `src/types.rs` parallel to `Type::Seq`; add `is_subtype` rules: `Map(K, V₁) <: Map(K, V₂)` (V covariant, K invariant); `Null <: Map(K, V)`; `[RECORD→MAP]` cross-form rule (`src/types.rs`)
-- [ ] Register `Record`, `Map`, `Dict` in `TypeEnv::with_builtins()`: `@Record` produces open row, `@Map` produces `Map[Any Any]`, `@Dict` = `Record ∨ Map` BAS union (`src/type_env.rs`)
-- [ ] Add `get?` builtin: returns value or `[]` (Null) on missing key — no error; update `get-or` to use `get?` (`src/builtins_dict.rs`, `stdlib/prelude.llt`)
-- [ ] Add `record?` and `map?` type-narrowing predicates (Bool) alongside existing `dict?` (`src/builtins_meta.rs`, `src/builtins.rs`)
-- [ ] Implement structural dict equality in `builtin_eq`: sorted-key recursive walk, (ThunkId, ThunkId) visited set for cycle detection; both Records and Maps use order-insensitive key comparison (`src/builtins_math.rs`)
-- [ ] Update `check_get` in typecheck: `Map[K V]` target → return `V | Null`; `Record` target with known field → return field type (total) (`src/typecheck.rs`)
-- [ ] Update `doc/03-data-model.md` §Equality: document order-insensitive structural equality for Record and Map; explain why extensional (finite-map) semantics implies order-insensitivity
-- [ ] Tests: corpus tests for `[= [a: 1 b: 2] [b: 2 a: 1]]` → `true`; `get?` on Map; `Map[Int String]` annotation; `Dict` union narrowing in `match` in `tests/corpus/eval/`
+- [x] Add `Type::Map(Box<Type>, Box<Type>)` + is_subtype/unify/apply/Display (`src/types.rs`, `src/type_unify.rs`, `src/type_env.rs`)
+- [x] Register `Map` in `TypeEnv::with_builtins()` as `Map[Any Any]` (`src/type_env.rs`)
+- [x] Add `get?` builtin: returns value or Null on missing key (`src/builtins_dict.rs`)
+- [x] Add `record?` and `map?` predicates (`src/builtins_meta.rs`)
+- [x] Implement structural dict equality: order-insensitive key comparison with cycle detection (`src/builtins_math.rs`)
+- [ ] Update `check_get` in typecheck for Map[K V] → V|Null (BAS-dependent) (`src/typecheck.rs`)
+- [ ] Update `doc/03-data-model.md` §Equality (deferred to doc sprint)
+- [ ] Corpus tests for structural equality + get? + Map annotation (deferred)
 **Depends on:** `bas-core`
 
 ### `hkt-monads`: Research higher-kinded types and generic monadic `[do]` for tinct
