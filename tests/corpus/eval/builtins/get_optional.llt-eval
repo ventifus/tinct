@@ -1,0 +1,9 @@
+[d: [a: 1 b: 2]
+ r1: [get? "a" d]
+ r2: [get? "c" d]
+ r3: [get? 0 [1 2 3]]
+ r4: [get? 5 [1 2 3]]]
+=== out
+Dict({"d": Dict({"a": Int(1), "b": Int(2)}), "r1": Int(1), "r2": Dict({}), "r3": Int(1), "r4": Dict({})})
+=== warn
+undefined variable: get?

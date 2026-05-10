@@ -55,6 +55,21 @@ A list is equivalent to a dict with integer keys:
 
 **Why:** Duplicate keys + lazy evaluation creates confusing semantics — depending on the scoping model, derived values may see different bindings of the same key. Prohibiting duplicates eliminates the ambiguity entirely and catches copy-paste errors.
 
+## Equality
+
+**Dict equality is order-insensitive and structural.** Two dicts are equal if they have the same key set and equal values at each key, regardless of insertion order. This follows from the extensional (finite-map) semantics of Dict: a dict is a partial function from keys to values, and two functions are equal when they agree on every point in their domain.
+
+```tinct
+[= [a: 1  b: 2] [b: 2  a: 1]]   # → true  (same keys and values, different order)
+[= [a: 1] [a: 2]]                 # → false (value at "a" differs)
+[= [a: 1  b: 2] [a: 1]]          # → false (different key sets)
+[= [] []]                          # → true  (empty dicts are equal)
+```
+
+Both Record and Map forms use the same order-insensitive comparison — the runtime representation is the same `Value::Dict`, so `=` treats them identically. Cycle detection via a visited-pair set prevents infinite loops on self-referential structures.
+
+Functions and builtins always compare as unequal to each other (no meaningful closure equality).
+
 ## Numeric Types — `Int`, `Float`, `Number`
 
 **Two concrete types: `Int(i64)` and `Float(f64)`.** `Number` is the supertype that accepts either. Integer literals carry their value: `42` has type `IntLiteral(42)`, which is a subtype of `Int`. Float literals do not have a literal type variant because floats cannot be dict keys.

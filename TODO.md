@@ -85,8 +85,8 @@ See `doc/whatif/parameterized-dict.md` and `doc/07-type-extensions.md §Record/M
 - [x] Add `record?` and `map?` predicates (`src/builtins_meta.rs`)
 - [x] Implement structural dict equality: order-insensitive key comparison with cycle detection (`src/builtins_math.rs`)
 - [ ] Update `check_get` in typecheck for Map[K V] → V|Null (BAS-dependent) (`src/typecheck.rs`)
-- [ ] Update `doc/03-data-model.md` §Equality (deferred to doc sprint)
-- [ ] Corpus tests for structural equality + get? + Map annotation (deferred)
+- [x] Update `doc/03-data-model.md` §Equality: order-insensitive structural equality, cycle detection, extensional semantics (`doc/03-data-model.md`)
+- [x] Corpus tests: dict_structural_equality, get_optional, record_map_predicates (`tests/corpus/eval/builtins/`)
 **Depends on:** `bas-core`
 
 ### `hkt-monads`: Research higher-kinded types and generic monadic `[do]` for tinct
