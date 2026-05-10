@@ -744,10 +744,7 @@ fn check_net_cap_allowlist(
         }
         // IP literal not in any CIDR — deny
         return Err(EvalError::user_error(
-            format!(
-                "connect: IP address {} not in any allowed CIDR range",
-                host
-            ),
+            format!("connect: IP address {} not in any allowed CIDR range", host),
             span,
         )
         .into());
@@ -2814,14 +2811,24 @@ fn build_tls_config(
 
     // Load system roots unless disabled
     if !no_system_roots {
-        let native_certs = rustls_native_certs::load_native_certs().map_err(|e| {
-            EvalError::user_error(
-                format!("tls-connect: failed to load system CA roots: {}", e),
+        let cert_result = rustls_native_certs::load_native_certs();
+
+        // Report any errors encountered while loading certs
+        if !cert_result.errors.is_empty() {
+            // Collect error messages
+            let error_msgs: Vec<String> =
+                cert_result.errors.iter().map(|e| e.to_string()).collect();
+            return Err(EvalError::user_error(
+                format!(
+                    "tls-connect: failed to load system CA roots: {}",
+                    error_msgs.join("; ")
+                ),
                 opts_span,
             )
-        })?;
+            .into());
+        }
 
-        for cert in native_certs {
+        for cert in cert_result.certs {
             root_store.add(cert).map_err(|e| {
                 EvalError::user_error(
                     format!("tls-connect: failed to add system CA cert: {}", e),
@@ -3392,14 +3399,14 @@ pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
             use crate::value::Key;
 
             // Extract the _raw_der bytes from the dict
-            let raw_der_thunk_id = dict
-                .get(&Key::String("_raw_der".to_string()))
-                .ok_or_else(|| {
-                    EvalError::user_error(
-                        "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
-                        call_span,
-                    )
-                })?;
+            let raw_der_thunk_id =
+                dict.get(&Key::String("_raw_der".to_string()))
+                    .ok_or_else(|| {
+                        EvalError::user_error(
+                            "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
+                            call_span,
+                        )
+                    })?;
 
             // Get the thunk and materialize it
             let raw_der_thunk = ctx.get_thunk(*raw_der_thunk_id);
