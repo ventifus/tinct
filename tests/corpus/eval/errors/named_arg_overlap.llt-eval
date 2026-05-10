@@ -4,4 +4,4 @@
 [f: [fn [x@Int y@Int] [+ x y]]
  result: [f 42 x: 99]]
 === error
-missing argument
+[E024] missing argument

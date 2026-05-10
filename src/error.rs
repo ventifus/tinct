@@ -2199,6 +2199,9 @@ mod tests {
             ErrorKind::UserError {
                 message: "test".to_string(),
             },
+            ErrorKind::SchemaViolation {
+                violations: vec![("field".to_string(), "error".to_string())],
+            },
             ErrorKind::Internal {
                 message: "test".to_string(),
             },
@@ -2223,6 +2226,53 @@ mod tests {
                 "Variant {:?} does not equal itself",
                 variant
             );
+        }
+    }
+
+    #[test]
+    fn test_error_code_exhaustiveness() {
+        // Ensures every ErrorKind variant returns a valid E-code (not the catch-all E099,
+        // unless it IS the Internal variant). This test prevents new variants from silently
+        // falling through to E099 without an explicit code assignment.
+        let variants = all_error_kind_variants();
+
+        for variant in &variants {
+            let code = variant.code();
+
+            // All codes must match E\d{3} format
+            assert!(
+                code.len() == 4 && code.starts_with('E'),
+                "ErrorKind variant {:?} has invalid code format: {}",
+                variant,
+                code
+            );
+
+            // Verify it's a valid 3-digit number after the E
+            let number_part = &code[1..];
+            assert!(
+                number_part.parse::<u32>().is_ok(),
+                "ErrorKind variant {:?} has non-numeric code: {}",
+                variant,
+                code
+            );
+
+            // Only Internal variant should return E099
+            match variant {
+                ErrorKind::Internal { .. } => {
+                    assert_eq!(
+                        code, "E099",
+                        "Internal variant should return E099, got {}",
+                        code
+                    );
+                }
+                _ => {
+                    assert_ne!(
+                        code, "E099",
+                        "Non-Internal variant {:?} should not return catch-all code E099",
+                        variant
+                    );
+                }
+            }
         }
     }
 
@@ -4025,11 +4075,11 @@ mod tests {
         }
         // Verify the count matches all_error_kind_variants() — the canonical list.
         // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 35 variants (verified against the ErrorKind enum definition).
+        // Current count: 36 variants (verified against the ErrorKind enum definition).
         assert_eq!(
             variants.len(),
-            35,
-            "Expected 35 ErrorKind variants in all_error_kind_variants(); got {}. \
+            36,
+            "Expected 36 ErrorKind variants in all_error_kind_variants(); got {}. \
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );

@@ -2403,9 +2403,14 @@ fn check_call_with_scheme(
                                 ));
                                 continue;
                             }
+                            // Mark param as consumed (Task 1: Robinson idempotency)
+                            consumed_params.insert(param_idx);
                             // Infer named arg type and unify
                             match infer_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
+                                    // Task 2: merge state.subst updates from infer_expr into local subst
+                                    subst.type_map.extend(state.subst.type_map.clone());
+                                    subst.row_map.extend(state.subst.row_map.clone());
                                     if let Err(e) =
                                         unify(&arg_ty, param_ty, &mut subst, state, na.span)
                                     {
@@ -2618,6 +2623,8 @@ fn check_call(
                                 ));
                                 continue;
                             }
+                            // Mark param as consumed (Task 1: Robinson idempotency)
+                            consumed_params.insert(param_idx);
                             // Infer the named arg type and unify against the param type
                             // Fix 2: accumulate errors instead of using `?` to short-circuit
                             match infer_expr(&na.node.value, env, state, type_map) {
@@ -2796,9 +2803,14 @@ fn check_call(
                                 ));
                                 continue;
                             }
+                            // Mark param as consumed (Task 1: Robinson idempotency)
+                            consumed_params.insert(param_idx);
                             // Infer named arg type and unify
                             match infer_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
+                                    // Task 2: merge state.subst updates from infer_expr into local subst
+                                    subst.type_map.extend(state.subst.type_map.clone());
+                                    subst.row_map.extend(state.subst.row_map.clone());
                                     if let Err(e) =
                                         unify(&arg_ty, param_ty, &mut subst, state, na.span)
                                     {
