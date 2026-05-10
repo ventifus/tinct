@@ -3914,3 +3914,89 @@ pub(crate) fn builtin_proxy_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     let BuiltinArgs { call_span, .. } = ctx_arg;
     Err(EvalError::user_error("proxy-connect: not yet implemented".to_string(), call_span).into())
 }
+
+// ── HTTP-sessions stubs ────────────────────────────────────────────────────────
+
+/// `quic-session`: Open a QUIC session to a host.
+/// Takes `(cap, host, port, opts)`.
+/// Stub — returns error until the quinn dependency is added.
+pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error(
+        "quic-session: QUIC not yet implemented — requires quinn dependency".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `quic-open-stream`: Open a bidirectional stream on a QUIC session.
+/// Takes `(quic_session)`.
+/// Stub — returns error until QUIC is implemented.
+pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error(
+        "quic-open-stream: QUIC not yet implemented".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `quic-open-datagram`: Send/receive datagrams on a QUIC session.
+/// Takes `(quic_session)`.
+/// Stub — returns error until QUIC is implemented.
+pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error(
+        "quic-open-datagram: QUIC not yet implemented".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `http2-session`: Establish an HTTP/2 session over a Handle.
+/// Takes `(handle, opts)`.
+/// Stub — returns error until the h2 dependency is added.
+pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error(
+        "http2-session: HTTP/2 not yet implemented — requires h2 dependency".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `http3-session`: Establish an HTTP/3 session over a QUIC session.
+/// Takes `(quic_session, opts)`.
+/// Stub — returns error until HTTP/3 is implemented.
+pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error(
+        "http3-session: HTTP/3 not yet implemented".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `http-request`: Issue an HTTP request on an HTTP/2 or HTTP/3 session.
+/// Takes `(session, method, path, headers, body)`.
+/// Stub — returns error until HTTP/2 and HTTP/3 are implemented.
+pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error(
+        "http-request: HTTP/2 and HTTP/3 not yet implemented".to_string(),
+        call_span,
+    )
+    .into())
+}
+
+/// `icmp-ping`: Send an ICMP echo request to a host.
+/// Takes `(cap, host, timeout_ms)`.
+/// Stub — returns error until raw socket support is available.
+pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
+    Err(EvalError::user_error(
+        "icmp-ping: ICMP not yet implemented — requires raw socket support".to_string(),
+        call_span,
+    )
+    .into())
+}

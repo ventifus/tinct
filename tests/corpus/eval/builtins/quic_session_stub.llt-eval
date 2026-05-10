@@ -1,0 +1,8 @@
+# Test that quic-session exists and returns "not yet implemented"
+[quic-session "placeholder"]
+
+=== error
+[E080] quic-session: QUIC not yet implemented
+
+=== warn
+arity mismatch: expected 4 argument(s), got 1

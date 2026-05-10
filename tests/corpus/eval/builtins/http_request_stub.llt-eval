@@ -1,0 +1,8 @@
+# Test that http-request exists and returns "not yet implemented"
+[http-request "placeholder"]
+
+=== error
+[E080] http-request: HTTP/2 and HTTP/3 not yet implemented
+
+=== warn
+arity mismatch: expected 5 argument(s), got 1
