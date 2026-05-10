@@ -18,6 +18,7 @@ mod eval_pipeline;
 pub(crate) use eval_dict_mod::*;
 pub use eval_pipeline::*;
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -405,6 +406,49 @@ pub(crate) fn format_type_for_assert(ty: &Type) -> String {
     format!("{}", ty)
 }
 
+/// Extract a merged Record row from a type for eval-time validation.
+///
+/// Multi-field annotations produce `Intersection([{f1: T1, ...ρ1}, {f2: T2, ...ρ2}])`.
+/// For runtime validation and proxy wrapping we need a single `Row` that collects all
+/// required fields.  The merged row:
+///   - fields: union of all fields across all Record members (first definition wins on conflict)
+///   - tail: RowVar (open) if ANY member is open, Empty only if ALL members are closed
+///
+/// Returns `Some(&Row)` for `Type::Record` (trivial) or `Type::Intersection` whose members
+/// are all Records.  Returns `None` for anything else (scalar types, Union, etc.).
+pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
+    match expected {
+        Type::Record(row) => Some(Cow::Borrowed(row)),
+        Type::Intersection(members) if members.iter().all(|m| matches!(m, Type::Record(_))) => {
+            let mut merged_fields: HashMap<String, Type> = HashMap::new();
+            let mut any_open = false;
+            for m in members {
+                if let Type::Record(row) = m {
+                    for (k, v) in &row.fields {
+                        merged_fields.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                    if matches!(row.tail, RowTail::RowVar(_, _)) {
+                        any_open = true;
+                    }
+                }
+            }
+            Some(Cow::Owned(Row {
+                fields: merged_fields,
+                tail: if any_open {
+                    // Use a stable dummy name for the merged open tail.
+                    // This sentinel name won't be looked up in state.levels at eval time;
+                    // it merely signals to validate_and_wrap_record that extra fields are OK
+                    // (the cardinality check is skipped when tail is RowVar).
+                    RowTail::RowVar("_merged".to_string(), 0)
+                } else {
+                    RowTail::Empty
+                },
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// Validate a dict value against a Record type and wrap fields with guards.
 ///
 /// Returns a new dict with guarded field thunks. This implements the [VM-RECORD-PROXY]
@@ -700,69 +744,71 @@ pub(crate) fn eval_recursive(
             if let Some(expected) = resolved {
                 // STRUCTURAL VALIDATION (type checker succeeded and provided elaboration)
 
-                match &expected {
-                    Type::Record(row) => {
-                        // [VM-RECORD-PROXY]: shape check + guard wrapping
-                        let value = materialize(&thunk, Some(&expr.span), ctx)?;
-                        // Flatten Overlay to Dict before record type assertion.
-                        let value = match value {
-                            Value::Overlay(l, r) => Value::Dict(crate::builtins::flatten_overlay(
-                                &l,
-                                &r,
-                                "type assert",
-                                ctx,
-                                expr.span,
-                            )?),
-                            other => other,
-                        };
-                        if let Value::Dict(entries) = &value {
-                            // Use helper to validate and wrap record
-                            // If validation fails and default: is present, use default
-                            let default_opt = annotation
-                                .node
-                                .get_property(DEFAULT_ANNOTATION_KEY)
-                                .map(|expr| (Rc::new(expr.clone()), Rc::clone(&env)));
+                // For Record types and Intersection-of-Records, apply proxy contract wrapping.
+                // as_record_row_merged handles both Type::Record and Intersection-of-Records
+                // by merging all required fields into a single Row for validation.
+                if let Some(row) = as_record_row_merged(&expected) {
+                    // [VM-RECORD-PROXY]: shape check + guard wrapping
+                    let value = materialize(&thunk, Some(&expr.span), ctx)?;
+                    // Flatten Overlay to Dict before record type assertion.
+                    let value = match value {
+                        Value::Overlay(l, r) => Value::Dict(crate::builtins::flatten_overlay(
+                            &l,
+                            &r,
+                            "type assert",
+                            ctx,
+                            expr.span,
+                        )?),
+                        other => other,
+                    };
+                    if let Value::Dict(entries) = &value {
+                        // Use helper to validate and wrap record
+                        // If validation fails and default: is present, use default
+                        let default_opt = annotation
+                            .node
+                            .get_property(DEFAULT_ANNOTATION_KEY)
+                            .map(|expr| (Rc::new(expr.clone()), Rc::clone(&env)));
 
-                            match validate_and_wrap_record(
-                                entries,
-                                row,
-                                &mut vec![],
+                        match validate_and_wrap_record(
+                            entries,
+                            row.as_ref(),
+                            &mut vec![],
+                            expr.span,
+                            thunk.span,
+                            ctx,
+                            default_opt.clone(),
+                        ) {
+                            Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
+                                Value::Dict(new_entries),
                                 expr.span,
-                                thunk.span,
-                                ctx,
-                                default_opt.clone(),
-                            ) {
-                                Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
-                                    Value::Dict(new_entries),
-                                    expr.span,
-                                ))),
-                                Err(err) => {
-                                    if let Some((default, env)) = default_opt {
-                                        eval_recursive(default, env, ctx)
-                                    } else {
-                                        Err(err)
-                                    }
+                            ))),
+                            Err(err) => {
+                                if let Some((default, env)) = default_opt {
+                                    eval_recursive(default, env, ctx)
+                                } else {
+                                    Err(err)
                                 }
                             }
-                        } else {
-                            // Expected Record but got non-Dict
-                            if let Some(default_expr) =
-                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                            {
-                                return eval_recursive(Rc::new(default_expr.clone()), env, ctx);
-                            }
-                            Err(EvalError::type_assert_failed(
-                                &format_type_for_assert(&expected),
-                                &value.type_name(),
-                                thunk.span, // value's definition site, not annotation site
-                            )
-                            .with_materialization_span(expr.span)
-                            .into())
                         }
+                    } else {
+                        // Expected Record/Intersection but got non-Dict
+                        if let Some(default_expr) =
+                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                        {
+                            return eval_recursive(Rc::new(default_expr.clone()), env, ctx);
+                        }
+                        Err(EvalError::type_assert_failed(
+                            &format_type_for_assert(&expected),
+                            &value.type_name(),
+                            thunk.span, // value's definition site, not annotation site
+                        )
+                        .with_materialization_span(expr.span)
+                        .into())
                     }
-                    _ => {
-                        // Non-Record type: immediate validation per spec (line 22)
-                        // "For primitive types, validation is immediate"
+                } else {
+                    // Non-Record/Intersection type: immediate validation
+                    // "For primitive types, validation is immediate"
+                    {
                         let value = materialize(&thunk, Some(&expr.span), ctx)?;
                         if value_matches_type(&value, &expected) {
                             // Type check passed — now check `is:` predicate if present
@@ -1661,13 +1707,15 @@ pub fn materialize(
 
         match result {
             Ok(value) => {
-                // For Record types, apply proxy contract wrapping
-                if let Type::Record(ref row) = expected {
+                // For Record types (and Intersection-of-Records), apply proxy contract wrapping.
+                // as_record_row_merged handles both Type::Record and Intersection-of-Records
+                // by merging all required fields into a single Row.
+                if let Some(row) = as_record_row_merged(&expected) {
                     if let Value::Dict(ref entries) = value {
                         // Use helper to validate and wrap record
                         match validate_and_wrap_record(
                             entries,
-                            row,
+                            row.as_ref(),
                             &mut field_path,
                             guard_span,
                             inner_span,
@@ -1701,7 +1749,7 @@ pub fn materialize(
                             }
                         }
                     } else {
-                        // Expected Record but got non-Dict - use default if present
+                        // Expected Record/Intersection but got non-Dict - use default if present
                         if let Some((default_expr, default_env)) = default {
                             let default_thunk = eval_recursive(default_expr, default_env, _ctx)?;
                             let default_value = run(
