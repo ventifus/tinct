@@ -170,8 +170,8 @@ See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-da
 - [x] **quinn step 3 — quic-session builtin**: Value::QuicSession(Rc<quinn::Connection>); NetCap+TLS config; async_rt::block_on(endpoint.connect) (`src/builtins_io.rs`, `src/value.rs`)
 - [x] **quinn step 4 — stream builtins**: QuicRecvReader/QuicSendWriter wrappers; quic-open-stream returns Handle[Readable Writable Binary Stream] (`src/builtins_io.rs`)
 - [x] **quinn step 5 — http3-session**: Value::Http3Session(Rc<RefCell<h3::client::SendRequest>>); h3-quinn Connection adapter; bytes dep added (`src/builtins_io.rs`, `src/value.rs`, `Cargo.toml`)
-- [ ] **quinn step 6 — http-request for HTTP/3**: implement HTTP/3 dispatch in `builtin_http_request` — when `Value::Http3Session`: construct h3 request, `block_on(send_request.send_request(req).await)`, collect response body bytes; return `Ok[{status headers body}] | Err[String]` using nominal Result; the HTTP/2 dispatch branch (reqwest-based) can be implemented similarly (`src/builtins_io.rs`)
-- [ ] **quinn step 7 — tests**: corpus tests for quic-session type errors (wrong arg count, wrong cap type); these are the only CI-testable paths since QUIC requires a live server
+- [x] **quinn step 6 — http-request**: HTTP/3 dispatch via h3 send_request/recv_response; Http2Session soft error; wrong-type hard error; returns Ok[{status,headers,body}]|Err (`src/builtins_io.rs`, `Cargo.toml` http=1)
+- [x] **quinn step 7 — tests**: http_request_wrong_session, http_request_stub updated, http3_session_stub (`tests/corpus/eval/builtins/`)
 - [x] Stub builtins registered: quic-session, quic-open-stream, quic-open-datagram, http2-session, http3-session, http-request, icmp-ping — all return clear "not yet implemented" errors (187 total builtins) (`src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`)
 - [x] Add `Value::QuicSession`, `Value::Http2Session`, `Value::Http3Session` as `Rc<()>` placeholders (`src/value.rs`)
 - [x] Add `Type::QuicSession`, `Type::Http2Session`, `Type::Http3Session` + TypeEnv + value_matches_type (`src/types.rs`, `src/type_env.rs`, `src/eval.rs`)
