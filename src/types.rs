@@ -483,6 +483,31 @@ impl Type {
                         .iter()
                         .all(|m2| members1.iter().any(|m1| Type::is_consistent(m1, m2)))
             }
+            // Record ~ Intersection-of-Records: consistent if shared fields are consistent.
+            // Multi-field annotations `@[f1: T1  f2: T2]` resolve to
+            // `Intersection([{f1: T1, ...ρ1}, {f2: T2, ...ρ2}])`.  Checking a concrete
+            // record (possibly containing Unknown) against this intersection should succeed
+            // when all intersection members' known fields are individually consistent with
+            // the corresponding record fields.  This mirrors the `Record ~ Record` case
+            // (which only checks shared fields) applied per member.
+            (Type::Record(row), Type::Intersection(members))
+            | (Type::Intersection(members), Type::Record(row)) => members.iter().all(|m| {
+                if let Type::Record(mrow) = m {
+                    // Check shared fields between the record and this member
+                    for (k, mt) in &mrow.fields {
+                        if let Some(rt) = row.fields.get(k) {
+                            if !Type::is_consistent(rt, mt) {
+                                return false;
+                            }
+                        }
+                        // Field present in member but not in record is OK — open rows absorb
+                    }
+                    true
+                } else {
+                    // Non-Record member — fall back to structural consistency
+                    Type::is_consistent(&Type::Record(row.clone()), m)
+                }
+            }),
             // Literal types are consistent with their parent types (similar to subtyping)
             (Type::IntLiteral(_), Type::Int | Type::Number)
             | (Type::Int | Type::Number, Type::IntLiteral(_)) => true,

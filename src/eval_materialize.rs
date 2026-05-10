@@ -13,9 +13,9 @@ use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    annotation_has_structural_fields, eval, eval_dict, eval_recursive, format_field_path,
-    format_type_for_assert, validate_and_wrap_record, value_matches_type, EvalContext,
-    DEFAULT_ANNOTATION_KEY,
+    annotation_has_structural_fields, as_record_row_merged, eval, eval_dict, eval_recursive,
+    format_field_path, format_type_for_assert, validate_and_wrap_record, value_matches_type,
+    EvalContext, DEFAULT_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{eval_call, invoke_function, CallContext};
@@ -916,8 +916,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         }
                         other => other,
                     };
-                    // For Record types, apply proxy contract wrapping
-                    if let Type::Record(ref row) = expected {
+                    // For Record types and Intersection-of-Records, apply proxy contract wrapping.
+                    // as_record_row_merged handles both forms by merging fields into a single Row.
+                    if let Some(row) = as_record_row_merged(&expected) {
                         if let Value::Dict(ref entries) = value {
                             let ctx_ref = match guard_ctx.as_ref() {
                                 Some(ctx) => ctx,
@@ -933,7 +934,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             };
                             match validate_and_wrap_record(
                                 entries,
-                                row,
+                                row.as_ref(),
                                 &mut *field_path,
                                 guard_span,
                                 inner_span,
@@ -1337,8 +1338,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
             match result {
                 Err(e) => Action::Continue(Err(e)),
                 Ok(value) => match *resolved {
-                    Some(expected) => match &expected {
-                        Type::Record(row) => {
+                    Some(expected) => {
+                        // For Record types and Intersection-of-Records, apply proxy contract wrapping.
+                        // as_record_row_merged merges all required fields from all members into a Row.
+                        if let Some(row) = as_record_row_merged(&expected) {
                             // Flatten Overlay to Dict before record type assertion.
                             let value = match value {
                                 Value::Overlay(l, r) => {
@@ -1356,7 +1359,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     .map(|expr| (Rc::new(expr.clone()), Rc::clone(&env)));
                                 match validate_and_wrap_record(
                                     entries,
-                                    row,
+                                    row.as_ref(),
                                     &mut vec![],
                                     expr_span,
                                     thunk_span,
@@ -1401,31 +1404,28 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     .into()))
                                 }
                             }
-                        }
-                        _ => {
-                            if value_matches_type(&value, &expected) {
-                                Action::Continue(Ok(value))
-                            } else if let Some(default_expr) =
-                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                            {
-                                // Evaluate default expression iteratively.
-                                // The result will flow to the next continuation on the stack.
-                                Action::Eval {
-                                    expr: Rc::new(default_expr.clone()),
-                                    env,
-                                    ctx: Rc::clone(&ctx),
-                                }
-                            } else {
-                                Action::Continue(Err(EvalError::type_assert_failed(
-                                    &format_type_for_assert(&expected),
-                                    &value.type_name(),
-                                    thunk_span,
-                                )
-                                .with_materialization_span(expr_span)
-                                .into()))
+                        } else if value_matches_type(&value, &expected) {
+                            Action::Continue(Ok(value))
+                        } else if let Some(default_expr) =
+                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                        {
+                            // Evaluate default expression iteratively.
+                            // The result will flow to the next continuation on the stack.
+                            Action::Eval {
+                                expr: Rc::new(default_expr.clone()),
+                                env,
+                                ctx: Rc::clone(&ctx),
                             }
+                        } else {
+                            Action::Continue(Err(EvalError::type_assert_failed(
+                                &format_type_for_assert(&expected),
+                                &value.type_name(),
+                                thunk_span,
+                            )
+                            .with_materialization_span(expr_span)
+                            .into()))
                         }
-                    },
+                    }
                     None => {
                         // --no-typecheck FALLBACK (nominal validation)
                         // Per doc/07-type-extensions.md §--no-typecheck mode:

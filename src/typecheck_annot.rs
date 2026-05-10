@@ -546,6 +546,15 @@ fn apply_type_alias_substitution(
                 .map(|m| apply_type_alias_substitution(m, subst, state))
                 .collect(),
         ),
+        Type::Intersection(members) => Type::normalize_intersection(
+            members
+                .iter()
+                .map(|m| apply_type_alias_substitution(m, subst, state))
+                .collect(),
+        ),
+        Type::Negation(inner) => {
+            Type::Negation(Box::new(apply_type_alias_substitution(inner, subst, state)))
+        }
         // All other types are atomic and don't contain substitutable parameters
         _ => ty.clone(),
     }
@@ -1420,24 +1429,67 @@ pub(crate) fn resolve_type_dict(
         fields.insert(key, ty);
     }
 
-    // BAS FUTURE WORK: Under BAS (Basic Atomic Subtyping), a multi-field closed record
-    // annotation like `@[x: Int  y: String]` should be constructed as an intersection of
-    // single-field closed records: `{x: Int} ∧ {y: String}`.
+    // Multi-field record annotation → intersection of open single-field records.
     //
-    // This is intentionally NOT implemented yet because it requires coordinated changes to:
-    //   1. `is_subtype` (types.rs): closed records currently require exact field match;
-    //      for BAS single-field intersection to work, `Record({x:1,y:2}) <: Record({x:Int})`
-    //      must hold (width subtyping), which breaks `test_type_assert_closed_record_rejects_extra_fields`.
-    //   2. `unify` (type_unify.rs): needs `Record ↔ Intersection` unification via merge.
-    //   3. `check_dot_access` (typecheck.rs): needs to handle `Intersection` access.
+    // `@[x: Int  y: String]` → `Intersection([{x: Int, ...ρ1}, {y: String, ...ρ2}])`
     //
-    // When implemented, the change is:
-    //   if fields.len() >= 2 && rest == RowTail::Empty {
-    //       let members = fields.into_iter().map(|(k, v)| {
-    //           Type::Record(Row { fields: {k: v}, tail: RowTail::Empty })
-    //       }).collect();
-    //       return Ok(Type::normalize_intersection(members));
-    //   }
+    // Each member uses an OPEN row (RowTail::RowVar with a fresh variable) so that
+    // `is_subtype(Record({x:1, y:"hello"}), Record({x:Int}, RowVar))` succeeds via the
+    // open-tail rule in `is_subtype`. This avoids the closed-record exact-match failure
+    // that would occur if we used closed single-field members.
+    //
+    // Single-field annotations (`@[name: String]`) keep existing behavior: a single open
+    // record with the user-supplied tail (or Empty if no `...` was written). This ensures
+    // `test_type_assert_closed_record_rejects_extra_fields` continues to pass — a single
+    // closed-field annotation stays closed.
+    //
+    // Annotations with a rest entry (`@[x: Int ...]`) also bypass this path (rest ≠ Empty).
+    //
+    // SHARED TYPE VARIABLE GUARD: If any TypeVar name appears in more than one field,
+    // fall back to the closed Record. Splitting into open single-field members would
+    // cause each member to independently bind the shared TypeVar to a different concrete
+    // value during unification, producing spurious "cannot unify X with Y" errors.
+    // Example: `[type [a] [first: a  second: a]]` — both fields share `a`; if split into
+    // `{first: a, ...ρ1}` and `{second: a, ...ρ2}`, unifying with `{first: 1, second: 2}`
+    // first binds `a = 1` then tries to unify `a` (= 1) with 2 → error.
+    if fields.len() >= 2 && rest == RowTail::Empty {
+        // Check for shared TypeVar names across field types
+        let mut all_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut has_shared = false;
+        for ty in fields.values() {
+            let mut field_type_vars = std::collections::HashSet::new();
+            let mut field_row_vars = std::collections::HashSet::new();
+            ty.collect_all_vars(&mut field_type_vars, &mut field_row_vars);
+            for v in field_type_vars {
+                if !all_seen.insert(v) {
+                    has_shared = true;
+                    break;
+                }
+            }
+            if has_shared {
+                break;
+            }
+        }
+
+        if !has_shared {
+            let members: Vec<Type> = fields
+                .into_iter()
+                .map(|(k, v)| {
+                    // Fresh open row variable for each member so row unification can absorb
+                    // the extra fields that are present in the concrete record but absent from
+                    // this single-field member.
+                    let (rho_name, rho_level) = state.fresh_row_var_name();
+                    let mut member_fields = HashMap::new();
+                    member_fields.insert(k, v);
+                    Type::Record(Row {
+                        fields: member_fields,
+                        tail: RowTail::RowVar(rho_name, rho_level),
+                    })
+                })
+                .collect();
+            return Ok(Type::normalize_intersection(members));
+        }
+    }
 
     Ok(Type::Record(Row { fields, tail: rest }))
 }

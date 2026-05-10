@@ -1704,6 +1704,38 @@ pub fn unify(
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
 
+        // Record ↔ Intersection-of-Records unification.
+        //
+        // When a concrete Record is unified against an Intersection whose members are all
+        // Records (the shape produced by multi-field `@[x: Int  y: String]` annotations),
+        // unify the record against EACH member in turn.  Row unification will bind each
+        // member's open row variable to absorb the extra fields present in the concrete
+        // record, satisfying the width-subtyping requirement for open rows.
+        //
+        // This arm is placed BEFORE the C-Var2 patterns because those patterns require
+        // `!concrete.has_inference_vars()`, which would not fire for intersections whose
+        // members contain RowVar tails (which are inference variables).  Additionally,
+        // C-Var2 only handles intersections with exactly one TypeVar — not the all-Record
+        // intersection shape we are handling here.
+        (Type::Record(_), Type::Intersection(members))
+            if members.iter().all(|m| matches!(m, Type::Record(_))) =>
+        {
+            let members = members.clone();
+            for member in &members {
+                unify(&a, member, subst, state, span)?;
+            }
+            Ok(())
+        }
+        (Type::Intersection(members), Type::Record(_))
+            if members.iter().all(|m| matches!(m, Type::Record(_))) =>
+        {
+            let members = members.clone();
+            for member in &members {
+                unify(member, &b, subst, state, span)?;
+            }
+            Ok(())
+        }
+
         // [C-VAR1] (BAS constraint rewriting, conservative):
         // τ₁ ≤ τ₂ ∨ α  →  bind α to the concrete type when the non-var members
         // don't already cover τ₁.
