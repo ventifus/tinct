@@ -218,8 +218,8 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [x] `socks5-connect` (`src/builtins_io.rs:3590-3592`) — **remove from registry** (no use case currently; re-add when there is one)
 - [x] `proxy-connect` (`src/builtins_io.rs:3597-3599`) — **remove from registry** (same)
 - [x] `open` write and append modes — **implement `Writable`/`Appendable` flags and remove legacy string-flag API**: implement `[open cap path Writable]` and `[open cap path Appendable]` per `doc/whatif/completed/lib-supplemental.md` §Streaming File I/O; delete the backward-compat string-mode branch entirely (`src/builtins_io.rs:167-226`); audit all corpus tests and stdlib files for `open ... "r"` calls and migrate to `[open cap path Readable]` (`src/builtins_io.rs`, `stdlib/`, `tests/`)
-- [ ] `tls-connect` — **entire builtin removed** in `connect-v2` sprint (tracked there)
-- [ ] `connect` UDP transport — tracked in `connect-v2` sprint
+- [x] `tls-connect` — removed in connect-v2 sprint; replaced by `tls-layer`
+- [x] `connect` UDP transport — stub added in connect-v2 sprint ("UDP not yet supported"); full impl requires datagram infrastructure
 - [x] `--cap-net` CIDR range entries — `NetCapEntry::Cidr(ipnet::IpNet)`, DNS rebinding mitigation, combined hostname+CIDR validation (`src/main.rs`, `src/value.rs`, `src/builtins_io.rs`, `Cargo.toml`)
 
 **spki-pinning-wrong** — `compute_spki_hash` hashes full DER cert instead of SPKI field; `tls-peer-cert` returns placeholder strings:
