@@ -155,8 +155,8 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-data-model.md §Sessions`.
 
 - [ ] Add `quinn` as direct dependency (`Cargo.toml`); implement `quic-session cap host port opts` → `Value::QuicSession`; opts carries TLS config (CA roots, ALPN, client certs, SPKI pins) (`src/builtins_io.rs`, `Cargo.toml`)
-- [ ] Add `Value::QuicSession`, `Value::Http2Session`, `Value::Http3Session` to `src/value.rs`; store as `Rc<...>` (pointer-sized, Clone-compatible, within 80-byte size assertion); update type_name/Debug/Display/PartialEq/visit_value exhaustive match arms; add non-serializable arms in `visit_value`
-- [ ] Add `Type::QuicSession`, `Type::Http2Session`, `Type::Http3Session` atomic variants to `src/types.rs`; register in `TypeEnv::with_builtins()`; update `value_matches_type()` in `src/eval.rs` for TypeAssert checking (`src/types.rs`, `src/type_env.rs`, `src/eval.rs`)
+- [x] Add `Value::QuicSession`, `Value::Http2Session`, `Value::Http3Session` as `Rc<()>` placeholders (`src/value.rs`)
+- [x] Add `Type::QuicSession`, `Type::Http2Session`, `Type::Http3Session` + TypeEnv + value_matches_type (`src/types.rs`, `src/type_env.rs`, `src/eval.rs`)
 - [ ] Document tokio runtime strategy for `quic-session`: use `tokio::runtime::Runtime::new_current_thread().block_on(...)` scoped to the builtin call; must not create a second runtime when `http2-session` (reqwest, which already embeds a runtime) and `quic-session` are both used in the same script — use a single shared `Rc<tokio::runtime::Runtime>` in the builtin context or run quinn on the reqwest runtime
 - [ ] Implement `quic-open-stream session` → `Handle[Binary Readable Writable Stream]` from a QuicSession (`src/builtins_io.rs`)
 - [ ] Implement `quic-open-datagram session` → `Handle[Binary Readable Writable Datagram]` for RFC 9297 datagram extensions (`src/builtins_io.rs`)
@@ -164,7 +164,7 @@ See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-da
 - [ ] Implement `http3-session quic-session [opts]` → `Value::Http3Session` via h3/reqwest http3 feature (`src/builtins_io.rs`)
 - [ ] Implement `http-request session method path headers body` → `{ok: {status headers body}} | {err: String}`; dispatch on Http2Session and Http3Session (`src/builtins_io.rs`)
 - [ ] Implement `icmp-ping cap host timeout-ms` → `{ok: {latency-ms: Int}} | {err: String}`; platform-conditional (`src/builtins_io.rs`)
-- [ ] **Remove `http-connect` entirely** — delete `builtin!("http-connect", ...)` from `standard_builtins()` and the corresponding TypeEnv entry; delete corpus test `tests/corpus/eval/builtins/http_connect_type_check.llt-eval`; remove `assert!(names.contains(&"http-connect"), ...)` in `src/builtins.rs`; replacement is `[http2-session [tls-layer [connect %nc Tcp "host" 443] "host" opts]]` (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
+- [x] Remove `http-connect` entirely — deleted builtin, function, TypeEnv entry, corpus test, test assertion (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
 - [ ] Register all new builtins in `standard_builtins()` (`src/builtins.rs`)
 - [ ] Tests: error-path corpus tests for quic-session, http2-session, http-request (arity, type errors) in `tests/corpus/eval/builtins/`
 - [ ] Update `doc/11a-builtins.md` §Network with Session builtins

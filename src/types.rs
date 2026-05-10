@@ -150,6 +150,12 @@ pub enum Type {
     ClockCap,
     /// Timezone — parsed IANA TZ rules from zoneinfo file. Created by `load-tz`.
     Timezone,
+    /// QUIC session — multiplexed connection over UDP (RFC 9000). Created by `quic-session`.
+    QuicSession,
+    /// HTTP/2 session — multiplexed HTTP connection (RFC 9113). Created by `http2-session`.
+    Http2Session,
+    /// HTTP/3 session — HTTP over QUIC (RFC 9114). Created by `http3-session`.
+    Http3Session,
     /// Union type — represents a value that can be one of several types.
     /// Invariant: members are sorted, deduplicated, and flattened (no nested unions).
     /// Single-element unions are unwrapped to the bare type by normalize_union().
@@ -218,6 +224,9 @@ impl PartialEq for Type {
             (Type::Duration, Type::Duration) => true,
             (Type::ClockCap, Type::ClockCap) => true,
             (Type::Timezone, Type::Timezone) => true,
+            (Type::QuicSession, Type::QuicSession) => true,
+            (Type::Http2Session, Type::Http2Session) => true,
+            (Type::Http3Session, Type::Http3Session) => true,
             (Type::Union(members1), Type::Union(members2)) => members1 == members2,
             (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
             (Type::Negation(t1), Type::Negation(t2)) => t1 == t2,
@@ -849,10 +858,13 @@ fn type_order(ty: &Type) -> u8 {
         Type::Duration => 21,
         Type::ClockCap => 22,
         Type::Timezone => 23,
-        Type::Union(_) => 24, // Should not appear after flattening, but included for completeness
-        Type::Intersection(_) => 25, // Should not appear after flattening, but included for completeness
-        Type::Negation(_) => 26,
-        Type::Never => 27,
+        Type::QuicSession => 24,
+        Type::Http2Session => 25,
+        Type::Http3Session => 26,
+        Type::Union(_) => 27, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 28, // Should not appear after flattening, but included for completeness
+        Type::Negation(_) => 29,
+        Type::Never => 30,
     }
 }
 

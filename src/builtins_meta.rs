@@ -721,6 +721,9 @@ fn type_name(val: &Value) -> String {
         Value::ClockCap(_) => "ClockCap",
         Value::Timezone(_) => "Timezone",
         Value::HttpConn { .. } => "HttpConn",
+        Value::QuicSession(_) => "QuicSession",
+        Value::Http2Session(_) => "Http2Session",
+        Value::Http3Session(_) => "Http3Session",
     }
     .to_string()
 }

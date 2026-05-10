@@ -402,6 +402,18 @@ pub fn visit_value<V: ValueVisitor>(
             "HttpConn".to_string(),
             ast::Span::origin(),
         ))),
+        value::Value::QuicSession(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "QuicSession".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::Http2Session(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Http2Session".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::Http3Session(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Http3Session".to_string(),
+            ast::Span::origin(),
+        ))),
     }
 }
 
