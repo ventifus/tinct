@@ -6,7 +6,7 @@ use std::rc::Rc;
 use super::{infer_expr, resolve_type_expr, TypeMap};
 use crate::ast::{Entry, Expr, Span, Spanned};
 use crate::types::{
-    generalize, unify, InferState, Row, RowTail, Substitution, Type, TypeAlias, TypeEnv, TypeError,
+    generalize, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
 };
 
@@ -56,22 +56,19 @@ pub(crate) fn infer_dict(
                     // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
                     // creates a distinct fresh var, breaking identity-function types.
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-                    let mut alias_row_map: HashMap<String, String> = HashMap::new();
-                    // Pre-seed param names in BOTH maps so they survive cross-kind
-                    // collision checks (a param can appear as both `a` and `...a`).
+                    // Pre-seed param names so they map to fresh TypeVars.
                     for p in params {
                         let fresh = format!("_t{}", state.name_counter);
                         state.name_counter += 1;
                         state.levels.insert(fresh.clone(), state.level);
                         alias_ann_map.insert(p.clone(), fresh.clone());
-                        alias_row_map.insert(p.clone(), fresh.clone());
                     }
                     if let Ok(alias_ty) = resolve_type_expr(
                         body,
                         &dict_env,
                         state,
                         &mut Some(&mut alias_ann_map),
-                        &mut Some(&mut alias_row_map),
+                        &mut None,
                     ) {
                         let remapped_params: Vec<String> = params
                             .iter()
@@ -99,7 +96,6 @@ pub(crate) fn infer_dict(
     // constraints generated during value inference.
     let mut subst = Substitution {
         type_map: state.subst.type_map.clone(),
-        row_map: state.subst.row_map.clone(),
     };
 
     // Pass 3: Infer values and unify with bound type vars
@@ -178,50 +174,7 @@ pub(crate) fn infer_dict(
         }
     }
 
-    // For row_map: apply local subst to field types in state.subst row bindings, then merge.
-    // Algorithm W substitution composition: unify on collision (same as type_map above).
-    {
-        let state_row_entries: Vec<(String, Row)> = state
-            .subst
-            .row_map
-            .iter()
-            .map(|(k, row)| (k.clone(), row.clone()))
-            .collect();
-
-        // Reusable HashMap to avoid allocation per iteration
-        let mut applied_fields: HashMap<String, Type> = HashMap::new();
-
-        for (k, row) in state_row_entries {
-            applied_fields.clear();
-            for (field_name, field_ty) in &row.fields {
-                applied_fields.insert(field_name.clone(), subst.apply(field_ty));
-            }
-            let applied_row = Row {
-                fields: applied_fields.clone(),
-                // Tail not applied here; Pass 3c's subst.apply() chases tail chains transitively.
-                tail: row.tail.clone(),
-            };
-            match subst.row_map.get(&k).cloned() {
-                Some(existing) => {
-                    // Both maps bind the same row variable: unify to reconcile constraints.
-                    // Remove the binding for k before calling unify to prevent apply() from
-                    // chasing k -> existing -> k in an infinite cycle during resolution.
-                    subst.row_map.remove(&k);
-                    unify(
-                        &Type::Record(existing),
-                        &Type::Record(applied_row),
-                        &mut subst,
-                        state,
-                        span,
-                    )
-                    .map_err(|e| vec![e])?;
-                }
-                None => {
-                    subst.row_map.insert(k, applied_row);
-                }
-            }
-        }
-    }
+    // BAS: no row_map to merge (RowVar tails removed)
 
     // Pass 3c: Apply the merged substitution to all field types
     let field_types: HashMap<String, Type> = if subst.is_empty() {
@@ -241,9 +194,6 @@ pub(crate) fn infer_dict(
     for (k, v) in &subst.type_map {
         state.subst.type_map.insert(k.clone(), v.clone());
     }
-    for (k, row) in &subst.row_map {
-        state.subst.row_map.insert(k.clone(), row.clone());
-    }
     state.subst.check_size(span).map_err(|e| vec![e])?;
 
     // Pass 4: Generalize - create TypeSchemes for each entry
@@ -256,10 +206,7 @@ pub(crate) fn infer_dict(
     // Restore enclosing level
     state.level = enclosing_level;
 
-    let record_type = Type::Record(Row {
-        fields: field_types,
-        tail: RowTail::Empty,
-    });
+    let record_type = Type::Record(Row { fields: field_types });
 
     if errors.is_empty() {
         Ok((record_type, schemes))

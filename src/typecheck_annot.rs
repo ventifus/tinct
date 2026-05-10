@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
 use crate::ast::{Annotation, Entry, Expr, Span, Spanned};
-use crate::types::{InferState, Row, RowTail, Type, TypeAlias, TypeEnv, TypeError};
+use crate::types::{InferState, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 pub(crate) fn expand_type_alias(
     inner: &Spanned<Expr>,
@@ -16,7 +16,6 @@ pub(crate) fn expand_type_alias(
     // Use a fresh per-alias mapping so annotation names within one type alias expression
     // (e.g., `a` in `[Fn@a [a]]`) consistently map to the same fresh TypeVar.
     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-    let mut alias_row_map: HashMap<String, String> = HashMap::new();
     // The `let _ = resolve_type_expr(...)` discards the resolved type intentionally — the call
     // is for validation side-effects (error propagation) only. Standalone type alias expressions
     // have no runtime type; returning Any is correct. The actual type alias definition is
@@ -26,7 +25,7 @@ pub(crate) fn expand_type_alias(
         env,
         state,
         &mut Some(&mut alias_ann_map),
-        &mut Some(&mut alias_row_map),
+        &mut None,
     )?;
     Ok(Type::Unknown)
 }
@@ -44,9 +43,8 @@ pub(crate) fn resolve_type_assert(
     // Named row variables (e.g., ...r) in TypeAssert annotations are tracked correctly
     // instead of creating fresh anonymous row vars.
     let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
-    let mut row_ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
     let mut ann_mapping_opt = ann_mapping.as_mut();
-    let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
+    let mut row_ann_mapping_opt: Option<&mut HashMap<String, String>> = None;
 
     let expected = resolve_annotation(
         &annotation.node,
@@ -493,34 +491,7 @@ fn apply_type_alias_substitution(
                 .iter()
                 .map(|(k, v)| (k.clone(), apply_type_alias_substitution(v, subst, state)))
                 .collect();
-            let new_tail = match &row.tail {
-                RowTail::Empty => RowTail::Empty,
-                RowTail::RowVar(name, _) => {
-                    // Check if this row variable matches a type alias parameter
-                    if let Some(replacement) = subst.get(name) {
-                        // Parameter used as row variable: if the replacement is a TypeVar,
-                        // convert it to a RowVar (same name, row-kinded).
-                        match replacement {
-                            Type::TypeVar(var_name, level) => {
-                                RowTail::RowVar(var_name.clone(), *level)
-                            }
-                            _ => {
-                                // Non-TypeVar replacement for a row position — keep as-is
-                                let level = *state.levels.get(name).unwrap_or(&state.level);
-                                RowTail::RowVar(name.clone(), level)
-                            }
-                        }
-                    } else {
-                        // Not a parameter — keep as-is but refresh level from state
-                        let level = *state.levels.get(name).unwrap_or(&state.level);
-                        RowTail::RowVar(name.clone(), level)
-                    }
-                }
-            };
-            Type::Record(Row {
-                fields: new_fields,
-                tail: new_tail,
-            })
+            Type::Record(Row { fields: new_fields })
         }
         Type::Function {
             params,
@@ -650,20 +621,11 @@ pub(crate) fn resolve_type_name(
         "Top" => Ok(Type::Top),
         "Unknown" => Ok(Type::Unknown),
         "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
-        "Null" => Ok(Type::Record(Row {
-            fields: HashMap::new(),
-            tail: RowTail::Empty,
-        })),
+        "Null" => Ok(Type::Record(Row { fields: HashMap::new() })),
         "Dict" => {
-            // Open record type with a fresh row variable tail — represents "any dict".
-            // Any concrete record is a subtype via is_subtype's RowVar tail rule (open sup allows
-            // all sub records). During unification, the row var binds to match the actual record
-            // structure passed at the call site.
-            let (rho_name, rho_level) = state.fresh_row_var_name();
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-                tail: RowTail::RowVar(rho_name, rho_level),
-            }))
+            // Empty record — represents "any dict" under BAS width subtyping.
+            // Any concrete record is a subtype because all required fields (none) are present.
+            Ok(Type::Record(Row { fields: HashMap::new() }))
         }
         "Fn" => {
             // Return Type::Unknown to represent "any callable". The previous encoding
@@ -809,10 +771,7 @@ fn expand_alias_body_guarded(
                     )?,
                 );
             }
-            Ok(Type::Record(Row {
-                fields: new_fields,
-                tail: row.tail.clone(),
-            }))
+            Ok(Type::Record(Row { fields: new_fields }))
         }
         Type::Function {
             params,
@@ -1343,69 +1302,12 @@ pub(crate) fn resolve_type_dict(
     }
 
     let mut fields: HashMap<String, Type> = HashMap::new();
-    let mut rest = RowTail::Empty;
+    let mut has_rest = false; // tracks if `...` is present (BAS: openness via width subtyping)
     for entry in entries {
-        if let Expr::Rest(name) = &entry.node.value.node {
-            rest = match name {
-                None => {
-                    // Anonymous open record: generate a fresh row variable name
-                    let fresh_name = format!("_open{}", state.name_counter);
-                    state.name_counter += 1;
-                    state.levels.insert(fresh_name.clone(), state.level);
-                    RowTail::RowVar(fresh_name, state.level)
-                }
-                Some(n) => {
-                    // Row variables in type expressions use row_ann_mapping (not ann_mapping).
-                    // ann_mapping is for type-kind variables; row_ann_mapping is for row-kind
-                    // variables. Using the wrong map would cause cross-kind collisions where a
-                    // name used as both a type variable and a row variable maps to the same fresh
-                    // name in the type substitution (kinded substitution violation).
-                    //
-                    // Cross-kind collision: if the same name appears in both ann_mapping (as a
-                    // type variable) and row_ann_mapping (as a row variable), the annotation is
-                    // ambiguous and must be rejected.
-                    // Cross-kind collision: a name used as type variable cannot also
-                    // be used as a row variable — UNLESS it was pre-seeded in both maps
-                    // (parameterized type alias params can appear in either position).
-                    let in_ann = ann_mapping.as_ref().is_some_and(|m| m.contains_key(n));
-                    let in_row = row_ann_mapping.as_ref().is_some_and(|m| m.contains_key(n));
-                    if in_ann && !in_row {
-                        // Same name already used as a type variable in this function scope
-                        // and NOT pre-seeded as a row variable.
-                        return Err(TypeError::new(
-                            format!(
-                                "annotation name '{n}' is already used as a type variable in this function; \
-                                 it cannot also be used as a row variable"
-                            ),
-                            span,
-                        ));
-                    }
-                    if let Some(ref mut mapping) = row_ann_mapping {
-                        // Check if this row variable name already has a mapping
-                        if let Some(existing_var) = mapping.get(n) {
-                            // Already mapped: return the existing RowVar with its current level
-                            // from state.levels. DO NOT reset the level - unification may have
-                            // lowered it, and level lowering must be monotone (Kiselyov 2013).
-                            let current_level = *state.levels.get(existing_var).expect(
-                                "invariant: row var registered in mapping must be in state.levels",
-                            );
-                            RowTail::RowVar(existing_var.clone(), current_level)
-                        } else {
-                            // First time seeing this row variable: create fresh var and register level
-                            let fresh = format!("_t{}", state.name_counter);
-                            state.name_counter += 1;
-                            state.levels.insert(fresh.clone(), state.level);
-                            mapping.insert(n.clone(), fresh.clone());
-                            RowTail::RowVar(fresh, state.level)
-                        }
-                    } else {
-                        // Outside of function scope, use the row variable name directly
-                        // Use or_insert to atomically lookup-or-create, avoiding level reset
-                        let level = *state.levels.entry(n.clone()).or_insert(state.level);
-                        RowTail::RowVar(n.clone(), level)
-                    }
-                }
-            };
+        if let Expr::Rest(_name) = &entry.node.value.node {
+            // BAS: `...` annotations express user intent for openness; under BAS width
+            // subtyping all records are closed — is_subtype handles extra fields.
+            has_rest = true;
             continue;
         }
         let key = match &entry.node.key {
@@ -1452,7 +1354,7 @@ pub(crate) fn resolve_type_dict(
     // Example: `[type [a] [first: a  second: a]]` — both fields share `a`; if split into
     // `{first: a}` and `{second: a}`, unifying with `{first: 1, second: 2}` first binds
     // `a = 1` then tries to unify `a` (= 1) with 2 → error.
-    if fields.len() >= 2 && rest == RowTail::Empty {
+    if fields.len() >= 2 && !has_rest {
         // Check for shared TypeVar names across field types
         let mut all_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut has_shared = false;
@@ -1485,17 +1387,14 @@ pub(crate) fn resolve_type_dict(
                     // under BAS conjunction-elimination semantics.
                     let mut member_fields = HashMap::new();
                     member_fields.insert(k, v);
-                    Type::Record(Row {
-                        fields: member_fields,
-                        tail: RowTail::Empty,
-                    })
+                    Type::Record(Row { fields: member_fields })
                 })
                 .collect();
             return Ok(Type::normalize_intersection(members));
         }
     }
 
-    Ok(Type::Record(Row { fields, tail: rest }))
+    Ok(Type::Record(Row { fields }))
 }
 
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries

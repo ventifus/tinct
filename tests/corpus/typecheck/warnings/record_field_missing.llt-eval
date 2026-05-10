@@ -1,9 +1,0 @@
-# Record field missing warning: function parameter annotated as [x: Int] (closed record),
-# but body accesses field $r.y which is not present in [x: Int].
-# The type checker reports "field 'y' not found in [x: Int]".
-# Eval proceeds — the function is defined but never called, so no runtime error occurs.
-[f: [fn [r@[x: Int]] r.y]]
-=== out
-Dict({"f": Function(r)})
-=== warn
-field 'y' not found in [x: Int] at 4:22-4:25

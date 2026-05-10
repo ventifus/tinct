@@ -696,7 +696,7 @@ pub fn format_witnesses(witnesses: &[CoveragePattern]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Row, RowTail};
+    use crate::types::Row;
 
     // Helper: create a constructor pattern
     fn con(tag: ConstructorTag, sub_patterns: Vec<CoveragePattern>) -> CoveragePattern {
@@ -1266,11 +1266,9 @@ mod tests {
         let union_members = vec![
             Type::Record(Row {
                 fields: [("ok".to_string(), Type::Unknown)].into_iter().collect(),
-                tail: RowTail::Empty,
             }),
             Type::Record(Row {
                 fields: [("err".to_string(), Type::Str)].into_iter().collect(),
-                tail: RowTail::Empty,
             }),
         ];
         let sig = ConstructorSignature::from_union(&union_members);

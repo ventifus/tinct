@@ -28,6 +28,9 @@ pub struct TestFile {
     pub expectations: TestExpectations,
     /// Whether to enable `--no-fs` mode (from `# no_fs` directive).
     pub no_fs: bool,
+    /// NetCap entries to inject, parsed from `# cap_net NAME=ENTRY` tokens.
+    /// Each entry is `(cap_name, allowlist_entry_string)` e.g. `("nc", "*.local")`.
+    pub cap_net: Vec<(String, String)>,
 }
 
 /// Split a test file on labeled section delimiters (`=== out`, `=== warn`, `=== error`).
@@ -59,12 +62,53 @@ pub fn split_test_file(content: &str) -> TestFile {
         ("", content)
     };
 
-    // Check if "no_fs" is the only directive (after the leading #)
-    // This avoids false positives on comments containing "no_fs" as a word
-    let no_fs = directives_line
-        .strip_prefix('#')
-        .map(|s| s.trim())
-        .map_or(false, |s| s == "no_fs");
+    // Parse space-separated directive tokens after the leading `#`.
+    // Uses a stateful parser — only recognized sequences are processed:
+    //   no_fs           — evaluate with filesystem access disabled
+    //   cap_net NAME=ENTRY [NAME=ENTRY ...]  — inject NetCap entries
+    //
+    // If the line contains any unrecognized token (i.e. it's a plain comment),
+    // all directive parsing is abandoned and defaults are used. This prevents
+    // false positives on comment lines like `# x >= y: true`.
+    let mut no_fs = false;
+    let mut cap_net: Vec<(String, String)> = Vec::new();
+    let mut parse_ok = true;
+
+    if let Some(tokens_str) = directives_line.strip_prefix('#') {
+        let mut in_cap_net = false;
+        for token in tokens_str.split_whitespace() {
+            if token == "no_fs" {
+                no_fs = true;
+                in_cap_net = false;
+            } else if token == "cap_net" {
+                in_cap_net = true;
+            } else if in_cap_net {
+                // Consume NAME=ENTRY tokens after cap_net keyword
+                if let Some((name, entry)) = token.split_once('=') {
+                    if !name.is_empty() && !entry.is_empty() {
+                        cap_net.push((name.to_string(), entry.to_string()));
+                    } else {
+                        parse_ok = false;
+                        break;
+                    }
+                } else {
+                    // Non-NAME=ENTRY token after cap_net — not a directive line
+                    parse_ok = false;
+                    break;
+                }
+            } else {
+                // Unrecognized token in initial state — not a directive line
+                parse_ok = false;
+                break;
+            }
+        }
+    }
+
+    if !parse_ok {
+        no_fs = false;
+        cap_net.clear();
+    }
+
     let content = rest;
 
     // Find all section delimiters
@@ -94,6 +138,7 @@ pub fn split_test_file(content: &str) -> TestFile {
                 error: None,
             },
             no_fs,
+            cap_net,
         };
     }
 
@@ -166,6 +211,7 @@ pub fn split_test_file(content: &str) -> TestFile {
         input: input.to_string(),
         expectations: TestExpectations { out, warn, error },
         no_fs,
+        cap_net,
     }
 }
 

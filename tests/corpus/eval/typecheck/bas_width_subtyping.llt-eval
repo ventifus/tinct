@@ -1,0 +1,6 @@
+# BAS width subtyping: a record with extra fields satisfies a narrower annotation
+[get-name: [fn [r@[name: String]] r.name]]
+---
+[result: [call %.get-name [name: "Alice"  age: 30]]]
+=== out
+Dict({"result": String("Alice")})

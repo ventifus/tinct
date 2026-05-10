@@ -3,7 +3,7 @@ mod test_helpers;
 use std::fs;
 use std::path::PathBuf;
 use test_helpers::{find_test_files, run_corpus_dir, split_test_file, CorpusOutcome};
-use tinct::{eval_source_with_config, parse, parse_expression, typecheck_source};
+use tinct::{eval_source_with_cap_net, eval_source_with_config, parse, parse_expression, typecheck_source};
 
 #[test]
 fn test_valid_corpus() {
@@ -226,7 +226,11 @@ fn test_eval_corpus() {
         .spawn(move || {
             run_corpus_dir(&corpus_dir, &[type_errors_dir.as_path()], |test| {
                 // Eval pipeline: eval_source_with_config() + typecheck_source()
-                let eval_result = eval_source_with_config(&test.input, test.no_fs);
+                let eval_result = if test.cap_net.is_empty() {
+                    eval_source_with_config(&test.input, test.no_fs)
+                } else {
+                    eval_source_with_cap_net(&test.input, test.no_fs, &test.cap_net)
+                };
                 let typecheck_result = typecheck_source(&test.input);
 
                 let (output, error) = match eval_result {
@@ -452,7 +456,12 @@ fn test_typecheck_warnings_corpus() {
                 };
 
                 // 1. Eval must succeed.
-                match eval_source_with_config(&test.input, test.no_fs) {
+                let eval_result_tc = if test.cap_net.is_empty() {
+                    eval_source_with_config(&test.input, test.no_fs)
+                } else {
+                    eval_source_with_cap_net(&test.input, test.no_fs, &test.cap_net)
+                };
+                match eval_result_tc {
                     Ok(actual) => {
                         if actual.trim() != expected_out.as_str() {
                             failed.push((
