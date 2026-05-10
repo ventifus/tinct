@@ -3849,6 +3849,65 @@ pub(crate) fn builtin_socks5_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thun
     Err(EvalError::user_error("socks5-connect: not yet implemented".to_string(), call_span).into())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Span;
+    use crate::value::NetCapEntry;
+
+    fn dummy_span() -> Span {
+        Span::origin()
+    }
+
+    #[test]
+    fn test_check_net_cap_allowlist_denial() {
+        // Allowlist: only api.example.com:443 is allowed.
+        let entries = vec![NetCapEntry::HostPort("api.example.com".to_string(), 443)];
+        let span = dummy_span();
+
+        // Allowed host:port → Ok
+        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(443), span);
+        assert!(
+            result.is_ok(),
+            "api.example.com:443 should be allowed, got: {:?}",
+            result
+        );
+
+        // Denied host (different hostname, same port) → Err
+        let result = check_net_cap_allowlist(&entries, "evil.example.com", Some(443), span);
+        assert!(
+            result.is_err(),
+            "evil.example.com:443 should be denied"
+        );
+        let msg = result.unwrap_err().message().to_string();
+        assert!(
+            msg.contains("denied"),
+            "error should mention 'denied', got: {msg}"
+        );
+
+        // Denied port (correct host, wrong port) → Err
+        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(80), span);
+        assert!(
+            result.is_err(),
+            "api.example.com:80 should be denied (only port 443 is allowed)"
+        );
+
+        // Any allowlist → allows everything
+        let any_entries = vec![NetCapEntry::Any];
+        let result = check_net_cap_allowlist(&any_entries, "anything.example.com", Some(1234), span);
+        assert!(
+            result.is_ok(),
+            "NetCapEntry::Any should allow any host:port"
+        );
+        // Any also allows hosts not in the original restricted list
+        let result = check_net_cap_allowlist(&any_entries, "evil.example.com", Some(22), span);
+        assert!(
+            result.is_ok(),
+            "NetCapEntry::Any should allow evil.example.com:22"
+        );
+    }
+}
+
 /// `proxy-connect`: Create an HTTP CONNECT proxy tunnel.
 /// Stub implementation — returns error "not yet implemented".
 pub(crate) fn builtin_proxy_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {

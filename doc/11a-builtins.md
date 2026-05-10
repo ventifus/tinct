@@ -629,6 +629,31 @@ For field descriptions, see [Data Model](03-data-model.md) §URI Values.
 - `uri-origin`: Type mismatch if arg is not Url
 - `uri->string`: Type mismatch if arg is not Uri, Url, or Urn
 
+### Implementation Note: Tokio Runtime Strategy for Future Async Builtins
+
+When `quic-session` or other async network builtins (`http2-session`, `http3-session`) are implemented, the Tokio runtime strategy must be carefully managed to avoid the "cannot start a runtime from within a runtime" panic.
+
+**Rule: one runtime per builtin call, never nested.**
+
+Each async builtin (e.g., `quic-session`, a future `http3-connect`) must create and block on its own scoped runtime:
+
+```rust
+// In builtin_quic_session():
+let rt = tokio::runtime::Builder::new_current_thread()
+    .enable_all()
+    .build()
+    .map_err(|e| EvalError::user_error(format!("quic-session: runtime error: {}", e), span))?;
+let result = rt.block_on(async { /* quinn QUIC handshake */ });
+```
+
+**Why `current_thread` and not `Runtime::new()`:** LLT builtins are called from synchronous Rust. A `current_thread` runtime blocks the calling thread for the duration of one async operation, then is dropped. It does not spawn background threads, making it safe to create and destroy per-call.
+
+**Shared runtime problem:** If `reqwest` (HTTP/1.1 and HTTP/2) and `quinn` (QUIC / HTTP/3) are both used in the same process, each may attempt to create a Tokio runtime. The two runtimes must not nest. The solution is to use the same `current_thread` pattern for both and ensure they are never called recursively (they cannot be, since LLT is single-threaded and builtins return before the next builtin is called).
+
+**Not a concern for `tls-connect` / `connect`:** These use blocking `std::net::TcpStream` and `rustls::StreamOwned` synchronously — no Tokio required.
+
+**Future work:** If a session builtin needs to hold a live async connection across multiple builtin calls (e.g., streaming gRPC), the runtime must outlive the builtin call. In that case, store the runtime alongside the handle in the `Value::Handle` `caps` dict as an opaque Rust-managed resource. See TODO.md for the quic-session milestone.
+
 ## Stable Aliases
 
 The following `builtin-*` aliases provide access to the raw Rust implementations, bypassing any LLT-implemented wrappers in the prelude:

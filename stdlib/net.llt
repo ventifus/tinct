@@ -53,17 +53,19 @@
 
   # Make an HTTP GET request using url@Url.
   # Dispatches on url.scheme (http or https).
-  # Returns parsed response dict.
+  # Returns parsed response dict, or errors for unsupported schemes.
   http-get: [fn@Dict [cap@NetCap url@Url]
     [if [= url.scheme "https"]
       [parse-http-response
         [bytes-str [slurp [write-handle
           [tls-connect cap Tcp url.host url.port []]
           [str-bytes [build-http-request "GET" url.path url.host]]]]]]
-      [parse-http-response
-        [bytes-str [slurp [write-handle
-          [connect cap url.host url.port]
-          [str-bytes [build-http-request "GET" url.path url.host]]]]]]]]
+      [if [= url.scheme "http"]
+        [parse-http-response
+          [bytes-str [slurp [write-handle
+            [connect cap url.host url.port]
+            [str-bytes [build-http-request "GET" url.path url.host]]]]]]
+        [error [str "http-get: unsupported scheme: " url.scheme]]]]]
 
   # Parse URL string and call http-get.
   # Returns: [Ok response-dict] or [Err message]
