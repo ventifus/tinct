@@ -271,58 +271,54 @@ pub(crate) fn resolve_annotation(
                 entries.iter().filter(|e| e.node.key.is_none()).collect();
 
             if !positional_entries.is_empty() && !entries_look_like_type_dict(entries) {
-                // BAS annotation keywords: @[[all A B]] → Intersection, @[[without A]] → Negation.
+                // BAS annotation keywords in the wrapped position: @[[all A B]] / @[[without A]].
                 //
-                // The outer @[...] wraps an inner list [all A B] or [without A] as a positional
-                // entry in a PropertyDict. The inner list appears here as a positional entry whose
-                // value is a Dict. We dispatch based on the FIRST positional entry being a list
-                // whose own first entry is a VarRef to `all` or `without`.
+                // The inner [all A B] bracket parses as either:
+                //   Expr::Dict(entries)  — when it contains keyed or mixed entries (rare/legacy)
+                //   Expr::Call { implied: true, func: VarRef("all"), args: [A, B] } — the common case,
+                //     because a bare identifier in head position followed by arguments is an implied call.
                 //
-                // Syntax: @[[all Int Str]]   → positional_entries[0].value = Dict([all, Int, Str])
-                //         @[[without Int]]   → positional_entries[0].value = Dict([without, Int])
+                // We handle both by calling resolve_type_expr on the inner expression directly.
+                // resolve_type_expr already dispatches both Expr::Dict (via resolve_type_dict with its
+                // `all`/`without` guard) and Expr::Call { implied: true } (via the new arm added above).
+                //
+                // Legacy Expr::Dict path is preserved here for backwards compatibility only.
                 if positional_entries.len() == 1 {
-                    if let Expr::Dict(inner_entries) = &positional_entries[0].node.value.node {
-                        if !inner_entries.is_empty() {
+                    let inner_expr = &positional_entries[0].node.value;
+                    match &inner_expr.node {
+                        Expr::Dict(inner_entries) if !inner_entries.is_empty() => {
                             if let Expr::VarRef { name: kw, .. } =
                                 &inner_entries[0].node.value.node
                             {
-                                if kw == "all" {
-                                    if inner_entries.len() < 2 {
-                                        return Err(TypeError::new(
-                                            "@[[all ...]] requires at least one type argument",
-                                            span,
-                                        ));
-                                    }
-                                    let mut members = Vec::new();
-                                    for entry in &inner_entries[1..] {
-                                        let ty = resolve_type_expr(
-                                            &entry.node.value,
-                                            env,
-                                            state,
-                                            ann_mapping,
-                                            row_ann_mapping,
-                                        )?;
-                                        members.push(ty);
-                                    }
-                                    return Ok(Type::normalize_intersection(members));
-                                } else if kw == "without" {
-                                    if inner_entries.len() != 2 {
-                                        return Err(TypeError::new(
-                                            "@[[without A]] requires exactly one type argument",
-                                            span,
-                                        ));
-                                    }
-                                    let inner = resolve_type_expr(
-                                        &inner_entries[1].node.value,
+                                if kw == "all" || kw == "without" {
+                                    return resolve_type_expr(
+                                        inner_expr,
                                         env,
                                         state,
                                         ann_mapping,
                                         row_ann_mapping,
-                                    )?;
-                                    return Ok(Type::Negation(Box::new(inner)));
+                                    );
                                 }
                             }
                         }
+                        Expr::Call {
+                            implied: true,
+                            func,
+                            ..
+                        } => {
+                            if let Expr::VarRef { name: kw, .. } = &func.node {
+                                if kw == "all" || kw == "without" {
+                                    return resolve_type_expr(
+                                        inner_expr,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
@@ -1122,6 +1118,42 @@ pub(crate) fn resolve_type_expr(
                         ret: Box::new(ret),
                         variadic: false,
                     });
+                }
+            }
+
+            // BAS keywords in implied-call position: [all T1 T2] and [without T].
+            //
+            // `[all T1 T2]` parses as Expr::Call { func: VarRef("all"), args: [T1, T2], implied: true }
+            // rather than Expr::Dict, because the parser sees a bare identifier in head position
+            // followed by arguments — no `[` delimiter to form a Dict.
+            //
+            // [all T1 T2 ...] → Type::Intersection([T1, T2, ...])
+            // [without T]     → Type::Negation(T)
+            if let Expr::VarRef { name: kw, .. } = &func.node {
+                if kw == "all" {
+                    // args contains the type arguments; func ("all") is the head, not a type.
+                    if args.is_empty() {
+                        return Err(TypeError::new(
+                            "[all ...] requires at least one type argument",
+                            expr.span,
+                        ));
+                    }
+                    let mut members = Vec::new();
+                    for arg in args.iter() {
+                        let ty = resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                        members.push(ty);
+                    }
+                    return Ok(Type::normalize_intersection(members));
+                } else if kw == "without" {
+                    if args.len() != 1 {
+                        return Err(TypeError::new(
+                            "[without A] requires exactly one type argument",
+                            expr.span,
+                        ));
+                    }
+                    let inner =
+                        resolve_type_expr(&args[0], env, state, ann_mapping, row_ann_mapping)?;
+                    return Ok(Type::Negation(Box::new(inner)));
                 }
             }
 

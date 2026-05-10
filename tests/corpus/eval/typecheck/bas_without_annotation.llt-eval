@@ -1,0 +1,8 @@
+# BAS @[[without T]] annotation syntax: negation type resolves via Expr::Call path.
+# [without String] parses as Expr::Call { func: VarRef("without"), args: [String], implied: true } —
+# NOT as Expr::Dict. This test exercises the Expr::Call arm in resolve_type_expr and the
+# Expr::Call dispatch in resolve_annotation's PropertyDict branch.
+# Type::Negation is conservative at runtime (always passes); 42 satisfies ~String.
+[@[[without String]] 42]
+=== out
+Int(42)

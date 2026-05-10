@@ -1,0 +1,7 @@
+# BAS @[[all T1 T2]] annotation syntax: two-element intersection via Expr::Call path.
+# [all Int Number] parses as Expr::Call { func: VarRef("all"), args: [Int, Number], implied: true }.
+# normalize_intersection([Int, Number]) — Int is a subtype of Number in BAS, produces
+# Type::Intersection([Int, Number]). The value 42 matches both Int and Number, so it passes.
+[@[[all Int Number]] 42]
+=== out
+Int(42)

@@ -58,7 +58,7 @@ See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md Â
 - [x] False-branch narrowing: `apply_negation_narrowings()` in if-false branch, type predicates narrow to Negation type (`src/typecheck.rs`)
 - [x] I-Case3 in infer_match: remaining_scrutinee accumulates negations across arms for precise type narrowing (`src/typecheck.rs`)
 - [x] BAS corpus tests: negation narrowing, S-RcdTop, str narrowing, I-Case3 three-arm, S-ClsBot variant match (`tests/corpus/eval/typecheck/bas_*.llt-eval`)
-- [ ] Fix `@[[all A B]]` annotation syntax: `[all T1 T2]` parses as Expr::Call not Expr::Dict; dispatch in typecheck_annot.rs needs to handle Call form (`src/typecheck_annot.rs`, `src/parser.rs`)
+- [x] Fix `@[[all A B]]` syntax: added Call form dispatch in resolve_type_expr and resolve_annotation; conservative Negation subtype/unify arms added (`src/typecheck_annot.rs`, `src/types.rs`, `src/type_unify.rs`)
 
 ### `result-nominal`: Nominal Result Type and Stdlib Retrofit
 

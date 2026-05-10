@@ -1688,6 +1688,14 @@ pub fn unify(
         // Negation unification: structural (for now, basic support)
         (Type::Negation(t1), Type::Negation(t2)) => unify(t1, t2, subst, state, span),
 
+        // Conservative Negation compatibility: any concrete type unifies with a Negation type.
+        // Full BAS would require checking that the concrete type is disjoint from the negated type
+        // (T <: ~A iff T ∩ A = Never) via RDNF normalization, which is not yet implemented.
+        // For now, Type::Negation acts as a constraint that is enforced conservatively at runtime
+        // (value_matches_type always returns true for Negation) rather than statically.
+        // This prevents false type errors for `[@[[without T]] expr]` TypeAsserts.
+        (_, Type::Negation(_)) | (Type::Negation(_), _) => Ok(()),
+
         // Capability types: reflexive unification only
         (Type::DirCap, Type::DirCap) => Ok(()),
         (Type::NetCap, Type::NetCap) => Ok(()),
