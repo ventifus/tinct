@@ -259,11 +259,22 @@ pub enum Value {
     /// Opaque — not serializable, consumed by timezone conversion builtins.
     Timezone(Rc<jiff::tz::TimeZone>),
     /// HTTP connection pool — persistent connection for HTTP requests.
-    /// Created by `http-connect`, consumed by `http-get` and other HTTP verbs.
+    /// Created by reqwest client, consumed by `http-get` and other HTTP verbs.
     HttpConn {
         client: Rc<reqwest::blocking::Client>,
         base_url: Option<String>,
     },
+    /// QUIC session — multiplexed connection over UDP (RFC 9000).
+    /// Placeholder for quinn::Connection. Created by `quic-session`, consumed by
+    /// `quic-open-stream` and `quic-open-datagram`.
+    QuicSession(Rc<()>),
+    /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
+    /// Placeholder for reqwest client or h2::Connection. Created by `http2-session`,
+    /// consumed by `http-request`.
+    Http2Session(Rc<()>),
+    /// HTTP/3 session — HTTP over QUIC (RFC 9114).
+    /// Placeholder for h3::Connection. Created by `http3-session`, consumed by `http-request`.
+    Http3Session(Rc<()>),
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
@@ -315,6 +326,9 @@ impl Value {
             Value::ClockCap(_) => "ClockCap",
             Value::Timezone(_) => "Timezone",
             Value::HttpConn { .. } => "HttpConn",
+            Value::QuicSession(_) => "QuicSession",
+            Value::Http2Session(_) => "Http2Session",
+            Value::Http3Session(_) => "Http3Session",
         }
     }
 
@@ -396,6 +410,9 @@ impl fmt::Debug for Value {
                     write!(f, "HttpConn")
                 }
             }
+            Value::QuicSession(_) => write!(f, "QuicSession"),
+            Value::Http2Session(_) => write!(f, "Http2Session"),
+            Value::Http3Session(_) => write!(f, "Http3Session"),
         }
     }
 }
@@ -479,6 +496,9 @@ impl fmt::Display for Value {
                     write!(f, "<HttpConn>")
                 }
             }
+            Value::QuicSession(_) => write!(f, "<QuicSession>"),
+            Value::Http2Session(_) => write!(f, "<Http2Session>"),
+            Value::Http3Session(_) => write!(f, "<Http3Session>"),
         }
     }
 }
@@ -559,6 +579,9 @@ impl PartialEq for Value {
             (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
             (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::ClockCap(a), Value::ClockCap(b)) => a == b,
+            (Value::QuicSession(a), Value::QuicSession(b)) => Rc::ptr_eq(a, b),
+            (Value::Http2Session(a), Value::Http2Session(b)) => Rc::ptr_eq(a, b),
+            (Value::Http3Session(a), Value::Http3Session(b)) => Rc::ptr_eq(a, b),
             // Timezone and HttpConn are not comparable — opaque data
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.

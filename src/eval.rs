@@ -366,6 +366,9 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Duration => matches!(value, Value::Duration(_)),
         Type::ClockCap => matches!(value, Value::ClockCap(_)),
         Type::Timezone => matches!(value, Value::Timezone(_)),
+        Type::QuicSession => matches!(value, Value::QuicSession(_)),
+        Type::Http2Session => matches!(value, Value::Http2Session(_)),
+        Type::Http3Session => matches!(value, Value::Http3Session(_)),
         Type::Union(members) => {
             // Value matches union if it matches ANY member type
             members

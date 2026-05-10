@@ -415,6 +415,9 @@ impl fmt::Display for Type {
             Type::Duration => write!(f, "Duration"),
             Type::ClockCap => write!(f, "ClockCap"),
             Type::Timezone => write!(f, "Timezone"),
+            Type::QuicSession => write!(f, "QuicSession"),
+            Type::Http2Session => write!(f, "Http2Session"),
+            Type::Http3Session => write!(f, "Http3Session"),
             Type::Union(members) => {
                 for (i, member) in members.iter().enumerate() {
                     if i > 0 {
@@ -1547,14 +1550,6 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "http-connect".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Unknown)], // Url dict (from url builtin; no dedicated type)
-                ret: Box::new(Type::Unknown),        // Returns HttpConn
-                variadic: false,
-            },
-        );
-        env.insert(
             "http-get".to_string(),
             Type::Function {
                 params: vec![(None, Type::Unknown), (None, Type::Str)], // HttpConn, path String
@@ -2080,6 +2075,27 @@ impl TypeEnv {
             TypeAlias {
                 params: vec![],
                 body: Type::Handle,
+            },
+        );
+        env.insert_type_alias(
+            "QuicSession".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::QuicSession,
+            },
+        );
+        env.insert_type_alias(
+            "Http2Session".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::Http2Session,
+            },
+        );
+        env.insert_type_alias(
+            "Http3Session".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::Http3Session,
             },
         );
 

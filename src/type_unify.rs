@@ -257,7 +257,10 @@ impl Substitution {
             | Type::Timestamp
             | Type::Duration
             | Type::ClockCap
-            | Type::Timezone => {
+            | Type::Timezone
+            | Type::QuicSession
+            | Type::Http2Session
+            | Type::Http3Session => {
                 return ty.clone();
             }
             _ => {}
