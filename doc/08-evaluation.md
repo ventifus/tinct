@@ -877,6 +877,16 @@ For dual-dispatch builtins, the Dict and Seq paths must agree on which non-colle
 
 ## Laziness Design
 
+### Strictness Exceptions
+
+Tinct's evaluation model is lazy by default — values remain unevaluated until accessed. Three intentional exceptions deviate from this default by forcing materialization at construction time rather than access time:
+
+1. **TypeAssert eager validation:** `[@Type expr]` materializes `expr` immediately to verify type constraints, even if the TypeAssert result is never used. This ensures type errors are caught at annotation sites rather than deferred to access sites, providing clearer error reporting and preventing invalid values from propagating through lazy pipelines.
+
+2. **reduce eager iteration:** `$reduce` (and `$fold`) materialize each accumulator step to prevent O(N) Rust stack depth from nested PendingCall thunks. The accumulator chain is still lazy (each step is a PendingCall thunk), but the Seq iteration itself materializes tails at each step to detect sequence end without building deep call chains.
+
+3. **Guarded default fallback:** When a guard fails and a `default:` value is provided, the default is evaluated and materialized immediately. This prevents deferred errors from propagating when the guard explicitly signals a fallback path should be taken.
+
 This table documents the laziness behavior of every operation and the rationale for each decision.
 
 | Operation | Behavior | Rationale |

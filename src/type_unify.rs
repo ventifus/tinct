@@ -553,12 +553,17 @@ fn row_var_occurs_in_type_impl(
                 || row_var_occurs_in_type_impl(var_name, ret, subst, visited)
         }
         Type::Seq(elem) => row_var_occurs_in_type_impl(var_name, elem, subst, visited),
+        Type::Map(key, val) => {
+            row_var_occurs_in_type_impl(var_name, key, subst, visited)
+                || row_var_occurs_in_type_impl(var_name, val, subst, visited)
+        }
         Type::Union(members) => members
             .iter()
             .any(|m| row_var_occurs_in_type_impl(var_name, m, subst, visited)),
         Type::Intersection(members) => members
             .iter()
             .any(|m| row_var_occurs_in_type_impl(var_name, m, subst, visited)),
+        Type::Negation(inner) => row_var_occurs_in_type_impl(var_name, inner, subst, visited),
         Type::TypeVar(name, _) => {
             // Chase TypeVar binding: if α is bound to τ in subst, check τ for ρ
             // Cycle detection: if we've already visited this TypeVar, return false
@@ -1662,13 +1667,22 @@ pub fn unify(
         (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, state, span),
 
         (Type::Map(k1, v1), Type::Map(k2, v2)) => {
-            unify(k1, k2, subst, state, span)?;
+            // Map keys must be invariant: Map[Int, Str] ≠ Map[Number, Str]
+            // This matches the is_subtype invariance check (k1 == k2).
+            // Use bidirectional subtype check to handle type aliases and normalization.
+            if !Type::is_subtype(k1, k2) || !Type::is_subtype(k2, k1) {
+                return Err(TypeError::new(
+                    format!("Map key types differ: {} vs {}", k1, k2),
+                    span,
+                ));
+            }
             unify(v1, v2, subst, state, span)
         }
 
         (Type::Proxy, Type::Proxy) => Ok(()),
 
         // Never unification: Never unifies with anything (it's the bottom type)
+        // TypeVar cases are handled by the general TypeVar patterns above (lines 1553, 1575)
         (Type::Never, _) | (_, Type::Never) => Ok(()),
 
         // Negation unification: structural (for now, basic support)

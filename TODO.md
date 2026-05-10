@@ -305,6 +305,22 @@ Annotation format: `fn-name@[doc: "One-line description"]: [fn ...]` for public 
 
 ## Codebase Health
 
+### cycle-206-findings: Cycle #206 analysis findings
+
+From the 9-agent codebase review on 2026-05-09.
+
+**[Critical] Row occurs check incomplete for Map/Negation** (computer-scientist):
+- [x] Row occurs check: added Map/Negation arms to `row_var_occurs_in_type_impl` (`src/type_unify.rs`)
+- [x] Dict equality cycle detection: refactored to thread `visited` through recursive value comparisons (`src/builtins_math.rs`)
+- [x] Map key variance: fixed unify to use invariance (bidirectional subtype check) matching is_subtype (`src/type_unify.rs`)
+- [x] CALL-POLY consumed_params: verified already present from cycle-201-findings
+- [x] UnixStream path bypass: added absolute path + `..` traversal validation (`src/builtins_io.rs`)
+- [x] Never TypeVar binding: explicit binding in unify (`src/type_unify.rs`)
+- [x] Duplicate named args rejection: added detection in all 3 check_call paths (`src/typecheck.rs`)
+- [x] doc/15-ast.md TypeAlias: updated to show params field (`doc/15-ast.md`)
+- [x] doc/02-syntax.md: removed stale bracket-access whitespace claim (`doc/02-syntax.md`)
+- [x] doc/08-evaluation.md: added §Strictness Exceptions subsection (`doc/08-evaluation.md`)
+
 ### cycle-201-findings: Cycle #201 analysis findings
 
 From the 9-agent codebase review on 2026-05-09.

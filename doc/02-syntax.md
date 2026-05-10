@@ -17,7 +17,7 @@ This document describes the tinct language syntax: its design rationale, formal 
 - `[]` is familiar from JSON, Python, JavaScript
 - True unification: there's one data structure, so there's one syntax
 
-**Parser complexity trade-off:** Single brackets with overloaded semantics require careful disambiguation: head-position classification (call vs dict vs data sequence), keyword recognition (`call`/`fn`/`type` vs dict entries), access chain whitespace sensitivity (`a.b` vs `a .b`), and special-form parsing. This complexity is concentrated in the parser — the evaluator and user-facing syntax remain simple.
+**Parser complexity trade-off:** Single brackets with overloaded semantics require careful disambiguation: head-position classification (call vs dict vs data sequence), keyword recognition (`call`/`fn`/`type` vs dict entries), annotation whitespace sensitivity (`a@Type` vs `a @Type`), and special-form parsing. This complexity is concentrated in the parser — the evaluator and user-facing syntax remain simple.
 
 ### Special Forms vs Stdlib Functions
 
@@ -107,7 +107,7 @@ The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the l
 - `word@Annotation` — annotation (no whitespace before `@`)
 - `word @Annotation` — bare identifier `word` followed by separate expression
 
-`@` (ImmediateAt) is the only whitespace-sensitive token: a space before `@` prevents annotation detection. Both `.` and `[` are not whitespace-sensitive. `@` detection is handled by the hand-written lexer using `last_was_identifier: bool` tracking.
+`@` (ImmediateAt) is the only whitespace-sensitive token: a space before `@` prevents annotation detection. `.` is not whitespace-sensitive (dot access works with or without preceding whitespace). `@` detection is handled by the hand-written lexer using `last_was_identifier: bool` tracking.
 
 ### 2.2 Brackets and Punctuation
 
