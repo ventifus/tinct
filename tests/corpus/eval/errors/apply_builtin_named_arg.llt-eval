@@ -7,4 +7,4 @@
 [E023]
 
 === warn
-arity mismatch: expected 1 arguments, got 2 at 4:1-4:31
+cannot unify Fn@? [?] with Fn@_t0 [_t0 _t0] at 4:8-4:19

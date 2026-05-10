@@ -7,4 +7,4 @@
 === out
 Dict({"f": Function(a, b, c), "args": Dict({2: String("c"), 0: String("a"), 1: String("b")}), "result": String("abc")})
 === warn
-arity mismatch: expected 3 arguments, got 1 at 1:1-5:2
+cannot unify Fn@? [?] with _t0 at 4:18-4:19

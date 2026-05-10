@@ -122,6 +122,7 @@ pub(crate) fn infer_dict(
                         ) {
                             errors.push(e);
                             field_types.insert(name.clone(), Type::Unknown);
+                            state.failed_bindings.insert(name.clone(), entry.span);
                         } else {
                             field_types.insert(name.clone(), value_ty);
                         }
@@ -132,6 +133,7 @@ pub(crate) fn infer_dict(
                 Err(mut errs) => {
                     errors.append(&mut errs);
                     field_types.insert(name.clone(), Type::Unknown);
+                    state.failed_bindings.insert(name.clone(), entry.span);
                     // Populate type_map with Any for LSP hover on failed dict value expressions
                     if let Some(ref mut map) = type_map {
                         let key = (

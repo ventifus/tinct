@@ -608,6 +608,7 @@ pub fn check_bounds_satisfiable(state: &InferState, span: Span) -> Result<(), Ty
                             var_name, lower, upper
                         ),
                         span,
+                        notes: Vec::new(),
                     });
                 }
             }
@@ -707,6 +708,7 @@ pub fn constrain(
                         sub, sup, reason
                     ),
                     span,
+                    notes: Vec::new(),
                 });
             }
             if sub_params.len() != sup_params.len() {
@@ -718,6 +720,7 @@ pub fn constrain(
                         reason
                     ),
                     span,
+                    notes: Vec::new(),
                 });
             }
 
@@ -759,6 +762,7 @@ pub fn constrain(
                                 key, sub, sup, reason
                             ),
                             span,
+                            notes: Vec::new(),
                         });
                     }
                 }
@@ -783,6 +787,7 @@ pub fn constrain(
                     sub, sup, reason
                 ),
                 span,
+                notes: Vec::new(),
             })
         }
 
@@ -809,6 +814,7 @@ pub fn constrain(
                     sub, sup, reason
                 ),
                 span,
+                notes: Vec::new(),
             })
         }
 
@@ -827,6 +833,7 @@ pub fn constrain(
                 sub, sup, reason
             ),
             span,
+            notes: Vec::new(),
         }),
     }
 }

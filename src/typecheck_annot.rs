@@ -1291,6 +1291,9 @@ pub(crate) fn resolve_type_dict(
     // When ALL entries are auto-indexed (no keys) and there are 2+ entries,
     // this is a union of type expressions (not a record type).
     // Single auto-indexed entry falls through to existing handling.
+    // Note: simplify_type is intentionally NOT called here — annotation-declared
+    // union types (e.g., ADT type aliases [type [Ok a] [Err String]]) must be
+    // preserved exactly as declared and not collapsed by S-RcdTop/S-ClsBot rules.
     if all_positional && entries.len() >= 2 {
         let mut members = Vec::new();
         for entry in entries {

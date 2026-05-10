@@ -1,0 +1,7 @@
+# RDNF negation annotation: @[[without Int]] resolves to Type::Negation(Int) via
+# simplify_type(Negation(Int)) in resolve_type_dict. The annotation on a dict key
+# is metadata only — no type assertion is performed on the value.
+# Verifies that the annotation resolves without error and eval produces the correct output.
+[x@[[without Int]]: "hello"]
+=== out
+Dict({"x": String("hello")})

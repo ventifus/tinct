@@ -1171,53 +1171,14 @@ fn infer_if(
     let then_ty = infer_expr(then_expr, &env_true, state, type_map)?;
     let else_ty = infer_expr(else_expr, &env_false, state, type_map)?;
 
-    // Join the types using LUB (least upper bound)
-    // Without union types, this is often the shared base type or Unknown
-    let result_ty = least_upper_bound(&then_ty, &else_ty, state);
+    // Form the union of both branch types and simplify (RDNF step 1b).
+    // normalize_union deduplicates — if both branches return Int, the result is Int not Union([Int, Int]).
+    let raw_union = Type::normalize_union(vec![then_ty, else_ty]);
+    let result_ty = Type::simplify_type(raw_union);
 
     Ok(result_ty)
 }
 
-/// Compute the least upper bound of two types.
-/// Without union types, this is conservative — often returns the shared base type or Unknown.
-fn least_upper_bound(ty1: &Type, ty2: &Type, _state: &mut InferState) -> Type {
-    // If the types are identical, return either one
-    if ty1 == ty2 {
-        return ty1.clone();
-    }
-
-    // Promote literal types to their base types for LUB
-    let promoted1 = promote_literal(ty1);
-    let promoted2 = promote_literal(ty2);
-
-    if promoted1 == promoted2 {
-        return promoted1;
-    }
-
-    // Number is the LUB of Int and Float; Number subsumes both
-    match (&promoted1, &promoted2) {
-        (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Number,
-        (Type::Number, Type::Int)
-        | (Type::Int, Type::Number)
-        | (Type::Number, Type::Float)
-        | (Type::Float, Type::Number) => Type::Number,
-        // Both are records: BAS — empty record (width subtyping allows any fields)
-        (Type::Record(_), Type::Record(_)) => {
-            Type::Record(Row { fields: HashMap::new() })
-        }
-        // Otherwise, fall back to Unknown
-        _ => Type::Unknown,
-    }
-}
-
-/// Promote literal types to their base types.
-fn promote_literal(ty: &Type) -> Type {
-    match ty {
-        Type::IntLiteral(_) => Type::Int,
-        Type::StringLiteral(_) => Type::Str,
-        _ => ty.clone(),
-    }
-}
 
 /// Collect variable bindings introduced by a pattern, with their types.
 ///
@@ -1293,10 +1254,20 @@ fn infer_expr(
         Expr::Bool(_) => Ok(Type::Bool),
         Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
 
-        Expr::VarRef { name, .. } => env
-            .get(name)
-            .map(|scheme| instantiate_scheme(scheme, state.level, state))
-            .ok_or_else(|| vec![TypeError::undefined_variable(name, expr.span)]),
+        Expr::VarRef { name, .. } => {
+            if let Some(scheme) = env.get(name) {
+                Ok(instantiate_scheme(scheme, state.level, state))
+            } else {
+                let mut err = TypeError::undefined_variable(name, expr.span);
+                if let Some(&cause_span) = state.failed_bindings.get(name.as_str()) {
+                    err.notes.push(format!(
+                        "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
+                        cause_span.start.line, cause_span.start.column
+                    ));
+                }
+                Err(vec![err])
+            }
+        }
 
         Expr::Dict(entries) => {
             infer_dict(entries, env, state, type_map, expr.span).map(|(ty, _schemes)| ty)
@@ -1420,7 +1391,14 @@ fn infer_expr(
                             }
                             Ok(Type::Proxy)
                         } else {
-                            Err(vec![TypeError::undefined_variable(name, func.span)])
+                            let mut err = TypeError::undefined_variable(name, func.span);
+                            if let Some(&cause_span) = state.failed_bindings.get(name.as_str()) {
+                                err.notes.push(format!(
+                                    "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
+                                    cause_span.start.line, cause_span.start.column
+                                ));
+                            }
+                            Err(vec![err])
                         }
                     }
                 }
@@ -1526,6 +1504,7 @@ fn infer_expr(
             //   → arm 1: x : scrutinee ∩ Int
             //   → arm 2: x : scrutinee ∩ ~Int ∩ Str  (if scrutinee : Int | Str, simplifies to Str)
             let mut remaining_scrutinee = scrutinee_ty.clone();
+            let mut arm_result_types: Vec<Type> = Vec::new();
 
             for arm in arms {
                 // Compute the arm-local scrutinee type from I-Case3:
@@ -1560,7 +1539,8 @@ fn infer_expr(
                 if let Some(guard) = &arm.guard {
                     let _guard_ty = infer_expr(guard, &arm_env, state, type_map)?;
                 }
-                let _arm_ty = infer_expr(&arm.body, &arm_env, state, type_map)?;
+                let arm_ty = infer_expr(&arm.body, &arm_env, state, type_map)?;
+                arm_result_types.push(arm_ty);
 
                 // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
                 // For Constructor/TypeTag arms without a guard: remaining ∩ ~tag.
@@ -1637,9 +1617,16 @@ fn infer_expr(
                 }
             }
 
-            // Return Unknown for now — full union result typing (per-arm
-            // narrowing + precise union result types) deferred to narrowing sprint.
-            Ok(Type::Unknown)
+            // Union all arm result types and simplify (RDNF step 1a).
+            // If arms is empty (malformed match), fall back to Unknown.
+            // Deduplication and simplification collapse Union([Int, Int]) → Int, etc.
+            let match_ty = if arm_result_types.is_empty() {
+                Type::Unknown
+            } else {
+                let raw_union = Type::normalize_union(arm_result_types);
+                Type::simplify_type(raw_union)
+            };
+            Ok(match_ty)
         }
 
         Expr::DefMacro { .. } => {
@@ -1784,11 +1771,14 @@ fn infer_expr(
     // On error, record Type::Error as a sentinel so that LSP hover shows <error>
     // rather than no type at all, and parent expressions can see Error via the type_map
     // rather than inferring from a missing entry.
+    // Simplify compound types (RDNF step 1d) before storing so LSP hover shows the
+    // reduced form (e.g., Union([Int, Int]) → Int, Intersection([Never, T]) → Never).
     if let Some(ref mut map) = type_map {
         let key = (expr.span.start.offset, expr.span.end.offset);
         match &result {
             Ok(ty) => {
-                map.insert(key, ty.clone());
+                let simplified = Type::simplify_type(ty.clone());
+                map.insert(key, simplified);
             }
             Err(_) => {
                 map.insert(key, Type::Error);
