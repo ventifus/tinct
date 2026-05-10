@@ -621,6 +621,93 @@ Converts a list of dicts (all sharing the same keys) to CSV format. The header r
 
 **Note:** All formatters are implemented entirely in LLT (no Rust native code). They use recursion and will hit `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
 
+## Protocol Modules
+
+Tinct ships a set of network-protocol helpers in `stdlib/protocols/`. All four modules are **pure-tinct** — they operate on byte strings using Rust builtins (`str`, `str-slice`, `char-code`, `chr`, `length`, and arithmetic) and require no Handle I/O. Each module is self-contained and does not depend on `prelude.llt` or any other stdlib module.
+
+Load with `[include libdir "protocols/<name>.llt"]`. The second document in each file contains the public API; private helpers in the first document are not exported.
+
+| File | Functions / constants | Reference |
+|------|-----------------------|-----------|
+| `protocols/websocket.llt` | `build-ws-frame`, `parse-ws-frame-header`, `build-ws-handshake`; constants `Continuation`, `Text`, `Binary`, `Close`, `Ping`, `Pong` | RFC 6455 |
+| `protocols/socks5.llt` | `build-socks5-greeting`, `build-socks5-connect`, `parse-socks5-response`; constants `SOCKS5-VERSION`, `NO-AUTH`, `AUTH-USERNAME-PASSWORD`, `CMD-CONNECT`, `ADDR-IPV4`, `ADDR-DOMAIN`, `ADDR-IPV6` | RFC 1928 |
+| `protocols/grpc.llt` | `build-grpc-frame`, `parse-grpc-frame-header`; constant `GRPC-HEADER-LEN` | gRPC over HTTP/2 §5 |
+| `protocols/dns.llt` | `encode-dns-name`, `build-dns-query`; constants `A`, `NS`, `CNAME`, `PTR`, `MX`, `TXT`, `AAAA`, `SRV`, `DNS-FLAGS-QUERY`, `DNS-CLASS-IN` | RFC 1035 |
+
+### `protocols/websocket.llt` — WebSocket frame encoding (RFC 6455)
+
+Build and parse WebSocket frames. All frame construction is for client-to-server direction (always masked, per RFC 6455 §5.3). Extended 64-bit payloads (>65535 bytes) are not supported.
+
+```tinct
+[include libdir "protocols/websocket.llt"]
+---
+[build-ws-frame Text "hello" "\x01\x02\x03\x04"]
+# => [header: <bytes> payload: <masked-bytes> frame: <full-frame>]
+```
+
+| Function | Type | Description |
+|----------|------|-------------|
+| `build-ws-frame` | `(Int -> String -> String -> Dict)` | Build a masked frame. `opcode` is one of the opcode constants; `mask-key` must be exactly 4 bytes. Returns `[header: payload: frame:]`. |
+| `parse-ws-frame-header` | `(String -> Dict)` | Parse raw frame bytes. Returns `[fin: rsv: opcode: masked: payload-len: header-len:]`; `header-len` is the byte offset where the payload starts. |
+| `build-ws-handshake` | `(String -> String -> String -> String)` | Build an HTTP/1.1 WebSocket upgrade request. Args: `host`, `path`, `key` (base64 nonce). |
+
+Opcode constants: `Continuation` (0), `Text` (1), `Binary` (2), `Close` (8), `Ping` (9), `Pong` (10).
+
+### `protocols/socks5.llt` — SOCKS5 request helpers (RFC 1928)
+
+Build client greeting and CONNECT request messages; parse server responses. Uses ATYP=3 (DOMAINNAME) for the CONNECT request — the proxy server resolves the hostname.
+
+```tinct
+[include libdir "protocols/socks5.llt"]
+---
+[build-socks5-greeting [0: NO-AUTH]]
+# => "\x05\x01\x00"
+```
+
+| Function | Type | Description |
+|----------|------|-------------|
+| `build-socks5-greeting` | `(Dict -> String)` | Build the initial client greeting. Arg is a dict of method-code integers, e.g. `[0: NO-AUTH]` or `[0: NO-AUTH 1: AUTH-USERNAME-PASSWORD]`. |
+| `build-socks5-connect` | `(String -> Int -> String)` | Build a CONNECT request for `host:port`. Uses ATYP=3 (domain). Hostname max 255 bytes. |
+| `parse-socks5-response` | `(String -> Dict)` | Parse the server response. Returns `[version: rep: status: atyp: addr: port: success?:]`. |
+
+Protocol constants: `SOCKS5-VERSION` (5), `NO-AUTH` (0), `AUTH-USERNAME-PASSWORD` (2), `CMD-CONNECT` (1), `ADDR-IPV4` (1), `ADDR-DOMAIN` (3), `ADDR-IPV6` (4).
+
+### `protocols/grpc.llt` — gRPC Length-Prefixed Message frames
+
+Encode and decode the 5-byte gRPC LPM header that wraps serialized protobuf payloads over HTTP/2. Does not handle HTTP/2 framing or protobuf serialization — those layers are handled by the caller.
+
+```tinct
+[include libdir "protocols/grpc.llt"]
+---
+[build-grpc-frame my-proto-bytes false]
+# => "\x00" + 4-byte big-endian length + proto-bytes
+```
+
+| Function | Type | Description |
+|----------|------|-------------|
+| `build-grpc-frame` | `(String -> Bool -> String)` | Prepend the 5-byte LPM header. `compressed` sets Compressed-Flag byte to 1. |
+| `parse-grpc-frame-header` | `(String -> Dict)` | Parse the 5-byte header. Returns `[compressed: length: header-len:]` on success or `[err: String]` on malformed input. `header-len` is always 5. |
+
+Constant: `GRPC-HEADER-LEN` (5).
+
+### `protocols/dns.llt` — DNS query helpers (RFC 1035)
+
+Build DNS wire-format query messages ready to send over UDP. Only query construction is provided — response parsing is not included.
+
+```tinct
+[include libdir "protocols/dns.llt"]
+---
+[build-dns-query 42 "example.com" A]
+# => 12-byte header + question section (wire format, ready for UDP send)
+```
+
+| Function | Type | Description |
+|----------|------|-------------|
+| `encode-dns-name` | `(String -> String)` | Encode a dot-separated domain name in DNS label wire format (RFC 1035 §3.1). Empty string encodes as the DNS root (`\x00`). |
+| `build-dns-query` | `(Int -> String -> Int -> String)` | Build a full DNS query message. Args: 16-bit `id`, `domain`, `qtype`. Sets RD=1 (recursion desired), QCLASS=IN. |
+
+QTYPE constants: `A` (1), `NS` (2), `CNAME` (5), `PTR` (12), `MX` (15), `TXT` (16), `AAAA` (28), `SRV` (33). Other constants: `DNS-FLAGS-QUERY` (256, standard recursive query flags), `DNS-CLASS-IN` (1).
+
 ## Known Limitations
 
 **Stdlib error message spans:** Error messages from stdlib functions that call `$error` internally (such as `$flatten`, `$take-while`, `$drop-while`) point to the stdlib implementation source location, not the user's call site. This is inherent to stdlib-authored error messages — the `$error` builtin correctly reports the span of the `[call $error ...]` expression, which happens to be inside `stdlib/prelude.llt`. User call sites will appear in the error's stack trace, but not as the primary error location. This will be addressed when file-path-based stack frame filtering is implemented to suppress stdlib internal frames and promote user frames.
