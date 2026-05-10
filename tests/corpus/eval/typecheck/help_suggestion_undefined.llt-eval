@@ -1,0 +1,8 @@
+# Type error help suggestion: undefined variable shows sequential scope help
+# Undefined variable produces type warning (caught by type checker before eval)
+# Eval still proceeds but produces error at runtime
+[result: $x]
+=== warn
+undefined variable: x
+=== error
+[E002] undefined variable: x

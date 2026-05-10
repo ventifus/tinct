@@ -1,0 +1,7 @@
+# Type error help suggestion: arity mismatch shows helpful suggestion
+# TypeAssert checks lambda against function type with different arity
+[@[Fn@Int [Int Int]] [fn [x] x]]
+=== out
+Function(x)
+=== warn
+arity mismatch: expected 2 arguments, got 1

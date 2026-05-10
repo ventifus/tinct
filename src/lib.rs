@@ -81,7 +81,7 @@ use std::rc::Rc;
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 /// Parser entry points and error type.
-pub use parser::{parse, parse2, parse_expression, ParseError, ParseOutput};
+pub use parser::{format_parse_error, parse, parse2, parse_expression, ParseError, ParseOutput};
 
 /// Evaluation functions.
 pub use eval::{eval_file, eval_file_with_input, materialize, EvalConfig, EvalContext, EvalState};

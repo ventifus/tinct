@@ -56,6 +56,35 @@ Research questions:
 
 - [ ] Research HKT and generic monadic do-notation — write proposal to `doc/whatif/hkt-monads.md`
 
+### `net-layers`: Research composable networking layer model for tinct
+
+The current `connect`/`tls-connect`/`http-connect` design is a flat stack: raw transport, TLS wrapper, HTTP client. This is insufficient for modern networking where protocols compose arbitrarily:
+
+- **QUIC**: session-oriented reliability on top of UDP (RFC 9000)
+- **DTLS**: TLS on top of datagrams (RFC 6347)
+- **HTTP/3**: HTTP on top of QUIC
+- **SOCKS5**: TCP tunneling proxy (RFC 1928)
+- **HTTP CONNECT**: HTTP-level tunneling
+- **Wireguard**: encrypted transport (IP-level)
+- **RFC 9297**: datagram extensions inside HTTP/3
+- **STARTTLS**: TLS upgrade mid-connection (SMTP, IMAP, PostgreSQL)
+
+The desired layering model allows expressions like:
+`[http3 [quic [connect cap Udp host port]]]` or
+`[http [socks5 [connect cap Tcp proxy port] target-host target-port]]`
+
+The current `connect Udp` stub and `tls-connect` Handle form are both blocked pending this design.
+
+Research questions:
+- What is the right abstraction for a "transport" vs "session" vs "application" layer in tinct's capability model?
+- How does each layer advertise its capabilities via the Handle cap row? (e.g., `Handle[Readable Writable Binary Stream]` vs `Handle[Readable Writable Binary Stream Tls Datagram]`)
+- Can the composable layer model be expressed entirely in pure tinct over a small set of Rust transport primitives (TCP, UDP, Unix socket)?
+- How do capabilities narrow at each layer? A SOCKS5 Handle over a NetCap should not grant broader access than the NetCap permits.
+- Survey: Rust's `tower` (service layers), Haskell's `conduit`/`pipes`, Node.js Transform streams, gRPC interceptors — which compositional model fits tinct's lazy, capability-based design?
+- What is the minimum Rust builtin surface needed? (Probably: raw TCP, raw UDP, Unix socket, and `tls-upgrade handle sni opts` — everything else in pure tinct or via reqwest)
+
+- [x] Research composable networking layer model — see `doc/whatif/lib-net-v2.md`
+
 ## Known Bugs
 
 ### ~~`iife-parse`: `[[fn ...] args]` parsed as Dict, not Call~~ (BY DESIGN)
@@ -83,30 +112,6 @@ without a depth limit this is no longer a concern.
 ---
 
 
-## Diagnostics & Capabilities
-
-### `misc-fixes`: Remaining diagnostics, capability, and error UX improvements
-
-**rich-diagnostics** — Parse error snippet rendering and help suggestions:
-
-- [x] Add error codes to `TypeError` enum variants (`src/typecheck.rs`, `src/error.rs`)
-- [x] Implement `format_type_error` with Rust-style multi-line format (`src/error.rs`)
-- [x] Apply `format_type_error` to `run_eval` and `typecheck_source` output (`src/main.rs`, `src/lib.rs`)
-- [ ] Apply same snippet rendering to parse errors in strict mode (parse errors currently also lack source context) (`src/main.rs`, `src/error.rs`)
-- [x] Add contextual `= note:` lines for common type errors (`src/typecheck.rs`, `src/error.rs`)
-- [ ] Add `= help:` suggestions for actionable fixes: arity mismatch on `include` → "use cap-qualified form `[include %libdir \"path\"]`"; undefined variable that looks like a Sequential scope issue → "group definitions with `[call [fn [] ...]]`" (`src/error.rs`)
-- [x] Add `tinct explain T001` subcommand (`src/main.rs`, `src/explain.rs`)
-- [ ] Update `tinct run --strict` output header from bare `type checking failed with N error(s)` to `error: type checking failed with N error(s) (use --strict to make fatal)` in non-strict mode, or `error: type checking failed — cannot evaluate` in strict mode (`src/main.rs`)
-- [x] Corpus tests for error message format (`tests/corpus/`)
-
-**cap-file** — `--- caps:` pragma @Handle type hint:
-
-- [x] Parse `--cap-file name=path:mode` entries in CLI (`src/main.rs`)
-- [x] Open file + wrap as `Value::Handle` (`src/main.rs`, `src/builtins_io.rs`)
-- [x] `--no-fs` suppresses `--cap-file` Handles (`src/main.rs`)
-- [ ] Extend `--- caps:` pragma runtime validation to handle `@Handle` type: emit `%config@Handle is required but not provided\n  inject it with:  tinct run --cap-file config=PATH:r ...` — the flag hint is derived from the cap name (strip `%`) and defaults to `:r` mode (`src/eval_pipeline.rs` or `src/main.rs`)
-- [x] Update `doc/09-documents.md` and `doc/12-tooling.md` (`doc/`)
-- [x] Corpus / CLI tests (`tests/`)
 
 ## Known Bugs (Runtime)
 
@@ -119,13 +124,19 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [x] `socks5-connect` (`src/builtins_io.rs:3590-3592`) — **remove from registry** (no use case currently; re-add when there is one)
 - [x] `proxy-connect` (`src/builtins_io.rs:3597-3599`) — **remove from registry** (same)
 - [x] `open` write and append modes — **implement `Writable`/`Appendable` flags and remove legacy string-flag API**: implement `[open cap path Writable]` and `[open cap path Appendable]` per `doc/whatif/completed/lib-supplemental.md` §Streaming File I/O; delete the backward-compat string-mode branch entirely (`src/builtins_io.rs:167-226`); audit all corpus tests and stdlib files for `open ... "r"` calls and migrate to `[open cap path Readable]` (`src/builtins_io.rs`, `stdlib/`, `tests/`)
-- [ ] `tls-connect` Handle form (`src/builtins_io.rs:2451-2454`) — **implement** (needed for STARTTLS and mid-connection TLS upgrades); **blocked on `handle-refactor` below**: currently `Value::Handle` wraps `Box<dyn BufRead>` — the raw `TcpStream` is not accessible for handoff to rustls; keep the stub and its error message until `handle-refactor` is done
-
-**handle-refactor** — `Value::Handle` needs to optionally preserve the underlying `TcpStream` so that `tls-connect` (Handle form) can extract it. Design options:
-- [ ] Add `raw_tcp: Option<TcpStream>` field to `Value::Handle` alongside `inner: Box<dyn BufRead>` and `write_inner`; populated by `connect` for TCP handles, `None` for file handles; `tls-connect` moves it out (consuming the plain Handle) and layers TLS on top (`src/builtins_io.rs`, `src/value.rs`)
-- [ ] After `handle-refactor`: implement `tls-connect handle sni opts` — extract `raw_tcp`, build `ClientConnection`, wrap in `TlsReader`/`TlsWriter`, return new `Handle[... Tls]`; the input Handle is consumed (subsequent use is a runtime error) (`src/builtins_io.rs:2451`)
-- [ ] `connect` UDP transport (`src/builtins_io.rs:612`) — always errors `"UDP not yet supported, use Tcp"`; document or implement
-- [ ] `--cap-net` CIDR range entries (`src/main.rs:692-695`) — always error `"CIDR ranges are not yet implemented"`; document or implement
+- [ ] `tls-connect` Handle form (`src/builtins_io.rs:2451-2454`) — **implement** (needed for STARTTLS and mid-connection TLS upgrades); **blocked on `net-layers` research**: the Handle form is part of the broader layering model; the specific implementation (raw_tcp field in Value::Handle, or a different approach) should be informed by the net-layers design; keep stub until research is complete
+- [ ] `connect` UDP transport (`src/builtins_io.rs:612`) — **blocked on `net-layers` research**: UDP is not simply "TCP but unreliable" — QUIC builds session semantics on UDP, DTLS wraps TLS over datagrams; the right answer depends on the composable layer model; keep stub until `net-layers` design is complete
+- [ ] `--cap-net` CIDR range entries (`src/main.rs:718-723`) — **implement** with combined hostname+CIDR validation semantics:
+  - Add `NetCapEntry::Cidr(ipnet::IpNet)` to `src/value.rs`; parse via `s.parse::<ipnet::IpNet>()`
+  - Add `ipnet` as direct dep (`Cargo.toml`; already transitive at `2.12.0`)
+  - Support comma-separated entries in one flag: `--cap-net localonly=*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`
+  - **Validation semantics** (at connection time in `src/builtins_io.rs`):
+    - IP literal host: allowed iff any CIDR entry contains it
+    - Hostname, cap has no CIDR entries: allowed iff hostname matches any Hostname/Glob entry
+    - Hostname, cap has CIDR entries: must match a Hostname/Glob entry **and** DNS-resolve to an IP in a CIDR entry — both gates must pass
+  - **DNS resolution**: resolve at connection time; connect directly to the resolved IP (not the hostname again) to mitigate DNS rebinding; the resolved IP is also used for TLS SNI separately
+  - Example: `--cap-net localonly=*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` — allows `.local` hostnames only if they resolve to RFC 1918 addresses, plus RFC 1918 IP literals directly
+  - (`src/builtins_io.rs`, `src/value.rs`, `src/main.rs`)
 
 **spki-pinning-wrong** — `compute_spki_hash` hashes full DER cert instead of SPKI field; `tls-peer-cert` returns placeholder strings:
 
@@ -161,7 +172,10 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 
 **int-float-precision** — Int→Float promotion silently loses precision for integers > 2^53 (`builtins_math.rs:191`):
 
-- [ ] Add a runtime warning (or error in strict mode) when an integer beyond `2^53` is promoted to `f64` in arithmetic builtins (`src/builtins_math.rs`)
+- [x] Decide: **error always** when implicit Int→Float promotion would lose precision (|n| > 2^53); consistent with CUE/Nickel/Dhall which require explicit conversion rather than silent precision loss. Provide `[float n]` as the explicit escape hatch — analogous to Rust's `as f64` — that makes the lossy conversion intentional.
+- [ ] In arithmetic builtins that promote Int to Float (`+`, `-`, `*`, `/` with mixed Int/Float args): check `|int_val| > 9007199254740992` (2^53) before promotion; emit `EvalError::user_error` if exceeded; suggest `[float n]` in the error message (`src/builtins_math.rs:191`)
+- [ ] Add `float` builtin: takes an Int or Float, returns Float; for Int, performs the `as f64` cast unconditionally (no precision check — user opted in); for Float, is a no-op (`src/builtins_math.rs`, `src/builtins.rs`)
+- [ ] Update `doc/03-data-model.md` §Numeric Types: document that implicit Int→Float promotion errors on precision loss; document `[float n]` as the explicit opt-in conversion
 
 **e-flag-ordering** — `-e` expressions don't interleave with file arguments (`main.rs:750`):
 

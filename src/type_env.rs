@@ -2481,7 +2481,9 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
     out
 }
 
-/// Generate contextual `= note:` or `= help:` lines for well-known type error patterns.
+/// Generate contextual `= note:` and `= help:` lines for well-known type error patterns.
+///
+/// Returns a formatted string with note and/or help lines, each prefixed with `  = `.
 fn type_error_note(err: &TypeError) -> Option<String> {
     let msg = &err.message;
 
@@ -2493,25 +2495,231 @@ fn type_error_note(err: &TypeError) -> Option<String> {
             .strip_prefix("undefined variable: ")
             .unwrap_or("")
             .trim();
-        let note = if name.is_empty() {
-            "  = note: variable is not defined in any enclosing scope".to_string()
+        let mut lines = Vec::new();
+
+        if name.is_empty() {
+            lines.push("  = note: variable is not defined in any enclosing scope".to_string());
         } else {
-            format!("  = note: `{name}` is not defined in any enclosing scope at this point")
-        };
-        Some(note)
+            lines.push(format!(
+                "  = note: `{name}` is not defined in any enclosing scope at this point"
+            ));
+            lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [] ...]]".to_string());
+        }
+
+        Some(lines.join("\n"))
     } else if msg.starts_with("cannot unify") {
         // Extract types from "cannot unify A with B"
         let rest = msg.strip_prefix("cannot unify ").unwrap_or("");
         if let Some(idx) = rest.find(" with ") {
             let expected = &rest[..idx];
             let got = &rest[idx + 6..];
-            Some(format!(
+            let mut lines = Vec::new();
+
+            lines.push(format!(
                 "  = note: expected `{expected}`\n           found `{got}`"
-            ))
+            ));
+
+            // Add conversion hints for common type mismatches
+            // "cannot unify A with B" means expected A, got B
+            // So we suggest converting B (got) to A (expected)
+            let help_msg = match (expected, got) {
+                // Expected Int/Number, got String → convert String to Int/Float
+                (e, "String") if e.contains("Int") || e.contains("Number") => {
+                    Some("  = help: convert with [int <expr>] or [float <expr>]")
+                }
+                // Expected String, got Int/Number → convert Int/Number to String
+                ("String", g) if g.contains("Int") || g.contains("Number") => {
+                    Some("  = help: convert with [str <expr>]")
+                }
+                // Expected String, got Float
+                ("String", g) if g.contains("Float") => Some("  = help: convert with [str <expr>]"),
+                // Expected Float, got String
+                (e, "String") if e.contains("Float") => {
+                    Some("  = help: convert with [float <expr>]")
+                }
+                // Expected String, got Bool
+                ("String", "Bool") => Some("  = help: convert with [if <expr> \"true\" \"false\"]"),
+                // Expected Bool, got String
+                ("Bool", "String") => Some("  = help: convert with [not [call $= \"\" <expr>]]"),
+                // Expected Int/Number, got Bool → convert Bool to Int
+                (e, "Bool") if e.contains("Int") || e.contains("Number") => {
+                    Some("  = help: convert with [if <expr> 1 0]")
+                }
+                // Expected Float, got Bool
+                (e, "Bool") if e.contains("Float") => {
+                    Some("  = help: convert with [if <expr> 1.0 0.0]")
+                }
+                // Expected Bool, got Int/Number → convert Int/Number to Bool
+                ("Bool", g) if g.contains("Int") || g.contains("Number") => {
+                    Some("  = help: convert with [not [call $= 0 <expr>]]")
+                }
+                // Expected Bool, got Float
+                ("Bool", g) if g.contains("Float") => {
+                    Some("  = help: convert with [not [call $= 0.0 <expr>]]")
+                }
+                _ => None,
+            };
+
+            if let Some(help) = help_msg {
+                lines.push(help.to_string());
+            }
+
+            Some(lines.join("\n"))
         } else {
             None
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod help_suggestion_tests {
+    use super::*;
+    use crate::test_util::test_span;
+
+    #[test]
+    fn test_arity_mismatch_generic_help() {
+        let err = TypeError::new(
+            "arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named)",
+            test_span(1, 1, 1, 10),
+        );
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: check that you are passing the correct number of arguments"));
+    }
+
+    #[test]
+    fn test_arity_mismatch_help() {
+        let err = TypeError::new(
+            "arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named)",
+            test_span(1, 1, 1, 10),
+        );
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: check that you are passing the correct number of arguments"));
+    }
+
+    #[test]
+    fn test_undefined_variable_help() {
+        let err = TypeError::new("undefined variable: myvar", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(
+            note.contains("= note: `myvar` is not defined in any enclosing scope at this point")
+        );
+        assert!(note.contains("= help: if this name is defined later in the document, group definitions using a function scope"));
+    }
+
+    #[test]
+    fn test_type_mismatch_string_to_int_help() {
+        // "cannot unify Int with String" means expected Int, got String
+        // Should suggest converting String to Int
+        let err = TypeError::new("cannot unify Int with String", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Int`"));
+        assert!(note.contains("found `String`"));
+        assert!(note.contains("= help: convert with [int <expr>] or [float <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_int_to_string_help() {
+        // "cannot unify String with Int" means expected String, got Int
+        // Should suggest converting Int to String
+        let err = TypeError::new("cannot unify String with Int", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `String`"));
+        assert!(note.contains("found `Int`"));
+        assert!(note.contains("= help: convert with [str <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_number_to_string_help() {
+        // "cannot unify String with Number" means expected String, got Number
+        // Should suggest converting Number to String
+        let err = TypeError::new("cannot unify String with Number", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= help: convert with [str <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_float_to_string_help() {
+        // "cannot unify String with Float" means expected String, got Float
+        let err = TypeError::new("cannot unify String with Float", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `String`"));
+        assert!(note.contains("found `Float`"));
+        assert!(note.contains("= help: convert with [str <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_string_to_float_help() {
+        // "cannot unify Float with String" means expected Float, got String
+        let err = TypeError::new("cannot unify Float with String", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Float`"));
+        assert!(note.contains("found `String`"));
+        assert!(note.contains("= help: convert with [float <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_bool_to_string_help() {
+        // "cannot unify String with Bool" means expected String, got Bool
+        let err = TypeError::new("cannot unify String with Bool", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `String`"));
+        assert!(note.contains("found `Bool`"));
+        assert!(note.contains("= help: convert with [if <expr> \"true\" \"false\"]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_string_to_bool_help() {
+        // "cannot unify Bool with String" means expected Bool, got String
+        let err = TypeError::new("cannot unify Bool with String", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Bool`"));
+        assert!(note.contains("found `String`"));
+        assert!(note.contains("= help: convert with [not [call $= \"\" <expr>]]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_bool_to_float_help() {
+        // "cannot unify Float with Bool" means expected Float, got Bool
+        let err = TypeError::new("cannot unify Float with Bool", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Float`"));
+        assert!(note.contains("found `Bool`"));
+        assert!(note.contains("= help: convert with [if <expr> 1.0 0.0]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_float_to_bool_help() {
+        // "cannot unify Bool with Float" means expected Bool, got Float
+        let err = TypeError::new("cannot unify Bool with Float", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Bool`"));
+        assert!(note.contains("found `Float`"));
+        assert!(note.contains("= help: convert with [not [call $= 0.0 <expr>]]"));
     }
 }

@@ -4804,6 +4804,43 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
     }
 }
 
+/// Format a parse error with Rust-style rich diagnostics (snippet + caret).
+///
+/// Produces output matching the format of `format_type_error`:
+/// ```text
+/// error: parse error message
+///  --> file.llt:10:5
+///   |
+/// 10 | [invalid syntax here
+///    |               ^^^^^
+/// ```
+pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> String {
+    use crate::error::render_span_snippet;
+
+    // If there's no span, fall back to basic message formatting
+    if err.span.is_none() {
+        return format!("error: {}", err.message);
+    }
+
+    let span = err.span.unwrap();
+    let line = span.start.line;
+    let col = span.start.column;
+
+    // Header: error: message
+    let mut out = format!("error: {}\n", err.message);
+
+    // Location: --> file:line:col
+    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
+
+    // Snippet: source context with caret
+    if let Some(snippet) = render_span_snippet(source, span) {
+        out.push_str("  |\n");
+        out.push_str(&snippet);
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6966,5 +7003,41 @@ mod tests {
             }
             other => panic!("expected DotAccess, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_format_parse_error() {
+        // Create a parse error with a span
+        let source = "[a: 1, b: ]";
+        let err = parse(source).unwrap_err();
+
+        // Format it with the new function
+        let formatted = format_parse_error(&err, source, "test.llt");
+
+        // Should contain key elements:
+        // - "error:" prefix
+        // - file name and location
+        // - source snippet
+        assert!(formatted.starts_with("error:"));
+        assert!(formatted.contains("test.llt"));
+        assert!(formatted.contains("-->"));
+        // The snippet should include the source line
+        assert!(formatted.contains("[a: 1, b: ]"));
+    }
+
+    #[test]
+    fn test_format_parse_error_no_span() {
+        // Create a parse error without a span
+        let err = ParseError {
+            message: "test error".to_string(),
+            span: None,
+        };
+
+        // Format it
+        let formatted = format_parse_error(&err, "dummy source", "test.llt");
+
+        // Should fall back to simple formatting
+        assert_eq!(formatted, "error: test error");
+        assert!(!formatted.contains("-->"));
     }
 }
