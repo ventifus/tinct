@@ -1,6 +1,4 @@
 # str-find: empty string matches at position 0
-[include "stdlib/strings.llt"]
----
-[call %.str-find "abc" ""]
+[str-find "abc" ""]
 === out
 Int(0)
