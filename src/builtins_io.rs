@@ -4525,14 +4525,268 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 
 /// `http-request`: Issue an HTTP request on an HTTP/2 or HTTP/3 session.
 /// Takes `(session, method, path, headers, body)`.
-/// Stub — returns error until HTTP/2 and HTTP/3 are implemented.
+///
+/// Returns `{ok: {status: Int, headers: Dict, body: String}}` on success
+/// or `{err: String}` on failure (non-throwing Result).
+///
+/// Dispatches on session type:
+/// - `Http3Session`: uses h3 over the existing QUIC connection
+/// - `Http2Session`: not yet implemented (stub)
+/// - Other: type error (hard error, not Result variant)
 pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error(
-        "http-request: HTTP/2 and HTTP/3 not yet implemented".to_string(),
+    let BuiltinArgs {
+        args,
+        named,
         call_span,
-    )
-    .into())
+        ctx,
+    } = ctx_arg;
+
+    reject_named("http-request", named, call_span)?;
+
+    if args.len() != 5 {
+        return Err(EvalError::user_error(
+            format!(
+                "http-request: expected 5 arguments (session method path headers body), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    // Materialize all args — all are required immediately.
+    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let method_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let headers_val = materialize(&args[3], Some(&call_span), &ctx)?;
+    let body_val = materialize(&args[4], Some(&call_span), &ctx)?;
+
+    let method_str = require_string("http-request", method_val, args[1].span)?;
+    let path_str = require_string("http-request", path_val, args[2].span)?;
+    let body_str = require_string("http-request", body_val, args[4].span)?;
+
+    // Collect request headers from the Dict argument.
+    // Each value is a ThunkId in the arena — resolve and materialize to extract the string.
+    let req_headers: Vec<(String, String)> = match headers_val {
+        Value::Dict(ref map) => {
+            let mut out = Vec::with_capacity(map.len());
+            for (key, val_id) in map.iter() {
+                let key_str = match key {
+                    crate::value::Key::String(s) => s.clone(),
+                    crate::value::Key::Int(i) => i.to_string(),
+                };
+                let thunk = ctx.thunk_arena.borrow().get(*val_id).clone();
+                let val_materialized = materialize(&thunk, Some(&call_span), &ctx)?;
+                let val_str = require_string("http-request header value", val_materialized, call_span)?;
+                out.push((key_str, val_str));
+            }
+            out
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http-request".to_string(),
+                "Dict",
+                other.type_name(),
+                args[3].span,
+            )
+            .into())
+        }
+    };
+
+    match session_val {
+        Value::Http3Session(send_request_rc) => {
+            http_request_h3(
+                send_request_rc,
+                method_str,
+                path_str,
+                req_headers,
+                body_str,
+                call_span,
+                &ctx,
+            )
+        }
+        Value::Http2Session(_) => {
+            // Http2Session is a stub (Rc<()>) — no real reqwest client stored.
+            // Return a soft error so callers can handle it.
+            http_request_err_val(
+                "http-request: HTTP/2 sessions not yet implemented".to_string(),
+                call_span,
+                &ctx,
+            )
+        }
+        other => Err(EvalError::type_mismatch_ctx(
+            "http-request".to_string(),
+            "Http2Session or Http3Session",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// Issue an HTTP/3 request on an existing `h3::client::SendRequest` session.
+///
+/// Builds the `http::Request`, sends it, collects the response headers and body,
+/// and returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
+fn http_request_h3(
+    send_request_rc: Rc<RefCell<h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>>>,
+    method_str: String,
+    path_str: String,
+    req_headers: Vec<(String, String)>,
+    body_str: String,
+    span: crate::ast::Span,
+    ctx: &crate::eval::EvalContext,
+) -> EvalResult<Rc<Thunk>> {
+    use bytes::Bytes;
+
+    // Build the http::Request — body is sent separately as DATA frames.
+    let mut builder = http::Request::builder()
+        .method(method_str.as_str())
+        .uri(path_str.as_str());
+    for (k, v) in &req_headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    let request = match builder.body(()) {
+        Ok(r) => r,
+        Err(e) => {
+            return http_request_err_val(
+                format!("http-request: invalid request: {}", e),
+                span,
+                ctx,
+            );
+        }
+    };
+
+    // Send request headers; get back a RequestStream.
+    // borrow_mut() is safe — we hold the only reference during this blocking call.
+    let mut stream =
+        match crate::async_rt::block_on(send_request_rc.borrow_mut().send_request(request)) {
+            Ok(s) => s,
+            Err(e) => {
+                return http_request_err_val(
+                    format!("http-request: send_request failed: {}", e),
+                    span,
+                    ctx,
+                );
+            }
+        };
+
+    // Send the body as a DATA frame (empty body is a zero-length frame).
+    if !body_str.is_empty() {
+        if let Err(e) =
+            crate::async_rt::block_on(stream.send_data(Bytes::from(body_str.into_bytes())))
+        {
+            return http_request_err_val(
+                format!("http-request: send_data failed: {}", e),
+                span,
+                ctx,
+            );
+        }
+    }
+
+    // Signal end of request stream (no trailers).
+    if let Err(e) = crate::async_rt::block_on(stream.finish()) {
+        return http_request_err_val(
+            format!("http-request: finish failed: {}", e),
+            span,
+            ctx,
+        );
+    }
+
+    // Receive response headers.
+    let response = match crate::async_rt::block_on(stream.recv_response()) {
+        Ok(r) => r,
+        Err(e) => {
+            return http_request_err_val(
+                format!("http-request: recv_response failed: {}", e),
+                span,
+                ctx,
+            );
+        }
+    };
+
+    let status = response.status().as_u16() as i64;
+
+    // Collect response headers into an LLT dict.
+    let mut headers_map = IndexMap::new();
+    for (name, value) in response.headers() {
+        let k = crate::value::Key::String(name.to_string());
+        let v = match value.to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                // Non-UTF-8 header value — use lossy conversion.
+                String::from_utf8_lossy(value.as_bytes()).into_owned()
+            }
+        };
+        headers_map.insert(
+            k,
+            ctx.alloc_thunk(ok_val(string_val(&v), span)?),
+        );
+    }
+
+    // Collect response body DATA frames.
+    // recv_data() returns `impl Buf` — use the Buf trait to copy bytes out.
+    let mut body_bytes: Vec<u8> = Vec::new();
+    loop {
+        match crate::async_rt::block_on(stream.recv_data()) {
+            Ok(Some(mut chunk)) => {
+                use bytes::Buf;
+                while chunk.has_remaining() {
+                    let slice = chunk.chunk();
+                    body_bytes.extend_from_slice(slice);
+                    let n = slice.len();
+                    chunk.advance(n);
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return http_request_err_val(
+                    format!("http-request: recv_data failed: {}", e),
+                    span,
+                    ctx,
+                );
+            }
+        }
+    }
+
+    let body_string = String::from_utf8_lossy(&body_bytes).into_owned();
+
+    // Build inner response dict: {status: Int, headers: Dict, body: String}
+    let mut inner = IndexMap::new();
+    inner.insert(
+        crate::value::Key::String("status".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Int(status), span)?),
+    );
+    inner.insert(
+        crate::value::Key::String("headers".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span)?),
+    );
+    inner.insert(
+        crate::value::Key::String("body".to_string()),
+        ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
+    );
+
+    // Wrap as {ok: inner}
+    let mut result = IndexMap::new();
+    result.insert(
+        crate::value::Key::String("ok".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
+    );
+    ok_val(Value::Dict(result), span)
+}
+
+/// Build an `{err: String}` result dict for http-request soft failures.
+fn http_request_err_val(
+    msg: String,
+    span: crate::ast::Span,
+    ctx: &crate::eval::EvalContext,
+) -> EvalResult<Rc<Thunk>> {
+    let mut result = IndexMap::new();
+    result.insert(
+        crate::value::Key::String("err".to_string()),
+        ctx.alloc_thunk(ok_val(string_val(&msg), span)?),
+    );
+    ok_val(Value::Dict(result), span)
 }
 
 /// `icmp-ping`: Send an ICMP echo request to a host.

@@ -58,6 +58,7 @@ quinn = { version = "0.11", default-features = false, features = ["rustls", "rin
 h3 = "0.0.8"  # HTTP/3 over QUIC (hyperium)
 h3-quinn = "0.0.10"  # Quinn QUIC adapter for h3 (0.0.10+ compatible with quinn 0.11)
 bytes = "1"  # Byte buffer abstraction (shared dep with quinn/h3; used in Http3Session body type)
+http = "1"  # HTTP types (Request, Response, HeaderMap) used in http-request builtin via h3
 serde_json = "1.0"
 strsim = "0.11"
 
