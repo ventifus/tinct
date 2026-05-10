@@ -1419,6 +1419,26 @@ pub(crate) fn resolve_type_dict(
         let ty = resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
         fields.insert(key, ty);
     }
+
+    // BAS FUTURE WORK: Under BAS (Basic Atomic Subtyping), a multi-field closed record
+    // annotation like `@[x: Int  y: String]` should be constructed as an intersection of
+    // single-field closed records: `{x: Int} ∧ {y: String}`.
+    //
+    // This is intentionally NOT implemented yet because it requires coordinated changes to:
+    //   1. `is_subtype` (types.rs): closed records currently require exact field match;
+    //      for BAS single-field intersection to work, `Record({x:1,y:2}) <: Record({x:Int})`
+    //      must hold (width subtyping), which breaks `test_type_assert_closed_record_rejects_extra_fields`.
+    //   2. `unify` (type_unify.rs): needs `Record ↔ Intersection` unification via merge.
+    //   3. `check_dot_access` (typecheck.rs): needs to handle `Intersection` access.
+    //
+    // When implemented, the change is:
+    //   if fields.len() >= 2 && rest == RowTail::Empty {
+    //       let members = fields.into_iter().map(|(k, v)| {
+    //           Type::Record(Row { fields: {k: v}, tail: RowTail::Empty })
+    //       }).collect();
+    //       return Ok(Type::normalize_intersection(members));
+    //   }
+
     Ok(Type::Record(Row { fields, tail: rest }))
 }
 

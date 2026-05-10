@@ -53,7 +53,7 @@ See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md �
 - [x] Implement S-RcdTop (disjoint single-field records union = Top) and S-ClsBot (disjoint intersections = Never) in `is_subtype`; `simplify_type` added for basic RDNF groundwork (`src/types.rs`)
 - [x] C-Var1/2 constraint rewriting: conservative approximation — unify(concrete, Union([..., TypeVar, ...])) binds TypeVar to concrete (`src/type_unify.rs`)
 - [ ] Full RDNF normalization (simplify_type groundwork added; needs constraint solver integration) (`src/typecheck.rs`)
-- [ ] Implement multi-field record annotation as intersection: `@[x: T  y: U]` → `{x: T} ∧ {y: U}` (BAS-dependent on RowTail removal) (`src/typecheck.rs`, `src/expand.rs`)
+- [ ] Multi-field record annotation as intersection: `@[x: T  y: U]` → `{x: T} ∧ {y: U}` — blocked: needs Intersection-aware dot access + Row/Intersection unify; stub comment in `resolve_type_dict` (`src/typecheck_annot.rs`)
 - [x] Add `@[[all A B]]` (intersection) and `@[[without A]]` (negation) annotation syntax (`src/typecheck_annot.rs`)
 - [x] False-branch narrowing: `apply_negation_narrowings()` in if-false branch, type predicates narrow to Negation type (`src/typecheck.rs`)
 - [x] I-Case3 in infer_match: remaining_scrutinee accumulates negations across arms for precise type narrowing (`src/typecheck.rs`)
