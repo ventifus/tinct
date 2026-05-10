@@ -762,6 +762,7 @@ fn type_name(val: &Value) -> String {
         Value::QuicSession(_) => "QuicSession",
         Value::Http2Session(_) => "Http2Session",
         Value::Http3Session(_) => "Http3Session",
+        Value::DatagramHandle { .. } => "DatagramHandle",
     }
     .to_string()
 }

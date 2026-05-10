@@ -414,6 +414,12 @@ pub fn visit_value<V: ValueVisitor>(
             "Http3Session".to_string(),
             ast::Span::origin(),
         ))),
+        value::Value::DatagramHandle { .. } => {
+            Err(Box::new(error::EvalError::value_not_serializable(
+                "DatagramHandle".to_string(),
+                ast::Span::origin(),
+            )))
+        }
     }
 }
 

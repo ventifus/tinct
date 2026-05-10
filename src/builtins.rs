@@ -349,8 +349,9 @@ pub(crate) use crate::builtins_io::{
     builtin_http3_session, builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link,
     builtin_list_dir, builtin_make_dir, builtin_narrow, builtin_open, builtin_position,
     builtin_proxy_connect, builtin_quic_open_datagram, builtin_quic_open_stream,
-    builtin_quic_session, builtin_read_link, builtin_remove, builtin_rename, builtin_revocable,
-    builtin_revoke_cap, builtin_seek, builtin_seek_end, builtin_slurp, builtin_socks5_connect,
+    builtin_quic_session, builtin_read_link, builtin_recv_datagram, builtin_remove,
+    builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek, builtin_seek_end,
+    builtin_send_datagram, builtin_slurp, builtin_socks5_connect,
     builtin_spki_pin, builtin_stat, builtin_tls_layer, builtin_tls_peer_cert, builtin_write,
     builtin_write_atomic, builtin_write_handle,
 };
@@ -1218,6 +1219,13 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_read_link,
             [Strictness::Seq, Strictness::Seq]
         ),
+        // Datagram sockets (UDP, Unix datagram)
+        builtin!(
+            "send-datagram",
+            builtin_send_datagram,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
         // Sequences
@@ -6147,7 +6155,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 187,
+            count, 189,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6342,10 +6350,12 @@ mod tests {
         assert!(names.contains(&"http3-session"), "missing http3-session");
         assert!(names.contains(&"http-request"), "missing http-request");
         assert!(names.contains(&"icmp-ping"), "missing icmp-ping");
+        assert!(names.contains(&"send-datagram"), "missing send-datagram");
+        assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            187,
-            "expected 187 builtins, got {}",
+            189,
+            "expected 189 builtins, got {}",
             names.len()
         );
     }

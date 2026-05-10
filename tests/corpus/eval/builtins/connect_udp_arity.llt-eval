@@ -1,0 +1,9 @@
+# Test: UDP connect with wrong arg count produces arity error
+# no_fs
+[connect %pwd Udp "localhost"]
+
+=== error
+connect: Udp transport requires host and port (4 args total), got 3
+
+=== warn
+arity mismatch: expected 4 argument(s), got 3 (3 positional, 0 named) at 2:1-2:31

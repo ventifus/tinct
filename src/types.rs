@@ -157,6 +157,9 @@ pub enum Type {
     Http2Session,
     /// HTTP/3 session — HTTP over QUIC (RFC 9114). Created by `http3-session`.
     Http3Session,
+    /// Datagram socket handle — message-oriented I/O (UDP or Unix datagram).
+    /// Created by `connect cap Udp host port`. Consumed by `send-datagram` and `recv-datagram`.
+    DatagramHandle,
     /// Union type — represents a value that can be one of several types.
     /// Invariant: members are sorted, deduplicated, and flattened (no nested unions).
     /// Single-element unions are unwrapped to the bare type by normalize_union().
@@ -229,6 +232,7 @@ impl PartialEq for Type {
             (Type::QuicSession, Type::QuicSession) => true,
             (Type::Http2Session, Type::Http2Session) => true,
             (Type::Http3Session, Type::Http3Session) => true,
+            (Type::DatagramHandle, Type::DatagramHandle) => true,
             (Type::Union(members1), Type::Union(members2)) => members1 == members2,
             (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
             (Type::Negation(t1), Type::Negation(t2)) => t1 == t2,
@@ -1092,10 +1096,11 @@ fn type_order(ty: &Type) -> u8 {
         Type::QuicSession => 25,
         Type::Http2Session => 26,
         Type::Http3Session => 27,
-        Type::Union(_) => 28, // Should not appear after flattening, but included for completeness
-        Type::Intersection(_) => 29, // Should not appear after flattening, but included for completeness
-        Type::Negation(_) => 30,
-        Type::Never => 31,
+        Type::DatagramHandle => 28,
+        Type::Union(_) => 29, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 30, // Should not appear after flattening, but included for completeness
+        Type::Negation(_) => 31,
+        Type::Never => 32,
     }
 }
 

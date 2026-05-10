@@ -423,6 +423,7 @@ impl fmt::Display for Type {
             Type::QuicSession => write!(f, "QuicSession"),
             Type::Http2Session => write!(f, "Http2Session"),
             Type::Http3Session => write!(f, "Http3Session"),
+            Type::DatagramHandle => write!(f, "DatagramHandle"),
             Type::Union(members) => {
                 for (i, member) in members.iter().enumerate() {
                     if i > 0 {
@@ -1516,12 +1517,35 @@ impl TypeEnv {
             "connect".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::NetCap),
-                    (None, Type::Unknown), // Transport variant (Tcp, Udp, etc.)
+                    (None, Type::Unknown), // NetCap or DirCap (UnixStream/UnixDatagram)
+                    (None, Type::Unknown), // Transport variant (Tcp, Udp, UnixStream, etc.)
                     (None, Type::Str),     // host
                     (None, Type::Int),     // port
                 ],
-                ret: Box::new(Type::Handle),
+                ret: Box::new(Type::Unknown), // Handle or DatagramHandle depending on transport
+                variadic: false,
+            },
+        );
+        // Datagram socket builtins
+        env.insert(
+            "send-datagram".to_string(),
+            Type::Function {
+                params: vec![
+                    (None, Type::DatagramHandle), // socket
+                    (None, Type::Unknown),        // String or Bytes
+                ],
+                ret: Box::new(Type::Record(crate::types::Row {
+                    fields: std::collections::HashMap::new(),
+                    tail: crate::types::RowTail::Empty,
+                })), // null
+                variadic: false,
+            },
+        );
+        env.insert(
+            "recv-datagram".to_string(),
+            Type::Function {
+                params: vec![(None, Type::DatagramHandle)],
+                ret: Box::new(Type::Unknown), // Dict {data: Bytes}
                 variadic: false,
             },
         );
@@ -2179,6 +2203,13 @@ impl TypeEnv {
             TypeAlias {
                 params: vec![],
                 body: Type::Http3Session,
+            },
+        );
+        env.insert_type_alias(
+            "DatagramHandle".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::DatagramHandle,
             },
         );
 
