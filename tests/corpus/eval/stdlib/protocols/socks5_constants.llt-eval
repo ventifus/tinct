@@ -1,0 +1,14 @@
+# Verify SOCKS5 constants are exported with correct values (RFC 1928).
+
+[include "stdlib/protocols/socks5.llt"]
+---
+[set [set [set [set [set [set [set []
+    "SOCKS5-VERSION"         %.SOCKS5-VERSION]
+    "NO-AUTH"                %.NO-AUTH]
+    "AUTH-USERNAME-PASSWORD" %.AUTH-USERNAME-PASSWORD]
+    "CMD-CONNECT"            %.CMD-CONNECT]
+    "ADDR-IPV4"              %.ADDR-IPV4]
+    "ADDR-DOMAIN"            %.ADDR-DOMAIN]
+    "ADDR-IPV6"              %.ADDR-IPV6]
+=== out
+Dict({"SOCKS5-VERSION": Int(5), "NO-AUTH": Int(0), "AUTH-USERNAME-PASSWORD": Int(2), "CMD-CONNECT": Int(1), "ADDR-IPV4": Int(1), "ADDR-DOMAIN": Int(3), "ADDR-IPV6": Int(4)})

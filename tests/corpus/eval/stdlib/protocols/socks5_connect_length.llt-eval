@@ -1,0 +1,9 @@
+# build-socks5-connect "example.com" 80: verify byte count.
+# VER(1) + CMD(1) + RSV(1) + ATYP(1) + LEN(1) + HOST(11) + PORT(2) = 18 bytes.
+# "example.com" has 11 characters.
+
+[include "stdlib/protocols/socks5.llt"]
+---
+[length [call %.build-socks5-connect "example.com" 80]]
+=== out
+Int(18)

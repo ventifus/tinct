@@ -1,0 +1,19 @@
+# parse-ws-frame-header: parse a masked Text frame header.
+# byte0 = 0x81 (FIN=1, opcode=1/Text)
+# byte1 = 0x82 (MASK=1, payload-len=2)
+# Remaining 4 bytes: mask key.
+# Test that all 5 structural fields are correct in a single dict.
+
+[include "stdlib/protocols/websocket.llt"]
+---
+[call [fn [p]
+    [set [set [set [set [set []
+        "fin"         p.fin]
+        "opcode"      p.opcode]
+        "masked"      p.masked]
+        "payload-len" p.payload-len]
+        "header-len"  p.header-len]]
+    [call %.parse-ws-frame-header
+        [str [chr 129] [chr 130] [chr 1] [chr 2] [chr 3] [chr 4]]]]
+=== out
+Dict({"fin": Bool(true), "opcode": Int(1), "masked": Bool(true), "payload-len": Int(2), "header-len": Int(6)})

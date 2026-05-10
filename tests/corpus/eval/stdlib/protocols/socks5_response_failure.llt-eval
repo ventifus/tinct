@@ -1,0 +1,14 @@
+# parse-socks5-response: connection refused (REP=5).
+# 4-byte response: VER=5, REP=5, RSV=0, ATYP=1.
+# Expected: success?=false, rep=5, status="Connection refused".
+
+[include "stdlib/protocols/socks5.llt"]
+---
+[call [fn [p]
+    [set [set [set []
+        "success?" p.success?]
+        "rep"      p.rep]
+        "status"   p.status]]
+    [call %.parse-socks5-response [str [chr 5] [chr 5] [chr 0] [chr 1]]]]
+=== out
+Dict({"success?": Bool(false), "rep": Int(5), "status": String("Connection refused")})
