@@ -346,26 +346,26 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 **Functions that need Rust rename to `builtin-NAME` + prelude wrapper added:**
 
 Collection/Sequence operations (these are the root cause of Seq vs Dict literal type mismatches):
-- [ ] `join` → `builtin-join`; add `join@[doc: "Join elements into string"]: [fn@String [sep@String xs@[Dict Seq]] [builtin-join sep xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `concat` → `builtin-concat`; add `concat@[doc: "Concatenate two sequences or dicts"]: [fn [xs ys] [builtin-concat xs ys]]` with correct 2-arg signature — **this is the root cause of the `concat` TypeEnv arity bug** (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `cycle` → `builtin-cycle`; add `cycle@[doc: "Repeat xs infinitely"]: [fn@Seq [xs] [builtin-cycle xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `range` → `builtin-range`; add `range@[doc: "Integer range [start end)"]: [fn@Seq [start@Int end@Int] [builtin-range start end]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `repeat` → `builtin-repeat`; add `repeat@[doc: "Repeat value infinitely"]: [fn@Seq [x] [builtin-repeat x]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `iterate` → `builtin-iterate`; add `iterate@[doc: "f(x), f(f(x)), ..."]: [fn@Seq [f@Fn x] [builtin-iterate f x]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `unfold` → `builtin-unfold`; add `unfold@[doc: "Generate sequence from seed"]: [fn@Seq [f@Fn seed] [builtin-unfold f seed]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `collect` → `builtin-collect`; add `collect@[doc: "Materialize lazy Seq to Dict"]: [fn@Dict [xs@Seq] [builtin-collect xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `seq` → `builtin-seq`; add `seq@[doc: "Construct a Seq from head and tail"]: [fn@Seq [head tail@Seq] [builtin-seq head tail]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `head` → `builtin-head`; add `head@[doc: "First element of a Seq"]: [fn [xs@Seq] [builtin-head xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `tail` → `builtin-tail`; add `tail@[doc: "All but first element of Seq"]: [fn@Seq [xs@Seq] [builtin-tail xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `sort` → `builtin-sort`; add `sort@[doc: "Sort a dict by keys"]: [fn@Dict [xs@Dict] [builtin-sort xs]]`; note: prelude already has `sorted`, `sort-by`, `sorted-by` — this is the raw underlying builtin (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `reverse` → `builtin-reverse`; add `reverse@[doc: "Reverse a dict or Seq"]: [fn [xs] [builtin-reverse xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `first` → `builtin-first`; add `first@[doc: "First element"]: [fn [xs] [builtin-first xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `last` → `builtin-last`; add `last@[doc: "Last element"]: [fn [xs] [builtin-last xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `rest` → `builtin-rest`; add `rest@[doc: "All but first element"]: [fn [xs] [builtin-rest xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] `cons` → `builtin-cons`; add `cons@[doc: "Prepend element"]: [fn [x xs] [builtin-cons x xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `join` → `builtin-join`; add `join@[doc: "Join elements into string"]: [fn@String [sep@String xs@[Dict Seq]] [builtin-join sep xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `concat` → `builtin-concat`; add `concat@[doc: "Concatenate two sequences or dicts"]: [fn [xs ys] [builtin-concat xs ys]]` with correct 2-arg signature — **this is the root cause of the `concat` TypeEnv arity bug** (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `cycle` → `builtin-cycle`; add `cycle@[doc: "Repeat xs infinitely"]: [fn@Seq [xs] [builtin-cycle xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `range` → `builtin-range`; add `range@[doc: "Integer range [start end)"]: [fn@Seq [start@Int end@Int] [builtin-range start end]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `repeat` → `builtin-repeat`; add `repeat@[doc: "Repeat value infinitely"]: [fn@Seq [x] [builtin-repeat x]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `iterate` → `builtin-iterate`; add `iterate@[doc: "f(x), f(f(x)), ..."]: [fn@Seq [f@Fn x] [builtin-iterate f x]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `unfold` → `builtin-unfold`; add `unfold@[doc: "Generate sequence from seed"]: [fn@Seq [f@Fn seed] [builtin-unfold f seed]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `collect` → `builtin-collect`; add `collect@[doc: "Materialize lazy Seq to Dict"]: [fn@Dict [xs@Seq] [builtin-collect xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `seq` → `builtin-seq`; add `seq@[doc: "Construct a Seq from head and tail"]: [fn@Seq [head tail@Seq] [builtin-seq head tail]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `head` → `builtin-head`; add `head@[doc: "First element of a Seq"]: [fn [xs@Seq] [builtin-head xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `tail` → `builtin-tail`; add `tail@[doc: "All but first element of Seq"]: [fn@Seq [xs@Seq] [builtin-tail xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `sort` → `builtin-sort`; add `sort@[doc: "Sort a dict by keys"]: [fn@Dict [xs@Dict] [builtin-sort xs]]`; note: prelude already has `sorted`, `sort-by`, `sorted-by` — this is the raw underlying builtin (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `reverse` → `builtin-reverse`; add `reverse@[doc: "Reverse a dict or Seq"]: [fn [xs] [builtin-reverse xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `first` → `builtin-first`; add `first@[doc: "First element"]: [fn [xs] [builtin-first xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `last` → `builtin-last`; add `last@[doc: "Last element"]: [fn [xs] [builtin-last xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `rest` → `builtin-rest`; add `rest@[doc: "All but first element"]: [fn [xs] [builtin-rest xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `cons` → `builtin-cons`; add `cons@[doc: "Prepend element"]: [fn [x xs] [builtin-cons x xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
 
 **TypeEnv entries to REMOVE from `TypeEnv::with_builtins()` after wrappers are added** (type now comes from prelude annotation):
-- [ ] Remove `join`, `concat`, `cycle`, `range`, `repeat`, `iterate`, `unfold`, `collect`, `seq`, `head`, `tail`, `sort`, `reverse`, `first`, `last`, `rest`, `cons` from TypeEnv::with_builtins() — prelude wrappers will drive the type (`src/type_env.rs`)
+- [x] Remove `join`, `concat`, `cycle`, `range`, `repeat`, `iterate`, `unfold`, `collect`, `seq`, `head`, `tail`, `sort`, `reverse`, `first`, `last`, `rest`, `cons` from TypeEnv::with_builtins() — prelude wrappers will drive the type (`src/type_env.rs`)
 
 **TypeEnv entries to KEEP** (prelude uses these internally during its own type-checking, or they are truly primitive):
 - `builtin-*` aliases — used by prelude wrappers
@@ -384,9 +384,9 @@ Collection/Sequence operations (these are the root cause of Seq vs Dict literal 
 - `include`, `env`, `emit`, `proxy`, `gensym`, `validate` — system/meta functions
 
 **Update all call sites** after renaming:
-- [ ] Audit `stdlib/prelude.llt`, `stdlib/net.llt`, `stdlib/io.llt`, `stdlib/toml-lite.llt`, `stdlib/regex.llt` for direct calls to `join`, `concat`, `cycle`, `range`, `repeat`, `iterate`, `unfold`, `collect`, `seq`, `head`, `tail`, `sort`, `reverse`, `first`, `last`, `rest`, `cons` — update to use `builtin-NAME` in private helpers and `NAME` (via the wrapper) in public exports (`stdlib/`)
-- [ ] Update all corpus test files that call the renamed functions to ensure they still pass (`tests/corpus/`)
-- [ ] Remove `=== warn` sections from `cycle.llt-eval`, `join.llt-eval`, `concat*.llt-eval`, `rest_seq.llt-eval`, `cons_seq.llt-eval` and other stdlib tests once TypeEnv drift is fixed (`tests/corpus/eval/stdlib/`)
+- [x] Audit `stdlib/prelude.llt`, `stdlib/net.llt`, `stdlib/io.llt`, `stdlib/toml-lite.llt`, `stdlib/regex.llt` for direct calls to `join`, `concat`, `cycle`, `range`, `repeat`, `iterate`, `unfold`, `collect`, `seq`, `head`, `tail`, `sort`, `reverse`, `first`, `last`, `rest`, `cons` — update to use `builtin-NAME` in private helpers and `NAME` (via the wrapper) in public exports (`stdlib/`)
+- [x] Update all corpus test files that call the renamed functions to ensure they still pass (`tests/corpus/`)
+- [x] Remove `=== warn` sections from `cycle.llt-eval`, `join.llt-eval`, `concat*.llt-eval`, `rest_seq.llt-eval`, `cons_seq.llt-eval` and other stdlib tests once TypeEnv drift is fixed (`tests/corpus/eval/stdlib/`)
 
 ## Standard Library
 
