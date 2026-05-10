@@ -1,0 +1,8 @@
+# build-socks5-greeting with NO-AUTH only: result should be 3 bytes.
+# VER(1) + NMETHODS(1) + METHOD(1) = 3 bytes.
+
+[include "stdlib/protocols/socks5.llt"]
+---
+[length [call %.build-socks5-greeting [0: %.NO-AUTH]]]
+=== out
+Int(3)

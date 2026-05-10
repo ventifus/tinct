@@ -1,0 +1,13 @@
+# Verify opcode constants are exported with correct values.
+
+[include "stdlib/protocols/websocket.llt"]
+---
+[set [set [set [set [set [set []
+    "Continuation" %.Continuation]
+    "Text"         %.Text]
+    "Binary"       %.Binary]
+    "Close"        %.Close]
+    "Ping"         %.Ping]
+    "Pong"         %.Pong]
+=== out
+Dict({"Continuation": Int(0), "Text": Int(1), "Binary": Int(2), "Close": Int(8), "Ping": Int(9), "Pong": Int(10)})

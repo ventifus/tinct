@@ -1,0 +1,8 @@
+# build-ws-frame returns a dict with keys: header, payload, frame.
+# Mask-key constructed with chr() since LLT only supports \n \t \r escapes.
+
+[include "stdlib/protocols/websocket.llt"]
+---
+[keys [call %.build-ws-frame 1 "Hi" [str [chr 1] [chr 2] [chr 3] [chr 4]]]]
+=== out
+Dict({0: String("header"), 1: String("payload"), 2: String("frame")})

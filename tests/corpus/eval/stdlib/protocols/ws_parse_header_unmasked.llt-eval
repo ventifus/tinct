@@ -1,0 +1,17 @@
+# parse-ws-frame-header: unmasked server-to-client Pong frame.
+# byte0 = 0x8A (FIN=1, opcode=0xA=10/Pong)
+# byte1 = 0x00 (MASK=0, payload-len=0)
+# Expected: fin=true, opcode=10, masked=false, payload-len=0, header-len=2
+
+[include "stdlib/protocols/websocket.llt"]
+---
+[call [fn [p]
+    [set [set [set [set [set []
+        "fin"         p.fin]
+        "opcode"      p.opcode]
+        "masked"      p.masked]
+        "payload-len" p.payload-len]
+        "header-len"  p.header-len]]
+    [call %.parse-ws-frame-header [str [chr 138] [chr 0]]]]
+=== out
+Dict({"fin": Bool(true), "opcode": Int(10), "masked": Bool(false), "payload-len": Int(0), "header-len": Int(2)})

@@ -1,0 +1,7 @@
+# build-socks5-connect errors on empty hostname.
+
+[include "stdlib/protocols/socks5.llt"]
+---
+[try [fn [] [call %.build-socks5-connect "" 80]]]
+=== out
+Variant(Err, String("build-socks5-connect: hostname must not be empty"))
