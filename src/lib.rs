@@ -17,6 +17,8 @@
 //! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
 
 pub(crate) mod arena;
+// Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
+pub mod async_rt;
 pub mod ast;
 pub mod ast_dict;
 pub(crate) mod coverage;

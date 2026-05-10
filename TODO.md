@@ -165,8 +165,8 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 
 See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-data-model.md §Sessions`.
 
-- [ ] **quinn step 1 — deps**: add `quinn = { version = "0.11", default-features = false, features = ["rustls", "ring"] }` and `h3 = "0.0.6"` (or latest stable) to `Cargo.toml`; verify `just build` succeeds (`Cargo.toml`)
-- [ ] **quinn step 2 — shared tokio runtime**: add `src/async_rt.rs` with `thread_local! { static TOKIO_RT: ... }` — single-threaded `tokio::runtime::Builder::new_current_thread().build()` initialized once per thread; expose `async_rt::block_on(fut)` helper; reqwest's blocking client already wraps async internally so no conflict (`src/async_rt.rs`, `src/lib.rs`)
+- [x] **quinn step 1 — deps**: quinn 0.11 (rustls+ring), h3 0.0.8, h3-quinn 0.0.10, tokio 1 full (`Cargo.toml`)
+- [x] **quinn step 2 — shared tokio runtime**: thread_local current_thread runtime + `block_on()` helper (`src/async_rt.rs`, `src/lib.rs`)
 - [ ] **quinn step 3 — quic-session builtin**: implement `builtin_quic_session` — parse cap/host/port/opts; build `rustls::ClientConfig` from opts (reuse `build_tls_config` from tls-layer); create `quinn::Endpoint`; call `async_rt::block_on(endpoint.connect(addr, host)?.await)`; store `quinn::Connection` in `Value::QuicSession` (replace `Rc<()>` placeholder) (`src/builtins_io.rs`)
 - [ ] **quinn step 4 — stream builtins**: implement `builtin_quic_open_stream` — `block_on(conn.open_bi())` returning `(SendStream, RecvStream)`; wrap in `Value::Handle` with Binary RW Stream caps using `AsyncRead`/`AsyncWrite` adapters; implement `builtin_quic_open_datagram` — `conn.send_datagram(bytes)` / `block_on(conn.read_datagram())` via `Value::DatagramHandle` (`src/builtins_io.rs`)
 - [ ] **quinn step 5 — http3-session**: implement `builtin_http3_session` — take `Value::QuicSession`; call `h3::client::builder().build(quic_conn).await`; store `h3::client::SendRequest` in `Value::Http3Session` (replace `Rc<()>`) (`src/builtins_io.rs`)
