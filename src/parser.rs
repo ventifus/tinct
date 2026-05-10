@@ -3780,8 +3780,17 @@ fn pop_last_value_from_frame(
             *pending_key = last_entry.key;
             Ok(Rc::try_unwrap(last_entry.value).unwrap_or_else(|rc| (*rc).clone()))
         }
-        Some(StackFrame::Call { ref mut args, .. }) => {
+        Some(StackFrame::Call {
+            ref mut func,
+            ref mut args,
+            ..
+        }) => {
             if args.is_empty() {
+                // No args pushed yet — try popping the function itself as the dot-access target.
+                // This allows `[net.http-get ...]` where `net` is in head (func) position.
+                if let Some(f) = func.take() {
+                    return Ok(f);
+                }
                 return Err(ParseError {
                     message: "dot access requires a target before '.'".to_string(),
                     span: Some(span),
@@ -4656,6 +4665,7 @@ fn push_value(
             Ok(())
         }
         Some(StackFrame::Call {
+            ref mut func,
             ref mut args,
             ref mut pending_key,
             ..
@@ -4663,6 +4673,11 @@ fn push_value(
             if let Some((name, _)) = pending_key.take() {
                 // This value completes a named argument
                 args.push(CallArg::Named(name, Rc::new(expr)));
+            } else if func.is_none() && args.is_empty() {
+                // The function expression is being set/restored (e.g., after dot-access
+                // on the function position: `[net.http-get ...]` pops `net` from func,
+                // constructs `net.http-get`, then pushes it back as the new func).
+                *func = Some(expr);
             } else {
                 // Positional argument
                 args.push(CallArg::Positional(Rc::new(expr)));
