@@ -1,0 +1,6 @@
+# Test: tls-layer errors when Handle has no raw_tcp (e.g., file handle)
+[handle: [open %pwd "Cargo.toml" "r"]]
+[tls-layer handle "example.com" []]
+
+=== error
+tls-layer: handle does not have a raw TCP stream (not created by connect cap Tcp)

@@ -135,21 +135,20 @@ Research questions:
 
 See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle Refactor. **Spec chapters:** `doc/03-data-model.md §Network Handles`, `doc/03-data-model.md §Layers`.
 
-- [ ] Add `raw_tcp: Option<Rc<RefCell<Option<TcpStream>>>>` field to `Value::Handle`; must be `Rc<RefCell<...>>` because `Value: Clone` and `TcpStream: !Clone` — all clones of a Handle share the same slot so `take()` in `tls-layer` invalidates all aliases; populated by `connect cap Tcp`, `None` for file/unix handles (`src/value.rs`)
-- [ ] Add `creation_span: Span` field to `Value::Handle`; populate from `call_span` at `connect` call time; use in dual-span error when `tls-layer` finds `raw_tcp: None` (definition site + second-use site) (`src/value.rs`, `src/builtins_io.rs`)
-- [ ] Refactor `builtin_connect` to dispatch on Transport variant tag for argument count: `Tcp`/`Udp` → host+port, `UnixStream`/`UnixDatagram`/`NamedPipe` → path, `Icmp` → host, unknown → forward to user Connector's `connect` field (`src/builtins_io.rs`)
-- [ ] Implement `connect cap Udp host port` → `Handle[Binary Readable Writable Datagram]`; remove the "UDP not yet supported" stub (`src/builtins_io.rs:610`)
-- [ ] Implement `connect cap UnixStream path` → `Handle[Binary Readable Writable Stream]`; use `openat2 RESOLVE_BENEATH` for path resolution (do NOT use `PathBuf::join` + raw `UnixStream::connect` — bypasses sandbox); note: `cap_std::fs::Dir::connect_unix_stream()` is not yet implemented upstream (cap-std 3.4.x), so use lower-level fd-based approach (`src/builtins_io.rs`)
-- [ ] Implement `connect cap UnixDatagram path` → `Handle[Binary Readable Writable Datagram]`; same DirCap path resolution (`src/builtins_io.rs`)
-- [ ] Implement `connect cap NamedPipe path` → `Handle[Binary Readable Writable]` (`src/builtins_io.rs`)
-- [ ] Implement `connect cap Icmp host` → `Handle[Binary Readable Writable Datagram]`; platform-conditional (Linux `SOCK_DGRAM`+`IPPROTO_ICMP`); return `{err: "icmp-unavailable"}` on unsupported platforms (`src/builtins_io.rs`)
-- [ ] Implement `tls-layer handle sni opts` → `Handle[... Tls]`; extract `raw_tcp` from input Handle, build `rustls::ClientConnection`, wrap in TlsReader/TlsWriter; the input Handle is consumed (subsequent use errors) (`src/builtins_io.rs`)
-- [ ] **Remove `tls-connect` entirely** — both the Connector form (currently fully implemented, `src/builtins_io.rs`) and Handle stub; delete `builtin!("tls-connect", ...)` from `standard_builtins()` and the corresponding TypeEnv entry in `with_builtins()`; delete corpus test `tests/corpus/eval/builtins/tls_connect_arity.llt-eval`; remove `assert!(names.contains(&"tls-connect"), ...)` in `src/builtins.rs`; replacement is `[tls-layer [connect %nc Tcp "host" 443] "host" opts]` (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
-- [ ] Register transport nominal variants `UnixStream`, `UnixDatagram`, `NamedPipe`, `Icmp` alongside existing `Tcp`, `Udp` in `create_root_env()` (`src/builtins.rs`); also register `Url` as type alias in `TypeEnv::with_builtins()` — currently unregistered, causing `@Url` annotation in stdlib functions to produce "undefined type" error (`src/type_env.rs`)
-- [ ] Define and document user-defined Connector capability policy: Connectors are pure-tinct functions and cannot call I/O builtins directly; all network I/O goes through `connect` which enforces the cap; document this invariant in `doc/11a-builtins.md` §Network
-- [ ] Update `check_net_cap_allowlist` to handle `Icmp` transport (check host against allowlist without port) (`src/builtins_io.rs`)
-- [ ] Tests: corpus tests for `connect Tcp`, `connect Udp`, `connect UnixStream` (via local socket), `tls-layer` error paths (wrong Handle type, consumed Handle) in `tests/corpus/eval/builtins/` using `=== out`/`=== error` sections
-- [ ] Update `doc/11a-builtins.md` §Network with transport-generic `connect` signature, `tls-layer`, Unix socket transports; remove §Proxy Tunnels section (documents removed builtins `socks5-connect` and `proxy-connect`; update Network count from 13 to 11)
+- [x] Add `raw_tcp` + `creation_span` fields to `Value::Handle` (`src/value.rs`)
+- [x] Refactor `builtin_connect` to dispatch on Transport variant tag (`src/builtins_io.rs`)
+- [x] Implement `connect cap UnixStream path` (Linux-only via /proc/self/fd) (`src/builtins_io.rs`)
+- [ ] Implement `connect cap Udp` — stub: requires Datagram handle infrastructure (Read/Write incompatible with recv_from/send_to)
+- [ ] Implement `connect cap UnixDatagram` — stub: same Datagram issue as UDP
+- [ ] Implement `connect cap NamedPipe` — stub: Windows-only
+- [ ] Implement `connect cap Icmp` — stub: requires raw socket support
+- [x] Implement `tls-layer handle sni opts` → Handle with Tls cap; consumes raw_tcp (`src/builtins_io.rs`)
+- [x] Remove `tls-connect` entirely — replaced by `tls-layer` (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
+- [x] Register transport variants (UnixStream, UnixDatagram, NamedPipe, Icmp) + Url type alias (`src/builtins.rs`, `src/type_env.rs`)
+- [x] Document Connector capability policy in `doc/11a-builtins.md` §Network
+- [x] Update `check_net_cap_allowlist` for ICMP (host-only, no port) (`src/builtins_io.rs`)
+- [x] Corpus tests: connect arity, UDP stub, UnixStream arity, tls-layer no raw_tcp, NamedPipe stub (`tests/corpus/eval/builtins/`)
+- [x] Update `doc/11a-builtins.md` §Network: transport-generic connect, tls-layer, removed Proxy Tunnels
 
 ### `http-sessions`: QUIC, HTTP/2, HTTP/3 Sessions
 

@@ -1,6 +1,6 @@
 # Builtin Reference
 
-This chapter provides a complete reference for all 76 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
+This chapter provides a complete reference for all 178 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
 
 ## Notation
 
@@ -336,30 +336,51 @@ Network builtins create and operate on `Value::Handle`, `Value::HttpConn`, and U
 
 All network operations materialize their non-Handle arguments. Handle arguments are passed by reference — they carry the connection state and are not forced as thunks.
 
+**Connector security policy:** User-defined Connectors are pure-tinct functions that cannot call I/O builtins directly. All network I/O flows through `connect` which enforces the NetCap allowlist. Custom Connectors (WireGuard clients, test fakes, protocol layers) receive allowlist-validated connections from `connect` and may transform them, but cannot bypass the allowlist to create new OS-level network connections.
+
 ### Transport — connect
 
 Opens a transport-layer connection via a Connector and returns a `Handle`.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `connect` | 3–4 | `S × S × S (× S)? → Handle` | Handle | Open a connection; Connector × Transport × host × port |
+| `connect` | 3–4 | `S × S × S (× S)? → Handle` | Handle | Transport-generic dispatch: `connector transport host [port]` |
 
-**Two call forms:**
+**Transport variants:** `Tcp | Udp | UnixStream | UnixDatagram | NamedPipe | Icmp`
+
+Each transport variant determines the connection semantics and argument requirements:
 
 ```tinct
-# Explicit transport:
+# TCP/UDP: require host (String) and port (Int)
 [connect net Tcp "api.example.com" 443]   # → Handle{ Binary Readable Writable Stream }
 [connect net Udp "8.8.8.8" 53]            # → Handle{ Binary Readable Writable Datagram }
+
+# Unix sockets: require DirCap (not NetCap), path (String), no port
+[connect dir UnixStream "app.sock"]       # → Handle{ Binary Readable Writable Stream }
+
+# ICMP: require host (String), no port
+[connect net Icmp "8.8.8.8"]              # → Handle{ Binary Readable Datagram }
 
 # Tcp is the default when Transport is omitted:
 [connect net "api.example.com" 443]       # same as Tcp form
 ```
 
-The first argument is any Connector — a value with a `connect` method implementing the Connector protocol (see [Data Model](03-data-model.md) §Handles). `NetCap` (injected via `--cap-net`) is the stdlib Connector for OS sockets. User-defined Connectors (WireGuard clients, SOCKS5 wrappers, test fakes) implement the same protocol.
+The first argument is any Connector — a capability value that authorizes connections. `NetCap` (injected via `--cap-net`) gates TCP/UDP/ICMP connections to allowlist hosts. `DirCap` (injected via `--cap-dir`) gates Unix socket connections relative to the directory. User-defined Connectors implement custom routing or tunneling.
 
-`Transport` is a nominal unit variant: `Tcp` produces a `Stream` Handle; `Udp` produces a `Datagram` Handle. User-defined transport variants are forwarded to the Connector unchanged.
+**Capability requirements by transport:**
 
-**Error cases:** Type mismatch if host is not String or port is not Int; connection refused or timeout at the OS level; Connector rejects the host/port (allowlist violation for `NetCap`).
+| Transport | Connector Type | Arguments | Handle Capabilities |
+|-----------|----------------|-----------|---------------------|
+| `Tcp` | `NetCap` or custom | `host port` | `Binary Readable Writable Stream` |
+| `Udp` | `NetCap` or custom | `host port` | `Binary Readable Writable Datagram` |
+| `UnixStream` | `DirCap` | `path` | `Binary Readable Writable Stream` |
+| `UnixDatagram` | `DirCap` | `path` | `Binary Readable Writable Datagram` |
+| `NamedPipe` | `DirCap` (Windows) | `path` | `Binary Readable Writable Stream` |
+| `Icmp` | `NetCap` or custom | `host` | `Binary Readable Datagram` |
+
+**Implementation status:** `Tcp` is fully implemented. `UnixStream` is implemented on Linux only (uses `/proc/self/fd` for path resolution). `Udp`, `UnixDatagram`, `NamedPipe`, and `Icmp` are stubs — they return "not yet implemented" errors pending datagram infrastructure and platform-specific socket support.
+
+**Error cases:** Type mismatch if arguments don't match the transport's requirements; connection refused or timeout at the OS level; Connector rejects the connection (allowlist violation for `NetCap`, path escape for `DirCap`); unsupported transport variant.
 
 ### TLS — tls-connect
 
@@ -424,6 +445,30 @@ A `SpkiPin` value carries the hash algorithm and raw fingerprint bytes:
 `SpkiPin` is constructed via the `spki-pin` stdlib function (two positional args: `HashAlgorithm` variant and `Bytes`). SHA-3 (Keccak construction) is preferred for new deployments; SHA-256 is accepted for compatibility with existing tooling.
 
 Maintain both current and next-rotation pins to allow key rotation without a service outage — `tls-connect` succeeds if the leaf SPKI matches any pin in the list using that pin's algorithm.
+
+### TLS Layer — tls-layer
+
+Upgrades an existing `Stream` Handle to TLS, returning a new Handle with the `Tls` capability.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `tls-layer` | 3 | `S × S × S → Handle` | Handle | Layer TLS: `handle sni opts` → Handle with Tls capability |
+
+**Usage:**
+
+```tinct
+[tcp: [connect net Tcp "10.0.0.5" 443]]
+[tls: [tls-layer tcp "api.example.com" []]]
+# → Handle{ Binary Readable Writable Stream Tls }
+```
+
+`tls-layer` is the general Layer pattern for composing Handle transformations. It consumes the underlying Handle's raw TCP stream (via `raw_tcp: Option<TcpStream>`) and returns a new Handle wrapping the TLS session. After `tls-layer` extracts the TCP stream, the original Handle is invalidated — subsequent operations on it produce a runtime error.
+
+The `sni` argument is the Server Name Indication hostname for the TLS handshake. It may differ from the IP connected to (e.g., when connecting to a specific IP but validating a certificate for a domain).
+
+The `opts` dict accepts the same keys as `tls-connect`: `ca-bundle`, `no-system-roots`, `mozilla-roots`, `client-cert`, `client-key`, `pins`, `alpn`.
+
+**Error cases:** Type mismatch if handle is not a Handle or sni is not String; capability error if the Handle does not carry the `Stream` capability or the underlying TCP stream has already been consumed; TLS handshake failure; SPKI pin mismatch.
 
 ### TLS Introspection — tls-peer-cert
 
@@ -542,27 +587,6 @@ resp.body     # → "{...}"
 ```
 
 **Error cases:** Type mismatch if url is not Url or HttpConn; unsupported scheme (only `"http"` and `"https"` are handled); connection or TLS errors; non-UTF-8 response body.
-
-### Proxy Tunnels — socks5-connect, proxy-connect
-
-Tunnel a Handle through a proxy server, returning a new Handle with the same capabilities as the original.
-
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `socks5-connect` | 4 | `S × S × S × S → Handle` | Handle | SOCKS5 tunnel: `h host port creds` |
-| `proxy-connect` | 3 | `S × S × S → Handle` | Handle | HTTP CONNECT tunnel: `h host port` |
-
-```tinct
-# SOCKS5 proxy → TLS → HTTP/2:
-[proxy:    [connect net Tcp "proxy.internal" 1080]]
-[tunneled: [socks5-connect proxy "api.example.com" 443 creds]]
-[tls:      [tls-connect tunneled "api.example.com" opts]]
-[client:   [http-connect tls "api.example.com"]]
-```
-
-`socks5-connect` wraps `h` (a plain TCP Handle to the proxy server) with a SOCKS5 negotiation, forwarding subsequent reads and writes to the remote `host:port` through the proxy. `creds` is a dict with optional `username` and `password` keys (or `null` for unauthenticated). `proxy-connect` uses the HTTP CONNECT method instead of SOCKS5.
-
-**Error cases:** Type mismatch if h is not a Handle; proxy negotiation failure; proxy rejects the target host/port.
 
 ### URI Builtins — uri, url, urn
 

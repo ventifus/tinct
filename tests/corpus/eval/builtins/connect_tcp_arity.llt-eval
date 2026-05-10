@@ -1,0 +1,9 @@
+# Test: connect with Tcp transport but missing host/port produces arity error
+# no_fs
+[connect %pwd Tcp]
+
+=== error
+connect: Tcp transport requires host and port (4 args total), got 2
+
+=== warn
+arity mismatch: expected 4 argument(s), got 2 (2 positional, 0 named) at 2:1-2:19

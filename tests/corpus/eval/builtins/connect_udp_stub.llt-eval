@@ -1,0 +1,9 @@
+# Test: UDP returns "not yet implemented" error
+# no_fs
+[connect %pwd Udp "localhost" 1234]
+
+=== error
+connect: UDP not yet implemented — requires Datagram handle infrastructure
+
+=== warn
+cannot unify NetCap with DirCap at 2:10-2:14

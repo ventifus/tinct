@@ -200,11 +200,17 @@ pub enum Value {
     /// `inner`: the underlying I/O reader (BufRead trait object).
     /// `write_inner`: optional write half for bidirectional connections (e.g. TCP sockets).
     /// `seek_inner`: optional seek interface for files (None for streams).
+    /// `raw_tcp`: shared slot for extracting raw TcpStream (populated by `connect cap Tcp`, consumed by `tls-layer`).
+    ///            `Rc<RefCell<Option<...>>>` preserves `Value: Clone` — all clones share the slot.
+    ///            `take()` in `tls-layer` invalidates all aliases.
+    /// `creation_span`: span where this Handle was created (for dual-span error messages).
     Handle {
         caps: HashMap<String, Value>,
         inner: Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>,
         write_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Write>>>>,
         seek_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Seek>>>>,
+        raw_tcp: Option<Rc<RefCell<Option<std::net::TcpStream>>>>,
+        creation_span: Span,
     },
     /// Write-only file/stream handle with capability metadata.
     /// `caps`: capability names → associated data (Null for boolean caps, Dict for protocol caps).
@@ -563,11 +569,12 @@ impl PartialEq for Value {
 }
 
 // Size assertion: ensure Value::Dict (IndexMap) remains the dominant variant.
-// Value enum size is dominated by Dict(IndexMap). BuiltinDef is Copy (40 bytes:
+// Value enum size is dominated by Dict(IndexMap) + Handle. BuiltinDef is Copy (40 bytes:
 // 8-byte fn ptr + 2 fat ptrs for &str and &[Strictness]). IndexMap size varies
 // by version; indexmap 2.x uses ~72 bytes on 64-bit platforms.
+// Handle added raw_tcp (16 bytes) + creation_span (48 bytes) in connect-v2 refactor.
 const _: () = {
-    const EXPECTED_MAX: usize = 80;
+    const EXPECTED_MAX: usize = 144; // Increased from 80 for Handle refactor
     const ACTUAL: usize = std::mem::size_of::<Value>();
     assert!(
         ACTUAL <= EXPECTED_MAX,

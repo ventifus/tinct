@@ -349,7 +349,7 @@ pub(crate) use crate::builtins_io::{
     builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow, builtin_open,
     builtin_position, builtin_proxy_connect, builtin_read_link, builtin_remove, builtin_rename,
     builtin_revocable, builtin_revoke_cap, builtin_seek, builtin_seek_end, builtin_slurp,
-    builtin_socks5_connect, builtin_spki_pin, builtin_stat, builtin_tls_connect,
+    builtin_socks5_connect, builtin_spki_pin, builtin_stat, builtin_tls_layer,
     builtin_tls_peer_cert, builtin_write, builtin_write_atomic, builtin_write_handle,
 };
 
@@ -1127,7 +1127,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_connect,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
-        builtin!("tls-connect", builtin_tls_connect),
+        builtin!(
+            "tls-layer",
+            builtin_tls_layer,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("tls-peer-cert", builtin_tls_peer_cert, [Strictness::Seq]),
         builtin!(
             "spki-pin",
@@ -1428,9 +1432,16 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
         env.borrow_mut().insert(def.name.to_string(), thunk);
     }
 
-    // Transport nominal variant constants: Tcp and Udp.
+    // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
     // These are unit variants (no payload) used as flags for `connect` and `tls-connect`.
-    for tag in ["Tcp", "Udp"] {
+    for tag in [
+        "Tcp",
+        "Udp",
+        "UnixStream",
+        "UnixDatagram",
+        "NamedPipe",
+        "Icmp",
+    ] {
         let thunk = Rc::new(Thunk::new_materialized(
             Value::Variant {
                 tag: tag.to_string(),
@@ -6255,7 +6266,7 @@ mod tests {
         assert!(names.contains(&"ct-equal?"), "missing ct-equal?");
         assert!(names.contains(&"bytes?"), "missing bytes?");
         // TLS builtins
-        assert!(names.contains(&"tls-connect"), "missing tls-connect");
+        assert!(names.contains(&"tls-layer"), "missing tls-layer");
         assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
         assert!(names.contains(&"spki-pin"), "missing spki-pin");
         // HTTP / network builtins
