@@ -8,4 +8,4 @@
 === out
 Dict({"handler": Function(name), "p": Proxy, "a": Int(10), "b": Int(20)})
 === warn
-cannot unify Fn@? [String] with _t0 at 3:13-3:20
+cannot unify Fn@_ [String] with _t0 at 3:13-3:20

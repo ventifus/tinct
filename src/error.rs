@@ -1741,9 +1741,7 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
         snippet.push_str(&"^".repeat(caret_length));
     } else {
         // ── Multi-line span ───────────────────────────────────────────────
-        // First line: show from start_col to end of line, highlight from start_col.
         let first_line = lines[span.start.line - 1];
-        let start_col = span.start.column.saturating_sub(1).min(first_line.len());
         snippet.push_str(&format!(
             "  {:>width$} | {}\n",
             span.start.line,
@@ -1772,18 +1770,12 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
             width = line_num_width
         ));
 
-        // Caret line: highlight from start_col on the first line to end_col on the last.
-        // We produce a single caret run starting at start_col and spanning to the last
-        // column of the last line, since the lines may have different lengths.
-        // Convention: start carets at start_col (aligned to first line's gutter).
-        let caret_end = if end_col > start_col {
-            end_col
-        } else {
-            start_col + 1
-        };
+        // Caret line: underline the last line from col 0 to end_col.
+        // Using start_col from the first line would misalign when the last line starts
+        // at a different column (e.g. fn body indented differently from fn header).
+        let caret_length = end_col.max(1);
         snippet.push_str(&format!("  {} | ", padding));
-        snippet.push_str(&" ".repeat(start_col));
-        snippet.push_str(&"^".repeat(caret_end - start_col));
+        snippet.push_str(&"^".repeat(caret_length));
     }
 
     Some(snippet)

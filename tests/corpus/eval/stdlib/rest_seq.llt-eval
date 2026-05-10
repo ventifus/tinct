@@ -3,4 +3,4 @@
 === out
 Dict({0: Int(1), 1: Int(2), 2: Int(3)})
 === warn
-cannot unify [] with Seq[?] at 1:24-1:52
+cannot unify [] with Seq[_] at 1:24-1:52

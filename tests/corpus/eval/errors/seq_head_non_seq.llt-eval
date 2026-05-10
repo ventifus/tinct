@@ -4,4 +4,4 @@
 [E010] head: expected Seq, got Int
 
 === warn
-cannot unify Seq[?] with 42 at 1:7-1:9
+cannot unify Seq[_] with 42 at 1:7-1:9

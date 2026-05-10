@@ -4,4 +4,4 @@
 [E034] cycle on empty collection
 
 === warn
-cannot unify Seq[?] with [] at 1:8-1:10
+cannot unify Seq[_] with [] at 1:8-1:10
