@@ -62,30 +62,6 @@ hex-digit: [fn@String [n@Int]
         [chr [builtin-add 48 n]]           # '0'-'9' (48 = '0')
         [chr [builtin-add 87 n]]]]         # 'a'-'f' (97 = 'a', 97-10=87)
 
-# mod is from stdlib/prelude.llt
-# Type: (Number -> Number -> Number)
-mod: [fn@Number [a@Number b@Number] [builtin-sub a [builtin-mul [quot a b] b]]]
-
-# quot is from stdlib/prelude.llt
-# Type: (Number -> Number -> Int)
-quot: [fn@Int [a@Number b@Number] [trunc [builtin-div a b]]]
-
-# trunc is from stdlib/prelude.llt
-# Type: (Number -> Int)
-trunc: [fn@Int [x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
-
-# >= is from stdlib/prelude.llt
-# Type: (Comparable -> Comparable -> Bool)
->=: [fn@Bool [a b] [not [builtin-lt a b]]]
-
-# not is from stdlib/prelude.llt
-# Type: (Any -> Bool)
-not: [fn@Bool [x] [builtin-if x false true]]
-
-# ceil is from stdlib/prelude.llt
-# Type: (Number -> Int)
-ceil: [fn@Int [x@Number] [builtin-sub 0 [floor [builtin-sub 0 x]]]]
-
 # Decode a hexadecimal string back to its original form.
 # Takes pairs of hex digits and converts them to characters.
 # Type: (String -> String)
@@ -122,14 +98,6 @@ hex-digit-to-int-impl: [fn@Int [code@Int]
             [builtin-if [and [>= code 65] [<= code 70]]   # 'A'-'F'
                 [builtin-sub code 55]
                 [error [str "hex-decode: invalid hex digit: " c]]]]]]
-
-# and is from stdlib/prelude.llt
-# Type: (Any -> Any -> Any)
-and: [fn [a b] [builtin-if a b false]]
-
-# <= is from stdlib/prelude.llt
-# Type: (Comparable -> Comparable -> Bool)
-<=: [fn@Bool [a b] [not [builtin-lt b a]]]
 
 # ============================================================================
 # Base64 Encoding (RFC 4648)

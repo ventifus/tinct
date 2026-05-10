@@ -761,3 +761,56 @@ Other Completeness items (polymorphic recursion detection, CALL-MONO/CALL-POLY d
 | Union types | `Unknown` typing for dual-dispatch builtins causes false positives in practice | `doc/whatif/union-types.md` |
 
 Expressiveness features are independent of each other — any can be adopted without the others. The `doc/whatif/` files analyze what each adoption would require, what it would gain and lose, and recommend an implementation approach.
+
+## Boolean-Algebraic Subtyping (BAS)
+
+Tinct's type system migrates from Rémy-style row polymorphism to Boolean-Algebraic Subtyping (BAS), following Chau & Parreaux (POPL 2026). BAS encodes all of union, intersection, negation, and record extension in one distributive Boolean lattice — eliminating row variables and their associated soundness gaps.
+
+### The BAS Type Algebra
+
+The type grammar is a Boolean algebra over atomic types:
+
+| Formal | tinct annotation | Notes |
+|--------|-----------------|-------|
+| `A \| B` | `@[A B]` | union — existing positional entries in `@[...]` |
+| `A & B` | `@[[all A B]]` | intersection — `[all ...]` prefix in annotation |
+| `~A` | `@[[without A]]` | negation — `[without A]` prefix in annotation |
+| `⊤` | `@Top` | true supertype |
+| `⊥` | `@Never` | true bottom |
+| `{f: τ}` | `@[f: τ]` | single-field record — existing annotation |
+
+Multi-field annotations are intersections: `@[x: T  y: U]` = `{x: T} ∧ {y: U}`. Width subtyping is a theorem of conjunction elimination (`A & B <: A`), not a special rule.
+
+### Key Rules
+
+**S-RcdTop** (Parreaux & Chau 2022, §2.2.2): `{x: τ} ∨ {y: π} ≡ ⊤` when `x ≠ y`. Unions of records with disjoint field names collapse to the top type. **Consequence:** structural `{ok: T} | {err: String}` is not a discriminated union — it equals ⊤. Use nominal class-tagged unions for ADTs.
+
+**S-ClsBot** (Parreaux & Chau 2022, §2.2.2): `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags. Nominal unions (`Ok[T] | Err[String]`) remain discriminated.
+
+**C-Var1/2**: Constraints of the form `τ₁ ≤ τ₂ ∨ α` rewrite losslessly to `τ₁ & ~τ₂ ≤ α` using Boolean algebra. This eliminates backtracking and yields principal types.
+
+**Row elimination**: Row variables (`RowTail::RowVar`) are removed. Record extension is derived from conjunction: `{name: Str} & {age: Int}` subsumes `{name: Str}` by `A & B <: A`.
+
+### Nominal Result Type
+
+Under BAS, the Result type must use **nominal variants** to be discriminated:
+
+```tinct
+[Result: [type [Ok a] [Err String]]]
+```
+
+`Ok[T] | Err[String]` is discriminated by S-ClsBot (`#Ok & #Err ≤ Never`). Pattern matching uses nominal patterns `[Ok v]` / `[Err msg]`. The `try` builtin returns `Ok(value)` on success and `Err(message)` on caught error. Structural `{ok: v}` / `{err: msg}` dicts remain valid as plain dicts but are not a discriminated union under BAS.
+
+### Record/Map Split and `Dict`
+
+`Dict` is the BAS union of `Record` and `Map[K V]` — two different type constructors, not field-disjoint records, so S-RcdTop does not collapse this union:
+
+```
+Dict = Record ∨ Map[K V]
+```
+
+`Record` uses BAS row intersection for multi-field records. `Map[K V]` is a parameterized type constructor for homogeneous maps. `get` on `Map[K V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
+
+Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/parameterized-dict.md`.
+
+See `doc/whatif/boolean-algebraic-subtyping.md` for the complete design, and `doc/whatif/parameterized-dict.md` for the Record/Map split implementation.

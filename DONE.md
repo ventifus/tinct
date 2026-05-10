@@ -4950,3 +4950,10 @@ Fixes for type checker issues: named arg types, Sequential scoping, match arm sc
 - [x] Add `= help:` suggestions for actionable fixes (`src/type_env.rs::type_error_note`)
 - [x] Update `tinct run --strict` output header (`src/main.rs`)
 - [x] Extend `--- caps:` pragma runtime validation to handle `@Handle` type (`src/eval_pipeline.rs`)
+
+### cycle-196-findings: Cycle #196 analysis findings
+
+- [x] Remove duplicate prelude functions from encoding.llt + str-repeat from strings.llt
+- [x] apply() fast-path extended with 8 concrete types
+- [x] doc/11-stdlib.md builtin count corrected (191→178)
+- [x] 7 items verified already correct (PartialEq, ErrorKind, Substitution, bytes_to_seq, Span filter, help_suggestion format)

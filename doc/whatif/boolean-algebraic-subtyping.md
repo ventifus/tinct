@@ -1,6 +1,6 @@
 # What If: Boolean-Algebraic Subtyping for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-09
 
 What would it take to rebuild tinct's record-extension foundation on Boolean-Algebraic
 Subtyping (BAS), eliminating row variables and closing the soundness gap in D2?

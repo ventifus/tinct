@@ -6081,6 +6081,17 @@ mod tests {
     }
 
     #[test]
+    fn standard_builtins_count() {
+        let count = standard_builtins().len();
+        // This test documents the current count. Update this assertion when adding/removing builtins.
+        // The count in doc/11-stdlib.md should match this number.
+        assert_eq!(
+            count, 178,
+            "builtin count changed - update this test and doc/11-stdlib.md"
+        );
+    }
+
+    #[test]
     fn standard_builtins_contains_all() {
         let builtins = standard_builtins();
         let names: Vec<&str> = builtins.iter().map(|def| def.name).collect();

@@ -83,20 +83,6 @@ pad-right: [fn@String [s@String width@Int pad-char@String]
         s]]
 
 # ============================================================================
-# String Repetition
-# ============================================================================
-
-# Repeat a string n times.
-# Type: (String -> Int -> String)
-# Example: [str-repeat "ab" 3] => "ababab"
-# Example: [str-repeat "x" 0] => ""
-# Example: [str-repeat "hello" 1] => "hello"
-# Uses builtin-reduce over range to build up the repeated string.
-# Note: Also available in stdlib/prelude.llt (loaded at startup).
-str-repeat: [fn@String [s@String n@Int]
-    [builtin-reduce [fn [acc _] [str acc s]] "" [range 0 n]]]
-
-# ============================================================================
 # String Search
 # ============================================================================
 
