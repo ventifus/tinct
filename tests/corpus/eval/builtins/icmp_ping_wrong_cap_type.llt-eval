@@ -1,0 +1,9 @@
+# Test: icmp-ping with DirCap instead of NetCap returns type error
+# no_fs
+[icmp-ping %pwd "localhost" 1000]
+
+=== error
+icmp-ping: expected NetCap, got DirCap
+
+=== warn
+cannot unify NetCap with DirCap

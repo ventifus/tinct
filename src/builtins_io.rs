@@ -4149,14 +4149,345 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 
 /// `icmp-ping`: Send an ICMP echo request to a host.
 /// Takes `(cap, host, timeout_ms)`.
-/// Stub — returns error until raw socket support is available.
+/// Returns `{ok: {latency-ms: Int}}` on success or `{err: String}` on failure.
+/// Uses unprivileged ICMP ping sockets (`SOCK_DGRAM + IPPROTO_ICMP`, Linux 3.11+).
 pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error(
-        "icmp-ping: ICMP not yet implemented — requires raw socket support".to_string(),
+    let BuiltinArgs {
+        args,
+        named,
         call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("icmp-ping", named, call_span)?;
+
+    if args.len() != 3 {
+        return Err(EvalError::user_error(
+            format!(
+                "icmp-ping: expected 3 arguments (cap host timeout-ms), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let host_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let timeout_val = materialize(&args[2], Some(&call_span), &ctx)?;
+
+    // Extract NetCap entries
+    let entries = match cap_val {
+        Value::NetCap(e) => e,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "icmp-ping".to_string(),
+                "NetCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let host = require_string("icmp-ping", host_val, args[1].span)?;
+
+    let timeout_ms = match timeout_val {
+        Value::Int(n) if n >= 0 => n,
+        Value::Int(_) => {
+            return Err(EvalError::user_error(
+                "icmp-ping: timeout-ms must be a non-negative integer".to_string(),
+                args[2].span,
+            )
+            .into())
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "icmp-ping".to_string(),
+                "Int",
+                other.type_name(),
+                args[2].span,
+            )
+            .into())
+        }
+    };
+
+    // Validate host against NetCap allowlist (ICMP has no port, pass None)
+    // This fires before any socket operations.
+    check_net_cap_allowlist(&entries, &host, None, call_span)?;
+
+    // Perform platform-specific ping and return result dict
+    icmp_ping_impl(&host, timeout_ms, call_span, &ctx)
+}
+
+/// Build a `{err: String}` result dict value.
+fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> EvalResult<Rc<Thunk>> {
+    use crate::value::Key;
+    let mut result = IndexMap::new();
+    result.insert(
+        Key::String("err".to_string()),
+        ctx.alloc_thunk(ok_val(string_val(&msg), span)?),
+    );
+    ok_val(Value::Dict(result), span)
+}
+
+/// Build a `{ok: {latency-ms: Int}}` result dict value.
+fn icmp_ok_val(latency_ms: i64, span: Span, ctx: &crate::eval::EvalContext) -> EvalResult<Rc<Thunk>> {
+    use crate::value::Key;
+    // Inner dict: {latency-ms: Int}
+    let mut inner = IndexMap::new();
+    inner.insert(
+        Key::String("latency-ms".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span)?),
+    );
+    // Outer dict: {ok: {latency-ms: Int}}
+    let mut result = IndexMap::new();
+    result.insert(
+        Key::String("ok".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
+    );
+    ok_val(Value::Dict(result), span)
+}
+
+#[cfg(unix)]
+fn icmp_ping_impl(
+    host: &str,
+    timeout_ms: i64,
+    span: Span,
+    ctx: &crate::eval::EvalContext,
+) -> EvalResult<Rc<Thunk>> {
+    use std::net::ToSocketAddrs;
+
+    // Resolve hostname to IPv4 address
+    let addr = match (host, 0u16).to_socket_addrs() {
+        Ok(mut iter) => {
+            // Find the first IPv4 address
+            match iter.find(|a| a.is_ipv4()) {
+                Some(a) => a,
+                None => {
+                    return icmp_err_val(
+                        format!("icmp-ping: no IPv4 address found for '{}'", host),
+                        span,
+                        ctx,
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            return icmp_err_val(
+                format!("icmp-ping: failed to resolve '{}': {}", host, e),
+                span,
+                ctx,
+            );
+        }
+    };
+
+    // Create unprivileged ICMP socket (SOCK_DGRAM + IPPROTO_ICMP, Linux 3.11+)
+    let sock_fd = unsafe {
+        libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP)
+    };
+    if sock_fd < 0 {
+        let os_err = std::io::Error::last_os_error();
+        return icmp_err_val(
+            format!(
+                "icmp-ping: failed to create ICMP socket ({}): \
+                 kernel may require net.ipv4.ping_group_range to include your GID",
+                os_err
+            ),
+            span,
+            ctx,
+        );
+    }
+
+    // RAII guard to close the socket on any exit path
+    struct SockGuard(libc::c_int);
+    impl Drop for SockGuard {
+        fn drop(&mut self) {
+            unsafe { libc::close(self.0); }
+        }
+    }
+    let _guard = SockGuard(sock_fd);
+
+    // Set receive timeout via SO_RCVTIMEO
+    let timeout_secs = timeout_ms / 1000;
+    let timeout_usecs = (timeout_ms % 1000) * 1000;
+    let tv = libc::timeval {
+        tv_sec: timeout_secs as libc::time_t,
+        tv_usec: timeout_usecs as libc::suseconds_t,
+    };
+    let ret = unsafe {
+        libc::setsockopt(
+            sock_fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &tv as *const libc::timeval as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if ret < 0 {
+        let os_err = std::io::Error::last_os_error();
+        return icmp_err_val(
+            format!("icmp-ping: setsockopt SO_RCVTIMEO failed ({})", os_err),
+            span,
+            ctx,
+        );
+    }
+
+    // Build ICMP Echo Request packet
+    // Format: type(1) code(1) checksum(2) id(2) seq(2) data(...)
+    let id = (std::process::id() & 0xFFFF) as u16;
+    let seq: u16 = 1;
+    const DATA: &[u8] = b"tinct-ping";
+    let mut packet = vec![0u8; 8 + DATA.len()];
+    packet[0] = 8;  // ICMP Echo Request type
+    packet[1] = 0;  // code
+    packet[2] = 0;  // checksum (computed below)
+    packet[3] = 0;
+    packet[4] = (id >> 8) as u8;
+    packet[5] = (id & 0xFF) as u8;
+    packet[6] = (seq >> 8) as u8;
+    packet[7] = (seq & 0xFF) as u8;
+    packet[8..].copy_from_slice(DATA);
+
+    // Compute ICMP checksum (RFC 792)
+    let checksum = icmp_checksum(&packet);
+    packet[2] = (checksum >> 8) as u8;
+    packet[3] = (checksum & 0xFF) as u8;
+
+    // Build destination sockaddr_in
+    let ip_octets = match addr.ip() {
+        std::net::IpAddr::V4(v4) => v4.octets(),
+        std::net::IpAddr::V6(_) => {
+            return icmp_err_val(
+                "icmp-ping: IPv6 is not yet supported".to_string(),
+                span,
+                ctx,
+            );
+        }
+    };
+    let dest = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: 0,
+        sin_addr: libc::in_addr {
+            // s_addr holds the IPv4 address as raw bytes in network order.
+            // from_ne_bytes reinterprets the octets as a native-endian u32, so
+            // the bytes land in memory in the original [a,b,c,d] order on any
+            // architecture — correct for s_addr regardless of host endianness.
+            s_addr: u32::from_ne_bytes(ip_octets),
+        },
+        sin_zero: [0; 8],
+    };
+
+    // Record start time
+    let start = std::time::Instant::now();
+
+    // Send ICMP Echo Request
+    let sent = unsafe {
+        libc::sendto(
+            sock_fd,
+            packet.as_ptr() as *const libc::c_void,
+            packet.len(),
+            0,
+            &dest as *const libc::sockaddr_in as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    if sent < 0 {
+        let os_err = std::io::Error::last_os_error();
+        return icmp_err_val(
+            format!("icmp-ping: sendto failed ({})", os_err),
+            span,
+            ctx,
+        );
+    }
+
+    // Receive ICMP Echo Reply
+    // With SOCK_DGRAM + IPPROTO_ICMP, kernel strips the IP header — reply is ICMP only
+    let mut recv_buf = [0u8; 256];
+    let recvd = unsafe {
+        libc::recv(
+            sock_fd,
+            recv_buf.as_mut_ptr() as *mut libc::c_void,
+            recv_buf.len(),
+            0,
+        )
+    };
+
+    let elapsed = start.elapsed();
+    let latency_ms = elapsed.as_millis() as i64;
+
+    if recvd < 0 {
+        let os_err = std::io::Error::last_os_error();
+        // EAGAIN / EWOULDBLOCK = timeout
+        let raw_errno = os_err.raw_os_error().unwrap_or(0);
+        if raw_errno == libc::EAGAIN || raw_errno == libc::EWOULDBLOCK {
+            return icmp_err_val(
+                format!("icmp-ping: timeout after {}ms", timeout_ms),
+                span,
+                ctx,
+            );
+        }
+        return icmp_err_val(
+            format!("icmp-ping: recv failed ({})", os_err),
+            span,
+            ctx,
+        );
+    }
+
+    // Validate reply: must be at least 8 bytes, type=0 (Echo Reply)
+    let recvd = recvd as usize;
+    if recvd < 8 {
+        return icmp_err_val(
+            "icmp-ping: received truncated ICMP reply".to_string(),
+            span,
+            ctx,
+        );
+    }
+    if recv_buf[0] != 0 {
+        // Not an Echo Reply (type 0); could be a Destination Unreachable etc.
+        return icmp_err_val(
+            format!("icmp-ping: unexpected ICMP reply type {}", recv_buf[0]),
+            span,
+            ctx,
+        );
+    }
+
+    icmp_ok_val(latency_ms, span, ctx)
+}
+
+/// Compute ICMP checksum per RFC 792: one's complement sum of 16-bit words.
+#[cfg(unix)]
+fn icmp_checksum(data: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    let mut i = 0;
+    while i + 1 < data.len() {
+        let word = ((data[i] as u32) << 8) | (data[i + 1] as u32);
+        sum = sum.wrapping_add(word);
+        i += 2;
+    }
+    // Handle odd byte
+    if i < data.len() {
+        sum = sum.wrapping_add((data[i] as u32) << 8);
+    }
+    // Fold carries
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+#[cfg(not(unix))]
+fn icmp_ping_impl(
+    _host: &str,
+    _timeout_ms: i64,
+    span: Span,
+    ctx: &crate::eval::EvalContext,
+) -> EvalResult<Rc<Thunk>> {
+    icmp_err_val(
+        "icmp-ping: ICMP ping is not supported on this platform".to_string(),
+        span,
+        ctx,
     )
-    .into())
 }
 
 /// `send-datagram`: Send a message over a DatagramHandle.
