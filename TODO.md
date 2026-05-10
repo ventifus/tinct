@@ -48,8 +48,8 @@ Research questions:
 See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md §Boolean-Algebraic Subtyping`. **Spec chapters:** `doc/07-type-extensions.md §BAS`.
 
 - [ ] Remove `RowTail::RowVar` from `src/types.rs`; replace row variable representation with BAS Boolean lattice; all `Type::Record(Row)` sites that reference `RowTail::RowVar` must migrate to intersection-based representation (`src/types.rs`)
-- [ ] Add `Type::Intersection(Vec<Type>)`, `Type::Negation(Box<Type>)` variants to `src/types.rs`; update all match sites
-- [ ] Add `Type::Top` and `Type::Never` as explicit variants (currently approximated by `Unknown` / `Never` sentinels) (`src/types.rs`)
+- [x] Add `Type::Negation(Box<Type>)` variant to `src/types.rs`; updated all match sites (types.rs, type_unify.rs, type_env.rs, eval.rs)
+- [x] Add `Type::Never` as explicit bottom type variant; `Type::Top` already existed; updated is_subtype (S-NEVER rule), is_consistent, Display, value_matches_type
 - [ ] Implement S-RcdTop simplification in `is_subtype`: `{x: τ} ∨ {y: π} ≡ ⊤` when x ≠ y; implement S-ClsBot: `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags (`src/types.rs`, `src/type_unify.rs`)
 - [ ] Implement C-Var1/2 constraint rewriting in the inference engine: `τ₁ ≤ τ₂ ∨ α` → `τ₁ & ~τ₂ ≤ α`; `α & τ₁ ≤ τ₂` → `α ≤ τ₂ | ~τ₁` (`src/typecheck.rs`, `src/type_unify.rs`)
 - [ ] Implement RDNF normalization and type simplification for the constraint solver; inline type simplifier for display (`src/typecheck.rs`)

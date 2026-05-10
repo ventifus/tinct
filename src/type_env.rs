@@ -441,6 +441,16 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            Type::Negation(inner) => {
+                // Parenthesize complex inner types for clarity
+                match **inner {
+                    Type::Union(_) | Type::Intersection(_) | Type::Negation(_) => {
+                        write!(f, "~({inner})")
+                    }
+                    _ => write!(f, "~{inner}"),
+                }
+            }
+            Type::Never => write!(f, "\u{22a5}"), // ⊥ symbol
         }
     }
 }

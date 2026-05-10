@@ -247,6 +247,7 @@ impl Substitution {
             | Type::Number
             | Type::Unknown
             | Type::Top
+            | Type::Never
             | Type::Proxy
             | Type::Error
             | Type::DirCap
@@ -365,6 +366,10 @@ impl Substitution {
                 // Re-normalize after substitution to maintain invariants
                 Cow::Owned(Type::normalize_intersection(applied_members))
             }
+            Type::Negation(inner) => Cow::Owned(Type::Negation(Box::new(
+                self.apply_type(inner, depth + 1, visited_types, visited_rows)
+                    .into_owned(),
+            ))),
             // Primitive types (Int, Float, Bool, Str, etc.) have no type variables;
             // return a borrow to avoid cloning the whole type tree when substitution
             // does not apply. Cow::Borrowed eliminates the clone on the hot path.
@@ -1102,6 +1107,7 @@ fn lower_levels_check_occurs(
             }
             found
         }
+        Type::Negation(inner) => lower_levels_check_occurs(inner, occurs_name, cap_level, state),
         _ => false,
     }
 }
@@ -1637,6 +1643,12 @@ pub fn unify(
         (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, state, span),
 
         (Type::Proxy, Type::Proxy) => Ok(()),
+
+        // Never unification: Never unifies with anything (it's the bottom type)
+        (Type::Never, _) | (_, Type::Never) => Ok(()),
+
+        // Negation unification: structural (for now, basic support)
+        (Type::Negation(t1), Type::Negation(t2)) => unify(t1, t2, subst, state, span),
 
         // Capability types: reflexive unification only
         (Type::DirCap, Type::DirCap) => Ok(()),
