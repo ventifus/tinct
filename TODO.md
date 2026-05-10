@@ -225,24 +225,14 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [x] `socks5-connect` (`src/builtins_io.rs:3590-3592`) — **remove from registry** (no use case currently; re-add when there is one)
 - [x] `proxy-connect` (`src/builtins_io.rs:3597-3599`) — **remove from registry** (same)
 - [x] `open` write and append modes — **implement `Writable`/`Appendable` flags and remove legacy string-flag API**: implement `[open cap path Writable]` and `[open cap path Appendable]` per `doc/whatif/completed/lib-supplemental.md` §Streaming File I/O; delete the backward-compat string-mode branch entirely (`src/builtins_io.rs:167-226`); audit all corpus tests and stdlib files for `open ... "r"` calls and migrate to `[open cap path Readable]` (`src/builtins_io.rs`, `stdlib/`, `tests/`)
-- [ ] `tls-connect` — **entire builtin removed** in `connect-v2` sprint (tracked there); both Connector form and Handle stub go away; no migration shim needed
-- [ ] `connect` UDP transport (`src/builtins_io.rs:612`) — **unblocked** (net-layers research complete); tracked in `connect-v2`: implement `[connect cap Udp host port]` → `Handle[Binary Readable Writable Datagram]`; remove "UDP not yet supported" stub (`src/builtins_io.rs:612`)
-- [ ] `--cap-net` CIDR range entries (`src/main.rs:718-723`) — **implement** with combined hostname+CIDR validation semantics:
-  - Add `NetCapEntry::Cidr(ipnet::IpNet)` to `src/value.rs`; parse via `s.parse::<ipnet::IpNet>()`
-  - Add `ipnet` as direct dep (`Cargo.toml`; already transitive at `2.12.0`)
-  - Support comma-separated entries in one flag: `--cap-net localonly=*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`
-  - **Validation semantics** (at connection time in `src/builtins_io.rs`):
-    - IP literal host: allowed iff any CIDR entry contains it
-    - Hostname, cap has no CIDR entries: allowed iff hostname matches any Hostname/Glob entry
-    - Hostname, cap has CIDR entries: must match a Hostname/Glob entry **and** DNS-resolve to an IP in a CIDR entry — both gates must pass
-  - **DNS resolution**: resolve at connection time; connect directly to the resolved IP (not the hostname again) to mitigate DNS rebinding; the resolved IP is also used for TLS SNI separately
-  - Example: `--cap-net localonly=*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` — allows `.local` hostnames only if they resolve to RFC 1918 addresses, plus RFC 1918 IP literals directly
-  - (`src/builtins_io.rs`, `src/value.rs`, `src/main.rs`)
+- [ ] `tls-connect` — **entire builtin removed** in `connect-v2` sprint (tracked there)
+- [ ] `connect` UDP transport — tracked in `connect-v2` sprint
+- [x] `--cap-net` CIDR range entries — `NetCapEntry::Cidr(ipnet::IpNet)`, DNS rebinding mitigation, combined hostname+CIDR validation (`src/main.rs`, `src/value.rs`, `src/builtins_io.rs`, `Cargo.toml`)
 
 **spki-pinning-wrong** — `compute_spki_hash` hashes full DER cert instead of SPKI field; `tls-peer-cert` returns placeholder strings:
 
-- [ ] Fix `compute_spki_hash` to extract the SPKI field from the DER certificate before hashing (use `x509-parser` or `rustls-pki-types` to parse the cert and extract `subject_public_key_info`); the hash must match what `spki-pin` generates (`src/builtins_io.rs`)
-- [ ] Implement `tls-peer-cert` subject/issuer parsing — currently returns placeholder strings `"(certificate parsing not yet implemented)"` (`src/builtins_io.rs:3172-3205`)
+- [x] Fix `compute_spki_hash` to extract SPKI field via `x509-parser` before hashing (`src/builtins_io.rs`)
+- [x] Implement `tls-peer-cert` subject/issuer/SANs/validity parsing via `x509-parser` (`src/builtins_io.rs`)
 
 **variant-payload-eq** — `=` returns false for Variant values with payloads (`builtins_math.rs:199`):
 
@@ -280,13 +270,13 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 
 **e-flag-ordering** — `-e` expressions don't interleave with file arguments (`main.rs:750`):
 
-- [ ] Track relative order of file and `-e` arguments in the CLI parser; build the pipeline stage list in declaration order rather than files-then-expressions (`src/main.rs`)
+- [x] Track relative order of file and `-e` arguments via `interleave_files_and_exprs()` helper (`src/main.rs`)
 
 **net-llt-parse-http-response** — `parse-http-response` returns wrong dict for any real HTTP response (one with headers):
 
-- [ ] In `parse-http-response` (`stdlib/net.llt`): extract the else-branch body into a helper function (`parse-header-body`) so the `[hdr-lines: ...]` Sequential binding is in fn-body position, not inside an `if`-branch argument where it is parsed as a dict literal `{hdr-lines: ...}` instead of a let binding; current behaviour: returns `{sections: ..., 0: ...}` instead of `{status: headers: body:}` (`stdlib/net.llt`)
-- [ ] Replace remaining `builtin-eq` / `builtin-add` calls in `net.llt` with `=` / `+` while fixing the above (`stdlib/net.llt`)
-- [ ] Corpus test: `[fetch cap "http://..."]` returns a dict with `status`, `headers`, `body` keys (`tests/corpus/`)
+- [x] Fix `parse-http-response` Sequential binding bug — extracted into `parse-header-body` helper (`stdlib/net.llt`)
+- [x] Replace `builtin-eq`/`builtin-add` with `=`/`+` in net.llt (`stdlib/net.llt`)
+- [x] Corpus test for parse-http-response (`tests/corpus/eval/stdlib/net_parse_http_response.llt-eval`)
 
 ~~**http-connect-untested**~~ — `http-connect` is **removed** in the `http-sessions` sprint; the reqwest container bug is moot. No investigation needed.
 

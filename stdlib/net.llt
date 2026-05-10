@@ -2,7 +2,7 @@
 # Requires: net-cap, connect, tls-connect (io-phase2)
 # Requires: write-handle, slurp, str-bytes, bytes-str (io-phase1)
 # Requires prelude: if, or, make-entry, merge, set, split, join, rest,
-#                   length, to-int, str, get, builtin-eq, builtin-add, error
+#                   length, to-int, str, get, error
 #
 # Provides:
 #   build-http-request    — method + path + host -> raw HTTP/1.0 request String
@@ -12,46 +12,50 @@
 #   http-get              — url-based HTTP GET (dispatches on url.scheme)
 #   fetch                 — url + http-get (http) or tls-connect (https)
 
+# Internal helpers — not exported
 [
-  # Build a minimal HTTP/1.0 GET request string.
-  build-http-request: [fn@String [method@String path@String host@String]
-    [str method " " path " HTTP/1.0\r\nHost: " host "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]
-
-  # Extract HTTP status code Int from the first response line.
-  # "HTTP/1.0 200 OK" -> 200
-  parse-status-line: [fn@Int [line@String]
-    [to-int [get 1 [split " " line]]]]
-
   # Recursively parse header lines into accumulator dict.
   # Each line "Name: value" — skips malformed lines.
-  parse-header-fields: [fn@Dict [lines@Dict i@Int n@Int acc@Dict]
-    [if [builtin-eq i n]
+  parse-header-fields-impl: [fn@Dict [lines@Dict i@Int n@Int acc@Dict]
+    [if [= i n]
       acc
-      [if [builtin-eq [length [split ": " [get i lines]]] 1]
-        [parse-header-fields lines [builtin-add i 1] n acc]
-        [parse-header-fields lines [builtin-add i 1] n
+      [if [= [length [split ": " [get i lines]]] 1]
+        [parse-header-fields-impl lines [+ i 1] n acc]
+        [parse-header-fields-impl lines [+ i 1] n
           [merge acc
             [make-entry
               [get 0 [split ": " [get i lines]]]
               [join ": " [rest [split ": " [get i lines]]]]]]]]]]
 
+  # Helper to parse header+body section when separator exists.
+  # Input: sections dict with 0 (headers) and 1 (body).
+  parse-header-body: [fn@Dict [sections@Dict]
+    [hdr-lines: [split "\r\n" [get 0 sections]]
+    [set [set [set []
+      "status"  [to-int [get 1 [split " " [get 0 hdr-lines]]]]]
+      "headers" [parse-header-fields-impl [rest hdr-lines] 0 [length [rest hdr-lines]] []]]
+      "body"    [get 1 sections]]]]
+]
+
+# Public API
+[
+  # Build a minimal HTTP/1.0 GET request string.
+  build-http-request: [fn@String [method@String path@String host@String]
+    [str method " " path " HTTP/1.0\r\nHost: " host "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]
+
   # Parse raw HTTP response string into {status headers body}.
   # Returns status 0 and body=response if no header/body separator found.
   parse-http-response: [fn@Dict [response@String]
     [sections: [split "\r\n\r\n" response]
-    [if [builtin-eq [length sections] 1]
+    [if [= [length sections] 1]
       [set [set [set [] "status" 0] "headers" []] "body" response]
-      [hdr-lines: [split "\r\n" sections.0]
-      [set [set [set []
-        "status"  [parse-status-line hdr-lines.0]]
-        "headers" [parse-header-fields [rest hdr-lines] 0 [length [rest hdr-lines]] []]]
-        "body"    sections.1]]]]]
+      [parse-header-body sections]]]]
 
   # Make an HTTP GET request using url@Url.
   # Dispatches on url.scheme (http or https).
   # Returns parsed response dict.
   http-get: [fn@Dict [cap@NetCap url@Url]
-    [if [builtin-eq url.scheme "https"]
+    [if [= url.scheme "https"]
       [parse-http-response
         [bytes-str [slurp [write-handle
           [tls-connect cap Tcp url.host url.port []]
@@ -73,7 +77,7 @@
       [pairs: [split u.query "&"]
       [reduce [fn [acc pair]
         [kv: [split pair "="]
-        [set acc [get 0 kv] [if [builtin-eq [length kv] 1] "" [get 1 kv]]]]]
+        [set acc [get 0 kv] [if [= [length kv] 1] "" [get 1 kv]]]]]
         [] pairs]]]]
 
   # Return "scheme://host:port" (origin).
