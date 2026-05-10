@@ -15,9 +15,11 @@ use std::rc::Rc;
 
 use indexmap::IndexMap;
 
+use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
+use crate::eval::{materialize, EvalContext};
+use crate::value::Key;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
 /// Two-operand numeric pair after auto-promotion.
@@ -263,7 +265,91 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
             }
         }
-        // Dict, Function, Builtin are never equal
+        // Dict: structural equality (order-insensitive key comparison, recursive value comparison)
+        (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
+            // Helper to compare two dicts with cycle detection
+            fn dict_eq_impl(
+                left: &Value,
+                right: &Value,
+                ctx: &Rc<EvalContext>,
+                call_span: Span,
+                visited: &mut std::collections::HashSet<(usize, usize)>,
+            ) -> EvalResult<bool> {
+                use crate::builtins::require_dict;
+                use std::rc::Rc;
+
+                // Get the dicts (flattening Overlay if necessary)
+                let left_map = require_dict("=", left.clone(), call_span, ctx, call_span)?;
+                let right_map = require_dict("=", right.clone(), call_span, ctx, call_span)?;
+
+                // Check pointer identity cycle detection
+                let left_ptr = left as *const Value as usize;
+                let right_ptr = right as *const Value as usize;
+                let pair = (left_ptr, right_ptr);
+                if visited.contains(&pair) {
+                    // Already visiting this pair - treat as equal (structural coinduction)
+                    return Ok(true);
+                }
+                visited.insert(pair);
+
+                // Compare keys (order-insensitive)
+                if left_map.len() != right_map.len() {
+                    visited.remove(&pair);
+                    return Ok(false);
+                }
+
+                // Extract and sort keys for canonical comparison
+                // Sort order: integers numerically first, then strings lexicographically
+                let mut left_keys: Vec<_> = left_map.keys().collect();
+                let mut right_keys: Vec<_> = right_map.keys().collect();
+                let key_cmp = |a: &&Key, b: &&Key| match (a, b) {
+                    (Key::Int(x), Key::Int(y)) => x.cmp(y),
+                    (Key::String(x), Key::String(y)) => x.cmp(y),
+                    (Key::Int(_), Key::String(_)) => std::cmp::Ordering::Less,
+                    (Key::String(_), Key::Int(_)) => std::cmp::Ordering::Greater,
+                };
+                left_keys.sort_by(key_cmp);
+                right_keys.sort_by(key_cmp);
+
+                if left_keys != right_keys {
+                    visited.remove(&pair);
+                    return Ok(false);
+                }
+
+                // Compare values for each key
+                for key in left_keys {
+                    let left_val_id = left_map.get(key).unwrap();
+                    let right_val_id = right_map.get(key).unwrap();
+
+                    let left_thunk = ctx.get_thunk(*left_val_id);
+                    let right_thunk = ctx.get_thunk(*right_val_id);
+
+                    // Recurse via builtin_eq
+                    let result_thunk = builtin_eq(BuiltinArgs {
+                        args: &[left_thunk, right_thunk],
+                        named: None,
+                        call_span,
+                        ctx: Rc::clone(ctx),
+                    })?;
+                    let result_val = materialize(&result_thunk, Some(&call_span), ctx)?;
+                    match result_val {
+                        Value::Bool(false) => {
+                            visited.remove(&pair);
+                            return Ok(false);
+                        }
+                        Value::Bool(true) => {}
+                        _ => unreachable!("builtin_eq always returns Bool"),
+                    }
+                }
+
+                visited.remove(&pair);
+                Ok(true)
+            }
+
+            let mut visited = std::collections::HashSet::new();
+            dict_eq_impl(&left, &right, &ctx, call_span, &mut visited)?
+        }
+        // Function, Builtin are never equal
         _ => false,
     };
     ok_val(Value::Bool(result), call_span)

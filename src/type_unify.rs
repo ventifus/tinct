@@ -347,6 +347,16 @@ impl Substitution {
                 self.apply_type(elem, depth + 1, visited_types, visited_rows)
                     .into_owned(),
             ))),
+            Type::Map(key, val) => Cow::Owned(Type::Map(
+                Box::new(
+                    self.apply_type(key, depth + 1, visited_types, visited_rows)
+                        .into_owned(),
+                ),
+                Box::new(
+                    self.apply_type(val, depth + 1, visited_types, visited_rows)
+                        .into_owned(),
+                ),
+            )),
             Type::Union(members) => {
                 let applied_members: Vec<Type> = members
                     .iter()
@@ -1096,6 +1106,12 @@ fn lower_levels_check_occurs(
             found
         }
         Type::Seq(elem) => lower_levels_check_occurs(elem, occurs_name, cap_level, state),
+        Type::Map(key, val) => {
+            let mut found = false;
+            found |= lower_levels_check_occurs(key, occurs_name, cap_level, state);
+            found |= lower_levels_check_occurs(val, occurs_name, cap_level, state);
+            found
+        }
         Type::Union(members) => {
             let mut found = false;
             for m in members {
@@ -1644,6 +1660,11 @@ pub fn unify(
         }
 
         (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, state, span),
+
+        (Type::Map(k1, v1), Type::Map(k2, v2)) => {
+            unify(k1, k2, subst, state, span)?;
+            unify(v1, v2, subst, state, span)
+        }
 
         (Type::Proxy, Type::Proxy) => Ok(()),
 

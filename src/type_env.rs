@@ -141,6 +141,10 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
         Type::Seq(elem) => Type::Seq(Box::new(rename_single_type_var(
             elem, old_name, fresh_name, level,
         ))),
+        Type::Map(key, val) => Type::Map(
+            Box::new(rename_single_type_var(key, old_name, fresh_name, level)),
+            Box::new(rename_single_type_var(val, old_name, fresh_name, level)),
+        ),
         Type::Union(members) => Type::Union(
             members
                 .iter()
@@ -405,6 +409,7 @@ impl fmt::Display for Type {
                 write!(f, "]")
             }
             Type::Seq(elem) => write!(f, "Seq[{elem}]"),
+            Type::Map(key, val) => write!(f, "Map[{key} {val}]"),
             Type::Proxy => write!(f, "Proxy"),
             Type::Error => write!(f, "<error>"),
             Type::DirCap => write!(f, "DirCap"),
@@ -2405,6 +2410,12 @@ impl TypeEnv {
                 },
             );
         }
+
+        // Type constructors
+        env.insert(
+            "Map".to_string(),
+            Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+        );
 
         env
     }

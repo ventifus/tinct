@@ -257,6 +257,63 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
+/// `get?`: Rust primitive for optional dict key lookup.
+///
+/// Takes 2 args: a key (Int or String) and a dict.
+/// Returns the value if the key exists, or Value::Dict(empty) (Null) if missing.
+/// NO error on missing key (unlike `builtin-get` which errors).
+pub(crate) fn builtin_get_optional(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("get?", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    // Materialize the key
+    let key_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let key = match key_val {
+        Value::Int(n) => Key::Int(n),
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = &source[start..end];
+            Key::String(s.to_string())
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "get?".to_string(),
+                "Int or String",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Materialize the dict (spine only, not values)
+    let dict_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let map = crate::builtins::require_dict("get?", dict_val, args[1].span, &ctx, call_span)?;
+
+    // Look up the key
+    match map.get(&key) {
+        Some(thunk_id) => {
+            let thunk = ctx.thunk_arena.borrow().get(*thunk_id).clone();
+            Ok(thunk)
+        }
+        None => {
+            // Return empty dict (Null) on missing key
+            ok_val(Value::Dict(IndexMap::new()), call_span)
+        }
+    }
+}
+
 /// `each`: Convert a Dict to a Seq of its values in insertion order.
 ///
 /// Takes 1 arg (a Dict). Returns a lazy Seq of values.

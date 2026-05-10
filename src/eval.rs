@@ -355,6 +355,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::StringLiteral(s) => value.as_str().map_or(false, |v| v == s),
         Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin(_)),
         Type::Seq(_) => matches!(value, Value::Seq { .. }),
+        Type::Map(_, _) => matches!(value, Value::Dict(_) | Value::Overlay(..)), // Map matches any Dict for now
         Type::TypeVar(_, _) => true,
         Type::Record(_) => true, // Records handled separately via proxy wrapping
         Type::Proxy => matches!(value, Value::Proxy { .. }),

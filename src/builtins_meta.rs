@@ -686,6 +686,38 @@ pub(crate) fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     )
 }
 
+/// `record?`: Return true if the argument is a Dict (Record at runtime).
+/// Note: All runtime dicts are Records in the current model; type-level distinction only.
+pub(crate) fn builtin_record_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("record?", args, named, &ctx, call_span)?;
+    ok_val(
+        Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
+        call_span,
+    )
+}
+
+/// `map?`: Return true if the argument is a Dict (Map at runtime).
+/// Note: All runtime dicts are Records in the current model; type-level distinction only.
+pub(crate) fn builtin_map_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("map?", args, named, &ctx, call_span)?;
+    ok_val(
+        Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
+        call_span,
+    )
+}
+
 /// `fn?`: Return true if the argument is callable (Function or Builtin).
 pub(crate) fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
