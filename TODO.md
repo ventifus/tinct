@@ -427,26 +427,26 @@ Organizing principles for `stdlib/`:
 - [ ] Move `str-find-impl`, `str-find-check` to `prelude.llt` private dict; add `str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1"]` to public dict; remove from `strings.llt` (`stdlib/prelude.llt`, `stdlib/strings.llt`)
 
 *Export `make-entry` from prelude* — needed by toml-lite.llt and currently inaccessible from the public dict:
-- [ ] Add `make-entry@[doc: "Construct a single-entry dict from key and value"]: make-entry` to prelude public dict (re-exports the private helper) (`stdlib/prelude.llt`)
+- [x] Add `make-entry@[doc: "Construct a single-entry dict from key and value"]: make-entry` to prelude public dict (re-exports the private helper) (`stdlib/prelude.llt`)
 
 *Clean up `regex.llt`* — single-dict, duplicates prelude, uses `builtin-*` directly:
-- [ ] Remove locally-defined `has?`, `has-check`, `>=`, `>` — prelude versions are in scope; replace usages with prelude calls (`stdlib/regex.llt`)
-- [ ] Apply two-dict pattern: private first dict with `re-match-impl`, `re-match-try`, `re-match-check`, `re-find-impl`, `re-find-try`, `re-find-check`, `re-findall-impl`, `re-findall-try`, `re-findall-check`, `re-ensure-pattern`; public second dict with `re-compile`, `re-match`, `re-find`, `re-findall`, `re-replace`, `re-split`, `re-escape-replacement` (`stdlib/regex.llt`)
-- [ ] Replace `builtin-eq`/`builtin-lt` with `=`/`<` from prelude in regex.llt helpers (`stdlib/regex.llt`)
+- [x] Remove locally-defined `has?`, `has-check`, `>=`, `>` — prelude versions are in scope; replace usages with prelude calls (`stdlib/regex.llt`)
+- [x] Apply two-dict pattern: private first dict with `re-match-impl`, `re-match-try`, `re-match-check`, `re-find-impl`, `re-find-try`, `re-find-check`, `re-findall-impl`, `re-findall-try`, `re-findall-check`, `re-ensure-pattern`; public second dict with `re-compile`, `re-match`, `re-find`, `re-findall`, `re-replace`, `re-split`, `re-escape-replacement` (`stdlib/regex.llt`)
+- [x] Replace `builtin-eq`/`builtin-lt` with `=`/`<` from prelude in regex.llt helpers (`stdlib/regex.llt`)
 
 *Clean up `toml-lite.llt`* — single-dict with 15+ prelude/stdlib duplicates, uses `builtin-*` throughout:
-- [ ] Remove locally-defined prelude duplicates: `get-or`, `has?`, `has?-impl`, `not`, `and`, `>=`, `>`, `try-or`, `try-or-impl`, `first`, `all?`, `all?-impl` (12 functions) — use prelude versions (`stdlib/toml-lite.llt`)
-- [ ] Remove locally-defined `make-entry` (now exported from prelude) and `str-find`/`str-find-impl`/`str-find-check` (now in prelude) (`stdlib/toml-lite.llt`)
+- [x] Remove locally-defined prelude duplicates: `get-or`, `has?`, `has?-impl`, `not`, `and`, `>=`, `>`, `try-or`, `try-or-impl`, `first`, `all?`, `all?-impl` (12 functions) — use prelude versions (`stdlib/toml-lite.llt`)
+- [x] Remove locally-defined `make-entry` (now exported from prelude) and `str-find`/`str-find-impl`/`str-find-check` (now in prelude) (`stdlib/toml-lite.llt`)
 - [ ] Apply two-dict pattern: private first dict for `parse-lines-impl`, `parse-line-dispatch`, `parse-header-body`, `parse-section-name`, `parse-array-table-header`, `parse-kv-split`, `parse-kv-build`, `parse-value-try-int`, `parse-value-try-bool`, `toml-set-at-path-impl`, `toml-set-at-path-final`, `toml-set-at-path-final-check`, `toml-merge-into-last-impl`, `toml-append-array-impl`, `is-array?`, `is-array?-check-keys`, `not-blank-or-comment`; public second dict for `parse-toml-lite`, `parse-toml-lines`, `parse-section-header`, `parse-key-value`, `parse-value`, `toml-set-at-path`, `toml-merge-into-last`, `toml-append-array-table` (`stdlib/toml-lite.llt`)
-- [ ] Replace `builtin-if`/`builtin-eq`/`builtin-lt`/`builtin-add`/`builtin-get`/`builtin-reduce` with prelude wrappers `if`/`=`/`<`/`+`/`get`/`reduce` throughout toml-lite.llt (`stdlib/toml-lite.llt`)
+- [x] Replace `builtin-if`/`builtin-eq`/`builtin-lt`/`builtin-add`/`builtin-get`/`builtin-reduce` with prelude wrappers `if`/`=`/`<`/`+`/`get`/`reduce` throughout toml-lite.llt (`stdlib/toml-lite.llt`)
 
 *Clean up `path.llt`* — single-dict, internal helpers are accidentally exported, uses `builtin-*`:
-- [ ] Apply two-dict pattern: private first dict for `dirname-impl`, `dirname-drop-last`, `extension-impl`; public second dict for `path-parts`, `basename`, `dirname`, `extension`, `path-join` (`stdlib/path.llt`)
-- [ ] Replace `builtin-if`/`builtin-eq`/`builtin-sub`/`builtin-add`/`builtin-get` with prelude wrappers `if`/`=`/`-`/`+`/`get` (`stdlib/path.llt`)
+- [x] Apply two-dict pattern: private first dict for `dirname-impl`, `dirname-drop-last`, `extension-impl`; public second dict for `path-parts`, `basename`, `dirname`, `extension`, `path-join` (`stdlib/path.llt`)
+- [x] Replace `builtin-if`/`builtin-eq`/`builtin-sub`/`builtin-add`/`builtin-get` with prelude wrappers `if`/`=`/`-`/`+`/`get` (`stdlib/path.llt`)
 
 *Clean up `macros.llt`* — `tmpl-expand`/`tmpl-emit-call` are in the public dict but are internal helpers:
-- [ ] Move `tmpl-expand` and `tmpl-emit-call` from the public second dict to the private first dict; only `tmpl-transformer` and `do-transformer` should be exported (`stdlib/macros.llt`)
-- [ ] Replace `builtin-*` calls in `macros.llt` private helpers with prelude wrappers (`if`/`=`/`+`/`get`) where the prelude call is equivalent — the macro expander runs with prelude in scope (`stdlib/macros.llt`)
+- [x] Move `tmpl-expand` and `tmpl-emit-call` from the public second dict to the private first dict; only `tmpl-transformer` and `do-transformer` should be exported (`stdlib/macros.llt`)
+- [x] Replace `builtin-*` calls in `macros.llt` private helpers with prelude wrappers (`if`/`=`/`+`/`get`) where the prelude call is equivalent — the macro expander runs with prelude in scope (`stdlib/macros.llt`)
 
 *Update corpus tests:*
 - [ ] Move `tests/corpus/eval/stdlib/encoding_scoping.llt-eval`, `path_scoping.llt-eval`, `re_scoping.llt-eval`, `strings_scoping.llt-eval`, `toml_scoping.llt-eval`, `math_scoping.llt-eval` to `tests/corpus/eval/stdlib/errors/` — scoping-denial tests belong with error tests, not success-path tests (`tests/corpus/eval/stdlib/`)
