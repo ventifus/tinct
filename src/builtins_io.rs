@@ -4530,6 +4530,7 @@ pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     // The client automatically negotiates HTTP/2 via ALPN for HTTPS connections.
     let client = reqwest::blocking::Client::builder()
         .use_rustls_tls()
+        .user_agent("tinct/0.1 (https://github.com/anthropics/tinct)")
         .build()
         .map_err(|e| {
             EvalError::user_error(
