@@ -42,6 +42,8 @@ regex = "1"  # Pattern matching for schema validation
 rust_decimal = "1"  # Exact base-10 decimal arithmetic (96-bit software decimal)
 num-bigint = "0.4"  # Arbitrary-precision integer arithmetic
 subtle = "1"  # Constant-time comparison for cryptographic operations
+ipnet = "2"  # CIDR notation parsing for --cap-net ranges
+hex = "0.4"  # Hex encoding for SPKI hashes in tls-peer-cert
 rustyline = { version = "18.0", optional = true }
 rustls = { version = "0.23", features = ["ring"] }  # TLS engine for tls-connect
 rustls-native-certs = "0.7"  # System CA roots (default trust store)
@@ -49,6 +51,7 @@ webpki-roots = "0.26"  # Mozilla CA roots (opt-in via mozilla-roots: true)
 sha2 = "0.10"  # SHA-2 hash algorithms (SHA-256, SHA-384, SHA-512) for SPKI pins
 sha3 = "0.10"  # SHA3 hash algorithms for SPKI pins
 rustls-pemfile = "2"  # PEM file parsing for CA bundles and client certificates
+x509-parser = "0.16"  # X.509 certificate parsing for tls-peer-cert and SPKI extraction
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }  # HTTP client for http-connect/http-get
 serde_json = "1.0"
 strsim = "0.11"

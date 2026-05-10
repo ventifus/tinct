@@ -139,10 +139,12 @@ pub enum NetCapEntry {
     /// Hostname glob with prefix wildcard only.
     /// Example: "*.internal"
     HostnameGlob(String),
+    /// CIDR range (IPv4 or IPv6).
+    /// Example: "192.168.1.0/24", "2001:db8::/32"
+    Cidr(ipnet::IpNet),
     /// Unrestricted — allow any host/port.
     /// Produced by `--cap-net NAME=any` on the CLI.
     Any,
-    // Future: IPv4/IPv6 CIDR ranges deferred to Phase 3
 }
 
 /// Clock capability inner implementation (Miller 2006 object capability model).

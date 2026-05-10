@@ -662,10 +662,16 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     // Check allowlist before connecting
-    check_net_cap_allowlist(&entries, &host, port, call_span)?;
+    // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
+    let resolved_ip = check_net_cap_allowlist(&entries, &host, port, call_span)?;
 
     // Open TCP connection
-    let addr = format!("{}:{}", host, port);
+    // If DNS resolution was required, connect to the resolved IP to mitigate DNS rebinding
+    let addr = if let Some(ip) = resolved_ip {
+        format!("{}:{}", ip, port)
+    } else {
+        format!("{}:{}", host, port)
+    };
     let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
         EvalError::user_error(
             format!("connect: failed to connect to {}: {}", addr, e),
@@ -709,29 +715,58 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
+/// Returns Ok(None) for hostname-only match, Ok(Some(ip)) for IP-based match requiring DNS resolution.
 fn check_net_cap_allowlist(
     entries: &[crate::value::NetCapEntry],
     host: &str,
     port: u16,
     span: Span,
-) -> EvalResult<()> {
+) -> EvalResult<Option<std::net::IpAddr>> {
     use crate::value::NetCapEntry;
+    use std::net::IpAddr;
 
-    // Check hostname-based entries first (pre-DNS)
+    // Quick check: Any entry allows everything
+    if entries.iter().any(|e| matches!(e, NetCapEntry::Any)) {
+        return Ok(None);
+    }
+
+    // Try to parse host as IP address
+    let host_ip = host.parse::<IpAddr>().ok();
+
+    // If host is an IP literal, check CIDR entries
+    if let Some(ip) = host_ip {
+        for entry in entries {
+            if let NetCapEntry::Cidr(net) = entry {
+                if net.contains(&ip) {
+                    return Ok(None); // Direct IP match, no DNS needed
+                }
+            }
+        }
+        // IP literal not in any CIDR — deny
+        return Err(EvalError::user_error(
+            format!(
+                "connect: IP address {} not in any allowed CIDR range",
+                host
+            ),
+            span,
+        )
+        .into());
+    }
+
+    // Host is a hostname — check hostname-based entries first
+    let mut hostname_match = false;
     for entry in entries {
         match entry {
-            NetCapEntry::Any => {
-                // Unrestricted — allow any host/port.
-                return Ok(());
-            }
             NetCapEntry::Hostname(allowed_host) => {
                 if host.eq_ignore_ascii_case(allowed_host) {
-                    return Ok(());
+                    hostname_match = true;
+                    break;
                 }
             }
             NetCapEntry::HostPort(allowed_host, allowed_port) => {
                 if host.eq_ignore_ascii_case(allowed_host) && port == *allowed_port {
-                    return Ok(());
+                    hostname_match = true;
+                    break;
                 }
             }
             NetCapEntry::HostnameGlob(pattern) => {
@@ -739,18 +774,94 @@ fn check_net_cap_allowlist(
                 if let Some(suffix) = pattern.strip_prefix("*.") {
                     if host.eq_ignore_ascii_case(suffix) || host.ends_with(&format!(".{}", suffix))
                     {
-                        return Ok(());
+                        hostname_match = true;
+                        break;
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Check if any CIDR entries exist
+    let has_cidr = entries.iter().any(|e| matches!(e, NetCapEntry::Cidr(_)));
+
+    if hostname_match && !has_cidr {
+        // Hostname match, no CIDR restrictions — allow without DNS resolution
+        return Ok(None);
+    }
+
+    if hostname_match && has_cidr {
+        // Hostname match, but CIDR entries exist — must resolve and validate IP
+        // This prevents hostname-only match from bypassing IP-based restrictions
+        let resolved_ip = resolve_hostname_for_cidr(host, entries, span)?;
+        return Ok(Some(resolved_ip));
+    }
+
+    if !hostname_match && has_cidr {
+        // No hostname match, but CIDR entries exist — try DNS resolution
+        let resolved_ip = resolve_hostname_for_cidr(host, entries, span)?;
+        return Ok(Some(resolved_ip));
+    }
+
+    // No match at all — deny
+    Err(EvalError::user_error(
+        format!(
+            "connect: connection to {}:{} denied by NetCap allowlist",
+            host, port
+        ),
+        span,
+    )
+    .into())
+}
+
+/// Resolve hostname to IP and validate against CIDR entries.
+/// Returns the first IP that matches a CIDR entry.
+fn resolve_hostname_for_cidr(
+    host: &str,
+    entries: &[crate::value::NetCapEntry],
+    span: Span,
+) -> EvalResult<std::net::IpAddr> {
+    use crate::value::NetCapEntry;
+    use std::net::ToSocketAddrs;
+
+    // Resolve hostname to IP addresses
+    let dummy_port = 0; // ToSocketAddrs requires a port, but we don't use it
+    let addrs: Vec<std::net::IpAddr> = match (host, dummy_port).to_socket_addrs() {
+        Ok(iter) => iter.map(|sa| sa.ip()).collect(),
+        Err(e) => {
+            return Err(EvalError::user_error(
+                format!("connect: failed to resolve hostname '{}': {}", host, e),
+                span,
+            )
+            .into())
+        }
+    };
+
+    if addrs.is_empty() {
+        return Err(EvalError::user_error(
+            format!("connect: no IP addresses found for hostname '{}'", host),
+            span,
+        )
+        .into());
+    }
+
+    // Check each resolved IP against CIDR entries
+    for ip in &addrs {
+        for entry in entries {
+            if let NetCapEntry::Cidr(net) = entry {
+                if net.contains(ip) {
+                    return Ok(*ip); // Found a match
                 }
             }
         }
     }
 
-    // No match — deny connection
+    // No resolved IP matched any CIDR
     Err(EvalError::user_error(
         format!(
-            "connect: connection to {}:{} denied by NetCap allowlist",
-            host, port
+            "connect: resolved IPs for '{}' ({:?}) not in any allowed CIDR range",
+            host, addrs
         ),
         span,
     )
@@ -3076,28 +3187,38 @@ fn validate_spki_pins(
     Ok(())
 }
 
-/// Compute SPKI hash (simplified: hashes the whole cert for now)
-/// TODO: Extract SPKI field from X.509 certificate and hash only that
+/// Compute SPKI hash (RFC 7469 compliant: hash the SubjectPublicKeyInfo field)
 fn compute_spki_hash(cert_der: &[u8], algorithm: &str, span: Span) -> EvalResult<Vec<u8>> {
     use sha3::{Digest, Sha3_256, Sha3_384, Sha3_512};
+
+    // Parse the X.509 certificate and extract the SPKI field
+    let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
+        EvalError::user_error(
+            format!("tls-connect: failed to parse certificate: {}", e),
+            span,
+        )
+    })?;
+
+    // Extract the raw SPKI bytes
+    let spki_der = cert.tbs_certificate.subject_pki.raw;
 
     match algorithm {
         "Sha256" => {
             use sha2::Sha256;
-            Ok(Sha256::digest(cert_der).to_vec())
+            Ok(Sha256::digest(spki_der).to_vec())
         }
         "Sha384" => {
             use sha2::Sha384;
-            Ok(Sha384::digest(cert_der).to_vec())
+            Ok(Sha384::digest(spki_der).to_vec())
         }
         "Sha512" => {
             use sha2::Sha512;
-            Ok(Sha512::digest(cert_der).to_vec())
+            Ok(Sha512::digest(spki_der).to_vec())
         }
-        "Sha3-256" => Ok(Sha3_256::digest(cert_der).to_vec()),
-        "Sha3-384" => Ok(Sha3_384::digest(cert_der).to_vec()),
-        "Sha3-512" => Ok(Sha3_512::digest(cert_der).to_vec()),
-        "Blake3" => Ok(blake3::hash(cert_der).as_bytes().to_vec()),
+        "Sha3-256" => Ok(Sha3_256::digest(spki_der).to_vec()),
+        "Sha3-384" => Ok(Sha3_384::digest(spki_der).to_vec()),
+        "Sha3-512" => Ok(Sha3_512::digest(spki_der).to_vec()),
+        "Blake3" => Ok(blake3::hash(spki_der).as_bytes().to_vec()),
         other => Err(EvalError::user_error(
             format!("tls-connect: unsupported hash algorithm '{}'", other),
             span,
@@ -3131,6 +3252,104 @@ fn extract_cert_info(
     );
 
     Ok(Value::Dict(info))
+}
+
+/// Extract Common Name (CN) from an X.509 distinguished name
+fn extract_cn(name: &x509_parser::x509::X509Name) -> Option<String> {
+    use x509_parser::der_parser::oid;
+    // OID for commonName is 2.5.4.3
+    let cn_oid = oid!(2.5.4 .3);
+
+    for rdn in name.iter() {
+        for attr in rdn.iter() {
+            if attr.attr_type() == &cn_oid {
+                if let Ok(cn_str) = attr.attr_value().as_str() {
+                    return Some(cn_str.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract Subject Alternative Names (SANs) from an X.509 certificate
+/// Returns a Seq of strings (DNS names, IPs, emails, URIs)
+fn extract_sans(
+    cert: &x509_parser::certificate::X509Certificate,
+    span: Span,
+    ctx: &Rc<crate::eval::EvalContext>,
+) -> EvalResult<Value> {
+    use x509_parser::extensions::GeneralName;
+
+    let mut sans_list = Vec::new();
+
+    // Find the SubjectAlternativeName extension
+    if let Some(san_ext) = cert
+        .tbs_certificate
+        .extensions()
+        .iter()
+        .find(|e| e.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
+    {
+        // parsed_extension() returns &ParsedExtension, not Result
+        if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
+            san_ext.parsed_extension()
+        {
+            for name in &san.general_names {
+                match name {
+                    GeneralName::DNSName(dns) => {
+                        sans_list.push(string_val(dns));
+                    }
+                    GeneralName::IPAddress(ip_bytes) => {
+                        // Convert IP bytes to string representation
+                        let ip_str = if ip_bytes.len() == 4 {
+                            format!(
+                                "{}.{}.{}.{}",
+                                ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]
+                            )
+                        } else if ip_bytes.len() == 16 {
+                            // IPv6
+                            format!(
+                                "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
+                                ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3],
+                                ip_bytes[4], ip_bytes[5], ip_bytes[6], ip_bytes[7],
+                                ip_bytes[8], ip_bytes[9], ip_bytes[10], ip_bytes[11],
+                                ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15]
+                            )
+                        } else {
+                            continue; // Skip malformed IP addresses
+                        };
+                        sans_list.push(string_val(&ip_str));
+                    }
+                    GeneralName::RFC822Name(email) => {
+                        sans_list.push(string_val(email));
+                    }
+                    GeneralName::URI(uri) => {
+                        sans_list.push(string_val(uri));
+                    }
+                    _ => {
+                        // Ignore other types (DirectoryName, EDIPartyName, etc.)
+                    }
+                }
+            }
+        }
+    }
+
+    // Convert Vec<Value> to a Seq by building from right to left
+    // End of Seq is an empty Dict
+    let mut result = ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), span)?);
+    for val in sans_list.into_iter().rev() {
+        let head_thunk = ctx.alloc_thunk(ok_val(val, span)?);
+        result = ctx.alloc_thunk(ok_val(
+            Value::Seq {
+                head: head_thunk,
+                tail: result,
+            },
+            span,
+        )?);
+    }
+
+    // Materialize the final Seq
+    materialize(&ctx.get_thunk(result), Some(&span), ctx)
 }
 
 /// `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle.
@@ -3168,44 +3387,90 @@ pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     })?;
 
     // The TlsInfo is stored in the Tls capability — it's a dict with _raw_der
-    // For now, we'll just return the dict as-is
-    // A full implementation would parse the X.509 certificate and extract fields
     match tls_info {
-        Value::Dict(_) => {
-            // Return a minimal cert info dict
-            // TODO: Parse X.509 certificate and extract subject, issuer, SANs, validity, etc.
-            let mut cert_info = IndexMap::new();
+        Value::Dict(dict) => {
             use crate::value::Key;
 
+            // Extract the _raw_der bytes from the dict
+            let raw_der_thunk_id = dict
+                .get(&Key::String("_raw_der".to_string()))
+                .ok_or_else(|| {
+                    EvalError::user_error(
+                        "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
+                        call_span,
+                    )
+                })?;
+
+            // Get the thunk and materialize it
+            let raw_der_thunk = ctx.get_thunk(*raw_der_thunk_id);
+            let raw_der_val = materialize(&raw_der_thunk, Some(&call_span), &ctx)?;
+            let cert_der = match &raw_der_val {
+                Value::Bytes { source, start, end } => &source[*start..*end],
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "tls-peer-cert".to_string(),
+                        "Bytes",
+                        other.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            };
+
+            // Parse the X.509 certificate
+            let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
+                EvalError::user_error(
+                    format!("tls-peer-cert: failed to parse certificate: {}", e),
+                    call_span,
+                )
+            })?;
+
+            // Extract subject CN (Common Name)
+            let subject = extract_cn(&cert.tbs_certificate.subject).unwrap_or("(none)".to_string());
+
+            // Extract issuer CN
+            let issuer = extract_cn(&cert.tbs_certificate.issuer).unwrap_or("(none)".to_string());
+
+            // Extract validity dates (convert to Unix timestamps)
+            let not_before = cert.tbs_certificate.validity.not_before.timestamp();
+            let not_after = cert.tbs_certificate.validity.not_after.timestamp();
+
+            // Extract SANs (Subject Alternative Names)
+            let sans = extract_sans(&cert, call_span, &ctx)?;
+
+            // Compute SPKI SHA-256 hash
+            let spki_der = cert.tbs_certificate.subject_pki.raw;
+            let spki_hash = {
+                use sha2::{Digest, Sha256};
+                Sha256::digest(spki_der)
+            };
+            let spki_hex = hex::encode(spki_hash);
+
+            // Build the result dict
+            let mut cert_info = IndexMap::new();
             cert_info.insert(
                 Key::String("subject".to_string()),
-                ctx.alloc_thunk(ok_val(
-                    string_val("(certificate parsing not yet implemented)"),
-                    call_span,
-                )?),
+                ctx.alloc_thunk(ok_val(string_val(&subject), call_span)?),
             );
             cert_info.insert(
                 Key::String("issuer".to_string()),
-                ctx.alloc_thunk(ok_val(
-                    string_val("(certificate parsing not yet implemented)"),
-                    call_span,
-                )?),
+                ctx.alloc_thunk(ok_val(string_val(&issuer), call_span)?),
             );
             cert_info.insert(
                 Key::String("sans".to_string()),
-                ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span)?),
+                ctx.alloc_thunk(ok_val(sans, call_span)?),
             );
             cert_info.insert(
                 Key::String("not-before".to_string()),
-                ctx.alloc_thunk(ok_val(Value::Int(0), call_span)?),
+                ctx.alloc_thunk(ok_val(Value::Int(not_before), call_span)?),
             );
             cert_info.insert(
                 Key::String("not-after".to_string()),
-                ctx.alloc_thunk(ok_val(Value::Int(0), call_span)?),
+                ctx.alloc_thunk(ok_val(Value::Int(not_after), call_span)?),
             );
             cert_info.insert(
                 Key::String("spki-sha256".to_string()),
-                ctx.alloc_thunk(ok_val(string_val("(not yet computed)"), call_span)?),
+                ctx.alloc_thunk(ok_val(string_val(&spki_hex), call_span)?),
             );
 
             ok_val(Value::Dict(cert_info), call_span)

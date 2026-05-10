@@ -3042,6 +3042,84 @@ fn input_output_expr_pipeline() {
     assert_eq!(stdout.trim(), "hello");
 }
 
+#[test]
+fn expr_file_interleaving() {
+    // Test that -e and file arguments are processed in the order they appear on the CLI.
+    // Command: tinct run file1.llt -e '[transform %]' file2.llt
+    // Expected order: file1.llt → -e expression → file2.llt
+
+    // Create two temp files
+    let (file1_path, _dir1) = write_temp_llt("interleave_file1", "[x: 1]");
+    let (file2_path, _dir2) = write_temp_llt("interleave_file2", "[y: %.x]");
+
+    // Without proper interleaving, this would fail because file2.llt would be processed
+    // before the -e expression, so % would be file1's output [x: 1], not the transformed value.
+    // With proper interleaving: file1 → [x: 1], then -e → [x: 1, z: 2], then file2 → [y: 1]
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            file1_path.to_str().unwrap(),
+            "-e",
+            "[merge % [z: 2]]",
+            file2_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The final output should be [y: 1] because file2 accesses %.x,
+    // and % at that point is the result of the -e expression [x: 1, z: 2]
+    let expected = r#"{"y":1}"#;
+    assert_eq!(
+        stdout.trim(),
+        expected,
+        "Expected interleaved execution: file1 → -e → file2"
+    );
+}
+
+#[test]
+fn expr_file_interleaving_multiple() {
+    // Test multiple interleaved -e and file arguments.
+    // Command: tinct run -e '[a: 1]' file1.llt -e '[c: %.b]' file2.llt
+
+    let (file1_path, _dir1) = write_temp_llt("interleave_multi_file1", "[b: %.a]");
+    let (file2_path, _dir2) = write_temp_llt("interleave_multi_file2", "[d: %.c]");
+
+    // Pipeline: -e → [a: 1], file1 → [b: 1], -e → [c: 1], file2 → [d: 1]
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "-e",
+            "[a: 1]",
+            file1_path.to_str().unwrap(),
+            "-e",
+            "[c: %.b]",
+            file2_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let expected = r#"{"d":1}"#;
+    assert_eq!(stdout.trim(), expected);
+}
+
 // ---------------------------------------------------------------------------
 // tinct describe — input contract description
 // ---------------------------------------------------------------------------

@@ -716,15 +716,106 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
         }
         Ok(NetCapEntry::HostnameGlob(s.to_string()))
     } else if s.contains('/') {
-        // CIDR range — deferred to Phase 3
-        Err(format!(
-            "--cap-net: CIDR ranges are not yet implemented (got '{}')",
-            s
-        ))
+        // CIDR range
+        match s.parse::<ipnet::IpNet>() {
+            Ok(net) => Ok(NetCapEntry::Cidr(net)),
+            Err(e) => Err(format!(
+                "--cap-net: invalid CIDR notation '{}': {}",
+                s, e
+            )),
+        }
     } else {
         // Plain hostname
         Ok(NetCapEntry::Hostname(s.to_string()))
     }
+}
+
+/// Reconstruct the interleaved order of files and -e expressions from raw CLI args.
+/// Clap doesn't preserve the relative order of positional args and flags, so we
+/// parse std::env::args_os() to determine which files and -e expressions appeared
+/// in what order after the "run" subcommand.
+fn interleave_files_and_exprs(files: &[String], exprs: &[String]) -> Vec<PipelineStage> {
+    let mut result = Vec::new();
+
+    // Parse raw args to find the order. We need to track which files and exprs
+    // we've consumed from the clap-parsed vectors.
+    let mut file_iter = files.iter();
+    let mut expr_iter = exprs.iter();
+
+    let mut args = std::env::args_os().skip(1); // Skip program name
+    let mut seen_run = false;
+
+    while let Some(arg) = args.next() {
+        let arg_str = arg.to_string_lossy();
+
+        // Skip until we see "run" subcommand
+        if !seen_run {
+            if arg_str == "run" {
+                seen_run = true;
+            }
+            continue;
+        }
+
+        // Check if this is a -e/--expr flag
+        if arg_str == "-e" || arg_str == "--expr" {
+            // Next arg is the expression value
+            if let Some(_expr_val) = args.next() {
+                // Match against the next unconsumed expr from clap's list
+                if let Some(expr) = expr_iter.next() {
+                    result.push(PipelineStage::Expr(expr.clone()));
+                }
+            }
+        } else if arg_str.starts_with("--expr=") {
+            // Handle --expr=value form
+            // Just consume the next expr from the iterator (clap already parsed it)
+            if let Some(expr) = expr_iter.next() {
+                result.push(PipelineStage::Expr(expr.clone()));
+            }
+        } else if arg_str.starts_with('-') {
+            // Skip other flags and their values
+            // This is a heuristic: if it starts with -, it's a flag.
+            // Some flags take values, some don't. We'll handle common ones.
+            let flag = arg_str.as_ref();
+            if matches!(
+                flag,
+                "-i" | "--input"
+                | "-o" | "--output"
+                | "--timeout"
+                | "--allow-path"
+                | "--max-memory"
+                | "--max-cpu"
+                | "--max-fds"
+                | "--allow-env"
+                | "--cap-fs"
+                | "--cap-net"
+                | "--cap-clock"
+                | "--cap-clock-fixed"
+                | "--cap-file"
+            ) {
+                // These flags take a value, skip it
+                args.next();
+            }
+            // Boolean flags like --eval, --no-fs, --strict, etc. don't take values
+        } else {
+            // This is a positional argument (file)
+            // Match against the next unconsumed file from clap's list
+            if let Some(file) = file_iter.next() {
+                result.push(PipelineStage::File(file.clone()));
+            }
+        }
+    }
+
+    // Append any remaining files (shouldn't happen in correct usage)
+    for file in file_iter {
+        result.push(PipelineStage::File(file.clone()));
+    }
+
+    // Append any remaining exprs (shouldn't happen in correct usage)
+    for expr in expr_iter {
+        result.push(PipelineStage::Expr(expr.clone()));
+    }
+
+    result
 }
 
 fn run_eval(
@@ -772,19 +863,10 @@ fn run_eval(
     }
 
     // Interleave files and -e expressions in the order they appear on the CLI.
-    // We need to track the original order, but clap doesn't preserve mixed positional/flag order.
-    // Instead, we process files in order, then expr in order.
-    // The TODO spec says "interleaved with file arguments in order" — we'll append files first, then exprs.
-    // Actually, re-reading: "each -e occurrence inserts an inline tinct expression as a pipeline stage
-    // at that position in the command line, interleaved with file arguments"
-    // This requires tracking the order. For now, we'll use a simpler approach: files come first, then exprs.
-    // TODO: Proper interleaving would require clap derive macros that track occurrence order.
-    for file_path in file_paths {
-        pipeline_stages.push(PipelineStage::File(file_path.clone()));
-    }
-    for expression in &expr {
-        pipeline_stages.push(PipelineStage::Expr(expression.clone()));
-    }
+    // Clap doesn't preserve mixed positional/flag order, so we reconstruct it
+    // by parsing raw CLI arguments.
+    let interleaved_stages = interleave_files_and_exprs(file_paths, &expr);
+    pipeline_stages.extend(interleaved_stages);
 
     // Append -o output formatter if specified
     if let Some(ref output_format) = output {
@@ -2898,5 +2980,83 @@ mod tests {
         assert!(parse_duration("18446744073709550617ms").is_err());
         let err_msg = parse_duration("18446744073709550617ms").unwrap_err();
         assert!(err_msg.contains("duration out of range"));
+    }
+
+    #[test]
+    fn parse_net_cap_entry_cidr_ipv4() {
+        use tinct::NetCapEntry;
+        let entry = parse_cli_net_cap_entry("192.168.1.0/24").unwrap();
+        match entry {
+            NetCapEntry::Cidr(net) => {
+                assert_eq!(net.to_string(), "192.168.1.0/24");
+                assert!(net.contains(&"192.168.1.1".parse().unwrap()));
+                assert!(net.contains(&"192.168.1.254".parse().unwrap()));
+                assert!(!net.contains(&"192.168.2.1".parse().unwrap()));
+            }
+            _ => panic!("Expected Cidr variant"),
+        }
+    }
+
+    #[test]
+    fn parse_net_cap_entry_cidr_ipv6() {
+        use tinct::NetCapEntry;
+        let entry = parse_cli_net_cap_entry("2001:db8::/32").unwrap();
+        match entry {
+            NetCapEntry::Cidr(net) => {
+                assert_eq!(net.to_string(), "2001:db8::/32");
+                assert!(net.contains(&"2001:db8::1".parse().unwrap()));
+                assert!(net.contains(&"2001:db8:ffff:ffff:ffff:ffff:ffff:ffff".parse().unwrap()));
+                assert!(!net.contains(&"2001:db9::1".parse().unwrap()));
+            }
+            _ => panic!("Expected Cidr variant"),
+        }
+    }
+
+    #[test]
+    fn parse_net_cap_entry_cidr_single_host() {
+        use tinct::NetCapEntry;
+        let entry = parse_cli_net_cap_entry("10.0.0.5/32").unwrap();
+        match entry {
+            NetCapEntry::Cidr(net) => {
+                assert!(net.contains(&"10.0.0.5".parse().unwrap()));
+                assert!(!net.contains(&"10.0.0.6".parse().unwrap()));
+            }
+            _ => panic!("Expected Cidr variant"),
+        }
+    }
+
+    #[test]
+    fn parse_net_cap_entry_cidr_invalid() {
+        assert!(parse_cli_net_cap_entry("192.168.1.0/33").is_err());
+        assert!(parse_cli_net_cap_entry("not-an-ip/24").is_err());
+        assert!(parse_cli_net_cap_entry("192.168.1.0/").is_err());
+    }
+
+    #[test]
+    fn parse_net_cap_entry_hostname() {
+        use tinct::NetCapEntry;
+        let entry = parse_cli_net_cap_entry("example.com").unwrap();
+        assert!(matches!(entry, NetCapEntry::Hostname(h) if h == "example.com"));
+    }
+
+    #[test]
+    fn parse_net_cap_entry_hostport() {
+        use tinct::NetCapEntry;
+        let entry = parse_cli_net_cap_entry("example.com:443").unwrap();
+        assert!(matches!(entry, NetCapEntry::HostPort(h, p) if h == "example.com" && p == 443));
+    }
+
+    #[test]
+    fn parse_net_cap_entry_glob() {
+        use tinct::NetCapEntry;
+        let entry = parse_cli_net_cap_entry("*.internal").unwrap();
+        assert!(matches!(entry, NetCapEntry::HostnameGlob(g) if g == "*.internal"));
+    }
+
+    #[test]
+    fn parse_net_cap_entry_any() {
+        use tinct::NetCapEntry;
+        let entry = parse_cli_net_cap_entry("any").unwrap();
+        assert!(matches!(entry, NetCapEntry::Any));
     }
 }
