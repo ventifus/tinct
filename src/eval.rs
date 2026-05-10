@@ -1188,16 +1188,16 @@ pub(crate) fn eval_recursive(
 }
 
 /// Marker for variant constructor functions in closure environment.
-const VARIANT_TAG_MARKER: &str = "__variant_tag__";
+pub(crate) const VARIANT_TAG_MARKER: &str = "__variant_tag__";
 
 /// Check if an identifier starts with an uppercase letter.
-fn is_constructor_name(name: &str) -> bool {
+pub(crate) fn is_constructor_name(name: &str) -> bool {
     name.chars().next().map_or(false, |c| c.is_uppercase())
 }
 
 /// Check if an expression is a nominal variant constructor declaration.
 /// Returns (tag, has_payload) if it is, None otherwise.
-fn is_nominal_constructor(expr: &Expr) -> Option<(String, bool)> {
+pub(crate) fn is_nominal_constructor(expr: &Expr) -> Option<(String, bool)> {
     match expr {
         Expr::VarRef { name, .. } if is_constructor_name(name) => Some((name.clone(), false)),
         Expr::Call {
@@ -1219,7 +1219,7 @@ fn is_nominal_constructor(expr: &Expr) -> Option<(String, bool)> {
 
 /// Extract nominal variant constructors from a type alias body.
 /// Returns a vector of (tag, has_payload) pairs.
-fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
+pub(crate) fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
     match body {
         // Multi-entry union: Dict with auto-indexed entries
         Expr::Dict(entries) => entries
@@ -1229,6 +1229,59 @@ fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
             .collect(),
         // Single-entry: check if it's a nominal constructor
         other => is_nominal_constructor(other).into_iter().collect(),
+    }
+}
+
+/// Eagerly register nominal variant constructors from a TypeAlias body into `target_env`.
+///
+/// Called from eval_dict's pre-pass to ensure constructor thunks (e.g. `Ok`, `Err`) are
+/// already present in dict_env BEFORE the normal thunk-creation pass runs. This prevents
+/// the circular thunk dependency that arises when a re-export entry like `Ok: Ok` references
+/// the letrec name `Ok` while the TypeAlias that creates the constructor hasn't been forced yet.
+///
+/// The registered thunks are materialized (not lazy), so they can be found immediately when
+/// sibling thunks like `Ok: Ok` are forced.
+#[allow(dead_code)]
+pub(crate) fn eagerly_register_constructors(
+    body: &Expr,
+    span: Span,
+    target_env: &Rc<RefCell<Environment>>,
+) {
+    let constructors = extract_nominal_constructors(body);
+    for (tag, has_payload) in constructors {
+        let constructor_value = if has_payload {
+            let constructor_env =
+                Rc::new(RefCell::new(Environment::with_parent(Rc::clone(target_env))));
+            constructor_env.borrow_mut().insert(
+                VARIANT_TAG_MARKER.to_string(),
+                Rc::new(Thunk::new_materialized(string_val(&tag), span)),
+            );
+            let param = Param {
+                name: "payload".to_string(),
+                annotation: None,
+                variadic: false,
+            };
+            let body_expr = Rc::new(Spanned::new(
+                Expr::VarRef {
+                    name: "payload".to_string(),
+                    escaped: false,
+                    resolved: RefCell::new(None),
+                },
+                span,
+            ));
+            Value::Function {
+                params: Rc::new(vec![param]),
+                body: body_expr,
+                env: constructor_env,
+            }
+        } else {
+            Value::Variant {
+                tag: tag.clone(),
+                payload: None,
+            }
+        };
+        let constructor_thunk = Rc::new(Thunk::new_materialized(constructor_value, span));
+        target_env.borrow_mut().insert(tag, constructor_thunk);
     }
 }
 

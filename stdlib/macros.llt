@@ -12,8 +12,7 @@
 #
 # Loaded automatically via create_stdlib_env(). All prelude functions
 # (str, split, str-slice, str-length, str-contains?, starts-with?,
-#  append, builtin-reduce, builtin-if, builtin-eq, builtin-add,
-#  builtin-get, to-int, length) are available here.
+#  append, reduce, if, =, +, get, to-int, length) are available here.
 #
 # ============================================================================
 # tmpl-transformer — string interpolation macro
@@ -56,10 +55,10 @@ tmpl-is-stop: [fn [c]
 # Walks from index i until a stop char is found or end of string.
 # Returns i when done (i = number of ident chars consumed).
 tmpl-var-len: [fn [s len i]
-  [builtin-if [builtin-lt i len]
-    [builtin-if [tmpl-is-stop [str-slice s i [builtin-add i 1]]]
+  [if [< i len]
+    [if [tmpl-is-stop [str-slice s i [+ i 1]]]
       i
-      [tmpl-var-len s len [builtin-add i 1]]]
+      [tmpl-var-len s len [+ i 1]]]
     i]]
 
 # Build a string literal AST dict node.
@@ -73,7 +72,7 @@ tmpl-var-node: [fn [var-name]
 # Append an optional suffix literal to nodes (only if suffix is non-empty).
 # Returns the updated nodes list.
 tmpl-append-suffix: [fn [nodes suffix]
-  [builtin-if [builtin-eq suffix ""]
+  [if [= suffix ""]
     nodes
     [append nodes [tmpl-str-node suffix]]]]
 
@@ -82,7 +81,7 @@ tmpl-append-suffix: [fn [nodes suffix]
 # Returns the updated nodes list.
 # Called when the piece starts with "{" after splitting on "$".
 tmpl-process-expr-piece: [fn [piece macro-args nodes]
-  [builtin-if [str-contains? piece "}"]
+  [if [str-contains? piece "}"]
     [tmpl-process-expr-with-close piece macro-args nodes]
     # Malformed ${}: no closing "}" found — emit "$" + piece as a literal
     [append nodes [tmpl-str-node [str "$" piece]]]
@@ -95,15 +94,15 @@ tmpl-process-expr-with-close: [fn [piece macro-args nodes]
 
 tmpl-process-expr-parts: [fn [brace-split macro-args nodes]
   [tmpl-process-expr-idx
-    [builtin-get 0 brace-split]
-    [builtin-get 1 brace-split]
+    [get 0 brace-split]
+    [get 1 brace-split]
     macro-args
     nodes]]
 
 # idx-part is "{N", suffix is the text after "}"
 tmpl-process-expr-idx: [fn [idx-part suffix macro-args nodes]
   [tmpl-process-expr-insert
-    [builtin-get [builtin-add [to-int [str-slice idx-part 1 [length idx-part]]] 1] macro-args]
+    [get [+ [to-int [str-slice idx-part 1 [length idx-part]]] 1] macro-args]
     suffix
     nodes]]
 
@@ -133,16 +132,16 @@ tmpl-process-var-emit: [fn [piece nodes var-end len]
 #
 # Returns the updated accumulator.
 tmpl-reduce-step: [fn [macro-args] [fn [acc piece]
-  [builtin-if acc.is-first
+  [if acc.is-first
     # First piece: always a literal prefix (may be empty — skip if so)
     [tmpl-step-literal acc piece]
-    [builtin-if acc.skip
+    [if acc.skip
       # This piece is the literal continuation after a $$ escape (not a var name).
       [tmpl-step-literal acc piece]
-      [builtin-if [builtin-eq piece ""]
+      [if [= piece ""]
         # Empty piece = $$ escape: emit literal "$" and mark next piece as skip.
         [nodes: [append acc.nodes [tmpl-str-node "$"]]  skip: true  is-first: false]
-        [builtin-if [starts-with? piece "{"]
+        [if [starts-with? piece "{"]
           # ${N} expression placeholder
           [nodes: [tmpl-process-expr-piece piece macro-args acc.nodes]  skip: false  is-first: false]
           # $name variable reference
@@ -156,9 +155,25 @@ tmpl-reduce-step: [fn [macro-args] [fn [acc piece]
 # Append piece as a literal to acc.nodes (empty string → skip).
 # Returns a new accumulator with is-first=false and skip=false.
 tmpl-step-literal: [fn [acc piece]
-  [nodes: [builtin-if [builtin-eq piece ""] acc.nodes [append acc.nodes [tmpl-str-node piece]]]
+  [nodes: [if [= piece ""] acc.nodes [append acc.nodes [tmpl-str-node piece]]]
    skip: false
    is-first: false]]
+
+# Split template string on "$" and fold pieces into AST arg nodes.
+tmpl-expand: [fn [template-str macro-args]
+  [tmpl-emit-call
+    [reduce
+      [tmpl-reduce-step macro-args]
+      [nodes: []  skip: false  is-first: true]
+      [split "$" template-str]]]]
+
+# Wrap the collected AST nodes in a [str ...] call AST dict.
+tmpl-emit-call: [fn [result]
+  [type: "call"
+   fn:         [type: "var"  name: "str"]
+   args:       result.nodes
+   named-args: []
+   implied:    true]]
 
 # ============================================================================
 # do-transformer — monadic do-notation macro (STUB)
@@ -178,11 +193,11 @@ tmpl-step-literal: [fn [acc piece]
 #     [Ok parsed.name]]
 #
 #   Desugars to:
-#   [and-then [fn [x]
-#     [and-then [fn [parsed]
-#       [Ok parsed.name]]
-#       [try [fn [] [parse-toml-lite x]]]]]
-#     [try [fn [] [read-file %pwd "config.toml"]]]]
+#   [and-then [try [fn [] [read-file %pwd "config.toml"]]]
+#     [fn [x]
+#       [and-then [try [fn [] [parse-toml-lite x]]]
+#         [fn [parsed]
+#           [Ok parsed.name]]]]]
 
 do-stub: [fn [macro-args]
   [type: "call"
@@ -203,24 +218,8 @@ do-stub: [fn [macro-args]
 # Returns an AST call dict for [str ...].
 tmpl-transformer@[doc: "String interpolation macro transformer (i\"...$var...\" syntax)"]: [fn [macro-args]
   [tmpl-expand
-    [builtin-get "value" [builtin-get 0 macro-args]]
+    [get "value" [get 0 macro-args]]
     macro-args]]
-
-# Split template string on "$" and fold pieces into AST arg nodes.
-tmpl-expand: [fn [template-str macro-args]
-  [tmpl-emit-call
-    [builtin-reduce
-      [tmpl-reduce-step macro-args]
-      [nodes: []  skip: false  is-first: true]
-      [split "$" template-str]]]]
-
-# Wrap the collected AST nodes in a [str ...] call AST dict.
-tmpl-emit-call: [fn [result]
-  [type: "call"
-   fn:         [type: "var"  name: "str"]
-   args:       result.nodes
-   named-args: []
-   implied:    true]]
 
 # do-transformer: the macro body for [defmacro do].
 # Stub implementation — produces an error explaining that do is not yet implemented.

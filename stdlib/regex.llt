@@ -11,28 +11,76 @@
 # Future: dot, quantifiers, anchors, character classes.
 # ============================================================================
 
+# ============================================================================
+# FIRST DICT: Private helpers (not exported)
+# ============================================================================
+
 [
 
+# Ensure pattern is a string (extracts .pattern from compiled dict, or passes through)
+re-ensure-pattern: [fn@String [pattern]
+    [if [= [type-of pattern] "String"]
+        pattern
+        [if [has? pattern "pattern"]
+            pattern.pattern
+            pattern]]]
+
+# Test if string contains pattern anywhere (recursive position scan)
+re-match-impl: [fn@Bool [pat@String haystack@String i@Int len@Int]
+    [if [> i len]
+        false
+        [re-match-try pat haystack i len]]]
+
+re-match-try: [fn@Bool [pat@String haystack@String i@Int len@Int]
+    [re-match-check pat haystack i len [+ i [length pat]]]]
+
+re-match-check: [fn@Bool [pat@String haystack@String i@Int len@Int end-pos@Int]
+    [if [> end-pos len]
+        [re-match-impl pat haystack [+ i 1] len]
+        [if [= pat [str-slice haystack i end-pos]]
+            true
+            [re-match-impl pat haystack [+ i 1] len]]]]
+
+# Find first match — returns [] if no match
+re-find-impl: [fn@Dict [pat@String haystack@String i@Int len@Int]
+    [if [> i len]
+        []
+        [re-find-try pat haystack i len]]]
+
+re-find-try: [fn@Dict [pat@String haystack@String i@Int len@Int]
+    [re-find-check pat haystack i len [+ i [length pat]]]]
+
+re-find-check: [fn@Dict [pat@String haystack@String i@Int len@Int end-pos@Int]
+    [if [> end-pos len]
+        [re-find-impl pat haystack [+ i 1] len]
+        [if [= pat [str-slice haystack i end-pos]]
+            [match: pat  start: i  end: end-pos]
+            [re-find-impl pat haystack [+ i 1] len]]]]
+
+# Find all matches — returns dict of match result dicts
+re-findall-impl: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict]
+    [if [> i len]
+        acc
+        [re-findall-try pat haystack i len acc]]]
+
+re-findall-try: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict]
+    [re-findall-check pat haystack i len acc [+ i [length pat]]]]
+
+re-findall-check: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict end-pos@Int]
+    [if [> end-pos len]
+        [re-findall-impl pat haystack [+ i 1] len acc]
+        [if [= pat [str-slice haystack i end-pos]]
+            [re-findall-impl pat haystack end-pos len
+                [append acc [match: pat  start: i  end: end-pos]]]
+            [re-findall-impl pat haystack [+ i 1] len acc]]]]
+
+]
+
 # ============================================================================
-# Helper Functions
+# SECOND DICT: Public API (exported)
 # ============================================================================
 
-# Check if dict has a key
-has?: [fn@Bool [d@Dict k]
-    [has-check [try [fn [] [builtin-get k d]]]]]
-
-has-check: [fn@Bool [result]
-    [match result
-        [Ok _] true
-        [Err _] false]]
-
-# Comparison operators
->=: [fn@Bool [a b] [builtin-if [builtin-lt a b] false true]]
->: [fn@Bool [a b] [builtin-lt b a]]
-
-# ============================================================================
-# Public API
-# ============================================================================
+[
 
 # Compile a pattern (currently a no-op, just returns the pattern)
 re-compile@[doc: "Compile a pattern (currently a no-op, just returns the pattern)"]: [fn@Dict [pattern@String]
@@ -42,61 +90,15 @@ re-compile@[doc: "Compile a pattern (currently a no-op, just returns the pattern
 re-match@[doc: "Test if string contains pattern anywhere"]: [fn@Bool [pattern haystack@String]
     [re-match-impl [re-ensure-pattern pattern] haystack 0 [length haystack]]]
 
-re-match-impl: [fn@Bool [pat@String haystack@String i@Int len@Int]
-    [builtin-if [> i len]
-        false
-        [re-match-try pat haystack i len]]]
-
-re-match-try: [fn@Bool [pat@String haystack@String i@Int len@Int]
-    [re-match-check pat haystack i len [builtin-add i [length pat]]]]
-
-re-match-check: [fn@Bool [pat@String haystack@String i@Int len@Int end-pos@Int]
-    [builtin-if [> end-pos len]
-        [re-match-impl pat haystack [builtin-add i 1] len]
-        [builtin-if [builtin-eq pat [str-slice haystack i end-pos]]
-            true
-            [re-match-impl pat haystack [builtin-add i 1] len]]]]
-
-# Find first match
+# Find first match (returns [match: String start: Int end: Int] or [])
 re-find@[doc: "Find first match"]: [fn@Dict [pattern haystack@String]
     [re-find-impl [re-ensure-pattern pattern] haystack 0 [length haystack]]]
 
-re-find-impl: [fn@Dict [pat@String haystack@String i@Int len@Int]
-    [builtin-if [> i len]
-        []
-        [re-find-try pat haystack i len]]]
-
-re-find-try: [fn@Dict [pat@String haystack@String i@Int len@Int]
-    [re-find-check pat haystack i len [builtin-add i [length pat]]]]
-
-re-find-check: [fn@Dict [pat@String haystack@String i@Int len@Int end-pos@Int]
-    [builtin-if [> end-pos len]
-        [re-find-impl pat haystack [builtin-add i 1] len]
-        [builtin-if [builtin-eq pat [str-slice haystack i end-pos]]
-            [match: pat  start: i  end: end-pos]
-            [re-find-impl pat haystack [builtin-add i 1] len]]]]
-
-# Find all matches (returns dict for simplicity)
+# Find all matches (returns dict of match result dicts)
 re-findall@[doc: "Find all matches (returns dict for simplicity)"]: [fn@Dict [pattern haystack@String]
     [re-findall-impl [re-ensure-pattern pattern] haystack 0 [length haystack] []]]
 
-re-findall-impl: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict]
-    [builtin-if [> i len]
-        acc
-        [re-findall-try pat haystack i len acc]]]
-
-re-findall-try: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict]
-    [re-findall-check pat haystack i len acc [builtin-add i [length pat]]]]
-
-re-findall-check: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict end-pos@Int]
-    [builtin-if [> end-pos len]
-        [re-findall-impl pat haystack [builtin-add i 1] len acc]
-        [builtin-if [builtin-eq pat [str-slice haystack i end-pos]]
-            [re-findall-impl pat haystack end-pos len
-                [append acc [match: pat  start: i  end: end-pos]]]
-            [re-findall-impl pat haystack [builtin-add i 1] len acc]]]]
-
-# Replace all matches
+# Replace all matches with replacement string
 re-replace@[doc: "Replace all matches"]: [fn@String [pattern replacement@String haystack@String]
     [replace [re-ensure-pattern pattern] replacement haystack]]
 
@@ -104,16 +106,8 @@ re-replace@[doc: "Replace all matches"]: [fn@String [pattern replacement@String 
 re-split@[doc: "Split on pattern"]: [fn@Dict [pattern haystack@String]
     [split [re-ensure-pattern pattern] haystack]]
 
-# Escape replacement string
+# Escape replacement string (escape backslashes)
 re-escape-replacement@[doc: "Escape replacement string"]: [fn@String [s@String]
     [replace "\\" "\\\\" s]]
-
-# Ensure pattern is a string
-re-ensure-pattern: [fn@String [pattern]
-    [builtin-if [builtin-eq [type-of pattern] "String"]
-        pattern
-        [builtin-if [has? pattern "pattern"]
-            pattern.pattern
-            pattern]]]
 
 ]

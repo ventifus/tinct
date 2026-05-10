@@ -9051,27 +9051,21 @@ mod tests {
 
     #[test]
     fn test_try_result_type() {
-        // `try` builtin should return Union([ok: a], [err: Str])
+        // `try` builtin returns Unknown — not a structural union — because the runtime
+        // now returns nominal Value::Variant { tag: "Ok"/"Err" }. A structural union
+        // {ok:T}|{err:Str} would cause T004 false positives when user code matches on
+        // constructor patterns [Ok v] / [Err msg]. Unknown avoids triggering coverage
+        // checking (infer_match only runs exhaustiveness when scrutinee is Type::Union).
+        // TODO(result-nominal): replace with Ok[T]|Err[String] when Type::Variant is added.
         let env = TypeEnv::with_builtins();
         let scheme = env.get("try").expect("try builtin not found in env");
         match &scheme.body {
-            Type::Function { ret, .. } => match ret.as_ref() {
-                Type::Union(members) => {
-                    assert_eq!(members.len(), 2, "try should return 2-member union");
-                    // Check that one member has "ok" field and one has "err" field
-                    let has_ok = members.iter().any(|m| match m {
-                        Type::Record(Row { fields, .. }) => fields.contains_key("ok"),
-                        _ => false,
-                    });
-                    let has_err = members.iter().any(|m| match m {
-                        Type::Record(Row { fields, .. }) => fields.contains_key("err"),
-                        _ => false,
-                    });
-                    assert!(has_ok, "try result should have [ok: ...] variant");
-                    assert!(has_err, "try result should have [err: ...] variant");
-                }
-                other => panic!("expected Union return type for try, got {other}"),
-            },
+            Type::Function { ret, .. } => {
+                assert!(
+                    matches!(ret.as_ref(), Type::Unknown),
+                    "try should return Unknown (not structural union — see comment), got {ret}"
+                );
+            }
             other => panic!("expected Function type for try, got {other}"),
         }
     }

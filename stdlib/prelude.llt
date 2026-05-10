@@ -547,6 +547,11 @@ get-in-or@[doc: "Get nested value by path with default"]: [fn@Any [xs path@Dict 
 # assert: [empty? [1 2 3]] => false
 empty?@[doc: "Check if collection is empty"]: [fn@Bool [xs] [builtin-if [seq? xs] false [builtin-eq [length xs] 0]]]
 
+# Construct a single-entry dict from a computed key and a value.
+# Used internally by set, from-entries, and domain modules that build dicts programmatically.
+# assert: [make-entry "x" 42] => [x: 42]
+make-entry@[doc: "Construct single-entry dict from key and value"]: [fn@Dict [k v] [$k: v]]
+
 # Set a key in a dict (returns new dict with key added/updated).
 # assert: [set [a: 1] "b" 2] => [a: 1  b: 2]
 set@[doc: "Set key in dict"]: [fn@Dict [xs@Dict k v] [merge xs [make-entry k v]]]
@@ -1016,10 +1021,11 @@ Ok: Ok
 Err: Err
 
 # Chain a Result: if Ok, apply f to the value; if Err, pass through.
-# Type: ((a -> Result b) -> Result a -> Result b)
-# Example: [and-then [fn [x] [Ok [* x 2]]] [Ok 21]] => [Ok 42]
-# Example: [and-then [fn [x] [Ok [* x 2]]] [Err "bad"]] => [Err "bad"]
-and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass through"]: [fn [f result]
+# Result is first (data-flow order); matches Rust's .and_then(f) and Haskell's result >>= f.
+# Type: (Result a -> (a -> Result b) -> Result b)
+# Example: [and-then [Ok 21] [fn [x] [Ok [* x 2]]]] => [Ok 42]
+# Example: [and-then [Err "bad"] [fn [x] [Ok [* x 2]]]] => [Err "bad"]
+and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass through"]: [fn [result f]
     [match result
         [Ok v] [f v]
         [Err msg] [Err msg]]]

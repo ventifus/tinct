@@ -12,16 +12,19 @@
 #   - # comments → ignored
 #   - Blank lines → ignored
 #
-# Available Rust builtins used here:
-#   String:      str, split, trim, str-slice, str-contains?, starts-with?, length
-#   Arithmetic:  builtin-add, builtin-sub, builtin-mul, builtin-div
-#   Comparison:  builtin-lt, builtin-eq
-#   Control:     builtin-if
-#   Dict:        keys, merge, append, builtin-get
-#   Sequences:   builtin-reduce, collect
+# Depends on prelude functions (loaded before this module):
+#   Logic:       not, and
+#   Comparison:  >=, >
+#   Control:     if
+#   Arithmetic:  +, -
+#   Dict:        keys, length, merge, append, get, get-or, has?, make-entry
+#   String:      str, split, trim, str-slice, str-contains?, starts-with?
+#   Sequences:   collect, filter, map
 #   Numeric:     to-int
+#   Error:       try-or
+#   List:        first
+#   Collections: all?
 #
-# All functions in this dict can reference each other (letrec semantics).
 # ============================================================================
 
 [
@@ -38,8 +41,8 @@
 parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn [text@String]
     [try [fn [] [parse-toml-lines
         [collect
-            [builtin-filter [fn [line] [not-blank-or-comment line]]
-                [builtin-map [fn [line] [trim line]]
+            [filter [fn [line] [not-blank-or-comment line]]
+                [map [fn [line] [trim line]]
                     [split "\n" text]]]]]]]]
 
 # ============================================================================
@@ -54,23 +57,23 @@ parse-toml-lines: [fn@Dict [lines]
 # Recursive line processor with accumulator.
 # Type: (Dict String -> Int -> Int -> Dict -> Dict String -> Dict)
 parse-lines-impl: [fn@Dict [lines i@Int len@Int acc@Dict current-path]
-    [builtin-if [>= i len]
+    [if [>= i len]
         acc
-        [parse-line-dispatch lines i len acc current-path [builtin-get i lines]]]]
+        [parse-line-dispatch lines i len acc current-path [get i lines]]]]
 
 # Dispatch on line type: [section], [[array-table]], or key = value.
 # Type: (Dict String -> Int -> Int -> Dict -> Dict String -> String -> Dict)
 parse-line-dispatch: [fn@Dict [lines i@Int len@Int acc@Dict current-path line@String]
-    [builtin-if [starts-with? line "[["]
+    [if [starts-with? line "[["]
         # Array table: [[name]]
-        [parse-lines-impl lines [builtin-add i 1] len
+        [parse-lines-impl lines [+ i 1] len
             [toml-append-array-table acc [parse-array-table-header line]]
             [parse-array-table-header line]]
-        [builtin-if [starts-with? line "["]
+        [if [starts-with? line "["]
             # Section: [name]
-            [parse-lines-impl lines [builtin-add i 1] len acc [parse-section-header line]]
+            [parse-lines-impl lines [+ i 1] len acc [parse-section-header line]]
             # Key-value pair
-            [parse-lines-impl lines [builtin-add i 1] len
+            [parse-lines-impl lines [+ i 1] len
                 [toml-set-at-path acc current-path [parse-key-value line]]
                 current-path]]]]
 
@@ -81,7 +84,7 @@ parse-line-dispatch: [fn@Dict [lines i@Int len@Int acc@Dict current-path line@St
 # Check if a line is blank or a comment.
 # Type: (String -> Bool)
 not-blank-or-comment: [fn@Bool [line@String]
-    [builtin-if [builtin-eq [length line] 0]
+    [if [= [length line] 0]
         false
         [not [starts-with? line "#"]]]]
 
@@ -94,12 +97,12 @@ not-blank-or-comment: [fn@Bool [line@String]
 # Example: "[server]" => ["server"]
 # Example: "[database.options]" => ["database" "options"]
 parse-section-header: [fn@Dict [line@String]
-    [parse-section-name [trim [str-slice line 1 [builtin-sub [length line] 1]]]]]
+    [parse-section-name [trim [str-slice line 1 [- [length line] 1]]]]]
 
 # Parse section name, splitting on dots for nested sections.
 # Type: (String -> Dict String)
 parse-section-name: [fn@Dict [name@String]
-    [builtin-if [str-contains? name "."]
+    [if [str-contains? name "."]
         [collect [split "." name]]
         [0: name]]]
 
@@ -111,7 +114,7 @@ parse-section-name: [fn@Dict [name@String]
 # Type: (String -> Dict String)
 # Example: "[[items]]" => ["items"]
 parse-array-table-header: [fn@Dict [line@String]
-    [parse-section-name [trim [str-slice line 2 [builtin-sub [length line] 2]]]]]
+    [parse-section-name [trim [str-slice line 2 [- [length line] 2]]]]]
 
 # ============================================================================
 # Key-Value Parsing
@@ -129,7 +132,7 @@ parse-key-value: [fn@Dict [line@String]
 parse-kv-split: [fn@Dict [line@String eq-pos@Int]
     [parse-kv-build
         [trim [str-slice line 0 eq-pos]]
-        [trim [str-slice line [builtin-add eq-pos 1] [length line]]]]]
+        [trim [str-slice line [+ eq-pos 1] [length line]]]]]
 
 # Build the key-value dict entry.
 # Type: (String -> String -> Dict)
@@ -146,9 +149,9 @@ parse-kv-build: [fn@Dict [key@String value@String]
 # Example: "42" => 42
 # Example: "true" => true
 parse-value: [fn [value@String]
-    [builtin-if [starts-with? value "\""]
+    [if [starts-with? value "\""]
         # Quoted string: strip quotes
-        [str-slice value 1 [builtin-sub [length value] 1]]
+        [str-slice value 1 [- [length value] 1]]
         # Try parsing as integer
         [parse-value-try-int value]]]
 
@@ -162,9 +165,9 @@ parse-value-try-int: [fn [value@String]
 # Try parsing as boolean, fall back to bare string.
 # Type: (String -> Any)
 parse-value-try-bool: [fn [value@String]
-    [builtin-if [builtin-eq value "true"]
+    [if [= value "true"]
         true
-        [builtin-if [builtin-eq value "false"]
+        [if [= value "false"]
             false
             value]]]
 
@@ -176,27 +179,27 @@ parse-value-try-bool: [fn [value@String]
 # Type: (Dict -> Dict String -> Dict -> Dict)
 # Example: [toml-set-at-path [] ["server"] [port: 8080]] => [server: [port: 8080]]
 toml-set-at-path: [fn@Dict [root@Dict path kv@Dict]
-    [builtin-if [builtin-eq [type-of path] "String"]
+    [if [= [type-of path] "String"]
         # Single-key path (leaf)
         [merge root kv]
         # Multi-level path (nested)
-        [builtin-if [builtin-eq [length path] 0]
+        [if [= [length path] 0]
             [merge root kv]
             [toml-set-at-path-impl root path kv 0]]]]
 
 # Recursive path setter.
 # Type: (Dict -> Dict String -> Dict -> Int -> Dict)
 toml-set-at-path-impl: [fn@Dict [root@Dict path kv@Dict depth@Int]
-    [builtin-if [builtin-eq depth [builtin-sub [length path] 1]]
+    [if [= depth [- [length path] 1]]
         # Last segment: check if target is an array table, merge into last element if so
-        [toml-set-at-path-final root [builtin-get depth path] kv]
+        [toml-set-at-path-final root [get depth path] kv]
         # Intermediate segment: recurse
-        [merge root [make-entry [builtin-get depth path]
+        [merge root [make-entry [get depth path]
             [toml-set-at-path-impl
-                [get-or root [builtin-get depth path] []]
+                [get-or root [get depth path] []]
                 path
                 kv
-                [builtin-add depth 1]]]]]]
+                [+ depth 1]]]]]]
 
 # Final path segment: check if target is an array, merge into last element.
 # Type: (Dict -> String -> Dict -> Dict)
@@ -204,9 +207,9 @@ toml-set-at-path-final: [fn@Dict [root@Dict key@String kv@Dict]
     [toml-set-at-path-final-check root key kv [get-or root key []]]]
 
 toml-set-at-path-final-check: [fn@Dict [root@Dict key@String kv@Dict target]
-    [builtin-if [is-array? target]
+    [if [is-array? target]
         # Target is an array: merge kv into last element (if non-empty)
-        [builtin-if [> [length target] 0]
+        [if [> [length target] 0]
             [merge root [make-entry key [toml-merge-into-last target kv]]]
             # Empty array: just merge kv directly (shouldn't happen in valid TOML)
             [merge root [make-entry key [merge target kv]]]]
@@ -216,10 +219,10 @@ toml-set-at-path-final-check: [fn@Dict [root@Dict key@String kv@Dict target]
 # Merge kv into the last element of an array (integer-keyed dict).
 # Type: (Dict -> Dict -> Dict)
 toml-merge-into-last: [fn@Dict [arr@Dict kv@Dict]
-    [toml-merge-into-last-impl arr kv [builtin-sub [length arr] 1]]]
+    [toml-merge-into-last-impl arr kv [- [length arr] 1]]]
 
 toml-merge-into-last-impl: [fn@Dict [arr@Dict kv@Dict last-idx@Int]
-    [merge arr [make-entry last-idx [merge [builtin-get last-idx arr] kv]]]]
+    [merge arr [make-entry last-idx [merge [get last-idx arr] kv]]]]
 
 # Check if a value is an array (dict with all integer keys and non-empty).
 # Type: (Any -> Bool)
@@ -227,24 +230,9 @@ is-array?: [fn@Bool [xs]
     [and [dict? xs] [is-array?-check-keys xs]]]
 
 is-array?-check-keys: [fn@Bool [xs@Dict]
-    [builtin-if [builtin-eq [length xs] 0]
+    [if [= [length xs] 0]
         false  # Empty dicts are not considered arrays
         [all? int? [keys xs]]]]
-
-# Type predicate: check if value is a dict.
-# Note: dict? is a Rust builtin, but we need all? which is from prelude.
-# We'll inline all? here to avoid dependency issues.
-all?: [fn@Bool [pred@Fn xs@Dict]
-    [builtin-if [seq? xs]
-        [error "all?: expected Dict, got Seq"]
-        [all?-impl pred xs [keys xs] 0 [length xs]]]]
-
-all?-impl: [fn@Bool [pred@Fn xs@Dict ks i@Int len@Int]
-    [builtin-if [>= i len]
-        true
-        [builtin-if [pred [builtin-get i ks]]
-            [all?-impl pred xs ks [builtin-add i 1] len]
-            false]]]
 
 # ============================================================================
 # Array Table Support
@@ -254,93 +242,51 @@ all?-impl: [fn@Bool [pred@Fn xs@Dict ks i@Int len@Int]
 # Type: (Dict -> Dict String -> Dict)
 # Example: [toml-append-array-table [] ["items"]] => [items: [[]]]
 toml-append-array-table: [fn@Dict [root@Dict path]
-    [builtin-if [builtin-eq [type-of path] "String"]
+    [if [= [type-of path] "String"]
         # Single-key path
         [merge root [make-entry path [append [get-or root path []] []]]]
         # Multi-level path
-        [builtin-if [builtin-eq [length path] 0]
+        [if [= [length path] 0]
             root
             [toml-append-array-impl root path 0]]]]
 
 # Recursive array table appender.
 # Type: (Dict -> Dict String -> Int -> Dict)
 toml-append-array-impl: [fn@Dict [root@Dict path depth@Int]
-    [builtin-if [builtin-eq depth [builtin-sub [length path] 1]]
+    [if [= depth [- [length path] 1]]
         # Last segment: append empty dict to array
-        [merge root [make-entry [builtin-get depth path]
-            [append [get-or root [builtin-get depth path] []] []]]]
+        [merge root [make-entry [get depth path]
+            [append [get-or root [get depth path] []] []]]]
         # Intermediate segment: recurse
-        [merge root [make-entry [builtin-get depth path]
+        [merge root [make-entry [get depth path]
             [toml-append-array-impl
-                [get-or root [builtin-get depth path] []]
+                [get-or root [get depth path] []]
                 path
-                [builtin-add depth 1]]]]]]
+                [+ depth 1]]]]]]
 
 # ============================================================================
-# Utility Functions (from prelude and stdlib/strings.llt)
+# Utility Functions
 # ============================================================================
-
-# These are duplicated from prelude.llt to avoid circular dependency.
-
-# Internal helper: construct single-entry dict.
-make-entry: [fn@Dict [k v] [$k: v]]
 
 # Find the first occurrence of a substring. Returns character index or -1.
 # Simplified version from stdlib/strings.llt, inlined to avoid include complexity.
 str-find: [fn@Int [haystack@String needle@String]
-    [builtin-if [str-contains? haystack needle]
+    [if [str-contains? haystack needle]
         [str-find-impl haystack needle 0 [length needle] [length haystack]]
-        [builtin-sub 0 1]]]
+        [- 0 1]]]
 
 str-find-impl: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
-    [builtin-if [builtin-lt i haystack-len]
+    [if [< i haystack-len]
         [str-find-check haystack needle i needle-len haystack-len]
-        [builtin-sub 0 1]]]
+        [- 0 1]]]
 
 str-find-check: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
-    [builtin-if [builtin-eq needle-len 0]
+    [if [= needle-len 0]
         0
-        [builtin-if [builtin-lt [builtin-add i needle-len] [builtin-add haystack-len 1]]
-            [builtin-if [builtin-eq [str-slice haystack i [builtin-add i needle-len]] needle]
+        [if [< [+ i needle-len] [+ haystack-len 1]]
+            [if [= [str-slice haystack i [+ i needle-len]] needle]
                 i
-                [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]
-            [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]]]
-
-# Get with default.
-get-or: [fn [xs@Dict k default]
-    [builtin-if [has? xs k] [builtin-get k xs] default]]
-
-# Check if key exists.
-has?: [fn@Bool [xs@Dict k]
-    [has?-impl [try [fn [] [builtin-get k xs]]]]]
-
-has?-impl: [fn@Bool [try-result]
-    [match try-result
-        [Ok _] true
-        [Err _] false]]
-
-# Boolean negation.
-not: [fn@Bool [x] [builtin-if x false true]]
-
-# Short-circuit AND.
-and: [fn [a b] [builtin-if a b false]]
-
-# Greater-than-or-equal.
->=: [fn@Bool [a b] [not [builtin-lt a b]]]
-
-# Greater-than.
->: [fn@Bool [a b] [builtin-lt b a]]
-
-# Try with fallback.
-try-or: [fn [f@Fn default]
-    [try-or-impl [try f] default]]
-
-try-or-impl: [fn [try-result default]
-    [match try-result
-        [Ok v] v
-        [Err _] default]]
-
-# First element.
-first: [fn [xs] xs.0]
+                [str-find-impl haystack needle [+ i 1] needle-len haystack-len]]
+            [str-find-impl haystack needle [+ i 1] needle-len haystack-len]]]]
 
 ]
