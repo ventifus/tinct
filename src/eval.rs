@@ -369,7 +369,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::ClockCap => matches!(value, Value::ClockCap(_)),
         Type::Timezone => matches!(value, Value::Timezone(_)),
         Type::QuicSession => matches!(value, Value::QuicSession(_)),
-        Type::Http2Session => matches!(value, Value::Http2Session(_)),
+        Type::Http2Session => matches!(value, Value::Http2Session { .. }),
         Type::Http3Session => matches!(value, Value::Http3Session(_)),
         Type::DatagramHandle => matches!(value, Value::DatagramHandle { .. }),
         Type::Union(members) => {

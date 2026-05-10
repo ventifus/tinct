@@ -1,5 +1,5 @@
 # Network utilities — depends on io-phase2 builtins
-# Requires: net-cap, connect, tls-connect (io-phase2)
+# Requires: net-cap, connect, http2-session, http-request (io-phase2)
 # Requires: write-handle, slurp, str-bytes, bytes-str (io-phase1)
 # Requires prelude: if, or, make-entry, merge, set, split, join, rest,
 #                   length, to-int, str, get, error
@@ -10,7 +10,7 @@
 #   parse-header-fields   — recursive header dict builder
 #   parse-http-response   — raw response String -> [status: headers: body:]
 #   http-get              — url-based HTTP GET (dispatches on url.scheme)
-#   fetch                 — url + http-get (http) or tls-connect (https)
+#   fetch                 — url + http-get (http) or http2-session (https)
 
 # Internal helpers — not exported
 [
@@ -52,14 +52,20 @@
       [parse-header-body sections]]]]
 
   # Make an HTTP GET request using url@Url.
-  # Dispatches on url.scheme (http or https).
-  # Returns parsed response dict, or errors for unsupported schemes.
-  http-get: [fn@Dict [cap@NetCap url@Url]
+  # Dispatches on url.scheme:
+  #   https — uses http2-session (reqwest, HTTP/2 via ALPN, connection pooled)
+  #             returns {ok: {status headers body}} or {err: msg}
+  #   http  — uses raw TCP connect + HTTP/1.0 request string
+  #             returns parsed response dict (throws on network error)
+  #   other — throws "unsupported scheme"
+  http-get: [fn [cap@NetCap url@Url]
     [if [= url.scheme "https"]
-      [parse-http-response
-        [bytes-str [slurp [write-handle
-          [tls-connect cap Tcp url.host url.port []]
-          [str-bytes [build-http-request "GET" url.path url.host]]]]]]
+      [http-request
+        [http2-session cap [uri-origin url] []]
+        "GET"
+        [str url.path [if [null? url.query] "" [str "?" url.query]]]
+        []
+        ""]
       [if [= url.scheme "http"]
         [parse-http-response
           [bytes-str [slurp [write-handle
@@ -68,7 +74,7 @@
         [error [str "http-get: unsupported scheme: " url.scheme]]]]]
 
   # Parse URL string and call http-get.
-  # Returns: [Ok response-dict] or [Err message]
+  # Returns: {ok: response-dict} or {err: message}
   fetch: [fn [cap@NetCap url-string@String]
     [try [fn [] [http-get cap [url url-string]]]]]
 

@@ -269,9 +269,13 @@ pub enum Value {
     /// `quic-open-stream` and `quic-open-datagram`.
     QuicSession(Rc<quinn::Connection>),
     /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
-    /// Placeholder for reqwest client or h2::Connection. Created by `http2-session`,
-    /// consumed by `http-request`.
-    Http2Session(Rc<()>),
+    /// Wraps a `reqwest::blocking::Client` configured to prefer HTTP/2 via ALPN.
+    /// Created by `http2-session`, consumed by `http-request`.
+    /// `base_url` is the `scheme://host:port` origin used to resolve relative paths.
+    Http2Session {
+        client: Rc<reqwest::blocking::Client>,
+        base_url: String,
+    },
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
     /// Wraps an `h3::client::SendRequest` over `h3_quinn`. Created by `http3-session`,
     /// consumed by `http-request`.
@@ -351,7 +355,7 @@ impl Value {
             Value::Timezone(_) => "Timezone",
             Value::HttpConn { .. } => "HttpConn",
             Value::QuicSession(_) => "QuicSession",
-            Value::Http2Session(_) => "Http2Session",
+            Value::Http2Session { .. } => "Http2Session",
             Value::Http3Session(_) => "Http3Session",
             Value::DatagramHandle { .. } => "DatagramHandle",
         }
@@ -436,7 +440,7 @@ impl fmt::Debug for Value {
                 }
             }
             Value::QuicSession(_) => write!(f, "QuicSession"),
-            Value::Http2Session(_) => write!(f, "Http2Session"),
+            Value::Http2Session { base_url, .. } => write!(f, "Http2Session({base_url})"),
             Value::Http3Session(_) => write!(f, "Http3Session"),
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
         }
@@ -523,7 +527,7 @@ impl fmt::Display for Value {
                 }
             }
             Value::QuicSession(_) => write!(f, "<QuicSession>"),
-            Value::Http2Session(_) => write!(f, "<Http2Session>"),
+            Value::Http2Session { base_url, .. } => write!(f, "<Http2Session {base_url}>"),
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
         }
@@ -607,7 +611,10 @@ impl PartialEq for Value {
             (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::ClockCap(a), Value::ClockCap(b)) => a == b,
             (Value::QuicSession(a), Value::QuicSession(b)) => Rc::ptr_eq(a, b),
-            (Value::Http2Session(a), Value::Http2Session(b)) => Rc::ptr_eq(a, b),
+            (
+                Value::Http2Session { client: a, .. },
+                Value::Http2Session { client: b, .. },
+            ) => Rc::ptr_eq(a, b),
             (Value::Http3Session(a), Value::Http3Session(b)) => Rc::ptr_eq(a, b),
             // Timezone and HttpConn are not comparable — opaque data
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.

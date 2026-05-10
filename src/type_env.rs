@@ -1510,7 +1510,8 @@ impl TypeEnv {
             "http2-session".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Handle),   // TLS-wrapped Handle
+                    (None, Type::NetCap),   // capability
+                    (None, Type::Str),      // base_url (scheme://host:port)
                     (None, Type::Unknown),  // opts dict
                 ],
                 ret: Box::new(Type::Http2Session),
