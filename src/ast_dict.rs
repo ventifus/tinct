@@ -1373,6 +1373,7 @@ pub fn dict_to_ast(
             let name = get_string_field(dict, "name", &["type"], ctx)?;
             Expr::VarRef {
                 name,
+                escaped: false,
                 resolved: RefCell::new(None),
             }
         }

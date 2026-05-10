@@ -417,10 +417,21 @@ fn desugar_pipe(expr: &mut Spanned<Expr>) {
                 implied,
             }
         }
-        Expr::VarRef { name, resolved } => {
+        Expr::VarRef {
+            name,
+            escaped,
+            resolved,
+        } => {
             // Bare word: call it with lhs as the only argument
             Expr::Call {
-                func: Box::new(Spanned::new(Expr::VarRef { name, resolved }, rhs.span)),
+                func: Box::new(Spanned::new(
+                    Expr::VarRef {
+                        name,
+                        escaped,
+                        resolved,
+                    },
+                    rhs.span,
+                )),
                 args: vec![Rc::new(lhs)],
                 named_args: vec![],
                 implied: true,

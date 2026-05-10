@@ -1,0 +1,5 @@
+# Guard failure on primitive type uses default (structural validation path)
+# Note: This test requires structural type validation to create guards
+[@[type: Number  default: 99] "not a number"]
+=== out
+Int(99)

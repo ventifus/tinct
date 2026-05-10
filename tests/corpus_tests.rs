@@ -262,13 +262,8 @@ fn test_eval_corpus() {
 /// Typecheck corpus runner — validates that all `.llt-eval` files in
 /// `tests/corpus/eval/typecheck/` pass type checking without errors.
 ///
-/// Builtin type signatures are available via `TypeEnv::with_builtins()`, but 3 of 16
-/// corpus files still fail: `$get` is a stdlib prelude function (not a builtin),
-/// `$merge` triggers a row polymorphism false positive, and `$+` with dot-access
-/// forward refs produces a unification error. Re-enable once stdlib prelude functions
-/// have type signatures and row-polymorphism inference is improved.
+/// All stdlib builtins and prelude functions have type signatures via `imports::build_prelude_env()`.
 #[test]
-#[ignore = "3 corpus files fail: $get is stdlib (not builtin), $merge/$+ row-poly false positives"]
 fn test_typecheck_corpus() {
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval/typecheck");
 

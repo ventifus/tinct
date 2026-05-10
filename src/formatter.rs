@@ -337,16 +337,11 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(s);
                 }
             }
-            Expr::VarRef { name, .. } => {
-                // Source-sniff: emit `$` only if the original token started with `$`
-                // (i.e., it was an EscapedRef). Bare identifiers and `%`-prefixed refs
-                // do not get a `$` prepended — the `%` is already part of `name`.
-                let is_escaped = self
-                    .source
-                    .as_bytes()
-                    .get(expr.span.start.offset)
-                    .map_or(false, |&b| b == b'$');
-                if is_escaped {
+            Expr::VarRef { name, escaped, .. } => {
+                // Emit `$` prefix if this was written as an escaped ref (`$name`).
+                // Bare identifiers and `%`-prefixed refs do not get a `$` prepended —
+                // the `%` is already part of `name`.
+                if *escaped {
                     self.output.push('$');
                 }
                 self.output.push_str(name);
@@ -625,15 +620,10 @@ impl<'a> Formatter<'a> {
                     s.len()
                 }
             }
-            Expr::VarRef { name, .. } => {
-                // Source-sniff: add 1 for `$` only if the original token was an EscapedRef.
+            Expr::VarRef { name, escaped, .. } => {
+                // Add 1 for `$` if this was an escaped ref.
                 // `%`-prefixed refs already include `%` in the stored name.
-                let is_escaped = self
-                    .source
-                    .as_bytes()
-                    .get(expr.span.start.offset)
-                    .map_or(false, |&b| b == b'$');
-                name.len() + if is_escaped { 1 } else { 0 }
+                name.len() + if *escaped { 1 } else { 0 }
             }
             Expr::DotAccess { expr, field } => {
                 let field_len = match field {
@@ -1240,13 +1230,8 @@ impl<'a> Formatter<'a> {
                     Some('a') // placeholder - bare identifiers start with alphanumeric
                 }
             }
-            Expr::VarRef { .. } => {
-                let is_escaped = self
-                    .source
-                    .as_bytes()
-                    .get(expr.span.start.offset)
-                    .map_or(false, |&b| b == b'$');
-                if is_escaped {
+            Expr::VarRef { escaped, .. } => {
+                if *escaped {
                     Some('$')
                 } else {
                     Some('a') // placeholder

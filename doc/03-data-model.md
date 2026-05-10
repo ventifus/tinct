@@ -86,6 +86,20 @@ z@Number                        # accepts either
 [mod 10 3]                      # → 1 (Int — remainder)
 ```
 
+**Precision-safe promotion.** Implicit Int→Float promotion in mixed-type arithmetic operations errors when the integer's magnitude exceeds `2^53`, the largest integer exactly representable in an `f64` mantissa. This prevents silent precision loss:
+
+```tinct
+[+ 9007199254740992 1.0]        # → 9007199254740993.0 (2^53, exact)
+[+ 9007199254740993 1.0]        # → Error: Int→Float promotion would lose precision
+```
+
+**Explicit float conversion** — `[float n]` builtin performs unconditional Int→Float conversion without precision checks, allowing controlled precision loss when desired. For Float inputs, `float` is a no-op.
+
+```tinct
+[float 9007199254740993]        # → 9007199254740992.0 (loss of precision, intentional)
+[float 3.14]                    # → 3.14 (no-op on Float inputs)
+```
+
 **Integer arithmetic uses checked semantics.** `Int` operations (`+`, `-`, `*`) use Rust's `checked_add`/`checked_sub`/`checked_mul`, so overflow returns an error rather than wrapping or panicking. This prevents silent data corruption on large values. Width-specific types like `Int32` could enforce narrower range constraints via the contracts system.
 
 **Dict key integration:** `Int` values are directly usable as dict keys. `Float` values cannot be used as keys — floating-point equality semantics make them unreliable as hash keys.
@@ -192,37 +206,71 @@ Boolean capabilities (Readable, Writable, Binary, Text, Stream, Datagram, Seekab
 
 #### Network Handles
 
-Network builtins produce Handles with these capability rows:
+`connect` dispatches on the Transport variant to determine the address format and capability routing. Port is absent for transports that have no port concept:
 
 ```
-connect connector Tcp  host port  → Handle{ Binary Readable Writable Stream }
-connect connector Udp  host port  → Handle{ Binary Readable Writable Datagram }
-tls-connect …                    → Handle{ Binary Readable Writable Stream Tls→{cert…} }
+# Stream transports (NetCap)
+connect cap Tcp  host port       → Handle{ Binary Readable Writable Stream }
+connect cap Udp  host port       → Handle{ Binary Readable Writable Datagram }
+connect cap Icmp host            → Handle{ Binary Readable Writable Datagram }
+
+# Local transports (DirCap)
+connect cap UnixStream    path   → Handle{ Binary Readable Writable Stream }
+connect cap UnixDatagram  path   → Handle{ Binary Readable Writable Datagram }
+connect cap NamedPipe     path   → Handle{ Binary Readable Writable }
+
+# TLS Layer (Handle → Handle upgrade)
+tls-layer handle sni opts        → Handle{ …existing… Tls→{cert…} }
 ```
+
+Capability routing: `Tcp`/`Udp`/`Icmp` require a `NetCap` (allowlist checked before syscall); `UnixStream`/`UnixDatagram`/`NamedPipe` require a `DirCap` (cap_std path-based access). User-defined Connectors handle their own capability checks.
 
 The `Tls` capability value is a dict with the same fields as the `PeerCert` type returned by `tls-peer-cert` (see [Builtins](11a-builtins.md) §Network).
 
-#### Handle Immutability and Composability
+#### Layers — Handle→Handle Protocol Upgrades
 
-Handles compose: `tls-connect` wraps an existing stream Handle and returns a new Handle with the `Tls` capability added. The original Handle is consumed — the new Handle is the only reference to the underlying connection. Proxy builtins (`socks5-connect`, `proxy-connect`) follow the same pattern: they accept a plain Handle and return a new Handle tunneled through the proxy, with the original Handle's capabilities preserved.
+A **Layer** is any function that takes a Handle and returns a Handle with augmented capabilities (`Handle[R] → Handle[R ∪ NewCaps]`). There is no Layer typeclass — the composition is structural. Any pure-tinct function with the right signature is a Layer.
 
-### HTTP Connections — Value::HttpConn
+Standard library Layers: `tls-layer` (TLS/STARTTLS upgrade, Rust builtin), `socks5-layer` (SOCKS5 tunnel, pure tinct in `protocols/socks5.llt`), `http-connect-layer` (HTTP CONNECT tunnel, pure tinct in `net.llt`).
 
-**`Value::HttpConn` is a runtime-only value representing a persistent HTTP connection pool.** Unlike a raw Handle (which models one bidirectional byte stream), an `HttpConn` manages the full HTTP session state required for connection reuse across HTTP/1.1, HTTP/2, and HTTP/3.
-
-`HttpConn` is opaque — there is no field access syntax for it. It is accepted as the first argument to `http-get` (instead of a plain Connector), which then reuses the connection rather than opening a new one:
+Layers compose left-to-right with Connectors:
 
 ```tinct
-# All three requests share one HTTP/2 connection:
-[client: [http-connect wg "api.example.com" 443 []]]
-[users:  [http-get client "/v1/users"  []]]
-[posts:  [http-get client "/v1/posts"  []]]
-[config: [http-get client "/v1/config" []]]
+[tcp:  [connect %nc Tcp "proxy.corp" 1080]]
+[tun:  [socks5-layer tcp "api.internal" 443]]
+[tls:  [tls-layer tun "api.internal" tls-opts]]
 ```
 
-`http-connect` accepts either a Connector (opens a new connection) or an existing TLS Handle (reuses an established stream). See [Builtins](11a-builtins.md) §Network for both call forms.
+The original Handle is consumed; subsequent operations on it produce a runtime error. The new Handle wraps the protocol-upgraded connection.
 
-**Why a separate type rather than Handle:** HTTP/2 and HTTP/3 multiplex multiple request/response streams over one connection using protocol-level framing (stream IDs, HPACK compression, QUIC streams). This cannot be expressed as a single `Handle[Readable Writable]` byte stream — the multiplexing state lives in Rust inside the `HttpConn` value, implemented via `reqwest`. HTTP/1.0 single-shot requests are handled by pure-tinct `http-get` over a plain Handle; `HttpConn` is for session reuse with HTTP/2+.
+#### Sessions — Multiplexed Connections
+
+A **Session** is a multiplexed connection: one physical channel carrying multiple independent logical streams. Sessions are opened from Handles or Connectors; stream Handles are opened from Sessions.
+
+Three Session types exist as runtime-only opaque values:
+
+**`Value::QuicSession`** — QUIC (RFC 9000), implemented via `quinn`. QUIC integrates transport, TLS, and reliable delivery at the UDP level. `quinn` owns the UDP socket internally (managing path migration, congestion control, ACKs):
+
+```tinct
+[quic:   [quic-session %nc "api.example.com" 443 quic-opts]]
+[stream: [quic-open-stream quic]]    # → Handle{ Binary Readable Writable Stream }
+```
+
+**`Value::Http2Session`** — HTTP/2 (RFC 7540), via reqwest/h2. Created from a `Handle[Stream Tls]` with h2 ALPN:
+
+```tinct
+[h2: [http2-session tls-handle]]
+[r:  [http-request h2 "GET" "/api" []]]
+```
+
+**`Value::Http3Session`** — HTTP/3 (RFC 9114), over a QuicSession:
+
+```tinct
+[h3: [http3-session quic-session]]
+[r:  [http-request h3 "GET" "/api" []]]
+```
+
+`http-request` is the uniform application-level call across all HTTP session types, returning `{ok: {status: Int  headers: Dict  body: Bytes}} | {err: String}`.
 
 ### URI Values — Uri, Url, Urn
 

@@ -102,6 +102,10 @@ pub enum Expr {
     /// Variable reference. In new syntax, bare identifiers (`x`) and escaped refs (`$x`)
     /// both produce `VarRef`. The `%` pipeline variable is stored as `VarRef("%")`.
     ///
+    /// The `escaped` field tracks whether this was written as `$x` (true) or `x` (false).
+    /// This matters for pattern matching: `$x` in a pattern means "pin" (match against
+    /// the value of x), while `x` in a pattern means "bind" (assign the matched value to x).
+    ///
     /// The `resolved` field is populated by the variable resolution pass (Phase 1 of arena
     /// allocation strategy). It caches the (level, slot) de Bruijn coordinates for static
     /// bindings.
@@ -116,6 +120,8 @@ pub enum Expr {
     /// write `None` twice, indistinguishable from the initial unprocessed state).
     VarRef {
         name: String,
+        /// True if written as `$name`, false if written as bare `name`
+        escaped: bool,
         /// Resolved (level, slot) pair from variable resolution pass.
         /// Uses RefCell for write-once resolution without cloning the entire AST.
         /// The write-once invariant is enforced in resolve.rs.
@@ -622,9 +628,23 @@ impl fmt::Display for Span {
 impl Expr {
     /// Helper constructor for VarRef with unresolved cache.
     /// Used throughout the codebase to create variable references before the resolution pass runs.
+    /// Creates a bare (unescaped) variable reference: `x`, not `$x`.
     pub fn var_ref(name: String) -> Self {
         Expr::VarRef {
             name,
+            escaped: false,
+            // Outer None = not yet processed by the resolution pass.
+            resolved: RefCell::new(None),
+        }
+    }
+
+    /// Helper constructor for escaped VarRef (`$name`).
+    /// Used in the parser when encountering Token::EscapedRef.
+    /// In pattern context, escaped refs become pin patterns.
+    pub fn escaped_ref(name: String) -> Self {
+        Expr::VarRef {
+            name,
+            escaped: true,
             // Outer None = not yet processed by the resolution pass.
             resolved: RefCell::new(None),
         }

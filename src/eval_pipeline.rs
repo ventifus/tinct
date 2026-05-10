@@ -180,6 +180,7 @@ fn wrap_with_nominal_validation(
     let varref_expr = Box::new(crate::ast::Spanned::new(
         Expr::VarRef {
             name: "%_input".to_string(),
+            escaped: false,
             resolved: RefCell::new(None),
         },
         validation_span,

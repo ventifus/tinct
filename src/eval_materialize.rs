@@ -166,6 +166,11 @@ pub(crate) struct GuardedValidateData {
     /// Materialized/Failed at guard-push time (these states can't produce new Overlays).
     pub(crate) ctx: Option<Rc<EvalContext>>,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
+    /// Default expression and environment from TypeAssert `default:` annotation.
+    pub(crate) default: Option<(
+        Rc<crate::ast::Spanned<crate::ast::Expr>>,
+        Rc<RefCell<crate::value::Environment>>,
+    )>,
 }
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -580,7 +585,7 @@ pub(crate) fn force_step(
             thunk: Rc::clone(&func_thunk),
             mat_span: Some(call_span),
         }
-    } else if let Some((inner, expected, field_path, guard_span, blame_label)) =
+    } else if let Some((inner, expected, field_path, guard_span, blame_label, default_opt)) =
         thunk.take_guarded()
     {
         let inner_span = inner.span;
@@ -610,6 +615,7 @@ pub(crate) fn force_step(
             mat_span,
             ctx: guard_ctx,
             blame_label,
+            default: default_opt,
         })));
         Action::Materialize {
             thunk: Rc::clone(&inner),
@@ -881,6 +887,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 mat_span,
                 ctx: guard_ctx,
                 blame_label,
+                default,
             } = *data;
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
@@ -931,6 +938,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 guard_span,
                                 inner_span,
                                 ctx_ref,
+                                default.clone(),
                             ) {
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict(new_entries);
@@ -939,13 +947,50 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     Action::Continue(Ok(guarded_value))
                                 }
                                 Err(err) => {
+                                    // Guard validation failed - use default if present
+                                    if let Some((default_expr, default_env)) = default {
+                                        let ctx_for_default = guard_ctx
+                                            .clone()
+                                            .expect("guard_ctx should be Some for Record guards");
+                                        stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                            thunk: Rc::clone(&thunk),
+                                            origin: Some(Rc::from("default fallback")),
+                                            thunk_span,
+                                            mat_span,
+                                            restore: None,
+                                            ctx: Rc::clone(&ctx_for_default),
+                                        })));
+                                        return Action::Eval {
+                                            expr: default_expr,
+                                            env: default_env,
+                                            ctx: ctx_for_default,
+                                        };
+                                    }
                                     let err = decorate(err);
                                     thunk.cache_failure(&err);
                                     Action::Continue(Err(err))
                                 }
                             }
                         } else {
-                            // Expected Record but got non-Dict
+                            // Expected Record but got non-Dict - use default if present
+                            if let Some((default_expr, default_env)) = default {
+                                let ctx_for_default = guard_ctx
+                                    .clone()
+                                    .expect("guard_ctx should be Some for Record guards");
+                                stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                    thunk: Rc::clone(&thunk),
+                                    origin: Some(Rc::from("default fallback")),
+                                    thunk_span,
+                                    mat_span,
+                                    restore: None,
+                                    ctx: Rc::clone(&ctx_for_default),
+                                })));
+                                return Action::Eval {
+                                    expr: default_expr,
+                                    env: default_env,
+                                    ctx: ctx_for_default,
+                                };
+                            }
                             let field_path_prefix = if field_path.is_empty() {
                                 String::new()
                             } else {
@@ -979,6 +1024,30 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             thunk.set_state(ThunkState::Materialized(value.clone()));
                             Action::Continue(Ok(value))
                         } else {
+                            // Type mismatch for non-Record types - use default if present
+                            if let Some((default_expr, default_env)) = default {
+                                // For non-Record guards, guard_ctx may be None (inner was already Materialized).
+                                // Defaults still need a ctx to evaluate in. Use guard_ctx if available, otherwise
+                                // we need to get ctx from somewhere. Since this is a fallback path, we can use
+                                // the default_env's associated ctx if needed, but we don't have direct access.
+                                // The safest approach: require guard_ctx for defaults (enforced at guard creation).
+                                if let Some(ctx_for_default) = guard_ctx {
+                                    stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                        thunk: Rc::clone(&thunk),
+                                        origin: Some(Rc::from("default fallback")),
+                                        thunk_span,
+                                        mat_span,
+                                        restore: None,
+                                        ctx: Rc::clone(&ctx_for_default),
+                                    })));
+                                    return Action::Eval {
+                                        expr: default_expr,
+                                        env: default_env,
+                                        ctx: ctx_for_default,
+                                    };
+                                }
+                                // If guard_ctx is None, we can't evaluate the default. Fall through to error.
+                            }
                             let field_path_prefix = if field_path.is_empty() {
                                 String::new()
                             } else {
@@ -1020,6 +1089,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             field_path,
                             guard_span,
                             blame_label,
+                            default,
                         });
                     }
                     Action::Continue(Err(e))
@@ -1291,6 +1361,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     expr_span,
                                     thunk_span,
                                     &ctx,
+                                    default_opt.clone(),
                                 ) {
                                     Ok(new_entries) => {
                                         Action::Continue(Ok(Value::Dict(new_entries)))

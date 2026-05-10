@@ -1,0 +1,5 @@
+# Named arg type checking: unknown param name — runtime error (type-check warning not yet implemented)
+[f: [fn [x@Int y@Int] [call $+ $x $y]]
+ result: [call $f 42 z: 999]]
+=== error
+[E024] missing argument for required parameter 'y'

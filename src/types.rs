@@ -189,7 +189,12 @@ impl PartialEq for Type {
                     ret: r2,
                     variadic: v2,
                 },
-            ) => v1 == v2 && p1 == p2 && r1 == r2,
+            ) => {
+                p1.len() == p2.len()
+                    && p1.iter().zip(p2).all(|((_, t1), (_, t2))| t1 == t2)
+                    && r1 == r2
+                    && v1 == v2
+            }
             (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
@@ -1339,6 +1344,74 @@ mod tests {
             variadic: false,
         };
         assert_eq!(format!("{ty}"), "Fn@Int []");
+    }
+
+    #[test]
+    fn test_function_equality_ignores_param_names() {
+        // Function types with different param names should be equal
+        let f1 = Type::Function {
+            params: vec![(Some("x".into()), Type::Int), (Some("y".into()), Type::Str)],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        };
+        let f2 = Type::Function {
+            params: vec![(None, Type::Int), (None, Type::Str)],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        };
+        let f3 = Type::Function {
+            params: vec![(Some("a".into()), Type::Int), (Some("b".into()), Type::Str)],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        };
+        assert_eq!(
+            f1, f2,
+            "Function types should be equal regardless of param names"
+        );
+        assert_eq!(
+            f2, f3,
+            "Function types should be equal regardless of param names"
+        );
+        assert_eq!(
+            f1, f3,
+            "Function types should be equal regardless of param names"
+        );
+
+        // Different param types should NOT be equal
+        let f4 = Type::Function {
+            params: vec![
+                (Some("x".into()), Type::Float),
+                (Some("y".into()), Type::Str),
+            ],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        };
+        assert_ne!(
+            f1, f4,
+            "Function types with different param types should not be equal"
+        );
+
+        // Different return types should NOT be equal
+        let f5 = Type::Function {
+            params: vec![(Some("x".into()), Type::Int), (Some("y".into()), Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        };
+        assert_ne!(
+            f1, f5,
+            "Function types with different return types should not be equal"
+        );
+
+        // Different variadic flag should NOT be equal
+        let f6 = Type::Function {
+            params: vec![(Some("x".into()), Type::Int), (Some("y".into()), Type::Str)],
+            ret: Box::new(Type::Bool),
+            variadic: true,
+        };
+        assert_ne!(
+            f1, f6,
+            "Function types with different variadic flags should not be equal"
+        );
     }
 
     #[test]

@@ -1,0 +1,9 @@
+# Default itself is evaluated lazily — guards with defaults not fully implemented
+[counter: [value: 0]
+ bump: [fn [] [merge counter [value: [+ counter.value 1]]].value]
+ result: [@[type: Number  default: bump[]] "fail"]]
+.result
+=== warn
+cannot unify Number
+=== out
+String("fail")

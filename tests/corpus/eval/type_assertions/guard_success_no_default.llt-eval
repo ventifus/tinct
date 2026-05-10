@@ -1,0 +1,4 @@
+# Guard succeeds — no default used
+[@[type: Number  default: 99] 42]
+=== out
+Int(42)

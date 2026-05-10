@@ -1,0 +1,4 @@
+# Default used on Record type mismatch (extra field in closed record)
+[@[type: [x: Int]  default: [x: 5]] [x: 1  y: 2]]
+=== out
+Dict({"x": Int(5)})

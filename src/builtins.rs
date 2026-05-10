@@ -327,9 +327,9 @@ pub(crate) fn reject_named(
 pub(crate) use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
     builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_exp,
-    builtin_finite_check, builtin_if, builtin_inf_check, builtin_log, builtin_log10, builtin_log2,
-    builtin_lt, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin,
-    builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_finite_check, builtin_float, builtin_if, builtin_inf_check, builtin_log, builtin_log10,
+    builtin_log2, builtin_lt, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl,
+    builtin_shr, builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
 };
 
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
@@ -1072,6 +1072,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("bxor", builtin_bxor, [Strictness::Seq, Strictness::Seq]),
         builtin!("shl", builtin_shl, [Strictness::Seq, Strictness::Seq]),
         builtin!("shr", builtin_shr, [Strictness::Seq, Strictness::Seq]),
+        // Type conversion
+        builtin!("float", builtin_float, [Strictness::Seq]),
         // Parsing
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
@@ -6260,8 +6262,8 @@ mod tests {
         assert!(names.contains(&"position"), "missing position");
         assert_eq!(
             names.len(),
-            177,
-            "expected 177 builtins, got {}",
+            178,
+            "expected 178 builtins, got {}",
             names.len()
         );
     }
