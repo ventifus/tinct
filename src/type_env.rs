@@ -2200,6 +2200,24 @@ impl TypeEnv {
             },
         );
 
+        // get?: registered directly. It is a Rust builtin (builtin_get_optional) that returns
+        // the value at the key or Null (empty dict) if missing. The base type Unknown → Unknown → Unknown
+        // is a conservative fallback; the type checker special-cases get? for Map and Record args
+        // to produce precise Union(V|Null) return types.
+        env.insert_scheme(
+            "get?".to_string(),
+            TypeScheme {
+                type_vars: vec![],
+                row_vars: vec![],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+                    ret: Box::new(Type::Unknown),
+                    variadic: false,
+                },
+            },
+        );
+
         // Date-time: timestamps and durations
         env.insert(
             "parse-timestamp".to_string(),
@@ -2493,6 +2511,18 @@ impl TypeEnv {
         env.insert(
             "Map".to_string(),
             Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+        );
+        // Map[K V] as a parameterized type alias: allows @[Map Str Int] annotations.
+        // The alias params "k" and "v" are substituted by instantiate_type_alias when applied.
+        env.insert_type_alias(
+            "Map".to_string(),
+            TypeAlias {
+                params: vec!["k".to_string(), "v".to_string()],
+                body: Type::Map(
+                    Box::new(Type::TypeVar("k".to_string(), 0)),
+                    Box::new(Type::TypeVar("v".to_string(), 0)),
+                ),
+            },
         );
 
         env
