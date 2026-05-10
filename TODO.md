@@ -292,33 +292,33 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 **stale-corpus-warns** — Multiple corpus test files have `=== warn` or `=== error` sections with stale expected strings that no longer match the type checker's output. Grouped by cause:
 
 *Span shifted or message text changed — update the expected substring to match current output:*
-- [ ] `tests/corpus/eval/builtins/apply.llt-eval` — warn: `cannot unify Fn@? [?] with Fn@Number [? ?]` at wrong span
-- [ ] `tests/corpus/eval/builtins/seq_empty.llt-eval` — warn: `cannot unify Seq[?] with []` span changed from `1:1-1:13` to `1:10-1:12`
-- [ ] `tests/corpus/eval/builtins/seq_collect_empty_input.llt-eval` — same span shift as seq_empty
-- [ ] `tests/corpus/eval/stdlib/slice_float_coercion.llt-eval` — warn: `cannot unify Int with Float` span changed
-- [ ] `tests/corpus/eval/stdlib/rest_seq.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
-- [ ] `tests/corpus/eval/stdlib/cons_seq.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
-- [ ] `tests/corpus/eval/laziness/deep_chain_50.llt-eval` — last expected warn line `field 'result' not found in []` no longer produced
-- [ ] `tests/corpus/eval/functions/fn_kotlin_apply_mixed_keys.llt-eval` (and `_named`, `_positional`, `_reorder`, `_sparse_keys`) — warn: `cannot unify Fn@? [?] with _t0` vs old arity mismatch text
-- [ ] `tests/corpus/eval/errors/flatten_seq_error.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
-- [ ] `tests/corpus/eval/errors/seq_collect_non_seq.llt-eval` — warn: span changed
-- [ ] `tests/corpus/eval/errors/slice_on_non_dict.llt-eval` — warn: `cannot unify [] with 42` (was `[...]`)
-- [ ] `tests/corpus/eval/errors/sort_seq_error.llt-eval` — warn: span changed
-- [ ] `tests/corpus/eval/errors/proxy_access_error_has_context.llt-eval` — warn: `cannot unify Proxy with [test: _t2]` (was `[test: _t2 ...]` with open-row marker)
-- [ ] `tests/corpus/eval/errors/proxy_handler_error.llt-eval` — same open-row marker removal
-- [ ] `tests/corpus/eval/errors/input_validation_mismatch.llt-eval` — warn: `expects contract []` (was `expects contract [...]`)
-- [ ] `tests/corpus/eval/errors/apply_builtin_named_arg.llt-eval` — warn text changed
+- [x] `tests/corpus/eval/builtins/apply.llt-eval` — warn: `cannot unify Fn@? [?] with Fn@Number [? ?]` at wrong span
+- [x] `tests/corpus/eval/builtins/seq_empty.llt-eval` — warn: `cannot unify Seq[?] with []` span changed from `1:1-1:13` to `1:10-1:12`
+- [x] `tests/corpus/eval/builtins/seq_collect_empty_input.llt-eval` — same span shift as seq_empty
+- [x] `tests/corpus/eval/stdlib/slice_float_coercion.llt-eval` — warn: `cannot unify Int with Float` span changed
+- [x] `tests/corpus/eval/stdlib/rest_seq.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
+- [x] `tests/corpus/eval/stdlib/cons_seq.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
+- [x] `tests/corpus/eval/laziness/deep_chain_50.llt-eval` — last expected warn line `field 'result' not found in []` no longer produced
+- [x] `tests/corpus/eval/functions/fn_kotlin_apply_mixed_keys.llt-eval` (and `_named`, `_positional`, `_reorder`, `_sparse_keys`) — warn: `cannot unify Fn@? [?] with _t0` vs old arity mismatch text
+- [x] `tests/corpus/eval/errors/flatten_seq_error.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
+- [x] `tests/corpus/eval/errors/seq_collect_non_seq.llt-eval` — warn: span changed
+- [x] `tests/corpus/eval/errors/slice_on_non_dict.llt-eval` — warn: `cannot unify [] with 42` (was `[...]`)
+- [x] `tests/corpus/eval/errors/sort_seq_error.llt-eval` — warn: span changed
+- [x] `tests/corpus/eval/errors/proxy_access_error_has_context.llt-eval` — warn: `cannot unify Proxy with [test: _t2]` (was `[test: _t2 ...]` with open-row marker)
+- [x] `tests/corpus/eval/errors/proxy_handler_error.llt-eval` — same open-row marker removal
+- [x] `tests/corpus/eval/errors/input_validation_mismatch.llt-eval` — warn: `expects contract []` (was `expects contract [...]`)
+- [x] `tests/corpus/eval/errors/apply_builtin_named_arg.llt-eval` — warn text changed
 
 *Type checker improved — warning no longer produced, remove the `=== warn` section entirely:*
-- [ ] `tests/corpus/eval/errors/bracket_access_missing_key.llt-eval` — type checker now resolves field access; `field 'b' not found` warning is gone
-- [ ] `tests/corpus/eval/errors/dot_access_missing_key.llt-eval` — same; `field 'missing' not found` warning gone
-- [ ] `tests/corpus/eval/errors/no_match_shows_keys.llt-eval` — same; `field 'xyz' not found` warning gone
-- [ ] `tests/corpus/eval/errors/typo_suggestion.llt-eval` — same; `field 'usernme' not found` warning gone
+- [x] `tests/corpus/eval/errors/bracket_access_missing_key.llt-eval` — type checker now resolves field access; `field 'b' not found` warning is gone
+- [x] `tests/corpus/eval/errors/dot_access_missing_key.llt-eval` — same; `field 'missing' not found` warning gone
+- [x] `tests/corpus/eval/errors/no_match_shows_keys.llt-eval` — same; `field 'xyz' not found` warning gone
+- [x] `tests/corpus/eval/errors/typo_suggestion.llt-eval` — same; `field 'usernme' not found` warning gone
 
 *Eval behavior changed — update expected output/error:*
-- [ ] `tests/corpus/eval/errors/closed_record_rejects_extra.llt-eval` — under BAS width subtyping, `@[name: Str]` now accepts dicts with extra fields; TypeAssert no longer rejects them; this test belongs in a "width-subtyping" success test, not errors/
-- [ ] `tests/corpus/eval/type_assertions/guard_default_extra_field.llt-eval` — expected `Dict({"x": Int(5)})` but BAS now preserves extra fields; output is `Dict({"x": Int(1), "y": Int(2)})`
-- [ ] `tests/corpus/eval/typecheck/bas_width_subtyping.llt-eval` — output changed after RowTail removal; update expected output to match new format
+- [x] `tests/corpus/eval/errors/closed_record_rejects_extra.llt-eval` — under BAS width subtyping, `@[name: Str]` now accepts dicts with extra fields; TypeAssert no longer rejects them; this test belongs in a "width-subtyping" success test, not errors/
+- [x] `tests/corpus/eval/type_assertions/guard_default_extra_field.llt-eval` — expected `Dict({"x": Int(5)})` but BAS now preserves extra fields; output is `Dict({"x": Int(1), "y": Int(2)})`
+- [x] `tests/corpus/eval/typecheck/bas_width_subtyping.llt-eval` — output changed after RowTail removal; update expected output to match new format
 
 *Test bugs — fix the corpus test itself:*
 - [ ] `tests/corpus/eval/stdlib/get_or_missing.llt-eval` — uses bare `b` (undefined variable) instead of `"b"` (string key); fix to `[get-or [a: 1] "b" 99]` and remove `=== warn` section
