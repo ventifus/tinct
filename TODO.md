@@ -326,10 +326,10 @@ From the 9-agent codebase review on 2026-05-09.
 From `just versions` on 2026-05-09. Also: `versions.llt` has a false-positive on Rust toolchain
 (compares `"1.95"` != `"1.95.0"` as strings — both are the same release).
 
-- [ ] `jiff`: `0.1.29` → `0.2.24` — breaking major bump; audit jiff API changes (`Cargo.toml`)
-- [ ] `reqwest`: `0.12.28` → `0.13.3` — minor but potentially breaking; check release notes (`Cargo.toml`)
-- [ ] `rustls-native-certs`: `0.7.3` → `0.8.3` (`Cargo.toml`)
-- [ ] `sha2`: `0.10.9` → `0.11.0` — breaking minor; audit digest API changes in `src/builtins_io.rs` (`Cargo.toml`)
-- [ ] `sha3`: `0.10.9` → `0.11.0` — same digest ecosystem breaking change as sha2 (`Cargo.toml`)
-- [ ] `subtle`: `1.0.0` → `2.6.1` — breaking major; audit constant-time comparison callers in `src/builtins_io.rs` (`Cargo.toml`)
-- [ ] `webpki-roots`: `0.26.11` → `1.0.7` — breaking major; `1.0.7` already in lock as transitive dep, consolidates (`Cargo.toml`)
+- [x] `jiff`: 0.1→0.2 (backward compatible)
+- [x] `reqwest`: 0.12→0.13 (feature `rustls-tls`→`rustls`)
+- [x] `rustls-native-certs`: 0.7→0.8 (`CertificateResult` struct API change)
+- [x] `sha2`: 0.10→0.11 (compatible)
+- [x] `sha3`: 0.10→0.11 (compatible)
+- [x] `subtle`: 1→2 (compatible)
+- [x] `webpki-roots`: 0.26→1.0 (compatible)
