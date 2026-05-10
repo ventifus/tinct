@@ -168,7 +168,7 @@ See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-da
 - [x] Remove `http-connect` entirely — deleted builtin, function, TypeEnv entry, corpus test, test assertion (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
 - [ ] Register all new builtins in `standard_builtins()` (`src/builtins.rs`)
 - [ ] Tests: error-path corpus tests for quic-session, http2-session, http-request (arity, type errors) in `tests/corpus/eval/builtins/`
-- [ ] Update `doc/11a-builtins.md` §Network with Session builtins
+- [x] Update `doc/11a-builtins.md` §Network with Session builtins — added Tokio runtime strategy note for future async builtins
 **Depends on:** `connect-v2`
 
 ### `stdlib-protocols`: net.llt rewrite + protocols/ subdirectory
