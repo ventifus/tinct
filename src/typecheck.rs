@@ -2262,6 +2262,26 @@ fn check_dot_access(
         }
         Type::Unknown => Ok(Type::Unknown),
         Type::Proxy => Ok(Type::Unknown),
+        // Intersection type: search each member for the field.
+        // An intersection value satisfies all members, so any member that has the field
+        // statically provides its type.  Return the first match; if no member has the
+        // field statically, fall back to Unknown (a member with an open row tail may
+        // accept the field dynamically, and we cannot resolve it at compile time without
+        // full constraint propagation into each member's row variable).
+        Type::Intersection(ref members) => {
+            for member in members {
+                if let Type::Record(Row { ref fields, .. }) = member {
+                    if let Some(ty) = fields.get(field_str) {
+                        return Ok(ty.clone());
+                    }
+                }
+            }
+            // No member had the field statically.
+            Ok(Type::Unknown)
+        }
+        // Negation type: ~A narrows inhabitance, not field structure.
+        // We cannot extract field types from a negation, so fall back to Unknown.
+        Type::Negation(_) => Ok(Type::Unknown),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -2350,6 +2370,19 @@ fn check_dot_access_int(
         }
         Type::Unknown => Ok(Type::Unknown),
         Type::Proxy => Ok(Type::Unknown),
+        // Intersection type: search each member for the numeric field.
+        Type::Intersection(ref members) => {
+            for member in members {
+                if let Type::Record(Row { ref fields, .. }) = member {
+                    if let Some(ty) = fields.get(field_name.as_str()) {
+                        return Ok(ty.clone());
+                    }
+                }
+            }
+            Ok(Type::Unknown)
+        }
+        // Negation type: fall back to Unknown for integer field access.
+        Type::Negation(_) => Ok(Type::Unknown),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -3426,6 +3459,56 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.message.contains("expected record type")));
+    }
+
+    // -- Dot access on Intersection and Negation types --
+
+    #[test]
+    fn test_dot_access_intersection_found() {
+        // `[@[[all [x: Int ...] [y: String ...]]] $rec].x` should return Int.
+        // The TypeAssert produces Intersection([{x:Int,...ρ1},{y:String,...ρ2}]).
+        // Our new Intersection arm searches members and returns Int from the {x:Int,...} member.
+        let env = doc_env(
+            "[rec: [x: 1  y: \"hello\"]]\
+             [result: [@[[all [x: Int ...] [y: String ...]]] $rec].x]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!(
+                "expected Int for .x on Intersection([{{x:Int,...}},{{y:String,...}}]), got {other}"
+            ),
+            None => panic!("field 'result' not found in env"),
+        }
+    }
+
+    #[test]
+    fn test_dot_access_intersection_missing_field_returns_unknown() {
+        // Accessing a field that is not in any member of the intersection should return Unknown
+        // (not an error), because a member with an open row tail may accept the field dynamically.
+        let result = check(
+            "[rec: [x: 1  y: \"hello\"]]\
+             [result: [@[[all [x: Int ...] [y: String ...]]] $rec].z]",
+        );
+        // Should not fail — field z is not statically known in the intersection, so Unknown is returned
+        assert!(
+            result.is_ok(),
+            "expected no error for accessing unknown field on intersection, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_dot_access_negation_returns_unknown() {
+        // Accessing a field on a Negation type returns Unknown (not an error).
+        // Negation restricts inhabitance, not field structure.
+        // @[[without [x: Int ...]]] produces Negation(Record({x:Int},...)).
+        // The conservative negation subtyping rule (_, Negation(_)) => true allows the check to pass.
+        // Then .y on Negation(...) should return Unknown without error.
+        let result = check("[x: 42]\n[result: [@[[without [x: Int ...]]] $x].y]");
+        // Should not error — Negation falls back to Unknown for field access
+        assert!(
+            result.is_ok(),
+            "expected no error for field access on Negation type, got: {result:?}"
+        );
     }
 
     // -- Access chain constraint generation (doc/07 Part 5) --
