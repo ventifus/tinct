@@ -85,7 +85,7 @@ See `doc/whatif/parameterized-dict.md` and `doc/07-type-extensions.md §Record/M
 - [x] Add `get?` builtin: returns value or Null on missing key (`src/builtins_dict.rs`)
 - [x] Add `record?` and `map?` predicates (`src/builtins_meta.rs`)
 - [x] Implement structural dict equality: order-insensitive key comparison with cycle detection (`src/builtins_math.rs`)
-- [ ] Update `check_get` in typecheck for Map[K V] → V|Null (BAS-dependent) (`src/typecheck.rs`)
+- [x] `check_get`: Map[K V] → val_ty; get? → Union([val_ty, Null]); Record narrowing; get? registered in TypeEnv (`src/typecheck.rs`, `src/type_env.rs`)
 - [x] Update `doc/03-data-model.md` §Equality: order-insensitive structural equality, cycle detection, extensional semantics (`doc/03-data-model.md`)
 - [x] Corpus tests: dict_structural_equality, get_optional, record_map_predicates (`tests/corpus/eval/builtins/`)
 **Depends on:** `bas-core`

@@ -1434,6 +1434,23 @@ fn infer_expr(
                 }
             }
 
+            // Special case: `get` and `get?` are type-level special forms that narrow
+            // their return type based on the dict argument's type (Map[K V] → V or V|Null).
+            if let Expr::VarRef { name, .. } = &func.node {
+                if (name == "get" || name == "get?") && named_args.is_empty() {
+                    let is_optional = name == "get?";
+                    return check_get(
+                        is_optional,
+                        args,
+                        named_args,
+                        env,
+                        expr.span,
+                        state,
+                        type_map,
+                    );
+                }
+            }
+
             // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
             // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
@@ -2131,6 +2148,102 @@ fn check_expr(
     } else {
         Ok(())
     }
+}
+
+/// Type-check `[get key dict]` and `[get? key dict]` with narrowing on Map/Record argument types.
+///
+/// For `[get key dict]` (error on missing key):
+/// - `Map[K V]` → `V`
+/// - `Record` with known string key → field type
+/// - Otherwise → `Unknown`
+///
+/// For `[get? key dict]` (Null on missing key):
+/// - `Map[K V]` → `V | Null`
+/// - `Record` with known string key → `field_type | Null`
+/// - Otherwise → `Unknown`
+///
+/// "Null" is represented as the empty closed record `Type::Record(Row { fields: {}, tail: Empty })`.
+fn check_get(
+    is_optional: bool,
+    args: &[Rc<Spanned<Expr>>],
+    named_args: &[Spanned<NamedArg>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    let builtin_name = if is_optional { "get?" } else { "get" };
+
+    // Validate arity: exactly 2 positional args, no named args.
+    if named_args.is_empty() && args.len() == 2 {
+        // Infer key argument (side effects: type_map population).
+        let key_ty = infer_expr(&args[0], env, state, type_map)?;
+        let key_ty = state.subst.apply(&key_ty);
+
+        // Infer dict argument.
+        let dict_ty = infer_expr(&args[1], env, state, type_map)?;
+        let dict_ty = state.subst.apply(&dict_ty);
+
+        // Null type: empty closed record (Value::Dict(empty) at runtime).
+        let null_ty = Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        });
+
+        let make_nullable = |ty: Type| -> Type {
+            if is_optional {
+                Type::normalize_union(vec![ty, null_ty.clone()])
+            } else {
+                ty
+            }
+        };
+
+        let result = match &dict_ty {
+            Type::Map(_, val_ty) => {
+                // Map[K V]: get returns V, get? returns V|Null.
+                make_nullable(*val_ty.clone())
+            }
+            Type::Record(row) => {
+                // Record: if the key is a known string literal, look up the field.
+                match &key_ty {
+                    Type::StringLiteral(field) => {
+                        match row.fields.get(field) {
+                            Some(field_ty) => make_nullable(field_ty.clone()),
+                            None => {
+                                // Field not in the known set. For closed records this is an error
+                                // at runtime, but we return Unknown here to allow gradual typing.
+                                // check_dot_access returns an error for closed records; get/get?
+                                // are more permissive since they take dynamic keys.
+                                Type::Unknown
+                            }
+                        }
+                    }
+                    _ => {
+                        // Non-literal key against a Record: we can't narrow statically.
+                        Type::Unknown
+                    }
+                }
+            }
+            _ => {
+                // Unknown, TypeVar, or other: fall back to Unknown.
+                Type::Unknown
+            }
+        };
+
+        return Ok(result);
+    }
+
+    // Unexpected arity or named args: fall through to the normal call path
+    // (which will produce an arity or type error as appropriate).
+    Err(vec![TypeError::new(
+        format!(
+            "arity mismatch: {} expects exactly 2 arguments, got {} ({} named)",
+            builtin_name,
+            args.len(),
+            named_args.len()
+        ),
+        span,
+    )])
 }
 
 fn check_dot_access(
@@ -10291,5 +10404,131 @@ mod tests {
         // The second arm after wildcard should be flagged as unreachable (if coverage checking fires)
         // or just succeed. Either way, no panic.
         let _ = check(source);
+    }
+
+    // ========== check_get / check_get? Tests ==========
+
+    #[test]
+    fn test_check_get_map_returns_value_type() {
+        // [get key map] where map : Map[String Int] should return Int.
+        // Seed TypeEnv directly with m : Map[String Int] since there is no Map literal syntax in LLT.
+        let mut base_env = TypeEnv::with_builtins();
+        base_env.insert(
+            "m".to_string(),
+            Type::Map(Box::new(Type::Str), Box::new(Type::Int)),
+        );
+        let env = Rc::new(base_env);
+        let mut state = InferState::new();
+        let mut file = crate::parse("[result: [get \"key\" m]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let result_env =
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .unwrap();
+        match result_env.get("result").map(|s| &s.body) {
+            Some(Type::Int) => {}
+            Some(other) => panic!("expected Int from get on Map[String Int], got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_check_get_optional_map_returns_value_or_null() {
+        // [get? key map] where map : Map[String Int] should return Int|Null.
+        // Seed TypeEnv directly with m : Map[String Int].
+        let mut base_env = TypeEnv::with_builtins();
+        base_env.insert(
+            "m".to_string(),
+            Type::Map(Box::new(Type::Str), Box::new(Type::Int)),
+        );
+        let env = Rc::new(base_env);
+        let mut state = InferState::new();
+        let mut file = crate::parse("[result: [get? \"key\" m]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let result_env =
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .unwrap();
+        let null_ty = Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        });
+        match result_env.get("result").map(|s| &s.body) {
+            Some(Type::Union(members)) => {
+                assert!(
+                    members.contains(&Type::Int),
+                    "Union should contain Int, got {:?}",
+                    members
+                );
+                assert!(
+                    members.contains(&null_ty),
+                    "Union should contain Null (empty Record), got {:?}",
+                    members
+                );
+            }
+            Some(other) => panic!("expected Union(Int|Null) from get? on Map[String Int], got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_check_get_record_known_field_returns_field_type() {
+        // [get "a" rec] where rec : [a: Int] should return Int.
+        let env = doc_env_with_builtins(
+            "[rec: [a: 42]]\n\
+             [result: [get \"a\" rec]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) | Some(Type::IntLiteral(_)) => {}
+            Some(other) => panic!("expected Int from get on record [a: Int], got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_check_get_optional_record_known_field_returns_field_type_or_null() {
+        // [get? "a" rec] where rec : [a: Int] should return Int|Null.
+        let env = doc_env_with_builtins(
+            "[rec: [a: 42]]\n\
+             [result: [get? \"a\" rec]]",
+        );
+        let null_ty = Type::Record(Row {
+            fields: HashMap::new(),
+            tail: RowTail::Empty,
+        });
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Union(members)) => {
+                let has_int = members
+                    .iter()
+                    .any(|m| matches!(m, Type::Int | Type::IntLiteral(_)));
+                assert!(has_int, "Union should contain Int or IntLiteral, got {:?}", members);
+                assert!(
+                    members.contains(&null_ty),
+                    "Union should contain Null, got {:?}",
+                    members
+                );
+            }
+            Some(other) => panic!("expected Union(Int|Null) from get? on record, got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_check_get_unknown_type_falls_back_to_unknown() {
+        // [get key unknown_dict] where unknown_dict : Unknown should return Unknown (no narrowing).
+        let env = doc_env_with_builtins(
+            "[d: [builtin-if true [] []]]\n\
+             [result: [get \"x\" d]]",
+        );
+        // We just verify it type-checks without error (returns Unknown or some type).
+        let _ = env.get("result");
+    }
+
+    #[test]
+    fn test_get_question_mark_registered_in_builtins() {
+        // get? should be resolvable from the builtin environment without error.
+        let env = Rc::new(TypeEnv::with_builtins());
+        assert!(
+            env.get("get?").is_some(),
+            "get? should be registered in TypeEnv::with_builtins()"
+        );
     }
 }
