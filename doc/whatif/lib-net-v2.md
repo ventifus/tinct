@@ -1,6 +1,6 @@
 # What If: Composable Networking for tinct (lib-net-v2)
 
-**State:** Proposal
+**State:** Accepted — 2026-05-09
 
 What would it take to give tinct a fully composable networking stack — one where TCP, UDP, Unix sockets, TLS, QUIC, SOCKS5, HTTP/1.1, HTTP/2, HTTP/3, gRPC, WebSocket, and DNS all emerge from three orthogonal primitives that compose freely?
 
@@ -56,7 +56,7 @@ Every networking operation in tinct is one of three things:
 
 **Session** — represents a multiplexed connection from which multiple logical streams can be opened. Created from a Handle; produces stream Handles.
 
-These compose left-to-right. A complete HTTP/3-over-SOCKS5 stack is:
+These compose left-to-right. An HTTP/2-over-SOCKS5 stack (TCP tunnel → TLS → HTTP/2):
 
 ```tinct
 [include %libdir "net.llt"]
@@ -65,26 +65,35 @@ These compose left-to-right. A complete HTTP/3-over-SOCKS5 stack is:
 # 1. Connector: TCP connection to proxy (NetCap)
 [tcp:   [connect %nc Tcp "proxy.corp" 1080]]
 
-# 2. Layer: SOCKS5 tunnel through proxy to target
-[tun:   [socks5-layer tcp "api.internal" 443]]
+# 2. Layer: SOCKS5 tunnel to target (NetCap re-validated for tunnel target)
+[tun:   [socks5-layer tcp %nc "api.internal" 443 null]]
 
-# 3. Layer: TLS on the tunneled stream
-[tls:   [tls-layer tun "api.internal" tls-opts]]
+# 3. Layer: TLS on the tunneled stream (negotiate h2 via ALPN)
+[tls:   [tls-layer tun "api.internal" [alpn: ["h2"]]]]
 
-# 4. Session: QUIC over the tunneled TLS connection
-[quic:  [quic-session tls "api.internal" quic-opts]]
+# 4. Session: HTTP/2 over the tunneled TLS connection
+[h2:    [http2-session tls]]
 
-# 5. Session: HTTP/3 over QUIC
-[http3: [http3-session quic]]
-
-# 6. Application: make a request
-[r: [http-request http3 "GET" "/v1/services" []]]
+# 5. Application: make a request
+[r:     [http-request h2 "GET" "/v1/services" [] null]]
 ```
 
-Or, using the `fetch` convenience function which assembles this automatically:
+HTTP/3 (QUIC) requires a direct UDP socket and cannot be proxied through a SOCKS5 TCP
+CONNECT tunnel. For HTTP/3, `quic-session` opens its own UDP socket directly:
 
 ```tinct
-[fetch [socks5-layer [connect %nc Tcp "proxy.corp" 1080] "api.internal" 443]
+[quic:  [quic-session %nc "api.example.com" 443 [alpn: ["h3"]]]]
+[h3:    [http3-session quic]]
+[r:     [http-request h3 "GET" "/v1/services" [] null]]
+```
+
+Proxying HTTP/3 through a tunnel requires MASQUE (RFC 9298) or SOCKS5 UDP ASSOCIATE —
+future work outside this design.
+
+Or, using the `fetch` convenience function:
+
+```tinct
+[fetch [socks5-layer [connect %nc Tcp "proxy.corp" 1080] %nc "api.internal" 443]
        [url "https://api.internal/v1/services"]]
 ```
 
@@ -130,6 +139,8 @@ IcmpHttpConn: [
 
 `connect` with a `DirCap` opens a Unix socket relative to the cap's directory — consistent with how `open cap path mode` works for files. The socket's filesystem permissions apply on top.
 
+**Implementation note:** `cap_std::fs::Dir::connect_unix_stream()` is not yet implemented upstream (cap-std 3.4.x). The implementation must use `openat2` with `RESOLVE_BENEATH` to resolve the path to a file descriptor, then connect via that fd — do not use `PathBuf::join` + raw `UnixStream::connect`, which bypasses the capability sandbox.
+
 **User-defined Connectors** implement the protocol:
 
 ```tinct
@@ -160,18 +171,19 @@ Any pure-tinct function with this signature is a Layer. There is no Layer typecl
   → Handle[... Stream Tls]
 
 # DTLS upgrade — requires Handle[... Datagram ...]; adds Tls capability
-# Architectural: deferred (requires dtls Rust dep)
+# Architectural: deferred (requires dtls Rust dep + datagram-aware Handle I/O —
+# the BufRead/Write interface loses UDP message boundaries that DTLS requires)
 [dtls-layer   handle@Handle sni@String opts@Dict]
   → Handle[... Datagram Tls]
 
 # SOCKS5 proxy tunnel — pure tinct in protocols/socks5.llt
-# Transparently routes the Handle through a SOCKS5 proxy
-[socks5-layer handle@Handle host@String port@Int creds@[Dict Null]]
+# cap@NetCap is re-validated against the tunnel target to prevent SSRF
+[socks5-layer handle@Handle cap@NetCap host@String port@Int creds@[Dict Null]]
   → Handle[... Stream]
 
 # HTTP CONNECT tunnel — pure tinct in net.llt
-# Uses an HTTP CONNECT request to establish a tunneled stream
-[http-connect-layer handle@Handle host@String port@Int headers@Dict]
+# cap@NetCap is re-validated against the tunnel target to prevent SSRF
+[http-connect-layer handle@Handle cap@NetCap host@String port@Int headers@Dict]
   → Handle[... Stream]
 ```
 
@@ -200,7 +212,7 @@ icmp-layer: [fn [handle target-host]
 
 A Session is a multiplexed connection: one physical channel that carries multiple independent logical streams. Sessions are opened from Handles; Handles are opened from Sessions.
 
-**QUIC Session** — implemented in Rust via `quinn`. QUIC integrates transport, TLS, and reliable ordered delivery at the UDP level. `quinn` must own the UDP socket (it manages path migration, congestion control, ACKs internally), so `quic-session` is Connector-style rather than a Layer over an existing UDP Handle:
+**QUIC Session** — implemented in Rust via `quinn`. QUIC integrates transport, TLS, and reliable ordered delivery at the UDP level. `quinn` requires exclusive control of the UDP socket after creation (it manages path migration, congestion control, ACKs internally — it can accept a pre-bound socket but must be the sole consumer after handoff), so `quic-session` is Connector-style rather than a Layer over an existing UDP Handle:
 
 ```tinct
 # quic-session opens its own UDP socket internally
@@ -258,9 +270,12 @@ fetch: [fn@Result [connector url@Url opts@Dict]
     "http"  [fetch-http  connector url opts]
     _       [err: [str "fetch: unsupported scheme: " url.scheme]]]]
 
-# fetch-https tries HTTP/3 first (via QUIC), falls back to HTTP/2, then HTTP/1.1
-# The negotiation happens via ALPN in TLS for HTTP/2,
-# and via Alt-Svc header for HTTP/3 upgrade.
+# fetch-https negotiates the best available protocol. HTTP/2 is selected via
+# ALPN in TLS (h2 token). HTTP/3 requires prior discovery: an Alt-Svc header
+# cached from a previous response, or a DNS HTTPS record (RFC 9460). The first
+# request to a new server always uses HTTP/1.1 or HTTP/2 — Alt-Svc is a cache
+# mechanism, not first-visit discovery. Alt-Svc redirects to a different host
+# are validated against the NetCap before the upgrade connection is opened.
 ```
 
 For the 90% case:
@@ -294,15 +309,15 @@ SOCKS5 Layer (RFC 1928 + RFC 1929). Performs the SOCKS5 handshake over an existi
 [include %libdir "protocols/socks5.llt"]
 
 [proxy: [connect %nc Tcp "proxy.corp" 1080]]
-[tun:   [socks5-connect proxy "internal-api.corp" 443]]
+[tun:   [socks5-layer proxy %nc "internal-api.corp" 443 null]]
 [tls:   [tls-layer tun "internal-api.corp" opts]]
 ```
 
-Supports: no-auth mode, username/password auth (RFC 1929), IPv4/IPv6/hostname target address.
+Supports CONNECT command only (TCP tunneling — RFC 1928 §4): no-auth mode, username/password auth (RFC 1929), IPv4/IPv6/hostname target address. BIND (§6) and UDP ASSOCIATE (§7) are out of scope. Actual line count closer to 80–120 once all address types, auth modes, and error paths are covered; requires binary I/O primitives (`read-bytes`, `byte-at`, `write-bytes`) that are not yet in stdlib.
 
-**`protocols/dns.llt`** (~100 lines, pure tinct over UDP)
+**`protocols/dns.llt`** (~200–300 lines, pure tinct over UDP)
 
-DNS wire protocol (RFC 1035). Constructs and parses DNS packets using `str-bytes`/`bytes-str`:
+DNS wire protocol (RFC 1035). Constructs and parses DNS packets; requires binary I/O primitives (`read-bytes`, `byte-at`, `write-bytes`) for byte-level encoding. RFC 1035 §4.1.4 compression pointers (required in received messages) need random access into the packet bytes, loop detection (per RFC 9267), and a pointer-follow depth limit. Line count is closer to 200–300 for a correct implementation with all 8 record types.
 
 ```tinct
 [include %libdir "protocols/dns.llt"]
@@ -385,7 +400,7 @@ stdlib/
     pretty.llt
 ```
 
-`net.llt` contains: `fetch`, `http-get`, `parse-http-response`, `build-http-request`, `http-connect-layer`, URI utilities (`uri-params`, `uri-origin`, `uri->string`). It does not contain any of the `protocols/` content.
+`net.llt` contains: `fetch`, `http-get`, `parse-http-response`, `build-http-request`, `http-connect-layer`. URI utilities (`uri-params`, `uri-origin`, `uri->string`) are Rust builtins — always available without include. It does not contain any of the `protocols/` content.
 
 ### Handle Refactor for tls-layer
 
@@ -397,11 +412,17 @@ Value::Handle {
     inner: Box<dyn BufRead>,          // existing
     write_inner: Option<Box<dyn Write>>, // existing
     seek_inner: Option<...>,           // existing
-    raw_tcp: Option<TcpStream>,        // NEW — Some for TCP handles, None for files/unix
+    raw_tcp: Option<Rc<RefCell<Option<TcpStream>>>>,  // NEW — shared across clones
 }
 ```
 
-After `tls-layer` extracts `raw_tcp`, the original Handle is consumed; subsequent operations on it produce a runtime error. The new TLS Handle wraps the TLS stream as before (TlsReader + TlsWriter sharing `Rc<RefCell<StreamOwned>>`).
+`raw_tcp` must be `Rc<RefCell<Option<TcpStream>>>` (not a plain `Option<TcpStream>`) because
+`Value: Clone` is a fundamental contract — `TcpStream` is not `Clone`. All clones of a Handle
+share the same `RefCell` slot. When `tls-layer` calls `.borrow_mut().take()` to extract the
+stream, the `Option` becomes `None` in all clones. A second `tls-layer` call on any alias sees
+`None` and produces a runtime error. Reads and writes on the original Handle's `inner` field
+are unaffected — only further `tls-layer` calls fail. The new TLS Handle wraps the TLS stream
+as before (TlsReader + TlsWriter sharing `Rc<RefCell<StreamOwned>>`).
 
 ## What Would Change
 
@@ -454,7 +475,7 @@ Four new files, each pure tinct, each standalone:
 
 ### Cargo Dependencies
 
-- `quinn` — QUIC implementation (new direct dep; already present? check lock)
+- `quinn` — QUIC implementation (new direct dep; not currently in Cargo.toml); brings in `tokio` as a mandatory dependency — document the runtime strategy (see TODO `http-sessions`) before adding
 - `ipnet` — CIDR range matching in NetCap (new direct dep; already transitive)
 - No other new required deps: reqwest (HTTP/2 via `h2` feature), h3 via reqwest `http3` feature
 
@@ -462,14 +483,13 @@ Four new files, each pure tinct, each standalone:
 
 ## Prerequisites
 
-- **Handle refactor** — `raw_tcp: Option<TcpStream>` field in `Value::Handle`; required for `tls-layer` (STARTTLS use case). Can be implemented independently of the rest.
+- **Handle refactor** — `raw_tcp: Option<Rc<RefCell<Option<TcpStream>>>>` field in `Value::Handle`; required for `tls-layer` (STARTTLS use case). Can be implemented independently of the rest.
 - **lib-tls.md** — implemented (TLS Connector form, SPKI pinning, CA configuration). The lib-net-v2 Handle form (`tls-layer`) extends rather than replaces this.
 - **Boolean Algebraic Subtyping** — not required for runtime behavior. With BAS, the type checker can express `Handle[R ∪ {Tls}]` as a proper type and verify Layer compatibility. Without BAS, the types are checked at runtime via the capability row.
 - **`open` capability flag refactor** — required before `connect cap UnixStream path` can share the DirCap path-resolution infrastructure with `open cap path Readable`.
 
 ## References
 
-- Bernstein, D.J. (2012). "QUIC: A UDP-Based Multiplexed and Secure Transport." — Quinn crate is the Rust implementation of RFC 9000; QUIC's integrated TLS replaces a separate tls-layer step.
 - Bishop, M. (2022). "HTTP/3." *RFC 9114*. — HTTP/3 over QUIC; Http3Session API.
 - Belshe, M., Peon, R. & Thomson, M. (2015). "Hypertext Transfer Protocol Version 2 (HTTP/2)." *RFC 7540*. — Http2Session API.
 - Fette, I. & Melnikov, A. (2011). "The WebSocket Protocol." *RFC 6455*. — `protocols/websocket.llt` framing.
@@ -477,5 +497,7 @@ Four new files, each pure tinct, each standalone:
 - Mockapetris, P. (1987). "Domain Names — Implementation and Specification." *RFC 1035*. — `protocols/dns.llt` wire format.
 - Miller, M.S. (2006). *Robust Composition: Towards a Unified Approach to Access Control and Concurrency Control.* — Object-capability model; capability routing by transport type (NetCap vs DirCap).
 - Iyengar, J. & Thomson, M. (2021). "QUIC: A UDP-Based Multiplexed and Secure Transport." *RFC 9000*. — QUIC as a Session primitive; quinn crate.
+- Hardaker, W. et al. (2022). "Common Implementation Anti-Patterns Related to DNS Resource Record (RR) Processing." *RFC 9267*. — DNS compression pointer loop detection in `protocols/dns.llt`.
 - Pauly, T. et al. (2023). "HTTP Datagrams and the Capsule Protocol." *RFC 9297*. — `quic-open-datagram` enabling datagram extensions over HTTP/3.
+- Schwartz, B. et al. (2023). "Service Binding and Parameter Specification via the DNS." *RFC 9460*. — DNS HTTPS records as first-visit HTTP/3 discovery alternative to Alt-Svc.
 - Thomson, M. & Turner, S. (2021). "Using TLS to Secure QUIC." *RFC 9001*. — QUIC's integrated TLS replaces the separate tls-layer step.

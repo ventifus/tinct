@@ -1,0 +1,6 @@
+# Nested guards propagate default
+[inner: [a: "fail"]
+ result: [@[type: [a: Int]  default: [a: 100]] inner]]
+.result
+=== out
+Dict({"a": Dict({"a": Int(100)})})

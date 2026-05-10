@@ -159,6 +159,7 @@ fn emit_tmpl_call(
     let tmpl_fn = Box::new(Spanned::new(
         Expr::VarRef {
             name: "tmpl".to_string(),
+            escaped: false,
             resolved: RefCell::new(None),
         },
         span,
@@ -2861,7 +2862,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::EscapedRef(name) => {
-                let expr = Spanned::new(Expr::var_ref(name.clone()), span);
+                let expr = Spanned::new(Expr::escaped_ref(name.clone()), span);
                 // Check if this VarRef is a potential dict key (followed by colon).
                 // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
                 if let Some((Token::Colon, _)) = peek_next_horizontal(&token_vec, i) {
@@ -4063,6 +4064,10 @@ fn expr_to_pattern_with_guard(
             (base_pattern, guard)
         }
         Expr::VarRef { name, .. } if name == "_" => (Pattern::Wildcard, None),
+        Expr::VarRef { name, escaped, .. } if escaped => {
+            // Escaped ref: $name in pattern context → pin pattern
+            (Pattern::Pin(name), None)
+        }
         Expr::VarRef { name, .. } if name.chars().next().map_or(false, |c| c.is_lowercase()) => {
             (Pattern::Variable(name), None)
         }

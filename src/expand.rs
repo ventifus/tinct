@@ -303,10 +303,14 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
     // Detect infinite recursion
     let em_depth = EXPAND_MACROS_DEPTH.get();
     if em_depth > 10 {
-        panic!(
-            "expand_macros: infinite recursion detected (depth={})",
-            em_depth
-        );
+        return Err(EvalError::resource_limit_exceeded(
+            format!(
+                "expand_macros: infinite recursion detected (depth={})",
+                em_depth
+            ),
+            file.span,
+        )
+        .into());
     }
 
     let mut env_macro = MacroEnv::new();

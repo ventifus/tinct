@@ -12,6 +12,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Boolean-Algebraic Subtyping](boolean-algebraic-subtyping.md) | Replace Rémy row variables with BAS (Chau & Parreaux 2026); eliminates row variables and closes the algebraic-subtyping soundness gap |
+| [Higher-Kinded Types and Monadic `[do]`](hkt-monads.md) | Rank-1 kind polymorphism; `Monad m` typeclass at kind `* → *`; `[do]` inference from return type; `sequence`/`traverse` as generic functions; backward-compatible with existing `[do monad]` |
 
 ## Internal Integrity
 
@@ -58,7 +59,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, tls-connect, SpkiPin, HttpConn, system roots, HTTP/1-3 |
-| [Composable Networking v2](lib-net-v2.md) | Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3 Sessions; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
+| [Composable Networking v2](lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3 Sessions; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Templating

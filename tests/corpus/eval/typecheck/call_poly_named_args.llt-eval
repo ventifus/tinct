@@ -1,0 +1,4 @@
+[id: [fn [x] $x]
+ result: [call $id x: 42]]
+=== out
+Dict({"id": Function(x), "result": Int(42)})

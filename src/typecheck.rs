@@ -2361,7 +2361,14 @@ fn check_call_with_scheme(
                     type_map: state.subst.type_map.clone(),
                     row_map: state.subst.row_map.clone(),
                 };
-                for ((_, param_ty), arg_ty) in params.iter().zip(arg_types.iter()) {
+                // Track consumed param indices to prevent named args from overlapping with positional args.
+                // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
+                // ALL params by name could accidentally match a positional-consumed param.
+                let mut consumed_params = std::collections::HashSet::new();
+                for (idx, ((_, param_ty), arg_ty)) in
+                    params.iter().zip(arg_types.iter()).enumerate()
+                {
+                    consumed_params.insert(idx);
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
                     if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
@@ -2373,17 +2380,29 @@ fn check_call_with_scheme(
                 // `params` here are already the instantiated params from instantiate_scheme above.
                 for na in named_args {
                     let arg_name = &na.node.name;
-                    // Find the param with matching name
-                    let param_ty_opt = params.iter().find_map(|(pname, pty)| {
+                    // Find the param with matching name, tracking its index to detect overlap
+                    let param_match = params.iter().enumerate().find_map(|(idx, (pname, pty))| {
                         if pname.as_ref() == Some(arg_name) {
-                            Some(pty)
+                            Some((idx, pty))
                         } else {
                             None
                         }
                     });
 
-                    match param_ty_opt {
-                        Some(param_ty) => {
+                    match param_match {
+                        Some((param_idx, param_ty)) => {
+                            // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
+                            // emit a type error and skip unification (the positional check already ran).
+                            if consumed_params.contains(&param_idx) {
+                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                    format!(
+                                        "named argument '{}' conflicts with positional argument at position {}",
+                                        arg_name, param_idx
+                                    ),
+                                    na.span,
+                                ));
+                                continue;
+                            }
                             // Infer named arg type and unify
                             match infer_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
@@ -2558,8 +2577,17 @@ fn check_call(
             // collect CALL-POLY errors too, but requires constraint-based solving (see comment below).
             if !func_ty.has_inference_vars() {
                 let mut errors = Vec::new();
+                // Track consumed param indices to prevent named args from overlapping with positional args.
+                // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
+                // ALL params by name could accidentally match a positional-consumed param if the call
+                // supplies both positional and named args (e.g., [call $f 42 x: 99] where param 0 is
+                // named x would check param 0 twice).
+                let mut consumed_params = std::collections::HashSet::new();
                 // Check positional args
-                for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
+                for (idx, (arg, (_param_name, param_ty))) in
+                    args.iter().zip(params.iter()).enumerate()
+                {
+                    consumed_params.insert(idx);
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
                         errors.append(&mut errs);
                     }
@@ -2567,30 +2595,50 @@ fn check_call(
                 // Check named args by matching them to params by name
                 for na in named_args {
                     let arg_name = &na.node.name;
-                    // Find the param with matching name
-                    let param_ty_opt = params.iter().find_map(|(pname, pty)| {
+                    // Find the param with matching name, tracking its index to detect overlap
+                    let param_match = params.iter().enumerate().find_map(|(idx, (pname, pty))| {
                         if pname.as_ref() == Some(arg_name) {
-                            Some(pty)
+                            Some((idx, pty))
                         } else {
                             None
                         }
                     });
 
-                    match param_ty_opt {
-                        Some(param_ty) => {
-                            // Unify the named arg type against the param type
-                            let arg_ty = infer_expr(&na.node.value, env, state, type_map)?;
-                            let mut subst = std::mem::take(&mut state.subst);
-                            let result = unify(&arg_ty, param_ty, &mut subst, state, na.span);
-                            state.subst = subst;
-                            if let Err(e) = result {
+                    match param_match {
+                        Some((param_idx, param_ty)) => {
+                            // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
+                            // emit a type warning and skip type checking (the positional check already ran).
+                            if consumed_params.contains(&param_idx) {
                                 errors.push(TypeError::new(
                                     format!(
-                                        "named argument '{}' type mismatch: {}",
-                                        arg_name, e.message
+                                        "named argument '{}' conflicts with positional argument at position {}",
+                                        arg_name, param_idx
                                     ),
                                     na.span,
                                 ));
+                                continue;
+                            }
+                            // Infer the named arg type and unify against the param type
+                            // Fix 2: accumulate errors instead of using `?` to short-circuit
+                            match infer_expr(&na.node.value, env, state, type_map) {
+                                Ok(arg_ty) => {
+                                    let mut subst = std::mem::take(&mut state.subst);
+                                    let result =
+                                        unify(&arg_ty, param_ty, &mut subst, state, na.span);
+                                    state.subst = subst;
+                                    if let Err(e) = result {
+                                        errors.push(TypeError::new(
+                                            format!(
+                                                "named argument '{}' type mismatch: {}",
+                                                arg_name, e.message
+                                            ),
+                                            na.span,
+                                        ));
+                                    }
+                                }
+                                Err(mut errs) => {
+                                    errors.append(&mut errs);
+                                }
                             }
                         }
                         None => {
@@ -2703,8 +2751,15 @@ fn check_call(
                     type_map: state.subst.type_map.clone(),
                     row_map: state.subst.row_map.clone(),
                 };
+                // Track consumed param indices to prevent named args from overlapping with positional args.
+                // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
+                // ALL params by name could accidentally match a positional-consumed param.
+                let mut consumed_params = std::collections::HashSet::new();
                 // Unify positional args
-                for ((_param_name, param_ty), arg_ty) in inst_params.iter().zip(arg_types.iter()) {
+                for (idx, ((_param_name, param_ty), arg_ty)) in
+                    inst_params.iter().zip(arg_types.iter()).enumerate()
+                {
+                    consumed_params.insert(idx);
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
                     if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
@@ -2714,17 +2769,33 @@ fn check_call(
                 // Unify named args by matching them to params by name
                 for na in named_args {
                     let arg_name = &na.node.name;
-                    // Find the param with matching name
-                    let param_ty_opt = inst_params.iter().find_map(|(pname, pty)| {
-                        if pname.as_ref() == Some(arg_name) {
-                            Some(pty)
-                        } else {
-                            None
-                        }
-                    });
+                    // Find the param with matching name, tracking its index to detect overlap
+                    let param_match =
+                        inst_params
+                            .iter()
+                            .enumerate()
+                            .find_map(|(idx, (pname, pty))| {
+                                if pname.as_ref() == Some(arg_name) {
+                                    Some((idx, pty))
+                                } else {
+                                    None
+                                }
+                            });
 
-                    match param_ty_opt {
-                        Some(param_ty) => {
+                    match param_match {
+                        Some((param_idx, param_ty)) => {
+                            // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
+                            // emit a type error and skip unification (the positional check already ran).
+                            if consumed_params.contains(&param_idx) {
+                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                    format!(
+                                        "named argument '{}' conflicts with positional argument at position {}",
+                                        arg_name, param_idx
+                                    ),
+                                    na.span,
+                                ));
+                                continue;
+                            }
                             // Infer named arg type and unify
                             match infer_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
@@ -4283,6 +4354,7 @@ mod tests {
                 key: None,
                 value: Rc::new(sp(Expr::VarRef {
                     name: "Int".into(),
+                    escaped: false,
                     resolved: RefCell::new(None),
                 })),
             },
@@ -4313,6 +4385,7 @@ mod tests {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: Rc::new(sp(Expr::VarRef {
                     name: "NoSuchType".into(),
+                    escaped: false,
                     resolved: RefCell::new(None),
                 })),
             },
@@ -8426,6 +8499,7 @@ mod tests {
                         key: None,
                         value: Rc::new(sp(Expr::VarRef {
                             name: (*name).to_string(),
+                            escaped: false,
                             resolved: RefCell::new(None),
                         })),
                     },
@@ -8514,6 +8588,7 @@ mod tests {
                     key: None,
                     value: Rc::new(sp(Expr::VarRef {
                         name: "Int".into(),
+                        escaped: false,
                         resolved: RefCell::new(None),
                     })),
                 },
@@ -8524,6 +8599,7 @@ mod tests {
                     key: None,
                     value: Rc::new(sp(Expr::VarRef {
                         name: "String".into(),
+                        escaped: false,
                         resolved: RefCell::new(None),
                     })),
                 },
@@ -8591,6 +8667,7 @@ mod tests {
                     key: None,
                     value: Rc::new(sp(Expr::VarRef {
                         name: "Int".into(),
+                        escaped: false,
                         resolved: RefCell::new(None),
                     })),
                 },
@@ -8601,6 +8678,7 @@ mod tests {
                     key: None,
                     value: Rc::new(sp(Expr::VarRef {
                         name: "String".into(),
+                        escaped: false,
                         resolved: RefCell::new(None),
                     })),
                 },
@@ -9676,6 +9754,51 @@ mod tests {
             t.1,
             Type::Seq(Box::new(Type::Int)),
             "tail should get Seq(element type)"
+        );
+    }
+
+    #[test]
+    fn test_collect_pattern_bindings_or() {
+        // Or-pattern: only collects from first alternative
+        let mut out = Vec::new();
+        collect_pattern_bindings(
+            &Pattern::Or(vec![
+                Spanned::new(Pattern::Variable("x".into()), Span::origin()),
+                Spanned::new(Pattern::Variable("y".into()), Span::origin()),
+            ]),
+            &Type::Int,
+            &mut out,
+        );
+        assert_eq!(
+            out.len(),
+            1,
+            "Or-pattern should collect only from first alt"
+        );
+        assert_eq!(out[0].0, "x", "should bind first alternative's variable");
+        assert_eq!(out[0].1, Type::Int);
+    }
+
+    #[test]
+    fn test_collect_pattern_bindings_constructor() {
+        // Constructor pattern with binding gets Unknown type
+        let mut out = Vec::new();
+        collect_pattern_bindings(
+            &Pattern::Constructor {
+                tag: "Some".into(),
+                binding: Some(Box::new(Spanned::new(
+                    Pattern::Variable("v".into()),
+                    Span::origin(),
+                ))),
+            },
+            &Type::Int, // scrutinee type is ignored for constructor payload
+            &mut out,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "v");
+        assert_eq!(
+            out[0].1,
+            Type::Unknown,
+            "constructor binding should get Unknown type (no payload narrowing yet)"
         );
     }
 }

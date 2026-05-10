@@ -1,0 +1,6 @@
+# Guard failure on record type — default used
+[rec: [x: "not int"]
+ result: [@[type: [x: Int]  default: [x: 42]] rec]]
+.result
+=== out
+Dict({"x": Dict({"x": Int(42)})})

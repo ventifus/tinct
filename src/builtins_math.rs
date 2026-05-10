@@ -32,7 +32,28 @@ enum NumPair {
     Floats(f64, f64),
 }
 
+/// Maximum safe integer for Int→Float promotion (2^53).
+/// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
+const MAX_SAFE_INT: i64 = 9007199254740992;
+
+/// Check if an Int→Float promotion would lose precision.
+/// Returns Err if |n| > 2^53, suggesting explicit [float n] cast.
+fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()> {
+    if n.abs() > MAX_SAFE_INT {
+        return Err(EvalError::user_error(
+            format!(
+                "implicit Int→Float promotion loses precision for {}; use [float {}] for intentional cast",
+                n, n
+            ),
+            span,
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Extract two numeric operands with auto-promotion, enforcing arity == 2.
+/// Int→Float promotion is guarded by precision check (|n| ≤ 2^53).
 fn extract_num_pair(
     args: &[Rc<Thunk>],
     ctx: &Rc<crate::eval::EvalContext>,
@@ -45,8 +66,14 @@ fn extract_num_pair(
     let right = materialize(&args[1], Some(&call_span), ctx)?;
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => Ok(NumPair::Ints(*a, *b)),
-        (Value::Int(a), Value::Float(b)) => Ok(NumPair::Floats(*a as f64, *b)),
-        (Value::Float(a), Value::Int(b)) => Ok(NumPair::Floats(*a, *b as f64)),
+        (Value::Int(a), Value::Float(b)) => {
+            check_int_to_float_precision(*a, args[0].span)?;
+            Ok(NumPair::Floats(*a as f64, *b))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            check_int_to_float_precision(*b, args[1].span)?;
+            Ok(NumPair::Floats(*a, *b as f64))
+        }
         (Value::Float(a), Value::Float(b)) => Ok(NumPair::Floats(*a, *b)),
         _ => Err(EvalError::type_mismatch_ctx(
             "+/-/*//".to_string(),
@@ -188,15 +215,18 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ) => &source_a[*start_a..*end_a] == &source_b[*start_b..*end_b],
         (Value::Bool(a), Value::Bool(b)) => a == b,
         // Cross-type: Int/Float promotion via `as f64` cast.
-        // Known limitation: integers with absolute value > 2^53 lose precision on
-        // promotion (e.g. 9007199254740993i64 as f64 == 9007199254740992.0), which
-        // can cause non-transitive equality (doc/11-stdlib.md §Equality P3). No
-        // runtime guard is added — this matches Jsonnet's silent promotion approach.
-        (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
-        (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
-        // Variant: equal if tags match and payloads match
-        // For Phase 1 (unit constructors), payload is always None
-        // TODO(C3): implement recursive payload equality for payload constructors
+        // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
+        // explicit [float n] cast. This prevents non-transitive equality bugs
+        // (doc/11-stdlib.md §Equality P3).
+        (Value::Int(a), Value::Float(b)) => {
+            check_int_to_float_precision(*a, args[0].span)?;
+            (*a as f64) == *b
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            check_int_to_float_precision(*b, args[1].span)?;
+            *a == (*b as f64)
+        }
+        // Variant: equal if tags match and payloads match (recursive comparison)
         (
             Value::Variant {
                 tag: tag_a,
@@ -206,7 +236,33 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tag: tag_b,
                 payload: payload_b,
             },
-        ) => tag_a == tag_b && payload_a.is_none() && payload_b.is_none(),
+        ) => {
+            if tag_a != tag_b {
+                false
+            } else {
+                match (payload_a, payload_b) {
+                    (None, None) => true,
+                    (Some(p1_id), Some(p2_id)) => {
+                        // Resolve ThunkIds to Rc<Thunk> via arena
+                        let p1_thunk = ctx.get_thunk(*p1_id);
+                        let p2_thunk = ctx.get_thunk(*p2_id);
+                        // Recurse by calling builtin_eq
+                        let result_thunk = builtin_eq(BuiltinArgs {
+                            args: &[p1_thunk, p2_thunk],
+                            named: None,
+                            call_span,
+                            ctx: Rc::clone(&ctx),
+                        })?;
+                        let result_val = materialize(&result_thunk, Some(&call_span), &ctx)?;
+                        match result_val {
+                            Value::Bool(b) => b,
+                            _ => unreachable!("builtin_eq always returns Bool"),
+                        }
+                    }
+                    _ => false, // One has payload, other doesn't
+                }
+            }
+        }
         // Dict, Function, Builtin are never equal
         _ => false,
     };
@@ -249,11 +305,16 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ) => &source_a[*start_a..*end_a] < &source_b[*start_b..*end_b],
         (Value::Bool(a), Value::Bool(b)) => !a && *b, // false < true
         // Cross-type: Int/Float promotion via `as f64` cast.
-        // Known limitation: integers with absolute value > 2^53 lose precision on
-        // promotion (doc/11-stdlib.md §Equality P3, P6). No runtime guard — matches
-        // Jsonnet's silent promotion approach.
-        (Value::Int(a), Value::Float(b)) => (*a as f64) < *b,
-        (Value::Float(a), Value::Int(b)) => *a < (*b as f64),
+        // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
+        // explicit [float n] cast (doc/11-stdlib.md §Equality P3, P6).
+        (Value::Int(a), Value::Float(b)) => {
+            check_int_to_float_precision(*a, args[0].span)?;
+            (*a as f64) < *b
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            check_int_to_float_precision(*b, args[1].span)?;
+            *a < (*b as f64)
+        }
         _ => {
             return Err(EvalError::type_mismatch_ctx(
                 "<".to_string(),
@@ -725,4 +786,34 @@ pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Logical shift: cast to u64, shift, cast back to i64
     let result = ((value as u64) >> bits) as i64;
     ok_val(Value::Int(result), call_span)
+}
+
+/// `float`: Explicit Int→Float conversion without precision checking.
+/// - Int → Float: cast via `as f64` (user explicitly opted into potential precision loss)
+/// - Float → Float: no-op
+/// - Other types → error
+/// Inherently materializing: must inspect value to determine type and perform conversion.
+pub(crate) fn builtin_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("float", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    match val {
+        Value::Int(n) => ok_val(Value::Float(n as f64), call_span),
+        Value::Float(f) => ok_val(Value::Float(f), call_span),
+        _ => Err(EvalError::type_mismatch_ctx(
+            "float".to_string(),
+            "Int or Float",
+            val.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
 }

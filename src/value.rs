@@ -613,12 +613,17 @@ pub enum ThunkState {
     /// Carries no `ctx` field because it does not evaluate AST directly; it forces the
     /// inner thunk (which carries its own `ctx`) and then validates the result.
     /// `blame_label` tracks the typed/untyped boundary for gradual typing (co-natural strategy).
+    /// `default` carries the fallback expression and environment from TypeAssert's `default:` annotation.
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
         field_path: Box<Vec<String>>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
+        default: Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
     },
     InProgress,
     Materialized(Value),
@@ -736,6 +741,20 @@ impl Thunk {
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
     ) -> Self {
+        Self::new_guarded_full(inner, expected, field_path, guard_span, blame_label, None)
+    }
+
+    pub fn new_guarded_full(
+        inner: Rc<Thunk>,
+        expected: Type,
+        field_path: Vec<String>,
+        guard_span: Span,
+        blame_label: Option<crate::error::BlameLabel>,
+        default: Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
+    ) -> Self {
         Self {
             state: RefCell::new(ThunkState::Guarded {
                 inner,
@@ -743,6 +762,7 @@ impl Thunk {
                 field_path: Box::new(field_path),
                 guard_span,
                 blame_label,
+                default,
             }),
             span: guard_span,
             origin: Some(Rc::from("type guard")),
@@ -891,6 +911,10 @@ impl Thunk {
         Vec<String>,
         Span,
         Option<crate::error::BlameLabel>,
+        Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
     )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
@@ -900,7 +924,15 @@ impl Thunk {
                 field_path,
                 guard_span,
                 blame_label,
-            } => Some((inner, expected, *field_path, guard_span, blame_label)),
+                default,
+            } => Some((
+                inner,
+                expected,
+                *field_path,
+                guard_span,
+                blame_label,
+                default,
+            )),
             other => {
                 *state = other;
                 None
@@ -1762,13 +1794,18 @@ mod tests {
             "take_guarded should succeed on Guarded thunk"
         );
 
-        let (taken_inner, taken_expected, taken_path, _taken_span, _blame) = result.unwrap();
+        let (taken_inner, taken_expected, taken_path, _taken_span, _blame, taken_default) =
+            result.unwrap();
         assert!(
             Rc::ptr_eq(&taken_inner, &inner),
             "inner thunk should be the same Rc"
         );
         assert_eq!(taken_expected, Type::Int);
         assert_eq!(taken_path, vec!["x".to_string()]);
+        assert!(
+            taken_default.is_none(),
+            "default should be None when not provided"
+        );
 
         // After take_guarded, thunk should be InProgress
         let state = thunk.state();
@@ -1809,7 +1846,7 @@ mod tests {
         ));
         let result = thunk.take_guarded();
         assert!(result.is_some());
-        let (got_inner, got_type, got_path, _got_span, _blame) = result.unwrap();
+        let (got_inner, got_type, got_path, _got_span, _blame, _default) = result.unwrap();
         assert_eq!(got_path, vec!["foo".to_string()]);
         assert!(matches!(got_type, Type::Int));
         assert!(Rc::ptr_eq(&got_inner, &inner));

@@ -54,7 +54,7 @@ Research questions:
 - What is the minimal HKT extension needed to express `Monad m`, `Functor f`, and `Foldable t` without requiring full System F-omega? (Rank-1 kind polymorphism may suffice.)
 - Survey: how do ML-family languages (OCaml 5 with effects, F#, SML) and recent functional languages (Koka, Frank, Unison) handle HKT and monadic abstraction?
 
-- [ ] Research HKT and generic monadic do-notation — write proposal to `doc/whatif/hkt-monads.md`
+- [x] Research HKT and generic monadic do-notation — see `doc/whatif/hkt-monads.md`
 
 ### `net-layers`: Research composable networking layer model for tinct
 
@@ -84,6 +84,59 @@ Research questions:
 - What is the minimum Rust builtin surface needed? (Probably: raw TCP, raw UDP, Unix socket, and `tls-upgrade handle sni opts` — everything else in pure tinct or via reqwest)
 
 - [x] Research composable networking layer model — see `doc/whatif/lib-net-v2.md`
+
+### `connect-v2`: Transport-generic connect, Handle refactor, tls-layer, Unix sockets
+
+See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle Refactor. **Spec chapters:** `doc/03-data-model.md §Network Handles`, `doc/03-data-model.md §Layers`.
+
+- [ ] Add `raw_tcp: Option<Rc<RefCell<Option<TcpStream>>>>` field to `Value::Handle`; must be `Rc<RefCell<...>>` because `Value: Clone` and `TcpStream: !Clone` — all clones of a Handle share the same slot so `take()` in `tls-layer` invalidates all aliases; populated by `connect cap Tcp`, `None` for file/unix handles (`src/value.rs`)
+- [ ] Add `creation_span: Span` field to `Value::Handle`; populate from `call_span` at `connect` call time; use in dual-span error when `tls-layer` finds `raw_tcp: None` (definition site + second-use site) (`src/value.rs`, `src/builtins_io.rs`)
+- [ ] Refactor `builtin_connect` to dispatch on Transport variant tag for argument count: `Tcp`/`Udp` → host+port, `UnixStream`/`UnixDatagram`/`NamedPipe` → path, `Icmp` → host, unknown → forward to user Connector's `connect` field (`src/builtins_io.rs`)
+- [ ] Implement `connect cap Udp host port` → `Handle[Binary Readable Writable Datagram]`; remove the "UDP not yet supported" stub (`src/builtins_io.rs:610`)
+- [ ] Implement `connect cap UnixStream path` → `Handle[Binary Readable Writable Stream]`; use `openat2 RESOLVE_BENEATH` for path resolution (do NOT use `PathBuf::join` + raw `UnixStream::connect` — bypasses sandbox); note: `cap_std::fs::Dir::connect_unix_stream()` is not yet implemented upstream (cap-std 3.4.x), so use lower-level fd-based approach (`src/builtins_io.rs`)
+- [ ] Implement `connect cap UnixDatagram path` → `Handle[Binary Readable Writable Datagram]`; same DirCap path resolution (`src/builtins_io.rs`)
+- [ ] Implement `connect cap NamedPipe path` → `Handle[Binary Readable Writable]` (`src/builtins_io.rs`)
+- [ ] Implement `connect cap Icmp host` → `Handle[Binary Readable Writable Datagram]`; platform-conditional (Linux `SOCK_DGRAM`+`IPPROTO_ICMP`); return `{err: "icmp-unavailable"}` on unsupported platforms (`src/builtins_io.rs`)
+- [ ] Implement `tls-layer handle sni opts` → `Handle[... Tls]`; extract `raw_tcp` from input Handle, build `rustls::ClientConnection`, wrap in TlsReader/TlsWriter; the input Handle is consumed (subsequent use errors) (`src/builtins_io.rs`)
+- [ ] Register transport nominal variants `UnixStream`, `UnixDatagram`, `NamedPipe`, `Icmp` alongside existing `Tcp`, `Udp` in `create_root_env()` (`src/builtins.rs`); also register `Url` as type alias in `TypeEnv::with_builtins()` — currently unregistered, causing `@Url` annotation in stdlib functions to produce "undefined type" error (`src/type_env.rs`)
+- [ ] Define and document user-defined Connector capability policy: Connectors are pure-tinct functions and cannot call I/O builtins directly; all network I/O goes through `connect` which enforces the cap; document this invariant in `doc/11a-builtins.md` §Network
+- [ ] Update `check_net_cap_allowlist` to handle `Icmp` transport (check host against allowlist without port) (`src/builtins_io.rs`)
+- [ ] Tests: corpus tests for `connect Tcp`, `connect Udp`, `connect UnixStream` (via local socket), `tls-layer` error paths (wrong Handle type, consumed Handle) in `tests/corpus/eval/builtins/` using `=== out`/`=== error` sections
+- [ ] Update `doc/11a-builtins.md` §Network with transport-generic `connect` signature, `tls-layer`, Unix socket transports; remove §Proxy Tunnels section (documents removed builtins `socks5-connect` and `proxy-connect`; update Network count from 13 to 11)
+
+### `http-sessions`: QUIC, HTTP/2, HTTP/3 Sessions
+
+See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-data-model.md §Sessions`.
+
+- [ ] Add `quinn` as direct dependency (`Cargo.toml`); implement `quic-session cap host port opts` → `Value::QuicSession`; opts carries TLS config (CA roots, ALPN, client certs, SPKI pins) (`src/builtins_io.rs`, `Cargo.toml`)
+- [ ] Add `Value::QuicSession`, `Value::Http2Session`, `Value::Http3Session` to `src/value.rs`; store as `Rc<...>` (pointer-sized, Clone-compatible, within 80-byte size assertion); update type_name/Debug/Display/PartialEq/visit_value exhaustive match arms; add non-serializable arms in `visit_value`
+- [ ] Add `Type::QuicSession`, `Type::Http2Session`, `Type::Http3Session` atomic variants to `src/types.rs`; register in `TypeEnv::with_builtins()`; update `value_matches_type()` in `src/eval.rs` for TypeAssert checking (`src/types.rs`, `src/type_env.rs`, `src/eval.rs`)
+- [ ] Document tokio runtime strategy for `quic-session`: use `tokio::runtime::Runtime::new_current_thread().block_on(...)` scoped to the builtin call; must not create a second runtime when `http2-session` (reqwest, which already embeds a runtime) and `quic-session` are both used in the same script — use a single shared `Rc<tokio::runtime::Runtime>` in the builtin context or run quinn on the reqwest runtime
+- [ ] Implement `quic-open-stream session` → `Handle[Binary Readable Writable Stream]` from a QuicSession (`src/builtins_io.rs`)
+- [ ] Implement `quic-open-datagram session` → `Handle[Binary Readable Writable Datagram]` for RFC 9297 datagram extensions (`src/builtins_io.rs`)
+- [ ] Implement `http2-session handle [opts]` → `Value::Http2Session` via reqwest/h2; handle must be `Handle[Stream Tls]` with h2 ALPN (`src/builtins_io.rs`)
+- [ ] Implement `http3-session quic-session [opts]` → `Value::Http3Session` via h3/reqwest http3 feature (`src/builtins_io.rs`)
+- [ ] Implement `http-request session method path headers body` → `{ok: {status headers body}} | {err: String}`; dispatch on Http2Session and Http3Session (`src/builtins_io.rs`)
+- [ ] Implement `icmp-ping cap host timeout-ms` → `{ok: {latency-ms: Int}} | {err: String}`; platform-conditional (`src/builtins_io.rs`)
+- [ ] Register all new builtins in `standard_builtins()` (`src/builtins.rs`)
+- [ ] Tests: error-path corpus tests for quic-session, http2-session, http-request (arity, type errors) in `tests/corpus/eval/builtins/`
+- [ ] Update `doc/11a-builtins.md` §Network with Session builtins
+**Depends on:** `connect-v2`
+
+### `stdlib-protocols`: net.llt rewrite + protocols/ subdirectory
+
+See `doc/whatif/lib-net-v2.md` §Protocol Library, §Stdlib Layout, §fetch. **Spec chapters:** `doc/03-data-model.md §Sessions`, `doc/11-stdlib.md`.
+
+- [ ] Create `stdlib/protocols/` directory
+- [ ] Write `stdlib/protocols/socks5.llt` — SOCKS5 TCP CONNECT only (RFC 1928 §4 + RFC 1929); no-auth + username/password, IPv4/IPv6/hostname target; signature `[socks5-layer handle cap@NetCap host port creds]` — cap re-validated against tunnel target to prevent SSRF; expose `build-socks5-request`/`parse-socks5-response` as testable pure functions; ~80–120 lines; **requires binary I/O primitives** (`read-bytes`, `byte-at`, `write-bytes`) not yet in stdlib (`stdlib/protocols/socks5.llt`)
+- [ ] Write `stdlib/protocols/dns.llt` — DNS wire protocol (RFC 1035): query construction, response parsing, record types A/AAAA/MX/TXT/SRV/CNAME/NS/PTR; compression pointer decompression (RFC 1035 §4.1.4) with loop detection (RFC 9267) and max-depth limit; expose `build-dns-query`/`parse-dns-response`/`encode-dns-name` as testable pure functions; ~200–300 lines; **requires binary I/O primitives** (`read-bytes`, `byte-at`, `write-bytes`) (`stdlib/protocols/dns.llt`)
+- [ ] Write `stdlib/protocols/grpc.llt` — gRPC-JSON transcoding: 5-byte frame encoding/decoding, gRPC headers over Http2Session (~40 lines pure tinct); expose `build-grpc-frame`/`parse-grpc-frame` as testable pure functions (`stdlib/protocols/grpc.llt`)
+- [ ] Write `stdlib/protocols/websocket.llt` — WebSocket upgrade (RFC 6455): HTTP upgrade handshake, frame encoding/decoding with masking and opcode dispatch, send/receive (~80 lines pure tinct); expose `build-ws-frame`/`parse-ws-frame` as testable pure functions (`stdlib/protocols/websocket.llt`)
+- [ ] Rewrite `stdlib/net.llt` — fix `parse-http-response` Sequential binding bug; replace `builtin-*` calls; add `http-connect-layer` (signature: `[http-connect-layer handle cap@NetCap host port headers]` — cap re-validated for tunnel target); rewrite `fetch` to auto-negotiate HTTP/1.1/HTTP/2 via ALPN and HTTP/3 via Alt-Svc cache (first request to new server always HTTP/1.1 or HTTP/2); validate Alt-Svc alternate-origin host against NetCap before upgrade; all I/O functions return Result per `error-patterns.md` (`stdlib/net.llt`)
+- [ ] Update `doc/11-stdlib.md` with `protocols/` subdirectory layout and new function listings
+- [ ] Tests: corpus tests for entry-point error paths (wrong Handle type, missing cap, arity) in `tests/corpus/eval/errors/`; unit tests for internal pure helpers (`build-socks5-request`, `build-dns-query`, `build-ws-frame`, `build-grpc-frame`) using literal byte input — these are the only CI-testable happy paths since Handle I/O requires a live server; also add `fetch` unsupported-scheme error test (`tests/corpus/eval/errors/fetch_unsupported_scheme.llt-eval`)
+- [ ] Add Rust unit test for `check_net_cap_allowlist` denial path with a restricted allowlist — the allowlist is the primary security enforcement and has zero corpus coverage; add to `src/builtins_io.rs` `#[cfg(test)]` section
+**Depends on:** `http-sessions`
 
 ## Known Bugs
 
@@ -124,8 +177,8 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [x] `socks5-connect` (`src/builtins_io.rs:3590-3592`) — **remove from registry** (no use case currently; re-add when there is one)
 - [x] `proxy-connect` (`src/builtins_io.rs:3597-3599`) — **remove from registry** (same)
 - [x] `open` write and append modes — **implement `Writable`/`Appendable` flags and remove legacy string-flag API**: implement `[open cap path Writable]` and `[open cap path Appendable]` per `doc/whatif/completed/lib-supplemental.md` §Streaming File I/O; delete the backward-compat string-mode branch entirely (`src/builtins_io.rs:167-226`); audit all corpus tests and stdlib files for `open ... "r"` calls and migrate to `[open cap path Readable]` (`src/builtins_io.rs`, `stdlib/`, `tests/`)
-- [ ] `tls-connect` Handle form (`src/builtins_io.rs:2451-2454`) — **implement** (needed for STARTTLS and mid-connection TLS upgrades); **blocked on `net-layers` research**: the Handle form is part of the broader layering model; the specific implementation (raw_tcp field in Value::Handle, or a different approach) should be informed by the net-layers design; keep stub until research is complete
-- [ ] `connect` UDP transport (`src/builtins_io.rs:612`) — **blocked on `net-layers` research**: UDP is not simply "TCP but unreliable" — QUIC builds session semantics on UDP, DTLS wraps TLS over datagrams; the right answer depends on the composable layer model; keep stub until `net-layers` design is complete
+- [ ] `tls-connect` Handle form (`src/builtins_io.rs:2451-2454`) — **superseded by `tls-layer`** from `connect-v2` sprint; remove stub and error message once `tls-layer` is implemented (`src/builtins_io.rs`)
+- [ ] `connect` UDP transport (`src/builtins_io.rs:612`) — **unblocked** (net-layers research complete); tracked in `connect-v2`: implement `[connect cap Udp host port]` → `Handle[Binary Readable Writable Datagram]`; remove "UDP not yet supported" stub (`src/builtins_io.rs:612`)
 - [ ] `--cap-net` CIDR range entries (`src/main.rs:718-723`) — **implement** with combined hostname+CIDR validation semantics:
   - Add `NetCapEntry::Cidr(ipnet::IpNet)` to `src/value.rs`; parse via `s.parse::<ipnet::IpNet>()`
   - Add `ipnet` as direct dep (`Cargo.toml`; already transitive at `2.12.0`)
@@ -145,37 +198,37 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 
 **variant-payload-eq** — `=` returns false for Variant values with payloads (`builtins_math.rs:199`):
 
-- [ ] Implement recursive payload equality for `Variant` values in the `=` builtin: if both are `Variant { tag, payload: Some(p1) }` and `Variant { tag, payload: Some(p2) }` with matching tags, force and compare `p1` and `p2` recursively (`src/builtins_math.rs:199`)
+- [x] Implement recursive payload equality for `Variant` values in the `=` builtin (`src/builtins_math.rs`)
 
 **guard-default-missing** — `default:` annotation not applied on guard failures (`eval.rs:1634`):
 
-- [ ] In `ThunkState::Guarded` and the guard-failure path: check if the annotation carries a `default:` value; if so, return that value instead of propagating the error (`src/eval.rs`, `src/eval_materialize.rs`)
+- [x] In `ThunkState::Guarded` and the guard-failure path: check if the annotation carries a `default:` value; if so, return that value instead of propagating the error (`src/eval.rs`, `src/eval_materialize.rs`)
 
 **pin-patterns** — `$name` in match arms binds new variable instead of pinning (`parser.rs:3915`):
 
-- [ ] Distinguish `$name` (pin — match against variable value) from bare `name` (bind — introduce new variable) in `Pattern::VarRef`; the token kind (`EscapedRef` vs `Identifier`) must be preserved through the pattern-parsing path (`src/parser.rs`)
+- [x] Distinguish `$name` (pin — match against variable value) from bare `name` (bind — introduce new variable) in `Pattern::VarRef` via `escaped: bool` field on `Expr::VarRef`; `Pattern::Pin` variant added (`src/parser.rs`, `src/ast.rs`)
 
 **ignored-tests** — Disabled tests masking real gaps:
 
-- [ ] `test_typecheck_corpus` (`tests/corpus_tests.rs:271`) is `#[ignore]`d because `get` (a prelude function) lacks a type signature in `TypeEnv`, and `merge`/`+` produce row-polymorphism false positives — add `get`, `merge`, and `+` type signatures to `TypeEnv::with_builtins()` or `build_prelude_env()` so the typecheck corpus can be re-enabled (`src/type_env.rs`, `src/imports.rs`)
+- [x] `test_typecheck_corpus` re-enabled — reorganized corpus files (moved warning/error tests to appropriate dirs) and removed `#[ignore]`
 - [ ] `test_tco_tail_recursive_function` (`src/eval.rs:8188`) is `#[ignore]`d because full TCO is not wired — PendingCall thunks still accumulate call depth; re-enable once the CEK `Action::Eval` dispatch eliminates depth accumulation (`src/eval.rs`)
 
 **typecheck-named-arg-gaps** — Remaining named-arg type checking gaps found in typecheck-bugs panel review:
 
-- [ ] `Type::Function` `PartialEq` includes param names — `Fn[(Some("x"), Int)]` and `Fn[(None, Int)]` compare unequal even though they are type-equivalent; affects Union deduplication and reflexive short-circuits in `unify`/`is_subtype`. Fix: override `PartialEq` to compare types only for `Function` variant (`src/types.rs:192`)
-- [ ] Named arg arity overlap check (C-NO-OVERLAP): type checker does not detect `[call $f positional-arg x: val]` where `x` is param 0 — counts arity correctly but may double-check the same param slot; evaluator rejects at runtime. Fix: after positional zip, exclude consumed param indices from named-arg search (`src/typecheck.rs:2527`)
-- [ ] CALL-MONO named-arg `?` short-circuit: `infer_expr(...)?` on line ~2582 returns immediately on first value inference failure instead of accumulating into `errors` (asymmetry with positional multi-error pattern) (`src/typecheck.rs:2582`)
-- [ ] `expand_macros` depth guard at `em_depth > 10` uses `panic!` — should return `Err(EvalError::...)` for consistency with `expand_expr` guard (`src/expand.rs:306`)
-- [ ] Corpus tests: `named_arg_wrong_type.llt-eval` and `named_arg_unknown_name.llt-eval` are in `eval/typecheck/` but carry `=== error` sections, violating the directory's "passes typecheck" contract; move to `eval/errors/` or make them typecheck-clean (`tests/corpus/eval/typecheck/`)
-- [ ] Corpus coverage gap: CALL-POLY and `check_call_with_scheme` named-arg paths have no corpus tests; add two-document corpus tests that exercise each path (`tests/corpus/eval/typecheck/`)
-- [ ] `collect_pattern_bindings` `Or` and `Constructor` arms have no unit tests (`src/typecheck.rs:1287-1293`)
+- [x] `Type::Function` `PartialEq` now ignores param names — compares types only (`src/types.rs`)
+- [x] Named arg arity overlap check (C-NO-OVERLAP) — positional param indices excluded from named-arg search (`src/typecheck.rs`)
+- [x] CALL-MONO named-arg error accumulation — `infer_expr` failures accumulated instead of `?` short-circuit (`src/typecheck.rs`)
+- [x] `expand_macros` depth guard changed from `panic!` to `Err(EvalError::resource_limit_exceeded(...))` (`src/expand.rs`)
+- [x] Corpus tests: moved `named_arg_wrong_type.llt-eval` and `named_arg_unknown_name.llt-eval` to `eval/errors/`
+- [x] Corpus coverage: added `call_poly_named_args.llt-eval` for CALL-POLY path (`tests/corpus/eval/typecheck/`)
+- [x] `collect_pattern_bindings` `Or` and `Constructor` unit tests added (`src/typecheck.rs`)
 
 **int-float-precision** — Int→Float promotion silently loses precision for integers > 2^53 (`builtins_math.rs:191`):
 
 - [x] Decide: **error always** when implicit Int→Float promotion would lose precision (|n| > 2^53); consistent with CUE/Nickel/Dhall which require explicit conversion rather than silent precision loss. Provide `[float n]` as the explicit escape hatch — analogous to Rust's `as f64` — that makes the lossy conversion intentional.
-- [ ] In arithmetic builtins that promote Int to Float (`+`, `-`, `*`, `/` with mixed Int/Float args): check `|int_val| > 9007199254740992` (2^53) before promotion; emit `EvalError::user_error` if exceeded; suggest `[float n]` in the error message (`src/builtins_math.rs:191`)
-- [ ] Add `float` builtin: takes an Int or Float, returns Float; for Int, performs the `as f64` cast unconditionally (no precision check — user opted in); for Float, is a no-op (`src/builtins_math.rs`, `src/builtins.rs`)
-- [ ] Update `doc/03-data-model.md` §Numeric Types: document that implicit Int→Float promotion errors on precision loss; document `[float n]` as the explicit opt-in conversion
+- [x] In arithmetic builtins: check `|int_val| > 2^53` before promotion; error with suggestion to use `[float n]` (`src/builtins_math.rs`)
+- [x] Add `float` builtin: unconditional Int→Float cast (`src/builtins_math.rs`, `src/builtins.rs`)
+- [x] Update `doc/03-data-model.md` §Numeric Types: precision-safe promotion + `[float n]` documented
 
 **e-flag-ordering** — `-e` expressions don't interleave with file arguments (`main.rs:750`):
 

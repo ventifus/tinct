@@ -1,0 +1,6 @@
+# Guard failure with no default — error propagates
+[@Number "not a number"]
+=== error
+[E011] type assertion failed: expected Number, got String
+=== warn
+cannot unify Number with "not a number"

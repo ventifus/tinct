@@ -1,0 +1,11 @@
+# Pin patterns: $name in match arms should pin (match against existing variable's value)
+# instead of binding a new variable
+
+[
+  x: 42
+  r1: [match 42 $x "matched" _ "no"]
+  r2: [match 99 $x "matched" _ "no"]
+]
+
+=== out
+Dict({"x": Int(42), "r1": String("matched"), "r2": String("no")})

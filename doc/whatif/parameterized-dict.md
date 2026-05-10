@@ -289,7 +289,7 @@ When BAS is adopted (`doc/whatif/boolean-algebraic-subtyping.md` accepted and im
 
 ## References
 
-- Chau, A. & Parreaux, L. (2026). "Boolean Algebraic Subtyping." *PLDI '26*. — BAS provides the union type algebra that makes `Dict = Record ∨ Map` well-formed and union elimination in pattern matching sound; prerequisite for this design.
+- Chau, C.Y. & Parreaux, L. (2026). "Boolean-Algebraic Subtyping: Intersections, Unions, Negations, and Principal Type Inference." *Proc. ACM Program. Lang.*, 10(POPL). — BAS provides the union type algebra that makes `Dict = Record ∨ Map` well-formed and union elimination in pattern matching sound; prerequisite for this design.
 - Damas, L. & Milner, R. (1982). "Principal type-schemes for functional programs." *POPL '82*, pp. 207–212. — Principal type property: inference must produce the most specific type; motivates why dict literals always infer `Record`, not `Map[K V]`.
 - Findler, R.B. & Felleisen, M. (2002). "Contracts for higher-order functions." *ICFP '02*, pp. 48–59. — Proxy contract mechanism for lazy structural TypeAssert; used for O(n) `@Map[K V]` runtime validation.
 - Nickel language documentation (Tweag). nickel-lang.org. — Nickel's `{_: Type}` dictionary type as precedent for the Record/Map split; the cross-form subtyping rule `{f₁: T₁, ..., fₙ: Tₙ} <: {_: T}` when all Tᵢ <: T.

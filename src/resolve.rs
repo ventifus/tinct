@@ -102,7 +102,7 @@ impl Resolver {
     /// - Recursively walks all child expressions
     fn walk_expr(&mut self, expr: &Spanned<Expr>) {
         match &expr.node {
-            Expr::VarRef { name, resolved } => {
+            Expr::VarRef { name, resolved, .. } => {
                 // Resolve this variable reference and cache the result.
                 // `coords` is Option<(u32, u32)> — None means unresolvable, Some means resolved.
                 // We wrap in Some(...) to produce the outer Some of the three-state sentinel:
@@ -489,7 +489,7 @@ mod tests {
                 // Second entry: y: $x
                 let y_value = &entries[1].node.value.node;
                 match y_value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "x");
                         // Level 1 (level 0 is the synthetic % scope), slot 0
                         assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -522,7 +522,7 @@ mod tests {
                         // First entry: y: $x
                         let y_value = &inner_entries[0].node.value.node;
                         match y_value {
-                            Expr::VarRef { name, resolved } => {
+                            Expr::VarRef { name, resolved, .. } => {
                                 assert_eq!(name, "x");
                                 // x is in the outer dict scope (level 1; level 0 is synthetic %), slot 0
                                 assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -552,7 +552,7 @@ mod tests {
         match fn_expr {
             Expr::Fn { body, .. } => {
                 match &body.node {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "x");
                         // x is the first parameter (level 1; level 0 is synthetic % scope), slot 0
                         assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -577,7 +577,7 @@ mod tests {
         let doc = &file.node.documents[0].node;
         let varref_expr = &doc.expressions[0].node;
         match varref_expr {
-            Expr::VarRef { name, resolved } => {
+            Expr::VarRef { name, resolved, .. } => {
                 assert_eq!(name, "undefined");
                 // Outer Some(None) after processing: processed but unresolvable.
                 // flatten() extracts the inner Option: Some(None).flatten() == None.
@@ -632,7 +632,7 @@ mod tests {
                 // Second entry: y: $x — value $x should resolve to x at level 1, slot 0
                 let y_value = &entries[1].node.value.node;
                 match y_value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "x");
                         // x is in the dict scope (level 1, slot 0)
                         assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -666,7 +666,7 @@ mod tests {
                                 // First entry: default: $fallback
                                 let default_value = &ann_entries[0].node.value.node;
                                 match default_value {
-                                    Expr::VarRef { name, resolved } => {
+                                    Expr::VarRef { name, resolved, .. } => {
                                         assert_eq!(name, "fallback");
                                         // Level 1 (level 0 is synthetic % scope), slot 0
                                         assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -706,7 +706,7 @@ mod tests {
                             Annotation::PropertyDict(ann_entries) => {
                                 let default_value = &ann_entries[0].node.value.node;
                                 match default_value {
-                                    Expr::VarRef { name, resolved } => {
+                                    Expr::VarRef { name, resolved, .. } => {
                                         assert_eq!(name, "default_val");
                                         // Level 1 (level 0 is synthetic % scope), slot 0
                                         assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -784,7 +784,7 @@ mod tests {
                 // Entry: public: $helper
                 let value = &entries[0].node.value.node;
                 match value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "helper");
                         // Must resolve — not Some(None).
                         // The exact level depends on scope stack depth:
@@ -827,7 +827,7 @@ mod tests {
             Expr::Dict(entries) => {
                 let b_value = &entries[1].node.value.node;
                 match b_value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "a");
                         assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                     }
@@ -843,7 +843,7 @@ mod tests {
             Expr::Dict(entries) => {
                 let c_value = &entries[0].node.value.node;
                 match c_value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "b");
                         assert_eq!(resolved.borrow().flatten(), Some((1, 1)));
                     }
@@ -881,7 +881,7 @@ mod tests {
                 //   level 3: third dict's own scope [c, d]
                 let c_value = &entries[0].node.value.node;
                 match c_value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "a");
                         assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                     }
@@ -890,7 +890,7 @@ mod tests {
 
                 let d_value = &entries[1].node.value.node;
                 match d_value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "b");
                         assert_eq!(resolved.borrow().flatten(), Some((2, 0)));
                     }
@@ -919,7 +919,7 @@ mod tests {
         let doc2 = &file.node.documents[1].node;
         let varref_expr = &doc2.expressions[0].node;
         match varref_expr {
-            Expr::VarRef { name, resolved } => {
+            Expr::VarRef { name, resolved, .. } => {
                 assert_eq!(name, "x");
                 // Processed but unresolvable: doc 1's scope is not visible in doc 2
                 assert_eq!(resolved.borrow().flatten(), None);
@@ -947,7 +947,7 @@ mod tests {
                     Expr::DotAccess { expr, field } => {
                         assert_eq!(*field, crate::ast::DotKey::Ident("field".to_string()));
                         match &expr.node {
-                            Expr::VarRef { name, resolved } => {
+                            Expr::VarRef { name, resolved, .. } => {
                                 assert_eq!(name, "x");
                                 // Level 1 (level 0 is synthetic % scope), slot 0
                                 assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -983,7 +983,7 @@ mod tests {
                         assert_eq!(named_args.len(), 1);
                         let named_arg_value = &named_args[0].node.value.node;
                         match named_arg_value {
-                            Expr::VarRef { name, resolved } => {
+                            Expr::VarRef { name, resolved, .. } => {
                                 assert_eq!(name, "x");
                                 // Level 1 (level 0 is synthetic % scope), slot 0
                                 assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
@@ -1035,7 +1035,7 @@ mod tests {
         let doc = &file.node.documents[0].node;
         let varref_expr = &doc.expressions[0].node;
         match varref_expr {
-            Expr::VarRef { name, resolved } => {
+            Expr::VarRef { name, resolved, .. } => {
                 assert_eq!(name, "%");
                 // % is in the synthetic scope at level 0, slot 0
                 assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
@@ -1059,7 +1059,7 @@ mod tests {
             Expr::Dict(entries) => {
                 let x_value = &entries[0].node.value.node;
                 match x_value {
-                    Expr::VarRef { name, resolved } => {
+                    Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "%");
                         // % is in synthetic scope (level 0), dict scope is level 1
                         assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
@@ -1097,7 +1097,7 @@ mod tests {
         let doc3 = &file.node.documents[2].node;
         let varref_expr = &doc3.expressions[0].node;
         match varref_expr {
-            Expr::VarRef { name, resolved } => {
+            Expr::VarRef { name, resolved, .. } => {
                 assert_eq!(name, "%first");
                 // slot 0 = %, slot 1 = %first
                 assert_eq!(resolved.borrow().flatten(), Some((0, 1)));

@@ -18,11 +18,12 @@ Tinct has the primitives for structured error handling (`try`, `error`, structur
 
 ### What's Missing
 
-1. No canonical `Result` type that the type system can check — `{ok: T} | {err: String}` is unenforceable without union types (BAS).
-2. No composition primitive — chaining N fallible operations requires N nested `match` expressions.
-3. No `[do]` form for sequential composition analogous to Haskell's do-notation.
-4. No documented rule for which functions should return Result vs propagate vs return defaults.
-5. `net.llt`'s `fetch`, `read-file`, and other I/O functions propagate instead of returning Result, breaking the implicit contract.
+1. No canonical `Result` nominal type — `Ok[T] | Err[String]` as a named union type with constructors is undeclared and unused.
+2. The `try` builtin returns structural `{ok: v}` / `{err: msg}` dicts, which collapse to ⊤ under BAS (S-RcdTop) and cannot be discriminated at the type level.
+3. No composition primitive — chaining N fallible operations requires N nested `match` expressions.
+4. No `[do]` form for sequential composition analogous to Haskell's do-notation.
+5. No documented rule for which functions should return Result vs propagate vs return defaults.
+6. `net.llt`'s `fetch`, `read-file`, and other I/O functions propagate instead of returning Result, breaking the implicit contract.
 
 ## Why Consistent Error Handling Matters for tinct
 
@@ -46,32 +47,32 @@ Sentinel strings (`"ERR:..."`) are never used in stdlib. They are a user-script 
 
 ### The `Result` Type
 
-The structural Result type is:
+Result is a **nominal union type** — a discriminated union with two constructors:
 
 ```tinct
-# The type of a successful result
-[ok: T]
-
-# The type of a failed result
-[err: String]
-
-# The union (requires BAS for full type-system enforcement)
-# {ok: T} | {err: String}
+[Result: [type [Ok a] [Err String]]]
 ```
 
-No type alias declaration is required for the runtime behavior — the pattern is structural. When BAS is adopted, `{ok: T} | {err: String}` becomes a proper union type with exhaustiveness checking in `match`. Until then, `match` arms work at runtime; type annotations are informational.
+`Ok` and `Err` are nominal constructors. A value is either `Ok(payload)` or `Err(message)` — the nominal tag is what discriminates them, not a field name. This is required by BAS: structural records with different field names (`{ok: T}` vs `{err: String}`) cannot be discriminated in a union because BAS's S-RcdTop rule (Parreaux & Chau 2022, §2.2.2) identifies `{x: τ} ∨ {y: π}` (x ≠ y) with ⊤ — making the union useless for type-level discrimination. Nominal tags remain distinct under S-ClsBot: `#Ok & #Err ≤ Never`.
+
+```tinct
+# Construction
+[Ok  42]           # Ok variant with payload 42
+[Err "not found"]  # Err variant with message
+
+# Pattern matching — nominal patterns (uppercase, no colon)
+[match result
+  [Ok  v]   [use v]
+  [Err msg] [error msg]]
+```
+
+The `try` builtin returns nominal variants: `Ok(value)` on success, `Err(message)` on caught error. This replaces the former structural dict `{ok: v}` / `{err: msg}` return form.
 
 Parameterized Result annotations use the type annotation form:
 
 ```tinct
-fetch@[ok: Dict]      # fetch returns {ok: Dict} | {err: String}
-parse-json@[ok: Any]  # parse-json returns {ok: Any} | {err: String}
-```
-
-Custom error payloads are expressed by varying the `err:` field type:
-
-```tinct
-[ok: Dict  err: [code: Int msg: String]]   # structured error
+fetch@[Ok Dict]      # fetch returns Ok[Dict] | Err[String]
+parse-json@[Ok Any]  # parse-json returns Ok[Any] | Err[String]
 ```
 
 ### Combinators
@@ -79,26 +80,26 @@ Custom error payloads are expressed by varying the `err:` field type:
 Four combinators in `prelude.llt` (or a dedicated `stdlib/result.llt`) make Result composable:
 
 ```tinct
-# Sequence: if result is {ok: v}, call f with v; pass {err: e} through unchanged.
+# Sequence: if result is Ok v, call f with v; pass Err through unchanged.
 and-then: [fn [result f]
   [match result
-    [ok: v] [f v]
-    [err: e] [err: e]]]
+    [Ok v]    [f v]
+    [Err msg] [Err msg]]]
 
-# Transform: apply f to the ok value; pass {err: e} through unchanged.
+# Transform: apply f to the Ok value; pass Err through unchanged.
 result-map: [fn [result f]
   [match result
-    [ok: v] [ok: [f v]]
-    [err: e] [err: e]]]
+    [Ok v]    [Ok [f v]]
+    [Err msg] [Err msg]]]
 
-# Default: unwrap ok value; return default on err.
+# Default: unwrap Ok value; return default on Err.
 result-or: [fn [result default]
   [match result
-    [ok: v] v
-    [err: _] default]]
+    [Ok v]   v
+    [Err _]  default]]
 
-# Wrap: lift a plain value into Result.
-result-ok: [fn [v] [ok: v]]
+# Wrap: lift a plain value into Ok.
+result-ok: [fn [v] [Ok v]]
 ```
 
 These four functions are all that is needed to compose Result chains without nesting. `and-then` is the monadic bind; `result-map` is fmap; `result-or` is `fromMaybe`; `result-ok` is `pure`/`return`.
@@ -140,7 +141,7 @@ Usage:
   [get "max_stable_version" [get "crate" data]]]
 ```
 
-This reads left-to-right, with each line binding the success value of the previous step. If any step returns `{err: e}`, `and-then` short-circuits and the whole `[do]` expression evaluates to `{err: e}`.
+This reads left-to-right, with each line binding the success value of the previous step. If any step returns `Err msg`, `and-then` short-circuits and the whole `[do]` expression evaluates to `Err msg`.
 
 The `[do]` macro is not limited to Result. Any dict with a `bind:` field works:
 
@@ -173,20 +174,22 @@ Error handling within `[do]`:
 [do result
   [r: [fetch %nc url]]
   [if [not [= r.status 200]]
-    [err: [str "HTTP " r.status]]   # short-circuit
-    [ok: r]]]
+    [Err [str "HTTP " r.status]]   # short-circuit with nominal Err
+    [Ok r]]]
 ```
 
-Since the macro desugars to `and-then`, any expression that evaluates to `{err: e}` short-circuits the chain. Callers can inject errors anywhere by returning `[err: msg]`.
+Since the macro desugars to `and-then`, any expression that evaluates to `Err msg` short-circuits the chain. Callers can inject errors anywhere by returning `[Err msg]`.
 
 ### Stdlib Retrofit
 
-All stdlib I/O functions that currently propagate are updated to return `{ok: T} | {err: String}`:
+All stdlib I/O functions that currently propagate are updated to return `Ok[T] | Err[String]` (nominal Result):
 
-- `stdlib/net.llt`: `fetch`, `http-get` — wrap connection/read errors in `{err: msg}`
-- `stdlib/io.llt`: `read-file`, `read-lines` — wrap file-not-found, permission errors
-- `stdlib/toml-lite.llt`: `parse-toml-lite` — wrap parse errors (currently propagates on malformed input)
+- `stdlib/net.llt`: `fetch`, `http-get` — wrap connection/read errors as `Err msg`
+- `stdlib/io.llt`: `read-file`, `read-lines` — wrap file-not-found, permission errors as `Err msg`
+- `stdlib/toml-lite.llt`: `parse-toml-lite` — wrap parse errors as `Err msg`
 - `stdlib/regex.llt`: `re-match`, `re-find` — these are pure (pattern mismatch is normal, not failure); keep as Bool/Dict returns
+
+The `try` builtin is updated to return nominal variants: `Ok(value)` on success, `Err(message)` on caught error. Existing prelude helpers (`has?-impl`, `try-or-impl`, `find-deep-try-check`) migrate from structural patterns `[ok: _]` / `[err: _]` to nominal patterns `[Ok _]` / `[Err _]`.
 
 Pure stdlib functions that already use `[error "msg"]` for misuse are unchanged: `sort-by`, `flatten`, `any?`, `all?`, etc.
 
@@ -218,22 +221,25 @@ Pure stdlib functions that already use `[error "msg"]` for misuse are unchanged:
 
 ### Type System
 
-**Current:** `{ok: T} | {err: String}` in a type annotation is treated as `Unknown` (no union unification).
+**Current:** Nominal variants (`Ok[T]`, `Err[String]`) are already supported via the typing cluster's C2/C3 nominal variant sprints. `[Result: [type [Ok a] [Err String]]]` declares a valid nominal union type today.
 
-**Proposed:** No change to the type checker now. With BAS, `{ok: T} | {err: String}` becomes a checkable union type and `match` exhaustiveness is enforced. The convention works at runtime before BAS; it becomes type-safe after.
+**Proposed:** No new type system changes required. Result is expressed as a named nominal union type using existing machinery. With BAS, the union `Ok[T] | Err[String]` becomes checkable via S-ClsBot (`#Ok & #Err ≤ Never` — nominal tags are disjoint), enabling `match` exhaustiveness checking and precise arm types. Without BAS, nominal variants already discriminate correctly at runtime via tag dispatch.
 
-**Impact:** None now. Major positive impact when BAS lands.
+Note: structural `{ok: T} | {err: String}` is intentionally **not** used. BAS's S-RcdTop rule (Parreaux & Chau 2022, §2.2.2) identifies unions of records with different field names as ⊤ — making structural Result useless for type-level discrimination (Parreaux & Chau 2022, §2.3.2).
+
+**Impact:** Additive. Nominal Result leverages already-implemented nominal variant infrastructure.
 
 ## Prerequisites
 
 **`defmacro` system** — already implemented (`stdlib/macros.llt`, `tmpl-transformer` sprint complete). The `[do]` macro is a new entry in the same system.
 
-**BAS (boolean-algebraic subtyping)** — not required for the convention or runtime behavior. Required for the type checker to enforce `{ok: T} | {err: String}` as a proper union type and report exhaustiveness errors on non-exhaustive `match`. See `doc/whatif/boolean-algebraic-subtyping.md`.
+**BAS (boolean-algebraic subtyping)** — not required for the convention or runtime behavior. Required for the type checker to enforce `Ok[T] | Err[String]` exhaustiveness checking via S-ClsBot discriminability and to give precise arm types after narrowing. Without BAS, nominal variant matching works at runtime; the type checker gives weaker guarantees. See `doc/whatif/boolean-algebraic-subtyping.md`.
 
 **HKT (higher-kinded types)** — not required. The explicit monad-dict approach works without HKT. If HKT is adopted in the future, `[do]` gains implicit dispatch and the monad argument becomes optional.
 
 ## References
 
+- Chau, C.Y. & Parreaux, L. (2026). "Boolean-Algebraic Subtyping: Intersections, Unions, Negations, and Principal Type Inference." *Proc. ACM Program. Lang.*, 10(POPL). — [S-RcdTop rule (§2.2.2) explains why structural `{ok:}|{err:}` collapses to ⊤; S-ClsBot (§2.2.2) explains why nominal `Ok|Err` is a proper discriminated union; §2.3.2 explicitly recommends class-tagged unions for this use case]
 - Wadler, P. (1985). "How to replace failure by a list of successes." *FPCA 1985*. — [The connection between `Maybe`, list monad, and failure handling; foundation for `and-then` composition]
 - Wadler, P. (1992). "The Essence of Functional Programming." *POPL 1992*. — [Monads as a unified model for IO, state, and exceptions; the theoretical basis for `result` monad dict]
 - Wlaschin, S. (2014). "Railway-Oriented Programming." *NDC Oslo 2014*. — [Practical two-track composition of Result-returning functions; directly describes `and-then` pattern without monadic machinery]

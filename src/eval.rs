@@ -435,6 +435,7 @@ pub(crate) fn validate_and_wrap_record(
     guard_span: Span,
     data_span: Span,
     ctx: &Rc<EvalContext>,
+    default: Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)>,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -531,11 +532,13 @@ pub(crate) fn validate_and_wrap_record(
             field_path.pop();
 
             let thunk_rc = ctx.get_thunk(thunk_id);
-            let guarded = Rc::new(Thunk::new_guarded(
+            let guarded = Rc::new(Thunk::new_guarded_full(
                 thunk_rc,
                 field_type.clone(),
                 nested_path,
                 guard_span,
+                None, // blame_label
+                default.clone(),
             ));
             let guarded_id = ctx.alloc_thunk(guarded);
             new_entries.insert(key.clone(), guarded_id);
@@ -575,7 +578,7 @@ pub(crate) fn eval_recursive(
         ))),
         Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
         Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
-        Expr::VarRef { name, resolved } => {
+        Expr::VarRef { name, resolved, .. } => {
             // TODO(arena-phase2): Use resolved (level, slot) for O(1) lookup when FlatEnv is available.
             // The current linked-environment model with stdlib/document scopes doesn't align with
             // the resolver's static level system (which only sees dict/function scopes during the AST walk).
@@ -718,6 +721,7 @@ pub(crate) fn eval_recursive(
                                 expr.span,
                                 thunk.span,
                                 ctx,
+                                default_opt.clone(),
                             ) {
                                 Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
                                     Value::Dict(new_entries),
@@ -960,6 +964,7 @@ pub(crate) fn eval_recursive(
                         let body = Rc::new(Spanned::new(
                             Expr::VarRef {
                                 name: "payload".to_string(),
+                                escaped: false,
                                 resolved: RefCell::new(None),
                             },
                             expr.span,
@@ -1627,15 +1632,12 @@ pub fn materialize(
                 Err(decorated)
             }
         }
-    } else if let Some((inner, expected, mut field_path, guard_span, blame_label)) =
+    } else if let Some((inner, expected, mut field_path, guard_span, blame_label, default)) =
         thunk.take_guarded()
     {
-        // Materialize the inner thunk first
-        // LIMITATION: Guard failures do not check default: from the original TypeAssert
-        // annotation because Guarded thunks do not capture the annotation or environment.
-        // This is a known limitation accepted in sprint review round 1 finding #6 and
-        // re-raised in round 2 finding #3. Fixing requires storing default_expr + env in
-        // Thunk State::Guarded, but attempts led to stack overflow. Deferred post-1.0.
+        // Materialize the inner thunk first.
+        // Guarded thunks now carry default: expressions from TypeAssert annotations.
+        // When guard validation fails, the default is evaluated and used as the fallback.
 
         // Capture inner thunk's span before materializing — used as data_span for error reporting
         let inner_span = inner.span;
@@ -1661,6 +1663,7 @@ pub fn materialize(
                             guard_span,
                             inner_span,
                             _ctx,
+                            default.clone(),
                         ) {
                             Ok(new_entries) => {
                                 let guarded_value = Value::Dict(new_entries);
@@ -1668,13 +1671,40 @@ pub fn materialize(
                                 Ok(guarded_value)
                             }
                             Err(err) => {
+                                // Guard validation failed - use default if present
+                                if let Some((default_expr, default_env)) = default {
+                                    let default_thunk =
+                                        eval_recursive(default_expr, default_env, _ctx)?;
+                                    let default_value = run(
+                                        Action::Materialize {
+                                            thunk: default_thunk,
+                                            mat_span: mat_span.copied(),
+                                        },
+                                        _ctx,
+                                    )?;
+                                    thunk
+                                        .set_state(ThunkState::Materialized(default_value.clone()));
+                                    return Ok(default_value);
+                                }
                                 let err = decorate(err);
                                 thunk.cache_failure(&err);
                                 Err(err)
                             }
                         }
                     } else {
-                        // Expected Record but got non-Dict
+                        // Expected Record but got non-Dict - use default if present
+                        if let Some((default_expr, default_env)) = default {
+                            let default_thunk = eval_recursive(default_expr, default_env, _ctx)?;
+                            let default_value = run(
+                                Action::Materialize {
+                                    thunk: default_thunk,
+                                    mat_span: mat_span.copied(),
+                                },
+                                _ctx,
+                            )?;
+                            thunk.set_state(ThunkState::Materialized(default_value.clone()));
+                            return Ok(default_value);
+                        }
                         let field_path_prefix = if field_path.is_empty() {
                             String::new()
                         } else {
@@ -1695,6 +1725,19 @@ pub fn materialize(
                         thunk.set_state(ThunkState::Materialized(value.clone()));
                         Ok(value)
                     } else {
+                        // Type mismatch for non-Record types - use default if present
+                        if let Some((default_expr, default_env)) = default {
+                            let default_thunk = eval_recursive(default_expr, default_env, _ctx)?;
+                            let default_value = run(
+                                Action::Materialize {
+                                    thunk: default_thunk,
+                                    mat_span: mat_span.copied(),
+                                },
+                                _ctx,
+                            )?;
+                            thunk.set_state(ThunkState::Materialized(default_value.clone()));
+                            return Ok(default_value);
+                        }
                         let field_path_prefix = if field_path.is_empty() {
                             String::new()
                         } else {
@@ -1725,6 +1768,7 @@ pub fn materialize(
                         field_path: Box::new(field_path),
                         guard_span,
                         blame_label,
+                        default,
                     });
                 }
                 Err(e)
@@ -7503,8 +7547,15 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result =
-            validate_and_wrap_record(&entries, &row, &mut field_path, guard_span, data_span, &ctx);
+        let result = validate_and_wrap_record(
+            &entries,
+            &row,
+            &mut field_path,
+            guard_span,
+            data_span,
+            &ctx,
+            None,
+        );
 
         // Should error with field path prefix in the message
         assert!(result.is_err(), "Expected error for missing field");
@@ -7569,8 +7620,15 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result =
-            validate_and_wrap_record(&entries, &row, &mut field_path, guard_span, data_span, &ctx);
+        let result = validate_and_wrap_record(
+            &entries,
+            &row,
+            &mut field_path,
+            guard_span,
+            data_span,
+            &ctx,
+            None,
+        );
 
         // Should error with field path prefix in the message
         assert!(
@@ -7624,8 +7682,15 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result =
-            validate_and_wrap_record(&entries, &row, &mut field_path, guard_span, data_span, &ctx);
+        let result = validate_and_wrap_record(
+            &entries,
+            &row,
+            &mut field_path,
+            guard_span,
+            data_span,
+            &ctx,
+            None,
+        );
 
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
@@ -7695,8 +7760,15 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result =
-            validate_and_wrap_record(&entries, &row, &mut field_path, guard_span, data_span, &ctx);
+        let result = validate_and_wrap_record(
+            &entries,
+            &row,
+            &mut field_path,
+            guard_span,
+            data_span,
+            &ctx,
+            None,
+        );
 
         // Should error: Key::Int(0) is not in the closed record's field set
         assert!(
@@ -7751,8 +7823,15 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result =
-            validate_and_wrap_record(&entries, &row, &mut field_path, guard_span, data_span, &ctx);
+        let result = validate_and_wrap_record(
+            &entries,
+            &row,
+            &mut field_path,
+            guard_span,
+            data_span,
+            &ctx,
+            None,
+        );
 
         // Should succeed: open records allow extra fields (including integer-keyed ones)
         assert!(

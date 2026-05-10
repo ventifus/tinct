@@ -1,0 +1,5 @@
+# Named arg type checking: wrong type — runtime error (type-check warning not yet implemented)
+[f: [fn [x@Int y@Int] [call $+ $x $y]]
+ result: [call $f 42 y: "not an int"]]
+=== error
+[E010] +/-/*//: expected Int or Float, got Int and String
