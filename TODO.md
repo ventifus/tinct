@@ -140,7 +140,7 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 - [x] Refactor `builtin_connect` to dispatch on Transport variant tag (`src/builtins_io.rs`)
 - [x] Implement `connect cap UnixStream path` (Linux-only via /proc/self/fd) (`src/builtins_io.rs`)
 - [x] Implement `connect cap Udp` — Value::DatagramHandle with UdpSocket + send-datagram/recv-datagram builtins (189 total)
-- [ ] Implement `connect cap UnixDatagram` — still stubbed; needs enum socket field or dedicated UnixDatagramHandle variant
+- [x] Implement `connect cap UnixDatagram` — DatagramSocket enum (Udp | UnixDgram), Linux autobind via UnixDatagram::bind("") + connect(path) (`src/value.rs`, `src/builtins_io.rs`)
 - [ ] Implement `connect cap NamedPipe` — stub: Windows-only
 - [ ] Implement `connect cap Icmp` — stub: requires raw socket support
 - [x] Implement `tls-layer handle sni opts` → Handle with Tls cap; consumes raw_tcp (`src/builtins_io.rs`)

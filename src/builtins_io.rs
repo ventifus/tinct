@@ -660,27 +660,21 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 )
                 .into());
             }
-            // UnixDatagram is a datagram protocol - current Handle infrastructure doesn't support
-            // datagram semantics (recv_from/send_to). Need dedicated Datagram handle type.
+            // Continue with Unix datagram connection below
+        }
+        "NamedPipe" => {
+            // NamedPipe is a Windows-only IPC mechanism; not available on Unix platforms.
             return Err(EvalError::user_error(
-                "connect: UnixDatagram not yet implemented — requires Datagram handle infrastructure"
+                "connect: NamedPipe is a Windows-only transport and is not supported on this platform"
                     .to_string(),
                 call_span,
             )
             .into());
         }
-        "NamedPipe" => {
-            // NamedPipe not supported on non-Windows platforms
-            return Err(EvalError::user_error(
-                "connect: Named pipes not supported on this platform".to_string(),
-                call_span,
-            )
-            .into());
-        }
         "Icmp" => {
-            // ICMP requires raw sockets or elevated privileges — not yet implemented
+            // ICMP requires CAP_NET_RAW or root privileges; use icmp-ping builtin instead.
             return Err(EvalError::user_error(
-                "connect: ICMP not yet implemented — requires platform-specific raw socket support"
+                "connect: ICMP is not supported via connect; use the icmp-ping builtin for ICMP echo requests"
                     .to_string(),
                 call_span,
             )
@@ -975,17 +969,115 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 )
             })?;
 
+            use crate::value::DatagramSocket;
             ok_val(
                 Value::DatagramHandle {
-                    socket: Rc::new(RefCell::new(socket)),
+                    socket: DatagramSocket::Udp(Rc::new(RefCell::new(socket))),
                     creation_span: call_span,
                 },
                 call_span,
             )
         }
+        "UnixDatagram" => {
+            // Unix-domain datagram socket — uses DirCap for path-based capability enforcement.
+            #[cfg(unix)]
+            {
+                let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
+
+                // Extract DirCap for path validation
+                let dir = match cap_val {
+                    Value::DirCap(d) => d,
+                    Value::RevocableDirCap { inner, revoked } => {
+                        if revoked.get() {
+                            return Err(EvalError::user_error(
+                                "connect: capability has been revoked".to_string(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                        inner
+                    }
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "connect".to_string(),
+                            "DirCap",
+                            other.type_name(),
+                            args[0].span,
+                        )
+                        .into())
+                    }
+                };
+
+                let path = require_string("connect", path_val, args[2].span)?;
+
+                // Validate path is relative (no absolute paths or '..' traversal)
+                if path.starts_with('/') || path.contains("..") {
+                    return Err(EvalError::user_error(
+                        "connect UnixDatagram: path must be relative (no absolute paths or '..' traversal)"
+                            .to_string(),
+                        call_span,
+                    )
+                    .into());
+                }
+
+                // Resolve the full socket path via the DirCap's file descriptor
+                use std::os::unix::io::AsRawFd;
+                let dir_fd = dir.as_raw_fd();
+                let proc_path =
+                    std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
+                let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
+                    EvalError::user_error(
+                        format!("connect: failed to resolve DirCap path: {}", e),
+                        call_span,
+                    )
+                })?;
+                let full_path = dir_path.join(&path);
+
+                // Autobind (anonymous local address): bind to empty string so the OS
+                // assigns an abstract socket name in the Linux autobind namespace.
+                let socket =
+                    std::os::unix::net::UnixDatagram::bind("").map_err(|e| {
+                        EvalError::user_error(
+                            format!(
+                                "connect: failed to autobind Unix datagram socket: {}",
+                                e
+                            ),
+                            call_span,
+                        )
+                    })?;
+
+                // Connect to the remote path so send()/recv() work without addresses
+                socket.connect(&full_path).map_err(|e| {
+                    EvalError::user_error(
+                        format!(
+                            "connect: failed to connect Unix datagram socket to '{}': {}",
+                            path, e
+                        ),
+                        call_span,
+                    )
+                })?;
+
+                use crate::value::DatagramSocket;
+                ok_val(
+                    Value::DatagramHandle {
+                        socket: DatagramSocket::UnixDgram(Rc::new(RefCell::new(socket))),
+                        creation_span: call_span,
+                    },
+                    call_span,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                Err(EvalError::user_error(
+                    "connect: UnixDatagram is not supported on this platform".to_string(),
+                    call_span,
+                )
+                .into())
+            }
+        }
         _ => {
-            // UnixDatagram, NamedPipe, and Icmp already handled in first match
-            // This is unreachable — all transport types have been handled above
+            // NamedPipe and Icmp already handled in first match with early returns.
+            // This is unreachable — all transport types have been handled above.
             unreachable!(
                 "connect: transport '{}' should have been handled in first match",
                 transport_tag
@@ -4115,10 +4207,14 @@ pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
         }
     };
 
-    // Send the datagram
-    socket.borrow().send(&data_bytes).map_err(|e| {
-        EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span)
-    })?;
+    // Send the datagram — dispatch on socket variant (same send() API for both)
+    use crate::value::DatagramSocket;
+    match &socket {
+        DatagramSocket::Udp(s) => s.borrow().send(&data_bytes),
+        #[cfg(unix)]
+        DatagramSocket::UnixDgram(s) => s.borrow().send(&data_bytes),
+    }
+    .map_err(|e| EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span))?;
 
     // Return null (empty dict)
     ok_val(Value::Dict(IndexMap::new()), call_span)
@@ -4153,11 +4249,15 @@ pub(crate) fn builtin_recv_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
         }
     };
 
-    // Receive datagram into a 65507-byte buffer (maximum UDP payload)
+    // Receive datagram into a 65507-byte buffer (maximum UDP/Unix datagram payload)
+    use crate::value::DatagramSocket;
     let mut buf = vec![0u8; 65507];
-    let n = socket.borrow().recv(&mut buf).map_err(|e| {
-        EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span)
-    })?;
+    let n = match &socket {
+        DatagramSocket::Udp(s) => s.borrow().recv(&mut buf),
+        #[cfg(unix)]
+        DatagramSocket::UnixDgram(s) => s.borrow().recv(&mut buf),
+    }
+    .map_err(|e| EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span))?;
     buf.truncate(n);
 
     // Build result dict: {data: Bytes}

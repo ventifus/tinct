@@ -280,9 +280,24 @@ pub enum Value {
     /// Created by `connect cap Udp host port` or `connect cap UnixDatagram path`.
     /// Consumed by `send-datagram` and `recv-datagram`.
     DatagramHandle {
-        socket: Rc<RefCell<std::net::UdpSocket>>,
+        socket: DatagramSocket,
         creation_span: Span,
     },
+}
+
+/// Socket variant carried inside `Value::DatagramHandle`.
+///
+/// Both arms expose the same `send`/`recv` API after connection, so dispatch
+/// is done once at construction time and builtins operate uniformly.
+///
+/// `Clone` is derived — `Rc::clone` is a shallow reference-count increment, not a socket copy.
+#[derive(Clone, Debug)]
+pub enum DatagramSocket {
+    /// UDP socket, connected to a remote address via `UdpSocket::connect`.
+    Udp(Rc<RefCell<std::net::UdpSocket>>),
+    /// Unix-domain datagram socket (Linux/macOS), connected to a remote path.
+    #[cfg(unix)]
+    UnixDgram(Rc<RefCell<std::os::unix::net::UnixDatagram>>),
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
