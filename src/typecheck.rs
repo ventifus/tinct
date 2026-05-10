@@ -2375,6 +2375,16 @@ fn check_call_with_scheme(
                         arg_errors.get_or_insert_with(Vec::new).push(e);
                     }
                 }
+                // Check for duplicate named argument names
+                let mut seen_names: HashSet<&str> = HashSet::new();
+                for na in named_args {
+                    if !seen_names.insert(&na.node.name) {
+                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                            format!("duplicate named argument: '{}'", na.node.name),
+                            na.span,
+                        ));
+                    }
+                }
                 // Unify named args by matching them to params by name.
                 // Mirrors check_call CALL-POLY named-arg loop (same pattern, same error messages).
                 // `params` here are already the instantiated params from instantiate_scheme above.
@@ -2597,6 +2607,16 @@ fn check_call(
                         errors.append(&mut errs);
                     }
                 }
+                // Check for duplicate named argument names
+                let mut seen_names: HashSet<&str> = HashSet::new();
+                for na in named_args {
+                    if !seen_names.insert(&na.node.name) {
+                        errors.push(TypeError::new(
+                            format!("duplicate named argument: '{}'", na.node.name),
+                            na.span,
+                        ));
+                    }
+                }
                 // Check named args by matching them to params by name
                 for na in named_args {
                     let arg_name = &na.node.name;
@@ -2771,6 +2791,16 @@ fn check_call(
                     // so we only propagate unification errors from non-Error args.
                     if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
+                    }
+                }
+                // Check for duplicate named argument names
+                let mut seen_names: HashSet<&str> = HashSet::new();
+                for na in named_args {
+                    if !seen_names.insert(&na.node.name) {
+                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                            format!("duplicate named argument: '{}'", na.node.name),
+                            na.span,
+                        ));
                     }
                 }
                 // Unify named args by matching them to params by name

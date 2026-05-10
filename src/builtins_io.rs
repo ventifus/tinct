@@ -838,10 +838,11 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 let path = require_string("connect", path_val, args[2].span)?;
 
-                // Validate path doesn't try to escape the directory
-                if path.contains("..") {
+                // Validate path is relative (no absolute paths or '..' traversal)
+                if path.starts_with('/') || path.contains("..") {
                     return Err(EvalError::user_error(
-                        format!("connect: path cannot contain '..': {}", path),
+                        "connect UnixStream: path must be relative (no absolute paths or '..' traversal)"
+                            .to_string(),
                         call_span,
                     )
                     .into());

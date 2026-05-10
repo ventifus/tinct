@@ -120,7 +120,10 @@ enum Expr {
         // sugar-generated from explicit lambdas.
         desugared: bool,
     },
-    TypeAlias(Box<Spanned<Expr>>),
+    TypeAlias {
+        params: Vec<String>,
+        body: Box<Spanned<Expr>>,
+    },
 
     // Type expressions
     TypeAssert {
