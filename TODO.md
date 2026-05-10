@@ -47,12 +47,18 @@ Research questions:
 
 See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md §Boolean-Algebraic Subtyping`. **Spec chapters:** `doc/07-type-extensions.md §BAS`.
 
-- [ ] Remove `RowTail::RowVar` from `src/types.rs`; replace row variable representation with BAS Boolean lattice; all `Type::Record(Row)` sites that reference `RowTail::RowVar` must migrate to intersection-based representation (`src/types.rs`)
+- [ ] **RowVar removal step 1 — annotation expansion**: in `typecheck_annot.rs`, change `infer_record_annotation` to emit `Record(fields, RowTail::Empty)` instead of `Record(fields, RowTail::RowVar(...))` — under BAS all structural annotations are open by default via conjunction elimination, so the RowVar is no longer needed to express openness (`src/typecheck_annot.rs`)
+- [ ] **RowVar removal step 2 — is_subtype width subtyping**: replace the RowVar-based width subtyping arms in `is_subtype` (`src/types.rs:~355-375`) with pure BAS conjunction elimination: `Record(F1, Empty) <: Record(F2, Empty)` iff `F2.keys() ⊆ F1.keys()` and `∀k ∈ F2: F1[k] <: F2[k]`; remove the RowVar-specific open/closed divergence branches (`src/types.rs`)
+- [ ] **RowVar removal step 3 — unification**: simplify record unification in `type_unify.rs` to remove `unify_remainders` and RowVar binding — field-by-field unification only; if one record has fields the other lacks, the subtyping rule (step 2) handles it; no new bindings in the substitution map for row variables (`src/type_unify.rs`)
+- [ ] **RowVar removal step 4 — cleanup**: delete `RowTail::RowVar` variant from `Row` enum; remove `fresh_row_var_name()` from `InferState`; update all match exhaustiveness sites in types.rs, type_unify.rs, typecheck.rs, typecheck_dict.rs, coverage.rs, eval.rs, type_env.rs to remove RowVar arms; remove `has_row_vars()` / `row_var_occurs_in_type_impl()` RowVar arms (`src/types.rs`, and 7 other files)
+- [ ] **RowVar removal step 5 — tests**: run `just test` to verify width subtyping still works without RowVar; update/remove any tests that created RowVar types directly; add corpus test `@[name: Str]` annotation on a function accepting `[name: "Alice" age: 30]` → passes (confirms BAS open-record semantics without RowVar)
 - [x] Add `Type::Negation(Box<Type>)` variant to `src/types.rs`; updated all match sites (types.rs, type_unify.rs, type_env.rs, eval.rs)
 - [x] Add `Type::Never` as explicit bottom type variant; `Type::Top` already existed; updated is_subtype (S-NEVER rule), is_consistent, Display, value_matches_type
 - [x] Implement S-RcdTop (disjoint single-field records union = Top) and S-ClsBot (disjoint intersections = Never) in `is_subtype`; `simplify_type` added for basic RDNF groundwork (`src/types.rs`)
 - [x] C-Var1/2 constraint rewriting: conservative approximation — unify(concrete, Union([..., TypeVar, ...])) binds TypeVar to concrete (`src/type_unify.rs`)
-- [ ] Full RDNF normalization (simplify_type groundwork added; needs constraint solver integration) (`src/typecheck.rs`)
+- [ ] **RDNF step 1 — call sites**: add `Type::simplify_type(ty)` calls at the 4 inference points that produce compound types: (a) union of arm types in `infer_match` after collecting all arm results; (b) union of branch types in `infer_if`; (c) result of `check_annotation` when annotation is Union/Intersection/Negation; (d) before inserting inferred types into TypeMap for LSP hover display (`src/typecheck.rs`)
+- [ ] **RDNF step 2 — recursive simplification**: extend `simplify_type` to recurse into compound type children — currently only handles top-level patterns; add recursive `simplify_type` calls on children of Union, Intersection, Negation, Record fields, Seq element, Map K/V (`src/types.rs:679`)
+- [ ] **RDNF step 3 — tests**: corpus test that `[match x [Ok v] v [Err _] 0]` produces a simplified union type (not `Union([Int, Int])` from two Int arms); LSP hover test that `@[[all [Int Str] [without Int]]]` simplifies to `Str` in error messages
 - [x] Multi-field annotation → intersection: `@[x: Int  y: String]` → `Intersection([{x:Int,...ρ1}, {y:String,...ρ2}])`; Record↔Intersection unify + eval dispatch updated (`src/typecheck_annot.rs`, `src/type_unify.rs`, `src/eval.rs`, `src/eval_materialize.rs`)
 - [x] Add `@[[all A B]]` (intersection) and `@[[without A]]` (negation) annotation syntax (`src/typecheck_annot.rs`)
 - [x] False-branch narrowing: `apply_negation_narrowings()` in if-false branch, type predicates narrow to Negation type (`src/typecheck.rs`)
@@ -74,6 +80,10 @@ See `doc/whatif/error-patterns.md` and `doc/07-type-extensions.md §Nominal Resu
 - [x] Retrofit `stdlib/io.llt`: `read-file`, `read-lines` return Result
 - [x] Retrofit `stdlib/toml-lite.llt`: `parse-toml-lite` returns Result
 - [x] Tests: corpus tests updated for nominal Ok/Err format (14 corpus files + 6 unit tests)
+- [ ] **Fix `Ok: Ok` circular dependency in prelude**: `Ok: Ok` and `Err: Err` in the public dict create self-referential letrec thunks — when `[Ok value]` is called in user code, the evaluator forces the prelude's `Ok` thunk which tries to force `Ok` again in the same letrec context, causing E070 circular dependency. Fix: remove the re-export thunks and instead expose the constructors registered by `[type ...]` directly (they are already in scope after the intermediate dict is evaluated); alternatively bind to lambda wrappers that don't recurse: `Ok: [fn [v] [Result.Ok v]]` using an internal name (`stdlib/prelude.llt`)
+- [ ] **Update TypeEnv for `try` to reflect nominal return type**: `try` is typed in TypeEnv as returning a structural `{ok: T} | {err: String}` dict, but the runtime now returns nominal `Ok(T) | Err(String)` variants. This mismatch causes T004 "non-exhaustive match" when user code matches on `[Ok v]` / `[Err msg]`, and cascading T002 "undefined variable" errors for bindings that depend on the failing match. Fix: update the `try` type signature in `TypeEnv::with_builtins()` to return `Result[T]` (or `Ok[T] | Err[String]`) so the type checker accepts nominal match patterns (`src/type_env.rs`)
+- [ ] **Swap `and-then` argument order from `[and-then f result]` to `[and-then result f]`**: current order (function first, result second) matches Elm but is backwards for tinct's data-flow idiom — pipelines read "take this result, then do this" which means result first. Rust's `.and_then(f)` and Haskell's `result >>= f` both put the result first. Update `and-then` signature and all callers including `result` monad dict (`bind: and-then`), `result-map`, `try-or-impl`, `find-deep-try-check`, and `[do]` macro desugaring which calls `monad.bind result f` (`stdlib/prelude.llt`, `stdlib/macros.llt`)
+- [ ] **Remove `https-get` from `samples/versions.llt` entirely**: the script has its own `https-get` only because `net.llt`'s `fetch`/`http-get` were historically broken or unavailable; once `stdlib-protocols` net.llt rewrite lands, replace the local `https-get` with `[include %libdir "net.llt"]` + `[fetch %nc [url "https://..."]]`; until then, if a local function is needed it must take `cap@NetCap url@Url` (not host/port/path separately, and not close over `%nc`) to match `net.llt`'s conventions (`samples/versions.llt`)
 **Depends on:** `bas-core` (for exhaustiveness checking; runtime behavior works without BAS but type checking requires it)
 
 ### `record-map-split`: Parameterized Map Type and Dict Union
@@ -141,8 +151,8 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 - [x] Implement `connect cap UnixStream path` (Linux-only via /proc/self/fd) (`src/builtins_io.rs`)
 - [x] Implement `connect cap Udp` — Value::DatagramHandle with UdpSocket + send-datagram/recv-datagram builtins (189 total)
 - [x] Implement `connect cap UnixDatagram` — DatagramSocket enum (Udp | UnixDgram), Linux autobind via UnixDatagram::bind("") + connect(path) (`src/value.rs`, `src/builtins_io.rs`)
-- [ ] Implement `connect cap NamedPipe` — stub: Windows-only
-- [ ] Implement `connect cap Icmp` — stub: requires raw socket support
+- [x] `connect cap NamedPipe` — stub with platform error (Windows-only, not implementable on Linux)
+- [x] `icmp-ping cap host timeout-ms` → `{ok: {latency-ms: Int}} | {err: String}`; SOCK_DGRAM+IPPROTO_ICMP (unprivileged Linux 3.11+); NetCap allowlist enforced before socket creation; RFC 792 checksum (`src/builtins_io.rs`)
 - [x] Implement `tls-layer handle sni opts` → Handle with Tls cap; consumes raw_tcp (`src/builtins_io.rs`)
 - [x] Remove `tls-connect` entirely — replaced by `tls-layer` (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
 - [x] Register transport variants (UnixStream, UnixDatagram, NamedPipe, Icmp) + Url type alias (`src/builtins.rs`, `src/type_env.rs`)
@@ -155,7 +165,13 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 
 See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-data-model.md §Sessions`.
 
-- [ ] Add `quinn` as direct dependency + full quic-session implementation (blocked: heavy async dep, Rc<()> placeholder remains) (`Cargo.toml`, `src/builtins_io.rs`)
+- [ ] **quinn step 1 — deps**: add `quinn = { version = "0.11", default-features = false, features = ["rustls", "ring"] }` and `h3 = "0.0.6"` (or latest stable) to `Cargo.toml`; verify `just build` succeeds (`Cargo.toml`)
+- [ ] **quinn step 2 — shared tokio runtime**: add `src/async_rt.rs` with `thread_local! { static TOKIO_RT: ... }` — single-threaded `tokio::runtime::Builder::new_current_thread().build()` initialized once per thread; expose `async_rt::block_on(fut)` helper; reqwest's blocking client already wraps async internally so no conflict (`src/async_rt.rs`, `src/lib.rs`)
+- [ ] **quinn step 3 — quic-session builtin**: implement `builtin_quic_session` — parse cap/host/port/opts; build `rustls::ClientConfig` from opts (reuse `build_tls_config` from tls-layer); create `quinn::Endpoint`; call `async_rt::block_on(endpoint.connect(addr, host)?.await)`; store `quinn::Connection` in `Value::QuicSession` (replace `Rc<()>` placeholder) (`src/builtins_io.rs`)
+- [ ] **quinn step 4 — stream builtins**: implement `builtin_quic_open_stream` — `block_on(conn.open_bi())` returning `(SendStream, RecvStream)`; wrap in `Value::Handle` with Binary RW Stream caps using `AsyncRead`/`AsyncWrite` adapters; implement `builtin_quic_open_datagram` — `conn.send_datagram(bytes)` / `block_on(conn.read_datagram())` via `Value::DatagramHandle` (`src/builtins_io.rs`)
+- [ ] **quinn step 5 — http3-session**: implement `builtin_http3_session` — take `Value::QuicSession`; call `h3::client::builder().build(quic_conn).await`; store `h3::client::SendRequest` in `Value::Http3Session` (replace `Rc<()>`) (`src/builtins_io.rs`)
+- [ ] **quinn step 6 — http-request for HTTP/3**: implement HTTP/3 dispatch in `builtin_http_request` — when `Value::Http3Session`: construct h3 request, `block_on(send_request.send_request(req).await)`, collect response body bytes; return `Ok[{status headers body}] | Err[String]` using nominal Result; the HTTP/2 dispatch branch (reqwest-based) can be implemented similarly (`src/builtins_io.rs`)
+- [ ] **quinn step 7 — tests**: corpus tests for quic-session type errors (wrong arg count, wrong cap type); these are the only CI-testable paths since QUIC requires a live server
 - [x] Stub builtins registered: quic-session, quic-open-stream, quic-open-datagram, http2-session, http3-session, http-request, icmp-ping — all return clear "not yet implemented" errors (187 total builtins) (`src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`)
 - [x] Add `Value::QuicSession`, `Value::Http2Session`, `Value::Http3Session` as `Rc<()>` placeholders (`src/value.rs`)
 - [x] Add `Type::QuicSession`, `Type::Http2Session`, `Type::Http3Session` + TypeEnv + value_matches_type (`src/types.rs`, `src/type_env.rs`, `src/eval.rs`)
@@ -242,7 +258,7 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 **ignored-tests** — Disabled tests masking real gaps:
 
 - [x] `test_typecheck_corpus` re-enabled — reorganized corpus files (moved warning/error tests to appropriate dirs) and removed `#[ignore]`
-- [ ] `test_tco_tail_recursive_function` (`src/eval.rs:8188`) is `#[ignore]`d because full TCO is not wired — PendingCall thunks still accumulate call depth; re-enable once the CEK `Action::Eval` dispatch eliminates depth accumulation (`src/eval.rs`)
+- [ ] `test_tco_tail_recursive_function` (`src/eval.rs:8326`): remove `#[ignore]`; update syntax from old `$`-prefix/`[call $f ...]` style to modern bare-word (`[if [= n 0] acc [count-down ...]]`); bump iterations from 10 to 100_000 to actually validate TCO — with `MAX_EVAL_DEPTH` removed and the CEK heap-based `Action` stack in place, the test should pass trivially; the `#[ignore]` comment is stale (`src/eval.rs`)
 
 **typecheck-named-arg-gaps** — Remaining named-arg type checking gaps found in typecheck-bugs panel review:
 
