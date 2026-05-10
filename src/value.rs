@@ -265,16 +265,17 @@ pub enum Value {
         base_url: Option<String>,
     },
     /// QUIC session — multiplexed connection over UDP (RFC 9000).
-    /// Placeholder for quinn::Connection. Created by `quic-session`, consumed by
+    /// Wraps a `quinn::Connection`. Created by `quic-session`, consumed by
     /// `quic-open-stream` and `quic-open-datagram`.
-    QuicSession(Rc<()>),
+    QuicSession(Rc<quinn::Connection>),
     /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
     /// Placeholder for reqwest client or h2::Connection. Created by `http2-session`,
     /// consumed by `http-request`.
     Http2Session(Rc<()>),
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
-    /// Placeholder for h3::Connection. Created by `http3-session`, consumed by `http-request`.
-    Http3Session(Rc<()>),
+    /// Wraps an `h3::client::SendRequest` over `h3_quinn`. Created by `http3-session`,
+    /// consumed by `http-request`.
+    Http3Session(Rc<RefCell<h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>>>),
     /// Message-oriented datagram socket (UDP or Unix datagram).
     /// Uses `send`/`recv` semantics (message boundaries preserved), not stream I/O.
     /// Created by `connect cap Udp host port` or `connect cap UnixDatagram path`.
