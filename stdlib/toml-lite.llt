@@ -34,7 +34,7 @@
 # Type: (String -> Dict)
 # Example: [parse-toml-lite "key = \"value\""] => [key: "value"]
 # Example: [parse-toml-lite "[section]\nkey = 42"] => [section: [key: 42]]
-parse-toml-lite: [fn@Dict [text@String]
+parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn@Dict [text@String]
     [parse-toml-lines
         [collect
             [builtin-filter [fn [line] [not-blank-or-comment line]]

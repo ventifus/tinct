@@ -34,7 +34,7 @@
 # Example: [hex-encode "hello"] => "68656c6c6f"
 # Example: [hex-encode "A"] => "41"
 # Example: [hex-encode ""] => ""
-hex-encode: [fn@String [s@String]
+hex-encode@[doc: "Convert a string to its hexadecimal representation"]: [fn@String [s@String]
     [hex-encode-impl s 0 [length s] ""]]
 
 hex-encode-impl: [fn@String [s@String i@Int len@Int acc@String]
@@ -68,7 +68,7 @@ hex-digit: [fn@String [n@Int]
 # Example: [hex-decode "68656c6c6f"] => "hello"
 # Example: [hex-decode "41"] => "A"
 # Example: [hex-decode ""] => ""
-hex-decode: [fn@String [s@String]
+hex-decode@[doc: "Decode a hexadecimal string back to its original form"]: [fn@String [s@String]
     [builtin-if [builtin-eq [mod [length s] 2] 0]
         [hex-decode-impl s 0 [length s] ""]
         [error "hex-decode: input length must be even"]]]
@@ -114,7 +114,7 @@ base64-alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 # Example: [base64-encode "hello"] => "aGVsbG8="
 # Example: [base64-encode "hi"] => "aGk="
 # Example: [base64-encode "a"] => "YQ=="
-base64-encode: [fn@String [s@String]
+base64-encode@[doc: "Convert a string to base64 encoding"]: [fn@String [s@String]
     [base64-encode-impl s 0 [length s] ""]]
 
 base64-encode-impl: [fn@String [s@String i@Int len@Int acc@String]
@@ -173,7 +173,7 @@ base64-char: [fn@String [n@Int]
 # Example: [base64-decode "aGVsbG8="] => "hello"
 # Example: [base64-decode "aGk="] => "hi"
 # Example: [base64-decode "YQ=="] => "a"
-base64-decode: [fn@String [s@String]
+base64-decode@[doc: "Decode a base64 string back to its original form"]: [fn@String [s@String]
     [base64-decode-impl s 0 [length s] ""]]
 
 base64-decode-impl: [fn@String [s@String i@Int len@Int acc@String]
@@ -233,7 +233,7 @@ base64-char-to-int-search: [fn@Int [c@String i@Int]
 # Type: (String -> String -> String)
 # Example: [mask-apply "hello" "key"] => (encrypted string)
 # Example: [mask-apply [mask-apply "hello" "key"] "key"] => "hello"  (double XOR recovers original)
-mask-apply: [fn@String [data@String mask@String]
+mask-apply@[doc: "Apply an XOR mask to a string (repeating-key cipher)"]: [fn@String [data@String mask@String]
     [builtin-if [builtin-eq [length mask] 0]
         [error "mask-apply: mask cannot be empty"]
         [mask-apply-impl data mask 0 [length data] [length mask] ""]]]

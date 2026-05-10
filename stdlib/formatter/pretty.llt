@@ -450,7 +450,7 @@ format-doc-header: [fn@Str [doc@Dict]
 
 # Format an AST dict to pretty source
 # Expects % to be a file dict from ast_to_dict with source+comments mode
-format: [fn@Str [ast@Dict]
+format@[doc: "Format AST dict to pretty source (80-column, 2-space indent, preserves comments)"]: [fn@Str [ast@Dict]
   [format-file ast]]
 
 # Pipeline mode: receive AST as % and emit formatted source

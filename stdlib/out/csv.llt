@@ -30,7 +30,7 @@ csv-rows: [fn@String [rows@Dict ks@Dict i@Int acc@String]
       [str acc [csv-row [get i rows] ks 0 ""]]]]]
 
 # Public API: format list-of-dicts to CSV
-csv: [fn@String [rows@Dict]
+csv@[doc: "Convert list-of-dicts to CSV format (header row + data rows)"]: [fn@String [rows@Dict]
   [if [empty? rows]
     ""
     [csv-impl rows [keys rows.0]]]]

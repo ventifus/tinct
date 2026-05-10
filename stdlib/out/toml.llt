@@ -68,7 +68,7 @@ toml-value: [fn@String [val@Any]
     [toml-scalar val]]]
 
 # Public API: format dict to TOML
-toml: [fn@String [d@Dict]
+toml@[doc: "Convert dict to TOML format (flat keys + tables)"]: [fn@String [d@Dict]
   [if [empty? d]
     ""
     [toml-impl d [toml-partition d [keys d] 0 [] []]]]]

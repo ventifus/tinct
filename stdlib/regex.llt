@@ -33,11 +33,11 @@ has-check: [fn@Bool [result@Dict]
 # ============================================================================
 
 # Compile a pattern (currently a no-op, just returns the pattern)
-re-compile: [fn@Dict [pattern@String]
+re-compile@[doc: "Compile a pattern (currently a no-op, just returns the pattern)"]: [fn@Dict [pattern@String]
     [pattern: pattern]]
 
 # Test if string contains pattern anywhere
-re-match: [fn@Bool [pattern haystack@String]
+re-match@[doc: "Test if string contains pattern anywhere"]: [fn@Bool [pattern haystack@String]
     [re-match-impl [re-ensure-pattern pattern] haystack 0 [length haystack]]]
 
 re-match-impl: [fn@Bool [pat@String haystack@String i@Int len@Int]
@@ -56,7 +56,7 @@ re-match-check: [fn@Bool [pat@String haystack@String i@Int len@Int end-pos@Int]
             [re-match-impl pat haystack [builtin-add i 1] len]]]]
 
 # Find first match
-re-find: [fn@Dict [pattern haystack@String]
+re-find@[doc: "Find first match"]: [fn@Dict [pattern haystack@String]
     [re-find-impl [re-ensure-pattern pattern] haystack 0 [length haystack]]]
 
 re-find-impl: [fn@Dict [pat@String haystack@String i@Int len@Int]
@@ -75,7 +75,7 @@ re-find-check: [fn@Dict [pat@String haystack@String i@Int len@Int end-pos@Int]
             [re-find-impl pat haystack [builtin-add i 1] len]]]]
 
 # Find all matches (returns dict for simplicity)
-re-findall: [fn@Dict [pattern haystack@String]
+re-findall@[doc: "Find all matches (returns dict for simplicity)"]: [fn@Dict [pattern haystack@String]
     [re-findall-impl [re-ensure-pattern pattern] haystack 0 [length haystack] []]]
 
 re-findall-impl: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict]
@@ -95,15 +95,15 @@ re-findall-check: [fn@Dict [pat@String haystack@String i@Int len@Int acc@Dict en
             [re-findall-impl pat haystack [builtin-add i 1] len acc]]]]
 
 # Replace all matches
-re-replace: [fn@String [pattern replacement@String haystack@String]
+re-replace@[doc: "Replace all matches"]: [fn@String [pattern replacement@String haystack@String]
     [replace [re-ensure-pattern pattern] replacement haystack]]
 
 # Split on pattern
-re-split: [fn@Dict [pattern haystack@String]
+re-split@[doc: "Split on pattern"]: [fn@Dict [pattern haystack@String]
     [split [re-ensure-pattern pattern] haystack]]
 
 # Escape replacement string
-re-escape-replacement: [fn@String [s@String]
+re-escape-replacement@[doc: "Escape replacement string"]: [fn@String [s@String]
     [replace "\\" "\\\\" s]]
 
 # Ensure pattern is a string
