@@ -1,0 +1,9 @@
+# BAS S-RcdTop: disjoint single-field closed records are the input to the S-RcdTop rule.
+# Type::is_subtype triggers check_s_rcd_top when a Union of closed single-field Records
+# with different field names is encountered — such a union is semantically equivalent to Top.
+# This test verifies the eval-layer behavior for the disjoint-record shapes that S-RcdTop reasons about.
+[f: [fn [r] r]
+ r1: [f [x: 42]]
+ r2: [f [y: "hello"]]]
+=== out
+Dict({"f": Function(r), "r1": Dict({"x": Int(42)}), "r2": Dict({"y": String("hello")})})
