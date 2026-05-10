@@ -2,6 +2,4 @@
 [any? [fn [x] true] [range 0 3]]
 === error
 [E080] any?: expected Dict, got Seq -- collect the Seq first
-=== warn
-cannot unify
 

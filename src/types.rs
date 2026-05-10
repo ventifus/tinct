@@ -2499,11 +2499,11 @@ mod tests {
         assert!(env.get("filter").is_some());
         assert!(env.get("reduce").is_some());
 
-        // List operations (moved from LLT to Rust)
-        assert!(env.get("rest").is_some());
-        assert!(env.get("cons").is_some());
-        assert!(env.get("reverse").is_some());
-        assert!(env.get("sort").is_some());
+        // List operations (registered as builtin-NAME; prelude exports the unwrapped names)
+        assert!(env.get("builtin-rest").is_some());
+        assert!(env.get("builtin-cons").is_some());
+        assert!(env.get("builtin-reverse").is_some());
+        assert!(env.get("builtin-sort").is_some());
     }
 
     #[test]

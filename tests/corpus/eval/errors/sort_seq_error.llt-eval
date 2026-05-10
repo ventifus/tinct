@@ -3,5 +3,4 @@
 === error
 [E010] sort: expected Dict, got Seq
 
-=== warn
-cannot unify [] with Seq[Int] at 1:7-1:19
+

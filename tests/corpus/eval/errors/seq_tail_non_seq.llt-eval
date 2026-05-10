@@ -3,5 +3,4 @@
 === error
 [E010] tail: expected Seq, got Int
 
-=== warn
-cannot unify Seq[_] with 42 at 1:7-1:9
+

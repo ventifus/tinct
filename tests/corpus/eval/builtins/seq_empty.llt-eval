@@ -2,5 +2,4 @@
 [collect []]
 === out
 Dict({})
-=== warn
-cannot unify Seq[_] with [] at 1:10-1:12
+

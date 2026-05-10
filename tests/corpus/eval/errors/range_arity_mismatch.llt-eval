@@ -1,7 +1,6 @@
-# E020: ArityMismatch - range expects 1 to 2 arguments, got 0
+# E024: MissingArg - range wrapper requires at least 1 argument (start)
 [range]
 === error
-[E020] arity mismatch: expected 1 to 2 arguments, got 0
+[E024] missing argument for required parameter 'start'
 
-=== warn
-arity mismatch: expected 2 argument(s), got 0 (0 positional, 0 named) at 1:1-1:8
+

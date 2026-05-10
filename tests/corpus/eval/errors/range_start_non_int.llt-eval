@@ -2,6 +2,3 @@
 [range "not a number" 10]
 === error
 [E010]
-
-=== warn
-cannot unify Int with "not a number" at 1:8-1:22

@@ -1228,16 +1228,16 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
-        // Sequences
-        builtin!("seq", builtin_seq),
-        builtin!("head", builtin_head, [Strictness::Seq]),
-        builtin!("tail", builtin_tail, [Strictness::Seq]),
-        builtin!("collect", builtin_collect, [Strictness::Spine]),
-        builtin!("range", builtin_range, [Strictness::Seq, Strictness::Seq]),
-        builtin!("repeat", builtin_repeat),
-        builtin!("cycle", builtin_cycle, [Strictness::Spine]),
-        builtin!("iterate", builtin_iterate),
-        builtin!("unfold", builtin_unfold),
+        // Sequences (registered under builtin-NAME; prelude exports the unwrapped names)
+        builtin!("builtin-seq", builtin_seq),
+        builtin!("builtin-head", builtin_head, [Strictness::Seq]),
+        builtin!("builtin-tail", builtin_tail, [Strictness::Seq]),
+        builtin!("builtin-collect", builtin_collect, [Strictness::Spine]),
+        builtin!("builtin-range", builtin_range, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-repeat", builtin_repeat),
+        builtin!("builtin-cycle", builtin_cycle, [Strictness::Spine]),
+        builtin!("builtin-iterate", builtin_iterate),
+        builtin!("builtin-unfold", builtin_unfold),
         builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine]),
         builtin!(
             "filter",
@@ -1251,19 +1251,19 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_reduce,
             [Strictness::Id, Strictness::Id, Strictness::Spine]
         ),
-        builtin!("join", builtin_join, [Strictness::Seq, Strictness::Spine]),
+        builtin!("builtin-join", builtin_join, [Strictness::Seq, Strictness::Spine]),
         builtin!(
-            "concat",
+            "builtin-concat",
             builtin_concat,
             [Strictness::Spine, Strictness::Seq]
         ),
-        // List operations (moved from LLT stdlib to Rust for performance)
-        builtin!("first", builtin_first, [Strictness::Spine]),
-        builtin!("last", builtin_last, [Strictness::Spine]),
-        builtin!("rest", builtin_rest, [Strictness::Spine]),
-        builtin!("cons", builtin_cons, [Strictness::Id, Strictness::Spine]),
-        builtin!("reverse", builtin_reverse, [Strictness::Spine]),
-        builtin!("sort", builtin_sort, [Strictness::Spine]),
+        // List operations (registered under builtin-NAME; prelude exports the unwrapped names)
+        builtin!("builtin-first", builtin_first, [Strictness::Spine]),
+        builtin!("builtin-last", builtin_last, [Strictness::Spine]),
+        builtin!("builtin-rest", builtin_rest, [Strictness::Spine]),
+        builtin!("builtin-cons", builtin_cons, [Strictness::Id, Strictness::Spine]),
+        builtin!("builtin-reverse", builtin_reverse, [Strictness::Spine]),
+        builtin!("builtin-sort", builtin_sort, [Strictness::Spine]),
         // Proxy
         builtin!("proxy", builtin_proxy),
         // Date-time: timestamps and durations
@@ -6245,30 +6245,30 @@ mod tests {
         assert!(names.contains(&"read-link"), "missing read-link");
         assert!(names.contains(&"from-json"), "missing from-json");
         assert!(names.contains(&"include"), "missing include");
-        // Sequences
-        assert!(names.contains(&"seq"), "missing seq");
-        assert!(names.contains(&"head"), "missing head");
-        assert!(names.contains(&"tail"), "missing tail");
-        assert!(names.contains(&"collect"), "missing collect");
-        assert!(names.contains(&"range"), "missing range");
-        assert!(names.contains(&"repeat"), "missing repeat");
-        assert!(names.contains(&"cycle"), "missing cycle");
-        assert!(names.contains(&"iterate"), "missing iterate");
-        assert!(names.contains(&"unfold"), "missing unfold");
+        // Sequences (registered as builtin-NAME; prelude exports unwrapped names)
+        assert!(names.contains(&"builtin-seq"), "missing builtin-seq");
+        assert!(names.contains(&"builtin-head"), "missing builtin-head");
+        assert!(names.contains(&"builtin-tail"), "missing builtin-tail");
+        assert!(names.contains(&"builtin-collect"), "missing builtin-collect");
+        assert!(names.contains(&"builtin-range"), "missing builtin-range");
+        assert!(names.contains(&"builtin-repeat"), "missing builtin-repeat");
+        assert!(names.contains(&"builtin-cycle"), "missing builtin-cycle");
+        assert!(names.contains(&"builtin-iterate"), "missing builtin-iterate");
+        assert!(names.contains(&"builtin-unfold"), "missing builtin-unfold");
         assert!(names.contains(&"map"), "missing map");
         assert!(names.contains(&"filter"), "missing filter");
         assert!(names.contains(&"take"), "missing take");
         assert!(names.contains(&"drop"), "missing drop");
         assert!(names.contains(&"reduce"), "missing reduce");
-        assert!(names.contains(&"join"), "missing join");
-        assert!(names.contains(&"concat"), "missing concat");
-        // List operations (moved from LLT to Rust)
-        assert!(names.contains(&"first"), "missing first");
-        assert!(names.contains(&"last"), "missing last");
-        assert!(names.contains(&"rest"), "missing rest");
-        assert!(names.contains(&"cons"), "missing cons");
-        assert!(names.contains(&"reverse"), "missing reverse");
-        assert!(names.contains(&"sort"), "missing sort");
+        assert!(names.contains(&"builtin-join"), "missing builtin-join");
+        assert!(names.contains(&"builtin-concat"), "missing builtin-concat");
+        // List operations (registered as builtin-NAME; prelude exports unwrapped names)
+        assert!(names.contains(&"builtin-first"), "missing builtin-first");
+        assert!(names.contains(&"builtin-last"), "missing builtin-last");
+        assert!(names.contains(&"builtin-rest"), "missing builtin-rest");
+        assert!(names.contains(&"builtin-cons"), "missing builtin-cons");
+        assert!(names.contains(&"builtin-reverse"), "missing builtin-reverse");
+        assert!(names.contains(&"builtin-sort"), "missing builtin-sort");
         // Also assert proxy is present
         assert!(names.contains(&"proxy"), "missing proxy");
         // Access-pipeline builtins (Wave 1 sprint)

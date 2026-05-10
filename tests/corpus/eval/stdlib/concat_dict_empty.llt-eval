@@ -2,5 +2,4 @@
 [concat [] [a: 1 b: 2]]
 === out
 Dict({"a": Int(1), "b": Int(2)})
-=== warn
-arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:1-1:24
+

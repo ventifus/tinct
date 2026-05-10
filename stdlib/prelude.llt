@@ -31,6 +31,8 @@
 #
 #   Primary-name operators defined as shadowable wrappers (in public dict):
 #     <  =  +  -  *  /  if  filter  map  reduce  take  drop
+#     seq  head  tail  collect  range  repeat  cycle  iterate  unfold
+#     join  concat  first  last  rest  cons  reverse  sort
 #   These delegate to stable builtin-* aliases, allowing domain modules
 #   to shadow the primary names via include while the prelude continues
 #   to work correctly via builtin-lt, builtin-eq, etc.
@@ -38,14 +40,17 @@
 #   Stable builtin-* aliases used internally (cannot be shadowed):
 #     builtin-lt  builtin-eq  builtin-add  builtin-sub  builtin-mul  builtin-div
 #     builtin-if  builtin-filter  builtin-map  builtin-reduce  builtin-take  builtin-drop
+#     builtin-seq  builtin-head  builtin-tail  builtin-collect  builtin-range
+#     builtin-repeat  builtin-cycle  builtin-iterate  builtin-unfold
+#     builtin-join  builtin-concat  builtin-first  builtin-last  builtin-rest
+#     builtin-cons  builtin-reverse  builtin-sort
 #
 #   Non-shadowed Rust builtins (commonly used, partial list — see src/builtins.rs):
 #     Dict:        keys  length  merge  append  builtin-get
 #     String:      str  split
 #     Numeric:     floor
 #     Runtime:     error  try  type-of
-#     Sequences:   seq  head  tail  collect  concat  each  each-key  each-kv
-#     List ops:    rest  cons  reverse  sort  sorted  sorted-by
+#     Sequences:   each  each-key  each-kv
 #     Predicates:  int?  float?  num?  str?  bool?  null?  dict?  fn?  seq?
 #
 # Design patterns:
@@ -225,8 +230,8 @@ map-entries-step: [fn@Dict [f@Fn xs@Dict ks i@Int acc@Dict current-key]
 zip-seq-impl: [fn@Any [xs ys]
     [builtin-if [seq? xs]
         [builtin-if [seq? ys]
-            [seq [[head xs] [head ys]]
-                [zip-seq-impl [tail xs] [tail ys]]]
+            [builtin-seq [[builtin-head xs] [builtin-head ys]]
+                [zip-seq-impl [builtin-tail xs] [builtin-tail ys]]]
             []]
         []]]
 
@@ -453,10 +458,8 @@ clamp@[doc: "Clamp value between bounds (inclusive)"]: [fn@Number [lo@Number hi@
 # String (derived from str, split, builtin-filter, builtin-eq)
 # ============================================================================
 
-# join is a Rust-native builtin (O(n) performance, dual-dispatch on Dict/Seq).
-# DEFERRED (Phase 10): implementable as one-line reduce in LLT once dual-dispatch reduce is stable.
-# LLT equivalent: [fn [sep xs] [builtin-reduce [fn [acc x] [str acc sep x]] [first xs] [rest xs]]]
-# See src/builtins.rs for implementation.
+# join: delegates to builtin-join (see wrappers section at bottom of this dict).
+# O(n) performance, dual-dispatch on Dict/Seq. Example: [join ", " ["a" "b"]] => "a, b"
 
 # Split a string on spaces, filtering empty strings. Returns a Seq of words.
 # Type: (String -> Seq String)
@@ -523,7 +526,7 @@ get-in@[doc: "Get nested value by path"]: [fn@Any [xs path@Dict]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
-            [get-in [get path.0 xs] [rest path]]
+            [get-in [get path.0 xs] [builtin-rest path]]
             [error [str "key not found: " path.0]]]]]
 
 # Traverse nested dicts by a list of keys with a default fallback.
@@ -534,7 +537,7 @@ get-in-or@[doc: "Get nested value by path with default"]: [fn@Any [xs path@Dict 
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
-            [get-in-or [get path.0 xs] [rest path] default]
+            [get-in-or [get path.0 xs] [builtin-rest path] default]
             default]]]
 
 # Check if a collection is empty.
@@ -574,7 +577,7 @@ from-entries@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [pairs] [b
 # ============================================================================
 
 # Get the first element of a list, first character of a string, or first byte of Bytes (as Int).
-# first is now a Rust builtin — see src/builtins.rs for implementation.
+# first: delegates to builtin-first (see wrappers section at bottom of this dict).
 # assert: [first [10 20 30]] => 10
 # assert: [first "hello"] => "h"
 # assert: [first (str-bytes "A")] => 65
@@ -587,26 +590,20 @@ nth@[doc: "Get nth element (supports negative indices)"]: [fn [xs@Dict n@Int]
     [nth-impl xs [keys xs] n [length xs]]]
 
 # Get the last element by insertion-order position, last character of a string, or last byte of Bytes (as Int).
-# last is now a Rust builtin — see src/builtins.rs for implementation.
+# last: delegates to builtin-last (see wrappers section at bottom of this dict).
 # assert: [last [10 20 30]] => 30
 # assert: [last "hello"] => "o"
 # assert: [last (str-bytes "Z")] => 90
 
-# rest: Rust-native builtin. Dict: O(n) drop-first-and-reindex. Seq: O(1) tail (delegates to tail).
-# See src/builtins.rs for implementation.
-
-# cons: Rust-native builtin. Dict: O(n) prepend-and-reindex. Seq: O(1) prepend (delegates to seq).
-# See src/builtins.rs for implementation.
+# rest: delegates to builtin-rest (see wrappers section at bottom of this dict).
+# cons: delegates to builtin-cons (see wrappers section at bottom of this dict).
 
 # Append an element to the end of a list. Delegates to append.
 # Type: (Dict a -> a -> Dict a)
 # Example: [conj [1 2 3] 4] => [1 2 3 4]
 conj@[doc: "Append element to end of list"]: [fn@Dict [xs@Dict x] [append xs x]]
 
-# concat is a Rust-native builtin (dual-dispatch on Dict/Seq).
-
-# reverse: Rust-native builtin. O(n) — reverses insertion order, reindexes from 0.
-# See src/builtins.rs for implementation.
+# concat, reverse, sort: delegate to their builtin-* aliases (see wrappers section).
 
 # Rebuild a collection with dense 0..n integer keys, preserving values and insertion order.
 # Useful after drop or sparse slicing to normalize key numbering.
@@ -619,13 +616,10 @@ reindex@[doc: "Rebuild with dense 0..n integer keys"]: [fn@Dict [xs@Dict] [reind
 # Sorting (Mergesort)
 # ============================================================================
 
-# sort: Rust-native builtin. O(n log n) natural ordering mergesort.
-# Type: (Dict Comparable -> Dict Comparable)
-# Sorts using the same total order as <: Int/Float numerically, String lexicographically, Bool by false < true.
-# Errors on Seq input (callers must collect first), and on mixed incompatible types.
+# sort: delegates to builtin-sort (see wrappers section at bottom of this dict).
+# O(n log n) natural ordering mergesort. Errors on Seq input (collect first).
 # Example: [sort [3 1 2]] => [1 2 3]
 # Example: [sort ["c" "a" "b"]] => ["a" "b" "c"]
-# See src/builtins.rs for implementation.
 
 # sort-merge depends on empty? (public) — lives in the public dict for mutual recursion.
 sort-merge@[doc: "Merge two sorted lists (internal helper)"]: [fn@Dict [cmp@Fn left@Dict right@Dict]
@@ -634,8 +628,8 @@ sort-merge@[doc: "Merge two sorted lists (internal helper)"]: [fn@Dict [cmp@Fn l
         [builtin-if [empty? right]
             left
             [builtin-if [cmp left.0 right.0]
-                [cons left.0 [sort-merge cmp [rest left] right]]
-                [cons right.0 [sort-merge cmp left [rest right]]]]]]]
+                [builtin-cons left.0 [sort-merge cmp [builtin-rest left] right]]
+                [builtin-cons right.0 [sort-merge cmp left [builtin-rest right]]]]]]]
 
 # Sort a list using a custom comparator (mergesort, stable).
 # Type: ((a -> a -> Bool) -> Dict a -> Dict a)
@@ -656,13 +650,13 @@ sort-by@[doc: "Sort with custom comparator"]: [fn@Dict [cmp@Fn xs@Dict]
 # Example: [sorted [filter [fn [x] [> x 2]] [1 3 2 4]]] => [3 4]
 # Example: [sorted [3 1 2]] => [1 2 3]
 sorted@[doc: "Sort collection in ascending order"]: [fn@Dict [xs]
-    [sort [builtin-if [seq? xs] [collect xs] xs]]]
+    [builtin-sort [builtin-if [seq? xs] [builtin-collect xs] xs]]]
 
 # Like sorted, with a custom comparator.
 # Type: ((a -> a -> Bool) -> Seq a | Dict a -> Dict a)
 # Example: [sorted-by [fn [a b] [> a b]] [filter [fn [x] [> x 0]] [-1 3 -2 4]]] => [4 3]
 sorted-by@[doc: "Sort with custom comparator (accepts Seq or Dict)"]: [fn@Dict [cmp@Fn xs]
-    [sort-by cmp [builtin-if [seq? xs] [collect xs] xs]]]
+    [sort-by cmp [builtin-if [seq? xs] [builtin-collect xs] xs]]]
 
 # ============================================================================
 # Universal Collection Operations (preserve keys)
@@ -731,8 +725,8 @@ zip@[doc: "Pair entries from two collections by position"]: [fn@Any [xs ys]
     [builtin-if [and [seq? xs] [seq? ys]]
         [zip-seq-impl xs ys]
         [zip-dict-impl
-            [builtin-if [seq? xs] [collect xs] xs]
-            [builtin-if [seq? ys] [collect ys] ys]]]]
+            [builtin-if [seq? xs] [builtin-collect xs] xs]
+            [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
 
 # Flatten nested lists one level deep.
 # flatten-impl/flatten-step depend on reindex (public) — live in public dict.
@@ -745,7 +739,7 @@ flatten-impl@[doc: "Flatten implementation (internal helper)"]: [fn@Dict [xs@Dic
 flatten-step@[doc: "Flatten step (internal helper)"]: [fn@Dict [xs@Dict ks i@Int acc@Dict current-key]
     [builtin-if [dict? [get current-key xs]]
         [flatten-impl xs ks [builtin-add i 1]
-            [concat acc [reindex [get current-key xs]]]]
+            [builtin-concat acc [reindex [get current-key xs]]]]
         [flatten-impl xs ks [builtin-add i 1]
             [append acc [get current-key xs]]]]]
 
@@ -809,11 +803,11 @@ partition@[doc: "Split collection into pass/fail groups"]: [fn@Dict [pred@Fn xs]
 # Uses concat to accumulate the results of f, avoiding Seq/Dict flush issues.
 # Inherently materializing: f must return collections that can be concatenated.
 flat-map@[doc: "Map and flatten results"]: [fn@Dict [f@Fn xs]
-    [builtin-reduce [fn [acc x] [concat acc [f x]]] [] xs]]
+    [builtin-reduce [fn [acc x] [builtin-concat acc [f x]]] [] xs]]
 
 # Return the first element satisfying pred, or error if none found.
 # filter on Dict returns a Seq; head gets the first element (errors if Seq is empty).
-find-first@[doc: "Find first element matching predicate"]: [fn [pred@Fn xs] [head [builtin-filter pred xs]]]
+find-first@[doc: "Find first element matching predicate"]: [fn [pred@Fn xs] [builtin-head [builtin-filter pred xs]]]
 
 # Return the first element satisfying pred, or default if none found.
 find-first-or@[doc: "Find first matching element or return default"]: [fn [pred@Fn default xs]
@@ -889,7 +883,7 @@ unzip@[doc: "Unzip list of pairs into pair of lists"]: [fn@Dict [pairs]
 transpose@[doc: "Transpose 2D dict (flip rows and columns)"]: [fn@Dict [rows@Dict]
     [builtin-if [empty? rows]
         []
-        [transpose-impl rows [keys [first [values rows]]]]]]
+        [transpose-impl rows [keys [builtin-first [values rows]]]]]]
 
 # ============================================================================
 # Aggregates
@@ -908,16 +902,16 @@ product@[doc: "Product of all elements"]: [fn@Number [xs] [builtin-reduce [fn [a
 min@[doc: "Minimum element"]: [fn [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] a b]]
-        [first xs]
-        [rest xs]]]
+        [builtin-first xs]
+        [builtin-rest xs]]]
 
 # Return the maximum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic max).
 max@[doc: "Maximum element"]: [fn [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] b a]]
-        [first xs]
-        [rest xs]]]
+        [builtin-first xs]
+        [builtin-rest xs]]]
 
 # Count elements satisfying pred.
 # Uses reduce to count, avoiding the Seq→length issue (filter on Dict returns Seq).
@@ -965,7 +959,7 @@ uniq@[doc: "Remove duplicates (keep first occurrence)"]: [fn@Dict [xs@Dict]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
-foldr@[doc: "Right fold"]: [fn [f@Fn acc xs] [builtin-reduce f acc [reverse xs]]]
+foldr@[doc: "Right fold"]: [fn [f@Fn acc xs] [builtin-reduce f acc [builtin-reverse xs]]]
 
 # ============================================================================
 # Composition
@@ -1062,8 +1056,11 @@ result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  p
 # Sequences
 # ============================================================================
 
-# Sequence constructors (range, repeat, cycle, take) are Rust-native builtins.
-# See src/builtins.rs for implementations.
+# Sequence constructors and list operations are registered as builtin-NAME and
+# wrapped below in the "Sequence / List Wrappers" section. The public names
+# (seq, head, tail, collect, range, repeat, cycle, iterate, unfold, join,
+# concat, first, last, rest, cons, reverse, sort) are all defined as wrappers
+# at the bottom of this dict so they can be shadowed by user code via include.
 
 # ============================================================================
 # Assertions
@@ -1125,7 +1122,7 @@ collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [xs] [builti
 # assert: [str-repeat "ab" 2] => "abab"
 # assert: [str-repeat "x" 0] => ""
 str-repeat@[doc: "Repeat string n times"]: [fn@Str [s@Str n@Int]
-  [builtin-reduce [fn [acc _] [str acc s]] "" [range 0 n]]]
+  [builtin-reduce [fn [acc _] [str acc s]] "" [builtin-range 0 n]]]
 
 # ============================================================================
 # Numeric Range Predicates
@@ -1151,5 +1148,71 @@ non-negative@[doc: "Check if value is non-negative"]: [fn [v] [>= v 0]]
 # assert: [positive 0] => false
 # assert: [positive -1] => false
 positive@[doc: "Check if value is positive"]: [fn [v] [> v 0]]
+
+# ============================================================================
+# Sequence / List Wrappers (shadowable wrappers for builtin-NAME functions)
+# ============================================================================
+#
+# Each wrapper delegates to the stable builtin-* alias, making the primary
+# name overridable by user code via include while internal prelude code
+# continues to work correctly through the builtin-* escape hatch.
+
+# Construct a Seq node from a head element and a tail Seq.
+seq@[doc: "Construct a Seq node (head, tail)"]: [fn [h t] [builtin-seq h t]]
+
+# Get the first element of a Seq (errors on empty Seq).
+head@[doc: "First element of a Seq"]: [fn [xs] [builtin-head xs]]
+
+# Get the tail of a Seq (all elements after the first; errors on empty Seq).
+tail@[doc: "Tail of a Seq (all elements after first)"]: [fn [xs] [builtin-tail xs]]
+
+# Materialize a lazy Seq into an integer-keyed Dict.
+collect@[doc: "Materialize Seq into Dict"]: [fn [xs] [builtin-collect xs]]
+
+# Generate a lazy integer range. 1-arg [range start] = infinite; 2-arg [range start end] = finite.
+# Example: [collect [range 0 3]] => [0 1 2]
+# Example: [take 3 [range 5]] => Seq(5, 6, 7, ...)
+range@[doc: "Lazy integer range (1-arg: infinite; 2-arg: finite half-open)"]: [fn [start@Int ...rest]
+    [builtin-if [builtin-eq [length rest] 0]
+        [builtin-range start]
+        [builtin-range start [builtin-get 0 rest]]]]
+
+# Infinite lazy Seq repeating a single value.
+repeat@[doc: "Infinite lazy Seq repeating a value"]: [fn [x] [builtin-repeat x]]
+
+# Cycle a collection infinitely.
+cycle@[doc: "Cycle collection infinitely"]: [fn [xs] [builtin-cycle xs]]
+
+# Infinite lazy Seq by repeatedly applying f to seed.
+iterate@[doc: "Iterate f over seed infinitely"]: [fn [f@Fn x] [builtin-iterate f x]]
+
+# Generate a Seq by unfolding a seed with f (f returns null to stop).
+unfold@[doc: "Unfold a Seq from seed using f"]: [fn [f@Fn seed] [builtin-unfold f seed]]
+
+# Join collection elements as strings with a separator.
+# Example: [join ", " ["a" "b" "c"]] => "a, b, c"
+join@[doc: "Join elements as strings with separator"]: [fn [sep@String xs] [builtin-join sep xs]]
+
+# Concatenate two collections (Dict or Seq).
+# Example: [concat [1 2] [3 4]] => [1 2 3 4]
+concat@[doc: "Concatenate two collections"]: [fn [xs ys] [builtin-concat xs ys]]
+
+# Get the first element of a Dict, String, or Bytes.
+first@[doc: "First element of a collection"]: [fn [xs] [builtin-first xs]]
+
+# Get the last element of a Dict, String, or Bytes.
+last@[doc: "Last element of a collection"]: [fn [xs] [builtin-last xs]]
+
+# Get all elements after the first (reindexed from 0).
+rest@[doc: "All elements after first (reindexed)"]: [fn [xs] [builtin-rest xs]]
+
+# Prepend an element to a collection.
+cons@[doc: "Prepend element to collection"]: [fn [x xs] [builtin-cons x xs]]
+
+# Reverse a collection (reindexed from 0).
+reverse@[doc: "Reverse a collection"]: [fn [xs] [builtin-reverse xs]]
+
+# Sort a collection in natural ascending order.
+sort@[doc: "Sort collection in natural ascending order"]: [fn [xs] [builtin-sort xs]]
 
 ]

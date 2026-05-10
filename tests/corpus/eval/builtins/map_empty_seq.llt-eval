@@ -2,5 +2,4 @@
 [collect [map [fn [x] [str x]] [take 2 [range 10]]]]
 === out
 Dict({0: String("10"), 1: String("11")})
-=== warn
-arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 1:40-1:50
+
