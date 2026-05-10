@@ -1497,22 +1497,27 @@ impl TypeEnv {
         env.insert(
             "connect".to_string(),
             Type::Function {
-                params: vec![(None, Type::NetCap), (None, Type::Str), (None, Type::Int)],
+                params: vec![
+                    (None, Type::NetCap),
+                    (None, Type::Unknown), // Transport variant (Tcp, Udp, etc.)
+                    (None, Type::Str),     // host
+                    (None, Type::Int),     // port
+                ],
                 ret: Box::new(Type::Handle),
                 variadic: false,
             },
         );
-        // TLS builtins (stubs — full implementation deferred)
+        // TLS builtins
         env.insert(
-            "tls-connect".to_string(),
+            "tls-layer".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Unknown),
-                    (None, Type::Unknown),
-                    (None, Type::Unknown),
+                    (None, Type::Handle),
+                    (None, Type::Str),
+                    (None, Type::Unknown), // opts dict
                 ],
                 ret: Box::new(Type::Handle),
-                variadic: true, // 3-5 args depending on form
+                variadic: false,
             },
         );
         env.insert(
@@ -2292,7 +2297,7 @@ impl TypeEnv {
             },
         );
 
-        // Transport: type alias for network transport variants (Tcp, Udp).
+        // Transport: type alias for network transport variants (Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp).
         // Represented as a union of string literals until Type::Variant exists.
         env.insert_type_alias(
             "Transport".to_string(),
@@ -2301,17 +2306,41 @@ impl TypeEnv {
                 body: Type::normalize_union(vec![
                     Type::StringLiteral("Tcp".to_string()),
                     Type::StringLiteral("Udp".to_string()),
+                    Type::StringLiteral("UnixStream".to_string()),
+                    Type::StringLiteral("UnixDatagram".to_string()),
+                    Type::StringLiteral("NamedPipe".to_string()),
+                    Type::StringLiteral("Icmp".to_string()),
                 ]),
             },
         );
 
-        // Transport variant constants: Tcp and Udp.
+        // Transport variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
         // Runtime builtins.rs inserts these as Value::Variant { tag, payload: None }.
         // The type system has no Type::Variant yet, so we use Unknown to allow passing
         // these values to tls-connect / connect without a type error in --strict mode.
-        for tag in ["Tcp", "Udp"] {
+        for tag in [
+            "Tcp",
+            "Udp",
+            "UnixStream",
+            "UnixDatagram",
+            "NamedPipe",
+            "Icmp",
+        ] {
             env.insert(tag.to_string(), Type::Unknown);
         }
+
+        // Url: type alias for the record type returned by the `url` builtin.
+        // Allows @Url annotations in user code without "undefined type" errors.
+        env.insert_type_alias(
+            "Url".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: RowTail::RowVar("_uri".to_string(), 0),
+                }),
+            },
+        );
 
         // builtin-* aliases: same types as canonical counterparts.
         // Used by stdlib/prelude to call builtins when canonical names may be shadowed.

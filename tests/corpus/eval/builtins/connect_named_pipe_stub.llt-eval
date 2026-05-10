@@ -1,0 +1,9 @@
+# Test: NamedPipe returns "not supported" error
+# no_fs
+[connect %pwd NamedPipe "/tmp/test.pipe"]
+
+=== error
+connect: Named pipes not supported on this platform
+
+=== warn
+arity mismatch: expected 4 argument(s), got 3 (3 positional, 0 named) at 2:1-2:42

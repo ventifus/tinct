@@ -719,10 +719,7 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
         // CIDR range
         match s.parse::<ipnet::IpNet>() {
             Ok(net) => Ok(NetCapEntry::Cidr(net)),
-            Err(e) => Err(format!(
-                "--cap-net: invalid CIDR notation '{}': {}",
-                s, e
-            )),
+            Err(e) => Err(format!("--cap-net: invalid CIDR notation '{}': {}", s, e)),
         }
     } else {
         // Plain hostname
@@ -779,18 +776,19 @@ fn interleave_files_and_exprs(files: &[String], exprs: &[String]) -> Vec<Pipelin
             if matches!(
                 flag,
                 "-i" | "--input"
-                | "-o" | "--output"
-                | "--timeout"
-                | "--allow-path"
-                | "--max-memory"
-                | "--max-cpu"
-                | "--max-fds"
-                | "--allow-env"
-                | "--cap-fs"
-                | "--cap-net"
-                | "--cap-clock"
-                | "--cap-clock-fixed"
-                | "--cap-file"
+                    | "-o"
+                    | "--output"
+                    | "--timeout"
+                    | "--allow-path"
+                    | "--max-memory"
+                    | "--max-cpu"
+                    | "--max-fds"
+                    | "--allow-env"
+                    | "--cap-fs"
+                    | "--cap-net"
+                    | "--cap-clock"
+                    | "--cap-clock-fixed"
+                    | "--cap-file"
             ) {
                 // These flags take a value, skip it
                 args.next();
@@ -1032,6 +1030,8 @@ fn run_eval(
             )),
             write_inner: None,
             seek_inner: None,
+            raw_tcp: None,
+            creation_span: tinct::Span::origin(),
         };
         let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
         env.borrow_mut()
@@ -1289,6 +1289,8 @@ fn run_eval(
                     inner: Rc::new(std::cell::RefCell::new(buf_reader)),
                     write_inner: None,
                     seek_inner: None,
+                    raw_tcp: None,
+                    creation_span: tinct::Span::origin(),
                 }
             } else {
                 // Open file for writing (create/truncate)

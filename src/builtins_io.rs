@@ -220,6 +220,8 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 inner: Rc::new(std::cell::RefCell::new(handle)),
                 write_inner: None,
                 seek_inner: None,
+                raw_tcp: None,
+                creation_span: call_span,
             },
             call_span,
         );
@@ -358,6 +360,8 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 inner: Rc::new(std::cell::RefCell::new(handle)),
                 write_inner: None,
                 seek_inner,
+                raw_tcp: None,
+                creation_span: call_span,
             },
             call_span,
         )
@@ -568,158 +572,368 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
 
-    // Expect 3 or 4 args: NetCap, String host, Int port, [Transport variant]
-    if args.len() < 3 || args.len() > 4 {
+    reject_named("connect", named, call_span)?;
+
+    // Force args[1] (Transport tag) first — this is a STRICTNESS POINT
+    // Minimum 2 args: cap and transport
+    if args.len() < 2 {
         return Err(EvalError::user_error(
             format!(
-                "connect: expected 3 or 4 arguments (cap host port [transport]), got {}",
+                "connect: expected at least 2 arguments (cap transport [...address]), got {}",
                 args.len()
             ),
             call_span,
         )
         .into());
     }
-    reject_named("connect", named, call_span)?;
 
     let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let host_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let port_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let transport_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract optional Transport variant (4th arg); default to Tcp
-    let transport_tag = if args.len() == 4 {
-        let transport_val = materialize(&args[3], Some(&call_span), &ctx)?;
-        match transport_val {
-            Value::Variant { tag, .. } => tag,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "connect".to_string(),
-                    "Transport variant (Tcp or Udp)",
-                    other.type_name(),
-                    args[3].span,
-                )
-                .into())
-            }
+    // Extract Transport variant tag
+    let transport_tag = match transport_val {
+        Value::Variant { tag, .. } => tag,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "connect".to_string(),
+                "Transport variant (e.g., Tcp, Udp)",
+                other.type_name(),
+                args[1].span,
+            )
+            .into())
         }
-    } else {
-        "Tcp".to_string()
     };
 
-    // Validate transport and reject UDP (reserved for Phase 2)
+    // Dispatch on transport tag to determine address format and arg count
     match transport_tag.as_str() {
-        "Tcp" => {} // proceed below
+        "Tcp" => {
+            // Tcp requires: cap Tcp host port (4 args total)
+            if args.len() != 4 {
+                return Err(EvalError::user_error(
+                    format!(
+                        "connect: Tcp transport requires host and port (4 args total), got {}",
+                        args.len()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+            // Continue with TCP connection below
+        }
         "Udp" => {
+            // Udp requires: cap Udp host port (4 args total)
+            if args.len() != 4 {
+                return Err(EvalError::user_error(
+                    format!(
+                        "connect: Udp transport requires host and port (4 args total), got {}",
+                        args.len()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+            // UDP is a datagram protocol - current Handle infrastructure doesn't support
+            // datagram semantics (recv_from/send_to). Need dedicated Datagram handle type.
             return Err(EvalError::user_error(
-                "connect: UDP not yet supported, use Tcp".to_string(),
+                "connect: UDP not yet implemented — requires Datagram handle infrastructure"
+                    .to_string(),
+                call_span,
+            )
+            .into());
+        }
+        "UnixStream" => {
+            // UnixStream requires: cap UnixStream path (3 args total)
+            if args.len() != 3 {
+                return Err(EvalError::user_error(
+                    format!(
+                        "connect: UnixStream transport requires path (3 args total), got {}",
+                        args.len()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+            // Continue with Unix stream connection below
+        }
+        "UnixDatagram" => {
+            // UnixDatagram requires: cap UnixDatagram path (3 args total)
+            if args.len() != 3 {
+                return Err(EvalError::user_error(
+                    format!(
+                        "connect: UnixDatagram transport requires path (3 args total), got {}",
+                        args.len()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+            // UnixDatagram is a datagram protocol - current Handle infrastructure doesn't support
+            // datagram semantics (recv_from/send_to). Need dedicated Datagram handle type.
+            return Err(EvalError::user_error(
+                "connect: UnixDatagram not yet implemented — requires Datagram handle infrastructure"
+                    .to_string(),
+                call_span,
+            )
+            .into());
+        }
+        "NamedPipe" => {
+            // NamedPipe not supported on non-Windows platforms
+            return Err(EvalError::user_error(
+                "connect: Named pipes not supported on this platform".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        "Icmp" => {
+            // ICMP requires raw sockets or elevated privileges — not yet implemented
+            return Err(EvalError::user_error(
+                "connect: ICMP not yet implemented — requires platform-specific raw socket support"
+                    .to_string(),
                 call_span,
             )
             .into());
         }
         other => {
             return Err(EvalError::user_error(
-                format!(
-                    "connect: unknown transport '{}' (expected Tcp or Udp)",
-                    other
-                ),
+                format!("connect: unsupported transport '{}'", other),
                 call_span,
             )
             .into());
         }
     }
 
-    // Extract NetCap
-    let entries = match cap_val {
-        Value::NetCap(e) => e,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "connect".to_string(),
-                "NetCap",
-                other.type_name(),
-                args[0].span,
+    // Branch based on transport type
+    match transport_tag.as_str() {
+        "Tcp" => {
+            // TCP path
+            let host_val = materialize(&args[2], Some(&call_span), &ctx)?;
+            let port_val = materialize(&args[3], Some(&call_span), &ctx)?;
+
+            // Extract NetCap
+            let entries = match cap_val {
+                Value::NetCap(e) => e,
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "connect".to_string(),
+                        "NetCap",
+                        other.type_name(),
+                        args[0].span,
+                    )
+                    .into())
+                }
+            };
+
+            let host = require_string("connect", host_val, args[2].span)?;
+            let port = match port_val {
+                Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
+                Value::Int(_) => {
+                    return Err(EvalError::user_error(
+                        "connect: port must be 1-65535".to_string(),
+                        args[3].span,
+                    )
+                    .into())
+                }
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "connect".to_string(),
+                        "Int",
+                        other.type_name(),
+                        args[3].span,
+                    )
+                    .into())
+                }
+            };
+
+            // Check allowlist before connecting
+            // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
+            let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
+
+            // Open TCP connection
+            // If DNS resolution was required, connect to the resolved IP to mitigate DNS rebinding
+            let addr = if let Some(ip) = resolved_ip {
+                format!("{}:{}", ip, port)
+            } else {
+                format!("{}:{}", host, port)
+            };
+            let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
+                EvalError::user_error(
+                    format!("connect: failed to connect to {}: {}", addr, e),
+                    call_span,
+                )
+            })?;
+
+            // Clone stream for write half before consuming the original into BufReader
+            let write_stream = stream.try_clone().map_err(|e| {
+                EvalError::user_error(
+                    format!("connect: failed to clone TcpStream for write half: {}", e),
+                    call_span,
+                )
+            })?;
+
+            // Clone stream for tls-layer extraction before consuming into BufReader
+            let raw_tcp_stream = stream.try_clone().map_err(|e| {
+                EvalError::user_error(
+                    format!("connect: failed to clone TcpStream for raw_tcp: {}", e),
+                    call_span,
+                )
+            })?;
+
+            let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
+                Some(Rc::new(RefCell::new(Box::new(write_stream))));
+
+            // Wrap read half in BufReader for Handle
+            let buf_reader = std::io::BufReader::new(stream);
+            let inner = Rc::new(RefCell::new(
+                Box::new(buf_reader) as Box<dyn std::io::BufRead>
+            ));
+
+            // Caps for TCP connection: Binary Readable Writable Stream
+            let mut caps = HashMap::new();
+            caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
+            caps.insert("Writable".to_string(), Value::Dict(IndexMap::new())); // Null
+            caps.insert("Binary".to_string(), Value::Dict(IndexMap::new())); // Null
+            caps.insert("Stream".to_string(), Value::Dict(IndexMap::new())); // Null
+
+            ok_val(
+                Value::Handle {
+                    caps,
+                    inner,
+                    write_inner,
+                    seek_inner: None,
+                    raw_tcp: Some(Rc::new(RefCell::new(Some(raw_tcp_stream)))),
+                    creation_span: call_span,
+                },
+                call_span,
             )
-            .into())
         }
-    };
+        "UnixStream" => {
+            // Unix stream socket path
+            #[cfg(target_os = "linux")]
+            {
+                let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-    let host = require_string("connect", host_val, args[1].span)?;
-    let port = match port_val {
-        Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
-        Value::Int(_) => {
-            return Err(EvalError::user_error(
-                "connect: port must be 1-65535".to_string(),
-                args[2].span,
+                // Extract DirCap for path validation
+                let dir = match cap_val {
+                    Value::DirCap(d) => d,
+                    Value::RevocableDirCap { inner, revoked } => {
+                        if revoked.get() {
+                            return Err(EvalError::user_error(
+                                "connect: capability has been revoked".to_string(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                        inner
+                    }
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "connect".to_string(),
+                            "DirCap",
+                            other.type_name(),
+                            args[0].span,
+                        )
+                        .into())
+                    }
+                };
+
+                let path = require_string("connect", path_val, args[2].span)?;
+
+                // Validate path doesn't try to escape the directory
+                if path.contains("..") {
+                    return Err(EvalError::user_error(
+                        format!("connect: path cannot contain '..': {}", path),
+                        call_span,
+                    )
+                    .into());
+                }
+
+                // Get the directory's file descriptor and resolve the full path via /proc/self/fd
+                // This is necessary because Unix domain sockets need an absolute path to connect
+                use std::os::unix::io::AsRawFd;
+                let dir_fd = dir.as_raw_fd();
+                let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
+                let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
+                    EvalError::user_error(
+                        format!("connect: failed to resolve DirCap path: {}", e),
+                        call_span,
+                    )
+                })?;
+                let full_path = dir_path.join(&path);
+
+                // Connect to Unix stream socket
+                let stream = std::os::unix::net::UnixStream::connect(&full_path).map_err(|e| {
+                    EvalError::user_error(
+                        format!(
+                            "connect: failed to connect to Unix socket '{}': {}",
+                            path, e
+                        ),
+                        call_span,
+                    )
+                })?;
+
+                // Clone stream for write half
+                let write_stream = stream.try_clone().map_err(|e| {
+                    EvalError::user_error(
+                        format!("connect: failed to clone UnixStream for write half: {}", e),
+                        call_span,
+                    )
+                })?;
+
+                let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
+                    Some(Rc::new(RefCell::new(Box::new(write_stream))));
+
+                // Wrap read half in BufReader for Handle
+                let buf_reader = std::io::BufReader::new(stream);
+                let inner = Rc::new(RefCell::new(
+                    Box::new(buf_reader) as Box<dyn std::io::BufRead>
+                ));
+
+                // Caps for Unix stream: Binary Readable Writable Stream
+                let mut caps = HashMap::new();
+                caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
+                caps.insert("Writable".to_string(), Value::Dict(IndexMap::new())); // Null
+                caps.insert("Binary".to_string(), Value::Dict(IndexMap::new())); // Null
+                caps.insert("Stream".to_string(), Value::Dict(IndexMap::new())); // Null
+
+                ok_val(
+                    Value::Handle {
+                        caps,
+                        inner,
+                        write_inner,
+                        seek_inner: None,
+                        raw_tcp: None, // Not TCP
+                        creation_span: call_span,
+                    },
+                    call_span,
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err(EvalError::user_error(
+                    "connect: Unix sockets not yet supported on this platform (requires Linux /proc/self/fd access)".to_string(),
+                    call_span,
+                )
+                .into())
+            }
+        }
+        _ => {
+            // Udp, UnixDatagram, NamedPipe, and Icmp already handled in first match
+            // This is unreachable — all transport types have been handled above
+            unreachable!(
+                "connect: transport '{}' should have been handled in first match",
+                transport_tag
             )
-            .into())
         }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "connect".to_string(),
-                "Int",
-                other.type_name(),
-                args[2].span,
-            )
-            .into())
-        }
-    };
-
-    // Check allowlist before connecting
-    // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
-    let resolved_ip = check_net_cap_allowlist(&entries, &host, port, call_span)?;
-
-    // Open TCP connection
-    // If DNS resolution was required, connect to the resolved IP to mitigate DNS rebinding
-    let addr = if let Some(ip) = resolved_ip {
-        format!("{}:{}", ip, port)
-    } else {
-        format!("{}:{}", host, port)
-    };
-    let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
-        EvalError::user_error(
-            format!("connect: failed to connect to {}: {}", addr, e),
-            call_span,
-        )
-    })?;
-
-    // Clone stream for write half before consuming the original into BufReader
-    let write_stream = stream.try_clone().map_err(|e| {
-        EvalError::user_error(
-            format!("connect: failed to clone TcpStream for write half: {}", e),
-            call_span,
-        )
-    })?;
-
-    let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
-        Some(Rc::new(RefCell::new(Box::new(write_stream))));
-
-    // Wrap read half in BufReader for Handle
-    let buf_reader = std::io::BufReader::new(stream);
-    let inner = Rc::new(RefCell::new(
-        Box::new(buf_reader) as Box<dyn std::io::BufRead>
-    ));
-
-    // Caps for TCP connection: Binary Readable Writable Stream
-    let mut caps = HashMap::new();
-    caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
-    caps.insert("Writable".to_string(), Value::Dict(IndexMap::new())); // Null
-    caps.insert("Binary".to_string(), Value::Dict(IndexMap::new())); // Null
-    caps.insert("Stream".to_string(), Value::Dict(IndexMap::new())); // Null
-
-    ok_val(
-        Value::Handle {
-            caps,
-            inner,
-            write_inner,
-            seek_inner: None,
-        },
-        call_span,
-    )
+    }
 }
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
 /// Returns Ok(None) for hostname-only match, Ok(Some(ip)) for IP-based match requiring DNS resolution.
+/// For host-only transports (ICMP), pass port=None — HostPort entries won't match, but Hostname/Glob/CIDR will.
 fn check_net_cap_allowlist(
     entries: &[crate::value::NetCapEntry],
     host: &str,
-    port: u16,
+    port: Option<u16>,
     span: Span,
 ) -> EvalResult<Option<std::net::IpAddr>> {
     use crate::value::NetCapEntry;
@@ -761,10 +975,13 @@ fn check_net_cap_allowlist(
                 }
             }
             NetCapEntry::HostPort(allowed_host, allowed_port) => {
-                if host.eq_ignore_ascii_case(allowed_host) && port == *allowed_port {
-                    hostname_match = true;
-                    break;
+                if let Some(p) = port {
+                    if host.eq_ignore_ascii_case(allowed_host) && p == *allowed_port {
+                        hostname_match = true;
+                        break;
+                    }
                 }
+                // If port is None (ICMP, etc.), HostPort entries don't match
             }
             NetCapEntry::HostnameGlob(pattern) => {
                 // Pattern: "*.suffix"
@@ -802,10 +1019,15 @@ fn check_net_cap_allowlist(
     }
 
     // No match at all — deny
+    let target = if let Some(p) = port {
+        format!("{}:{}", host, p)
+    } else {
+        host.to_string()
+    };
     Err(EvalError::user_error(
         format!(
-            "connect: connection to {}:{} denied by NetCap allowlist",
-            host, port
+            "connect: connection to {} denied by NetCap allowlist",
+            target
         ),
         span,
     )
@@ -950,6 +1172,8 @@ pub(crate) fn builtin_lines_step(
                     inner: Rc::clone(&handle),
                     write_inner: write_inner.as_ref().map(Rc::clone),
                     seek_inner: None,
+                    raw_tcp: None,
+                    creation_span: call_span,
                 },
                 call_span,
             )?];
@@ -1390,6 +1614,8 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
                 inner: Rc::clone(&read_inner),
                 write_inner: Some(Rc::clone(&write_inner)),
                 seek_inner: None,
+                raw_tcp: None,
+                creation_span: call_span,
             },
             call_span,
         ),
@@ -1440,6 +1666,8 @@ pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     inner: Rc::clone(inner),
                     write_inner: Some(Rc::clone(w)),
                     seek_inner: None,
+                    raw_tcp: None,
+                    creation_span: call_span,
                 },
                 call_span,
             )
@@ -1557,6 +1785,7 @@ pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ref inner,
             ref write_inner,
             ref seek_inner,
+            ..
         } => {
             // Check for Seekable capability
             if !caps.contains_key("Seekable") {
@@ -1622,6 +1851,8 @@ pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     inner: Rc::clone(inner),
                     write_inner: write_inner.clone(),
                     seek_inner: Some(Rc::clone(seek_handle)),
+                    raw_tcp: None,
+                    creation_span: call_span,
                 },
                 call_span,
             )
@@ -1656,6 +1887,7 @@ pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             ref inner,
             ref write_inner,
             ref seek_inner,
+            ..
         } => {
             // Check for Seekable capability
             if !caps.contains_key("Seekable") {
@@ -1718,6 +1950,8 @@ pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     inner: Rc::clone(inner),
                     write_inner: write_inner.clone(),
                     seek_inner: Some(Rc::clone(seek_handle)),
+                    raw_tcp: None,
+                    creation_span: call_span,
                 },
                 call_span,
             )
@@ -2489,276 +2723,6 @@ impl std::io::Write for TlsWriter {
     }
 }
 
-/// `tls-connect`: Layer TLS on a connection.
-/// Two forms:
-/// 1. Connector form: `tls-connect connector Transport host port opts`
-/// 2. Handle form: `tls-connect handle sni opts`
-///
-/// Returns Handle[Binary Readable Writable Stream Tls] with TlsInfo in the Tls capability.
-pub(crate) fn builtin_tls_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    reject_named("tls-connect", named, call_span)?;
-
-    // Determine which form: Handle (3 args) or Connector (4-5 args)
-    if args.len() == 3 {
-        // Handle form: tls-connect handle sni opts
-        let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
-        let sni_val = materialize(&args[1], Some(&call_span), &ctx)?;
-        let _opts_val = materialize(&args[2], Some(&call_span), &ctx)?;
-
-        let _sni = require_string("tls-connect", sni_val, args[1].span)?;
-
-        // Extract Handle and its write_inner (which should be a TcpStream)
-        let _write_inner = match handle_val {
-            Value::Handle {
-                write_inner: Some(w),
-                caps,
-                ..
-            } => {
-                // Check it has Stream capability
-                if !caps.contains_key("Stream") {
-                    return Err(EvalError::user_error(
-                        "tls-connect (Handle form): handle must have Stream capability".to_string(),
-                        args[0].span,
-                    )
-                    .into());
-                }
-                w
-            }
-            Value::Handle {
-                write_inner: None, ..
-            } => {
-                return Err(EvalError::user_error(
-                    "tls-connect (Handle form): handle must be writable (bidirectional)"
-                        .to_string(),
-                    args[0].span,
-                )
-                .into());
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect".to_string(),
-                    "Handle",
-                    other.type_name(),
-                    args[0].span,
-                )
-                .into())
-            }
-        };
-
-        // The write_inner is Box<dyn Write>, which we need to downcast to TcpStream
-        // This is a limitation: we can't extract the TcpStream from a trait object without unsafe
-        // For now, we'll error and require the Connector form
-        return Err(EvalError::user_error(
-            "tls-connect: Handle form not yet supported — use Connector form: tls-connect cap Tcp host port opts".to_string(),
-            call_span,
-        )
-        .into());
-    } else if args.len() >= 4 && args.len() <= 5 {
-        // Connector form: tls-connect connector Transport host port [opts]
-        let connector_val = materialize(&args[0], Some(&call_span), &ctx)?;
-        let transport_val = materialize(&args[1], Some(&call_span), &ctx)?;
-        let host_val = materialize(&args[2], Some(&call_span), &ctx)?;
-        let port_val = materialize(&args[3], Some(&call_span), &ctx)?;
-
-        let opts_val = if args.len() == 5 {
-            materialize(&args[4], Some(&call_span), &ctx)?
-        } else {
-            Value::Dict(IndexMap::new()) // empty opts
-        };
-
-        // Validate transport is Tcp
-        let transport_tag = match transport_val {
-            Value::Variant { tag, .. } => tag,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect".to_string(),
-                    "Transport variant (Tcp)",
-                    other.type_name(),
-                    args[1].span,
-                )
-                .into())
-            }
-        };
-
-        if transport_tag.as_str() != "Tcp" {
-            return Err(EvalError::user_error(
-                format!(
-                    "tls-connect: only Tcp transport is supported, got {}",
-                    transport_tag
-                ),
-                args[1].span,
-            )
-            .into());
-        }
-
-        // Extract NetCap
-        let entries = match connector_val {
-            Value::NetCap(e) => e,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect".to_string(),
-                    "NetCap",
-                    other.type_name(),
-                    args[0].span,
-                )
-                .into())
-            }
-        };
-
-        let host = require_string("tls-connect", host_val, args[2].span)?;
-        let port = match port_val {
-            Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
-            Value::Int(_) => {
-                return Err(EvalError::user_error(
-                    "tls-connect: port must be 1-65535".to_string(),
-                    args[3].span,
-                )
-                .into())
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect".to_string(),
-                    "Int",
-                    other.type_name(),
-                    args[3].span,
-                )
-                .into())
-            }
-        };
-
-        // Check allowlist before connecting
-        check_net_cap_allowlist(&entries, &host, port, call_span)?;
-
-        // Open TCP connection
-        let addr = format!("{}:{}", host, port);
-        let tcp_stream = std::net::TcpStream::connect(&addr).map_err(|e| {
-            EvalError::user_error(
-                format!("tls-connect: failed to connect to {}: {}", addr, e),
-                call_span,
-            )
-        })?;
-
-        // Build TLS config
-        let tls_config = build_tls_config(
-            &opts_val,
-            args.get(4).map(|a| a.span).unwrap_or(call_span),
-            &ctx,
-        )?;
-
-        // Create TLS connection
-        let server_name = rustls::pki_types::ServerName::try_from(host.clone())
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("tls-connect: invalid server name '{}': {}", host, e),
-                    args[2].span,
-                )
-            })?
-            .to_owned();
-
-        let client_conn =
-            rustls::ClientConnection::new(std::sync::Arc::new(tls_config), server_name).map_err(
-                |e| {
-                    EvalError::user_error(
-                        format!("tls-connect: failed to create TLS connection: {}", e),
-                        call_span,
-                    )
-                },
-            )?;
-
-        let tls_stream = rustls::StreamOwned::new(client_conn, tcp_stream);
-        let shared_stream = Rc::new(RefCell::new(tls_stream));
-
-        // Perform TLS handshake by attempting to flush
-        {
-            use std::io::Write;
-            shared_stream.borrow_mut().flush().map_err(|e| {
-                EvalError::user_error(
-                    format!("tls-connect: TLS handshake failed: {}", e),
-                    call_span,
-                )
-            })?;
-        }
-
-        // Validate SPKI pins if provided
-        if let Value::Dict(opts_map) = &opts_val {
-            if let Some(pins_thunk_id) =
-                opts_map.get(&crate::value::Key::String("pins".to_string()))
-            {
-                let pins_thunk = ctx.get_thunk(*pins_thunk_id);
-                let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
-                validate_spki_pins(&shared_stream.borrow().conn, &pins_val, call_span, &ctx)?;
-            }
-        }
-
-        // Extract peer certificate info for the Tls capability
-        let tls_info = {
-            let stream_borrow = shared_stream.borrow();
-            let peer_certs = stream_borrow.conn.peer_certificates();
-            if let Some(certs) = peer_certs {
-                if !certs.is_empty() {
-                    // Clone the cert DER bytes before dropping the borrow
-                    let cert_der = certs[0].clone();
-                    drop(stream_borrow);
-                    extract_cert_info(&cert_der, call_span, &ctx)?
-                } else {
-                    Value::Dict(IndexMap::new()) // No cert
-                }
-            } else {
-                Value::Dict(IndexMap::new()) // No cert
-            }
-        };
-
-        // Create read and write wrappers
-        let reader = TlsReader {
-            stream: Rc::clone(&shared_stream),
-            buf: Vec::new(),
-            buf_pos: 0,
-        };
-        let writer = TlsWriter {
-            stream: Rc::clone(&shared_stream),
-        };
-
-        let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
-        let write_inner = Some(Rc::new(RefCell::new(
-            Box::new(writer) as Box<dyn std::io::Write>
-        )));
-
-        // Build capabilities: Binary Readable Writable Stream Tls
-        let mut caps = HashMap::new();
-        caps.insert("Readable".to_string(), Value::Dict(IndexMap::new()));
-        caps.insert("Writable".to_string(), Value::Dict(IndexMap::new()));
-        caps.insert("Binary".to_string(), Value::Dict(IndexMap::new()));
-        caps.insert("Stream".to_string(), Value::Dict(IndexMap::new()));
-        caps.insert("Tls".to_string(), tls_info);
-
-        ok_val(
-            Value::Handle {
-                caps,
-                inner,
-                write_inner,
-                seek_inner: None,
-            },
-            call_span,
-        )
-    } else {
-        Err(EvalError::user_error(
-            format!(
-                "tls-connect: expected 3 args (Handle form) or 4-5 args (Connector form), got {}",
-                args.len()
-            ),
-            call_span,
-        )
-        .into())
-    }
-}
-
 /// Build a rustls ClientConfig from the opts dict
 fn build_tls_config(
     opts_val: &Value,
@@ -3357,6 +3321,183 @@ fn extract_sans(
 
     // Materialize the final Seq
     materialize(&ctx.get_thunk(result), Some(&span), ctx)
+}
+
+/// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
+/// Takes (handle, sni, opts). Extracts raw_tcp from Handle, wraps in TLS, returns new Handle.
+/// Signature: tls-layer handle@Handle sni@String opts@Dict → Handle[... Stream Tls]
+pub(crate) fn builtin_tls_layer(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Expect 3 args: handle, sni, opts
+    if args.len() != 3 {
+        return Err(EvalError::user_error(
+            format!(
+                "tls-layer: expected 3 arguments (handle sni opts), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+    reject_named("tls-layer", named, call_span)?;
+
+    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let sni_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let opts_val = materialize(&args[2], Some(&call_span), &ctx)?;
+
+    let sni = require_string("tls-layer", sni_val, args[1].span)?;
+
+    // Extract Handle and its raw_tcp
+    let (raw_tcp_slot, caps, creation_span) = match handle_val {
+        Value::Handle {
+            raw_tcp: Some(slot),
+            caps,
+            creation_span,
+            ..
+        } => (slot, caps, creation_span),
+        Value::Handle {
+            raw_tcp: None,
+            creation_span,
+            ..
+        } => {
+            // Dual-span error: call_span (primary) + creation_span (secondary)
+            return Err(EvalError::user_error(
+                "tls-layer: handle does not have a raw TCP stream (not created by connect cap Tcp)"
+                    .to_string(),
+                call_span,
+            )
+            .with_secondary_span(creation_span, "handle created here")
+            .into());
+        }
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "tls-layer".to_string(),
+                "Handle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Check Handle has Stream capability
+    if !caps.contains_key("Stream") {
+        return Err(EvalError::user_error(
+            "tls-layer: handle must have Stream capability".to_string(),
+            args[0].span,
+        )
+        .into());
+    }
+
+    // Take the TcpStream from the shared slot (invalidates all aliases)
+    let tcp_stream = raw_tcp_slot.borrow_mut().take().ok_or_else(|| {
+        // Dual-span error: call_span (primary) + creation_span (secondary)
+        EvalError::user_error(
+            "tls-layer: raw TCP stream already consumed by a previous tls-layer call".to_string(),
+            call_span,
+        )
+        .with_secondary_span(creation_span, "handle created here")
+    })?;
+
+    // Build TLS config
+    let tls_config = build_tls_config(&opts_val, args[2].span, &ctx)?;
+
+    // Create TLS connection
+    let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
+        .map_err(|e| {
+            EvalError::user_error(
+                format!("tls-layer: invalid server name '{}': {}", sni, e),
+                args[1].span,
+            )
+        })?
+        .to_owned();
+
+    let client_conn = rustls::ClientConnection::new(std::sync::Arc::new(tls_config), server_name)
+        .map_err(|e| {
+        EvalError::user_error(
+            format!("tls-layer: failed to create TLS connection: {}", e),
+            call_span,
+        )
+    })?;
+
+    let tls_stream = rustls::StreamOwned::new(client_conn, tcp_stream);
+    let shared_stream = Rc::new(RefCell::new(tls_stream));
+
+    // Perform TLS handshake by attempting to flush
+    {
+        use std::io::Write;
+        shared_stream.borrow_mut().flush().map_err(|e| {
+            EvalError::user_error(format!("tls-layer: TLS handshake failed: {}", e), call_span)
+        })?;
+    }
+
+    // Validate SPKI pins if provided
+    if let Value::Dict(opts_map) = &opts_val {
+        if let Some(pins_thunk_id) = opts_map.get(&crate::value::Key::String("pins".to_string())) {
+            let pins_thunk = ctx.get_thunk(*pins_thunk_id);
+            let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
+            validate_spki_pins(&shared_stream.borrow().conn, &pins_val, call_span, &ctx)?;
+        }
+    }
+
+    // Extract peer certificate info for the Tls capability
+    let tls_info = {
+        let stream_borrow = shared_stream.borrow();
+        let peer_certs = stream_borrow.conn.peer_certificates();
+        if let Some(certs) = peer_certs {
+            if !certs.is_empty() {
+                // Clone the cert DER bytes before dropping the borrow
+                let cert_der = certs[0].clone();
+                drop(stream_borrow);
+                extract_cert_info(&cert_der, call_span, &ctx)?
+            } else {
+                Value::Dict(IndexMap::new()) // No cert
+            }
+        } else {
+            Value::Dict(IndexMap::new()) // No cert
+        }
+    };
+
+    // Create read and write wrappers
+    let reader = TlsReader {
+        stream: Rc::clone(&shared_stream),
+        buf: Vec::new(),
+        buf_pos: 0,
+    };
+    let writer = TlsWriter {
+        stream: Rc::clone(&shared_stream),
+    };
+
+    let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
+    let write_inner = Some(Rc::new(RefCell::new(
+        Box::new(writer) as Box<dyn std::io::Write>
+    )));
+
+    // Build capabilities: Binary Readable Writable Stream Tls
+    let mut new_caps = HashMap::new();
+    new_caps.insert("Readable".to_string(), Value::Dict(IndexMap::new()));
+    new_caps.insert("Writable".to_string(), Value::Dict(IndexMap::new()));
+    new_caps.insert("Binary".to_string(), Value::Dict(IndexMap::new()));
+    new_caps.insert("Stream".to_string(), Value::Dict(IndexMap::new()));
+    new_caps.insert("Tls".to_string(), tls_info);
+
+    ok_val(
+        Value::Handle {
+            caps: new_caps,
+            inner,
+            write_inner,
+            seek_inner: None,
+            raw_tcp: None, // Consumed by this operation
+            creation_span: call_span,
+        },
+        call_span,
+    )
 }
 
 /// `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle.
