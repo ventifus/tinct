@@ -1,0 +1,8 @@
+# BAS @[[all T]] annotation syntax: single-element intersection resolves via Expr::Call path.
+# [all Int] parses as Expr::Call { func: VarRef("all"), args: [Int], implied: true } —
+# NOT as Expr::Dict. This test exercises the Expr::Call arm in resolve_type_expr and the
+# Expr::Call dispatch in resolve_annotation's PropertyDict branch.
+# normalize_intersection([Int]) unwraps to Int.
+[@[[all Int]] 42]
+=== out
+Int(42)

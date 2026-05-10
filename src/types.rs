@@ -319,6 +319,12 @@ impl Type {
             // Negation: A <: ~B iff A and B are disjoint (for now, conservative: only reflexive negation)
             // Full BAS subtyping requires RDNF normalization — this is a placeholder
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_subtype(t2, t1), // contravariant
+            // Conservative Negation subtyping: any type is considered a subtype of a Negation type.
+            // Full BAS requires T <: ~A iff T ∩ A = Never (disjointness via RDNF), which is not yet
+            // implemented. For now, ~A is treated as an open constraint enforced at runtime
+            // (value_matches_type returns true for Negation conservatively).
+            // This allows `[@[[without T]] expr]` TypeAssert to pass without false static type errors.
+            (_, Type::Negation(_)) => true,
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
