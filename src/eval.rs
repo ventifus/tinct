@@ -378,6 +378,11 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
                 .iter()
                 .all(|member| value_matches_type(value, member))
         }
+        // Never: no value can match the bottom type
+        Type::Never => false,
+        // Negation: conservative for now - always true (full BAS would require inhabitation check)
+        // TODO(BAS): implement proper negation validation via RDNF normalization
+        Type::Negation(_) => true,
         // Error is a type-inference sentinel that should never reach runtime validation.
         // Type::Error indicates type inference failed; treating it as a match would mask bugs.
         Type::Error => {

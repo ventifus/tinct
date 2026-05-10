@@ -161,8 +161,17 @@ pub enum Type {
     /// Single-element intersections are unwrapped to the bare type by normalize_intersection().
     /// Intersections appear in inferred types when a type variable has multiple upper bounds
     /// (algebraic subtyping Phase 3c). Top is the identity (T & Top = T), Never is absorbing
-    /// (T & Never = Never — though Never doesn't exist yet, Bottom will serve this role).
+    /// (T & Never = Never).
     Intersection(Vec<Type>),
+    /// Negation type — ~A, the complement type. Represents "definitely not A".
+    /// Essential for BAS constraint solving (C-Var1/2 rules) and false-branch narrowing.
+    /// Example: after `[int? x]` fails, x : (Int | Str) & ~Int = Str.
+    /// In annotation syntax: @[[without A]].
+    Negation(Box<Type>),
+    /// Never type — ⊥, the bottom type. Represents "no value can inhabit this type".
+    /// The empty intersection. Intersections that simplify to Never (e.g., Int & Str,
+    /// #Ok & #Err via S-ClsBot) become Never. In annotation syntax: @Never.
+    Never,
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -211,6 +220,8 @@ impl PartialEq for Type {
             (Type::Timezone, Type::Timezone) => true,
             (Type::Union(members1), Type::Union(members2)) => members1 == members2,
             (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
+            (Type::Negation(t1), Type::Negation(t2)) => t1 == t2,
+            (Type::Never, Type::Never) => true,
             _ => false,
         }
     }
@@ -233,6 +244,10 @@ impl Type {
         }
         // [S-TOP]: τ <: Top for all τ (Top is the supertype of everything)
         if matches!(sup, Type::Top) {
+            return true;
+        }
+        // [S-NEVER]: Never <: τ for all τ (Never is the subtype of everything)
+        if matches!(sub, Type::Never) {
             return true;
         }
         // Unknown is NOT a subtype of anything (except Top, handled above), and no type is a
@@ -262,6 +277,9 @@ impl Type {
             (sub_ty, Type::Intersection(sup_members)) => sup_members
                 .iter()
                 .all(|member| Type::is_subtype(sub_ty, member)),
+            // Negation: A <: ~B iff A and B are disjoint (for now, conservative: only reflexive negation)
+            // Full BAS subtyping requires RDNF normalization — this is a placeholder
+            (Type::Negation(t1), Type::Negation(t2)) => Type::is_subtype(t2, t1), // contravariant
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
@@ -426,6 +444,10 @@ impl Type {
             }
             // Top is consistent with everything (τ ~ Top for all τ)
             (Type::Top, _) | (_, Type::Top) => true,
+            // Never is consistent with everything (like Unknown, for gradual typing)
+            (Type::Never, _) | (_, Type::Never) => true,
+            // Negation: structurally consistent
+            (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),
             // Capability types, Proxy: consistent only if equal (handled by a == b above)
             // All other combinations are inconsistent
             _ => false,
@@ -600,6 +622,7 @@ impl Type {
             Type::Seq(elem) => elem.has_inference_vars(),
             Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Intersection(members) => members.iter().any(|m| m.has_inference_vars()),
+            Type::Negation(inner) => inner.has_inference_vars(),
             Type::Proxy => false,
             _ => false,
         }
@@ -636,6 +659,9 @@ impl Type {
                 for member in members {
                     member.collect_row_vars(vars);
                 }
+            }
+            Type::Negation(inner) => {
+                inner.collect_row_vars(vars);
             }
             _ => {}
         }
@@ -680,6 +706,9 @@ impl Type {
                 for member in members {
                     member.collect_all_vars(type_vars, row_vars);
                 }
+            }
+            Type::Negation(inner) => {
+                inner.collect_all_vars(type_vars, row_vars);
             }
             _ => {}
         }
@@ -740,6 +769,9 @@ impl Type {
                 }
                 found
             }
+            Type::Negation(inner) => {
+                inner.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars)
+            }
             _ => false,
         }
     }
@@ -782,6 +814,9 @@ impl Type {
                     member.collect_all_vars_vec(type_vars, row_vars);
                 }
             }
+            Type::Negation(inner) => {
+                inner.collect_all_vars_vec(type_vars, row_vars);
+            }
             _ => {}
         }
     }
@@ -816,6 +851,8 @@ fn type_order(ty: &Type) -> u8 {
         Type::Timezone => 23,
         Type::Union(_) => 24, // Should not appear after flattening, but included for completeness
         Type::Intersection(_) => 25, // Should not appear after flattening, but included for completeness
+        Type::Negation(_) => 26,
+        Type::Never => 27,
     }
 }
 
