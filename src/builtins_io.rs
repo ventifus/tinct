@@ -632,14 +632,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 )
                 .into());
             }
-            // UDP is a datagram protocol - current Handle infrastructure doesn't support
-            // datagram semantics (recv_from/send_to). Need dedicated Datagram handle type.
-            return Err(EvalError::user_error(
-                "connect: UDP not yet implemented — requires Datagram handle infrastructure"
-                    .to_string(),
-                call_span,
-            )
-            .into());
+            // Continue with UDP connection below
         }
         "UnixStream" => {
             // UnixStream requires: cap UnixStream path (3 args total)
@@ -917,8 +910,81 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into())
             }
         }
+        "Udp" => {
+            // UDP datagram socket path
+            let host_val = materialize(&args[2], Some(&call_span), &ctx)?;
+            let port_val = materialize(&args[3], Some(&call_span), &ctx)?;
+
+            // Extract NetCap
+            let entries = match cap_val {
+                Value::NetCap(e) => e,
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "connect".to_string(),
+                        "NetCap",
+                        other.type_name(),
+                        args[0].span,
+                    )
+                    .into())
+                }
+            };
+
+            let host = require_string("connect", host_val, args[2].span)?;
+            let port = match port_val {
+                Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
+                Value::Int(_) => {
+                    return Err(EvalError::user_error(
+                        "connect: port must be 1-65535".to_string(),
+                        args[3].span,
+                    )
+                    .into())
+                }
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "connect".to_string(),
+                        "Int",
+                        other.type_name(),
+                        args[3].span,
+                    )
+                    .into())
+                }
+            };
+
+            // Check allowlist before connecting
+            let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
+
+            let addr = if let Some(ip) = resolved_ip {
+                format!("{}:{}", ip, port)
+            } else {
+                format!("{}:{}", host, port)
+            };
+
+            // Bind to any local address (OS assigns ephemeral port)
+            let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| {
+                EvalError::user_error(
+                    format!("connect: failed to bind UDP socket: {}", e),
+                    call_span,
+                )
+            })?;
+
+            // connect() associates the remote address so send()/recv() work without addresses
+            socket.connect(&addr).map_err(|e| {
+                EvalError::user_error(
+                    format!("connect: failed to connect UDP socket to {}: {}", addr, e),
+                    call_span,
+                )
+            })?;
+
+            ok_val(
+                Value::DatagramHandle {
+                    socket: Rc::new(RefCell::new(socket)),
+                    creation_span: call_span,
+                },
+                call_span,
+            )
+        }
         _ => {
-            // Udp, UnixDatagram, NamedPipe, and Icmp already handled in first match
+            // UnixDatagram, NamedPipe, and Icmp already handled in first match
             // This is unreachable — all transport types have been handled above
             unreachable!(
                 "connect: transport '{}' should have been handled in first match",
@@ -3999,4 +4065,115 @@ pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
     )
     .into())
+}
+
+/// `send-datagram`: Send a message over a DatagramHandle.
+/// Signature: `[send-datagram handle data]` → null
+/// `data` must be a String or Bytes.
+pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("send-datagram", named, call_span)?;
+
+    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let data_val = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    // Extract DatagramHandle socket
+    let socket = match handle_val {
+        Value::DatagramHandle { socket, .. } => socket,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "send-datagram".to_string(),
+                "DatagramHandle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Extract bytes to send (String or Bytes)
+    let data_bytes: Vec<u8> = match data_val {
+        Value::String { source, start, end } => source[start..end].as_bytes().to_vec(),
+        Value::Bytes { source, start, end } => source[start..end].to_vec(),
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "send-datagram".to_string(),
+                "String or Bytes",
+                other.type_name(),
+                args[1].span,
+            )
+            .into())
+        }
+    };
+
+    // Send the datagram
+    socket.borrow().send(&data_bytes).map_err(|e| {
+        EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span)
+    })?;
+
+    // Return null (empty dict)
+    ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `recv-datagram`: Receive a message from a DatagramHandle.
+/// Signature: `[recv-datagram handle]` → `{data: String}`
+/// The socket must have been put into non-blocking mode or have a timeout set
+/// via the underlying OS to avoid blocking forever; this builtin blocks until
+/// a datagram arrives.
+pub(crate) fn builtin_recv_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    let val = crate::builtins::expect_one_arg("recv-datagram", args, named, &ctx, call_span)?;
+
+    // Extract DatagramHandle socket
+    let socket = match val {
+        Value::DatagramHandle { socket, .. } => socket,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "recv-datagram".to_string(),
+                "DatagramHandle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    // Receive datagram into a 65507-byte buffer (maximum UDP payload)
+    let mut buf = vec![0u8; 65507];
+    let n = socket.borrow().recv(&mut buf).map_err(|e| {
+        EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span)
+    })?;
+    buf.truncate(n);
+
+    // Build result dict: {data: Bytes}
+    use crate::value::Key;
+    let data_len = buf.len();
+    let data_bytes = Value::Bytes {
+        source: Rc::from(buf.as_slice()),
+        start: 0,
+        end: data_len,
+    };
+
+    let mut dict = IndexMap::new();
+    dict.insert(
+        Key::String("data".to_string()),
+        ctx.alloc_thunk(ok_val(data_bytes, call_span)?),
+    );
+
+    ok_val(Value::Dict(dict), call_span)
 }

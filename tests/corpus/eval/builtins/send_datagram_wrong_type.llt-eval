@@ -1,0 +1,9 @@
+# Test: send-datagram rejects non-DatagramHandle as first argument
+# no_fs
+[send-datagram 42 "hello"]
+
+=== error
+send-datagram: expected DatagramHandle, got Int
+
+=== warn
+cannot unify DatagramHandle with 42 at 2:16-2:18

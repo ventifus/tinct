@@ -275,6 +275,14 @@ pub enum Value {
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
     /// Placeholder for h3::Connection. Created by `http3-session`, consumed by `http-request`.
     Http3Session(Rc<()>),
+    /// Message-oriented datagram socket (UDP or Unix datagram).
+    /// Uses `send`/`recv` semantics (message boundaries preserved), not stream I/O.
+    /// Created by `connect cap Udp host port` or `connect cap UnixDatagram path`.
+    /// Consumed by `send-datagram` and `recv-datagram`.
+    DatagramHandle {
+        socket: Rc<RefCell<std::net::UdpSocket>>,
+        creation_span: Span,
+    },
 }
 
 /// Helper function to construct a `Value::String` from a string slice.
@@ -329,6 +337,7 @@ impl Value {
             Value::QuicSession(_) => "QuicSession",
             Value::Http2Session(_) => "Http2Session",
             Value::Http3Session(_) => "Http3Session",
+            Value::DatagramHandle { .. } => "DatagramHandle",
         }
     }
 
@@ -413,6 +422,7 @@ impl fmt::Debug for Value {
             Value::QuicSession(_) => write!(f, "QuicSession"),
             Value::Http2Session(_) => write!(f, "Http2Session"),
             Value::Http3Session(_) => write!(f, "Http3Session"),
+            Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
         }
     }
 }
@@ -499,6 +509,7 @@ impl fmt::Display for Value {
             Value::QuicSession(_) => write!(f, "<QuicSession>"),
             Value::Http2Session(_) => write!(f, "<Http2Session>"),
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
+            Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
         }
     }
 }

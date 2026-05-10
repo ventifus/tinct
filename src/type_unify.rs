@@ -260,7 +260,8 @@ impl Substitution {
             | Type::Timezone
             | Type::QuicSession
             | Type::Http2Session
-            | Type::Http3Session => {
+            | Type::Http3Session
+            | Type::DatagramHandle => {
                 return ty.clone();
             }
             _ => {}
@@ -1700,6 +1701,7 @@ pub fn unify(
         (Type::DirCap, Type::DirCap) => Ok(()),
         (Type::NetCap, Type::NetCap) => Ok(()),
         (Type::Handle, Type::Handle) => Ok(()),
+        (Type::DatagramHandle, Type::DatagramHandle) => Ok(()),
 
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),

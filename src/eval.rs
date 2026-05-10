@@ -371,6 +371,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::QuicSession => matches!(value, Value::QuicSession(_)),
         Type::Http2Session => matches!(value, Value::Http2Session(_)),
         Type::Http3Session => matches!(value, Value::Http3Session(_)),
+        Type::DatagramHandle => matches!(value, Value::DatagramHandle { .. }),
         Type::Union(members) => {
             // Value matches union if it matches ANY member type
             members
