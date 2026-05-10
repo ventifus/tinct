@@ -1,4 +1,4 @@
-# Test: try builtin returns result dict (duplicates builtins/try_success)
+# Test: try builtin returns result variant (nominal Ok/Err)
 [try [fn [] 42]]
 === out
-Dict({"ok": Int(42)})
+Variant(Ok, Int(42))

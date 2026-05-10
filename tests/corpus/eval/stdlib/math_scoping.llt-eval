@@ -3,6 +3,6 @@
 
 [try [fn [] pi]]
 === out
-Dict({"err": String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)")})
+Variant(Err, String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)"))
 === warn
 undefined variable: pi

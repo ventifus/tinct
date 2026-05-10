@@ -5,4 +5,4 @@
 
 [call %.parse-toml-lite "key = \"value\"\n\nother = 42"]
 === out
-Dict({"key": String("value"), "other": Int(42)})
+Variant(Ok, Dict({"key": String("value"), "other": Int(42)}))

@@ -160,6 +160,37 @@ tmpl-step-literal: [fn [acc piece]
    skip: false
    is-first: false]]
 
+# ============================================================================
+# do-transformer — monadic do-notation macro (STUB)
+# ============================================================================
+#
+# TODO: Implement full do-notation desugaring.
+# For now, this is a stub that produces a clear error message.
+#
+# Planned desugaring:
+#   [do monad [name: expr] ... final]
+#   → [monad.bind [fn [name] ...] expr]
+#
+# Example:
+#   [do result
+#     [x: [try [fn [] [read-file %pwd "config.toml"]]]]
+#     [parsed: [try [fn [] [parse-toml-lite x]]]]
+#     [Ok parsed.name]]
+#
+#   Desugars to:
+#   [and-then [fn [x]
+#     [and-then [fn [parsed]
+#       [Ok parsed.name]]
+#       [try [fn [] [parse-toml-lite x]]]]]
+#     [try [fn [] [read-file %pwd "config.toml"]]]]
+
+do-stub: [fn [macro-args]
+  [type: "call"
+   fn: [type: "var" name: "error"]
+   args: [[type: "literal" kind: "str" value: "do macro not yet implemented" bare: false]]
+   named-args: []
+   implied: true]]
+
 ]
 
 # Public exports (second dict — exported by load_stdlib_module into stdlib_env)
@@ -190,5 +221,11 @@ tmpl-emit-call: [fn [result]
    args:       result.nodes
    named-args: []
    implied:    true]]
+
+# do-transformer: the macro body for [defmacro do].
+# Stub implementation — produces an error explaining that do is not yet implemented.
+# Receives macro-args dict: {0: monad-ast, 1: binding-or-expr, ...}
+do-transformer@[doc: "Monadic do-notation macro transformer (STUB)"]: [fn [macro-args]
+  [do-stub macro-args]]
 
 ]

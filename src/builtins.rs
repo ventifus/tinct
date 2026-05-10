@@ -2947,7 +2947,7 @@ mod tests {
     }
 
     #[test]
-    fn try_success_returns_ok_dict() {
+    fn try_success_returns_ok_variant() {
         // [fn [] 42]
         let ctx = test_ctx();
         let func = zero_arg_fn(Expr::Int(42));
@@ -2958,12 +2958,12 @@ mod tests {
             ctx: Rc::clone(&ctx),
         }));
         match result {
-            Value::Dict(map) => {
-                assert!(map.contains_key(&Key::String("ok".into())));
-                let ok_val = mat_id(map[&Key::String("ok".into())], &ctx);
-                assert_eq!(ok_val, Value::Int(42));
+            Value::Variant { tag, payload } => {
+                assert_eq!(tag, "Ok");
+                let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx);
+                assert_eq!(payload_val, Value::Int(42));
             }
-            _ => panic!("expected Dict"),
+            _ => panic!("expected Variant(Ok, ...), got: {:?}", result),
         }
     }
 
@@ -2978,16 +2978,17 @@ mod tests {
             ctx: Rc::clone(&ctx),
         }));
         match result {
-            Value::Dict(map) => {
-                let ok_val = mat_id(map[&Key::String("ok".into())], &ctx);
-                assert_eq!(ok_val, string_val("hello".into()));
+            Value::Variant { tag, payload } => {
+                assert_eq!(tag, "Ok");
+                let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx);
+                assert_eq!(payload_val, string_val("hello".into()));
             }
-            _ => panic!("expected Dict"),
+            _ => panic!("expected Variant(Ok, ...), got: {:?}", result),
         }
     }
 
     #[test]
-    fn try_failure_returns_err_dict() {
+    fn try_failure_returns_err_variant() {
         // [fn [] $nonexistent] -- references an undefined variable
         let ctx = test_ctx();
         let func = zero_arg_fn(Expr::var_ref("nonexistent".into()));
@@ -2998,9 +2999,9 @@ mod tests {
             ctx: Rc::clone(&ctx),
         }));
         match result {
-            Value::Dict(map) => {
-                assert!(map.contains_key(&Key::String("err".into())));
-                let err_val = mat_id(map[&Key::String("err".into())], &ctx);
+            Value::Variant { tag, payload } => {
+                assert_eq!(tag, "Err");
+                let err_val = mat_id(payload.expect("Err should have payload"), &ctx);
                 match err_val {
                     Value::String {
                         ref source,
@@ -3016,7 +3017,7 @@ mod tests {
                     _ => panic!("expected String error message"),
                 }
             }
-            _ => panic!("expected Dict"),
+            _ => panic!("expected Variant(Err, ...), got: {:?}", result),
         }
     }
 
@@ -3087,11 +3088,12 @@ mod tests {
             ctx: Rc::clone(&ctx),
         }));
         match result {
-            Value::Dict(map) => {
-                let ok_val = mat_id(map[&Key::String("ok".into())], &ctx);
-                assert_eq!(ok_val, Value::Int(99));
+            Value::Variant { tag, payload } => {
+                assert_eq!(tag, "Ok");
+                let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx);
+                assert_eq!(payload_val, Value::Int(99));
             }
-            _ => panic!("expected Dict"),
+            _ => panic!("expected Variant(Ok, ...), got: {:?}", result),
         }
     }
 
@@ -3114,11 +3116,12 @@ mod tests {
             ctx: Rc::clone(&ctx),
         }));
         match result {
-            Value::Dict(map) => {
-                let err_val = mat_id(map[&Key::String("err".into())], &ctx);
-                assert_eq!(err_val, string_val("builtin error".into()));
+            Value::Variant { tag, payload } => {
+                assert_eq!(tag, "Err");
+                let payload_val = mat_id(payload.expect("Err should have payload"), &ctx);
+                assert_eq!(payload_val, string_val("builtin error".into()));
             }
-            _ => panic!("expected Dict"),
+            _ => panic!("expected Variant(Err, ...), got: {:?}", result),
         }
     }
 
@@ -7594,10 +7597,14 @@ mod tests {
             env_ref.get("identity").is_some(),
             "missing prelude function identity"
         );
-        // Should have macros exports (tmpl-transformer pre-registered as tmpl macro)
+        // Should have macros exports (tmpl-transformer and do-transformer)
         assert!(
             env_ref.get("tmpl-transformer").is_some(),
             "missing macros export tmpl-transformer"
+        );
+        assert!(
+            env_ref.get("do-transformer").is_some(),
+            "missing macros export do-transformer"
         );
         // strings/math/encoding are NOT loaded at startup — require explicit include.
         assert!(

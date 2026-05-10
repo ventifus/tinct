@@ -5,4 +5,4 @@
 
 [call %.parse-toml-lite "[package]\nname = \"myproject\""]
 === out
-Dict({"package": Dict({"name": String("myproject")})})
+Variant(Ok, Dict({"package": Dict({"name": String("myproject")})}))

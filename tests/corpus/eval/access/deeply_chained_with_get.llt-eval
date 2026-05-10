@@ -7,4 +7,4 @@
   result: [get "name" [get 1 data]]
 ]
 === out
-Dict({"data": Dict({0: Dict({"name": ...}), 1: Dict({"name": ...})}), "result": String("second")})
+Dict({"data": Dict({0: Dict({"name": String("first")}), 1: Dict({"name": String("second")})}), "result": String("second")})

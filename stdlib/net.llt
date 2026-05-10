@@ -66,8 +66,9 @@
           [str-bytes [build-http-request "GET" url.path url.host]]]]]]]]
 
   # Parse URL string and call http-get.
-  fetch: [fn@Dict [cap@NetCap url-string@String]
-    [http-get cap [url url-string]]]
+  # Returns: [Ok response-dict] or [Err message]
+  fetch: [fn [cap@NetCap url-string@String]
+    [try [fn [] [http-get cap [url url-string]]]]]
 
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.

@@ -95,8 +95,8 @@ pub(crate) fn builtin_error(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     Err(EvalError::user_error(msg.to_string(), call_span).into())
 }
 
-/// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[ok: value]`
-/// on success or `[err: message]` on failure.
+/// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Ok value]`
+/// on success or `[Err message]` on failure.
 /// Inherently materializing: must materialize body to catch errors.
 pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
@@ -158,12 +158,15 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     match call_result {
         Ok(val) => {
-            let mut map = IndexMap::new();
-            map.insert(
-                Key::String("ok".to_string()),
-                ctx.alloc_thunk(ok_val(val, call_span)?),
-            );
-            ok_val(Value::Dict(map), call_span)
+            // Success: return Value::Variant { tag: "Ok", payload: Some(value) }
+            let payload_thunk_id = ctx.alloc_thunk(ok_val(val, call_span)?);
+            ok_val(
+                Value::Variant {
+                    tag: "Ok".to_string(),
+                    payload: Some(payload_thunk_id),
+                },
+                call_span,
+            )
         }
         Err(e) => {
             // DepthExceeded and ResourceLimitExceeded are non-catchable:
@@ -175,12 +178,15 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
                 _ => {}
             }
-            let mut map = IndexMap::new();
-            map.insert(
-                Key::String("err".to_string()),
-                ctx.alloc_thunk(ok_val(string_val(&e.message()), call_span)?),
-            );
-            ok_val(Value::Dict(map), call_span)
+            // Error: return Value::Variant { tag: "Err", payload: Some(message) }
+            let msg_thunk_id = ctx.alloc_thunk(ok_val(string_val(&e.message()), call_span)?);
+            ok_val(
+                Value::Variant {
+                    tag: "Err".to_string(),
+                    payload: Some(msg_thunk_id),
+                },
+                call_span,
+            )
         }
     }
 }

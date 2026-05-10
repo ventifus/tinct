@@ -22,6 +22,9 @@
 #    References private helpers from the first dict by plain name
 #    (eval_document injects first-dict bindings into scope for subsequent
 #    expressions, and the resolver models this scope chain).
+#    Type declarations (like Result) register variant constructors (Ok, Err)
+#    in the dict's letrec environment; these are re-exported as dict entries
+#    to make them available to code that includes the prelude.
 #
 # These functions depend on the following Rust-native builtins being available
 # in the parent environment:
@@ -126,10 +129,10 @@ cond-check: [fn@Any [pairs@Dict i@Int condition result]
 # Dict utilities helpers (only depend on builtins + siblings)
 # ============================================================================
 
-has?-impl: [fn@Bool [try-result@Dict]
+has?-impl: [fn@Bool [try-result]
     [match try-result
-        [ok: _] true
-        [err: _] false]]
+        [Ok _] true
+        [Err _] false]]
 
 remove-impl: [fn@Dict [xs@Dict ks exclude i@Int acc@Dict]
     [builtin-if [gte-impl i [length ks]]
@@ -272,10 +275,10 @@ transpose-impl: [fn@Dict [rows@Dict col-keys]
 # Error handling helpers (only depend on builtins + siblings)
 # ============================================================================
 
-try-or-impl: [fn [try-result@Dict default]
+try-or-impl: [fn [try-result default]
     [match try-result
-        [ok: v] v
-        [err: _] default]]
+        [Ok v] v
+        [Err _] default]]
 
 ]
 
@@ -771,10 +774,10 @@ find-deep-try@[doc: "Find-deep try (internal helper)"]: [fn@Any [subtree@Dict ta
         [try [fn [] [find-deep subtree target]]]
         parent target ks i]]
 
-find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [result@Dict parent@Dict target ks i@Int]
+find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [result parent@Dict target ks i@Int]
     [match result
-        [ok: v] v
-        [err: _] [find-deep-impl parent target ks [builtin-add i 1]]]]
+        [Ok v] v
+        [Err _] [find-deep-impl parent target ks [builtin-add i 1]]]]
 
 find-deep@[doc: "Recursively search for key in nested dicts"]: [fn@Any [xs@Dict target]
     [find-deep-impl xs target [keys xs] 0]]
@@ -1000,6 +1003,60 @@ list?@[doc: "Check if dict has all integer keys"]: [fn@Bool [xs]
 # Inherently materializing: must materialize body to catch errors.
 try-or@[doc: "Call function; return default on error"]: [fn [f@Fn default]
     [try-or-impl [try f] default]]
+
+# ============================================================================
+# Result Type and Combinators
+# ============================================================================
+
+# Result type declaration: [Ok a] | [Err String]
+# Evaluating this type alias registers Ok and Err as callable constructor
+# functions in this dict's letrec environment.
+Result: [type [Ok a] [Err String]]
+
+# Re-export Ok constructor as a dict entry so it's available to code that
+# includes the prelude. The RHS references the Ok constructor registered
+# by the Result type declaration above (letrec makes this safe).
+Ok: Ok
+
+# Re-export Err constructor as a dict entry.
+Err: Err
+
+# Chain a Result: if Ok, apply f to the value; if Err, pass through.
+# Type: ((a -> Result b) -> Result a -> Result b)
+# Example: [and-then [fn [x] [Ok [* x 2]]] [Ok 21]] => [Ok 42]
+# Example: [and-then [fn [x] [Ok [* x 2]]] [Err "bad"]] => [Err "bad"]
+and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass through"]: [fn [f result]
+    [match result
+        [Ok v] [f v]
+        [Err msg] [Err msg]]]
+
+# Map over Ok value, pass Err through.
+# Type: ((a -> b) -> Result a -> Result b)
+# Example: [result-map [fn [x] [* x 2]] [Ok 21]] => [Ok 42]
+# Example: [result-map [fn [x] [* x 2]] [Err "bad"]] => [Err "bad"]
+result-map@[doc: "Map over Ok value, pass Err through"]: [fn [f result]
+    [match result
+        [Ok v] [Ok [f v]]
+        [Err msg] [Err msg]]]
+
+# Return Ok value or the default on Err.
+# Type: (a -> Result a -> a)
+# Example: [result-or 99 [Ok 42]] => 42
+# Example: [result-or 99 [Err "bad"]] => 99
+result-or@[doc: "Return Ok value or the default on Err"]: [fn [default result]
+    [match result
+        [Ok v] v
+        [Err _] default]]
+
+# Wrap a value in Ok.
+# Type: (a -> Result a)
+# Example: [result-ok 42] => [Ok 42]
+result-ok@[doc: "Wrap a value in Ok"]: [fn [v] [Ok v]]
+
+# Result monad dict for [do result ...] chains.
+# Provides bind (and-then) and pure (result-ok) for the do macro.
+# Example: [do result [r: [fetch url]] [data: [from-json r.body]] [get "key" data]]
+result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: result-ok]
 
 # ============================================================================
 # Sequences

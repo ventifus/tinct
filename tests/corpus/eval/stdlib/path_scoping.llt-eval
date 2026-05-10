@@ -5,7 +5,7 @@
 
 === out
 
-Dict({"err": String("undefined variable: basename (did you mean the string \"basename\"? Use quotes.)")})
+Variant(Err, String("undefined variable: basename (did you mean the string \"basename\"? Use quotes.)"))
 
 === warn
 

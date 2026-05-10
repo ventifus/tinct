@@ -3,6 +3,6 @@
 
 [try [fn [] [hex-encode "A"]]]
 === out
-Dict({"err": String("undefined variable: hex-encode (did you mean the string \"hex-encode\"? Use quotes.)")})
+Variant(Err, String("undefined variable: hex-encode (did you mean the string \"hex-encode\"? Use quotes.)"))
 === warn
 undefined variable: hex-encode

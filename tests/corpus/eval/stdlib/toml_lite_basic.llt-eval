@@ -5,4 +5,4 @@
 
 [call %.parse-toml-lite "[section]\nkey = \"value\""]
 === out
-Dict({"section": Dict({"key": String("value")})})
+Variant(Ok, Dict({"section": Dict({"key": String("value")})}))

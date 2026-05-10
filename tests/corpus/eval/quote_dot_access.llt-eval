@@ -1,3 +1,3 @@
 [quote config.host]
 === out
-Dict({"type": String("dot-access"), "target": Dict({"type": String("var"), "name": String("config"), "span": Dict({"start": ..., "end": ...})}), "field": String("host"), "span": Dict({"start": Dict({"line": ..., "col": ..., "offset": ...}), "end": Dict({"line": ..., "col": ..., "offset": ...})})})
+Dict({"type": String("dot-access"), "target": Dict({"type": String("var"), "name": String("config"), "span": Dict({"start": Dict({"line": Int(1), "col": Int(8), "offset": Int(7)}), "end": Dict({"line": Int(1), "col": Int(14), "offset": Int(13)})})}), "field": String("host"), "span": Dict({"start": Dict({"line": Int(1), "col": Int(8), "offset": Int(7)}), "end": Dict({"line": Int(1), "col": Int(19), "offset": Int(18)})})})

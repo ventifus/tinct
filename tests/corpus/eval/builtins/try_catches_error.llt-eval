@@ -1,4 +1,4 @@
-# try: catching an error raised by $error returns [err: message]
+# try: catching an error raised by $error returns [Err message]
 [try [fn [] [error "caught"]]]
 === out
-Dict({"err": String("caught")})
+Variant(Err, String("caught"))
