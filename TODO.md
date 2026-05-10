@@ -455,6 +455,16 @@ Organizing principles for `stdlib/`:
 
 ## Codebase Health
 
+### cycle-216-findings: Cycle #216 analysis findings
+
+From the 3-agent focused review on 2026-05-09.
+
+**[Major] http-request session parameter typed as Unknown** (computer-scientist):
+- [x] http-request session param: Union([Http2Session, Http3Session]) — now statically rejects wrong session types (`src/type_env.rs`)
+- [x] Negation unification disjointness: reject unify(T, ~A) when T <: A; conservative Ok(()) for TypeVar/Unknown (`src/type_unify.rs`)
+- [x] DNS rebinding TOCTOU: documented — IP resolved once at session creation, no re-resolution at stream read
+- [x] QUIC stream byte limit: QUIC_STREAM_BYTE_LIMIT=64MB enforced in QuicRecvReader::fill_buf + Read::read (`src/builtins_io.rs`)
+
 ### cycle-206-findings: Cycle #206 analysis findings
 
 From the 9-agent codebase review on 2026-05-09.

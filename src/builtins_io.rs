@@ -4080,11 +4080,22 @@ pub(crate) fn builtin_proxy_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 ///
 /// Each `read` call issues `block_on(recv.read_buf(...))` on the thread-local
 /// tokio runtime. This keeps all async I/O on one thread and avoids spawning.
+///
+/// IP resolution note: the connection uses the IP resolved during `builtin_quic_session`
+/// (via `check_net_cap_allowlist` → `server_addr`). The `RecvStream` here is part of an
+/// already-established QUIC connection — no re-resolution occurs at read time. DNS-rebinding
+/// is therefore not a concern for stream reads.
 struct QuicRecvReader {
     recv: quinn::RecvStream,
     buf: Vec<u8>,
     buf_pos: usize,
+    /// Running total of bytes received across all reads. Used to enforce the per-stream
+    /// byte limit (QUIC_STREAM_BYTE_LIMIT) and prevent unbounded memory accumulation.
+    bytes_read: usize,
 }
+
+/// Maximum bytes that may be read from a single QUIC stream (64 MiB).
+const QUIC_STREAM_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 
 impl std::io::Read for QuicRecvReader {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
@@ -4104,6 +4115,14 @@ impl std::io::Read for QuicRecvReader {
             .map_err(|e| std::io::Error::other(format!("quic recv: {e}")))?
             .unwrap_or(0);
         self.buf.truncate(n);
+        self.bytes_read += n;
+        if self.bytes_read > QUIC_STREAM_BYTE_LIMIT {
+            return Err(std::io::Error::other(format!(
+                "quic recv: stream exceeded byte limit ({} bytes > {} MiB limit)",
+                self.bytes_read,
+                QUIC_STREAM_BYTE_LIMIT / (1024 * 1024),
+            )));
+        }
         if n == 0 {
             return Ok(0); // EOF
         }
@@ -4124,6 +4143,14 @@ impl std::io::BufRead for QuicRecvReader {
                 .map_err(|e| std::io::Error::other(format!("quic recv: {e}")))?
                 .unwrap_or(0);
             self.buf.truncate(n);
+            self.bytes_read += n;
+            if self.bytes_read > QUIC_STREAM_BYTE_LIMIT {
+                return Err(std::io::Error::other(format!(
+                    "quic recv: stream exceeded byte limit ({} bytes > {} MiB limit)",
+                    self.bytes_read,
+                    QUIC_STREAM_BYTE_LIMIT / (1024 * 1024),
+                )));
+            }
         }
         Ok(&self.buf[self.buf_pos..])
     }
@@ -4351,6 +4378,7 @@ pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
         recv,
         buf: Vec::new(),
         buf_pos: 0,
+        bytes_read: 0,
     };
     let writer = QuicSendWriter { send };
 

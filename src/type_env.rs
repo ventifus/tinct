@@ -1533,7 +1533,7 @@ impl TypeEnv {
             "http-request".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Unknown),  // Http2Session or Http3Session
+                    (None, Type::Union(vec![Type::Http2Session, Type::Http3Session])),  // Http2Session or Http3Session
                     (None, Type::Str),      // method
                     (None, Type::Str),      // path
                     (None, Type::Unknown),  // headers dict
