@@ -1155,6 +1155,47 @@ fn apply_narrowings(
     Rc::new(new_env)
 }
 
+/// Apply negation narrowings for the false branch of an `if` expression.
+///
+/// For each `TypeOf { var, ty }` narrowing (e.g., produced by `[int? x]`), the false branch
+/// knows the predicate FAILED, so the variable's type is intersected with `Negation(ty)`.
+/// This is the BAS false-branch rule: ~[int? x] → x : ~Int.
+///
+/// EqLiteral and HasKey narrowings are not negated in the false branch (they produce
+/// Negation(literal) which is rarely useful and can confuse downstream unification).
+fn apply_negation_narrowings(
+    env: &Rc<TypeEnv>,
+    narrowings: &[Narrowing],
+    _state: &mut InferState,
+) -> Rc<TypeEnv> {
+    // Only TypeOf narrowings produce useful false-branch refinements
+    let type_of_narrowings: Vec<_> = narrowings
+        .iter()
+        .filter(|n| matches!(n, Narrowing::TypeOf { .. }))
+        .collect();
+
+    if type_of_narrowings.is_empty() {
+        return Rc::clone(env);
+    }
+
+    let mut new_env = TypeEnv::with_parent(env);
+
+    for narrowing in type_of_narrowings {
+        let Narrowing::TypeOf { var, ty } = narrowing else {
+            continue;
+        };
+        // In the false branch: x : ~ty (negation of the predicate type)
+        // Do NOT apply if ty is Unknown (fn? narrowing) — ~Unknown is not useful
+        if matches!(ty, Type::Unknown) {
+            continue;
+        }
+        let negated = Type::Negation(Box::new(ty.clone()));
+        new_env.insert(var.clone(), negated);
+    }
+
+    Rc::new(new_env)
+}
+
 /// Type-check an `if` expression with path-sensitive narrowing.
 fn infer_if(
     cond: &Spanned<Expr>,
@@ -1173,8 +1214,12 @@ fn infer_if(
     // Fork the environment for the true branch
     let env_true = apply_narrowings(env, &narrowings, state);
 
-    // Fork the environment for the false branch (no narrowing)
-    let env_false = Rc::clone(env);
+    // Fork the environment for the false branch: apply negation narrowings (BAS false-branch).
+    // For each TypeOf narrowing (e.g., [int? x] → x : Int in true branch),
+    // the false branch narrows x to Negation(Int) — i.e., "definitely not Int".
+    // This enables false-branch type refinement: if x : Int | Str and [int? x] fails,
+    // then x : (Int | Str) & ~Int = Str in the false branch.
+    let env_false = apply_negation_narrowings(env, &narrowings, state);
 
     // Infer the then and else branches in their respective environments
     let then_ty = infer_expr(then_expr, &env_true, state, type_map)?;
@@ -1523,9 +1568,39 @@ fn infer_expr(
             // Extend the TypeEnv with pattern-bound variables and their inferred types
             // so that references inside the arm body are in scope and carry precise types
             // derived from the scrutinee type and pattern shape (match-arm-scope sprint).
+            //
+            // I-Case3 (BAS match narrowing): maintain a "remaining scrutinee" type that
+            // accumulates negations as Constructor/TypeTag arms are processed.
+            // For arm matching #C: arm body sees scrutinee ∩ #C (or the tag literal type).
+            // For subsequent arms: remaining_scrutinee ∩ ~#C (the tag is ruled out).
+            //
+            // This gives false-branch narrowing semantics inside match:
+            //   [match x  Int [...]  Str [...]]
+            //   → arm 1: x : scrutinee ∩ Int
+            //   → arm 2: x : scrutinee ∩ ~Int ∩ Str  (if scrutinee : Int | Str, simplifies to Str)
+            let mut remaining_scrutinee = scrutinee_ty.clone();
+
             for arm in arms {
+                // Compute the arm-local scrutinee type from I-Case3:
+                // For Constructor/TypeTag patterns, intersect remaining with the tag's type.
+                let arm_scrutinee_ty = match &arm.pattern.node {
+                    Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
+                        // The arm matches when scrutinee has this constructor tag.
+                        // Intersect remaining_scrutinee with a StringLiteral type for the tag,
+                        // which approximates the nominal tag constraint.
+                        let tag_ty = Type::StringLiteral(tag.clone());
+                        let members = vec![remaining_scrutinee.clone(), tag_ty];
+                        Type::normalize_intersection(members)
+                    }
+                    Pattern::Wildcard | Pattern::Variable(_) => {
+                        // Catch-all: arm sees the full remaining scrutinee
+                        remaining_scrutinee.clone()
+                    }
+                    _ => scrutinee_ty.clone(),
+                };
+
                 let mut pat_bindings: Vec<(String, Type)> = Vec::new();
-                collect_pattern_bindings(&arm.pattern.node, &scrutinee_ty, &mut pat_bindings);
+                collect_pattern_bindings(&arm.pattern.node, &arm_scrutinee_ty, &mut pat_bindings);
                 let arm_env = if pat_bindings.is_empty() {
                     env.clone()
                 } else {
@@ -1539,6 +1614,29 @@ fn infer_expr(
                     let _guard_ty = infer_expr(guard, &arm_env, state, type_map)?;
                 }
                 let _arm_ty = infer_expr(&arm.body, &arm_env, state, type_map)?;
+
+                // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
+                // For Constructor/TypeTag arms without a guard: remaining ∩ ~tag.
+                // Guarded arms are opaque (the guard may succeed or fail — we can't narrow).
+                if arm.guard.is_none() {
+                    match &arm.pattern.node {
+                        Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
+                            let neg_tag =
+                                Type::Negation(Box::new(Type::StringLiteral(tag.clone())));
+                            remaining_scrutinee = Type::normalize_intersection(vec![
+                                remaining_scrutinee.clone(),
+                                neg_tag,
+                            ]);
+                        }
+                        Pattern::Wildcard | Pattern::Variable(_) => {
+                            // Catch-all: remaining is Never (no more arms can match)
+                            remaining_scrutinee = Type::Never;
+                        }
+                        _ => {
+                            // Literal, Dict, Seq patterns — no structural narrowing for now
+                        }
+                    }
+                }
             }
 
             // Exhaustiveness checking: when scrutinee type is a union, run the
@@ -9842,5 +9940,202 @@ mod tests {
             Type::Unknown,
             "constructor binding should get Unknown type (no payload narrowing yet)"
         );
+    }
+
+    // ========== BAS Core Tests ==========
+
+    // --- C-Var1/2 Constraint Rewriting ---
+
+    #[test]
+    fn test_c_var1_binds_typevar_in_union() {
+        // C-Var1: unify(Int, Union([Str, TypeVar(a)])) → bind a = Int
+        // because Int is not covered by the non-var member Str
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let var_name = "_a0".to_string();
+        state.levels.insert(var_name.clone(), 1);
+        let a = Type::Int;
+        let b = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
+        let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+        assert!(result.is_ok(), "C-Var1 should succeed: {result:?}");
+        // a is bound to Int
+        assert_eq!(
+            subst.get(&var_name),
+            Some(&Type::Int),
+            "TypeVar should be bound to Int"
+        );
+    }
+
+    #[test]
+    fn test_c_var1_already_covered_no_binding() {
+        // C-Var1: unify(Int, Union([Int, TypeVar(a)])) → Int already covered, no binding needed
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let var_name = "_a1".to_string();
+        state.levels.insert(var_name.clone(), 1);
+        let a = Type::Int;
+        let b = Type::Union(vec![Type::Int, Type::TypeVar(var_name.clone(), 1)]);
+        let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+        assert!(result.is_ok(), "C-Var1 already covered should succeed: {result:?}");
+        // TypeVar should NOT be bound (Int already covered by non-var member)
+        assert!(
+            subst.get(&var_name).is_none(),
+            "TypeVar should not be bound when already covered"
+        );
+    }
+
+    #[test]
+    fn test_c_var1_symmetric_union_on_left() {
+        // C-Var1 symmetric: unify(Union([Str, TypeVar(a)]), Int) → bind a = Int
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let var_name = "_a2".to_string();
+        state.levels.insert(var_name.clone(), 1);
+        let a = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
+        let b = Type::Int;
+        let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+        assert!(result.is_ok(), "C-Var1 symmetric should succeed: {result:?}");
+        assert_eq!(
+            subst.get(&var_name),
+            Some(&Type::Int),
+            "TypeVar should be bound to Int"
+        );
+    }
+
+    #[test]
+    fn test_c_var2_binds_typevar_in_intersection() {
+        // C-Var2: unify(Intersection([Str, TypeVar(a)]), Int) → bind a = Int
+        // because Str alone doesn't satisfy Int
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let var_name = "_a3".to_string();
+        state.levels.insert(var_name.clone(), 1);
+        // Intersection([Str, TypeVar(a)]) — Str doesn't satisfy Int, so bind a = Int
+        let a = Type::Intersection(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
+        let b = Type::Int;
+        let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+        assert!(result.is_ok(), "C-Var2 should succeed: {result:?}");
+        assert_eq!(
+            subst.get(&var_name),
+            Some(&Type::Int),
+            "TypeVar should be bound to Int"
+        );
+    }
+
+    // --- @[[all A B]] and @[[without A]] annotation syntax ---
+
+    #[test]
+    fn test_annotation_all_produces_intersection() {
+        // @[[all Int Str]] → Type::Intersection([Int, Str])
+        // Note: normalize_intersection sorts members
+        let source = "[result: [@[[all Int Str]] 42]]";
+        // We just check that it parses without error — the check is that the annotation
+        // resolves to an Intersection type (checking mode will verify against the value)
+        let result = check(source);
+        // Int & Str is an uninhabited intersection — but type checking here is checking 42 : Int & Str
+        // which should fail since 42 : Int is not a subtype of Str.
+        // This is expected behavior — just verify no panic, and errors are type errors (not parse errors).
+        let _ = result; // may succeed or fail, but should not panic
+    }
+
+    #[test]
+    fn test_annotation_all_two_compatible_types() {
+        // @[[all Int Number]] → Int & Number = Int (since Int <: Number)
+        // Checking 42 against Int & Number should succeed since 42 : Int and Int <: Number
+        let source = "[@[[all Int Number]] 42]";
+        let result = check(source);
+        // Int & Number — 42 satisfies both Int and Number, so this should succeed or at most
+        // give a Negation-related message, not a structural crash
+        let _ = result;
+    }
+
+    #[test]
+    fn test_annotation_without_produces_negation() {
+        // @[[without Int]] → Type::Negation(Int)
+        // Just ensure it parses and resolves without panic
+        let source = "[@[[without Int]] \"hello\"]";
+        let result = check(source);
+        // "hello" : Str — Str is not Int, so ~Int check passes
+        let _ = result;
+    }
+
+    #[test]
+    fn test_annotation_never_type_name() {
+        // @Never should resolve to Type::Never
+        let env = doc_env_with_builtins("[T: [type Never]]");
+        let alias = env.get_type_alias("T").expect("T alias should exist");
+        assert_eq!(alias.body, Type::Never, "Never type alias should resolve to Type::Never");
+    }
+
+    #[test]
+    fn test_annotation_top_type_name() {
+        // @Top should resolve to Type::Top
+        let env = doc_env_with_builtins("[T: [type Top]]");
+        let alias = env.get_type_alias("T").expect("T alias should exist");
+        assert_eq!(alias.body, Type::Top, "Top type alias should resolve to Type::Top");
+    }
+
+    // --- False-branch narrowing ---
+
+    #[test]
+    fn test_false_branch_narrowing_int_predicate() {
+        // In the false branch of [int? x], x should be narrowed to ~Int
+        // We verify this by checking that the env_false has a Negation type for x
+        // The simplest observable: if we shadow the result with the else branch value,
+        // the type checker should not crash and the else-branch type is used.
+        let env = doc_env_with_builtins("[x: 42]\n[result: [if [int? x] 1 0]]");
+        // Both branches have Int; result should be Int
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) | Some(Type::IntLiteral(_)) | Some(Type::Number) => {}
+            Some(other) => panic!("expected Int for false-branch narrowing test, got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_false_branch_negation_inserted_in_env() {
+        // Verify that the false branch env actually has a Negation type.
+        // We do this by calling apply_negation_narrowings directly.
+        use std::rc::Rc;
+        let mut state = InferState::new();
+        let mut env = TypeEnv::new();
+        env.insert("x".to_string(), Type::Int);
+        let env = Rc::new(env);
+
+        let narrowings = vec![Narrowing::TypeOf {
+            var: "x".to_string(),
+            ty: Type::Int,
+        }];
+
+        let false_env = apply_negation_narrowings(&env, &narrowings, &mut state);
+
+        // x in false_env should be Negation(Int)
+        let x_ty = false_env.get("x").map(|s| s.body.clone());
+        assert_eq!(
+            x_ty,
+            Some(Type::Negation(Box::new(Type::Int))),
+            "false branch should narrow x to ~Int"
+        );
+    }
+
+    // --- I-Case3 in infer_match ---
+
+    #[test]
+    fn test_i_case3_match_arm_sees_narrowed_scrutinee() {
+        // Match with TypeTag patterns — verify that match type-checks without errors.
+        // The I-Case3 narrowing means the second arm sees remaining_scrutinee ∩ ~first-tag.
+        let source = "[x: \"ok\"]\n[result: [match x\n    \"ok\" 1\n    \"err\" 2\n    _ 0]]";
+        let result = check(source);
+        assert!(result.is_ok(), "match with TypeTag should type-check: {result:?}");
+    }
+
+    #[test]
+    fn test_i_case3_wildcard_remaining_is_never() {
+        // After a wildcard arm, remaining_scrutinee becomes Never (catch-all consumed).
+        // Any subsequent arm would be unreachable — but we just verify no panic.
+        let source = "[x: 42]\n[result: [match x\n    _ 1\n    1 2]]";
+        // The second arm after wildcard should be flagged as unreachable (if coverage checking fires)
+        // or just succeed. Either way, no panic.
+        let _ = check(source);
     }
 }

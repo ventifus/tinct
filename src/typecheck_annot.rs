@@ -271,6 +271,61 @@ pub(crate) fn resolve_annotation(
                 entries.iter().filter(|e| e.node.key.is_none()).collect();
 
             if !positional_entries.is_empty() && !entries_look_like_type_dict(entries) {
+                // BAS annotation keywords: @[[all A B]] → Intersection, @[[without A]] → Negation.
+                //
+                // The outer @[...] wraps an inner list [all A B] or [without A] as a positional
+                // entry in a PropertyDict. The inner list appears here as a positional entry whose
+                // value is a Dict. We dispatch based on the FIRST positional entry being a list
+                // whose own first entry is a VarRef to `all` or `without`.
+                //
+                // Syntax: @[[all Int Str]]   → positional_entries[0].value = Dict([all, Int, Str])
+                //         @[[without Int]]   → positional_entries[0].value = Dict([without, Int])
+                if positional_entries.len() == 1 {
+                    if let Expr::Dict(inner_entries) = &positional_entries[0].node.value.node {
+                        if !inner_entries.is_empty() {
+                            if let Expr::VarRef { name: kw, .. } =
+                                &inner_entries[0].node.value.node
+                            {
+                                if kw == "all" {
+                                    if inner_entries.len() < 2 {
+                                        return Err(TypeError::new(
+                                            "@[[all ...]] requires at least one type argument",
+                                            span,
+                                        ));
+                                    }
+                                    let mut members = Vec::new();
+                                    for entry in &inner_entries[1..] {
+                                        let ty = resolve_type_expr(
+                                            &entry.node.value,
+                                            env,
+                                            state,
+                                            ann_mapping,
+                                            row_ann_mapping,
+                                        )?;
+                                        members.push(ty);
+                                    }
+                                    return Ok(Type::normalize_intersection(members));
+                                } else if kw == "without" {
+                                    if inner_entries.len() != 2 {
+                                        return Err(TypeError::new(
+                                            "@[[without A]] requires exactly one type argument",
+                                            span,
+                                        ));
+                                    }
+                                    let inner = resolve_type_expr(
+                                        &inner_entries[1].node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    return Ok(Type::Negation(Box::new(inner)));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Check for parameterized type alias application: @[AliasName Arg1 Arg2]
                 // When the first positional entry is a VarRef referring to a parameterized
                 // type alias, treat remaining entries as type arguments rather than union members.
@@ -517,6 +572,7 @@ pub(crate) fn resolve_type_name_with_guard(
         || matches!(
             name,
             "Int" | "Float" | "String" | "Bool" | "Number" | "Any" | "Seq" | "Null" | "Dict" | "Fn"
+            | "Never" | "Top" | "Unknown"
         )
     {
         let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
@@ -584,6 +640,10 @@ pub(crate) fn resolve_type_name(
         "Bool" => Ok(Type::Bool),
         "Number" => Ok(Type::Number),
         "Any" => Ok(Type::Top),
+        // BAS type names
+        "Never" => Ok(Type::Never),
+        "Top" => Ok(Type::Top),
+        "Unknown" => Ok(Type::Unknown),
         "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
         "Null" => Ok(Type::Record(Row {
             fields: HashMap::new(),
@@ -1173,11 +1233,64 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
+    // BAS annotation keywords: [all A B] → Intersection(A, B) and [without A] → Negation(A).
+    //
+    // These correspond to the @[[all A B]] and @[[without A]] annotation syntax documented in
+    // doc/07-type-extensions.md. When the first positional entry is the keyword `all` or
+    // `without`, the remaining entries are resolved as type arguments.
+    //
+    // [all A B C ...] → Type::Intersection([A, B, C, ...]) (normalized)
+    // [without A]     → Type::Negation(A)
+    //
+    // Must check BEFORE the general all-positional union path so `[all Int Str]` is
+    // dispatched to Intersection, not Union(Int, Str).
+    let all_positional = entries.iter().all(|e| e.node.key.is_none());
+    if all_positional && !entries.is_empty() {
+        if let Expr::VarRef { name: kw, .. } = &entries[0].node.value.node {
+            if kw == "all" {
+                // [all T1 T2 ...] → Intersection([T1, T2, ...])
+                if entries.len() < 2 {
+                    return Err(TypeError::new(
+                        "[all ...] requires at least one type argument",
+                        span,
+                    ));
+                }
+                let mut members = Vec::new();
+                for entry in &entries[1..] {
+                    let ty = resolve_type_expr(
+                        &entry.node.value,
+                        env,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    )?;
+                    members.push(ty);
+                }
+                return Ok(Type::normalize_intersection(members));
+            } else if kw == "without" {
+                // [without A] → Negation(A)
+                if entries.len() != 2 {
+                    return Err(TypeError::new(
+                        "[without A] requires exactly one type argument",
+                        span,
+                    ));
+                }
+                let inner = resolve_type_expr(
+                    &entries[1].node.value,
+                    env,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )?;
+                return Ok(Type::Negation(Box::new(inner)));
+            }
+        }
+    }
+
     // Multi-entry union type from `[type T1 T2 ...]` declarations.
     // When ALL entries are auto-indexed (no keys) and there are 2+ entries,
     // this is a union of type expressions (not a record type).
     // Single auto-indexed entry falls through to existing handling.
-    let all_positional = entries.iter().all(|e| e.node.key.is_none());
     if all_positional && entries.len() >= 2 {
         let mut members = Vec::new();
         for entry in entries {

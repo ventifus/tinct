@@ -51,13 +51,13 @@ See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md �
 - [x] Add `Type::Negation(Box<Type>)` variant to `src/types.rs`; updated all match sites (types.rs, type_unify.rs, type_env.rs, eval.rs)
 - [x] Add `Type::Never` as explicit bottom type variant; `Type::Top` already existed; updated is_subtype (S-NEVER rule), is_consistent, Display, value_matches_type
 - [x] Implement S-RcdTop (disjoint single-field records union = Top) and S-ClsBot (disjoint intersections = Never) in `is_subtype`; `simplify_type` added for basic RDNF groundwork (`src/types.rs`)
-- [ ] Implement C-Var1/2 constraint rewriting in the inference engine: `τ₁ ≤ τ₂ ∨ α` → `τ₁ & ~τ₂ ≤ α`; `α & τ₁ ≤ τ₂` → `α ≤ τ₂ | ~τ₁` (`src/typecheck.rs`, `src/type_unify.rs`)
+- [x] C-Var1/2 constraint rewriting: conservative approximation — unify(concrete, Union([..., TypeVar, ...])) binds TypeVar to concrete (`src/type_unify.rs`)
 - [ ] Full RDNF normalization (simplify_type groundwork added; needs constraint solver integration) (`src/typecheck.rs`)
-- [ ] Implement multi-field record annotation as intersection of single-field records: `@[x: T  y: U]` → `{x: T} ∧ {y: U}` in the annotation resolver; remove `RowTail::RowVar` from annotation expansion (`src/typecheck.rs`, `src/expand.rs`)
-- [ ] Add `@[[all A B]]` (intersection) and `@[[without A]]` (negation) annotation syntax to the annotation parser; update `check_annotation` dispatch (`src/typecheck.rs`, `src/parser.rs`)
-- [ ] Implement false-branch narrowing in `if`/`match` using negation types: after `[int? x]` fails, narrow `x` to `x & ~Int` (`src/typecheck.rs`)
-- [ ] Update `infer_match` to use I-Case3: intersect scrutinee with `#C` in matched arm, `¬#C` in remaining arms; produce union of arm types (`src/typecheck.rs`)
-- [ ] Tests: corpus tests for BAS union inference, negation narrowing, width subtyping, S-RcdTop collapse, S-ClsBot discriminability in `tests/corpus/eval/typecheck/` using `=== out`/`=== error` sections
+- [ ] Implement multi-field record annotation as intersection: `@[x: T  y: U]` → `{x: T} ∧ {y: U}` (BAS-dependent on RowTail removal) (`src/typecheck.rs`, `src/expand.rs`)
+- [x] Add `@[[all A B]]` (intersection) and `@[[without A]]` (negation) annotation syntax (`src/typecheck_annot.rs`)
+- [x] False-branch narrowing: `apply_negation_narrowings()` in if-false branch, type predicates narrow to Negation type (`src/typecheck.rs`)
+- [x] I-Case3 in infer_match: remaining_scrutinee accumulates negations across arms for precise type narrowing (`src/typecheck.rs`)
+- [ ] Corpus tests for BAS union inference, negation narrowing, S-RcdTop collapse, S-ClsBot discriminability
 
 ### `result-nominal`: Nominal Result Type and Stdlib Retrofit
 

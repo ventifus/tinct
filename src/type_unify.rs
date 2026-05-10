@@ -1696,6 +1696,201 @@ pub fn unify(
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
 
+        // [C-VAR1] (BAS constraint rewriting, conservative):
+        // τ₁ ≤ τ₂ ∨ α  →  bind α to the concrete type when the non-var members
+        // don't already cover τ₁.
+        //
+        // Full BAS would rewrite to: τ₁ & ~τ₂ ≤ α, binding α to Negation(τ₂) ∩ τ₁.
+        // Conservative approximation: bind α directly to τ₁ when the non-var members
+        // of the union are disjoint from τ₁ (i.e., τ₁ is not a subtype of any non-var member).
+        // This handles the common case: `(Int, Union([Str, TypeVar(a)]))` → bind a = Int.
+        //
+        // Pattern: concrete type a, Union on side b with exactly one TypeVar
+        (concrete, Type::Union(members)) if !concrete.has_inference_vars() => {
+            // Partition union members into TypeVars and concrete members
+            let type_vars: Vec<_> = members
+                .iter()
+                .filter(|m| matches!(m, Type::TypeVar(_, _)))
+                .collect();
+            let concrete_members: Vec<_> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+                .collect();
+
+            // C-Var1 applies when there is exactly one TypeVar in the union
+            if type_vars.len() == 1 {
+                let already_covered = concrete_members
+                    .iter()
+                    .any(|m| Type::is_subtype(concrete, m));
+
+                if already_covered {
+                    // The concrete type is already covered by a non-var member — no binding needed.
+                    Ok(())
+                } else {
+                    // Bind the TypeVar to the concrete type (conservative C-Var1)
+                    let Type::TypeVar(var_name, _) = type_vars[0] else {
+                        unreachable!()
+                    };
+                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
+                        return Err(TypeError::new(
+                            format!("infinite type: {var_name} occurs in {concrete}"),
+                            span,
+                        ));
+                    }
+                    let concrete_promoted =
+                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
+                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    subst
+                        .type_map
+                        .insert(var_name.clone(), concrete_promoted.clone());
+                    subst.check_size(span)?;
+                    Ok(())
+                }
+            } else {
+                // More than one TypeVar, or zero TypeVars with no subtype relation — fall through
+                Err(TypeError::type_mismatch(&a, &b, span))
+            }
+        }
+
+        // Symmetric C-Var1: Union on the left, concrete on the right
+        (Type::Union(members), concrete) if !concrete.has_inference_vars() => {
+            let type_vars: Vec<_> = members
+                .iter()
+                .filter(|m| matches!(m, Type::TypeVar(_, _)))
+                .collect();
+            let concrete_members: Vec<_> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+                .collect();
+
+            if type_vars.len() == 1 {
+                let already_covered = concrete_members
+                    .iter()
+                    .any(|m| Type::is_subtype(concrete, m));
+
+                if already_covered {
+                    Ok(())
+                } else {
+                    let Type::TypeVar(var_name, _) = type_vars[0] else {
+                        unreachable!()
+                    };
+                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
+                        return Err(TypeError::new(
+                            format!("infinite type: {var_name} occurs in {concrete}"),
+                            span,
+                        ));
+                    }
+                    let concrete_promoted =
+                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
+                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    subst
+                        .type_map
+                        .insert(var_name.clone(), concrete_promoted.clone());
+                    subst.check_size(span)?;
+                    Ok(())
+                }
+            } else {
+                Err(TypeError::type_mismatch(&a, &b, span))
+            }
+        }
+
+        // [C-VAR2] (BAS constraint rewriting, conservative):
+        // α & τ₁ ≤ τ₂  →  bind α to τ₂ when τ₁ doesn't already satisfy τ₂.
+        //
+        // Full BAS would rewrite to: α ≤ τ₂ | ~τ₁.
+        // Conservative approximation: bind α directly to τ₂ when the non-var members
+        // of the intersection don't already imply τ₂.
+        //
+        // Pattern: Intersection with exactly one TypeVar on one side, concrete on the other
+        (Type::Intersection(members), concrete) if !concrete.has_inference_vars() => {
+            let type_vars: Vec<_> = members
+                .iter()
+                .filter(|m| matches!(m, Type::TypeVar(_, _)))
+                .collect();
+            let concrete_members: Vec<_> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+                .collect();
+
+            if type_vars.len() == 1 {
+                // If concrete members already satisfy the target, TypeVar can be anything
+                let already_satisfied = concrete_members
+                    .iter()
+                    .any(|m| Type::is_subtype(m, concrete));
+
+                if already_satisfied {
+                    Ok(())
+                } else {
+                    // Bind TypeVar to the target concrete type (conservative C-Var2)
+                    let Type::TypeVar(var_name, _) = type_vars[0] else {
+                        unreachable!()
+                    };
+                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
+                        return Err(TypeError::new(
+                            format!("infinite type: {var_name} occurs in {concrete}"),
+                            span,
+                        ));
+                    }
+                    let concrete_promoted =
+                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
+                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    subst
+                        .type_map
+                        .insert(var_name.clone(), concrete_promoted.clone());
+                    subst.check_size(span)?;
+                    Ok(())
+                }
+            } else {
+                Err(TypeError::type_mismatch(&a, &b, span))
+            }
+        }
+
+        // Symmetric C-Var2: concrete on the left, Intersection on the right
+        (concrete, Type::Intersection(members)) if !concrete.has_inference_vars() => {
+            let type_vars: Vec<_> = members
+                .iter()
+                .filter(|m| matches!(m, Type::TypeVar(_, _)))
+                .collect();
+            let concrete_members: Vec<_> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+                .collect();
+
+            if type_vars.len() == 1 {
+                let already_satisfied = concrete_members
+                    .iter()
+                    .any(|m| Type::is_subtype(m, concrete));
+
+                if already_satisfied {
+                    Ok(())
+                } else {
+                    let Type::TypeVar(var_name, _) = type_vars[0] else {
+                        unreachable!()
+                    };
+                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
+                        return Err(TypeError::new(
+                            format!("infinite type: {var_name} occurs in {concrete}"),
+                            span,
+                        ));
+                    }
+                    let concrete_promoted =
+                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
+                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    subst
+                        .type_map
+                        .insert(var_name.clone(), concrete_promoted.clone());
+                    subst.check_size(span)?;
+                    Ok(())
+                }
+            } else {
+                Err(TypeError::type_mismatch(&a, &b, span))
+            }
+        }
+
         // [U-SUBSUME]: concrete type subsumption fallback (Pierce & Turner 2000)
         // When both sides are ground types (no type variables), check the subtype
         // relation in both directions. Bidirectional because unification is symmetric --
