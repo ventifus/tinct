@@ -1,0 +1,4 @@
+# and-then: result-first order. If Ok, apply f to the value.
+[and-then [Ok 21] [fn [x] [Ok [* x 2]]]]
+=== out
+Variant(Ok, Int(42))

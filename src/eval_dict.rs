@@ -14,7 +14,8 @@ use crate::ast::{Entry, Expr, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
-use super::{eval, materialize, EvalContext};
+#[allow(unused_imports)]
+use super::{eagerly_register_constructors, eval, materialize, EvalContext};
 
 pub(crate) fn eval_dict(
     entries: &[Spanned<Entry>],
@@ -27,6 +28,32 @@ pub(crate) fn eval_dict(
     ))));
     let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
+
+    // Pre-pass: eagerly register nominal variant constructors from TypeAlias entries.
+    //
+    // Problem: `Ok: Ok` is a self-referential letrec thunk. When forced, it evaluates
+    // VarRef "Ok", which looks up dict_env["Ok"] — the same `Ok: Ok` thunk — causing
+    // E070 circular dependency.
+    //
+    // Fix: scan for TypeAlias entries *before* creating any thunks, and insert their
+    // constructors into dict_env as materialized thunks. Then, in the main pass below,
+    // skip dict_env.insert for keys that match a pre-registered constructor name (so the
+    // `Ok: Ok` lazy thunk does NOT overwrite the constructor in dict_env). When `Ok: Ok`
+    // is forced, VarRef "Ok" finds the pre-registered constructor thunk — no cycle.
+    //
+    // The `Ok: Ok` entry still appears in dict_map (the exported dict value), so callers
+    // that include the prelude can access `Ok` as a dict field.
+    let mut pre_registered_constructors: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    for entry in entries {
+        if let Expr::TypeAlias { params: _, body } = &entry.node.value.node {
+            eagerly_register_constructors(&body.node, entry.node.value.span, &dict_env);
+            for (tag, _) in super::extract_nominal_constructors(&body.node) {
+                pre_registered_constructors.insert(tag);
+            }
+        }
+    }
 
     for entry in entries {
         let key = match &entry.node.key {
@@ -78,11 +105,17 @@ pub(crate) fn eval_dict(
             )),
         };
 
-        // String keys become bindings so sibling entries can reference via $name
+        // String keys become bindings so sibling entries can reference via $name.
+        // Exception: skip dict_env.insert for keys that were pre-registered as nominal
+        // variant constructors in the pre-pass above. Those entries (e.g. `Ok: Ok`) must
+        // resolve `Ok` to the pre-registered constructor thunk, not to the `Ok: Ok` thunk
+        // itself (which would create a circular dependency / E070 error).
         if let Key::String(ref name) = key {
-            dict_env
-                .borrow_mut()
-                .insert(name.clone(), Rc::clone(&thunk));
+            if !pre_registered_constructors.contains(name.as_str()) {
+                dict_env
+                    .borrow_mut()
+                    .insert(name.clone(), Rc::clone(&thunk));
+            }
         }
 
         // Check for duplicate keys using insert(), which returns Some(old_value) if present.

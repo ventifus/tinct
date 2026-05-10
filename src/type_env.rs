@@ -1121,8 +1121,18 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // try: takes 1 arg — a zero-argument function. Returns [ok: v] or [err: String].
+        // try: takes 1 arg — a zero-argument function. Returns Ok(v) or Err(String).
         // Runtime (builtins_meta.rs:builtin_try) enforces exactly 1 arg.
+        //
+        // Return type is Unknown rather than a structural union `{ok:T}|{err:Str}` because:
+        // 1. The runtime now returns nominal Value::Variant { tag: "Ok"/"Err" }, not a struct dict.
+        // 2. A structural union would cause T004 "non-exhaustive match" when user code matches
+        //    on constructor patterns `[Ok v]` / `[Err msg]` — the coverage checker would see
+        //    DictKey("ok")/DictKey("err") in the sig but Variant("Ok")/Variant("Err") in arms.
+        // 3. Unknown avoids triggering exhaustiveness checking (Type::Union guard in infer_match).
+        //
+        // TODO(result-nominal): replace Unknown with a proper `Ok[T] | Err[String]` union type
+        // once Type::Variant is added to the type system (see doc/07-type-extensions.md).
         env.insert(
             "try".to_string(),
             Type::Function {
@@ -1134,16 +1144,7 @@ impl TypeEnv {
                         variadic: false,
                     },
                 )],
-                ret: Box::new(Type::normalize_union(vec![
-                    // [ok: a] variant
-                    Type::Record(Row {
-                        fields: { let mut f = HashMap::new(); f.insert("ok".to_string(), Type::Unknown); f },
-                    }),
-                    // [err: Str] variant
-                    Type::Record(Row {
-                        fields: { let mut f = HashMap::new(); f.insert("err".to_string(), Type::Str); f },
-                    }),
-                ])),
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );

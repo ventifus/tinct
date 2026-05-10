@@ -1,0 +1,4 @@
+# and-then: result-first order. If Err, pass through unchanged.
+[and-then [Err "bad"] [fn [x] [Ok [* x 2]]]]
+=== out
+Variant(Err, String("bad"))
