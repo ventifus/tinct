@@ -76,9 +76,11 @@ s5-quot: [fn@Int [a@Int b@Int]
         [s5-quot-impl a b]]]
 
 s5-quot-impl: [fn@Int [a@Int b@Int]
-    [builtin-if [builtin-lt a b]
-        0
-        [builtin-add 1 [s5-quot-impl [builtin-sub a b] b]]]]
+    [builtin-if [builtin-lt a 0]
+        [error "s5-quot: negative dividend not supported"]
+        [builtin-if [builtin-lt a b]
+            0
+            [builtin-add 1 [s5-quot-impl [builtin-sub a b] b]]]]]
 
 s5-mod: [fn@Int [a@Int b@Int]
     [builtin-sub a [builtin-mul [s5-quot a b] b]]]
