@@ -1578,6 +1578,84 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // HTTP-sessions stubs — return Unknown until full implementation lands
+        env.insert(
+            "quic-session".to_string(),
+            Type::Function {
+                params: vec![
+                    (None, Type::NetCap),   // cap
+                    (None, Type::Str),      // host
+                    (None, Type::Int),      // port
+                    (None, Type::Unknown),  // opts dict
+                ],
+                ret: Box::new(Type::QuicSession),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "quic-open-stream".to_string(),
+            Type::Function {
+                params: vec![(None, Type::QuicSession)],
+                ret: Box::new(Type::Handle), // Returns a bidirectional stream Handle
+                variadic: false,
+            },
+        );
+        env.insert(
+            "quic-open-datagram".to_string(),
+            Type::Function {
+                params: vec![(None, Type::QuicSession)],
+                ret: Box::new(Type::Unknown), // Returns a datagram channel
+                variadic: false,
+            },
+        );
+        env.insert(
+            "http2-session".to_string(),
+            Type::Function {
+                params: vec![
+                    (None, Type::Handle),   // TLS-wrapped Handle
+                    (None, Type::Unknown),  // opts dict
+                ],
+                ret: Box::new(Type::Http2Session),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "http3-session".to_string(),
+            Type::Function {
+                params: vec![
+                    (None, Type::QuicSession), // QUIC session
+                    (None, Type::Unknown),     // opts dict
+                ],
+                ret: Box::new(Type::Http3Session),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "http-request".to_string(),
+            Type::Function {
+                params: vec![
+                    (None, Type::Unknown),  // Http2Session or Http3Session
+                    (None, Type::Str),      // method
+                    (None, Type::Str),      // path
+                    (None, Type::Unknown),  // headers dict
+                    (None, Type::Unknown),  // body (Bytes or Null)
+                ],
+                ret: Box::new(Type::Unknown), // Returns Dict {status, headers, body}
+                variadic: false,
+            },
+        );
+        env.insert(
+            "icmp-ping".to_string(),
+            Type::Function {
+                params: vec![
+                    (None, Type::NetCap),  // cap
+                    (None, Type::Str),     // host
+                    (None, Type::Int),     // timeout_ms
+                ],
+                ret: Box::new(Type::Unknown), // Returns Dict {rtt_ms, success}
+                variadic: false,
+            },
+        );
         env.insert(
             "cap-data".to_string(),
             Type::Function {

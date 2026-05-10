@@ -345,9 +345,11 @@ pub(crate) use crate::builtins_dict::{
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
     builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit, builtin_env,
-    builtin_flush, builtin_has_cap, builtin_http_get, builtin_lines, builtin_link,
+    builtin_flush, builtin_has_cap, builtin_http_get, builtin_http2_session,
+    builtin_http3_session, builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link,
     builtin_list_dir, builtin_make_dir, builtin_narrow, builtin_open, builtin_position,
-    builtin_proxy_connect, builtin_read_link, builtin_remove, builtin_rename, builtin_revocable,
+    builtin_proxy_connect, builtin_quic_open_datagram, builtin_quic_open_stream,
+    builtin_quic_session, builtin_read_link, builtin_remove, builtin_rename, builtin_revocable,
     builtin_revoke_cap, builtin_seek, builtin_seek_end, builtin_slurp, builtin_socks5_connect,
     builtin_spki_pin, builtin_stat, builtin_tls_layer, builtin_tls_peer_cert, builtin_write,
     builtin_write_atomic, builtin_write_handle,
@@ -1366,6 +1368,44 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("uri", builtin_uri, [Strictness::Seq]),
         builtin!("url", builtin_url, [Strictness::Seq]),
         builtin!("urn", builtin_urn, [Strictness::Seq]),
+        // HTTP-sessions stubs (QUIC/HTTP2/HTTP3/ICMP — full implementation deferred)
+        builtin!(
+            "quic-session",
+            builtin_quic_session,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("quic-open-stream", builtin_quic_open_stream, [Strictness::Seq]),
+        builtin!(
+            "quic-open-datagram",
+            builtin_quic_open_datagram,
+            [Strictness::Seq]
+        ),
+        builtin!(
+            "http2-session",
+            builtin_http2_session,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "http3-session",
+            builtin_http3_session,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "http-request",
+            builtin_http_request,
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ]
+        ),
+        builtin!(
+            "icmp-ping",
+            builtin_icmp_ping,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ),
     ]
 }
 
@@ -6107,7 +6147,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 180,
+            count, 187,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6291,10 +6331,21 @@ mod tests {
         assert!(names.contains(&"seek"), "missing seek");
         assert!(names.contains(&"seek-end"), "missing seek-end");
         assert!(names.contains(&"position"), "missing position");
+        // HTTP-sessions stubs (QUIC/HTTP2/HTTP3/ICMP)
+        assert!(names.contains(&"quic-session"), "missing quic-session");
+        assert!(names.contains(&"quic-open-stream"), "missing quic-open-stream");
+        assert!(
+            names.contains(&"quic-open-datagram"),
+            "missing quic-open-datagram"
+        );
+        assert!(names.contains(&"http2-session"), "missing http2-session");
+        assert!(names.contains(&"http3-session"), "missing http3-session");
+        assert!(names.contains(&"http-request"), "missing http-request");
+        assert!(names.contains(&"icmp-ping"), "missing icmp-ping");
         assert_eq!(
             names.len(),
-            180,
-            "expected 180 builtins, got {}",
+            187,
+            "expected 187 builtins, got {}",
             names.len()
         );
     }
