@@ -52,9 +52,11 @@ ws-quot: [fn@Int [a@Int b@Int]
         [ws-quot-impl a b]]]
 
 ws-quot-impl: [fn@Int [a@Int b@Int]
-    [builtin-if [builtin-lt a b]
-        0
-        [builtin-add 1 [ws-quot-impl [builtin-sub a b] b]]]]
+    [builtin-if [builtin-lt a 0]
+        [error "ws-quot: negative dividend not supported"]
+        [builtin-if [builtin-lt a b]
+            0
+            [builtin-add 1 [ws-quot-impl [builtin-sub a b] b]]]]]
 
 ws-mod: [fn@Int [a@Int b@Int]
     [builtin-sub a [builtin-mul [ws-quot a b] b]]]
