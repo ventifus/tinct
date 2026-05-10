@@ -7,42 +7,34 @@
 --- caps: [%nc: @NetCap]
 
 [include %libdir "strings.llt"]
+[net: [include %libdir "net.llt"]]
 
 [cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]]
 [cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]]
 
-# Extract body from a raw HTTP response (part after first blank line).
-[http-body: [fn@String [raw@String]
-  [parts: [split "\r\n\r\n" raw]]
-  [if [< [length parts] 2] "" [get 1 parts]]]]
+# Convert a structural http-get response ({ok: {status headers body}} or {err: msg})
+# into a nominal Ok[body-string] or Err[msg] for use with and-then/result-or.
+[response->ok: [fn [r]
+  [if [has? r "ok"] [Ok r.ok.body] [Err r.err]]]]
 
-# Make an HTTPS GET and return the response body as String, or "ERR:..." on failure.
-[https-get: [fn@String [host@String port@Int path@String]
-  [match [try [fn@String []
-    [bytes-str [slurp [write-handle
-      [tls-connect %nc Tcp host port []]
-      [str-bytes [str "GET " path " HTTP/1.0\r\nHost: " host
-        "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]]]]]]
-    [ok: raw] [http-body raw]
-    [err: msg] [str "ERR:" msg]]]]
-
-# Fetch Rust stable channel TOML and extract the version string.
-[rust-toml-raw: [https-get "static.rust-lang.org" 443 "/dist/channel-rust-stable.toml"]]
-
-[latest-rust: [if [or [= [length rust-toml-raw] 0] [starts-with? rust-toml-raw "ERR:"]]
-  [if [starts-with? rust-toml-raw "ERR:"] rust-toml-raw "?"]
-  [reduce
-    [fn [state line]
-      [t: [trim line]]
-      [if [= state.version ""]
-        [if [str-contains? t "[pkg.rust]"]
-          [set state "in-pkg-rust" true]
-          [if [and state.in-pkg-rust [starts-with? t "version = \""]]
-            [set state "version" [str-slice t 11 [trunc [- [length t] 1]]]]
+# Fetch Rust stable channel TOML, extract version — returns "?" on any failure.
+[latest-rust: [result-or "?"
+  [and-then
+    [response->ok [net.http-get %nc [url "https://static.rust-lang.org/dist/channel-rust-stable.toml"]]]
+    [fn [raw]
+      [ver: [reduce
+        [fn [state line]
+          [t: [trim line]]
+          [if [= state.version ""]
+            [if [str-contains? t "[pkg.rust]"]
+              [set state "in-pkg-rust" true]
+              [if [and state.in-pkg-rust [starts-with? t "version = \""]]
+                [set state "version" [str-slice t 11 [trunc [- [length t] 1]]]]
+                state]]
             state]]
-        state]]
-    [set [set [] "in-pkg-rust" false] "version" ""]
-    [split "\n" rust-toml-raw]].version]]
+        [set [set [] "in-pkg-rust" false] "version" ""]
+        [split "\n" raw]].version]
+      [if [= [length ver] 0] [Err "version not found"] [Ok ver]]]]]]
 
 [latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]]
 
@@ -76,12 +68,15 @@
     [ver-after [get 1 [split pattern cargo-lock-text]]]
     "—"]]]
 
-# Fetch the latest stable version for a crate from crates.io.
+# Fetch the latest stable version for a crate from crates.io — "?" on failure.
 [crate-latest: [fn@String [name@String]
-  [body: [https-get "crates.io" 443 [str "/api/v1/crates/" name]]]
-  [if [or [= [length body] 0] [starts-with? body "ERR:"]]
-    [if [starts-with? body "ERR:"] body "?"]
-    [get "max_stable_version" [get "crate" [from-json body]]]]]]
+  [result-or "?"
+    [and-then
+      [response->ok [net.http-get %nc [url [str "https://crates.io/api/v1/crates/" name]]]]
+      [fn [body]
+        [if [= [length body] 0]
+          [Err "empty response"]
+          [Ok [get "max_stable_version" [get "crate" [from-json body]]]]]]]]]]]
 
 [rust-version: [env "RUST_VERSION"]]
 [mark: [fn@String [a@String b@String] [if [= a b] "✓" "←"]]]

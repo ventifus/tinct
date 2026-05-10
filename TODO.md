@@ -83,7 +83,7 @@ See `doc/whatif/error-patterns.md` and `doc/07-type-extensions.md §Nominal Resu
 - [x] **Fix `Ok: Ok` circular dependency in prelude**: Added eager constructor pre-registration in `eval_dict.rs` — TypeAlias entries are scanned before any thunks are created, constructors are inserted into dict_env as materialized thunks, and the main pass skips dict_env.insert for constructor-named keys so `Ok: Ok` resolves to the pre-registered constructor (`src/eval_dict.rs`, `src/eval.rs`)
 - [x] **Update TypeEnv for `try` to reflect nominal return type**: Changed `try` return type from `{ok:T}|{err:Str}` (structural union, triggers T004 on constructor match patterns) to `Type::Unknown` (no coverage checking). TODO: replace with proper `Ok[T]|Err[String]` once `Type::Variant` is added (`src/type_env.rs`)
 - [x] **Swap `and-then` argument order from `[and-then f result]` to `[and-then result f]`**: Updated signature to result-first (matches Rust's `.and_then(f)`, Haskell's `>>=`), updated callers in `samples/versions.llt`, updated desugaring comment in `stdlib/macros.llt` (`stdlib/prelude.llt`, `stdlib/macros.llt`, `samples/versions.llt`)
-- [ ] **Remove `https-get` from `samples/versions.llt` entirely**: the script has its own `https-get` only because `net.llt`'s `fetch`/`http-get` were historically broken or unavailable; once `stdlib-protocols` net.llt rewrite lands, replace the local `https-get` with `[include %libdir "net.llt"]` + `[fetch %nc [url "https://..."]]`; until then, if a local function is needed it must take `cap@NetCap url@Url` (not host/port/path separately, and not close over `%nc`) to match `net.llt`'s conventions (`samples/versions.llt`)
+- [x] **Remove `https-get` from `samples/versions.llt` entirely**: replaced local `https-get` (host/port/path) with `[include %libdir "net.llt"]` + `[net.http-get %nc [url "https://..."]]`; added `response->ok` adapter to convert structural `{ok: {status headers body}}` to nominal `Ok[body]`/`Err[msg]` for `and-then`/`result-or` chains (`samples/versions.llt`)
 **Depends on:** `bas-core` (for exhaustiveness checking; runtime behavior works without BAS but type checking requires it)
 
 ### `record-map-split`: Parameterized Map Type and Dict Union
@@ -332,7 +332,7 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 
 - [x] Diagnose: `[get 0 [split sep s]]` now returns `Str` via `Seq[Str]` element type propagation
 - [x] Fixed `split` TypeEnv entry to return `Seq[Str]`; fixed `check_get` to return element type `T` when called on `Seq[T]` with an integer key (`src/type_env.rs`, `src/typecheck.rs`)
-- [ ] Verify `samples/versions.llt` T003 errors at lines 15 and 57 disappear after fix (requires net.llt rewrite to test cleanly)
+- [x] Verify `samples/versions.llt` T003 errors resolved — local `https-get` removed, replaced with `net.http-get %nc [url "https://..."]`; old T003 sources (tls-layer, Tcp type arg) are gone
 
 **bas-narrowing-union-regression** — BAS RDNF step 1 removed `least_upper_bound` from `infer_if`, replacing it with `normalize_union + simplify_type`. This regresses 5 unit tests: the `if` expression now produces literal union types (`42 | 0`, `"hello" | "world"`) where narrowed concrete types (`Int`, `Str`) were previously inferred. Specifically: `test_narrowing_equality_literal_int`, `test_narrowing_equality_literal_reversed_operands`, `test_narrowing_equality_literal_string`, `test_narrowing_no_false_branch_narrowing`, `test_false_branch_narrowing_int_predicate` (`src/typecheck.rs:8625`, `8637`, `8648`, `8728`, `9777`).
 
