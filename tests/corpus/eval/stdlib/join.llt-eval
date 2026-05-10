@@ -2,5 +2,4 @@
 [join ", " ["hello" "world"]]
 === out
 String("hello, world")
-=== warn
-cannot unify Seq[_] with [0: "hello" 1: "world"] at 1:12-1:29
+

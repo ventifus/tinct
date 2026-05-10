@@ -3963,9 +3963,10 @@ mod tests {
 
     #[test]
     fn test_builtin_range_returns_seq_int() {
-        // Regression test for type-seq sprint: $range should return Type::Seq(Int).
-        // TypeEnv::with_builtins() registers range as Fn(Int, Int) -> Seq(Int).
-        let input = "[result: [call $range 0 10]]";
+        // Regression test for type-seq sprint: $builtin-range should return Type::Seq(Int).
+        // TypeEnv::with_builtins() registers builtin-range as Fn(Int, Int) -> Seq(Int).
+        // (The user-facing $range wrapper lives in prelude.llt and is not present here.)
+        let input = "[result: [call $builtin-range 0 10]]";
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
 
@@ -4147,9 +4148,10 @@ mod tests {
 
     #[test]
     fn test_builtin_collect_returns_record_not_seq() {
-        // $collect returns Record (open row), not Seq.
-        // TypeEnv::with_builtins() registers collect as Fn(Seq(Any)) -> Record({...}).
-        let input = "[s: [call $range 0 5]]\n[result: [call $collect $s]]";
+        // $builtin-collect returns Record (open row), not Seq.
+        // TypeEnv::with_builtins() registers builtin-collect as Fn(Seq(Any)) -> Record({...}).
+        // (The user-facing $collect and $range wrappers live in prelude.llt and are not present here.)
+        let input = "[s: [call $builtin-range 0 5]]\n[result: [call $builtin-collect $s]]";
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
 
@@ -8103,15 +8105,17 @@ mod tests {
     #[test]
     fn test_builtin_seq_generators_return_seq_types() {
         // Regression test for type-seq sprint: sequence-generating builtins should return Type::Seq.
-        // Covers: $seq, $repeat, $cycle, $iterate, $unfold, $take
-        // NOTE: $seq takes (head, tail) args — it's the primitive Seq cons operation
+        // Covers: $builtin-seq, $builtin-repeat, $builtin-cycle, $builtin-iterate, $builtin-unfold, $take
+        // NOTE: $builtin-seq takes (head, tail) args — it's the primitive Seq cons operation.
+        // The user-facing wrappers ($seq, $range, $repeat, $cycle, $iterate, $unfold) live in
+        // prelude.llt and are not present when using TypeEnv::with_builtins() alone.
         let input = r#"
-            [some_seq: [call $range 0 10]]
-            [seq_result: [call $seq 1 $some_seq]]
-            [repeat_result: [call $repeat 42]]
-            [cycle_result: [call $cycle $some_seq]]
-            [iterate_result: [call $iterate [fn [x@a] $x] 0]]
-            [unfold_result: [call $unfold [fn [x@a] [Just: [x  $x]]] 0]]
+            [some_seq: [call $builtin-range 0 10]]
+            [seq_result: [call $builtin-seq 1 $some_seq]]
+            [repeat_result: [call $builtin-repeat 42]]
+            [cycle_result: [call $builtin-cycle $some_seq]]
+            [iterate_result: [call $builtin-iterate [fn [x@a] $x] 0]]
+            [unfold_result: [call $builtin-unfold [fn [x@a] [Just: [x  $x]]] 0]]
             [take_result: [call $take 5 $some_seq]]
         "#;
         let mut file = crate::parse(input).unwrap();

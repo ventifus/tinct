@@ -1,5 +1,4 @@
 [concat ["a" "b"] ["c" "d"]]
 === out
 Dict({0: String("a"), 1: String("b"), 2: String("c"), 3: String("d")})
-=== warn
-arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:1-1:29
+

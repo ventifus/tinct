@@ -3,5 +3,4 @@
 === error
 [E010] concat: expected Dict or Seq, got Int
 
-=== warn
-arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:1-1:20
+

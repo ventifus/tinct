@@ -1709,9 +1709,9 @@ impl TypeEnv {
             },
         );
 
-        // Sequences: primitives
+        // Sequences: primitives (registered as builtin-NAME; prelude exports unwrapped names)
         env.insert(
-            "seq".to_string(),
+            "builtin-seq".to_string(),
             Type::Function {
                 params: vec![(None, Type::Unknown), (None, Type::Unknown)],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
@@ -1719,7 +1719,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "head".to_string(),
+            "builtin-head".to_string(),
             Type::Function {
                 params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Unknown),
@@ -1727,7 +1727,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "tail".to_string(),
+            "builtin-tail".to_string(),
             Type::Function {
                 params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
@@ -1735,7 +1735,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "collect".to_string(),
+            "builtin-collect".to_string(),
             Type::Function {
                 params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
@@ -1751,9 +1751,9 @@ impl TypeEnv {
             },
         );
 
-        // Sequences: generators
+        // Sequences: generators (registered as builtin-NAME; prelude exports unwrapped names)
         env.insert(
-            "range".to_string(),
+            "builtin-range".to_string(),
             Type::Function {
                 params: vec![(None, Type::Int), (None, Type::Int)],
                 ret: Box::new(Type::Seq(Box::new(Type::Int))),
@@ -1761,7 +1761,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "repeat".to_string(),
+            "builtin-repeat".to_string(),
             Type::Function {
                 params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
@@ -1769,7 +1769,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "cycle".to_string(),
+            "builtin-cycle".to_string(),
             Type::Function {
                 params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
@@ -1777,7 +1777,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "iterate".to_string(),
+            "builtin-iterate".to_string(),
             Type::Function {
                 params: vec![
                     (
@@ -1795,7 +1795,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "unfold".to_string(),
+            "builtin-unfold".to_string(),
             Type::Function {
                 params: vec![
                     (
@@ -1896,7 +1896,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "join".to_string(),
+            "builtin-join".to_string(),
             Type::Function {
                 params: vec![
                     (None, Type::Str),
@@ -1906,22 +1906,23 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // builtin-concat is 2-arg: (xs, ys) — corrects the old 1-arg TypeEnv bug.
         env.insert(
-            "concat".to_string(),
+            "builtin-concat".to_string(),
             Type::Function {
-                params: vec![(
-                    None,
-                    Type::Seq(Box::new(Type::Seq(Box::new(Type::Unknown)))),
-                )],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                params: vec![
+                    (None, Type::Unknown),
+                    (None, Type::Unknown),
+                ],
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
 
-        // List operations (moved from LLT stdlib to Rust for performance)
-        // rest: Dict -> Dict (removes first entry, reindexes)
+        // List operations (registered as builtin-NAME; prelude exports unwrapped names)
+        // builtin-rest: Dict -> Dict (removes first entry, reindexes)
         env.insert(
-            "rest".to_string(),
+            "builtin-rest".to_string(),
             Type::Function {
                 params: vec![(
                     None,
@@ -1931,9 +1932,9 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // cons: Any -> Dict -> Dict (prepends element, reindexes)
+        // builtin-cons: Any -> Dict -> Dict (prepends element, reindexes)
         env.insert(
-            "cons".to_string(),
+            "builtin-cons".to_string(),
             Type::Function {
                 params: vec![
                     (None, Type::Unknown),
@@ -1946,9 +1947,9 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // reverse: Dict -> Dict (reverses insertion order, reindexes)
+        // builtin-reverse: Dict -> Dict (reverses insertion order, reindexes)
         env.insert(
-            "reverse".to_string(),
+            "builtin-reverse".to_string(),
             Type::Function {
                 params: vec![(
                     None,
@@ -1958,9 +1959,9 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // sort: Dict -> Dict (natural ordering, O(n log n))
+        // builtin-sort: Dict -> Dict (natural ordering, O(n log n))
         env.insert(
-            "sort".to_string(),
+            "builtin-sort".to_string(),
             Type::Function {
                 params: vec![(
                     None,
@@ -2241,18 +2242,18 @@ impl TypeEnv {
             },
         );
 
-        // first: Dict|String|Bytes -> Any (returns first element, char, or byte-as-Int)
+        // builtin-first: Dict|String|Bytes -> Any (returns first element, char, or byte-as-Int)
         env.insert(
-            "first".to_string(),
+            "builtin-first".to_string(),
             Type::Function {
                 params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
-        // last: Dict|String|Bytes -> Any (returns last element, char, or byte-as-Int)
+        // builtin-last: Dict|String|Bytes -> Any (returns last element, char, or byte-as-Int)
         env.insert(
-            "last".to_string(),
+            "builtin-last".to_string(),
             Type::Function {
                 params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),

@@ -1,5 +1,4 @@
 [collect [concat [seq 1 [seq 2 []]] [seq 3 [seq 4 []]]]]
 === out
 Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)})
-=== warn
-arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:10-1:56
+

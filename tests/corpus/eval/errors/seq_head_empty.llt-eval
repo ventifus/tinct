@@ -3,5 +3,4 @@
 === error
 [E034] head on empty collection
 
-=== warn
-cannot unify Seq[_] with [] at 1:7-1:9
+

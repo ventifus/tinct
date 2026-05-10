@@ -2,5 +2,4 @@
 [collect [take 3 [cons 0 [iterate [fn [x] [+ x 1]] 1]]]]
 === out
 Dict({0: Int(0), 1: Int(1), 2: Int(2)})
-=== warn
-cannot unify [] with Seq[_] at 1:26-1:54
+

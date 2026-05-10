@@ -3,5 +3,4 @@
 === error
 [E043] collect: exceeded maximum collection size
 
-=== warn
-arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 1:10-1:19
+

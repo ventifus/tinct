@@ -2,5 +2,4 @@
 [join ", " []]
 === out
 String("")
-=== warn
-cannot unify Seq[_] with [] at 1:12-1:14
+

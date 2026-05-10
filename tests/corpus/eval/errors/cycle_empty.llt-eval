@@ -3,5 +3,4 @@
 === error
 [E034] cycle on empty collection
 
-=== warn
-cannot unify Seq[_] with [] at 1:8-1:10
+
