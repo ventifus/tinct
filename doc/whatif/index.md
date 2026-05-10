@@ -11,7 +11,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Boolean-Algebraic Subtyping](boolean-algebraic-subtyping.md) | Replace Rémy row variables with BAS (Chau & Parreaux 2026); eliminates row variables and closes the algebraic-subtyping soundness gap |
+| [Boolean-Algebraic Subtyping](boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
 | [Higher-Kinded Types and Monadic `[do]`](hkt-monads.md) | Rank-1 kind polymorphism; `Monad m` typeclass at kind `* → *`; `[do]` inference from return type; `sequence`/`traverse` as generic functions; backward-compatible with existing `[do monad]` |
 
 ## Internal Integrity
@@ -24,7 +24,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Consistent Error Handling](error-patterns.md) | Structural `{ok: T}\|{err: String}` Result + `and-then` combinator + `[do monad ...]` macro with bind-field dispatch; fallible I/O returns Result, pure functions propagate |
+| [Consistent Error Handling](error-patterns.md) | **Accepted 2026-05-09.** Nominal `Ok[T]\|Err[String]` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
 
 ## Syntax and Ergonomics
 
@@ -80,7 +80,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Record/Map Split and Parameterized Maps](parameterized-dict.md) | `Record` vs `Map[K V]` type split; `Dict: [type [Record Map]]` BAS union alias; `@Map[Int Seq@Int]` annotation for homogeneous maps; `get` returns `V \| Null` on typed maps. Requires BAS adoption. |
+| [Record/Map Split and Parameterized Maps](parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality; depends on BAS. |
 
 
 ---

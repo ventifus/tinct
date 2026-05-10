@@ -238,9 +238,12 @@ impl Substitution {
         // Avoids allocating visited_types/visited_rows HashSets for the common case.
         match ty {
             Type::Int
+            | Type::IntLiteral(_)
             | Type::Float
             | Type::Bool
             | Type::Str
+            | Type::StringLiteral(_)
+            | Type::Bytes
             | Type::Number
             | Type::Unknown
             | Type::Top
@@ -248,7 +251,12 @@ impl Substitution {
             | Type::Error
             | Type::DirCap
             | Type::NetCap
-            | Type::Handle => {
+            | Type::Handle
+            | Type::Uri
+            | Type::Timestamp
+            | Type::Duration
+            | Type::ClockCap
+            | Type::Timezone => {
                 return ty.clone();
             }
             _ => {}

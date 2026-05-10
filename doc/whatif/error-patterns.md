@@ -1,6 +1,6 @@
 # What If: Consistent Error Handling for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-09
 
 What would it take to give tinct a single, prescriptive convention for error handling — one that is type-safe, composable, and works cleanly with lazy evaluation?
 

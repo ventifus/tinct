@@ -43,6 +43,52 @@ Research questions:
 
 - [x] Survey error handling patterns across all stdlib files and sample scripts — see `doc/whatif/error-patterns.md`
 
+### `bas-core`: Boolean-Algebraic Subtyping — Type Algebra and Constraint Solver
+
+See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md §Boolean-Algebraic Subtyping`. **Spec chapters:** `doc/07-type-extensions.md §BAS`.
+
+- [ ] Remove `RowTail::RowVar` from `src/types.rs`; replace row variable representation with BAS Boolean lattice; all `Type::Record(Row)` sites that reference `RowTail::RowVar` must migrate to intersection-based representation (`src/types.rs`)
+- [ ] Add `Type::Intersection(Vec<Type>)`, `Type::Negation(Box<Type>)` variants to `src/types.rs`; update all match sites
+- [ ] Add `Type::Top` and `Type::Never` as explicit variants (currently approximated by `Unknown` / `Never` sentinels) (`src/types.rs`)
+- [ ] Implement S-RcdTop simplification in `is_subtype`: `{x: τ} ∨ {y: π} ≡ ⊤` when x ≠ y; implement S-ClsBot: `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags (`src/types.rs`, `src/type_unify.rs`)
+- [ ] Implement C-Var1/2 constraint rewriting in the inference engine: `τ₁ ≤ τ₂ ∨ α` → `τ₁ & ~τ₂ ≤ α`; `α & τ₁ ≤ τ₂` → `α ≤ τ₂ | ~τ₁` (`src/typecheck.rs`, `src/type_unify.rs`)
+- [ ] Implement RDNF normalization and type simplification for the constraint solver; inline type simplifier for display (`src/typecheck.rs`)
+- [ ] Implement multi-field record annotation as intersection of single-field records: `@[x: T  y: U]` → `{x: T} ∧ {y: U}` in the annotation resolver; remove `RowTail::RowVar` from annotation expansion (`src/typecheck.rs`, `src/expand.rs`)
+- [ ] Add `@[[all A B]]` (intersection) and `@[[without A]]` (negation) annotation syntax to the annotation parser; update `check_annotation` dispatch (`src/typecheck.rs`, `src/parser.rs`)
+- [ ] Implement false-branch narrowing in `if`/`match` using negation types: after `[int? x]` fails, narrow `x` to `x & ~Int` (`src/typecheck.rs`)
+- [ ] Update `infer_match` to use I-Case3: intersect scrutinee with `#C` in matched arm, `¬#C` in remaining arms; produce union of arm types (`src/typecheck.rs`)
+- [ ] Tests: corpus tests for BAS union inference, negation narrowing, width subtyping, S-RcdTop collapse, S-ClsBot discriminability in `tests/corpus/eval/typecheck/` using `=== out`/`=== error` sections
+
+### `result-nominal`: Nominal Result Type and Stdlib Retrofit
+
+See `doc/whatif/error-patterns.md` and `doc/07-type-extensions.md §Nominal Result Type`. **Spec chapters:** `doc/07-type-extensions.md §Nominal Result Type`.
+
+- [ ] Update `builtin_try` to return nominal `Value::Variant { tag: "Ok", payload: Some(value) }` on success and `Value::Variant { tag: "Err", payload: Some(message_string) }` on caught error; remove structural `{ok: v}` / `{err: msg}` dict return (`src/builtins.rs`)
+- [ ] Declare `[Result: [type [Ok a] [Err String]]]` in `stdlib/prelude.llt` as the canonical Result type alias
+- [ ] Add `and-then`, `result-map`, `result-or`, `result-ok` to the exported prelude dict using nominal `[Ok v]` / `[Err msg]` patterns (`stdlib/prelude.llt`)
+- [ ] Add `result` monad dict to prelude: `[bind: and-then  pure: result-ok]` (`stdlib/prelude.llt`)
+- [ ] Migrate `has?-impl`, `try-or-impl`, `find-deep-try-check` in `stdlib/prelude.llt` from structural `[ok: _]` / `[err: _]` patterns to nominal `[Ok _]` / `[Err _]` patterns (`stdlib/prelude.llt`)
+- [ ] Implement `[do]` macro in `stdlib/macros.llt`: desugar `[do monad step1 step2 ... final]` to nested `monad.bind` calls; support both `[name: expr]` binding forms and bare expression forms (`stdlib/macros.llt`)
+- [ ] Retrofit `stdlib/net.llt`: `fetch`, `http-get` return `Ok[Dict] | Err[String]`; wrap errors as `Err msg` (`stdlib/net.llt`)
+- [ ] Retrofit `stdlib/io.llt`: `read-file`, `read-lines` return `Ok[...]| Err[String]` (`stdlib/io.llt`)
+- [ ] Retrofit `stdlib/toml-lite.llt`: `parse-toml-lite` returns `Ok[Dict] | Err[String]` on parse failure (`stdlib/toml-lite.llt`)
+- [ ] Tests: corpus tests for `[do result ...]` chains, `and-then` short-circuit, `result-map`, `[Ok v]`/`[Err msg]` construction and matching in `tests/corpus/eval/`
+**Depends on:** `bas-core` (for exhaustiveness checking; runtime behavior works without BAS but type checking requires it)
+
+### `record-map-split`: Parameterized Map Type and Dict Union
+
+See `doc/whatif/parameterized-dict.md` and `doc/07-type-extensions.md §Record/Map Split`. **Spec chapters:** `doc/07-type-extensions.md §Record/Map Split and Dict`.
+
+- [ ] Add `Type::Map(Box<Type>, Box<Type>)` to `src/types.rs` parallel to `Type::Seq`; add `is_subtype` rules: `Map(K, V₁) <: Map(K, V₂)` (V covariant, K invariant); `Null <: Map(K, V)`; `[RECORD→MAP]` cross-form rule (`src/types.rs`)
+- [ ] Register `Record`, `Map`, `Dict` in `TypeEnv::with_builtins()`: `@Record` produces open row, `@Map` produces `Map[Any Any]`, `@Dict` = `Record ∨ Map` BAS union (`src/type_env.rs`)
+- [ ] Add `get?` builtin: returns value or `[]` (Null) on missing key — no error; update `get-or` to use `get?` (`src/builtins_dict.rs`, `stdlib/prelude.llt`)
+- [ ] Add `record?` and `map?` type-narrowing predicates (Bool) alongside existing `dict?` (`src/builtins_meta.rs`, `src/builtins.rs`)
+- [ ] Implement structural dict equality in `builtin_eq`: sorted-key recursive walk, (ThunkId, ThunkId) visited set for cycle detection; both Records and Maps use order-insensitive key comparison (`src/builtins_math.rs`)
+- [ ] Update `check_get` in typecheck: `Map[K V]` target → return `V | Null`; `Record` target with known field → return field type (total) (`src/typecheck.rs`)
+- [ ] Update `doc/03-data-model.md` §Equality: document order-insensitive structural equality for Record and Map; explain why extensional (finite-map) semantics implies order-insensitivity
+- [ ] Tests: corpus tests for `[= [a: 1 b: 2] [b: 2 a: 1]]` → `true`; `get?` on Map; `Map[Int String]` annotation; `Dict` union narrowing in `match` in `tests/corpus/eval/`
+**Depends on:** `bas-core`
+
 ### `hkt-monads`: Research higher-kinded types and generic monadic `[do]` for tinct
 
 The `error-patterns` proposal adopts `[do monad ...]` with explicit monad-dict dispatch as a HKT-free path to monadic composition. The door is left open: when HKT is available, the explicit monad argument becomes optional (inferred from the return type of the first expression), and `[do]` dispatches through a `Monad` typeclass instead of a runtime field access.
@@ -98,6 +144,7 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 - [ ] Implement `connect cap NamedPipe path` → `Handle[Binary Readable Writable]` (`src/builtins_io.rs`)
 - [ ] Implement `connect cap Icmp host` → `Handle[Binary Readable Writable Datagram]`; platform-conditional (Linux `SOCK_DGRAM`+`IPPROTO_ICMP`); return `{err: "icmp-unavailable"}` on unsupported platforms (`src/builtins_io.rs`)
 - [ ] Implement `tls-layer handle sni opts` → `Handle[... Tls]`; extract `raw_tcp` from input Handle, build `rustls::ClientConnection`, wrap in TlsReader/TlsWriter; the input Handle is consumed (subsequent use errors) (`src/builtins_io.rs`)
+- [ ] **Remove `tls-connect` entirely** — both the Connector form (currently fully implemented, `src/builtins_io.rs`) and Handle stub; delete `builtin!("tls-connect", ...)` from `standard_builtins()` and the corresponding TypeEnv entry in `with_builtins()`; delete corpus test `tests/corpus/eval/builtins/tls_connect_arity.llt-eval`; remove `assert!(names.contains(&"tls-connect"), ...)` in `src/builtins.rs`; replacement is `[tls-layer [connect %nc Tcp "host" 443] "host" opts]` (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
 - [ ] Register transport nominal variants `UnixStream`, `UnixDatagram`, `NamedPipe`, `Icmp` alongside existing `Tcp`, `Udp` in `create_root_env()` (`src/builtins.rs`); also register `Url` as type alias in `TypeEnv::with_builtins()` — currently unregistered, causing `@Url` annotation in stdlib functions to produce "undefined type" error (`src/type_env.rs`)
 - [ ] Define and document user-defined Connector capability policy: Connectors are pure-tinct functions and cannot call I/O builtins directly; all network I/O goes through `connect` which enforces the cap; document this invariant in `doc/11a-builtins.md` §Network
 - [ ] Update `check_net_cap_allowlist` to handle `Icmp` transport (check host against allowlist without port) (`src/builtins_io.rs`)
@@ -118,6 +165,7 @@ See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-da
 - [ ] Implement `http3-session quic-session [opts]` → `Value::Http3Session` via h3/reqwest http3 feature (`src/builtins_io.rs`)
 - [ ] Implement `http-request session method path headers body` → `{ok: {status headers body}} | {err: String}`; dispatch on Http2Session and Http3Session (`src/builtins_io.rs`)
 - [ ] Implement `icmp-ping cap host timeout-ms` → `{ok: {latency-ms: Int}} | {err: String}`; platform-conditional (`src/builtins_io.rs`)
+- [ ] **Remove `http-connect` entirely** — delete `builtin!("http-connect", ...)` from `standard_builtins()` and the corresponding TypeEnv entry; delete corpus test `tests/corpus/eval/builtins/http_connect_type_check.llt-eval`; remove `assert!(names.contains(&"http-connect"), ...)` in `src/builtins.rs`; replacement is `[http2-session [tls-layer [connect %nc Tcp "host" 443] "host" opts]]` (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
 - [ ] Register all new builtins in `standard_builtins()` (`src/builtins.rs`)
 - [ ] Tests: error-path corpus tests for quic-session, http2-session, http-request (arity, type errors) in `tests/corpus/eval/builtins/`
 - [ ] Update `doc/11a-builtins.md` §Network with Session builtins
@@ -177,7 +225,7 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [x] `socks5-connect` (`src/builtins_io.rs:3590-3592`) — **remove from registry** (no use case currently; re-add when there is one)
 - [x] `proxy-connect` (`src/builtins_io.rs:3597-3599`) — **remove from registry** (same)
 - [x] `open` write and append modes — **implement `Writable`/`Appendable` flags and remove legacy string-flag API**: implement `[open cap path Writable]` and `[open cap path Appendable]` per `doc/whatif/completed/lib-supplemental.md` §Streaming File I/O; delete the backward-compat string-mode branch entirely (`src/builtins_io.rs:167-226`); audit all corpus tests and stdlib files for `open ... "r"` calls and migrate to `[open cap path Readable]` (`src/builtins_io.rs`, `stdlib/`, `tests/`)
-- [ ] `tls-connect` Handle form (`src/builtins_io.rs:2451-2454`) — **superseded by `tls-layer`** from `connect-v2` sprint; remove stub and error message once `tls-layer` is implemented (`src/builtins_io.rs`)
+- [ ] `tls-connect` — **entire builtin removed** in `connect-v2` sprint (tracked there); both Connector form and Handle stub go away; no migration shim needed
 - [ ] `connect` UDP transport (`src/builtins_io.rs:612`) — **unblocked** (net-layers research complete); tracked in `connect-v2`: implement `[connect cap Udp host port]` → `Handle[Binary Readable Writable Datagram]`; remove "UDP not yet supported" stub (`src/builtins_io.rs:612`)
 - [ ] `--cap-net` CIDR range entries (`src/main.rs:718-723`) — **implement** with combined hostname+CIDR validation semantics:
   - Add `NetCapEntry::Cidr(ipnet::IpNet)` to `src/value.rs`; parse via `s.parse::<ipnet::IpNet>()`
@@ -240,10 +288,7 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [ ] Replace remaining `builtin-eq` / `builtin-add` calls in `net.llt` with `=` / `+` while fixing the above (`stdlib/net.llt`)
 - [ ] Corpus test: `[fetch cap "http://..."]` returns a dict with `status`, `headers`, `body` keys (`tests/corpus/`)
 
-**http-connect-untested** — `http-connect` + `http-get` (reqwest-based) builtins fail in the container environment with "error sending request"; never had an end-to-end test:
-
-- [ ] Add corpus or CLI integration test that exercises `http-connect` + `http-get` against a local HTTP server (e.g., `python3 -m http.server`) to verify basic request/response (`tests/`)
-- [ ] Investigate why reqwest blocking client fails in `rust:1.95` container with `--network=host` while raw `tls-connect` succeeds; likely a CA cert or runtime configuration issue (`src/builtins_io.rs:3465`)
+~~**http-connect-untested**~~ — `http-connect` is **removed** in the `http-sessions` sprint; the reqwest container bug is moot. No investigation needed.
 
 ## Standard Library
 
@@ -270,6 +315,21 @@ Annotation format: `fn-name@[doc: "One-line description"]: [fn ...]` for public 
 - [ ] Verify `:describe` and LSP hover return doc strings for all newly annotated functions after each file (`tinct repl`)
 
 ## Codebase Health
+
+### cycle-196-findings: Cycle #196 analysis findings
+
+From the 9-agent codebase review on 2026-05-09.
+
+- [x] Remove duplicate prelude functions from `stdlib/encoding.llt` (mod, quot, trunc, >=, not, ceil, and, <=)
+- [x] Remove `str-repeat` from `stdlib/strings.llt` — keep prelude version only
+- [x] Audit `Type::PartialEq` — verified all 26 variants have explicit arms, no issues found
+- [x] Verify help_suggestion corpus format — `=== out` + `=== warn` is correct for advisory-warning tests
+- [x] ErrorKind constructors — already exist for all new variants
+- [x] Substitution maps — already migrated to HashMap in prior sprint
+- [x] apply() fast-path — extended with Bytes, Uri, Timestamp, Duration, ClockCap, Timezone, IntLiteral, StringLiteral
+- [x] bytes_to_seq — verified no double-wrapping bug exists; current design correct
+- [x] doc/11-stdlib.md builtin count — updated from 191 to 178
+- [x] Span::origin() frame filter — already implemented in error.rs::should_display_frame
 
 ### dep-bumps: Bump direct dependencies to latest
 

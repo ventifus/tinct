@@ -1,6 +1,6 @@
 # What If: Record/Map Split and Parameterized Maps for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-09
 
 What would it take to give tinct a principled distinction between structural records and homogeneous maps, with a typed `Map[K V]` constructor and a `Dict` type that is their well-formed BAS union?
 
