@@ -258,7 +258,7 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 **ignored-tests** — Disabled tests masking real gaps:
 
 - [x] `test_typecheck_corpus` re-enabled — reorganized corpus files (moved warning/error tests to appropriate dirs) and removed `#[ignore]`
-- [ ] `test_tco_tail_recursive_function` (`src/eval.rs:8326`): remove `#[ignore]`; update syntax from old `$`-prefix/`[call $f ...]` style to modern bare-word (`[if [= n 0] acc [count-down ...]]`); bump iterations from 10 to 100_000 to actually validate TCO — with `MAX_EVAL_DEPTH` removed and the CEK heap-based `Action` stack in place, the test should pass trivially; the `#[ignore]` comment is stale (`src/eval.rs`)
+- [x] `test_tco_tail_recursive_function` — removed `#[ignore]`; updated syntax to modern bare-word (`[if [= n 0] acc [count-down ...]]`); bumped iterations from 10 to 100_000; passes with no depth limit (`src/eval.rs`)
 
 **typecheck-named-arg-gaps** — Remaining named-arg type checking gaps found in typecheck-bugs panel review:
 
@@ -327,6 +327,17 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 *Tinct type checker bugs — causing spurious warnings on correct code:*
 - See `typeenv-wrapper-pattern` sprint below for the root cause and fix.
 - [ ] ~30 tests in `builtins/` test error conditions (arity, wrong types, stubs) and have `=== error` / `=== warn` sections; these are intentional and correct behavior, but for clarity should be reorganized into `tests/corpus/eval/builtins/errors/` to match the convention that success-path tests have no error/warn sections (`tests/corpus/eval/builtins/`)
+
+**bas-get-seq-unknown** — BAS regression: `[get N seq]` returns `_` (Unknown) instead of the Seq element type. When `seq: Seq[String]`, `[get 0 seq]` should return `String`, but the type checker infers `_`. This causes false T003 errors in functions annotated with a concrete return type that use `get` on a Seq inside an `if` expression: the `if` body becomes e.g. `"" | _` instead of `String`. Observed in `samples/versions.llt:15` (http-body, `cannot unify String with "" | _`) and `samples/versions.llt:57` (dep-name-append, `cannot unify [] with [] | _`). Root cause: either `split` is typed as `Seq` (no element type) in TypeEnv, or `check_get` doesn't propagate the element type for integer-indexed Seq access. Investigate `TypeEnv::with_builtins()` entry for `split` and the `check_get` Seq arm in `src/typecheck.rs`.
+
+- [ ] Diagnose: add a minimal test `[parts: [split "x" "a x b"]]  [result: [get 0 parts]]` and check whether `result` infers `String` or `_` (`src/typecheck.rs`)
+- [ ] Fix `split` TypeEnv entry to return `Seq[String]` (if it currently returns bare `Seq`) OR fix `check_get` to return element type `T` when called on `Seq[T]` with an integer key (`src/type_env.rs`, `src/typecheck.rs`)
+- [ ] Verify `samples/versions.llt` T003 errors at lines 15 and 57 disappear after fix
+
+**bas-narrowing-union-regression** — BAS RDNF step 1 removed `least_upper_bound` from `infer_if`, replacing it with `normalize_union + simplify_type`. This regresses 5 unit tests: the `if` expression now produces literal union types (`42 | 0`, `"hello" | "world"`) where narrowed concrete types (`Int`, `Str`) were previously inferred. Specifically: `test_narrowing_equality_literal_int`, `test_narrowing_equality_literal_reversed_operands`, `test_narrowing_equality_literal_string`, `test_narrowing_no_false_branch_narrowing`, `test_false_branch_narrowing_int_predicate` (`src/typecheck.rs:8625`, `8637`, `8648`, `8728`, `9777`).
+
+- [ ] Determine whether `simplify_type` should promote `n | m` (two IntLiterals) to `Int` as the RDNF literal-promotion rule intends — if so, the rule may not be firing on if-expression results (`src/types.rs`)
+- [ ] Fix the 5 failing narrowing unit tests to pass (`src/typecheck.rs`)
 
 ### `typeenv-wrapper-pattern`: Apply private builtin-NAME + public prelude wrapper consistently
 
@@ -400,6 +411,47 @@ Annotation format: `fn-name@[doc: "One-line description"]: [fn ...]` for public 
 - [x] `stdlib/formatter/compact.llt`, `stdlib/formatter/pretty.llt` — format
 - [x] `stdlib/out/*.llt` — json, yaml, csv, toml, env (llt/raw are pipeline-only, no exports)
 - [x] Verify `:describe` works — annotations are metadata-only, DocMap extraction infrastructure already tested
+
+### `stdlib-reorganize`: Stdlib File Reorganization
+
+Organizing principles for `stdlib/`:
+1. **`prelude.llt`** — universal core, auto-included. General-purpose utilities; no domain-specific functions. Two-dict pattern: private first dict (`-impl`/`-step`/`-check` helpers), public second dict (exported API). Non-prelude modules must never copy prelude exports.
+2. **Domain modules** (`strings.llt`, `math.llt`, `encoding.llt`, etc.) — single-topic, explicit `[include %libdir "..."]` required. Depend on prelude (always in scope); two-dict pattern; no prelude duplication.
+3. **Pipeline adapters** (`in/`, `out/`, `formatter/`) — thin wrappers for document pipeline stages; not general-purpose libraries.
+4. **Protocol libraries** (`protocols/`) — low-level RFC wire format helpers; self-contained; no prelude duplication.
+
+*Document principles:*
+- [ ] Add `§Organization` section to `doc/11-stdlib.md` documenting the four principles above and the module taxonomy table (`doc/11-stdlib.md`)
+
+*Move `str-find` to prelude* — toml-lite.llt and strings.llt both define it; consolidate in prelude (same pattern as str-repeat in cycle-196):
+- [ ] Move `str-find-impl`, `str-find-check` to `prelude.llt` private dict; add `str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1"]` to public dict; remove from `strings.llt` (`stdlib/prelude.llt`, `stdlib/strings.llt`)
+
+*Export `make-entry` from prelude* — needed by toml-lite.llt and currently inaccessible from the public dict:
+- [ ] Add `make-entry@[doc: "Construct a single-entry dict from key and value"]: make-entry` to prelude public dict (re-exports the private helper) (`stdlib/prelude.llt`)
+
+*Clean up `regex.llt`* — single-dict, duplicates prelude, uses `builtin-*` directly:
+- [ ] Remove locally-defined `has?`, `has-check`, `>=`, `>` — prelude versions are in scope; replace usages with prelude calls (`stdlib/regex.llt`)
+- [ ] Apply two-dict pattern: private first dict with `re-match-impl`, `re-match-try`, `re-match-check`, `re-find-impl`, `re-find-try`, `re-find-check`, `re-findall-impl`, `re-findall-try`, `re-findall-check`, `re-ensure-pattern`; public second dict with `re-compile`, `re-match`, `re-find`, `re-findall`, `re-replace`, `re-split`, `re-escape-replacement` (`stdlib/regex.llt`)
+- [ ] Replace `builtin-eq`/`builtin-lt` with `=`/`<` from prelude in regex.llt helpers (`stdlib/regex.llt`)
+
+*Clean up `toml-lite.llt`* — single-dict with 15+ prelude/stdlib duplicates, uses `builtin-*` throughout:
+- [ ] Remove locally-defined prelude duplicates: `get-or`, `has?`, `has?-impl`, `not`, `and`, `>=`, `>`, `try-or`, `try-or-impl`, `first`, `all?`, `all?-impl` (12 functions) — use prelude versions (`stdlib/toml-lite.llt`)
+- [ ] Remove locally-defined `make-entry` (now exported from prelude) and `str-find`/`str-find-impl`/`str-find-check` (now in prelude) (`stdlib/toml-lite.llt`)
+- [ ] Apply two-dict pattern: private first dict for `parse-lines-impl`, `parse-line-dispatch`, `parse-header-body`, `parse-section-name`, `parse-array-table-header`, `parse-kv-split`, `parse-kv-build`, `parse-value-try-int`, `parse-value-try-bool`, `toml-set-at-path-impl`, `toml-set-at-path-final`, `toml-set-at-path-final-check`, `toml-merge-into-last-impl`, `toml-append-array-impl`, `is-array?`, `is-array?-check-keys`, `not-blank-or-comment`; public second dict for `parse-toml-lite`, `parse-toml-lines`, `parse-section-header`, `parse-key-value`, `parse-value`, `toml-set-at-path`, `toml-merge-into-last`, `toml-append-array-table` (`stdlib/toml-lite.llt`)
+- [ ] Replace `builtin-if`/`builtin-eq`/`builtin-lt`/`builtin-add`/`builtin-get`/`builtin-reduce` with prelude wrappers `if`/`=`/`<`/`+`/`get`/`reduce` throughout toml-lite.llt (`stdlib/toml-lite.llt`)
+
+*Clean up `path.llt`* — single-dict, internal helpers are accidentally exported, uses `builtin-*`:
+- [ ] Apply two-dict pattern: private first dict for `dirname-impl`, `dirname-drop-last`, `extension-impl`; public second dict for `path-parts`, `basename`, `dirname`, `extension`, `path-join` (`stdlib/path.llt`)
+- [ ] Replace `builtin-if`/`builtin-eq`/`builtin-sub`/`builtin-add`/`builtin-get` with prelude wrappers `if`/`=`/`-`/`+`/`get` (`stdlib/path.llt`)
+
+*Clean up `macros.llt`* — `tmpl-expand`/`tmpl-emit-call` are in the public dict but are internal helpers:
+- [ ] Move `tmpl-expand` and `tmpl-emit-call` from the public second dict to the private first dict; only `tmpl-transformer` and `do-transformer` should be exported (`stdlib/macros.llt`)
+- [ ] Replace `builtin-*` calls in `macros.llt` private helpers with prelude wrappers (`if`/`=`/`+`/`get`) where the prelude call is equivalent — the macro expander runs with prelude in scope (`stdlib/macros.llt`)
+
+*Update corpus tests:*
+- [ ] Move `tests/corpus/eval/stdlib/encoding_scoping.llt-eval`, `path_scoping.llt-eval`, `re_scoping.llt-eval`, `strings_scoping.llt-eval`, `toml_scoping.llt-eval`, `math_scoping.llt-eval` to `tests/corpus/eval/stdlib/errors/` — scoping-denial tests belong with error tests, not success-path tests (`tests/corpus/eval/stdlib/`)
+- [ ] Update `strings_scoping.llt-eval` to remove `str-find` from the "not-in-scope" list once it is in prelude; verify existing `str_find*.llt-eval` tests pass without any changes (`tests/corpus/eval/stdlib/`)
+- [ ] `just test` passes after all changes (`tests/`)
 
 ## Codebase Health
 

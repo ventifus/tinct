@@ -3,4 +3,4 @@
 === out
 String("only")
 === warn
-cannot unify Seq[?] with [0: "only"] at 1:11-1:19
+cannot unify Seq[_] with [0: "only"] at 1:11-1:19

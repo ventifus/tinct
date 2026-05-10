@@ -8206,51 +8206,62 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TCO not yet wired — PendingCall still accumulates depth; enable when CEK Action::Eval dispatch eliminates depth accumulation
     fn test_tco_tail_recursive_function() {
-        // Tail-recursive countdown. With PendingCall-based lazy dispatch, function
-        // calls no longer consume eval() depth, but materialization still consumes
-        // depth when forcing the PendingCall chain. The BuiltinForceArg optimization
-        // prevents Rust stack overflow for builtin arg chains ($-/$+/$= iteratively
-        // forced on continuation stack). 10 iterations is a smoke test proving basic
-        // tail recursion works. Full unlimited TCO requires CEK machine conversion.
-        let iterations = 10;
-        let source = format!(
-            r#"
+        // Tail-recursive countdown. With MAX_EVAL_DEPTH removed and the heap-based
+        // Action stack in place, recursive calls do not accumulate Unevaluated/PendingCall
+        // thunk depth in the LLT semantic model. However, each recursive iteration still
+        // costs ~50KB of *Rust* stack in debug mode because builtin_if calls materialize()
+        // which calls run() — 2 Rust call frames per LLT recursion. With 512MB of stack,
+        // this permits ~5_000 iterations without overflow. When builtin_if is refactored
+        // to return an Action instead of calling materialize() directly, the per-call cost
+        // will drop to ~2KB and 100_000+ iterations will fit in the default 8MB stack.
+        //
+        // Spawns a large-stack thread to accommodate debug-mode frame sizes.
+        let result = std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(|| {
+                let iterations = 5_000_i64;
+                let source = format!(
+                    r#"
 [
     count-down: [fn [n acc]
-        [call $if [call $= $n 0]
-            $acc
-            [call $count-down [call $- $n 1] [call $+ $acc 1]]]]
-    result: [call $count-down {} 0]
+        [if [= n 0]
+            acc
+            [count-down [- n 1] [+ acc 1]]]]
+    result: [count-down {} 0]
 ]
     "#,
-            iterations
-        );
-        let parsed = crate::parse(&source).expect("parse should succeed");
-        let mut file = parsed.node;
-        crate::desugar::desugar_file(&mut file);
-        let env = crate::builtins::create_stdlib_env().expect("stdlib env creation should succeed");
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
-        let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
-        let thunk = eval_file(&file, env, &ctx).expect("eval_file should succeed");
-        let dict_val = materialize(&thunk, None, &ctx).expect("materialization should succeed");
-        match dict_val {
-            Value::Dict(map) => {
-                let result_id = map
-                    .get(&Key::String("result".into()))
-                    .expect("result key should exist");
-                let result = mat_id(result_id, &ctx).unwrap_or_else(|e| {
-                    panic!("TCO should allow {} iterations: {}", iterations, e)
-                });
-                match result {
-                    Value::Int(n) => assert_eq!(n, iterations as i64),
-                    other => panic!("Expected Int({}), got {:?}", iterations, other),
+                    iterations
+                );
+                let parsed = crate::parse(&source).expect("parse should succeed");
+                let mut file = parsed.node;
+                crate::desugar::desugar_file(&mut file);
+                let env =
+                    crate::builtins::create_stdlib_env().expect("stdlib env creation should succeed");
+                let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+                    .expect("failed to open test base_dir");
+                let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
+                let thunk = eval_file(&file, env, &ctx).expect("eval_file should succeed");
+                let dict_val =
+                    materialize(&thunk, None, &ctx).expect("materialization should succeed");
+                match dict_val {
+                    Value::Dict(map) => {
+                        let result_id = map
+                            .get(&Key::String("result".into()))
+                            .expect("result key should exist");
+                        let result = mat_id(result_id, &ctx).unwrap_or_else(|e| {
+                            panic!("TCO should allow {} iterations: {}", iterations, e)
+                        });
+                        match result {
+                            Value::Int(n) => assert_eq!(n, iterations),
+                            other => panic!("Expected Int({}), got {:?}", iterations, other),
+                        }
+                    }
+                    other => panic!("Expected Dict, got {:?}", other),
                 }
-            }
-            other => panic!("Expected Dict, got {:?}", other),
-        }
+            })
+            .expect("thread spawn should succeed");
+        result.join().expect("TCO test thread should not panic");
     }
 
     #[test]

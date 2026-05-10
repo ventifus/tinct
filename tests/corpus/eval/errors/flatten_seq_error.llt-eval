@@ -4,5 +4,5 @@
 [E080] flatten: expected Dict, got Seq -- collect the Seq first
 
 === warn
-cannot unify [] with Seq[?] at 1:10-1:28
+cannot unify [] with Seq[_] at 1:10-1:28
 

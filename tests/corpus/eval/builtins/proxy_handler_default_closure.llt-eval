@@ -3,4 +3,4 @@
 === out
 Dict({"default_val": Int(42), "handler": Function(field, val), "p": Proxy, "result": Int(42)})
 === warn
-cannot unify Fn@? [String] with _t1 at 1:84-1:91
+cannot unify Fn@_ [String] with _t1 at 1:84-1:91

@@ -1577,7 +1577,7 @@ mod tests {
         assert_eq!(format!("{}", Type::Str), "String");
         assert_eq!(format!("{}", Type::Bool), "Bool");
         assert_eq!(format!("{}", Type::Number), "Number");
-        assert_eq!(format!("{}", Type::Unknown), "?");
+        assert_eq!(format!("{}", Type::Unknown), "_");
         assert_eq!(format!("{}", Type::Top), "⊤");
     }
 

@@ -4,4 +4,4 @@
 [E010]
 
 === warn
-cannot unify Fn@? [?] with 42 at 1:27-1:29
+cannot unify Fn@_ [_] with 42 at 1:27-1:29
