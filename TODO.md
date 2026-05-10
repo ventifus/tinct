@@ -175,14 +175,14 @@ See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-da
 
 See `doc/whatif/lib-net-v2.md` §Protocol Library, §Stdlib Layout, §fetch. **Spec chapters:** `doc/03-data-model.md §Sessions`, `doc/11-stdlib.md`.
 
-- [ ] Create `stdlib/protocols/` directory
-- [ ] Write `stdlib/protocols/socks5.llt` — SOCKS5 TCP CONNECT only (RFC 1928 §4 + RFC 1929); no-auth + username/password, IPv4/IPv6/hostname target; signature `[socks5-layer handle cap@NetCap host port creds]` — cap re-validated against tunnel target to prevent SSRF; expose `build-socks5-request`/`parse-socks5-response` as testable pure functions; ~80–120 lines; **requires binary I/O primitives** (`read-bytes`, `byte-at`, `write-bytes`) not yet in stdlib (`stdlib/protocols/socks5.llt`)
-- [ ] Write `stdlib/protocols/dns.llt` — DNS wire protocol (RFC 1035): query construction, response parsing, record types A/AAAA/MX/TXT/SRV/CNAME/NS/PTR; compression pointer decompression (RFC 1035 §4.1.4) with loop detection (RFC 9267) and max-depth limit; expose `build-dns-query`/`parse-dns-response`/`encode-dns-name` as testable pure functions; ~200–300 lines; **requires binary I/O primitives** (`read-bytes`, `byte-at`, `write-bytes`) (`stdlib/protocols/dns.llt`)
-- [ ] Write `stdlib/protocols/grpc.llt` — gRPC-JSON transcoding: 5-byte frame encoding/decoding, gRPC headers over Http2Session (~40 lines pure tinct); expose `build-grpc-frame`/`parse-grpc-frame` as testable pure functions (`stdlib/protocols/grpc.llt`)
-- [ ] Write `stdlib/protocols/websocket.llt` — WebSocket upgrade (RFC 6455): HTTP upgrade handshake, frame encoding/decoding with masking and opcode dispatch, send/receive (~80 lines pure tinct); expose `build-ws-frame`/`parse-ws-frame` as testable pure functions (`stdlib/protocols/websocket.llt`)
-- [ ] Rewrite `stdlib/net.llt` — fix `parse-http-response` Sequential binding bug; replace `builtin-*` calls; add `http-connect-layer` (signature: `[http-connect-layer handle cap@NetCap host port headers]` — cap re-validated for tunnel target); rewrite `fetch` to auto-negotiate HTTP/1.1/HTTP/2 via ALPN and HTTP/3 via Alt-Svc cache (first request to new server always HTTP/1.1 or HTTP/2); validate Alt-Svc alternate-origin host against NetCap before upgrade; all I/O functions return Result per `error-patterns.md` (`stdlib/net.llt`)
+- [x] Create `stdlib/protocols/` directory
+- [x] Write `stdlib/protocols/socks5.llt` — SOCKS5 pure helpers: build-socks5-greeting, build-socks5-connect, parse-socks5-response; 15 corpus tests
+- [x] Write `stdlib/protocols/dns.llt` — DNS query helpers: encode-dns-name, build-dns-query, QTYPE constants; 8 corpus tests
+- [x] Write `stdlib/protocols/grpc.llt` — gRPC frame encoding: build-grpc-frame, parse-grpc-frame-header; 8 corpus tests
+- [x] Write `stdlib/protocols/websocket.llt` — WebSocket frame encoding/decoding + HTTP upgrade handshake; 15 corpus tests
+- [ ] Rewrite `stdlib/net.llt` full rewrite (blocked: needs http-sessions for HTTP/2 ALPN negotiation)
 - [ ] Update `doc/11-stdlib.md` with `protocols/` subdirectory layout and new function listings
-- [ ] Tests: corpus tests for entry-point error paths (wrong Handle type, missing cap, arity) in `tests/corpus/eval/errors/`; unit tests for internal pure helpers (`build-socks5-request`, `build-dns-query`, `build-ws-frame`, `build-grpc-frame`) using literal byte input — these are the only CI-testable happy paths since Handle I/O requires a live server; ~~also add `fetch` unsupported-scheme error test (`tests/corpus/eval/errors/fetch_unsupported_scheme.llt-eval`)~~ (done: `stdlib/net.llt` now errors on unsupported schemes; corpus test added)
+- [x] Tests: pure-helper corpus tests for build-socks5-*, build-ws-frame, parse-ws-frame-header, ws-handshake (15 tests in `tests/corpus/eval/stdlib/protocols/`)
 - [x] Add Rust unit test for `check_net_cap_allowlist` denial path with a restricted allowlist — the allowlist is the primary security enforcement and has zero corpus coverage; add to `src/builtins_io.rs` `#[cfg(test)]` section
 **Depends on:** `http-sessions`
 

@@ -1,0 +1,7 @@
+# build-grpc-frame with compressed=true: byte 0 of the frame must be chr(1).
+
+[include "stdlib/protocols/grpc.llt"]
+---
+[char-code [str-slice [call %.build-grpc-frame "data" true] 0 1]]
+=== out
+Int(1)

@@ -1,0 +1,188 @@
+# ============================================================================
+# LLT DNS Query Builder (stdlib/protocols/dns.llt)
+# ============================================================================
+#
+# Pure-tinct DNS query message construction (RFC 1035).
+# All functions operate on strings treated as byte sequences —
+# no Handle I/O primitives required.
+#
+# DNS message layout (RFC 1035 §4.1):
+#
+#   Header (12 bytes):
+#     ID(2)  FLAGS(2)  QDCOUNT(2)  ANCOUNT(2)  NSCOUNT(2)  ARCOUNT(2)
+#
+#   Question section (variable):
+#     QNAME(N)  QTYPE(2)  QCLASS(2)
+#
+#   QNAME is a sequence of length-prefixed labels followed by a zero byte:
+#     e.g. "example.com" -> \x07example\x03com\x00
+#
+# Header FLAGS for a standard query (QR=0, OPCODE=0, RD=1):
+#   0x0100 (big-endian): recursion desired, all other bits zero.
+#
+# QCLASS is always 1 (IN = Internet) for standard queries.
+#
+# Dependencies (Rust builtins):
+#   str, str-slice, split, length, char-code, chr
+#   builtin-add, builtin-sub, builtin-mul
+#   builtin-lt, builtin-eq, builtin-if
+#   keys, get, set, head, tail, seq, collect
+#
+# Self-contained — does not require prelude or encoding.llt.
+#
+# Two-dict document: private helpers in dict 1, public API in dict 2.
+# All intermediate values are passed as function arguments (no [name: val]
+# let-bindings that would create dict pollution in return values).
+# ============================================================================
+
+# ============================================================================
+# Private helpers (not exported)
+# ============================================================================
+
+[
+
+# --------------------------------------------------------------------------
+# Integer arithmetic helpers (self-contained copies of quot, mod)
+# --------------------------------------------------------------------------
+
+dns-quot: [fn@Int [a@Int b@Int]
+    [builtin-if [builtin-eq b 0]
+        [error "dns-quot: division by zero"]
+        [dns-quot-impl a b]]]
+
+dns-quot-impl: [fn@Int [a@Int b@Int]
+    [builtin-if [builtin-lt a b]
+        0
+        [builtin-add 1 [dns-quot-impl [builtin-sub a b] b]]]]
+
+dns-mod: [fn@Int [a@Int b@Int]
+    [builtin-sub a [builtin-mul [dns-quot a b] b]]]
+
+# --------------------------------------------------------------------------
+# 16-bit big-endian encoding
+# --------------------------------------------------------------------------
+
+# Encode a 16-bit unsigned integer as 2 big-endian bytes.
+dns-encode-u16-be: [fn@String [n@Int]
+    [str [chr [dns-quot n 256]] [chr [dns-mod n 256]]]]
+
+# --------------------------------------------------------------------------
+# DNS label encoding
+# --------------------------------------------------------------------------
+
+# Encode a single label (no dots) as chr(len) + label-bytes.
+# Called for each dot-separated component of a domain name.
+dns-encode-label: [fn@String [label@String]
+    [str [chr [length label]] label]]
+
+# Encode all labels in a Dict (produced by [split domain "."]) as a
+# sequence of length-prefixed label strings, terminated by \x00.
+# labels is a Dict with integer keys 0, 1, ... n-1.
+dns-encode-labels-impl: [fn@String [labels@Dict ks@Dict i@Int n@Int acc@String]
+    [builtin-if [builtin-lt i n]
+        [dns-encode-labels-impl labels ks [builtin-add i 1] n
+            [str acc [dns-encode-label [get [get i ks] labels]]]]
+        [str acc [chr 0]]]]
+
+# Encode a full domain name in DNS wire format.
+# "example.com" -> chr(7) + "example" + chr(3) + "com" + chr(0)
+dns-encode-name: [fn@String [domain@String]
+    [dns-encode-labels-step [split "." domain]]]
+
+dns-encode-labels-step: [fn@String [labels@Dict]
+    [dns-encode-labels-impl labels [keys labels] 0 [length labels] ""]]
+
+# --------------------------------------------------------------------------
+# DNS header builder
+# --------------------------------------------------------------------------
+
+# Build the 12-byte DNS message header.
+#
+# id       — 16-bit message identifier (0..65535)
+# flags    — 16-bit flags field (0x0100 for a standard recursive query)
+# qdcount  — question count (usually 1)
+# ancount  — answer count (0 in a query)
+# nscount  — authority count (0 in a query)
+# arcount  — additional count (0 in a query)
+dns-build-header: [fn@String [id@Int flags@Int qdcount@Int ancount@Int nscount@Int arcount@Int]
+    [str
+        [dns-encode-u16-be id]
+        [dns-encode-u16-be flags]
+        [dns-encode-u16-be qdcount]
+        [dns-encode-u16-be ancount]
+        [dns-encode-u16-be nscount]
+        [dns-encode-u16-be arcount]]]
+
+# --------------------------------------------------------------------------
+# DNS question builder
+# --------------------------------------------------------------------------
+
+# Build the question section: QNAME + QTYPE(2) + QCLASS(2).
+dns-build-question: [fn@String [domain@String qtype@Int]
+    [str
+        [dns-encode-name domain]
+        [dns-encode-u16-be qtype]
+        [dns-encode-u16-be 1]]]
+
+]
+
+# ============================================================================
+# Public API
+# ============================================================================
+
+[
+
+# Common QTYPE constants (RFC 1035 §3.2.2, RFC 3596, RFC 2782)
+A:     1    # IPv4 address
+NS:    2    # Authoritative name server
+CNAME: 5    # Canonical name alias
+PTR:   12   # Pointer (reverse DNS)
+MX:    15   # Mail exchange
+TXT:   16   # Text strings
+AAAA:  28   # IPv6 address (RFC 3596)
+SRV:   33   # Service locator (RFC 2782)
+
+# Standard query FLAGS value: QR=0 (query), RD=1 (recursion desired).
+DNS-FLAGS-QUERY: 256
+
+# DNS IN (Internet) class.
+DNS-CLASS-IN: 1
+
+# Encode a domain name in DNS label wire format (RFC 1035 §3.1).
+#
+# Parameters:
+#   domain — dot-separated domain string, e.g. "example.com"
+#
+# Returns a String (byte sequence):
+#   chr(len1) + label1 + chr(len2) + label2 + ... + chr(0)
+#
+# Empty domain ("") encodes as a single zero byte (the DNS root).
+#
+# Type: (String -> String)
+encode-dns-name@[doc: "Encode domain name in DNS label format (RFC 1035 §3.1)"]:
+    [fn@String [domain@String]
+        [builtin-if [builtin-eq [length domain] 0]
+            [chr 0]
+            [dns-encode-name domain]]]
+
+# Build a DNS query message (RFC 1035 §4).
+#
+# Parameters:
+#   id     — 16-bit message ID to match query to response (0..65535)
+#   domain — target domain name, e.g. "example.com"
+#   qtype  — query type; use the constants A, AAAA, MX, TXT, SRV, CNAME, NS, PTR
+#
+# Returns a String (byte sequence) containing:
+#   Header(12) + Question(QNAME + QTYPE(2) + QCLASS(2))
+#
+# The returned bytes are ready to send over UDP to a DNS resolver.
+# QCLASS is always IN (1). Recursion desired (RD) bit is set in FLAGS.
+#
+# Type: (Int -> String -> Int -> String)
+build-dns-query@[doc: "Build a DNS query message (RFC 1035 §4)"]:
+    [fn@String [id@Int domain@String qtype@Int]
+        [str
+            [dns-build-header id DNS-FLAGS-QUERY 1 0 0 0]
+            [dns-build-question domain qtype]]]
+
+]

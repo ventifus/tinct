@@ -1,0 +1,8 @@
+# build-grpc-frame with "hello" (5 bytes) uncompressed:
+# header = 1 (flag) + 4 (length) = 5 bytes; total = 5 + 5 = 10 bytes.
+
+[include "stdlib/protocols/grpc.llt"]
+---
+[length [call %.build-grpc-frame "hello" false]]
+=== out
+Int(10)

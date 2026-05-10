@@ -1,0 +1,16 @@
+# DNS QTYPE constants and flag values.
+
+[include "stdlib/protocols/dns.llt"]
+---
+[set [set [set [set [set [set [set [set [set []
+    "A"              %.A]
+    "NS"             %.NS]
+    "CNAME"          %.CNAME]
+    "PTR"            %.PTR]
+    "MX"             %.MX]
+    "TXT"            %.TXT]
+    "AAAA"           %.AAAA]
+    "SRV"            %.SRV]
+    "DNS-FLAGS-QUERY" %.DNS-FLAGS-QUERY]
+=== out
+Dict({"A": Int(1), "NS": Int(2), "CNAME": Int(5), "PTR": Int(12), "MX": Int(15), "TXT": Int(16), "AAAA": Int(28), "SRV": Int(33), "DNS-FLAGS-QUERY": Int(256)})
