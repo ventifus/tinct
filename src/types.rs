@@ -278,10 +278,36 @@ impl Type {
             (sub_ty, Type::Union(sup_members)) => sup_members
                 .iter()
                 .any(|member| Type::is_subtype(sub_ty, member)),
+            // [S-RcdTop] (BAS width subtyping): A union of closed single-field records with
+            // disjoint field names is equivalent to Top in the BAS lattice.  The union
+            // `{x: τ} | {y: π}` cannot be refined further by structural subtyping — together
+            // these two shapes cover the entire closed-record universe at those labels.
+            // Since Top <: T holds only when T = Top (already handled by the S-TOP guard
+            // above), this fires as a pass-through to the S-TOP result when sup is Top, and
+            // correctly returns false for any non-Top supertype.
+            (Type::Union(sub_members), sup_ty)
+                if Self::check_s_rcd_top(sub_members).is_some() =>
+            {
+                // The union is semantically Top; delegate to is_subtype(Top, sup_ty).
+                // S-TOP (sup == Top) is already handled before the match, so we only
+                // reach here when sup is NOT Top — meaning Top is not a subtype of it.
+                matches!(sup_ty, Type::Top)
+            }
             // [UNION-ELIM]: union is a subtype iff ALL members are subtypes
             (Type::Union(sub_members), sup_ty) => sub_members
                 .iter()
                 .all(|member| Type::is_subtype(member, sup_ty)),
+            // [S-ClsBot] (nominal disjointness / structural annihilation): An intersection of
+            // two or more closed single-field records with DIFFERENT field names is uninhabited
+            // — no value can simultaneously be `{x: τ}` (exactly field x) and `{y: π}`
+            // (exactly field y) when x ≠ y.  This is the structural analogue of S-ClsBot
+            // (#C1 & #C2 ≤ Never) for nominal class tags.  Since the intersection reduces to
+            // Never, and Never <: T for all T [S-NEVER], we return true.
+            (Type::Intersection(sub_members), _sup_ty)
+                if Self::check_s_cls_bot(sub_members) =>
+            {
+                true // intersection ≡ Never, and Never <: anything [S-NEVER]
+            }
             // [INTERSECT-INTRO]: intersection is a subtype of any of its members
             (Type::Intersection(sub_members), sup_ty) => sub_members
                 .iter()
@@ -485,10 +511,19 @@ impl Type {
                     // Flatten nested unions
                     flattened.extend(nested);
                 }
+                // Top absorbs all in union: T | Top = Top
+                Type::Top => return Type::Top,
+                // Never is the identity in union: T | Never = T — skip it
+                Type::Never => continue,
                 _ => {
                     flattened.push(member);
                 }
             }
+        }
+
+        // If all members were Never (identity), the union is empty — which is Never
+        if flattened.is_empty() {
+            return Type::Never;
         }
 
         // Deduplicate by collecting into a set and back to a vec
@@ -521,6 +556,7 @@ impl Type {
 
     /// Normalize an intersection type: flatten, deduplicate, sort, and apply identity/absorbing rules.
     /// - Top is the identity: T & Top = T
+    /// - Never is absorbing: T & Never = Never (bottom annihilates all in intersection)
     /// - Error is absorbing: T & Error = Error (sentinel for failed inference)
     /// - Single-element intersections unwrap to the bare type
     pub fn normalize_intersection(members: Vec<Type>) -> Type {
@@ -531,6 +567,11 @@ impl Type {
         // Error is absorbing: any intersection containing Error becomes Error
         if members.iter().any(|m| matches!(m, Type::Error)) {
             return Type::Error;
+        }
+
+        // Never is absorbing: T & Never = Never (S-ClsBot base case: bottom annihilates)
+        if members.iter().any(|m| matches!(m, Type::Never)) {
+            return Type::Never;
         }
 
         let mut flattened = Vec::new();
@@ -580,6 +621,134 @@ impl Type {
         } else {
             Type::Intersection(unique)
         }
+    }
+
+    /// Structural simplification pass — RDNF groundwork.
+    ///
+    /// Applies identity/absorbing element rules, then delegates to normalize_union /
+    /// normalize_intersection for flattening, deduplication, and sorting.  Importantly,
+    /// this function applies two BAS structural rules that require looking at the *content*
+    /// of compound types:
+    ///
+    /// **S-RcdTop** (BAS width subtyping): A union of two closed single-field Records whose
+    /// field names are disjoint is equivalent to `Top` in the BAS lattice.  For example,
+    /// `{x: Int} | {y: Str}` cannot be narrowed further by structural subtyping — any
+    /// record discriminator must fall into one of these two disjoint shapes, which together
+    /// cover the entire record universe at those labels.  We conservatively apply this only
+    /// when BOTH records are closed (Empty tail), matching the BAS closed-record assumption.
+    ///
+    /// **S-ClsBot** (nominal disjointness): An intersection of two closed single-field
+    /// Records whose field names differ collapses to `Never`.  A value cannot simultaneously
+    /// be `{x: τ}` (exactly one field x) and `{y: π}` (exactly one field y) when x ≠ y.
+    /// This is the structural analogue of nominal tag annihilation (#C1 & #C2 ≤ Never).
+    pub fn simplify_type(ty: Type) -> Type {
+        match ty {
+            // Single-element union/intersection — identity
+            Type::Union(members) if members.len() == 1 => {
+                // Unwrap and recursively simplify
+                Type::simplify_type(members.into_iter().next().unwrap())
+            }
+            Type::Intersection(members) if members.len() == 1 => {
+                Type::simplify_type(members.into_iter().next().unwrap())
+            }
+            // Never absorbs all in intersection: T & Never = Never
+            Type::Intersection(ref members) if members.iter().any(|m| matches!(m, Type::Never)) => {
+                Type::Never
+            }
+            // Top absorbs all in union: T | Top = Top
+            Type::Union(ref members) if members.iter().any(|m| matches!(m, Type::Top)) => {
+                Type::Top
+            }
+            // Remove Never arms from union: T | Never = T
+            Type::Union(members) if members.iter().any(|m| matches!(m, Type::Never)) => {
+                let filtered: Vec<Type> = members
+                    .into_iter()
+                    .filter(|m| !matches!(m, Type::Never))
+                    .collect();
+                if filtered.is_empty() {
+                    Type::Never
+                } else {
+                    Type::normalize_union(filtered)
+                }
+            }
+            // S-RcdTop: union of closed single-field records with disjoint field names → Top
+            Type::Union(members) => {
+                if Self::check_s_rcd_top(&members).is_some() {
+                    Type::Top
+                } else {
+                    Type::Union(members)
+                }
+            }
+            // S-ClsBot: intersection of closed single-field records with different field names → Never
+            Type::Intersection(members) => {
+                if Self::check_s_cls_bot(&members) {
+                    Type::Never
+                } else {
+                    Type::Intersection(members)
+                }
+            }
+            // All other types are already in simplified form
+            _ => ty,
+        }
+    }
+
+    /// Check S-RcdTop: does the union contain two closed single-field Records with disjoint keys?
+    /// Returns Some(()) if the union simplifies to Top, None otherwise.
+    fn check_s_rcd_top(members: &[Type]) -> Option<()> {
+        // Collect all closed single-field records from the union
+        let single_field_closed: Vec<&str> = members
+            .iter()
+            .filter_map(|m| {
+                if let Type::Record(row) = m {
+                    if row.fields.len() == 1 && matches!(row.tail, RowTail::Empty) {
+                        return row.fields.keys().next().map(|k| k.as_str());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Need at least two with different field names
+        if single_field_closed.len() < 2 {
+            return None;
+        }
+        for i in 0..single_field_closed.len() {
+            for j in (i + 1)..single_field_closed.len() {
+                if single_field_closed[i] != single_field_closed[j] {
+                    return Some(());
+                }
+            }
+        }
+        None
+    }
+
+    /// Check S-ClsBot: does the intersection contain two closed single-field Records with
+    /// different field names?  Such a value cannot exist → Never.
+    fn check_s_cls_bot(members: &[Type]) -> bool {
+        let single_field_closed: Vec<&str> = members
+            .iter()
+            .filter_map(|m| {
+                if let Type::Record(row) = m {
+                    if row.fields.len() == 1 && matches!(row.tail, RowTail::Empty) {
+                        return row.fields.keys().next().map(|k| k.as_str());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // If there are two entries with different names, the intersection is uninhabited
+        if single_field_closed.len() < 2 {
+            return false;
+        }
+        for i in 0..single_field_closed.len() {
+            for j in (i + 1)..single_field_closed.len() {
+                if single_field_closed[i] != single_field_closed[j] {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn collect_type_vars(&self, vars: &mut HashSet<String>) {
@@ -6793,4 +6962,253 @@ mod tests {
         // Both should remain (different vars, no entailment)
         assert_eq!(constraints.len(), 2);
     }
+
+    // -------------------------------------------------------------------------
+    // normalize_union improvements: Never identity, Top absorption
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_union_never_is_identity() {
+        // T | Never = T (Never is the identity element in union)
+        let result = Type::normalize_union(vec![Type::Int, Type::Never]);
+        assert_eq!(result, Type::Int);
+    }
+
+    #[test]
+    fn test_normalize_union_all_never_returns_never() {
+        // Never | Never = Never
+        let result = Type::normalize_union(vec![Type::Never, Type::Never]);
+        assert_eq!(result, Type::Never);
+    }
+
+    #[test]
+    fn test_normalize_union_top_absorbs() {
+        // T | Top = Top (Top is the absorbing element in union)
+        let result = Type::normalize_union(vec![Type::Int, Type::Top]);
+        assert_eq!(result, Type::Top);
+    }
+
+    #[test]
+    fn test_normalize_union_top_absorbs_all() {
+        // Int | Str | Top = Top
+        let result = Type::normalize_union(vec![Type::Int, Type::Str, Type::Top]);
+        assert_eq!(result, Type::Top);
+    }
+
+    #[test]
+    fn test_normalize_union_never_mixed_with_others() {
+        // Int | Never | Str = Int | Str
+        let result = Type::normalize_union(vec![Type::Int, Type::Never, Type::Str]);
+        match result {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            _ => panic!("Expected Union, got {:?}", result),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // normalize_intersection improvements: Never absorption
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_intersection_never_absorbs() {
+        // T & Never = Never (S-ClsBot base: Never annihilates all in intersection)
+        let result = Type::normalize_intersection(vec![Type::Int, Type::Never]);
+        assert_eq!(result, Type::Never);
+    }
+
+    #[test]
+    fn test_normalize_intersection_never_absorbs_all() {
+        // Int & Str & Never = Never
+        let result = Type::normalize_intersection(vec![Type::Int, Type::Str, Type::Never]);
+        assert_eq!(result, Type::Never);
+    }
+
+    // -------------------------------------------------------------------------
+    // simplify_type: identity/absorbing element rules
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_simplify_type_single_union_unwraps() {
+        // Union([T]) = T
+        let ty = Type::Union(vec![Type::Int]);
+        assert_eq!(Type::simplify_type(ty), Type::Int);
+    }
+
+    #[test]
+    fn test_simplify_type_single_intersection_unwraps() {
+        // Intersection([T]) = T
+        let ty = Type::Intersection(vec![Type::Int]);
+        assert_eq!(Type::simplify_type(ty), Type::Int);
+    }
+
+    #[test]
+    fn test_simplify_type_intersection_never_absorbs() {
+        // Int & Never = Never
+        let ty = Type::Intersection(vec![Type::Int, Type::Never]);
+        assert_eq!(Type::simplify_type(ty), Type::Never);
+    }
+
+    #[test]
+    fn test_simplify_type_union_top_absorbs() {
+        // Int | Top = Top
+        let ty = Type::Union(vec![Type::Int, Type::Top]);
+        assert_eq!(Type::simplify_type(ty), Type::Top);
+    }
+
+    #[test]
+    fn test_simplify_type_union_remove_never_arms() {
+        // Int | Never | Str = Int | Str
+        let ty = Type::Union(vec![Type::Int, Type::Never, Type::Str]);
+        match Type::simplify_type(ty) {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&Type::Int));
+                assert!(members.contains(&Type::Str));
+            }
+            _ => panic!("Expected Union after simplification"),
+        }
+    }
+
+    #[test]
+    fn test_simplify_type_primitives_unchanged() {
+        assert_eq!(Type::simplify_type(Type::Int), Type::Int);
+        assert_eq!(Type::simplify_type(Type::Str), Type::Str);
+        assert_eq!(Type::simplify_type(Type::Never), Type::Never);
+        assert_eq!(Type::simplify_type(Type::Top), Type::Top);
+    }
+
+    // -------------------------------------------------------------------------
+    // S-RcdTop: disjoint single-field closed records union → Top
+    // -------------------------------------------------------------------------
+
+    fn single_field_closed(name: &str, ty: Type) -> Type {
+        let mut fields = HashMap::new();
+        fields.insert(name.to_string(), ty);
+        closed_record(fields)
+    }
+
+    #[test]
+    fn test_simplify_type_s_rcd_top_two_disjoint() {
+        // {x: Int} | {y: Str} → Top (disjoint single-field closed records)
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("y", Type::Str);
+        let ty = Type::Union(vec![r1, r2]);
+        assert_eq!(Type::simplify_type(ty), Type::Top);
+    }
+
+    #[test]
+    fn test_simplify_type_s_rcd_top_same_field_no_collapse() {
+        // {x: Int} | {x: Str} — same field name, NOT disjoint → no S-RcdTop
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("x", Type::Str);
+        let ty = Type::Union(vec![r1, r2]);
+        // Should remain a union, not collapse to Top
+        assert!(matches!(Type::simplify_type(ty), Type::Union(_)));
+    }
+
+    #[test]
+    fn test_simplify_type_s_rcd_top_open_record_no_collapse() {
+        // {x: Int | ρ} | {y: Str | ρ} — open tails, S-RcdTop requires closed
+        let mut f1 = HashMap::new();
+        f1.insert("x".to_string(), Type::Int);
+        let r1 = Type::Record(Row { fields: f1, tail: RowTail::RowVar("r1".to_string(), 0) });
+        let mut f2 = HashMap::new();
+        f2.insert("y".to_string(), Type::Str);
+        let r2 = Type::Record(Row { fields: f2, tail: RowTail::RowVar("r2".to_string(), 0) });
+        let ty = Type::Union(vec![r1, r2]);
+        // Open records — should NOT collapse to Top
+        assert!(!matches!(Type::simplify_type(ty), Type::Top));
+    }
+
+    #[test]
+    fn test_is_subtype_s_rcd_top_subtype_of_top() {
+        // {x: Int} | {y: Str} <: Top — should hold (union is Top)
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("y", Type::Str);
+        let union = Type::Union(vec![r1, r2]);
+        assert!(Type::is_subtype(&union, &Type::Top));
+    }
+
+    #[test]
+    fn test_is_subtype_s_rcd_top_not_subtype_of_int() {
+        // {x: Int} | {y: Str} <: Int — should NOT hold (union is Top, Top ⊄ Int)
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("y", Type::Str);
+        let union = Type::Union(vec![r1, r2]);
+        assert!(!Type::is_subtype(&union, &Type::Int));
+    }
+
+    // -------------------------------------------------------------------------
+    // S-ClsBot: disjoint single-field closed records intersection → Never
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_simplify_type_s_cls_bot_two_disjoint() {
+        // {x: Int} & {y: Str} → Never (cannot simultaneously have exactly field x and field y)
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("y", Type::Str);
+        let ty = Type::Intersection(vec![r1, r2]);
+        assert_eq!(Type::simplify_type(ty), Type::Never);
+    }
+
+    #[test]
+    fn test_simplify_type_s_cls_bot_same_field_no_annihilation() {
+        // {x: Int} & {x: Str} — same field name, structural overlap is possible (or invalid at field level)
+        // S-ClsBot only applies when field NAMES differ — same name means subtype mismatch, not S-ClsBot
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("x", Type::Str);
+        let ty = Type::Intersection(vec![r1, r2]);
+        // Should remain as intersection (field-type mismatch is a separate concern)
+        assert!(matches!(Type::simplify_type(ty), Type::Intersection(_)));
+    }
+
+    #[test]
+    fn test_simplify_type_s_cls_bot_open_record_no_annihilation() {
+        // {x: Int | ρ₁} & {y: Str | ρ₂} — open records, S-ClsBot requires closed
+        let mut f1 = HashMap::new();
+        f1.insert("x".to_string(), Type::Int);
+        let r1 = Type::Record(Row { fields: f1, tail: RowTail::RowVar("r1".to_string(), 0) });
+        let mut f2 = HashMap::new();
+        f2.insert("y".to_string(), Type::Str);
+        let r2 = Type::Record(Row { fields: f2, tail: RowTail::RowVar("r2".to_string(), 0) });
+        let ty = Type::Intersection(vec![r1, r2]);
+        // Open records CAN potentially overlap → should NOT simplify to Never
+        assert!(!matches!(Type::simplify_type(ty), Type::Never));
+    }
+
+    #[test]
+    fn test_is_subtype_s_cls_bot_subtype_of_never() {
+        // {x: Int} & {y: Str} <: Never — should hold (intersection IS Never)
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("y", Type::Str);
+        let intersection = Type::Intersection(vec![r1, r2]);
+        assert!(Type::is_subtype(&intersection, &Type::Never));
+    }
+
+    #[test]
+    fn test_is_subtype_s_cls_bot_subtype_of_anything() {
+        // {x: Int} & {y: Str} <: Int — should hold (Never <: T for all T)
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("y", Type::Str);
+        let intersection = Type::Intersection(vec![r1, r2]);
+        assert!(Type::is_subtype(&intersection, &Type::Int));
+    }
+
+    #[test]
+    fn test_is_subtype_s_cls_bot_same_field_not_never() {
+        // {x: Int} & {x: Str} — same field, S-ClsBot does NOT fire; standard INTERSECT-INTRO applies
+        let r1 = single_field_closed("x", Type::Int);
+        let r2 = single_field_closed("x", Type::Str);
+        let intersection = Type::Intersection(vec![r1, r2]);
+        // INTERSECT-INTRO: {x: Int} & {x: Str} <: {x: Int} is true (member is subtype of itself)
+        let target = single_field_closed("x", Type::Int);
+        assert!(Type::is_subtype(&intersection, &target));
+        // But {x: Int} & {x: Str} <: Never is false (S-ClsBot doesn't fire, same field names)
+        assert!(!Type::is_subtype(&intersection, &Type::Never));
+    }
+
 }

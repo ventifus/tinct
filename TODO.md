@@ -50,9 +50,9 @@ See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md �
 - [ ] Remove `RowTail::RowVar` from `src/types.rs`; replace row variable representation with BAS Boolean lattice; all `Type::Record(Row)` sites that reference `RowTail::RowVar` must migrate to intersection-based representation (`src/types.rs`)
 - [x] Add `Type::Negation(Box<Type>)` variant to `src/types.rs`; updated all match sites (types.rs, type_unify.rs, type_env.rs, eval.rs)
 - [x] Add `Type::Never` as explicit bottom type variant; `Type::Top` already existed; updated is_subtype (S-NEVER rule), is_consistent, Display, value_matches_type
-- [ ] Implement S-RcdTop simplification in `is_subtype`: `{x: τ} ∨ {y: π} ≡ ⊤` when x ≠ y; implement S-ClsBot: `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags (`src/types.rs`, `src/type_unify.rs`)
+- [x] Implement S-RcdTop (disjoint single-field records union = Top) and S-ClsBot (disjoint intersections = Never) in `is_subtype`; `simplify_type` added for basic RDNF groundwork (`src/types.rs`)
 - [ ] Implement C-Var1/2 constraint rewriting in the inference engine: `τ₁ ≤ τ₂ ∨ α` → `τ₁ & ~τ₂ ≤ α`; `α & τ₁ ≤ τ₂` → `α ≤ τ₂ | ~τ₁` (`src/typecheck.rs`, `src/type_unify.rs`)
-- [ ] Implement RDNF normalization and type simplification for the constraint solver; inline type simplifier for display (`src/typecheck.rs`)
+- [ ] Full RDNF normalization (simplify_type groundwork added; needs constraint solver integration) (`src/typecheck.rs`)
 - [ ] Implement multi-field record annotation as intersection of single-field records: `@[x: T  y: U]` → `{x: T} ∧ {y: U}` in the annotation resolver; remove `RowTail::RowVar` from annotation expansion (`src/typecheck.rs`, `src/expand.rs`)
 - [ ] Add `@[[all A B]]` (intersection) and `@[[without A]]` (negation) annotation syntax to the annotation parser; update `check_annotation` dispatch (`src/typecheck.rs`, `src/parser.rs`)
 - [ ] Implement false-branch narrowing in `if`/`match` using negation types: after `[int? x]` fails, narrow `x` to `x & ~Int` (`src/typecheck.rs`)
