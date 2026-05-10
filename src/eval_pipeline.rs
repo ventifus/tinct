@@ -64,6 +64,9 @@ pub fn eval_document(
                     crate::ast::Annotation::Simple(type_name) if type_name == "DirCap" => {
                         ("--cap-fs", format!("{}=PATH", cap_name))
                     }
+                    crate::ast::Annotation::Simple(type_name) if type_name == "Handle" => {
+                        ("--cap-file", format!("{}=PATH:r", cap_name))
+                    }
                     _ => {
                         // Generic fallback for other capability types
                         ("--cap", format!("{}=VALUE", cap_name))

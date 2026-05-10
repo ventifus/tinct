@@ -1,0 +1,8 @@
+# Test: Handle capability declared but missing
+# no_fs
+--- caps: [%myfile: @Handle]
+[result: "should not execute"]
+
+=== error
+[E099] %myfile@Handle is required but not provided
+  inject it with:  tinct run --cap-file myfile=PATH:r ...

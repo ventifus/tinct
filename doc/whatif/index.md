@@ -58,6 +58,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, tls-connect, SpkiPin, HttpConn, system roots, HTTP/1-3 |
+| [Composable Networking v2](lib-net-v2.md) | Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3 Sessions; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Templating

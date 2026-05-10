@@ -4941,3 +4941,12 @@ Fixes for type checker issues: named arg types, Sequential scoping, match arm sc
 - [x] Decide: implement structural dict equality — order-insensitive structural equality, bundled with parameterized-dict acceptance
 - [x] If implementing: handle cycles, lazy thunk forcing, key ordering — documented in `doc/whatif/parameterized-dict.md`
 - [x] Document in `doc/03-data-model.md` §Equality — deferred to parameterized-dict acceptance sprint
+
+## Diagnostics & Capabilities
+
+### `misc-fixes`: Remaining diagnostics, capability, and error UX improvements
+
+- [x] Apply same snippet rendering to parse errors in strict mode (`src/parser.rs::format_parse_error`, `src/main.rs`)
+- [x] Add `= help:` suggestions for actionable fixes (`src/type_env.rs::type_error_note`)
+- [x] Update `tinct run --strict` output header (`src/main.rs`)
+- [x] Extend `--- caps:` pragma runtime validation to handle `@Handle` type (`src/eval_pipeline.rs`)

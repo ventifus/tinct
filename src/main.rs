@@ -1281,10 +1281,22 @@ fn run_eval(
         };
 
         // Parse
-        let ast = parse(&source).map_err(|e| format!("{e}"))?;
+        let ast = parse(&source).map_err(|e| {
+            if strict {
+                // In strict mode, use rich diagnostic formatting
+                let file_name = match stage {
+                    PipelineStage::File(fp) => fp.as_str(),
+                    PipelineStage::Expr(_) => "<expr>",
+                };
+                tinct::format_parse_error(&e, &source, file_name)
+            } else {
+                // Non-strict mode: use simple formatting
+                format!("{e}")
+            }
+        })?;
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
-        // See also: src/lib.rs:87-91 (eval_source_with_config pipeline)
+        // See also: src/lib.rs (eval_source_with_config pipeline)
         // Expand macros (pre-desugar AST transformation).
         let expand_result = tinct::expand::expand_macros(ast, no_fs).map_err(|e| format!("{e}"))?;
         let mut ast = expand_result.file;
@@ -1337,21 +1349,23 @@ fn run_eval(
         let (type_errors, _type_map, _doc_map) =
             tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, type_env);
         if !type_errors.is_empty() {
-            if strict {
-                // In strict mode, type errors are fatal — print them and exit.
-                let file_name = match stage {
-                    PipelineStage::File(fp) => fp.as_str(),
-                    PipelineStage::Expr(_) => "<expr>",
-                };
-                for err in &type_errors {
-                    eprintln!("{}", tinct::format_type_error(err, &source, file_name));
-                }
-                return Err(format!(
-                    "type checking failed with {} error(s) (--strict mode)",
-                    type_errors.len()
-                ));
+            let file_name = match stage {
+                PipelineStage::File(fp) => fp.as_str(),
+                PipelineStage::Expr(_) => "<expr>",
+            };
+            for err in &type_errors {
+                eprintln!("{}", tinct::format_type_error(err, &source, file_name));
             }
-            // Non-strict mode: type errors are advisory, continue with eval.
+            if strict {
+                // In strict mode, type errors are fatal — exit.
+                return Err("type checking failed — cannot evaluate".to_string());
+            } else {
+                // Non-strict mode: type errors are advisory, print warning and continue.
+                eprintln!(
+                    "type checking failed with {} error(s) (use --strict to make fatal)",
+                    type_errors.len()
+                );
+            }
         }
 
         // Open base_dir as a cap-std Dir
@@ -1584,10 +1598,10 @@ fn run_fmt(
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let ast = parse(&source).map_err(|e| format!("{e}"))?;
+        let ast = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
-        // See also: src/lib.rs:214-225 (typecheck_source pipeline)
+        // See also: src/lib.rs (typecheck_source pipeline)
         let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
         let mut ast = expand_result.file;
 
