@@ -2112,6 +2112,14 @@ fn check_get(
                 // Map[K V]: get returns V, get? returns V|Null.
                 make_nullable(*val_ty.clone())
             }
+            Type::Seq(elem_ty) => {
+                // Seq[T] with an integer key: get returns T, get? returns T|Null.
+                // split returns Seq[Str], so [get N [split sep s]] → Str.
+                match &key_ty {
+                    Type::Int | Type::IntLiteral(_) => make_nullable(*elem_ty.clone()),
+                    _ => Type::Unknown,
+                }
+            }
             Type::Record(row) => {
                 // Record: if the key is a known string literal, look up the field.
                 match &key_ty {
@@ -9942,5 +9950,36 @@ mod tests {
             env.get("get?").is_some(),
             "get? should be registered in TypeEnv::with_builtins()"
         );
+    }
+
+    #[test]
+    fn test_check_get_seq_integer_key_returns_element_type() {
+        // [get N seq] where seq : Seq[Str] and N is an Int literal should return Str.
+        // Regression test for bas-get-seq-unknown: [get 0 [split sep s]] → Str.
+        let env = doc_env_with_builtins(
+            "[parts: [split \"x\" \"a x b\"]]\n\
+             [result: [get 0 parts]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
+            Some(other) => panic!("expected Str from [get 0 Seq[Str]], got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_split_returns_seq_str_type() {
+        // split is typed as Seq[Str] in TypeEnv, not Unknown.
+        let env = Rc::new(TypeEnv::with_builtins());
+        let split_scheme = env.get("split").expect("split should be registered");
+        match &split_scheme.body {
+            Type::Function { ret, .. } => {
+                assert!(
+                    matches!(ret.as_ref(), Type::Seq(inner) if matches!(inner.as_ref(), Type::Str)),
+                    "split return type should be Seq[Str], got {ret}"
+                );
+            }
+            other => panic!("split should be a Function type, got {other}"),
+        }
     }
 }

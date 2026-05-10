@@ -256,7 +256,7 @@ Rust primitives (builtin-lt, builtin-eq, builtin-add, builtin-if, builtin-filter
 
 | Module | Functions provided | When to include |
 |--------|-------------------|-----------------|
-| `strings.llt` | `pad-left`, `pad-right`, `str-find`, `str-reverse`, `str-repeat` | String formatting, padding, search |
+| `strings.llt` | `pad-left`, `pad-right`, `str-reverse` | String formatting and reversal (`str-find`, `str-repeat` are in prelude) |
 | `math.llt` | `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` | Math constants, derived trig/log functions |
 | `encoding.llt` | `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` | Binary encoding/decoding |
 | `datetime.llt` | `parse-timestamp`, `format-timestamp`, `timestamp-add`, etc. | Date/time formatting |
@@ -273,6 +273,25 @@ Rust primitives (builtin-lt, builtin-eq, builtin-add, builtin-if, builtin-filter
 
 Note: the Rust builtins in each domain (e.g., `starts-with?`, `pow`, `band`, `uri`) are always available without any include — only the pure-tinct helper functions require an explicit include.
 
+## Organization
+
+The stdlib follows four organizing principles:
+
+1. **`prelude.llt`** — Universal core, auto-included. General-purpose utilities with no domain-specific functions. Two-dict pattern: private first dict (`-impl`/`-step`/`-check` helpers), public second dict (exported API). Non-prelude modules must never copy prelude exports.
+
+2. **Domain modules** (`strings.llt`, `math.llt`, `encoding.llt`, `path.llt`, `io.llt`, `net.llt`, `regex.llt`, `toml-lite.llt`, `datetime.llt`) — Single-topic, explicit `[include %libdir "..."]` required. Depend on prelude (always in scope); two-dict pattern; no prelude duplication.
+
+3. **Pipeline adapters** (`in/`, `out/`, `formatter/`) — Thin wrappers for document pipeline stages; not general-purpose libraries.
+
+4. **Protocol libraries** (`protocols/`) — Low-level RFC wire format helpers; self-contained; no prelude duplication.
+
+| Layer | Location | Auto-loaded | Requires include |
+|-------|----------|-------------|-----------------|
+| Core prelude | `stdlib/prelude.llt` | Yes | No |
+| Domain modules | `stdlib/*.llt` | No | Yes |
+| Pipeline adapters | `stdlib/in/`, `stdlib/out/`, `stdlib/formatter/` | No | Yes |
+| Protocol libraries | `stdlib/protocols/` | No | Yes |
+
 ## Stdlib Function Reference
 
 **Architecture:** 178 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 12 shadowable wrappers). Of the 178 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv` is a pure LLT implementation in `prelude.llt` built on `builtin-reduce` — it is shadowable via `$include` like other prelude functions, but has no `builtin-collect-kv` alias.
@@ -283,7 +302,7 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
 - **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
-- **Extended strings** (`starts-with?`, `ends-with?`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-length`, `str-slice`, `str-contains?`, `str-chars` as Rust builtins; `pad-left`, `pad-right`, `str-find`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching, padding, character/byte operations; pure-tinct helpers require `[include libdir "strings.llt"]`
+- **Extended strings** (`starts-with?`, `ends-with?`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-length`, `str-slice`, `str-contains?`, `str-chars` as Rust builtins; `str-find`, `str-repeat` in prelude; `pad-left`, `pad-right`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching, padding, character/byte operations; `str-find` and `str-repeat` are prelude functions (always available); `pad-left`, `pad-right`, `str-reverse` require `[include libdir "strings.llt"]`
 - **Extended math** (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?` as Rust builtins; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` in `stdlib/math.llt`) — trigonometric, exponential, and logarithmic functions; NaN/infinity checks; constants and derived functions require `[include libdir "math.llt"]`
 - **Bitwise & Encoding** (`band`, `bor`, `bxor`, `shl`, `shr` as Rust builtins; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives and binary encoding; pure-tinct encoding functions require `[include libdir "encoding.llt"]`
 - **Bytes** (`bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?` as Rust builtins) — byte buffer operations with constant-time equality for cryptographic use
