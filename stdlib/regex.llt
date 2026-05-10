@@ -21,8 +21,10 @@
 has?: [fn@Bool [d@Dict k]
     [has-check [try [fn [] [builtin-get k d]]]]]
 
-has-check: [fn@Bool [result@Dict]
-    [builtin-eq [builtin-get 0 [keys result]] "ok"]]
+has-check: [fn@Bool [result]
+    [match result
+        [Ok _] true
+        [Err _] false]]
 
 # Comparison operators
 >=: [fn@Bool [a b] [builtin-if [builtin-lt a b] false true]]

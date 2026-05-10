@@ -1,9 +1,9 @@
-# Test try result pattern matching - ok arm
-# try returns [ok: value] on success; pattern match extracts value
+# Test try result pattern matching - Ok arm
+# try returns [Ok value] on success; pattern match extracts value
 
 [result: [try [fn [] [+ 10 5]]]
 [match result
-  [ok: v] v
-  [err: _] 0]]
+  [Ok v] v
+  [Err _] 0]]
 ---
 15

@@ -274,7 +274,8 @@ fn register_stdlib_macros(
     span: Span,
 ) {
     /// Table of (macro_name, transformer_key_in_stdlib_env) pairs.
-    const STDLIB_MACROS: &[(&str, &str)] = &[("tmpl", "tmpl-transformer")];
+    const STDLIB_MACROS: &[(&str, &str)] =
+        &[("tmpl", "tmpl-transformer"), ("do", "do-transformer")];
 
     for (macro_name, transformer_key) in STDLIB_MACROS {
         let transformer_thunk = {

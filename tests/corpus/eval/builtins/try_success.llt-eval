@@ -1,4 +1,4 @@
-# try : successful evaluation returns [ok: value]
+# try : successful evaluation returns [Ok value]
 [try [fn [] 42]]
 === out
-Dict({"ok": Int(42)})
+Variant(Ok, Int(42))

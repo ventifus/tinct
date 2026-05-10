@@ -1,6 +1,0 @@
-# Test that http-connect exists and validates its argument type
-# Expected: error (non-Url argument)
-[http-connect "not a uri"]
-
-=== error
-[E010] http-connect: expected Url

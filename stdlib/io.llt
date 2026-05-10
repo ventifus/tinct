@@ -3,13 +3,15 @@
 [
 # Read an entire file as a string.
 # cap: DirCap, path: String
-read-file@[doc: "Read an entire file as a string"]: [fn@String [cap@DirCap path@String]
-  [slurp [open cap path "r"]]]
+# Returns: [Ok content] or [Err message]
+read-file@[doc: "Read an entire file as a string"]: [fn [cap@DirCap path@String]
+  [try [fn [] [slurp [open cap path "r"]]]]]
 
 # Read a file as a lazy sequence of lines.
 # cap: DirCap, path: String
-read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Any [cap@DirCap path@String]
-  [lines [open cap path "r"]]]
+# Returns: [Ok seq] or [Err message]
+read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn [cap@DirCap path@String]
+  [try [fn [] [lines [open cap path "r"]]]]]
 
 # Print a string followed by a newline to stdout.
 println@[doc: "Print a string followed by a newline to stdout"]: [fn@Any [s@String]

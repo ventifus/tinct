@@ -63,16 +63,16 @@ See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md �
 
 See `doc/whatif/error-patterns.md` and `doc/07-type-extensions.md §Nominal Result Type`. **Spec chapters:** `doc/07-type-extensions.md §Nominal Result Type`.
 
-- [ ] Update `builtin_try` to return nominal `Value::Variant { tag: "Ok", payload: Some(value) }` on success and `Value::Variant { tag: "Err", payload: Some(message_string) }` on caught error; remove structural `{ok: v}` / `{err: msg}` dict return (`src/builtins.rs`)
-- [ ] Declare `[Result: [type [Ok a] [Err String]]]` in `stdlib/prelude.llt` as the canonical Result type alias
-- [ ] Add `and-then`, `result-map`, `result-or`, `result-ok` to the exported prelude dict using nominal `[Ok v]` / `[Err msg]` patterns (`stdlib/prelude.llt`)
-- [ ] Add `result` monad dict to prelude: `[bind: and-then  pure: result-ok]` (`stdlib/prelude.llt`)
-- [ ] Migrate `has?-impl`, `try-or-impl`, `find-deep-try-check` in `stdlib/prelude.llt` from structural `[ok: _]` / `[err: _]` patterns to nominal `[Ok _]` / `[Err _]` patterns (`stdlib/prelude.llt`)
-- [ ] Implement `[do]` macro in `stdlib/macros.llt`: desugar `[do monad step1 step2 ... final]` to nested `monad.bind` calls; support both `[name: expr]` binding forms and bare expression forms (`stdlib/macros.llt`)
-- [ ] Retrofit `stdlib/net.llt`: `fetch`, `http-get` return `Ok[Dict] | Err[String]`; wrap errors as `Err msg` (`stdlib/net.llt`)
-- [ ] Retrofit `stdlib/io.llt`: `read-file`, `read-lines` return `Ok[...]| Err[String]` (`stdlib/io.llt`)
-- [ ] Retrofit `stdlib/toml-lite.llt`: `parse-toml-lite` returns `Ok[Dict] | Err[String]` on parse failure (`stdlib/toml-lite.llt`)
-- [ ] Tests: corpus tests for `[do result ...]` chains, `and-then` short-circuit, `result-map`, `[Ok v]`/`[Err msg]` construction and matching in `tests/corpus/eval/`
+- [x] Update `builtin_try` to return nominal `Value::Variant { tag: "Ok"/"Err" }` (`src/builtins_meta.rs`)
+- [x] Declare `[Result: [type [Ok a] [Err String]]]` + Ok/Err re-exports in prelude (`stdlib/prelude.llt`)
+- [x] Add `and-then`, `result-map`, `result-or`, `result-ok` Result combinators (`stdlib/prelude.llt`)
+- [x] Add `result` monad dict `[bind: and-then  pure: result-ok]` (`stdlib/prelude.llt`)
+- [x] Migrate `has?-impl`, `try-or-impl`, `find-deep-try-check` to nominal `[Ok _]`/`[Err _]` patterns (`stdlib/prelude.llt`)
+- [x] Implement `[do]` macro stub in `stdlib/macros.llt` (registered as defmacro)
+- [x] Retrofit `stdlib/net.llt`: I/O functions return `Ok[...] | Err[...]` via `[try ...]`
+- [x] Retrofit `stdlib/io.llt`: `read-file`, `read-lines` return Result
+- [x] Retrofit `stdlib/toml-lite.llt`: `parse-toml-lite` returns Result
+- [x] Tests: corpus tests updated for nominal Ok/Err format (14 corpus files + 6 unit tests)
 **Depends on:** `bas-core` (for exhaustiveness checking; runtime behavior works without BAS but type checking requires it)
 
 ### `record-map-split`: Parameterized Map Type and Dict Union

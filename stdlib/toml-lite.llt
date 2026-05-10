@@ -31,15 +31,16 @@
 # ============================================================================
 
 # Parse a TOML-lite document into a nested dict structure.
-# Type: (String -> Dict)
-# Example: [parse-toml-lite "key = \"value\""] => [key: "value"]
-# Example: [parse-toml-lite "[section]\nkey = 42"] => [section: [key: 42]]
-parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn@Dict [text@String]
-    [parse-toml-lines
+# Type: (String -> Result Dict)
+# Example: [parse-toml-lite "key = \"value\""] => [Ok [key: "value"]]
+# Example: [parse-toml-lite "[section]\nkey = 42"] => [Ok [section: [key: 42]]]
+# Returns: [Ok dict] or [Err message]
+parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn [text@String]
+    [try [fn [] [parse-toml-lines
         [collect
             [builtin-filter [fn [line] [not-blank-or-comment line]]
                 [builtin-map [fn [line] [trim line]]
-                    [split "\n" text]]]]]]
+                    [split "\n" text]]]]]]]]
 
 # ============================================================================
 # Line-by-Line Parser
@@ -313,8 +314,10 @@ get-or: [fn [xs@Dict k default]
 has?: [fn@Bool [xs@Dict k]
     [has?-impl [try [fn [] [builtin-get k xs]]]]]
 
-has?-impl: [fn@Bool [try-result@Dict]
-    [builtin-eq [first [keys try-result]] "ok"]]
+has?-impl: [fn@Bool [try-result]
+    [match try-result
+        [Ok _] true
+        [Err _] false]]
 
 # Boolean negation.
 not: [fn@Bool [x] [builtin-if x false true]]
@@ -332,10 +335,10 @@ and: [fn [a b] [builtin-if a b false]]
 try-or: [fn [f@Fn default]
     [try-or-impl [try f] default]]
 
-try-or-impl: [fn [try-result@Dict default]
-    [builtin-if [builtin-eq [first [keys try-result]] "ok"]
-        try-result.ok
-        default]]
+try-or-impl: [fn [try-result default]
+    [match try-result
+        [Ok v] v
+        [Err _] default]]
 
 # First element.
 first: [fn [xs] xs.0]

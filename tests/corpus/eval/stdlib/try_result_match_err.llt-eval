@@ -1,9 +1,9 @@
-# Test try result pattern matching - err arm
-# try returns [err: message] on failure; pattern match uses default
+# Test try result pattern matching - Err arm
+# try returns [Err message] on failure; pattern match uses default
 
 [result: [try [fn [] [/ 1 0]]]
 [match result
-  [ok: v] v
-  [err: _] -1]]
+  [Ok v] v
+  [Err _] -1]]
 ---
 -1

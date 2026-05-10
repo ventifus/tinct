@@ -1,4 +1,4 @@
 # try + error : catch an error raised by error builtin
 [try [fn [] [error "boom"]]]
 === out
-Dict({"err": String("boom")})
+Variant(Err, String("boom"))

@@ -567,9 +567,10 @@ impl ValueVisitor for JsonVisitor {
 
 // --- Display Visitor ---
 
-/// Maximum display recursion depth (3 levels).
+/// Maximum display recursion depth (5 levels).
 /// Prevents deep traversal of nested structures in error messages.
-const MAX_DISPLAY_DEPTH: usize = 3;
+/// Increased from 3 to 5 to accommodate Result-wrapped values (Variant(Ok, ...)).
+const MAX_DISPLAY_DEPTH: usize = 5;
 
 struct DisplayVisitor;
 
