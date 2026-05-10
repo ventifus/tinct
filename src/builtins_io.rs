@@ -4439,16 +4439,130 @@ pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<
     .into())
 }
 
-/// `http2-session`: Establish an HTTP/2 session over a Handle.
-/// Takes `(handle, opts)`.
-/// Stub — returns error until the h2 dependency is added.
+/// `http2-session`: Establish an HTTP/2 session using reqwest.
+///
+/// Takes `(cap, base_url, opts)` where:
+/// - `cap`: NetCap capability controlling which hosts may be contacted
+/// - `base_url`: String — `scheme://host[:port]` origin (e.g. `"https://api.example.com"`)
+/// - `opts`: Dict — future options (currently unused; pass `[]`)
+///
+/// Returns an `Http2Session` wrapping a `reqwest::blocking::Client` configured
+/// to prefer HTTP/2 via ALPN for HTTPS connections. The client reuses the
+/// underlying connection pool across multiple `http-request` calls.
 pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error(
-        "http2-session: HTTP/2 not yet implemented — requires h2 dependency".to_string(),
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("http2-session", named, call_span)?;
+
+    if args.len() != 3 {
+        return Err(EvalError::user_error(
+            format!(
+                "http2-session: expected 3 arguments (cap base_url opts), got {}",
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
+    }
+
+    // Materialize all args — all are required immediately.
+    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let url_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    // opts reserved for future use (ca, client cert, timeouts, etc.)
+    let _opts_val = materialize(&args[2], Some(&call_span), &ctx)?;
+
+    // Validate cap
+    let entries = match cap_val {
+        Value::NetCap(e) => e,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "http2-session".to_string(),
+                "NetCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into())
+        }
+    };
+
+    let base_url = require_string("http2-session", url_val, args[1].span)?;
+
+    // Parse the base_url to extract host and port for cap validation.
+    // We need a host for the allowlist check. Parse scheme://host[:port].
+    let (host, port) = parse_origin_host_port(&base_url, call_span)?;
+    check_net_cap_allowlist(&entries, &host, port, call_span)?;
+
+    // Build the reqwest blocking client. Use rustls TLS (already the default via
+    // the "rustls" feature flag in Cargo.toml with default-features = false).
+    // The client automatically negotiates HTTP/2 via ALPN for HTTPS connections.
+    let client = reqwest::blocking::Client::builder()
+        .use_rustls_tls()
+        .build()
+        .map_err(|e| {
+            EvalError::user_error(
+                format!("http2-session: failed to build HTTP client: {}", e),
+                call_span,
+            )
+        })?;
+
+    ok_val(
+        Value::Http2Session {
+            client: Rc::new(client),
+            base_url,
+        },
         call_span,
     )
-    .into())
+}
+
+/// Parse `scheme://host[:port]` into `(host, Option<port>)`.
+///
+/// When no explicit port is present, infers the default: 443 for https, 80 for http.
+/// This ensures `check_net_cap_allowlist` with `HostPort` entries works correctly
+/// for standard URLs that omit the port.
+///
+/// Returns a hard error if the string cannot be parsed as an origin.
+fn parse_origin_host_port(origin: &str, span: Span) -> EvalResult<(String, Option<u16>)> {
+    // Strip scheme and record default port
+    let (after_scheme, default_port) = if let Some(rest) = origin.strip_prefix("https://") {
+        (rest, 443u16)
+    } else if let Some(rest) = origin.strip_prefix("http://") {
+        (rest, 80u16)
+    } else {
+        return Err(EvalError::user_error(
+            format!(
+                "http2-session: base_url must start with http:// or https://, got: {}",
+                origin
+            ),
+            span,
+        )
+        .into());
+    };
+
+    // Strip any trailing path
+    let host_part = after_scheme.split('/').next().unwrap_or(after_scheme);
+
+    // Split host:port — use rfind so IPv6 literals (no port) aren't split on ':'.
+    if let Some(colon) = host_part.rfind(':') {
+        let candidate_port = &host_part[colon + 1..];
+        // Only treat it as a port if it's all digits (avoids splitting IPv6 addresses).
+        if candidate_port.chars().all(|c| c.is_ascii_digit()) {
+            let host = host_part[..colon].to_string();
+            let port = candidate_port.parse::<u16>().map_err(|_| {
+                EvalError::user_error(
+                    format!("http2-session: invalid port in base_url: {}", origin),
+                    span,
+                )
+            })?;
+            return Ok((host, Some(port)));
+        }
+    }
+    // No explicit port — use scheme default for allowlist checking.
+    Ok((host_part.to_string(), Some(default_port)))
 }
 
 /// `http3-session`: Establish an HTTP/3 session over a QUIC connection.
@@ -4530,8 +4644,8 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 /// or `{err: String}` on failure (non-throwing Result).
 ///
 /// Dispatches on session type:
+/// - `Http2Session`: uses reqwest blocking client (HTTP/2 via ALPN)
 /// - `Http3Session`: uses h3 over the existing QUIC connection
-/// - `Http2Session`: not yet implemented (stub)
 /// - Other: type error (hard error, not Result variant)
 pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
@@ -4605,11 +4719,14 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
                 &ctx,
             )
         }
-        Value::Http2Session(_) => {
-            // Http2Session is a stub (Rc<()>) — no real reqwest client stored.
-            // Return a soft error so callers can handle it.
-            http_request_err_val(
-                "http-request: HTTP/2 sessions not yet implemented".to_string(),
+        Value::Http2Session { client, base_url } => {
+            http_request_h2(
+                client,
+                base_url,
+                method_str,
+                path_str,
+                req_headers,
+                body_str,
                 call_span,
                 &ctx,
             )
@@ -4622,6 +4739,116 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
         )
         .into()),
     }
+}
+
+/// Issue an HTTP/2 (or HTTP/1.1) request using a `reqwest::blocking::Client`.
+///
+/// The client was configured in `builtin_http2_session` to prefer HTTP/2 via ALPN.
+/// Path is resolved relative to `base_url` (the origin stored in the session).
+/// Returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
+#[allow(clippy::too_many_arguments)]
+fn http_request_h2(
+    client: Rc<reqwest::blocking::Client>,
+    base_url: String,
+    method_str: String,
+    path_str: String,
+    req_headers: Vec<(String, String)>,
+    body_str: String,
+    span: crate::ast::Span,
+    ctx: &crate::eval::EvalContext,
+) -> EvalResult<Rc<Thunk>> {
+    // Build the full URL: base_url + path_str.
+    // If path_str starts with http:// or https://, use it as-is (absolute URL).
+    // Otherwise, join with base_url.
+    let url = if path_str.starts_with("http://") || path_str.starts_with("https://") {
+        path_str
+    } else {
+        let base = base_url.trim_end_matches('/');
+        let path = if path_str.starts_with('/') {
+            path_str.clone()
+        } else {
+            format!("/{}", path_str)
+        };
+        format!("{}{}", base, path)
+    };
+
+    // Build the reqwest request.
+    let method = match reqwest::Method::from_bytes(method_str.as_bytes()) {
+        Ok(m) => m,
+        Err(e) => {
+            return http_request_err_val(
+                format!("http-request: invalid HTTP method '{}': {}", method_str, e),
+                span,
+                ctx,
+            );
+        }
+    };
+
+    let mut builder = client.request(method, &url);
+    for (k, v) in &req_headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    if !body_str.is_empty() {
+        builder = builder.body(body_str);
+    }
+
+    let response = match builder.send() {
+        Ok(r) => r,
+        Err(e) => {
+            return http_request_err_val(
+                format!("http-request: request failed: {}", e),
+                span,
+                ctx,
+            );
+        }
+    };
+
+    let status = response.status().as_u16() as i64;
+
+    // Collect response headers.
+    let mut headers_map = IndexMap::new();
+    for (name, value) in response.headers() {
+        let k = crate::value::Key::String(name.as_str().to_string());
+        let v = match value.to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
+        };
+        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span)?));
+    }
+
+    // Collect body as a String (UTF-8, lossy).
+    let body_bytes = match response.bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            return http_request_err_val(
+                format!("http-request: failed to read response body: {}", e),
+                span,
+                ctx,
+            );
+        }
+    };
+    let body_string = String::from_utf8_lossy(&body_bytes).into_owned();
+
+    // Build {ok: {status: Int, headers: Dict, body: String}}
+    let mut inner = IndexMap::new();
+    inner.insert(
+        crate::value::Key::String("status".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Int(status), span)?),
+    );
+    inner.insert(
+        crate::value::Key::String("headers".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span)?),
+    );
+    inner.insert(
+        crate::value::Key::String("body".to_string()),
+        ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
+    );
+    let mut result = IndexMap::new();
+    result.insert(
+        crate::value::Key::String("ok".to_string()),
+        ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
+    );
+    ok_val(Value::Dict(result), span)
 }
 
 /// Issue an HTTP/3 request on an existing `h3::client::SendRequest` session.

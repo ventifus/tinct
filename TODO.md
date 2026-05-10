@@ -189,7 +189,7 @@ See `doc/whatif/lib-net-v2.md` §Protocol Library, §Stdlib Layout, §fetch. **S
 - [x] Write `stdlib/protocols/dns.llt` — DNS query helpers: encode-dns-name, build-dns-query, QTYPE constants; 8 corpus tests
 - [x] Write `stdlib/protocols/grpc.llt` — gRPC frame encoding: build-grpc-frame, parse-grpc-frame-header; 8 corpus tests
 - [x] Write `stdlib/protocols/websocket.llt` — WebSocket frame encoding/decoding + HTTP upgrade handshake; 15 corpus tests
-- [ ] Rewrite `stdlib/net.llt` full rewrite (blocked: needs http-sessions for HTTP/2 ALPN negotiation)
+- [x] Rewrite `stdlib/net.llt`: http-get dispatches on scheme; https uses http2-session (reqwest ALPN); http uses TCP+HTTP/1.0 (`stdlib/net.llt`, `src/builtins_io.rs`, `src/value.rs`)
 - [x] Update `doc/11-stdlib.md` with `protocols/` subdirectory layout and function listings (`doc/11-stdlib.md`)
 - [x] Tests: pure-helper corpus tests for build-socks5-*, build-ws-frame, parse-ws-frame-header, ws-handshake (15 tests in `tests/corpus/eval/stdlib/protocols/`)
 - [x] Add Rust unit test for `check_net_cap_allowlist` denial path with a restricted allowlist — the allowlist is the primary security enforcement and has zero corpus coverage; add to `src/builtins_io.rs` `#[cfg(test)]` section
