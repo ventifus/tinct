@@ -1429,29 +1429,29 @@ pub(crate) fn resolve_type_dict(
         fields.insert(key, ty);
     }
 
-    // Multi-field record annotation → intersection of open single-field records.
+    // Multi-field record annotation → intersection of closed single-field records.
     //
-    // `@[x: Int  y: String]` → `Intersection([{x: Int, ...ρ1}, {y: String, ...ρ2}])`
+    // `@[x: Int  y: String]` → `Intersection([{x: Int}, {y: String}])`
     //
-    // Each member uses an OPEN row (RowTail::RowVar with a fresh variable) so that
-    // `is_subtype(Record({x:1, y:"hello"}), Record({x:Int}, RowVar))` succeeds via the
-    // open-tail rule in `is_subtype`. This avoids the closed-record exact-match failure
-    // that would occur if we used closed single-field members.
+    // Under BAS open semantics (Step 1 of RowVar removal), each member is a CLOSED record
+    // (RowTail::Empty). Openness is expressed via conjunction elimination in is_subtype:
+    // `{x:1, y:"hello"} <: {x:Int}` succeeds because width subtyping allows extra fields
+    // in the sub-record (BAS Step 2 of is_subtype). No RowVar needed for openness.
     //
-    // Single-field annotations (`@[name: String]`) keep existing behavior: a single open
-    // record with the user-supplied tail (or Empty if no `...` was written). This ensures
-    // `test_type_assert_closed_record_rejects_extra_fields` continues to pass — a single
-    // closed-field annotation stays closed.
+    // Single-field annotations (`@[name: String]`) fall through to line ~1494 with
+    // tail = Empty (no `...` written). Under BAS, `{name: "Alice", age: 30} <: {name: Str}`
+    // now succeeds via width subtyping, so single-field annotations are open by default.
     //
-    // Annotations with a rest entry (`@[x: Int ...]`) also bypass this path (rest ≠ Empty).
+    // Annotations with a rest entry (`@[x: Int ...]`) bypass this path (rest ≠ Empty)
+    // and produce an open record with a RowVar tail as before (explicit user annotation).
     //
     // SHARED TYPE VARIABLE GUARD: If any TypeVar name appears in more than one field,
-    // fall back to the closed Record. Splitting into open single-field members would
-    // cause each member to independently bind the shared TypeVar to a different concrete
-    // value during unification, producing spurious "cannot unify X with Y" errors.
+    // fall back to the closed Record. Splitting into single-field members would cause
+    // each member to independently bind the shared TypeVar to a different concrete value
+    // during unification, producing spurious "cannot unify X with Y" errors.
     // Example: `[type [a] [first: a  second: a]]` — both fields share `a`; if split into
-    // `{first: a, ...ρ1}` and `{second: a, ...ρ2}`, unifying with `{first: 1, second: 2}`
-    // first binds `a = 1` then tries to unify `a` (= 1) with 2 → error.
+    // `{first: a}` and `{second: a}`, unifying with `{first: 1, second: 2}` first binds
+    // `a = 1` then tries to unify `a` (= 1) with 2 → error.
     if fields.len() >= 2 && rest == RowTail::Empty {
         // Check for shared TypeVar names across field types
         let mut all_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1475,15 +1475,19 @@ pub(crate) fn resolve_type_dict(
             let members: Vec<Type> = fields
                 .into_iter()
                 .map(|(k, v)| {
-                    // Fresh open row variable for each member so row unification can absorb
-                    // the extra fields that are present in the concrete record but absent from
-                    // this single-field member.
-                    let (rho_name, rho_level) = state.fresh_row_var_name();
+                    // Under BAS open semantics, structural annotations are open by default
+                    // via conjunction elimination — a RowVar is no longer needed to express
+                    // openness. Each single-field member uses a closed (Empty) row tail.
+                    // Width subtyping in is_subtype (BAS Step 2) allows closed records with
+                    // extra fields to satisfy these closed single-field members:
+                    //   {name: "Alice", age: 30} <: {name: String} (closed)
+                    // because {name: String} is structurally "has at least name: String"
+                    // under BAS conjunction-elimination semantics.
                     let mut member_fields = HashMap::new();
                     member_fields.insert(k, v);
                     Type::Record(Row {
                         fields: member_fields,
-                        tail: RowTail::RowVar(rho_name, rho_level),
+                        tail: RowTail::Empty,
                     })
                 })
                 .collect();

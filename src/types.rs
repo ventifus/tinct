@@ -333,45 +333,51 @@ impl Type {
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
             (Type::Record(sub_row), Type::Record(sup_row)) => {
-                // All fields in sup must be present in sub with subtype field types
-                let fields_ok = sup_row.fields.iter().all(|(k, sup_ty)| {
-                    sub_row
-                        .fields
-                        .get(k)
-                        .is_some_and(|sub_ty| Type::is_subtype(sub_ty, sup_ty))
-                });
-                if !fields_ok {
-                    return false;
-                }
-
-                // Check tail constraints
-                match &sup_row.tail {
-                    RowTail::Empty => {
-                        // Closed sup requires sub has no extra fields
-                        match &sub_row.tail {
-                            RowTail::Empty => {
-                                // Both closed: sub must have exact same fields as sup
-                                sub_row
-                                    .fields
-                                    .keys()
-                                    .all(|k| sup_row.fields.contains_key(k))
-                            }
-                            RowTail::RowVar(_, _) => {
-                                // Open records (RowVar tail) cannot satisfy closed record
-                                // constraints — Rémy (1994). The row variable may be instantiated
-                                // with additional fields that the closed supertype rejects.
-                                // This is the sound PRE-unification behavior: is_subtype is called
-                                // before unification binds the RowVar to Empty. After unification,
-                                // the substituted type will have RowTail::Empty and the (Empty, Empty)
-                                // arm applies correctly. See test_is_subtype_consistency_open_sub_closed_sup_exact_known_fields.
-                                false
+                // BAS width subtyping (Step 2 of RowVar removal):
+                //
+                // R1 <: R2 iff all keys of R2 are in R1 with compatible types.
+                // Extra fields in R1 beyond those in R2 are always allowed (conjunction
+                // elimination: a record satisfies an annotation if it has AT LEAST those fields).
+                //
+                // This rule applies regardless of whether R1 has a RowVar or Empty tail:
+                // - R1 closed (Empty): extra known fields are fine (width subtyping)
+                // - R1 open (RowVar): extra known fields are fine, and unknown extra fields
+                //   (from the row variable) are also fine — the open annotation is a minimum
+                //
+                // The only case that fails is when a required field of R2 is missing from
+                // R1's known fields AND R1 is closed (so it definitely cannot have that field).
+                // If R1 is open (RowVar), the missing field might exist at runtime, so we
+                // conservatively require it to be present in the known fields for soundness.
+                for (k, sup_ty) in &sup_row.fields {
+                    match sub_row.fields.get(k) {
+                        Some(sub_ty) => {
+                            if !Type::is_subtype(sub_ty, sup_ty) {
+                                return false;
                             }
                         }
+                        None => {
+                            // Required field k is absent from sub's known fields.
+                            // Whether R1 is open or closed, we cannot prove R1 has field k
+                            // without it being in the known field set. Reject.
+                            return false;
+                        }
                     }
-                    RowTail::RowVar(_, _) => {
-                        // Open via row var — extra fields allowed
-                        true
-                    }
+                }
+
+                // All required fields from sup are present in sub with compatible types.
+                // Check tail compatibility:
+                match (&sub_row.tail, &sup_row.tail) {
+                    // Sub open, sup open: extra fields from sub's row var are absorbed by sup's row var
+                    (RowTail::RowVar(_, _), RowTail::RowVar(_, _)) => true,
+                    // Sub closed, sup open: closed record satisfies open requirement
+                    (RowTail::Empty, RowTail::RowVar(_, _)) => true,
+                    // Sub open, sup closed: under BAS, a RowVar sub can satisfy a closed sup
+                    // IF all sup fields are already present in sub (checked above).
+                    // The row variable may bring additional fields at runtime, but width
+                    // subtyping allows that — the sup only constrains what it declares.
+                    (RowTail::RowVar(_, _), RowTail::Empty) => true,
+                    // Both closed: sub may have extra fields — that's fine (width subtyping).
+                    (RowTail::Empty, RowTail::Empty) => true,
                 }
             }
             (
@@ -1793,8 +1799,9 @@ mod tests {
     }
 
     #[test]
-    fn test_subtype_closed_record_extra_field_rejected() {
-        // Closed sub with extra field should NOT be subtype of closed sup
+    fn test_subtype_closed_record_extra_field_accepted_bas() {
+        // BAS width subtyping: closed sub with extra field IS a subtype of closed sup.
+        // {a: Int, b: Int} has all the fields of {a: Int} plus more — width subtyping holds.
         let mut sub_fields = HashMap::new();
         sub_fields.insert("a".into(), Type::Int);
         sub_fields.insert("b".into(), Type::Int);
@@ -1805,8 +1812,8 @@ mod tests {
         let sup = closed_record(sup_fields);
 
         assert!(
-            !Type::is_subtype(&sub, &sup),
-            "[a: Int, b: Int] should NOT be subtype of [a: Int] (Closed)"
+            Type::is_subtype(&sub, &sup),
+            "[a: Int, b: Int] SHOULD be subtype of [a: Int] under BAS width subtyping"
         );
     }
 
@@ -1844,6 +1851,9 @@ mod tests {
 
     #[test]
     fn test_subtype_row_var_to_closed() {
+        // BAS width subtyping (Step 2): open record with extra fields IS a subtype of closed record
+        // when all closed record's fields are present in the open record's known fields.
+        // {a: Int, b: Int, ...r} has all fields of {a: Int} (and more), so it satisfies it.
         let mut sub_fields = HashMap::new();
         sub_fields.insert("a".into(), Type::Int);
         sub_fields.insert("b".into(), Type::Int);
@@ -1854,8 +1864,8 @@ mod tests {
         let sup = closed_record(sup_fields);
 
         assert!(
-            !Type::is_subtype(&sub, &sup),
-            "[a: Int, b: Int ...r] (RowVar) should NOT be subtype of [a: Int] (Closed)"
+            Type::is_subtype(&sub, &sup),
+            "[a: Int, b: Int ...r] (RowVar) should be subtype of [a: Int] (Closed) under BAS width subtyping"
         );
     }
 
@@ -1875,17 +1885,19 @@ mod tests {
     }
 
     #[test]
-    fn test_is_subtype_open_record_not_subtype_of_closed() {
-        // Sound pre-unification: open record with RowVar tail cannot satisfy a closed supertype.
-        // Rémy (1994): the row variable may instantiate with additional fields the closed type rejects.
+    fn test_is_subtype_open_record_subtype_of_closed_bas() {
+        // BAS width subtyping (Step 2): open record [a:Int ...r] IS a subtype of closed record
+        // [a:Int] because all of the closed record's fields are present in the open record's
+        // known fields. Under BAS open-record semantics, an open record with the same required
+        // fields satisfies a closed annotation.
         let mut a_fields = HashMap::new();
         a_fields.insert("a".into(), Type::Int);
         let open = row_var_record(a_fields.clone(), "r", 0);
         let closed = closed_record(a_fields);
 
         assert!(
-            !Type::is_subtype(&open, &closed),
-            "[a:Int ...r] (RowVar) should NOT be subtype of [a:Int] (closed)"
+            Type::is_subtype(&open, &closed),
+            "[a:Int ...r] (RowVar) should be subtype of [a:Int] (closed) under BAS width subtyping"
         );
     }
 
@@ -1900,6 +1912,44 @@ mod tests {
         assert!(
             Type::is_subtype(&sub, &sup),
             "[a:Int] (closed) should be subtype of [a:Int] (closed) — same fields"
+        );
+    }
+
+    #[test]
+    fn test_is_subtype_closed_record_with_extra_subtype_of_closed() {
+        // BAS width subtyping: closed record with EXTRA fields IS a subtype of closed record
+        // with fewer fields, because all the required fields are present.
+        // {a: Int, b: Str} <: {a: Int} — the "b" field is extra but that's fine.
+        let mut sub_fields = HashMap::new();
+        sub_fields.insert("a".into(), Type::Int);
+        sub_fields.insert("b".into(), Type::Str);
+        let sub = closed_record(sub_fields);
+
+        let mut sup_fields = HashMap::new();
+        sup_fields.insert("a".into(), Type::Int);
+        let sup = closed_record(sup_fields);
+
+        assert!(
+            Type::is_subtype(&sub, &sup),
+            "[a:Int, b:Str] (closed) should be subtype of [a:Int] (closed) under BAS width subtyping"
+        );
+    }
+
+    #[test]
+    fn test_is_subtype_closed_record_missing_required_field_fails() {
+        // A closed record that is MISSING a required field of the sup is NOT a subtype.
+        // {b: Int} <: {a: Int} fails because "a" is not in sub.
+        let mut sub_fields = HashMap::new();
+        sub_fields.insert("b".into(), Type::Int);
+        let sub = closed_record(sub_fields);
+
+        let mut sup_fields = HashMap::new();
+        sup_fields.insert("a".into(), Type::Int);
+        let sup = closed_record(sup_fields);
+
+        assert!(
+            !Type::is_subtype(&sub, &sup),
+            "[b:Int] (closed) should NOT be subtype of [a:Int] (closed) — missing required field 'a'"
         );
     }
 
@@ -2010,7 +2060,9 @@ mod tests {
     }
 
     #[test]
-    fn test_subtype_closed_sub_closed_sup_extra_fields_rejected() {
+    fn test_subtype_closed_sub_closed_sup_extra_fields_accepted_bas() {
+        // BAS width subtyping: closed sub with extra fields IS a subtype of closed sup.
+        // {name: Str, age: Int} has all fields of {name: Str} plus more — width subtyping.
         let mut sub = HashMap::new();
         sub.insert("name".into(), Type::Str);
         sub.insert("age".into(), Type::Int);
@@ -2018,7 +2070,10 @@ mod tests {
         let mut sup = HashMap::new();
         sup.insert("name".into(), Type::Str);
 
-        assert!(!Type::is_subtype(&closed_record(sub), &closed_record(sup),));
+        assert!(
+            Type::is_subtype(&closed_record(sub), &closed_record(sup)),
+            "[name: Str, age: Int] SHOULD be subtype of [name: Str] under BAS width subtyping"
+        );
     }
 
     #[test]
@@ -2087,9 +2142,10 @@ mod tests {
     }
 
     #[test]
-    fn test_subtype_open_sub_closed_sup_extra_fields_rejected() {
-        // Open sub with MORE known fields than Closed sup must be rejected.
-        // sub's extra field "age" is not in sup → bidirectional check fails.
+    fn test_subtype_open_sub_closed_sup_extra_fields_accepted_bas() {
+        // BAS width subtyping: open sub with MORE known fields IS a subtype of closed sup.
+        // sub has all of sup's required fields ("name") plus extra "age" — width subtyping.
+        // The closed sup only constrains what it declares; extra fields in sub are fine.
         //
         // sub: [name: Str, age: Int | Open]
         // sup: [name: Str | Closed]
@@ -2103,9 +2159,9 @@ mod tests {
         let sup = closed_record(sup_fields);
 
         assert!(
-            !Type::is_subtype(&sub, &sup),
-            "[name: Str, age: Int | Open] should NOT be subtype of [name: Str | Closed]: \
-             sub has extra field 'age' not in Closed sup"
+            Type::is_subtype(&sub, &sup),
+            "[name: Str, age: Int | Open] SHOULD be subtype of [name: Str | Closed] \
+             under BAS width subtyping"
         );
     }
 
@@ -4844,12 +4900,14 @@ mod tests {
         );
     }
 
-    /// Case 1b: (Empty, Empty) sub has extra field — unify FAILS, is_subtype false.
+    /// Case 1b: (Empty, Empty) sub has extra field — unify FAILS, but is_subtype is asymmetric.
     ///
     /// A = [a: Int, b: Str]  (closed)
     /// B = [a: Int]          (closed)
     ///
-    /// Extra field "b" in A; closed B cannot absorb it. unify and is_subtype both reject.
+    /// Under BAS width subtyping (Step 2): A <: B holds (A has all of B's fields plus extra "b").
+    /// B <: A does NOT hold (B is missing "b" which A requires).
+    /// Unify still fails — unification is symmetric (equality-seeking), not subtyping.
     #[test]
     fn test_is_subtype_consistency_closed_vs_closed_extra_field() {
         let span = test_span(1, 1, 1, 5);
@@ -4865,19 +4923,22 @@ mod tests {
         b_fields.insert("a".into(), Type::Int);
         let b = closed_record(b_fields);
 
+        // Unify still fails — unification is symmetric; closed B cannot absorb A's extra "b"
         let result = unify(&a, &b, &mut subst, &mut state, span);
         assert!(
             result.is_err(),
             "unify([a:Int,b:Str](closed), [a:Int](closed)) should fail"
         );
 
+        // BAS width subtyping: A has all of B's fields plus extra "b" → A <: B
         assert!(
-            !Type::is_subtype(&a, &b),
-            "[a:Int,b:Str](closed) should NOT be subtype of [a:Int](closed)"
+            Type::is_subtype(&a, &b),
+            "[a:Int,b:Str](closed) SHOULD be subtype of [a:Int](closed) under BAS width subtyping"
         );
+        // B is missing "b" required by A → B is NOT a subtype of A
         assert!(
             !Type::is_subtype(&b, &a),
-            "[a:Int](closed) should NOT be subtype of [a:Int,b:Str](closed)"
+            "[a:Int](closed) should NOT be subtype of [a:Int,b:Str](closed): missing required field 'b'"
         );
     }
 
@@ -5029,15 +5090,15 @@ mod tests {
     /// A = [a: Int, ...r]    (open, RowVar "r")
     /// B = [a: Int, b: Str]  (closed)
     ///
-    /// Pre-unification is_subtype(A, B): CONSERVATIVE — B has "b" not in A's known fields.
-    /// Bidirectional field check fails (sup has field "b" absent from sub's known set).
-    /// So is_subtype(A, B) = false before unification.
+    /// Pre-unification is_subtype(A, B): B has "b" not in A's known fields.
+    /// The field check fails (sup has field "b" absent from sub's known set).
+    /// So is_subtype(A, B) = false before unification (field "b" is missing).
     ///
     /// unify: "b" unique to B; A's tail "r" absorbs it (Case 3). r binds to {b: Str, Empty}.
     /// Post-substitution: S(A) = [a: Int, b: Str] = S(B). Subtype holds both ways.
     ///
-    /// KEY: unify succeeds, but is_subtype(A, B) is false PRE-substitution.
-    /// The consistency guarantee applies only AFTER substitution.
+    /// Note: is_subtype is false here because B requires "b" which is absent from A's known
+    /// fields — this is a FIELD MEMBERSHIP failure, not a tail-kind failure.
     #[test]
     fn test_is_subtype_consistency_open_sub_closed_sup() {
         let span = test_span(1, 1, 1, 5);
@@ -5053,11 +5114,12 @@ mod tests {
         b_fields.insert("b".into(), Type::Str);
         let b = closed_record(b_fields);
 
-        // Pre-unification: conservative — B has "b" not in A's known fields
+        // Pre-unification: B requires "b" which is NOT in A's known fields → false.
+        // This failure is about missing required field "b", not about tail kind.
         assert!(
             !Type::is_subtype(&a, &b),
             "[a:Int ...r] (RowVar) should NOT be subtype of [a:Int,b:Str] (closed): \
-             sub might lack 'b' — conservative treatment for unbound RowVar"
+             sub is missing required field 'b'"
         );
 
         unify(&a, &b, &mut subst, &mut state, span).unwrap();
@@ -5088,8 +5150,8 @@ mod tests {
     /// A = [a: Int, ...r]  (open)
     /// B = [a: Int]        (closed)
     ///
-    /// Conservative is_subtype: A's known fields exactly match B's — bidirectional check passes.
-    /// is_subtype(A, B) = true.
+    /// BAS width subtyping: A's known fields satisfy all of B's requirements.
+    /// is_subtype(A, B) = true (BAS Step 2 — RowVar sub satisfies closed sup when fields match).
     /// unify: no unique fields -> Case 1 -> unify_tails(RowVar(r), Empty) -> r binds to Empty.
     #[test]
     fn test_is_subtype_consistency_open_sub_closed_sup_exact_known_fields() {
@@ -5102,14 +5164,12 @@ mod tests {
         let a = row_var_record(a_fields.clone(), "r", 0);
         let b = closed_record(a_fields);
 
-        // Sound pre-unification check: open record (RowVar tail) cannot satisfy closed record
-        // constraint (Rémy 1994). The row variable may be instantiated with additional fields.
-        // Post-unification (after r binds to Empty via unify()), the types are equal and
-        // is_subtype holds — verified below.
+        // BAS width subtyping (Step 2): open record [a:Int ...r] IS a subtype of closed record
+        // [a:Int] because all of B's fields are present in A's known fields.
         assert!(
-            !Type::is_subtype(&a, &b),
-            "[a:Int ...r] (RowVar) should NOT be subtype of [a:Int] (closed) pre-unification: \
-             the row variable may be instantiated with additional fields that the closed type rejects"
+            Type::is_subtype(&a, &b),
+            "[a:Int ...r] (RowVar) should be subtype of [a:Int] (closed) under BAS width subtyping: \
+             all required fields are in sub's known set"
         );
 
         unify(&a, &b, &mut subst, &mut state, span).unwrap();
@@ -5137,9 +5197,11 @@ mod tests {
     /// A = [a: Int, b: Str, ...r]  (open)
     /// B = [a: Int]                (closed)
     ///
-    /// is_subtype: A has extra known "b" not in closed B -> bidirectional check fails.
-    /// unify: "b" unique to A, closed B cannot absorb it -> error.
-    /// Both agree: rejected.
+    /// Under BAS width subtyping (Step 2): is_subtype(A, B) = TRUE.
+    /// A has all of B's required fields ("a") plus extra known "b" — width subtyping allows this.
+    ///
+    /// Unify still fails — the "b" field is unique to A and B is closed (Empty tail),
+    /// so the unifier cannot absorb "b" into B. Unification is equality-seeking, not subtyping.
     #[test]
     fn test_is_subtype_consistency_open_sub_extra_fields_closed_sup() {
         let span = test_span(1, 1, 1, 5);
@@ -5155,11 +5217,13 @@ mod tests {
         b_fields.insert("a".into(), Type::Int);
         let b = closed_record(b_fields);
 
+        // BAS width subtyping: A has all of B's fields (plus extra "b") → A <: B
         assert!(
-            !Type::is_subtype(&a, &b),
-            "[a:Int,b:Str ...r] should NOT be subtype of [a:Int](closed): extra known field"
+            Type::is_subtype(&a, &b),
+            "[a:Int,b:Str ...r] SHOULD be subtype of [a:Int](closed) under BAS width subtyping"
         );
 
+        // Unify still fails: "b" is unique to A and closed B cannot absorb it
         let result = unify(&a, &b, &mut subst, &mut state, span);
         assert!(
             result.is_err(),
