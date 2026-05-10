@@ -1,6 +1,7 @@
-# TypeAssert: closed record annotation rejects dict with extra keys
-# [@Any ...] wrapper causes infer_expr to return Any, which satisfies the closed record
-# constraint at typecheck time, so resolved_type IS set and runtime validation catches the extra field.
+# TypeAssert: BAS width subtyping accepts dict with extra fields
+# Under BAS, [@[name: String] ...] accepts any record with AT LEAST name: String.
+# Extra fields are allowed (width subtyping). No runtime E011 is raised.
+# The [@Any ...] wrapper makes the type Unknown, which is consistent with the annotation.
 [@[name: String] [@Any [name: "hello"  extra: "world"]]]
-=== error
-[E011] type assertion failed: expected closed record (no extra fields), got record with unexpected field "extra"
+=== out
+Dict({"name": String("hello"), "extra": String("world")})

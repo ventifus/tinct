@@ -56,9 +56,9 @@ See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md �
 - [x] Add `Type::Never` as explicit bottom type variant; `Type::Top` already existed; updated is_subtype (S-NEVER rule), is_consistent, Display, value_matches_type
 - [x] Implement S-RcdTop (disjoint single-field records union = Top) and S-ClsBot (disjoint intersections = Never) in `is_subtype`; `simplify_type` added for basic RDNF groundwork (`src/types.rs`)
 - [x] C-Var1/2 constraint rewriting: conservative approximation — unify(concrete, Union([..., TypeVar, ...])) binds TypeVar to concrete (`src/type_unify.rs`)
-- [ ] **RDNF step 1 — call sites**: add `Type::simplify_type(ty)` calls at the 4 inference points that produce compound types: (a) union of arm types in `infer_match` after collecting all arm results; (b) union of branch types in `infer_if`; (c) result of `check_annotation` when annotation is Union/Intersection/Negation; (d) before inserting inferred types into TypeMap for LSP hover display (`src/typecheck.rs`)
-- [ ] **RDNF step 2 — recursive simplification**: extend `simplify_type` to recurse into compound type children — currently only handles top-level patterns; add recursive `simplify_type` calls on children of Union, Intersection, Negation, Record fields, Seq element, Map K/V (`src/types.rs:679`)
-- [ ] **RDNF step 3 — tests**: corpus test that `[match x [Ok v] v [Err _] 0]` produces a simplified union type (not `Union([Int, Int])` from two Int arms); LSP hover test that `@[[all [Int Str] [without Int]]]` simplifies to `Str` in error messages
+- [x] **RDNF step 1 — call sites**: `infer_match` collects arm result types and unions+simplifies; `infer_if` uses normalize_union+simplify_type (removed least_upper_bound); type_map insertion simplifies before storing for LSP hover; annotation-declared union types NOT simplified (ADT aliases preserved) (`src/typecheck.rs`, `src/typecheck_annot.rs`)
+- [x] **RDNF step 2 — recursive simplification**: `simplify_children` bottom-up pass for Union/Intersection/Negation/Record/Seq/Map/Function; subsumption elimination (drop A when A <: non-Negation B); literal promotion (≥2 IntLiterals→Int, ≥2 StringLiterals→Str) (`src/types.rs`)
+- [x] **RDNF step 3 — tests**: corpus `rdnf_match_union_simplification.llt-eval`, `rdnf_negation_known_type.llt-eval`; 10 unit tests for recursive simplification, subsumption elimination, literal promotion (`tests/corpus/eval/typecheck/`, `src/types.rs`)
 - [x] Multi-field annotation → intersection: `@[x: Int  y: String]` → `Intersection([{x:Int,...ρ1}, {y:String,...ρ2}])`; Record↔Intersection unify + eval dispatch updated (`src/typecheck_annot.rs`, `src/type_unify.rs`, `src/eval.rs`, `src/eval_materialize.rs`)
 - [x] Add `@[[all A B]]` (intersection) and `@[[without A]]` (negation) annotation syntax (`src/typecheck_annot.rs`)
 - [x] False-branch narrowing: `apply_negation_narrowings()` in if-false branch, type predicates narrow to Negation type (`src/typecheck.rs`)
@@ -288,6 +288,94 @@ Fixes for runtime stubs, evaluator bugs, parser gaps, disabled tests, and CLI is
 - [x] Corpus test for parse-http-response (`tests/corpus/eval/stdlib/net_parse_http_response.llt-eval`)
 
 ~~**http-connect-untested**~~ — `http-connect` is **removed** in the `http-sessions` sprint; the reqwest container bug is moot. No investigation needed.
+
+**stale-corpus-warns** — Multiple corpus test files have `=== warn` or `=== error` sections with stale expected strings that no longer match the type checker's output. Grouped by cause:
+
+*Span shifted or message text changed — update the expected substring to match current output:*
+- [ ] `tests/corpus/eval/builtins/apply.llt-eval` — warn: `cannot unify Fn@? [?] with Fn@Number [? ?]` at wrong span
+- [ ] `tests/corpus/eval/builtins/seq_empty.llt-eval` — warn: `cannot unify Seq[?] with []` span changed from `1:1-1:13` to `1:10-1:12`
+- [ ] `tests/corpus/eval/builtins/seq_collect_empty_input.llt-eval` — same span shift as seq_empty
+- [ ] `tests/corpus/eval/stdlib/slice_float_coercion.llt-eval` — warn: `cannot unify Int with Float` span changed
+- [ ] `tests/corpus/eval/stdlib/rest_seq.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
+- [ ] `tests/corpus/eval/stdlib/cons_seq.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
+- [ ] `tests/corpus/eval/laziness/deep_chain_50.llt-eval` — last expected warn line `field 'result' not found in []` no longer produced
+- [ ] `tests/corpus/eval/functions/fn_kotlin_apply_mixed_keys.llt-eval` (and `_named`, `_positional`, `_reorder`, `_sparse_keys`) — warn: `cannot unify Fn@? [?] with _t0` vs old arity mismatch text
+- [ ] `tests/corpus/eval/errors/flatten_seq_error.llt-eval` — warn: `cannot unify [] with Seq[?]` span changed
+- [ ] `tests/corpus/eval/errors/seq_collect_non_seq.llt-eval` — warn: span changed
+- [ ] `tests/corpus/eval/errors/slice_on_non_dict.llt-eval` — warn: `cannot unify [] with 42` (was `[...]`)
+- [ ] `tests/corpus/eval/errors/sort_seq_error.llt-eval` — warn: span changed
+- [ ] `tests/corpus/eval/errors/proxy_access_error_has_context.llt-eval` — warn: `cannot unify Proxy with [test: _t2]` (was `[test: _t2 ...]` with open-row marker)
+- [ ] `tests/corpus/eval/errors/proxy_handler_error.llt-eval` — same open-row marker removal
+- [ ] `tests/corpus/eval/errors/input_validation_mismatch.llt-eval` — warn: `expects contract []` (was `expects contract [...]`)
+- [ ] `tests/corpus/eval/errors/apply_builtin_named_arg.llt-eval` — warn text changed
+
+*Type checker improved — warning no longer produced, remove the `=== warn` section entirely:*
+- [ ] `tests/corpus/eval/errors/bracket_access_missing_key.llt-eval` — type checker now resolves field access; `field 'b' not found` warning is gone
+- [ ] `tests/corpus/eval/errors/dot_access_missing_key.llt-eval` — same; `field 'missing' not found` warning gone
+- [ ] `tests/corpus/eval/errors/no_match_shows_keys.llt-eval` — same; `field 'xyz' not found` warning gone
+- [ ] `tests/corpus/eval/errors/typo_suggestion.llt-eval` — same; `field 'usernme' not found` warning gone
+
+*Eval behavior changed — update expected output/error:*
+- [ ] `tests/corpus/eval/errors/closed_record_rejects_extra.llt-eval` — under BAS width subtyping, `@[name: Str]` now accepts dicts with extra fields; TypeAssert no longer rejects them; this test belongs in a "width-subtyping" success test, not errors/
+- [ ] `tests/corpus/eval/type_assertions/guard_default_extra_field.llt-eval` — expected `Dict({"x": Int(5)})` but BAS now preserves extra fields; output is `Dict({"x": Int(1), "y": Int(2)})`
+- [ ] `tests/corpus/eval/typecheck/bas_width_subtyping.llt-eval` — output changed after RowTail removal; update expected output to match new format
+
+*Test bugs — fix the corpus test itself:*
+- [ ] `tests/corpus/eval/stdlib/get_or_missing.llt-eval` — uses bare `b` (undefined variable) instead of `"b"` (string key); fix to `[get-or [a: 1] "b" 99]` and remove `=== warn` section
+- [ ] `tests/corpus/eval/stdlib/encoding_scoping.llt-eval` (and `path_scoping`, `re_scoping`, `strings_scoping`, `toml_scoping`, `math_scoping`) — test intentionally calls undefined functions inside `[try ...]` to verify they're not in scope without `include`; the `=== warn` section is technically expected but these tests belong in `tests/corpus/eval/stdlib/errors/` not the clean stdlib directory; reorganize
+
+*Tinct type checker bugs — causing spurious warnings on correct code:*
+- See `typeenv-wrapper-pattern` sprint below for the root cause and fix.
+- [ ] ~30 tests in `builtins/` test error conditions (arity, wrong types, stubs) and have `=== error` / `=== warn` sections; these are intentional and correct behavior, but for clarity should be reorganized into `tests/corpus/eval/builtins/errors/` to match the convention that success-path tests have no error/warn sections (`tests/corpus/eval/builtins/`)
+
+### `typeenv-wrapper-pattern`: Apply private builtin-NAME + public prelude wrapper consistently
+
+**Problem:** `TypeEnv::with_builtins()` is a manual second source of truth for function types. It drifts from reality (e.g. `concat` registered as 1-arg but is 2-arg, `cycle`/`join` typed as `Seq[?]` but callers pass Dict literals). The correct pattern — already used for `map`, `filter`, `reduce`, `take`, `drop`, `+`, `-`, `=`, `<` — is: Rust registers `builtin-NAME`, prelude exports `NAME` with proper type annotations, TypeEnv only has `builtin-NAME` (for prelude's internal use). See `doc/07-type-extensions.md §Boolean-Algebraic Subtyping` for rationale.
+
+**Functions that need Rust rename to `builtin-NAME` + prelude wrapper added:**
+
+Collection/Sequence operations (these are the root cause of Seq vs Dict literal type mismatches):
+- [ ] `join` → `builtin-join`; add `join@[doc: "Join elements into string"]: [fn@String [sep@String xs@[Dict Seq]] [builtin-join sep xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `concat` → `builtin-concat`; add `concat@[doc: "Concatenate two sequences or dicts"]: [fn [xs ys] [builtin-concat xs ys]]` with correct 2-arg signature — **this is the root cause of the `concat` TypeEnv arity bug** (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `cycle` → `builtin-cycle`; add `cycle@[doc: "Repeat xs infinitely"]: [fn@Seq [xs] [builtin-cycle xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `range` → `builtin-range`; add `range@[doc: "Integer range [start end)"]: [fn@Seq [start@Int end@Int] [builtin-range start end]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `repeat` → `builtin-repeat`; add `repeat@[doc: "Repeat value infinitely"]: [fn@Seq [x] [builtin-repeat x]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `iterate` → `builtin-iterate`; add `iterate@[doc: "f(x), f(f(x)), ..."]: [fn@Seq [f@Fn x] [builtin-iterate f x]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `unfold` → `builtin-unfold`; add `unfold@[doc: "Generate sequence from seed"]: [fn@Seq [f@Fn seed] [builtin-unfold f seed]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `collect` → `builtin-collect`; add `collect@[doc: "Materialize lazy Seq to Dict"]: [fn@Dict [xs@Seq] [builtin-collect xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `seq` → `builtin-seq`; add `seq@[doc: "Construct a Seq from head and tail"]: [fn@Seq [head tail@Seq] [builtin-seq head tail]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `head` → `builtin-head`; add `head@[doc: "First element of a Seq"]: [fn [xs@Seq] [builtin-head xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `tail` → `builtin-tail`; add `tail@[doc: "All but first element of Seq"]: [fn@Seq [xs@Seq] [builtin-tail xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `sort` → `builtin-sort`; add `sort@[doc: "Sort a dict by keys"]: [fn@Dict [xs@Dict] [builtin-sort xs]]`; note: prelude already has `sorted`, `sort-by`, `sorted-by` — this is the raw underlying builtin (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `reverse` → `builtin-reverse`; add `reverse@[doc: "Reverse a dict or Seq"]: [fn [xs] [builtin-reverse xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `first` → `builtin-first`; add `first@[doc: "First element"]: [fn [xs] [builtin-first xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `last` → `builtin-last`; add `last@[doc: "Last element"]: [fn [xs] [builtin-last xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `rest` → `builtin-rest`; add `rest@[doc: "All but first element"]: [fn [xs] [builtin-rest xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] `cons` → `builtin-cons`; add `cons@[doc: "Prepend element"]: [fn [x xs] [builtin-cons x xs]]` (`src/builtins.rs`, `stdlib/prelude.llt`)
+
+**TypeEnv entries to REMOVE from `TypeEnv::with_builtins()` after wrappers are added** (type now comes from prelude annotation):
+- [ ] Remove `join`, `concat`, `cycle`, `range`, `repeat`, `iterate`, `unfold`, `collect`, `seq`, `head`, `tail`, `sort`, `reverse`, `first`, `last`, `rest`, `cons` from TypeEnv::with_builtins() — prelude wrappers will drive the type (`src/type_env.rs`)
+
+**TypeEnv entries to KEEP** (prelude uses these internally during its own type-checking, or they are truly primitive):
+- `builtin-*` aliases — used by prelude wrappers
+- `+`, `-`, `*`, `/`, `=`, `<`, `if` — operators used throughout prelude
+- `keys`, `length`, `merge`, `append`, `builtin-get` — dict primitives
+- `str`, `split`, `replace`, `upper`, `lower`, `trim`, `str-length`, `str-slice`, `str-contains?`, `starts-with?`, `ends-with?` — string ops used in prelude
+- `char-code`, `chr`, `str-chars`, `str-bytes`, `bytes-str`, `bytes*` — char/bytes primitives
+- All math: `floor`, `round`, `sqrt`, trig, `pow`, `atan2`, `nan?`, `inf?`, `finite?`
+- All bitwise: `band`, `bor`, `bxor`, `shl`, `shr`
+- All type predicates: `int?`, `float?`, `str?`, `bool?`, `dict?`, `fn?`, `null?`, `num?`, `bytes?`, `seq?`, `record?`, `map?`
+- `error`, `try`, `force`, `eval`, `apply`, `until` — evaluation primitives
+- `from-json`, `to-int`, `to-float`, `float`, `type-of`, `llt-repr`, `tag-of`, `variant`, `get?` — conversion/introspection
+- All I/O and capability functions — too I/O-domain-specific for prelude wrappers
+- All date-time functions — domain-specific
+- URI/HTTP session functions — domain-specific
+- `include`, `env`, `emit`, `proxy`, `gensym`, `validate` — system/meta functions
+
+**Update all call sites** after renaming:
+- [ ] Audit `stdlib/prelude.llt`, `stdlib/net.llt`, `stdlib/io.llt`, `stdlib/toml-lite.llt`, `stdlib/regex.llt` for direct calls to `join`, `concat`, `cycle`, `range`, `repeat`, `iterate`, `unfold`, `collect`, `seq`, `head`, `tail`, `sort`, `reverse`, `first`, `last`, `rest`, `cons` — update to use `builtin-NAME` in private helpers and `NAME` (via the wrapper) in public exports (`stdlib/`)
+- [ ] Update all corpus test files that call the renamed functions to ensure they still pass (`tests/corpus/`)
+- [ ] Remove `=== warn` sections from `cycle.llt-eval`, `join.llt-eval`, `concat*.llt-eval`, `rest_seq.llt-eval`, `cons_seq.llt-eval` and other stdlib tests once TypeEnv drift is fixed (`tests/corpus/eval/stdlib/`)
 
 ## Standard Library
 

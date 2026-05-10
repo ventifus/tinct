@@ -293,7 +293,7 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "Bool"),
             Type::Bytes => write!(f, "Bytes"),
             Type::Number => write!(f, "Number"),
-            Type::Unknown => write!(f, "?"),
+            Type::Unknown => write!(f, "_"),
             Type::Top => write!(f, "\u{22a4}"),
             Type::TypeVar(name, _level) => write!(f, "{name}"),
             Type::Record(row) => {
@@ -2389,6 +2389,8 @@ impl Default for TypeEnv {
 pub struct TypeError {
     pub message: String,
     pub span: Span,
+    /// Extra `= note:` lines attached at the error-generation site (e.g. "caused by" context).
+    pub notes: Vec<String>,
 }
 
 impl TypeError {
@@ -2396,6 +2398,7 @@ impl TypeError {
         Self {
             message: message.into(),
             span,
+            notes: Vec::new(),
         }
     }
 
@@ -2495,11 +2498,17 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
         out.push_str(&snippet);
     }
 
-    // Contextual notes
+    // Contextual notes (pattern-matched); suppressed when attached notes already explain the cause
     let note = type_error_note(err);
     if let Some(n) = note {
         out.push('\n');
         out.push_str(&n);
+    }
+
+    // Attached notes added at error-generation time (e.g. "caused by" for cascade T002s)
+    for note in &err.notes {
+        out.push('\n');
+        out.push_str(note);
     }
 
     out
@@ -2514,6 +2523,12 @@ fn type_error_note(err: &TypeError) -> Option<String> {
     if msg.starts_with("arity mismatch") {
         Some("  = note: check that you are passing the correct number of arguments".to_string())
     } else if msg.starts_with("undefined variable") {
+        // When a caused-by note is attached (cascade from a failed definition), suppress the
+        // generic "not defined in any enclosing scope" note — it would be misleading.
+        if !err.notes.is_empty() {
+            return None;
+        }
+
         // Extract the variable name from "undefined variable: <name>"
         let name = msg
             .strip_prefix("undefined variable: ")

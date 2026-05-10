@@ -643,6 +643,10 @@ impl Type {
     /// be `{x: τ}` (exactly one field x) and `{y: π}` (exactly one field y) when x ≠ y.
     /// This is the structural analogue of nominal tag annihilation (#C1 & #C2 ≤ Never).
     pub fn simplify_type(ty: Type) -> Type {
+        // Bottom-up pass: simplify children first, then apply top-level rules.
+        // This ensures that e.g. Union([Union([Int, Int]), Str]) fully collapses.
+        let ty = Self::simplify_children(ty);
+
         match ty {
             // Single-element union/intersection — identity
             Type::Union(members) if members.len() == 1 => {
@@ -672,6 +676,89 @@ impl Type {
                     Type::normalize_union(filtered)
                 }
             }
+            // Literal promotion: Union of multiple IntLiterals → replace with Int.
+            // Union of multiple StringLiterals → replace with Str.
+            // This mirrors the [U-SUBSUME] rule for literal types: IntLiteral(n) <: Int, so
+            // any union of IntLiterals can be widened to Int. Applied when the union contains
+            // 2+ distinct IntLiterals (or StringLiterals) so that infer_if's branch joins
+            // produce a clean type rather than a collection of literals.
+            // E.g., Union([IntLiteral(0), IntLiteral(42)]) → Int (via this rule + subsumption).
+            Type::Union(members)
+                if members
+                    .iter()
+                    .filter(|m| matches!(m, Type::IntLiteral(_)))
+                    .count()
+                    >= 2 =>
+            {
+                // Replace all IntLiterals with Int, then re-normalize
+                let promoted: Vec<Type> = members
+                    .into_iter()
+                    .map(|m| if matches!(m, Type::IntLiteral(_)) { Type::Int } else { m })
+                    .collect();
+                Type::simplify_type(Type::normalize_union(promoted))
+            }
+            Type::Union(members)
+                if members
+                    .iter()
+                    .filter(|m| matches!(m, Type::StringLiteral(_)))
+                    .count()
+                    >= 2 =>
+            {
+                // Replace all StringLiterals with Str, then re-normalize
+                let promoted: Vec<Type> = members
+                    .into_iter()
+                    .map(|m| if matches!(m, Type::StringLiteral(_)) { Type::Str } else { m })
+                    .collect();
+                Type::simplify_type(Type::normalize_union(promoted))
+            }
+            // Subsumption elimination: if A <: B for two members, drop A (B covers it).
+            // This collapses e.g. Union([Int, IntLiteral(0)]) → Int since IntLiteral(0) <: Int.
+            // Conditions:
+            // 1. No inference variables (concrete types only) — avoid eliminating free TypeVars.
+            // 2. Supertype is not Negation — the conservative (_, Negation(_)) => true rule in
+            //    is_subtype is an approximation and must not drive subsumption elimination.
+            // 3. At least one pairwise (A, B) where A <: B and B is not Negation.
+            Type::Union(members) if members.iter().all(|m| !m.has_inference_vars()) && {
+                members.iter().enumerate().any(|(i, a)| {
+                    members.iter().enumerate().any(|(j, b)| {
+                        i != j
+                            && !matches!(b, Type::Negation(_))
+                            && Type::is_subtype(a, b)
+                    })
+                })
+            } => {
+                // Remove members that are strict subtypes of another non-Negation member
+                let mut to_keep: Vec<bool> = vec![true; members.len()];
+                for i in 0..members.len() {
+                    if !to_keep[i] {
+                        continue;
+                    }
+                    for j in 0..members.len() {
+                        if i == j || !to_keep[j] {
+                            continue;
+                        }
+                        // Skip if supertype candidate is Negation (conservative rule not sound here)
+                        if matches!(members[j], Type::Negation(_)) {
+                            continue;
+                        }
+                        // If members[i] <: members[j], remove members[i]
+                        if Type::is_subtype(&members[i], &members[j]) {
+                            to_keep[i] = false;
+                            break;
+                        }
+                    }
+                }
+                let reduced: Vec<Type> = members
+                    .into_iter()
+                    .zip(to_keep.into_iter())
+                    .filter_map(|(m, keep)| if keep { Some(m) } else { None })
+                    .collect();
+                if reduced.is_empty() {
+                    Type::Never
+                } else {
+                    Type::normalize_union(reduced)
+                }
+            }
             // S-RcdTop: union of closed single-field records with disjoint field names → Top
             Type::Union(members) => {
                 if Self::check_s_rcd_top(&members).is_some() {
@@ -690,6 +777,47 @@ impl Type {
             }
             // All other types are already in simplified form
             _ => ty,
+        }
+    }
+
+    /// Recursively simplify all children of a compound type (bottom-up pass).
+    /// Does NOT apply top-level simplification rules — that is done by `simplify_type`.
+    fn simplify_children(ty: Type) -> Type {
+        match ty {
+            Type::Union(members) => {
+                Type::Union(members.into_iter().map(Type::simplify_type).collect())
+            }
+            Type::Intersection(members) => {
+                Type::Intersection(members.into_iter().map(Type::simplify_type).collect())
+            }
+            Type::Negation(inner) => {
+                Type::Negation(Box::new(Type::simplify_type(*inner)))
+            }
+            Type::Record(row) => {
+                let fields = row
+                    .fields
+                    .into_iter()
+                    .map(|(k, v)| (k, Type::simplify_type(v)))
+                    .collect();
+                Type::Record(Row { fields })
+            }
+            Type::Seq(elem) => Type::Seq(Box::new(Type::simplify_type(*elem))),
+            Type::Map(k, v) => {
+                Type::Map(
+                    Box::new(Type::simplify_type(*k)),
+                    Box::new(Type::simplify_type(*v)),
+                )
+            }
+            Type::Function { params, ret, variadic } => {
+                let params = params
+                    .into_iter()
+                    .map(|(name, ty)| (name, Type::simplify_type(ty)))
+                    .collect();
+                let ret = Box::new(Type::simplify_type(*ret));
+                Type::Function { params, ret, variadic }
+            }
+            // Primitive types and type variables have no children to recurse into
+            other => other,
         }
     }
 
@@ -1181,6 +1309,10 @@ pub struct InferState {
     /// Type class instance environment: registry of instance declarations.
     /// Globally registered: coherence requires global uniqueness.
     pub instance_env: InstanceEnv,
+    /// Names of bindings that failed type inference, mapping to the span of the failed binding.
+    /// Used to annotate downstream T002 "undefined variable" errors with a "caused by" note
+    /// that points to the failed definition site instead of just saying "not in scope".
+    pub failed_bindings: HashMap<String, Span>,
 }
 
 impl InferState {
@@ -1247,6 +1379,7 @@ impl InferState {
             bounds: HashMap::new(),
             class_env,
             instance_env: InstanceEnv::new(),
+            failed_bindings: HashMap::new(),
         }
     }
 
@@ -6684,6 +6817,118 @@ mod tests {
         assert!(Type::is_subtype(&intersection, &target));
         // But {x: Int} & {x: Str} <: Never is false (S-ClsBot doesn't fire, same field names)
         assert!(!Type::is_subtype(&intersection, &Type::Never));
+    }
+
+    // -------------------------------------------------------------------------
+    // simplify_type: recursive child simplification (Step 2)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_simplify_type_nested_union_unwraps() {
+        // Union([Union([Int])]) → Int via bottom-up simplification
+        let inner = Type::Union(vec![Type::Int]);
+        let outer = Type::Union(vec![inner]);
+        // simplify_children first: inner Union([Int]) → Int
+        // then outer Union([Int]) → Int
+        assert_eq!(Type::simplify_type(outer), Type::Int);
+    }
+
+    #[test]
+    fn test_simplify_type_seq_recurses() {
+        // Seq(Union([Int])) → Seq(Int)
+        let ty = Type::Seq(Box::new(Type::Union(vec![Type::Int])));
+        assert_eq!(
+            Type::simplify_type(ty),
+            Type::Seq(Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn test_simplify_type_negation_recurses() {
+        // Negation(Union([Int])) → Negation(Int)
+        let ty = Type::Negation(Box::new(Type::Union(vec![Type::Int])));
+        assert_eq!(
+            Type::simplify_type(ty),
+            Type::Negation(Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn test_simplify_type_record_fields_recurse() {
+        // Record({x: Union([Int])}) → Record({x: Int})
+        let mut fields = HashMap::new();
+        fields.insert("x".to_string(), Type::Union(vec![Type::Int]));
+        let ty = Type::Record(Row { fields });
+        match Type::simplify_type(ty) {
+            Type::Record(row) => {
+                assert_eq!(row.fields.get("x"), Some(&Type::Int));
+            }
+            other => panic!("expected Record, got {other}"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // simplify_type: subsumption elimination and literal promotion
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_simplify_type_int_literal_subtype_of_int_eliminated() {
+        // Union([Int, IntLiteral(0)]) → Int (subsumption: IntLiteral(0) <: Int)
+        let ty = Type::Union(vec![Type::Int, Type::IntLiteral(0)]);
+        assert_eq!(Type::simplify_type(ty), Type::Int);
+    }
+
+    #[test]
+    fn test_simplify_type_two_int_literals_promote_to_int() {
+        // Union([IntLiteral(0), IntLiteral(42)]) → Int (literal promotion)
+        let ty = Type::Union(vec![Type::IntLiteral(0), Type::IntLiteral(42)]);
+        assert_eq!(Type::simplify_type(ty), Type::Int);
+    }
+
+    #[test]
+    fn test_simplify_type_two_string_literals_promote_to_str() {
+        // Union([StringLiteral("a"), StringLiteral("b")]) → Str (literal promotion)
+        let ty = Type::Union(vec![
+            Type::StringLiteral("a".to_string()),
+            Type::StringLiteral("b".to_string()),
+        ]);
+        assert_eq!(Type::simplify_type(ty), Type::Str);
+    }
+
+    #[test]
+    fn test_simplify_type_single_int_literal_unchanged() {
+        // Union([IntLiteral(42)]) → IntLiteral(42) (single member unwraps, not promoted)
+        let ty = Type::Union(vec![Type::IntLiteral(42)]);
+        assert_eq!(Type::simplify_type(ty), Type::IntLiteral(42));
+    }
+
+    #[test]
+    fn test_simplify_type_int_literal_with_str_no_promotion() {
+        // Union([IntLiteral(0), Str]) — only one IntLiteral, no promotion, stays as union
+        let ty = Type::Union(vec![Type::IntLiteral(0), Type::Str]);
+        match Type::simplify_type(ty) {
+            Type::Union(members) => {
+                assert_eq!(members.len(), 2);
+            }
+            other => panic!("expected Union, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_simplify_type_function_params_recurse() {
+        // Function(params=[Union([Int])], ret=Union([Str])) → Function(params=[Int], ret=Str)
+        let ty = Type::Function {
+            params: vec![(None, Type::Union(vec![Type::Int]))],
+            ret: Box::new(Type::Union(vec![Type::Str])),
+            variadic: false,
+        };
+        match Type::simplify_type(ty) {
+            Type::Function { params, ret, .. } => {
+                assert_eq!(params[0].1, Type::Int);
+                assert_eq!(*ret, Type::Str);
+            }
+            other => panic!("expected Function, got {other}"),
+        }
     }
 
 }

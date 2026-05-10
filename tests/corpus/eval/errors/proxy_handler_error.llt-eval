@@ -20,4 +20,4 @@
 [E080] handler called
 
 === warn
-cannot unify Proxy with [test: _t2 ...] at 17:1-17:65
+cannot unify Proxy with [test: _t2] at 17:1-17:65

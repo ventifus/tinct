@@ -2,6 +2,3 @@
 data.xyz
 === error
 [E001] key not found: xyz (available keys: foo, bar, baz)
-
-=== warn
-field 'xyz' not found in [bar: 2 baz: 3 foo: 1] at 2:1-2:9

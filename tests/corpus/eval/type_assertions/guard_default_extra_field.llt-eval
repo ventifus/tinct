@@ -1,4 +1,7 @@
-# Default used on Record type mismatch (extra field in closed record)
+# BAS width subtyping: record with extra field satisfies annotation with fewer fields.
+# [@[type: [x: Int] default: [x: 5]] [x: 1  y: 2]]
+# Under BAS, {x:1, y:2} <: {x: Int} (width subtyping), so the assertion PASSES and
+# the default is NOT used. The full dict including the extra field is returned.
 [@[type: [x: Int]  default: [x: 5]] [x: 1  y: 2]]
 === out
-Dict({"x": Int(5)})
+Dict({"x": Int(1), "y": Int(2)})
