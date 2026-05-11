@@ -2,7 +2,7 @@
 
 For the user-facing annotation syntax, see [Type Annotations](05-type-annotations.md). For the formal inference algorithm, see [Type Inference](06-type-inference.md).
 
-**Terminology note:** The current implementation uses `RowTail` (not `RowRest`). See Part 8 for the migration reference.
+**Migration status:** The Remy-style row polymorphism design (Parts 1-10 below) has been **archived** and superseded by Boolean-Algebraic Subtyping (BAS). `RowTail`, `RowVar`, `row_map`, and `row_vars` have been removed from the codebase. Under BAS, all records are closed; openness is expressed via width subtyping. See §Boolean-Algebraic Subtyping for the live specification.
 
 ## TypeAssert Runtime Validation
 
@@ -87,13 +87,13 @@ Where `guard(thunk, τ, field_path, span)` creates a guarded thunk — a new `Th
 
 If materialization of the inner thunk raises an error (e.g., division by zero), that error propagates immediately — it is not a type mismatch and does not trigger `default:`.
 
-**Proxy contracts preserve laziness.** [VM-RECORD-PROXY] performs two phases: (1) *immediate shape validation* — required keys exist, cardinality for closed records — which is eager and runs at the assertion site, and (2) *lazy field type validation* — guard thunks that check field types on access. The key insight from Findler & Felleisen (2002): compound type contracts should defer field checking to the point of observation. A field that is never accessed is never validated — and never forced. This preserves the fundamental lazy evaluation guarantee: unreferenced values are never computed.
+**Proxy contracts preserve laziness.** [VM-RECORD-PROXY] performs two phases: (1) *immediate shape validation* — required keys exist, cardinality for closed records — which is eager and runs at the assertion site, and (2) *lazy field type validation* — guard thunks that check field types on access. The key insight from Findler & Felleisen (2002): compound type contracts should defer field checking to the point of observation. A field that is never accessed is never validated — and never materialized. This preserves the fundamental lazy evaluation guarantee: unreferenced values are never computed.
 
 ```tinct
 data: [@[name: String age: Int] [from-json input]]
 # Shape check passes immediately (dict has "name" and "age" keys)
 # data.name — materializes, guard checks String, returns value
-# data.age — never accessed, never forced, never validated
+# data.age — never accessed, never materialized, never validated
 ```
 
 **Validation depth by type constructor:**
@@ -107,7 +107,7 @@ data: [@[name: String age: Int] [from-json input]]
 | `Record(fields, Open)` | Shape only | Immediate | Required keys present |
 | `Record` field types | Per-field via guard | On access | Proxy contract — lazy |
 | `Fn(params → ret)` | Tag only — "is callable" | Immediate | Params/return opaque (Findler-style monitor would be needed for deep checking) |
-| `Seq(τ)` | Tag only — "is sequence" | Immediate | Element type opaque; forcing all would diverge |
+| `Seq(τ)` | Tag only — "is sequence" | Immediate | Element type opaque; materializing all would diverge |
 | `TypeVar(α)` | Always passes | Immediate | Residual from polymorphic instantiation; treated as `Unknown` |
 
 Note on type-level variables: `TypeVar(α)` and `RowVar(r)` are both "variables" but serve different purposes. A `TypeVar` in a field type position indicates unconstrained polymorphism — treated as `Any` at runtime. A `RowVar` in the row rest position indicates structural openness — treated as `Open` at runtime (allow extra fields). `TypeVar` values in `resolved_type` arise only from polymorphic type schemes where a variable was not constrained during inference. Unresolved type aliases produce a `TypeError` during elaboration — they never reach the evaluator as `TypeVar`.
@@ -186,6 +186,29 @@ For guard failures (detected on field access), the error includes the field path
 
 **References.** Findler, R. & Felleisen, M. (2002). "Contracts for Higher-Order Functions." Strickland, T.S., Tobin-Hochstadt, S., Findler, R. & Felleisen, M. (2012). "Chaperones and Impersonators: Run-time Support for Reasonable Interposition." Wadler, P. & Findler, R. (2009). "Well-Typed Programs Can't Be Blamed." Siek, J. & Taha, W. (2006). "Gradual Typing for Functional Languages." Dunfield, J. & Krishnaswami, N. (2021). "Bidirectional Typing."
 
+## Numeric Representation Constraints (`repr:`)
+
+The `repr:` annotation property enforces numeric bit width and signedness constraints at type-checking time. It accepts eight string literals corresponding to Rust's integer types: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`.
+
+```tinct
+# Type checker ensures port has a numeric type
+port@[type: Int  repr: "u16"]: 8080
+
+# repr: without type: — type checker infers numeric constraint
+flags@[repr: "u32"]: 0x1F
+
+# Type error: repr: requires numeric type
+name@[type: String  repr: "u8"]: "hello"   # ERROR: repr: requires numeric type
+```
+
+**Semantics:**
+
+- **Type-checking:** The type checker verifies that the annotated expression has type `Int`, `Float`, or `Number`. If the inferred type is non-numeric, a type error is raised.
+- **Runtime:** The `repr:` property is ignored during evaluation — it does not coerce values or enforce bounds. Runtime integer overflow follows Rust's wrapping semantics regardless of `repr:` width.
+- **Use cases:** Document intent for serialization (e.g., protocol buffer field widths), signal bit-packing layouts, annotate configuration schemas with external constraints.
+
+**Implementation:** `src/typecheck_annot.rs:100-127` extracts the `repr:` value from the annotation dict and validates it against the allowed set. The type checker then verifies the annotated expression unifies with a numeric type.
+
 ## Dual-Dispatch Builtins
 
 **Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. The type checker assigns these builtins type `Unknown` because:
@@ -232,7 +255,7 @@ Failed(Box<EvalError>)
 
 When a thunk fails to materialize (any state → error), it transitions to `Failed` and stores the error. Future materialization attempts return a clone of the cached error with the `materialization_span` updated to reflect the current access location, preserving the original stack frames. This matches Nix's `nFailed` pattern and prevents quadratic behavior when multiple accesses trigger the same failing computation.
 
-**`PendingBuiltin` preserves laziness:** When the evaluator encounters `[call $builtin ...]`, it does not immediately execute the builtin. Instead, it wraps the builtin name and unevaluated argument thunks in a `PendingBuiltin` state. The builtin executes only when the result is materialized (accessed). This deferred execution is critical for preserving lazy semantics — builtins like `$if` can selectively materialize arguments, and operations like `$map` can return lazy structures without forcing computation.
+**`PendingBuiltin` preserves laziness:** When the evaluator encounters `[call $builtin ...]`, it does not immediately execute the builtin. Instead, it wraps the builtin name and unevaluated argument thunks in a `PendingBuiltin` state. The builtin executes only when the result is materialized (accessed). This deferred execution is critical for preserving lazy semantics — builtins like `$if` can selectively materialize arguments, and operations like `$map` can return lazy structures without materializing computation.
 
 This completes the laziness picture:
 
@@ -242,7 +265,7 @@ This completes the laziness picture:
 | `PendingBuiltin` | Deferred builtin call | `[call $builtin ...]` |
 | `PendingCall` | Deferred function application | `$map`, `$update`, lazy combinators |
 | `InProgress` | Cycle detection sentinel | Materialization |
-| `Materialized` | Computed value | After first force |
+| `Materialized` | Computed value | After first materialization |
 | `Failed` | Cached evaluation error | Any failed materialization |
 
 **Impact on existing operations:**
@@ -271,42 +294,42 @@ type BuiltinFn = fn(args, named, depth, call_span) -> Result<Value, Box<EvalErro
 type BuiltinFn = fn(args, named, depth, call_span) -> Result<Rc<Thunk>, Box<EvalError>>;
 ```
 
-Builtins that currently return materialized values wrap them in `Thunk::new_materialized()`. Builtins like `$map` and `$if` can now return thunks directly. This removes the forced materialization boundary that currently prevents builtins from participating in lazy evaluation.
+Builtins that currently return materialized values wrap them in `Thunk::new_materialized()`. Builtins like `$map` and `$if` can now return thunks directly. This removes the eager materialization boundary that currently prevents builtins from participating in lazy evaluation.
 
-**Rationale:** The current signature forces all builtins to return fully materialized values, which prevents operations like `$if` from returning the chosen branch as a thunk, and prevents `$map` from returning a dict with lazy PendingCall values. Changing the return type to `Rc<Thunk>` allows builtins to participate in lazy evaluation while maintaining backward compatibility (wrap in `Thunk::new_materialized()` for eager builtins).
+**Rationale:** The current signature requires all builtins to return fully materialized values, which prevents operations like `$if` from returning the chosen branch as a thunk, and prevents `$map` from returning a dict with lazy PendingCall values. Changing the return type to `Rc<Thunk>` allows builtins to participate in lazy evaluation while maintaining backward compatibility (wrap in `Thunk::new_materialized()` for eager builtins).
 
 **Type inference is unchanged** — return types are determined by unifying the call signature during type checking, not by inspecting returned thunk contents. This change is a runtime optimization only.
 
-**Performance trade-off:** Inherently materializing builtins (~60% of the 28 current builtins: arithmetic, string ops, comparisons) pay two extra heap allocations per call (Thunk + Rc wrapper) to wrap their `Value` result. For lazy-capable builtins (`$if`, `$merge`, `$map`, `$update`), this eliminates the forced materialization boundary. Net benefit when lazy operations dominate. If profiling shows the overhead is significant, a dual-signature approach (`EagerBuiltinFn` vs `LazyBuiltinFn`) could be considered.
+**Performance trade-off:** Inherently materializing builtins (~60% of the 28 current builtins: arithmetic, string ops, comparisons) pay two extra heap allocations per call (Thunk + Rc wrapper) to wrap their `Value` result. For lazy-capable builtins (`$if`, `$merge`, `$map`, `$update`), this eliminates the eager materialization boundary. Net benefit when lazy operations dominate. If profiling shows the overhead is significant, a dual-signature approach (`EagerBuiltinFn` vs `LazyBuiltinFn`) could be considered.
 
-## Row-Variable Unification — Kinded Rémy Model (Dict+Tail Representation)
+## Row-Variable Unification — Kinded Rémy Model (Archived, Superseded by BAS)
 
-Replace the current closed-strict/open-lenient record unification with kinded row-variable unification following Rémy (1994). Row variables become first-class participants in type inference with a separate **Row kind**, enabling the type checker to infer record extension and restriction through polymorphic function boundaries. The design omits Rémy's presence/absence flags (tinct has no typed field deletion) but preserves the kind separation that makes the soundness proof clean and leaves the door open for full Rémy if typed field deletion is needed later.
+> **Note:** This section documents the Rémy-style row polymorphism design that was implemented and subsequently replaced by Boolean-Algebraic Subtyping (BAS). The `RowTail` enum, `row_map` in `Substitution`, and `row_vars` in `TypeScheme` have all been removed. Under BAS, all records are closed — openness is expressed via width subtyping in `is_subtype()`. This section is preserved for historical reference; see the BAS section below for the live specification.
 
-**Representation choice:** The Row type uses a **dict+tail** representation (field map plus tail variable) rather than Rémy's cons-list (`Extend(l, τ, ρ)`). Rémy's left-commutativity equations (`l₁:τ₁ ; l₂:τ₂ ; ρ ≡ l₂:τ₂ ; l₁:τ₁ ; ρ`) make rows semantically unordered — the dict+tail representation computes directly in the quotient algebra of rows under these equations, representing each equivalence class as a single canonical form (unordered field map) rather than an arbitrary representative (ordered cons-list). This eliminates the need for a field extraction operation during unification and prevents duplicate labels structurally (the map enforces unique keys). Both representations encode the same abstract algebra; the choice is operational, not theoretical. Bernstein (2024) uses this representation; PureScript and Elm use similar approaches internally.
+The original design replaced closed-strict/open-lenient record unification with kinded row-variable unification following Rémy (1994). Row variables were first-class participants in type inference with a separate **Row kind**, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
 
-**Design rationale:** Rémy (1994) Theorem 4.7 proves principal type existence for the kinded row system. The kind separation prevents the class of soundness bugs found in Elm (issue #656, open since 2015) where row variables and type variables are conflated. Wand (1987, Theorem 1, corrected 1988) proves completeness for the presence-only restriction (no absence flags), which is a subsystem of Rémy's full system. PureScript demonstrates that kinded rows work at production scale. Nickel (Rust-based config language) validates kinded row polymorphism in a Rust codebase similar to tinct's.
+**Representation choice:** The Row type used a **dict+tail** representation (field map plus tail variable) rather than Rémy's cons-list (`Extend(l, τ, ρ)`). Rémy's left-commutativity equations (`l₁:τ₁ ; l₂:τ₂ ; ρ ≡ l₂:τ₂ ; l₁:τ₁ ; ρ`) make rows semantically unordered — the dict+tail representation computes directly in the quotient algebra of rows under these equations, representing each equivalence class as a single canonical form (unordered field map) rather than an arbitrary representative (ordered cons-list).
 
-### Part 1: Row Kind
+**Design rationale:** Rémy (1994) Theorem 4.7 proves principal type existence for the kinded row system. Wand (1987, Theorem 1, corrected 1988) proves completeness for the presence-only restriction (no absence flags). However, BAS (Dolan 2017, Parreaux 2020, Chau & Parreaux 2026) provides a more powerful framework where extensible records emerge from the Boolean algebra of types without needing separate row variables.
+
+### Part 1: Row Kind (ARCHIVED)
 
 **Notation:** This section uses ρ for row variables, following Rémy (1994) and Wand (1987). The [Evaluation](08-evaluation.md) §Scope Chain Semantics section uses ρ for environments, following Launchbury (1993). The two uses are confined to separate sections and do not interact — the row-variable ρ participates in type inference, while the environment ρ participates in evaluation.
 
-Rows are a **separate sort** from types. A row maps labels to types with an optional tail variable:
+Rows were a **separate sort** from types. A row mapped labels to types with an optional tail variable. Under BAS, the `Row` struct is simplified to just fields — no tail:
 
 ```rust
-#[derive(Debug, Clone, Eq)]
-pub enum RowTail {
-    Empty,              // closed row — no more fields
-    RowVar(String, u32), // ρ — row variable (name, Kiselyov generalization level)
+// CURRENT (BAS): All records are closed — no tail variable
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub fields: HashMap<String, Type>,
 }
 
-// PartialEq ignores the level field — two RowVars with the same name are equal regardless of level.
-// Level is a bookkeeping field for generalization, not part of structural identity.
-impl PartialEq for RowTail {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (RowTail::Empty, RowTail::Empty) => true,
-            (RowTail::RowVar(n1, _), RowTail::RowVar(n2, _)) => n1 == n2,
+// ARCHIVED (Rémy): The following types no longer exist in the codebase
+// enum RowTail {
+//     Empty,
+//     RowVar(String, u32),  // ρ — row variable (name, Kiselyov generalization level)
+// }
             _ => false,
         }
     }
@@ -355,14 +378,16 @@ pub struct Row {
 
 The current design is a strict subset — every field entry `l: τ` is implicitly `l: (Present, τ)`. Adding the flag later requires updating field access patterns but not the unification algorithm structure. The extract-and-recurse flow gains a presence-compatibility check (Present must match Present), but the overall partitioning and tail-binding logic is preserved.
 
-### Part 2: Substitution and Occurs Check
+### Part 2: Substitution and Occurs Check (ARCHIVED)
 
-The substitution splits into two kinded maps:
+> **Note:** The `row_map` field has been removed from `Substitution`. Under BAS, all records are closed — substitution operates only on type variables, not row variables. This section is preserved for historical reference.
+
+The original Rémy design split substitution into two kinded maps:
 
 ```rust
 pub struct Substitution {
     pub type_map: HashMap<String, Type>,   // α → τ  (kind: Type)
-    pub row_map: HashMap<String, Row>,     // ρ → r  (kind: Row)
+    // row_map removed — BAS uses closed records only
 }
 ```
 
@@ -426,9 +451,11 @@ type_var_occurs_in_row(α, Row { fields, tail }):
 
 The row-variable occurs check traverses **both** the tail (preventing direct infinite rows like `ρ = {x: Int, ...ρ}`) **and** field types (preventing infinite types through nesting like `ρ = {x: Record({y: Int, ...ρ})}` — where binding ρ to this row would create an infinite structure). This is necessary because `Record(Row)` embeds a row inside a type, so a row variable can appear transitively inside a field type via nesting.
 
-### Part 3: Row Unification
+### Part 3: Row Unification (ARCHIVED)
 
-Row unification is the core of the design. It uses **field partitioning** — given two rows, partition their fields into shared (present in both) and unique (present in only one), then unify shared field types and bind row variable tails to the other side's unique fields. This directly computes in the quotient algebra of Rémy's left-commutativity equations.
+> **Note:** Row unification has been replaced by BAS lattice operations. Under BAS, record unification is handled via `is_subtype()` checks using Boolean algebra rules, not field partitioning. This section describes the superseded Rémy-era algorithm.
+
+In the original Rémy design, row unification was the core of the type system. It used **field partitioning** — given two rows, partition their fields into shared (present in both) and unique (present in only one), then unify shared field types and bind row variable tails to the other side's unique fields. This directly computed in the quotient algebra of Rémy's left-commutativity equations.
 
 **Unification algorithm:**
 
@@ -565,7 +592,7 @@ All record unification delegates to row unification. The current nine-case `matc
 
 **Complexity:** Field partitioning is O(n) where n is the total number of fields across both rows (hash-based set operations on HashMap keys). This improves on the cons-list extract-and-recurse approach which is O(n²) worst case (O(n) scan per field). For tinct's use case (configuration records, typically < 100 fields) both are acceptable, but O(n) is strictly better.
 
-### Part 4: Instantiation and Generalization
+### Part 4: Instantiation and Generalization (ARCHIVED)
 
 Row variables participate in generalization and instantiation via the standard HM mechanism, extended to two kinds.
 
@@ -597,23 +624,25 @@ instantiate(τ, counter):
   return apply_type(τ, renaming)
 ```
 
-Row variables and type variables use **separate namespaces** — `_t0` is unambiguously a type variable or a row variable depending on which map it appears in. Both share the `_t{n}` naming counter (via `InferState.name_counter`), but are separated by the kinded `type_map` vs `row_map` in Substitution. This separation is enforced structurally by Rust's type system: `type_map: IndexMap<String, Type>` binds type variable names to Type, while `row_map: IndexMap<String, Row>` binds row variable names to Row. A variable name cannot appear in both maps simultaneously during well-formed unification. (User-supplied annotation names that violate kind separation can break this invariant — see `ann_mapping` cross-kind collision in TODO.md.)
+Row variables and type variables use **separate namespaces** — `_t0` is unambiguously a type variable or a row variable depending on which map it appears in. Both share the `_t{n}` naming counter (via `InferState.name_counter`), but are separated by the kinded `type_map` vs `row_map` in Substitution. This separation is enforced structurally by Rust's type system: `type_map: IndexMap<String, Type>` binds type variable names to Type, while `row_map: IndexMap<String, Row>` binds row variable names to Row. A variable name cannot appear in both maps simultaneously during well-formed unification. (User-supplied annotation names that violate kind separation can break this invariant — the `ann_mapping` cross-kind collision is a known limitation.)
 
-**Generalization** (with levels, per [Type Inference](06-type-inference.md) §Let-Generalization): row variables carry levels identically to type variables. A row variable `ρ` with `levels[ρ] > ℓ` is generalized at a let-binding. The `TypeScheme` representation extends to track both:
+**Generalization** (with levels, per [Type Inference](06-type-inference.md) §Let-Generalization): In the original Rémy design, row variables carried levels identically to type variables. Under BAS, the `TypeScheme` structure no longer tracks row variables:
 
 ```rust
 pub struct TypeScheme {
     pub type_vars: Vec<String>,    // universally quantified type variables
-    pub row_vars: Vec<String>,     // universally quantified row variables
+    // row_vars removed — BAS uses closed records, no row variable generalization
     pub body: Type,
 }
 ```
 
-**Dependency note:** Row-variable generalization and levels-based let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) are co-dependent: row variables participate in generalization via the same level-based mechanism as type variables.
+Generalization now operates only on type variables. Record width subtyping is handled via BAS intersection/union rules, not row polymorphism.
 
-### Part 5: Access Chain Constraint Generation
+### Part 5: Access Chain Constraint Generation (ARCHIVED)
 
-With row variables bindable, access chains can generate constraints instead of falling back to `Unknown` (resolving the limitation documented in [Type Inference](06-type-inference.md) §Access Chain Evaluation Part 5).
+> **Note:** Under BAS, access chains no longer generate row variable constraints. Width subtyping is handled via BAS rules, not row polymorphism. This section describes the superseded Rémy-era approach.
+
+In the original Rémy design, row variables enabled constraint generation for access chains instead of falling back to `Unknown`.
 
 ```
 check_dot_access(Γ, e, field) :
@@ -640,9 +669,9 @@ The TypeVar case is new and important: `$x.name` where `$x` has unknown type `α
 
 The RowVar case in Record access binds `ρ` to `Row({field: β}, RowVar(ρ_fresh))`, correctly recording the constraint "ρ must contain field with type β, plus whatever else is in ρ_fresh." This is sound because if ρ is later unified with a row that lacks the field, the binding will conflict.
 
-Part 5 is complete as of row-unification-e.
+Part 5 was complete as of row-unification-e. Now archived — row variables replaced by BAS width subtyping (see §Boolean-Algebraic Subtyping below).
 
-### Part 6: Subtyping
+### Part 6: Subtyping (ARCHIVED)
 
 `is_subtype` handles `Record(Row)` directly using the field map:
 
@@ -661,30 +690,25 @@ is_subtype(Record(Row { fields: F₁, tail: t₁ }), Record(Row { fields: F₂, 
 
 This preserves the current behavior ([Type Inference](06-type-inference.md) §Subtyping S-REC) while working with the new Row representation. The `RowVar` in subtyping position acts as `Open` — consistent with the gradual typing design where unknown row extensions are permitted.
 
-### Part 7: Display
+### Part 7: Display (ARCHIVED)
 
-Row types display using tinct's existing syntax:
+> **Note:** Under BAS, all records are closed. The `tail` field is always `Empty`, and row variable display logic is unused. Record types display as field lists only.
+
+In the BAS era, record types display using field-only syntax (no tail):
 
 ```
-Display for Row { fields, tail }:
+Display for Record(IndexMap<String, Type>):
   field_strs = ["{l}: {τ}" for (l, τ) in fields]
-  tail_str = match tail:
-    Empty     → None
-    RowVar(r) → Some(if r.starts_with("_") then "..." else "...{r}")
-  parts = field_strs ++ [tail_str].flatten()
-  return parts.join("  ")
+  return "[" + field_strs.join("  ") + "]"
 ```
 
-Generated row variable names (from anonymous `...` syntax) are displayed as bare `...` rather than `..._open0` to avoid confusing users with names they didn't write. Named row variables (user-written `...name`) display as `...name`.
+Examples (BAS era):
+- `Record({name: Str, age: Int})` → `[name: Str  age: Int]`
+- `Record({})` → `[]`
 
-Examples:
-- `Record(Row { fields: {name: Str, age: Int}, tail: Empty })` → `[name: Str  age: Int]`
-- `Record(Row { fields: {name: Str}, tail: RowVar("r") })` → `[name: Str ...r]`
-- `Record(Row { fields: {name: Str, age: Int}, tail: RowVar("_open0") })` → `[name: Str  age: Int ...]`
-- `Record(Row { fields: {}, tail: Empty })` → `[]`
-- `Record(Row { fields: {}, tail: RowVar("rest") })` → `[...rest]`
+The original Rémy design supported row variable tails (`...r`) in display output. That logic has been removed.
 
-### Part 8: Migration Reference (Complete)
+### Part 8: Migration Reference (ARCHIVED)
 
 The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and changed `Record(IndexMap, RowRest)` to `Record(Row)`:
 
@@ -707,7 +731,7 @@ The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and ch
 
 **Construction.** Inline struct construction is used in the implementation (e.g., `Row { fields: HashMap::new(), tail: RowTail::Empty }`). Helper functions like `Row::closed()` or `Row::var()` were not added.
 
-### Part 9: Properties
+### Part 9: Properties (ARCHIVED)
 
 **P1 — Principal types.** Every well-typed expression has a principal type under the kinded row unification algorithm. For the presence-only restriction (no absence flags), this follows from Wand (1987, Theorem 1, corrected 1988). The full system with presence/absence flags is covered by Rémy (1994, Theorem 4.7). The dict+tail representation computes in the quotient algebra of Rémy's rows under left-commutativity; since it is isomorphic to the cons-list representation, the principal type theorem applies unchanged.
 
@@ -725,7 +749,7 @@ The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and ch
 
 **P8 — Tail-field disjointness.** The fields of a row and the fields of its resolved tail are disjoint at unification time, not after full substitution resolution. When `unify_remainders` binds a tail `ρ` to `Row { fields: U, tail: t }`, the unique fields `U` were computed as the set difference `F_other \ shared` — fields present in the other row but not in the row containing `ρ`. Since `ρ` is the tail of the row that contributed the `shared` fields, and `U` contains only fields *not* in that row, the two sets are disjoint at binding time. However, later unifications may bind row variables in `t`, surfacing new fields that overlap with the row's explicit fields. The implementation handles this via re-resolution and re-partitioning (Steps 3.5 and 3.6 in `unify_rows`), ensuring that overlapping fields are unified as shared fields before passing the truly disjoint remainders to `unify_remainders`.
 
-### Part 10: Formal References
+### Part 10: Formal References (ARCHIVED)
 
 See [doc/17-references.md §Row polymorphism](17-references.md) for full citations of Rémy (1994), Wand (1987), Gaster & Jones (1996), Harper & Pierce (1991), and Bernstein (2024).
 
@@ -743,24 +767,24 @@ The Precision area does not change any inference rules or subtyping relationship
 
 **Completeness.** Extend type inference to cover named arguments, detect polymorphic recursion, and fix the function variance inconsistency.
 
-- Named arg unification — **implemented**. `Type::Function` carries `params: Vec<(Option<String>, Type)>`. Named args are matched **by name lookup** (`params.iter().find_map(|(pname, pty)| if pname.as_ref() == Some(arg_name) { Some(pty) })`), not positionally by index. Checking fires in CALL-MONO, `check_call` CALL-POLY, and `check_call_with_scheme` Function arm. Partial gaps remain (tracked in TODO.md): same-dict letrec forward references fall through to the TypeVar arm and skip named-arg validation; the positional-zip arity model does not account for named-arg slot reservation.
+- Named arg unification — **implemented**. `Type::Function` carries `params: Vec<(Option<String>, Type)>`. Named args are matched **by name lookup** (`params.iter().find_map(|(pname, pty)| if pname.as_ref() == Some(arg_name) { Some(pty) })`), not positionally by index. Checking fires in CALL-MONO, `check_call` CALL-POLY, and `check_call_with_scheme` Function arm. Partial gaps remain: same-dict letrec forward references fall through to the TypeVar arm and skip named-arg validation; the positional-zip arity model does not account for named-arg slot reservation.
 - Polymorphic recursion detection — forbid with a clear error message ("polymorphic recursion requires explicit type annotation"), rather than silently diverging during inference. Detection is immediate (depth 1): if a recursive call site instantiates a type variable that was bound by an outer call to the same function, report the error. No partial polymorphic recursion is allowed. This item assumes let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) is implemented — without let-polymorphism, every recursive call is monomorphic by definition and the detection is vacuous.
 - CALL-MONO/CALL-POLY divergence fix — the current dual-path design (unify for CALL-POLY, is_subtype for CALL-MONO) gives different verdicts for the same literal type pair depending on whether type variables are present (see [Type Inference](06-type-inference.md) §CALL-MONO/CALL-POLY literal type divergence). The structural recursive `check_expr` from the bidirectional typing design ([Type Inference](06-type-inference.md) §Bidirectional Typing) resolves this by applying [SUB] at leaves and unification only at actual type variable positions. Note: this is unrelated to function subtyping variance rules (contravariant parameters, covariant return), which are already correctly implemented in `src/types.rs:177-196`.
-- Formalize `Unknown` semantics (documentation only) — document the consistency relation that `Unknown` actually implements, distinguishing it from true subtyping. Define what the Gradual Guarantee means for tinct. Identify blame boundaries (TypeAssert, builtin return types, function annotations). See `doc/whatif/gradual-typing.md` for the full analysis.
+- Formalize `Unknown` semantics (documentation only) — document the consistency relation that `Unknown` actually implements, distinguishing it from true subtyping. Define what the Gradual Guarantee means for tinct. Identify blame boundaries (TypeAssert, builtin return types, function annotations). See `doc/whatif/completed/gradual-typing.md` for the full analysis.
 
 Other Completeness items (polymorphic recursion detection, CALL-MONO/CALL-POLY divergence fix, `Unknown` formalization) may proceed in parallel with Precision.
 
 **Relationship to other work.** The §Row-Variable Unification and let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) are separate infrastructure areas, not part of this roadmap. Completeness's polymorphic recursion detection assumes let-generalization is implemented. Row variable binding is complete as of row-unification-e.
 
-**Expressiveness.** Three independent features, each addressed by a specific condition. These are design extensions analyzed in `doc/whatif/` files.
+**Expressiveness.** Three independent features, each addressed by a specific condition. These are design extensions analyzed in `doc/whatif/completed/` files.
 
 | Feature | Condition | Analysis |
 |---------|-----------|----------|
-| Gradual typing formalization | `Unknown`-as-top-and-bottom causes a soundness bug that affects users | `doc/whatif/gradual-typing.md` |
-| Type classes | User-defined types need to participate in builtin protocols (Eq, Ord, Num) — see `doc/whatif/typeclasses.md` for the accepted design | `doc/whatif/typeclasses.md` |
-| Union types | `Unknown` typing for dual-dispatch builtins causes false positives in practice | `doc/whatif/union-types.md` |
+| Gradual typing formalization | `Unknown`-as-top-and-bottom causes a soundness bug that affects users | `doc/whatif/completed/gradual-typing.md` |
+| Type classes | User-defined types need to participate in builtin protocols (Eq, Ord, Num) — see `doc/whatif/completed/typeclasses.md` for the accepted design | `doc/whatif/completed/typeclasses.md` |
+| Union types | `Unknown` typing for dual-dispatch builtins causes false positives in practice | `doc/whatif/completed/union-types.md` |
 
-Expressiveness features are independent of each other — any can be adopted without the others. The `doc/whatif/` files analyze what each adoption would require, what it would gain and lose, and recommend an implementation approach.
+Expressiveness features are independent of each other — any can be adopted without the others. The `doc/whatif/completed/` files analyze what each adoption would require, what it would gain and lose, and recommend an implementation approach.
 
 ## Boolean-Algebraic Subtyping (BAS)
 
@@ -811,6 +835,6 @@ Dict = Record ∨ Map[K V]
 
 `Record` uses BAS row intersection for multi-field records. `Map[K V]` is a parameterized type constructor for homogeneous maps. `get` on `Map[K V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
 
-Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/parameterized-dict.md`.
+Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/completed/parameterized-dict.md`.
 
-See `doc/whatif/boolean-algebraic-subtyping.md` for the complete design, and `doc/whatif/parameterized-dict.md` for the Record/Map split implementation.
+See `doc/whatif/completed/boolean-algebraic-subtyping.md` for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.

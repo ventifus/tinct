@@ -32,8 +32,9 @@ timeout@[type: Number  default: 30]   # named param with default
 | `default` | Default value — makes the parameter named/optional |
 | `doc` | Human-readable description — surfaced in LSP hover, ignored by the type checker |
 | `is` | Runtime predicate — `Fn@Bool [Any]`; value must return `true` for the annotation to pass. Used in match arm guards and structural contracts. |
+| `repr` | Numeric representation constraint — enforces integer bit width and signedness. Accepts `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`. Type checker verifies the annotated expression has a numeric type (Int, Float, or Number). |
 
-**Arbitrary keys are allowed.** The core system reads `type:` and `default:` and ignores everything else. Programmers may add any metadata keys they find useful — `doc:`, `is:`, `example:`, `deprecated:`, etc. Tooling can read these at the AST or annotation level. Unknown keys are never an error.
+**Arbitrary keys are allowed.** The core system reads `type:`, `default:`, and `repr:` and ignores everything else. Programmers may add any metadata keys they find useful — `doc:`, `is:`, `example:`, `deprecated:`, etc. Tooling can read these at the AST or annotation level. Unknown keys are never an error.
 
 **Any parameter is nameable at the call site** (Kotlin model). A parameter with `default:` is optional — it uses the default value when neither a positional nor named argument covers it. A parameter without `default:` is required — it must be covered by either a positional argument at its index or a named argument. Required and optional parameters may be freely interleaved in the parameter list.
 
@@ -180,6 +181,7 @@ double: [fn@String [x@Number] [* x 2]]    # Error: body returns Number, not Stri
 **Type conventions:**
 - Uppercase: concrete types (`String`, `Number`, `Person`)
 - Lowercase: type variables (`a`, `b`, `k`, `v`)
+- `String` / `Str`: `String` is the user-facing type name used in annotations; `Str` is the internal `Type::Str` variant name in the implementation. Both refer to the same type. Use `String` in annotations and prose; `Str` appears in type inference output and error messages.
 - `Any`: escape hatch for dynamic data
 - `Null`: empty record `[]` — represents void/unit return type. `@Null` resolves to `Type::Record(Row::Empty)`. Use `fn@Null` for functions that return no meaningful value.
 - `Seq`: lazy sequence type. `[@Seq expr]` in TypeAssert position checks that `expr` is a Seq (element type is `Any`); the `@ElemType` suffix (e.g. `[@Seq@String expr]`) is a **parse error** in TypeAssert brackets — only bare `@Seq` is supported there. To constrain the element type, use the standalone expression form `Seq@String` (an `Annotated` bare word; note: `xs@Seq@String` in parameter annotation position is also a parse error — the parser captures only one `@TypeName` per parameter), which resolves to `Type::Seq(Type::Str)`.
@@ -268,7 +270,7 @@ A: [type [b_field: B]]  B: [type [a_field: A]]
 
 **Semantics: equi-recursive, not iso-recursive.** Type aliases are transparent — they unfold automatically during type checking. There is no explicit `fold`/`unfold` syntax (iso-recursive semantics). This matches Amadio & Cardelli (1993) equi-recursive type equality with a depth guard for decidability.
 
-**Current limitation:** Recursive references within an alias body resolve to `Unknown` (the universal escape hatch). This is sound but imprecise. Full support for recursive algebraic data types requires parameterized type aliases (future work). For configuration use cases, recursive types are uncommon — this feature primarily supports self-hosting stdlib functions that operate on tree-like structures.
+**Current limitation:** Recursive references within an alias body resolve to `Unknown` (the universal escape hatch). This is sound but imprecise. Full support for recursive algebraic data types requires parameterized type aliases. For configuration use cases, recursive types are uncommon — this feature primarily supports self-hosting stdlib functions that operate on tree-like structures.
 
 **Example:**
 
