@@ -17,7 +17,7 @@ A list is equivalent to a dict with integer keys:
 
 **Implementation:** May use different internal representations (dense vector for list-like data, HashMap for sparse/string keys) as a transparent performance optimization. Users never see the difference.
 
-**Type-theoretic implication:** The static `Record` type tracks only string-keyed fields; integer-keyed (positional) entries are not part of the record type. A dict `[a b c  name: Alice]` has record type `[name: String]` — the positional entries `a`, `b`, `c` are invisible to the type checker. This is a deliberate consequence of unifying lists and records: positional entries are list-like data without static field names, while named entries form the record structure that type inference reasons about.
+**Type-theoretic implication:** At runtime, every `[]` expression creates a `Value::Dict`. At the type level, the type checker uses `Record` to describe the static field structure of a dict. The terms "dict" (runtime) and "Record" (type) refer to the same value viewed from two levels. The static `Record` type tracks only string-keyed fields; integer-keyed (positional) entries are not part of the record type. A dict `[a b c  name: Alice]` has record type `[name: String]` — the positional entries `a`, `b`, `c` are invisible to the type checker. This is a deliberate consequence of unifying lists and records: positional entries are list-like data without static field names, while named entries form the record structure that type inference reasons about. See [Type Annotations](05-type-annotations.md) for the user-facing annotation syntax and [Type Inference](06-type-inference.md) for the formal Record type definition.
 
 ## One Bracket, One Structure
 
@@ -26,7 +26,7 @@ A list is equivalent to a dict with integer keys:
 ```tinct
 [name: "Alice"  age: 30]        # All keyed — a "dict"
 [a b c]                         # All auto-indexed — a "list" = [0: a  1: b  2: c]
-[f x timeout: 60]               # Mixed — positional + named (implied call)
+[f x timeout: 60]               # Mixed — positional + named (implied call; see doc/04)
 []                              # Empty — list and dict are identical
 ```
 
@@ -34,11 +34,39 @@ A list is equivalent to a dict with integer keys:
 
 **Positional and named entries may appear in any order.** Auto-indices are assigned sequentially to positional entries regardless of where named entries appear. For function calls, the binding priority chain (§Call Convention, C-PRIORITY) resolves positional arguments by index, then named arguments fill remaining parameters, then defaults apply.
 
+## Value Types — Overview
+
+Tinct has a fixed set of runtime value types. The following table lists all types in the `Value` enum with a brief description and where to find details. In type annotations, `String` is the user-facing name for the internal type `Str`.
+
+| Type | Description | Details |
+|------|-------------|---------|
+| `Int` | 64-bit signed integer (`i64`) | §Numeric Types below |
+| `Float` | 64-bit IEEE 754 float (`f64`) | §Numeric Types below |
+| `Decimal` | Arbitrary-precision decimal (`rust_decimal`) | §Numeric Types below |
+| `BigInt` | Arbitrary-precision integer (`num_bigint`) | §Numeric Types below |
+| `String` | UTF-8 string | Used throughout; type name `Str` internally |
+| `Bool` | Boolean (`true` / `false`) | Literal values; no dedicated section |
+| `Dict` | Key-value dictionary (the fundamental structure) | §Dicts Are Fundamental above |
+| `Seq` | Lazy sequence (coinductive stream) | §Lazy Sequences below |
+| `Function` | User-defined function (closure) | [Functions](04-functions.md) |
+| `Builtin` | Rust-native function | [Builtins Reference](11a-builtins.md) |
+| `Variant` | Tagged value (`tag` + optional `payload`) | [Builtins Reference](11a-builtins.md) §ADTs |
+| `Handle` | Open I/O resource (file, socket, etc.) | §Handles below |
+| `Uri` | Parsed URI (scheme + uri string) | §URI Values below |
+| `Timestamp` | Nanosecond-precision instant | [Builtins Reference](11a-builtins.md) §Datetime |
+| `Duration` | Time span (nanosecond precision) | [Builtins Reference](11a-builtins.md) §Datetime |
+| `Bytes` | Raw binary data | [Builtins Reference](11a-builtins.md) §I/O |
+| `Proxy` | Virtual field dispatch wrapper | [Builtins Reference](11a-builtins.md) §Proxy |
+| `Overlay` | Lazy merge of two dicts | [Evaluation](08-evaluation.md) §Lazy Merge |
+| `QuicSession` | QUIC session handle | [Builtins Reference](11a-builtins.md) §Network |
+| `Http2Session` | HTTP/2 session handle | [Builtins Reference](11a-builtins.md) §Network |
+| `Http3Session` | HTTP/3 session handle | [Builtins Reference](11a-builtins.md) §Network |
+
 ## Heterogeneous Keys
 
 **Allowed by default.** Integer and string keys can coexist in the same dict. Quoted strings are valid as keys, allowing keys with spaces or special characters: `["my key": value  "another:key": 42]`.
 
-**Computed keys and the type checker:** Dict keys can be variable references (`[$k: value]`). The evaluator resolves computed keys at runtime. The type checker resolves them at compile time via literal types: if `$k` has type `StringLiteral("name")`, the field name is `"name"`. If the type is not a literal (e.g., plain `String`), the field is excluded from the Record type. See "Literal types enable computed key resolution" in the Type System section.
+**Computed keys and the type checker:** Dict keys can be variable references (`[$k: value]`). The evaluator resolves computed keys at runtime. The type checker resolves them at compile time via literal types: if `$k` has type `StringLiteral("name")`, the field name is `"name"`. If the type is not a literal (e.g., plain `String`), the field is excluded from the Record type. See [Type Annotations](05-type-annotations.md) §Literal Types for details.
 
 ## Insertion Order
 
@@ -119,7 +147,7 @@ z@Number                        # accepts either
 
 **Dict key integration:** `Int` values are directly usable as dict keys. `Float` values cannot be used as keys — floating-point equality semantics make them unreliable as hash keys.
 
-**Width-specific types** (`Int32`, `Int64`, `Int128`, `Decimal`, etc.) are range constraints expressed through the contracts system, not new runtime representations. `Decimal` (if ever needed) would require a new Value variant.
+**Width-specific types** (`Int32`, `Int64`, `Int128`, etc.) are range constraints expressed through the contracts system, not new runtime representations. `Decimal` is a first-class runtime type created via `[decimal "3.14159"]`, backed by `rust_decimal::Decimal` (96-bit software decimal). `BigInt` is an arbitrary-precision integer created via `[big-int "12345678901234567890"]`, backed by `num_bigint::BigInt`.
 
 The promotion table is built into the evaluator. User-defined numeric types participating in arithmetic would require type classes — see `doc/whatif/typeclasses.md` for the accepted design.
 
@@ -158,10 +186,10 @@ person.name                     # string key "name"
 config.database.host            # chained string key access
 data.0                          # integer dot access — looks up Key::Int(0)
 
-# get builtin (dynamic key access, replaces bracket access)
+# get builtin (key first, collection second — replaces bracket access)
 [get 5 data]                    # Integer key 5
 [get "name" data]               # String key "name"
-[get $key data]                 # Computed key lookup
+[get $key data]                 # Computed key lookup ($key is a variable reference)
 [get 0 config.services].host    # Dynamic key then dot chain
 ```
 
@@ -192,7 +220,7 @@ data.0                          # integer dot access — looks up Key::Int(0)
 
 ### Lazy Sequences — Value::Seq
 
-**Lazy sequences (`Value::Seq`) are a runtime-only value type** representing infinite or demand-driven data (from `$range`, `$repeat`, `$cycle`, `$iterate`, etc.). They exist alongside `Dict`, `Int`, `Float`, `String`, `Bool`, `Function`, `Handle`, `HttpConn`, `Uri`, `Url`, and `Urn` in the value representation. Sequences have no literal syntax — they are produced by builtin functions and consumed by sequence operations like `$map`, `$filter`, `$take`, `$collect`.
+**Lazy sequences (`Value::Seq`) are a runtime-only value type** representing infinite or demand-driven data (from `$range`, `$repeat`, `$cycle`, `$iterate`, etc.). They exist alongside `Dict`, `Int`, `Float`, `String`, `Bool`, `Function`, `Handle`, `HttpConn`, `Uri`, `Decimal`, `BigInt`, `Variant`, `Timestamp`, `Duration`, and `Bytes` in the value representation. Sequences have no literal syntax — they are produced by builtin functions and consumed by sequence operations like `$map`, `$filter`, `$take`, `$collect`.
 
 Sequences are dual-dispatch targets: `$map` on a Seq returns a lazy Seq, `$filter` on a Seq returns a lazy Seq. Use `$collect` to materialize a Seq to a dense dict. Attempting operations that require full materialization (like `$sort` or `$length`) on an infinite Seq will error. See doc/08-evaluation.md §Lazy Sequences for implementation details and laziness semantics.
 
@@ -206,16 +234,16 @@ Every Handle carries a **capability row** — a `HashMap<String, Value>` mapping
 
 | Capability | Value | Granted by | Required by |
 |-----------|-------|------------|-------------|
-| `Readable` | `Value::Null` | `open … Readable`, `connect`, `tls-connect` | `slurp`, `lines`, `read` |
-| `Writable` | `Value::Null` | `open … Writable`, `connect`, `tls-connect` | `write`, stream writes |
-| `Binary` | `Value::Null` | `connect`, `tls-connect` | `slurp` (binary mode) |
-| `Text` | `Value::Null` | `open … Readable` on text files | `lines`, `slurp` (text mode) |
-| `Stream` | `Value::Null` | `connect … Tcp`, `tls-connect` | streaming reads/writes |
-| `Datagram` | `Value::Null` | `connect … Udp` | datagram I/O |
-| `Seekable` | `Value::Null` | regular file `open` | `seek` |
-| `Tls` | `Value::Dict` (TLS metadata) | `tls-connect` | `tls-peer-cert` |
+| `Readable` | empty dict (`[]`) | `open … Readable`, `connect`, `tls-layer` | `slurp`, `lines`, `read` |
+| `Writable` | empty dict (`[]`) | `open … Writable`, `connect`, `tls-layer` | `write`, stream writes |
+| `Binary` | empty dict (`[]`) | `connect`, `tls-layer` | `slurp` (binary mode) |
+| `Text` | empty dict (`[]`) | `open … Readable` on text files | `lines`, `slurp` (text mode) |
+| `Stream` | empty dict (`[]`) | `connect … Tcp`, `tls-layer` | streaming reads/writes |
+| `Datagram` | empty dict (`[]`) | `connect … Udp` | datagram I/O |
+| `Seekable` | empty dict (`[]`) | regular file `open` | `seek` |
+| `Tls` | `Value::Dict` (TLS metadata) | `tls-layer` | `tls-peer-cert` |
 
-Boolean capabilities (Readable, Writable, Binary, Text, Stream, Datagram, Seekable) store `Value::Null` as their associated data — the presence of the key is the entire capability. Protocol capabilities like `Tls` store structured data: the `Tls` value is a dict containing the leaf certificate metadata and negotiated ALPN protocol string.
+Boolean capabilities (Readable, Writable, Binary, Text, Stream, Datagram, Seekable) store an empty dict (`[]`) as their associated data — the presence of the key is the entire capability. There is no `Value::Null` variant; the `null?` predicate tests for an empty dict. Protocol capabilities like `Tls` store structured data: the `Tls` value is a dict containing the leaf certificate metadata and negotiated ALPN protocol string.
 
 **Reading capability data:** Use `cap-data h name` to read the associated `Value` for a capability, and `has-cap? h name` to test whether a capability is present without extracting data.
 
@@ -287,26 +315,26 @@ Three Session types exist as runtime-only opaque values:
 
 `http-request` is the uniform application-level call across all HTTP session types, returning `{ok: {status: Int  headers: Dict  body: Bytes}} | {err: String}`.
 
-### URI Values — Uri, Url, Urn
+### URI Values — Dict-based parsed URIs
 
-Three RFC 3986 value types represent parsed URIs at the tinct value level. These are produced by the `uri`, `url`, and `urn` builtins and are distinct from raw strings — their fields are accessible via dot notation.
+The `uri`, `url`, and `urn` builtins parse URI strings and return **plain dicts** with the documented fields accessible via dot notation. There are no distinct `Value::Url` or `Value::Urn` enum variants — all three builtins return `Value::Dict`, and `type-of` reports `"Dict"` for all three. (`Value::Uri { scheme, uri }` exists as an enum variant but is reserved for internal use and is not produced by any builtin.)
 
-#### Uri — Value::Uri (RFC 3986 §3)
+#### uri (RFC 3986 §3)
 
-**`Value::Uri` represents a generic RFC 3986 URI**, covering all URI forms including non-hierarchical ones (mailto:, tel:, urn:, news:). The `uri` builtin parses any URI string and returns a Uri.
+**`uri` parses a generic RFC 3986 URI** and returns a dict, covering all URI forms including non-hierarchical ones (mailto:, tel:, urn:, news:).
 
 Fields accessible via dot notation:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `scheme` | `String` | Lowercase scheme, e.g. `"https"`, `"mailto"`, `"urn"` |
-| `username` | `String` or `Null` | Null if absent or URI is non-hierarchical |
-| `password` | `String` or `Null` | Null if absent; splitting userinfo on `:` is a practical convention — RFC 3986 §3.2.1 treats the userinfo component as opaque. Password in URIs is deprecated per RFC 7235 §6.5. |
-| `host` | `String` or `Null` | Null for non-hierarchical URIs (mailto:, tel:, urn:, news:) |
-| `port` | `Int` or `Null` | Null for non-hierarchical or when unspecified; an empty port string (e.g., `"http://host:/path"`) is parsed as null, not an error |
+| `username` | `String` or empty dict | Empty dict if absent or URI is non-hierarchical |
+| `password` | `String` or empty dict | Empty dict if absent; splitting userinfo on `:` is a practical convention — RFC 3986 §3.2.1 treats the userinfo component as opaque. Password in URIs is deprecated per RFC 7235 §6.5. |
+| `host` | `String` or empty dict | Empty dict for non-hierarchical URIs (mailto:, tel:, urn:, news:) |
+| `port` | `Int` or empty dict | Empty dict for non-hierarchical or when unspecified; an empty port string (e.g., `"http://host:/path"`) is parsed as empty dict, not an error |
 | `path` | `String` | Always present per RFC 3986 §3.3 (though may be empty) |
-| `query` | `String` or `Null` | Raw query string without `?`; null if absent |
-| `fragment` | `String` or `Null` | Fragment without `#`; null if absent |
+| `query` | `String` or empty dict | Raw query string without `?`; empty dict if absent |
+| `fragment` | `String` or empty dict | Fragment without `#`; empty dict if absent |
 
 ```tinct
 [u: [uri "https://user:pass@host:8080/path?q=1#frag"]]
@@ -319,26 +347,26 @@ u.fragment  # → "frag"
 
 [m: [uri "mailto:user@example.com"]]
 m.scheme    # → "mailto"
-m.host      # → null (non-hierarchical)
+m.host      # → [] (empty dict — non-hierarchical)
 m.path      # → "user@example.com"
 ```
 
-#### Url — Value::Url (RFC 3986 §3.2)
+#### url (RFC 3986 §3.2)
 
-**`Value::Url` represents a hierarchical URI with a required authority (host and port)**. The `url` builtin parses the string and errors if the URI has no authority component. All network functions (`http-get`, `http-connect`, `tls-connect`) accept `Url`, not the generic `Uri`.
+**`url` parses a hierarchical URI with a required authority (host and port)** and returns a dict. The builtin errors if the URI has no authority component. Network functions (`http-get`, `tls-layer`) accept url dicts.
 
 Fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `scheme` | `String` | Lowercase: `"https"`, `"http"`, `"postgres"`, `"s3"`, `"amqp"`, etc. |
-| `username` | `String` or `Null` | Null if absent |
-| `password` | `String` or `Null` | Null if absent; splitting userinfo on `:` is a convention not mandated by RFC 3986 §3.2.1; deprecated for HTTP (RFC 7235 §6.5) |
+| `username` | `String` or empty dict | Empty dict if absent |
+| `password` | `String` or empty dict | Empty dict if absent; splitting userinfo on `:` is a convention not mandated by RFC 3986 §3.2.1; deprecated for HTTP (RFC 7235 §6.5) |
 | `host` | `String` | Always present — validated at parse time; IPv6 addresses without brackets |
 | `port` | `Int` | Always present — scheme-defaulted if absent (e.g., `443` for https, `80` for http); empty port string treated as absent and then defaulted |
 | `path` | `String` | Always present; `"/"` if absent in the input string |
-| `query` | `String` or `Null` | Raw query string without `?`; null if absent |
-| `fragment` | `String` or `Null` | Fragment without `#`; null if absent |
+| `query` | `String` or empty dict | Raw query string without `?`; empty dict if absent |
+| `fragment` | `String` or empty dict | Fragment without `#`; empty dict if absent |
 
 ```tinct
 [u: [url "https://api.example.com/v1/users?page=2"]]
@@ -353,9 +381,9 @@ u.query     # → "page=2"
 [url "urn:isbn:978-0-306-40615-7"] # → Error: no authority component
 ```
 
-#### Urn — Value::Urn (RFC 8141)
+#### urn (RFC 8141)
 
-**`Value::Urn` represents a URN per RFC 8141**: `urn:NID:NSS[?+r][?=q][#f]`. The `urn` builtin parses the string and errors if it is not a `urn:` URI.
+**`urn` parses a URN per RFC 8141**: `urn:NID:NSS[?+r][?=q][#f]` and returns a dict. The builtin errors if the string is not a `urn:` URI.
 
 Fields:
 
@@ -363,9 +391,9 @@ Fields:
 |-------|------|-------------|
 | `nid` | `String` | Namespace Identifier: `"isbn"`, `"uuid"`, `"oasis"`, etc. |
 | `nss` | `String` | Namespace Specific String |
-| `r-component` | `String` or `Null` | RFC 8141 §2.3 resolution parameters (`?+…`); null if absent. RFC 8141 §2.3.1 states this component SHOULD NOT be used (reserved for future use); it is parsed and stored but should be ignored in most contexts. |
-| `q-component` | `String` or `Null` | RFC 8141 §2.3 query parameters (`?=…`); null if absent |
-| `fragment` | `String` or `Null` | Fragment (`#…`); null if absent |
+| `r-component` | `String` or empty dict | RFC 8141 §2.3 resolution parameters (`?+…`); empty dict if absent. RFC 8141 §2.3.1 states this component SHOULD NOT be used (reserved for future use); it is parsed and stored but should be ignored in most contexts. |
+| `q-component` | `String` or empty dict | RFC 8141 §2.3 query parameters (`?=…`); empty dict if absent |
+| `fragment` | `String` or empty dict | Fragment (`#…`); empty dict if absent |
 
 ```tinct
 [u: [urn "urn:isbn:978-0-306-40615-7"]]
@@ -428,7 +456,7 @@ sparse: [0: a  5: b  10: c]
 
 ### Access Chain Evaluation — Formal Specification
 
-Formalizes access forms (dot and `get` builtin) as an access algebra with compositional chain semantics. Access chains are the primary data extraction mechanism in tinct — they desugar to nested AST nodes that the evaluator reduces inside-out, forcing the target at each step.
+Formalizes access forms (dot and `get` builtin) as an access algebra with compositional chain semantics. Access chains are the primary data extraction mechanism in tinct — they desugar to nested AST nodes that the evaluator reduces inside-out, materializing the target at each step.
 
 **Note:** Bracket access (`data[key]`) and range access (`data[2..5]`) were removed in access-pipeline-phase2. The formal specification below covers the current implementation: dot access and the `get` builtin. The ACCESS-BRACKET and ACCESS-RANGE rules below are retained as historical reference (they document the removed evaluation rules).
 
@@ -442,7 +470,7 @@ An **access chain** is a sequence of projections applied left-to-right to a targ
 π ::= dot(f)              — field access by literal string key f (or integer key n for dot-int access)
 ```
 
-(Historical: `bracket(e)` and `range(s?, e?)` projections were removed in access-pipeline-phase2. Use `[get key data]` for dynamic key access and `[slice data start end]` for subsequences.)
+(Historical: `bracket(e)` and `range(s?, e?)` projections were removed — see note above.)
 
 **Chains.** An access chain `C = π₁ · π₂ · ... · πₙ` applied to target expression `t` evaluates as left-to-right composition:
 
@@ -461,30 +489,30 @@ DotAccess(
   "c")
 ```
 
-(Bracket access was removed in access-pipeline-phase2. Use `[get 0 $a.b].c` to look up integer key 0 then dot-access "c".)
+(Bracket access was removed — see note at top of this section. Use `[get 0 $a.b].c` for this pattern.)
 
 The evaluator reduces inside-out: first `eval(VarRef("a"))`, then `apply(dot("b"), ...)`, then `apply(dot(0), ...)`, then `apply(dot("c"), ...)`. This inside-out reduction is equivalent to the left-to-right chain evaluation defined above.
 
 #### Part 2: Projection Rules
 
-Each projection forces its target to a `Dict`, then extracts by key. All three rules share a common forcing step formalized as `force_dict`.
+Each projection materializes its target to a `Dict`, then extracts by key. All three rules share a common materialization step formalized as `materialize_dict`.
 
-**[FORCE-DICT]** — Common target forcing
+**[MATERIALIZE-DICT]** — Common target materialization
 
 ```
 θ_target = eval(target, ρ, d+1)
-v = force(θ_target, d+1)                    (inherent materialization — must know dict structure)
+v = materialize(θ_target, d+1)              (inherent materialization — must know dict structure)
 v = Dict(map)                               (target must be Dict; type error otherwise)
 ────────────────────────────────────────────
-force_dict(target, ρ, d) ⇒ map
+materialize_dict(target, ρ, d) ⇒ map
 ```
 
-If `v` is not a `Dict`, evaluation fails with `type_mismatch("Dict", v.type_name(), span)`. This is inherent materialization (§Selective Materialization) — the dict structure must be known to perform key lookup. FORCE-DICT is a composite rule combining `eval`, `force`, and pattern match — it is not a primitive judgment of the Thunk Lifecycle. ACCESS-DOT returns an alias to an existing thunk in the dict.
+If `v` is not a `Dict`, evaluation fails with `type_mismatch("Dict", v.type_name(), span)`. This is inherent materialization (§Selective Materialization) — the dict structure must be known to perform key lookup. MATERIALIZE-DICT is a composite rule combining `eval`, `materialize`, and pattern match — it is not a primitive judgment of the Thunk Lifecycle. ACCESS-DOT returns an alias to an existing thunk in the dict.
 
 **[ACCESS-DOT]** — Dot access: `$target.field`
 
 ```
-map = force_dict(target, ρ, d)
+map = materialize_dict(target, ρ, d)
 key = String(field)                          (field is a literal string from the AST)
 map[key] = θ                                 (look up key; error if absent)
 ────────────────────────────────────────────
@@ -507,7 +535,7 @@ Error classes for current access forms:
 
 | Error | Rule | Condition | Message |
 |-------|------|-----------|---------|
-| Target not a Dict | FORCE-DICT | `v` is not `Dict` | `type_mismatch("Dict", v.type_name())` |
+| Target not a Dict | MATERIALIZE-DICT | `v` is not `Dict` | `type_mismatch("Dict", v.type_name())` |
 | Key not found (dot) | ACCESS-DOT | `String(field) ∉ dom(map)` | `key_not_found(field)` |
 | Key not found (`get`) | `get` builtin | `key ∉ dom(map)` | `key_not_found(key)` |
 
@@ -517,17 +545,17 @@ Error context is enriched via `push_frame`: dot access adds `"accessing .{field}
 
 Five properties that hold for all access chains.
 
-**Property 1: Step-wise Forcing**
+**Property 1: Step-wise Materialization**
 
-*Statement:* Each projection in a chain invokes FORCE-DICT exactly once. In a chain `π₁ · π₂ · ... · πₙ`, FORCE-DICT is invoked `n` times — once per step. FORCE-DICT evaluates and forces the target — if the target thunk is already `Materialized`, forcing is a cache hit (FORCE-CACHED from §Thunk Lifecycle).
+*Statement:* Each projection in a chain invokes MATERIALIZE-DICT exactly once. In a chain `π₁ · π₂ · ... · πₙ`, MATERIALIZE-DICT is invoked `n` times — once per step. MATERIALIZE-DICT evaluates and materializes the target — if the target thunk is already `Materialized`, materialization is a cache hit (MATERIALIZE-CACHED from §Thunk Lifecycle).
 
-*Proof sketch:* By induction on chain length. Each `apply(πᵢ, ...)` invokes FORCE-DICT, which calls `force(θ, d+1)`. The result of step `i` becomes the target of step `i+1`. No step forces the target of a different step. ∎
+*Proof sketch:* By induction on chain length. Each `apply(πᵢ, ...)` invokes MATERIALIZE-DICT, which calls `materialize(θ, d+1)`. The result of step `i` becomes the target of step `i+1`. No step materializes the target of a different step. ∎
 
 **Property 2: Result Laziness**
 
-*Statement:* ACCESS-DOT returns the thunk stored in the dict without forcing it. The result may be `Unevaluated`, `PendingBuiltin`, `PendingCall`, or `Materialized` — access does not trigger evaluation of the accessed value.
+*Statement:* ACCESS-DOT returns the thunk stored in the dict without materializing it. The result may be `Unevaluated`, `PendingBuiltin`, `PendingCall`, or `Materialized` — access does not trigger evaluation of the accessed value.
 
-*Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)` — a pointer copy, not a `force` call. The thunk's state is unchanged by the access. ∎
+*Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)` — a pointer copy, not a `materialize` call. The thunk's state is unchanged by the access. ∎
 
 **Property 3: Error Short-Circuiting**
 
@@ -535,17 +563,17 @@ Five properties that hold for all access chains.
 
 *Proof sketch:* By the chain recurrence, `eval_chain(t, [π₁, ...πₙ], ρ, d)` first computes `apply(π₁, t, ρ, d)`. If this returns an error, the recurrence has no value to pass to the next step, so the chain terminates with that error. By induction, no subsequent projection is evaluated. ∎
 
-**Property 4: Depth Consumption**
+**Property 4: Unbounded Chain Length**
 
-*Statement:* A chain of length `n` consumes `n` depth levels — each FORCE-DICT invocation increments depth by 1 (via `eval(target, ρ, d+1)` and `materialize(θ, d+1)` in each access function).
+*Statement:* In the iterative CEK machine, access chain steps push continuation frames onto the heap-allocated `Vec<Cont>`. Chain length is bounded only by available memory, with no hard depth limit. Each step pushes one `Cont::DotAccess` frame, which is popped after the target materializes.
 
-*Proof sketch:* By inspection of FORCE-DICT, which passes `d+1` to both `eval` and `materialize`. Each chain step invokes FORCE-DICT once (Property 1), so `n` steps consume `n` depth levels. For `MAX_EVAL_DEPTH = 256` and typical chain lengths (1–5), this is negligible. The CEK machine removes MAX_EVAL_DEPTH, making this property moot. ∎
+*Proof sketch:* The CEK machine's `eval_step` for dot access pushes `Cont::DotAccess(field, span)` and transitions to `Action::Materialize(target)`. Each step adds one frame to the stack (O(1) space per step). There is no `MAX_EVAL_DEPTH` check in the access path — the old recursive depth budget was eliminated by the CEK machine (see [Evaluation](08-evaluation.md) §Iterative Evaluator). ∎
 
 **Property 5: Sharing Preservation**
 
-*Statement:* ACCESS-DOT returns an `Rc::clone` of the thunk stored in the dict — an alias, not a copy. If the same field is accessed twice, both accesses obtain pointers to the same `Rc<Thunk>`. Once the first access forces it, the second access gets FORCE-CACHED (§Thunk Lifecycle).
+*Statement:* ACCESS-DOT returns an `Rc::clone` of the thunk stored in the dict — an alias, not a copy. If the same field is accessed twice, both accesses obtain pointers to the same `Rc<Thunk>`. Once the first access materializes it, the second access gets MATERIALIZE-CACHED (§Thunk Lifecycle).
 
-*Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)`. The `Rc` reference count increases, but both the dict entry and the accessor hold pointers to the same `Thunk`. When either forces it, the thunk transitions to `Materialized` (or `Failed`), and subsequent accesses via any alias see the cached state. This is the Launchbury (1993) sharing guarantee applied to record projection — access is observation, not duplication. ∎
+*Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)`. The `Rc` reference count increases, but both the dict entry and the accessor hold pointers to the same `Thunk`. When either materializes it, the thunk transitions to `Materialized` (or `Failed`), and subsequent accesses via any alias see the cached state. This is the Launchbury (1993) sharing guarantee applied to record projection — access is observation, not duplication. ∎
 
 #### Part 5: Type System Correspondence
 
@@ -559,7 +587,7 @@ The type checker mirrors the access algebra with type-level projections:
 | ACCESS-DOT (Int) | `check_dot_access_int` | Integer dot access `.N`; looks up `Key::Int(N)`; open record → `Any` |
 | `get` builtin | `check_bracket_access` (historical) | Now handled as a regular builtin call; key access via `[get key data]` |
 
-**Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error (`typecheck.rs:313` falls through to `not_a_record`). Constraint-based row unification would bind `α` to `Record([field: β], ρ)` — see §Row-Variable Unification in [Type System Extensions](07-type-extensions.md). Row variables (`RowVar(r)`) appearing in record types are treated as markers for openness during access type checking; they are not bound to remainder types during access operations (consistent with U-REC in §Type Inference Algorithm).
+**Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error (`typecheck.rs:313` falls through to `not_a_record`). Under BAS, all records are closed — openness is expressed via width subtyping rather than row variables. The `RowTail` and `RowVar` mechanisms described in the archived Remy section of [Type System Extensions](07-type-extensions.md) have been removed.
 
 **Open records and Any:** When a dot access targets an open record (`Record(fields, Open)` or `Record(fields, RowVar(_))`) and the field is not in `fields`, the type checker returns `Any` rather than an error. This reflects Tinct's gradual typing design: open records may contain fields not visible to the type checker. Rather than reject valid programs, the type checker admits the access but types the result as `Any`, deferring validation to runtime. This is sound because `Any` serves as both top and bottom type (S-ANY-TOP, S-ANY-BOT in §Type Inference Algorithm) — values of any type flow through `Any` positions. For closed records, a missing field is a static error.
 
@@ -569,7 +597,7 @@ The type checker mirrors the access algebra with type-level projections:
 
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
-| FORCE-DICT | Inlined in each access function (`eval` + `materialize` on target) | `eval_materialize.rs` |
+| MATERIALIZE-DICT | Inlined in each access function (`eval` + `materialize` on target) | `eval_materialize.rs` |
 | ACCESS-DOT | `eval()` returns `Unevaluated` thunk; `force_step()` via `DotAccessForce` continuation | `eval_materialize.rs` |
 | `Key::PartialOrd` | `impl PartialOrd for Key` | `value.rs` |
 | Chain nesting | Parser produces nested `DotAccess` AST nodes | `ast.rs` |
@@ -588,11 +616,11 @@ The type checker mirrors the access algebra with type-level projections:
 
 Chain: `dot("database") · dot("host")` applied to `config`.
 1. `eval(VarRef("config"), ρ)` → `θ_config`
-2. `force_dict(θ_config)` → `{database: θ_db}`. `map[String("database")]` → `θ_db`. Result: `θ_db` (lazy).
-3. `force_dict(θ_db)` → `{host: θ_host, port: θ_port}`. `map[String("host")]` → `θ_host`. Result: `θ_host` (lazy).
-4. `str` forces `θ_host` → `"localhost"`.
+2. `materialize_dict(θ_config)` → `{database: θ_db}`. `map[String("database")]` → `θ_db`. Result: `θ_db` (lazy).
+3. `materialize_dict(θ_db)` → `{host: θ_host, port: θ_port}`. `map[String("host")]` → `θ_host`. Result: `θ_host` (lazy).
+4. `str` materializes `θ_host` → `"localhost"`.
 
-Note: `θ_port` is never forced — Property 2 (result laziness) means accessing `.host` does not evaluate `.port`.
+Note: `θ_port` is never materialized — Property 2 (result laziness) means accessing `.host` does not evaluate `.port`.
 
 **Example 2: Dynamic key access with `get` builtin**
 

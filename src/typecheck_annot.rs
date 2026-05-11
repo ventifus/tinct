@@ -20,13 +20,7 @@ pub(crate) fn expand_type_alias(
     // is for validation side-effects (error propagation) only. Standalone type alias expressions
     // have no runtime type; returning Any is correct. The actual type alias definition is
     // registered in the TypeEnv during dict inference (see infer_dict Pass 2).
-    let _ = resolve_type_expr(
-        inner,
-        env,
-        state,
-        &mut Some(&mut alias_ann_map),
-        &mut None,
-    )?;
+    let _ = resolve_type_expr(inner, env, state, &mut Some(&mut alias_ann_map), &mut None)?;
     Ok(Type::Unknown)
 }
 
@@ -285,8 +279,7 @@ pub(crate) fn resolve_annotation(
                     let inner_expr = &positional_entries[0].node.value;
                     match &inner_expr.node {
                         Expr::Dict(inner_entries) if !inner_entries.is_empty() => {
-                            if let Expr::VarRef { name: kw, .. } =
-                                &inner_entries[0].node.value.node
+                            if let Expr::VarRef { name: kw, .. } = &inner_entries[0].node.value.node
                             {
                                 if kw == "all" || kw == "without" {
                                     return resolve_type_expr(
@@ -547,8 +540,19 @@ pub(crate) fn resolve_type_name_with_guard(
     if !name.starts_with(|c: char| c.is_uppercase())
         || matches!(
             name,
-            "Int" | "Float" | "String" | "Bool" | "Number" | "Any" | "Seq" | "Null" | "Dict" | "Fn"
-            | "Never" | "Top" | "Unknown"
+            "Int"
+                | "Float"
+                | "String"
+                | "Bool"
+                | "Number"
+                | "Any"
+                | "Seq"
+                | "Null"
+                | "Dict"
+                | "Fn"
+                | "Never"
+                | "Top"
+                | "Unknown"
         )
     {
         let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
@@ -621,11 +625,15 @@ pub(crate) fn resolve_type_name(
         "Top" => Ok(Type::Top),
         "Unknown" => Ok(Type::Unknown),
         "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
-        "Null" => Ok(Type::Record(Row { fields: HashMap::new() })),
+        "Null" => Ok(Type::Record(Row {
+            fields: HashMap::new(),
+        })),
         "Dict" => {
             // Empty record — represents "any dict" under BAS width subtyping.
             // Any concrete record is a subtype because all required fields (none) are present.
-            Ok(Type::Record(Row { fields: HashMap::new() }))
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+            }))
         }
         "Fn" => {
             // Return Type::Unknown to represent "any callable". The previous encoding
@@ -1347,8 +1355,9 @@ pub(crate) fn resolve_type_dict(
     // tail = Empty (no `...` written). Under BAS, `{name: "Alice", age: 30} <: {name: Str}`
     // now succeeds via width subtyping, so single-field annotations are open by default.
     //
-    // Annotations with a rest entry (`@[x: Int ...]`) bypass this path (rest ≠ Empty)
-    // and produce an open record with a RowVar tail as before (explicit user annotation).
+    // Annotations with a rest entry (`@[x: Int ...]`) bypass this path.
+    // Under BAS, `...` is accepted as annotation syntax but produces the same closed
+    // Record — BAS width subtyping handles openness structurally. No RowVar tail exists.
     //
     // SHARED TYPE VARIABLE GUARD: If any TypeVar name appears in more than one field,
     // fall back to the closed Record. Splitting into single-field members would cause
@@ -1390,7 +1399,9 @@ pub(crate) fn resolve_type_dict(
                     // under BAS conjunction-elimination semantics.
                     let mut member_fields = HashMap::new();
                     member_fields.insert(k, v);
-                    Type::Record(Row { fields: member_fields })
+                    Type::Record(Row {
+                        fields: member_fields,
+                    })
                 })
                 .collect();
             return Ok(Type::normalize_intersection(members));

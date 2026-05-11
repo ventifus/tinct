@@ -22,10 +22,25 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
 
-ρ ::= Closed                     no additional fields (Empty)
-    | RowVar(r)                  named row variable (see [Type System Extensions](07-type-extensions.md) §Row-Variable Unification)
-                                 (anonymous `...` syntax in annotations generates fresh `_open{n}` names internally)
+ρ ::= Closed                     no additional fields
 ```
+
+*Note:* Under BAS (Boolean-Algebraic Subtyping), row variables (`RowVar`) and `RowTail` have been removed. All records are closed; openness is expressed via width subtyping. The `RowVar(r)` alternative that previously appeared here is archived — see [Type System Extensions](07-type-extensions.md) §Boolean-Algebraic Subtyping.
+
+**Additional types** (not expressible in annotations, used internally by inference):
+
+| Type | Description |
+|------|-------------|
+| `Union(Vec<Type>)` | BAS union type (A \| B) |
+| `Intersection(Vec<Type>)` | BAS intersection type (A & B) |
+| `Negation(Box<Type>)` | BAS negation type (~A) |
+| `Never` | Bottom type (uninhabited) |
+| `Bytes` | Binary data |
+| `Map(K, V)` | Homogeneous parameterized map |
+| `Timestamp`, `Duration`, `Timezone` | Datetime types |
+| `DirCap`, `NetCap`, `ClockCap` | Capability types (runtime-only) |
+| `Handle`, `Uri` | I/O resource types (runtime-only) |
+| `QuicSession`, `Http2Session`, `Http3Session`, `DatagramHandle` | Network session types (runtime-only) |
 
 ## Bidirectional Typing
 
@@ -239,16 +254,7 @@ S = unify(α ≐ Record({k: β}, RowVar(ρ)))
 
 After unification, α is bound in S — references to α in the conclusion denote its resolved image S(α), not the original variable. The occurs check and level lowering for α, β, and ρ are handled internally by `unify()`.
 
-```
-Γ ⊢ e : Record(F, RowVar(ρ)),  k ∉ F,  β fresh,  ρ' fresh
-Precondition: ρ ∉ FRV(Row({k: β}, RowVar(ρ')))    (occurs check)
-Side-effect: ∀v ∈ FV(Row({k: β}, RowVar(ρ'))). level(v) ← min(level(v), level(ρ))
-S[ρ ↦ Row({k: β}, RowVar(ρ'))]
-────────────────────────────────── [DOT-ROWVAR]
-Γ ⊢ e.k ⇒ β
-```
-
-**[DOT-VAR] vs [DOT-ROWVAR] asymmetry.** [DOT-VAR] delegates to `unify()`, which handles the occurs check and level lowering internally as part of Robinson unification. [DOT-ROWVAR] performs explicit row-variable binding with its own occurs check (`row_var_occurs_pub`) and level lowering (`lower_row_var_levels_pub`), because the binding is inserted directly into `state.subst.row_map` without going through `unify()`. Both paths maintain the same invariants (no infinite types, level monotonicity) but through different mechanisms.
+*Note: The [DOT-ROWVAR] rule that previously appeared here (binding RowVar tails on field access) is archived — RowVar has been removed under BAS. Under the current system, accessing a field not present in a closed record is a static error. See [Type System Extensions](07-type-extensions.md) §Boolean-Algebraic Subtyping.*
 
 ```
 Γ ⊢ e : Record(F, ρ),  Γ ⊢ key : StringLiteral(k),  F(k) = τ
@@ -309,6 +315,8 @@ When name = "Fn": interpret as function type constructor.
 ## Unification: unify(τ₁, τ₂, S) → S'
 
 Unification finds a most general substitution S such that S(τ₁) = S(τ₂). Before matching, both types are normalized via S (substitution applied). Unification follows **Robinson (1965)** for structural decomposition and variable binding, extended with pragmatic promotion rules (see bidirectional literal-to-parent promotions in the implementation below). Subtyping is handled by `check_expr` via the `[SUB]` rule and `is_subtype` for directional checks, and by `[U-SUBSUME]` for bidirectional compatibility within unification. This separation follows Pierce & Turner (2000) and Dunfield & Krishnaswami (2021).
+
+**Algorithm variant:** The overall inference algorithm is closer to **Algorithm J** (Milner 1978) than Algorithm W (Damas & Milner 1982): it uses a mutable global substitution (`InferState.subst`) accumulated across inferences with immediate unification on each constraint, rather than threading explicit substitutions compositionally. This is more efficient but harder to reason about formally. The five-pass dict inference (§Dict Inference) is a letrec extension following Tofte (1988).
 
 ```
 unify(τ, τ, S) = S                              [U-REFL]
@@ -376,8 +384,8 @@ All other non-structural, non-subsumable combinations: error [U-FAIL]
 Subtyping is a pure predicate (no substitution mutation). Used for TypeAssert validation and return type checking.
 
 ```
-τ <: Any                                         [S-ANY-TOP]
-Any <: τ                                         [S-ANY-BOT]
+τ <: Unknown                                     [S-UNKNOWN-TOP]
+Unknown <: τ                                     [S-UNKNOWN-BOT]
 τ <: τ                                           [S-REFL]
 IntLiteral(n) <: Int <: Number                   [S-INT]
 StringLiteral(s) <: Str                          [S-STR]
@@ -386,16 +394,10 @@ Seq(τ) <: Seq(σ)  if τ <: σ                      [S-SEQ]
 
 Record(F₁,ρ₁) <: Record(F₂,ρ₂) if:
     ∀(k:σ) ∈ F₂, ∃(k:τ) ∈ F₁ with τ <: σ       (width+depth)
-    If ρ₂ = Empty:
-        If ρ₁ = Empty: keys(F₁) ⊆ keys(F₂)
-            (with width condition above this enforces keys(F₁) = keys(F₂))
-        If ρ₁ = RowVar: false
-            (Rémy 1994 — a RowVar tail may be instantiated with additional
-            fields that the closed supertype rejects. This is the sound
-            pre-unification behavior; post-unification, the RowVar is bound
-            to Empty by unify() and the (Empty, Empty) arm applies. See
-            test_is_subtype_consistency_open_sub_closed_sup_exact_known_fields.)
-    If ρ₂ = RowVar: always ok                     [S-REC]
+    ∀(k:τ) ∈ F₁ \ F₂, τ is permitted              (width: sub may have extra fields)
+    Under BAS, all records are closed (no RowVar tail). Width subtyping
+    means a record with MORE fields is a subtype of one with FEWER fields,
+    provided the shared fields satisfy depth subtyping.              [S-REC]
 
 Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
     |p| = |q|
@@ -470,7 +472,7 @@ impl TypeScheme {
 - Fresh type variables are created at ℓ_current
 - `Type::TypeVar(String)` becomes `Type::TypeVar(String, u32)` (name + level)
 - `PartialEq` for `Type` is implemented manually: `TypeVar(a, _) == TypeVar(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
-- `RowTail::RowVar(String)` becomes `RowTail::RowVar(String, u32)` — row variables carry levels and participate in generalization identically to type variables. **Naming note:** the enum was previously called `RowRest` in pre-row-unification code (e.g., `RowRest::Closed`, `RowRest::RowVar`); it was renamed to `RowTail` during the row-unification sprint (`RowRest::Closed` → `RowTail::Empty`, `RowRest::RowVar` → `RowTail::RowVar`). `RowTail` is the current name throughout the codebase.
+- `RowTail::RowVar(String)` becomes `RowTail::RowVar(String, u32)` — row variables carry levels and participate in generalization identically to type variables. `RowTail` is the current name throughout the codebase (the enum was previously called `RowRest`: `RowRest::Closed` → `RowTail::Empty`, `RowRest::RowVar` → `RowTail::RowVar`).
 - `Display` for `TypeVar` and `RowVar` hides the level (internal inference state, not user-facing).
 
 **Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Since `Type` is a value type, levels are stored in a separate mutable map alongside the substitution:
@@ -697,7 +699,7 @@ Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) →
 
 ## Constrained Type Variables
 
-Tinct implements **Elm-style constrained type variables** (Phase 2 of the type classes roadmap) to provide precise types for overloaded builtins without requiring full Haskell-style type classes. Constraints restrict which types can instantiate a type variable, enabling static rejection of invalid operations (e.g., `[= [fn [] 1] [fn [] 2]]`) while preserving parametric polymorphism for valid uses.
+Tinct implements **Elm-style constrained type variables** to provide precise types for overloaded builtins without requiring full Haskell-style type classes. Constraints restrict which types can instantiate a type variable, enabling static rejection of invalid operations (e.g., `[= [fn [] 1] [fn [] 2]]`) while preserving parametric polymorphism for valid uses.
 
 ### Constraint Representation
 
@@ -728,8 +730,8 @@ Tinct uses **fixed, hardcoded instance sets** — there are no user-extensible c
 | `Comparable` | Int, IntLiteral, Float, Str, StringLiteral, Number | `<`, `>`, `<=`, `>=` |
 | `Numeric` | Int, IntLiteral, Float, Number | `+`, `-`, `*`, `/` |
 | `Showable` | all types except Error | `str` |
-| `Mappable` | Record, Seq | *(requires higher-kinded types; deferred to Phase 3)* |
-| `Appendable` | Str, StringLiteral, Record, Seq | *(planned)* |
+| `Mappable` | Record, Seq | *(requires higher-kinded types; not yet constrained)* |
+| `Appendable` | Str, StringLiteral, Record, Seq | *(not yet constrained)* |
 
 **Rationale:** Function, Seq, and Record are excluded from Equatable because structural equality would force lazy thunks, violating lazy evaluation semantics (see `doc/whatif/typeclasses.md` §Equatable for Records).
 
@@ -808,19 +810,19 @@ result: [= [fn [] 1] [fn [] 2]]
    - Error: "type Fn@Int [] does not satisfy constraint Equatable"
 ```
 
-### Phase 2 Limitations
+### Current Limitations
 
 1. **No user-extensible classes:** Instance sets are hardcoded. Users cannot declare new classes or add instances to existing classes.
 
 2. **No dictionary passing:** Runtime behavior is unchanged — dual-dispatch builtins still use runtime type inspection. Constraints provide static checking only.
 
-3. **No higher-kinded types:** Mappable requires higher-kinded type variables (`Mappable f => (a → b) → f a → f b`), which is Phase 3 / D1 scope (Jones 1993 constructor classes). `map` and `filter` remain typed as `Unknown → Unknown` until then.
+3. **No higher-kinded types:** Mappable requires higher-kinded type variables (`Mappable f => (a → b) → f a → f b`) (Jones 1993 constructor classes). `map` and `filter` remain typed as `Unknown → Unknown` until higher-kinded types are supported.
 
-4. **No constrained row variables:** `Equatable [name: a ...]` (requiring all fields in row-rest to satisfy Equatable) is deferred to Phase 3 (Gaster & Jones 1996).
+4. **No constrained row variables:** `Equatable [name: a ...]` (requiring all fields in row-rest to satisfy Equatable) requires row-level constraints (Gaster & Jones 1996).
 
-### Forward Work
+### Extension Areas
 
-- **Phase 3 (D1):** Full Haskell-style type classes with class declarations, instance declarations, superclass hierarchy, and dictionary passing (Wadler & Blott 1989; Jones 1995).
+- **Full type classes:** Class declarations, instance declarations, superclass hierarchy, and dictionary passing (Wadler & Blott 1989; Jones 1995).
 - **Higher-kinded types:** Constructor classes (Jones 1993) for Mappable, Foldable over type constructors.
 - **Constrained row polymorphism:** Row-level constraints (Gaster & Jones 1996; PureScript-style qualified row variables).
 
@@ -828,11 +830,11 @@ result: [= [fn [] 1] [fn [] 2]]
 
 ## Limitations and Non-Guarantees
 
-1. **Unknown behaves as both top and bottom (pre-AGT migration).** In the current implementation (before full Gradual Typing migration), `Unknown` acts like both a supertype and subtype of all types during unification. In proper gradual typing (Abstract Gradual Typing, Garcia et al. 2016), `Unknown` (the `?` type) uses a **consistency** relation `~` (symmetric, non-transitive) that triggers runtime casts at boundaries, not subtyping. The current behavior is a known deviation from the AGT model.
+1. **Unknown behaves as both top and bottom.** `Unknown` acts like both a supertype and subtype of all types during unification. In proper gradual typing (Abstract Gradual Typing, Garcia et al. 2016), `Unknown` (the `?` type) uses a **consistency** relation `~` (symmetric, non-transitive) that triggers runtime casts at boundaries, not subtyping. The current behavior is a known deviation from the AGT model.
 
    **Concrete consequence — TypeAssert escape via Unknown.** An unannotated function `f` has type `Fn(Unknown → Unknown)`. Calling `f` returns `Unknown`. A TypeAssert `[@Int [f "hello"]]` passes type checking because `Unknown` unifies with `Int`, but the runtime value is a string. The type annotation is misleading — it narrows `Unknown` to `Int` statically while the runtime value may be anything. This is the primary way tinct's type system fails the Damas-Milner principal type guarantee (Damas & Milner, 1982): the type `Int` is assigned to an expression whose runtime value has type `String`. Corpus test: `tests/corpus/eval/typecheck/principal_type_any_escape.llt-eval`.
 
-   **Mitigation path:** Garcia et al. (2016) show how to systematically derive a gradual type system from a static one. The key insight is replacing `Any <: τ` (unsound bottom) with a **consistency** relation `Any ~ τ` (symmetric, non-transitive) that triggers runtime casts at the `Any`/concrete boundary. Under AGT, `[@Int [f "hello"]]` would insert a runtime cast that fails when the actual value is a string — making the TypeAssert a true contract rather than a static-only assertion. This is tracked in TODO.md (gradual typing migration).
+   **Mitigation path:** Garcia et al. (2016) show how to systematically derive a gradual type system from a static one. The key insight is replacing `Any <: τ` (unsound bottom) with a **consistency** relation `Any ~ τ` (symmetric, non-transitive) that triggers runtime casts at the `Any`/concrete boundary. Under AGT, `[@Int [f "hello"]]` would insert a runtime cast that fails when the actual value is a string — making the TypeAssert a true contract rather than a static-only assertion. See `doc/whatif/completed/gradual-typing.md` for the full analysis.
 
 2. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 

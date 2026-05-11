@@ -1,9 +1,9 @@
 # Implementation Status
 
-High-level guide to the current state of tinct. Updated 2026-05-08.
+High-level guide to the current state of tinct. Updated 2026-05-10.
 For completed sprint history see DONE.md. For future feature designs see `doc/whatif/`.
 
-**Significant open work remains.** The core language, type system, and I/O stack are complete. Several subsystems (rich diagnostics, `cap-file` Handle injection) have partially-implemented tasks that still need finishing. See "What's Next" below.
+**The core language, type system, and I/O stack are complete.** A small number of enhancement items (rich diagnostics, `cap-file` validation, stdlib reorganization) remain. See "What's Next" below.
 
 ---
 
@@ -28,9 +28,13 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 | Object capability model | ✓ Complete — `dir-cap`/`net-cap` builtins removed; all caps flow from CLI (`--cap-fs`, `--cap-net`, `--cap-file`) or runtime injection (`%pwd`, `%libdir`, `%stdin`); `%` prefix convention |
 | `---` header pragmas | ✓ Complete — `%name@Type`, `expects:`, `caps:` on document separators; type checker and runtime validation |
 | `caps:` pragma type-checker awareness | ✓ Complete — cap-qualified `[include %libdir "path"]` understood by type checker; `%pwd`/`%libdir`/`%stdin` seeded in `TypeEnv` |
-| TLS / HTTPS networking | ✓ Complete — `tls-connect`, full TLS handshake, CA roots (system + Mozilla + custom bundle), mTLS, ALPN, SPKI pinning |
+| TLS / HTTPS networking | ✓ Complete — `tls-layer` (Handle upgrade), CA roots (system + Mozilla + custom bundle), mTLS, ALPN, SPKI pinning |
+| Composable networking v2 | ✓ Complete — transport-generic `connect` (Tcp/Udp/UnixStream/UnixDatagram/Icmp), `tls-layer`, QUIC sessions (`quic-session`), HTTP/3 (`http3-session`), HTTP/2 via reqwest (`http2-session`), `http-request` builtin; `protocols/` subdirectory (DNS, WebSocket, SOCKS5, gRPC) |
+| Boolean-Algebraic Subtyping | ✓ Complete — `Union`/`Intersection`/`Negation`/`Never` type algebra; S-RcdTop, S-ClsBot; RDNF simplification; BAS negation narrowing; Rémy row variables removed |
+| Nominal Result type | ✓ Complete — `Ok[T] | Err[String]` via `[type [Ok a] [Err String]]`; `try` returns nominal variants; `and-then`/`result-or`/`result-map`/`result-ok` combinators; `[do result ...]` monad dict |
+| Record/Map type split | ✓ Complete — `Record` (known-field structural) vs `Map[K V]` (homogeneous); `Dict = Record ∨ Map` BAS union; `get?` (returns `V | Null`); `record?`/`map?` predicates; order-insensitive structural dict equality with cycle detection |
 | Macros | ✓ Complete — `[defmacro]`, quasiquoting `[quote]`/`[unquote]`, string interpolation `i"..."` via `[defmacro tmpl]`, macro hygiene |
-| Supplemental stdlib | ✓ Complete — `strings.llt`, `math.llt`, `encoding.llt`, `datetime.llt`, `regex.llt`, `net.llt`, `toml-lite.llt`; require explicit `[include libdir "name.llt"]` |
+| Supplemental stdlib | ✓ Complete — `strings.llt`, `math.llt`, `encoding.llt`, `datetime.llt`, `regex.llt`, `net.llt`, `toml-lite.llt`, `path.llt`, `io.llt`, `numeric.llt`, `macros.llt`, `protocols/`; require explicit `[include libdir "name.llt"]` |
 | Rich diagnostics | ✓ Partial — `T001`–`T004` error codes, Rust-style source snippets for type errors, `tinct explain T001`; parse error snippets and `= help:` suggestions still pending |
 | `$include` security hardening | ✓ Complete — cap-std fd-based open, BLAKE3/SHA3 hash verification, `--require-integrity`, `llt hash` |
 | Sandboxing | ✓ Complete — Landlock ACLs, seccomp-bpf, rlimit caps, `--allow-path`, `--allow-network` |
@@ -71,7 +75,10 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 
 ### Strategic
 
-**Boolean-Algebraic Subtyping** (`doc/whatif/boolean-algebraic-subtyping.md`) — Replace Rémy row variables with BAS (Chau & Parreaux 2026). Eliminates the soundness gap in D2 (algebraic subtyping). All prerequisites are now met; evaluate as a concrete next step.
+| Feature | Whatif doc | Notes |
+|---------|-----------|-------|
+| Higher-Kinded Types + `[do]` inference | [hkt-monads.md](doc/whatif/hkt-monads.md) | `[do monad ...]` works today; HKT adds inferred monad dispatch at kind `* → *` |
+| builtin-* privacy | [builtin-privacy.md](doc/whatif/builtin-privacy.md) | Restrict `builtin-*` aliases to prelude; type-checker warning for non-prelude callers |
 
 ---
 

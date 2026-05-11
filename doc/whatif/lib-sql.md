@@ -28,7 +28,7 @@ Users who want to combine tinct with SQL today must:
 
 ## Why SQL Data Sources Matter for tinct
 
-tinct's lazy evaluation model is a natural fit for database access: the language only computes what it needs, when it needs it. A SQL data source extends this to the database layer — rows are fetched only when forced, predicates are pushed down to the server, and `take 10` becomes `LIMIT 10` rather than "fetch all rows, discard all but ten."
+tinct's lazy evaluation model is a natural fit for database access: the language only computes what it needs, when it needs it. A SQL data source extends this to the database layer — rows are fetched only when materialized, predicates are pushed down to the server, and `take 10` becomes `LIMIT 10` rather than "fetch all rows, discard all but ten."
 
 Concretely:
 
@@ -71,7 +71,7 @@ The accumulated operations on `top10` compile to:
 SELECT name FROM users WHERE age > 30 LIMIT 10
 ```
 
-Dispatch happens when `top10` is first forced — by `collect`, `head`, iteration in `reduce`, or any other observation. The same program as pipeline stages:
+Dispatch happens when `top10` is first materialized — by `collect`, `head`, iteration in `reduce`, or any other observation. The same program as pipeline stages:
 
 ```tinct
 [include "stdlib/sql.llt"]
@@ -185,7 +185,7 @@ Dispatch is triggered by observation:
 | `tail q` | Append `OFFSET 1`; dispatch | lazy Seq |
 | `reduce f init q` | Dispatch; stream rows through `f` | any |
 
-`take` and `reduce` return a lazy `Seq` backed by a database cursor. Rows are fetched in batches (default: 100 rows per round trip) and the cursor advances as tinct forces elements. The cursor is closed when the Seq is exhausted or garbage collected.
+`take` and `reduce` return a lazy `Seq` backed by a database cursor. Rows are fetched in batches (default: 100 rows per round trip) and the cursor advances as tinct materializes elements. The cursor is closed when the Seq is exhausted or garbage collected.
 
 ### Pipeline Composition
 
@@ -262,7 +262,7 @@ The only new Rust-level additions for SQL are:
 
 ### New Rust Builtins (`src/builtins.rs`)
 
-**`proxy`:** New builtin. Takes a handler function, returns `Value::Proxy { handler }`. Field access on a `Proxy` forces the handler and calls it with the field name as a string. Generic — useful beyond SQL for mock objects, virtual namespaces, lazy schemas.
+**`proxy`:** New builtin. Takes a handler function, returns `Value::Proxy { handler }`. Field access on a `Proxy` materializes the handler and calls it with the field name as a string. Generic — useful beyond SQL for mock objects, virtual namespaces, lazy schemas.
 
 **`sql-open` / `sql-exec`:** Two new builtins for database I/O. `sql-open` returns a tinct dict containing an opaque `Value::SqlConnection` handle. `sql-exec` takes that handle and a SQL string, returns a cursor-backed lazy `Seq`.
 
@@ -272,7 +272,7 @@ The only new Rust-level additions for SQL are:
 
 **Current:** Field access on non-dict values errors.
 
-**Proposed:** Field access on `Value::Proxy` forces the handler and calls it with the field name. Cursor-backed Seq uses existing `PendingBuiltin` thunk machinery for lazy row fetching.
+**Proposed:** Field access on `Value::Proxy` materializes the handler and calls it with the field name. Cursor-backed Seq uses existing `PendingBuiltin` thunk machinery for lazy row fetching.
 
 **Impact:** Minor — one new arm in field-access evaluation.
 

@@ -116,7 +116,7 @@ transition. Therefore any two reduction sequences are identical, and
 confluence follows trivially.
 
 PendingBuiltin and PendingCall are deferred normal forms, not choice
-points — they reduce to exactly one outcome when forced, determined by
+points — they reduce to exactly one outcome when materialized, determined by
 the builtin function and the values of their arguments (builtin purity).
 The Ariola & Felleisen (1997) lemmas extend to cover these states by
 unique decomposition (L1) and subject reduction (L2). □

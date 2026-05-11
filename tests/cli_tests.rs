@@ -2643,7 +2643,12 @@ fn literate_weave_no_substitute_preserves_markers() {
     );
     let (path, _dir) = write_temp_md("literate_weave_no_sub", md);
     let output = Command::new(tinct_bin())
-        .args(["literate", "weave", "--no-substitute", path.to_str().unwrap()])
+        .args([
+            "literate",
+            "weave",
+            "--no-substitute",
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 
@@ -3664,4 +3669,3 @@ fn allow_host_blocks_unlisted_connection() {
         stderr
     );
 }
-

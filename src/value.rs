@@ -611,10 +611,9 @@ impl PartialEq for Value {
             (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::ClockCap(a), Value::ClockCap(b)) => a == b,
             (Value::QuicSession(a), Value::QuicSession(b)) => Rc::ptr_eq(a, b),
-            (
-                Value::Http2Session { client: a, .. },
-                Value::Http2Session { client: b, .. },
-            ) => Rc::ptr_eq(a, b),
+            (Value::Http2Session { client: a, .. }, Value::Http2Session { client: b, .. }) => {
+                Rc::ptr_eq(a, b)
+            }
             (Value::Http3Session(a), Value::Http3Session(b)) => Rc::ptr_eq(a, b),
             // Timezone and HttpConn are not comparable — opaque data
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.

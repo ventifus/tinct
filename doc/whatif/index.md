@@ -11,7 +11,8 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Boolean-Algebraic Subtyping](boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
+| [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
+| [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
 | [Higher-Kinded Types and Monadic `[do]`](hkt-monads.md) | Rank-1 kind polymorphism; `Monad m` typeclass at kind `* → *`; `[do]` inference from return type; `sequence`/`traverse` as generic functions; backward-compatible with existing `[do monad]` |
 
 ## Internal Integrity
@@ -24,7 +25,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Consistent Error Handling](error-patterns.md) | **Accepted 2026-05-09.** Nominal `Ok[T]\|Err[String]` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
+| [Consistent Error Handling](completed/error-patterns.md) | **Accepted 2026-05-09.** Nominal `Ok[T]\|Err[String]` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
 
 ## Syntax and Ergonomics
 
@@ -58,8 +59,8 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, tls-connect, SpkiPin, HttpConn, system roots, HTTP/1-3 |
-| [Composable Networking v2](lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3 Sessions; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
+| [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, `tls-layer`, SpkiPin, system CA roots, mTLS, ALPN, SPKI pinning |
+| [Composable Networking v2](completed/lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Templating
@@ -75,12 +76,6 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Supplemental Stdlib Modules](completed/lib-supplemental.md) | **Accepted 2026-05-07.** Strings, math, bitwise, Bytes, TOML-lite, FsCap, handle caps, StringView, path utils |
 | [Date-Time Support](completed/lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
 | [Pure-Tinct Regex Engine](completed/lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
-
-## Type System Extensions
-
-| Proposal | Summary |
-|----------|---------|
-| [Record/Map Split and Parameterized Maps](parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality; depends on BAS. |
 
 
 ---
@@ -125,12 +120,14 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Date-Time Support](completed/lib-datetime.md) | Timestamp, Duration, ClockCap, Timezone via system zoneinfo | 2026-05-07 — `datetime` sprint |
 | [Pure-Tinct Regex Engine](completed/lib-regex.md) | Thompson NFA in pure-tinct; Pattern nominal variant; re-compile/match/find/replace/split | 2026-05-07 — `regex` sprint |
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | Connector protocol, tls-connect, SpkiPin, HttpConn, system roots default, HTTP/1-3 | 2026-05-07 — `connector-tls` + `http-net` sprints |
+| [Composable Networking v2](completed/lib-net-v2.md) | Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory | 2026-05-09 — `connect-v2`, `http-sessions`, `stdlib-protocols` |
+| [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference | 2026-05-09 — `bas-core` |
+| [Consistent Error Handling](completed/error-patterns.md) | Nominal `Ok[T]\|Err[String]` Result; `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate | 2026-05-09 — `result-nominal` |
+| [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality | 2026-05-09 — `record-map-split` |
 
 ### Adopt Now
 
 These proposals have no gating conditions and deliver standalone value at low cost.
-
-**[Record/Map Split and Parameterized Maps](parameterized-dict.md)** — `Record` vs `Map[K V]` type split; `Dict: [type [Record Map]]` BAS union alias; `@Map[Int Seq@Int]` annotation for homogeneous maps; `get` returns `V | Null` on typed maps. Requires BAS adoption.
 
 **[Custom Call Aliases](call-aliases.md)** — `[timed f ...]` macro-defined call forms. Macros cluster is complete — prerequisite met.
 
@@ -181,7 +178,7 @@ quasiquoting ✓ ─── macros ✓ ─── call-aliases (adopt now)
 
 # I/O
 io ✓ Complete ─── templating ✓ Complete ─── template-polarity
-io ✓ Complete ─── lib-tls ✓
+io ✓ Complete ─── lib-tls ✓ ─── lib-net-v2 ✓ (connect-v2, http-sessions, stdlib-protocols)
 
 # Standard library
 lib-supplemental ✓ ─── lib-regex ✓
@@ -190,8 +187,8 @@ lib-supplemental ✓ ─── lib-regex ✓
 eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 
 # Post typing-cluster type system research
-union-types ✓ ─── boolean-algebraic-subtyping (prerequisites ✓ met — evaluate trigger)
-                 ─── record-map-split (parameterized-dict) — requires BAS
+union-types ✓ ─── boolean-algebraic-subtyping ✓ ─── record-map-split (parameterized-dict) ✓
+                                               └─── error-patterns ✓ (nominal Result)
 
 # Profile-gated (no deps, waiting for profiling data)
 string-interning, union-find-substitution

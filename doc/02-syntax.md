@@ -658,7 +658,7 @@ class_head = { "[" ~ identifier ~ identifier* ~ "]" }
 class_body = { entry }
 ```
 
-Declares a type class with type parameters and method signatures. Part of the type classes system (Phase 3/D1).
+Declares a type class with type parameters and method signatures. Part of the type classes system.
 
 Examples:
 ```tinct
@@ -921,7 +921,7 @@ doc_separator = @{ "---" ~ !bare_word_char }
 
 The grammar rules below consolidate all syntax rules from the sections above. The actual parser implementation in `src/parser.rs` + `src/lexer.rs` follows these rules but uses Rust code rather than a parser generator.
 
-**Historical note:** Tinct originally used a pest PEG grammar, which was removed in sprint parser-core-c3 (commit cc8333c) and replaced with the current hand-written iterative parser.
+**Historical note:** Tinct originally used a pest PEG grammar, which was replaced with the current hand-written iterative parser (commit cc8333c).
 
 ```ebnf
 // === Whitespace and Comments ===

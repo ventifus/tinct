@@ -345,13 +345,12 @@ pub(crate) use crate::builtins_dict::{
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
     builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit, builtin_env,
-    builtin_flush, builtin_has_cap, builtin_http_get, builtin_http2_session,
-    builtin_http3_session, builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link,
-    builtin_list_dir, builtin_make_dir, builtin_narrow, builtin_open, builtin_position,
-    builtin_proxy_connect, builtin_quic_open_datagram, builtin_quic_open_stream,
-    builtin_quic_session, builtin_read_link, builtin_recv_datagram, builtin_remove,
-    builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek, builtin_seek_end,
-    builtin_send_datagram, builtin_slurp, builtin_socks5_connect,
+    builtin_flush, builtin_has_cap, builtin_http2_session, builtin_http3_session, builtin_http_get,
+    builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link, builtin_list_dir,
+    builtin_make_dir, builtin_narrow, builtin_open, builtin_position, builtin_proxy_connect,
+    builtin_quic_open_datagram, builtin_quic_open_stream, builtin_quic_session, builtin_read_link,
+    builtin_recv_datagram, builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap,
+    builtin_seek, builtin_seek_end, builtin_send_datagram, builtin_slurp, builtin_socks5_connect,
     builtin_spki_pin, builtin_stat, builtin_tls_layer, builtin_tls_peer_cert, builtin_write,
     builtin_write_atomic, builtin_write_handle,
 };
@@ -1233,7 +1232,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-head", builtin_head, [Strictness::Seq]),
         builtin!("builtin-tail", builtin_tail, [Strictness::Seq]),
         builtin!("builtin-collect", builtin_collect, [Strictness::Spine]),
-        builtin!("builtin-range", builtin_range, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "builtin-range",
+            builtin_range,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("builtin-repeat", builtin_repeat),
         builtin!("builtin-cycle", builtin_cycle, [Strictness::Spine]),
         builtin!("builtin-iterate", builtin_iterate),
@@ -1251,7 +1254,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_reduce,
             [Strictness::Id, Strictness::Id, Strictness::Spine]
         ),
-        builtin!("builtin-join", builtin_join, [Strictness::Seq, Strictness::Spine]),
+        builtin!(
+            "builtin-join",
+            builtin_join,
+            [Strictness::Seq, Strictness::Spine]
+        ),
         builtin!(
             "builtin-concat",
             builtin_concat,
@@ -1261,7 +1268,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-first", builtin_first, [Strictness::Spine]),
         builtin!("builtin-last", builtin_last, [Strictness::Spine]),
         builtin!("builtin-rest", builtin_rest, [Strictness::Spine]),
-        builtin!("builtin-cons", builtin_cons, [Strictness::Id, Strictness::Spine]),
+        builtin!(
+            "builtin-cons",
+            builtin_cons,
+            [Strictness::Id, Strictness::Spine]
+        ),
         builtin!("builtin-reverse", builtin_reverse, [Strictness::Spine]),
         builtin!("builtin-sort", builtin_sort, [Strictness::Spine]),
         // Proxy
@@ -1380,9 +1391,18 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "quic-session",
             builtin_quic_session,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ]
         ),
-        builtin!("quic-open-stream", builtin_quic_open_stream, [Strictness::Seq]),
+        builtin!(
+            "quic-open-stream",
+            builtin_quic_open_stream,
+            [Strictness::Seq]
+        ),
         builtin!(
             "quic-open-datagram",
             builtin_quic_open_datagram,
@@ -6249,11 +6269,17 @@ mod tests {
         assert!(names.contains(&"builtin-seq"), "missing builtin-seq");
         assert!(names.contains(&"builtin-head"), "missing builtin-head");
         assert!(names.contains(&"builtin-tail"), "missing builtin-tail");
-        assert!(names.contains(&"builtin-collect"), "missing builtin-collect");
+        assert!(
+            names.contains(&"builtin-collect"),
+            "missing builtin-collect"
+        );
         assert!(names.contains(&"builtin-range"), "missing builtin-range");
         assert!(names.contains(&"builtin-repeat"), "missing builtin-repeat");
         assert!(names.contains(&"builtin-cycle"), "missing builtin-cycle");
-        assert!(names.contains(&"builtin-iterate"), "missing builtin-iterate");
+        assert!(
+            names.contains(&"builtin-iterate"),
+            "missing builtin-iterate"
+        );
         assert!(names.contains(&"builtin-unfold"), "missing builtin-unfold");
         assert!(names.contains(&"map"), "missing map");
         assert!(names.contains(&"filter"), "missing filter");
@@ -6267,7 +6293,10 @@ mod tests {
         assert!(names.contains(&"builtin-last"), "missing builtin-last");
         assert!(names.contains(&"builtin-rest"), "missing builtin-rest");
         assert!(names.contains(&"builtin-cons"), "missing builtin-cons");
-        assert!(names.contains(&"builtin-reverse"), "missing builtin-reverse");
+        assert!(
+            names.contains(&"builtin-reverse"),
+            "missing builtin-reverse"
+        );
         assert!(names.contains(&"builtin-sort"), "missing builtin-sort");
         // Also assert proxy is present
         assert!(names.contains(&"proxy"), "missing proxy");
@@ -6341,7 +6370,10 @@ mod tests {
         assert!(names.contains(&"position"), "missing position");
         // HTTP-sessions stubs (QUIC/HTTP2/HTTP3/ICMP)
         assert!(names.contains(&"quic-session"), "missing quic-session");
-        assert!(names.contains(&"quic-open-stream"), "missing quic-open-stream");
+        assert!(
+            names.contains(&"quic-open-stream"),
+            "missing quic-open-stream"
+        );
         assert!(
             names.contains(&"quic-open-datagram"),
             "missing quic-open-datagram"
