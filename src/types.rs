@@ -274,9 +274,7 @@ impl Type {
             // Since Top <: T holds only when T = Top (already handled by the S-TOP guard
             // above), this fires as a pass-through to the S-TOP result when sup is Top, and
             // correctly returns false for any non-Top supertype.
-            (Type::Union(sub_members), sup_ty)
-                if Self::check_s_rcd_top(sub_members).is_some() =>
-            {
+            (Type::Union(sub_members), sup_ty) if Self::check_s_rcd_top(sub_members).is_some() => {
                 // The union is semantically Top; delegate to is_subtype(Top, sup_ty).
                 // S-TOP (sup == Top) is already handled before the match, so we only
                 // reach here when sup is NOT Top — meaning Top is not a subtype of it.
@@ -292,9 +290,7 @@ impl Type {
             // (exactly field y) when x ≠ y.  This is the structural analogue of S-ClsBot
             // (#C1 & #C2 ≤ Never) for nominal class tags.  Since the intersection reduces to
             // Never, and Never <: T for all T [S-NEVER], we return true.
-            (Type::Intersection(sub_members), _sup_ty)
-                if Self::check_s_cls_bot(sub_members) =>
-            {
+            (Type::Intersection(sub_members), _sup_ty) if Self::check_s_cls_bot(sub_members) => {
                 true // intersection ≡ Never, and Never <: anything [S-NEVER]
             }
             // [INTERSECT-INTRO]: intersection is a subtype of any of its members
@@ -661,9 +657,7 @@ impl Type {
                 Type::Never
             }
             // Top absorbs all in union: T | Top = Top
-            Type::Union(ref members) if members.iter().any(|m| matches!(m, Type::Top)) => {
-                Type::Top
-            }
+            Type::Union(ref members) if members.iter().any(|m| matches!(m, Type::Top)) => Type::Top,
             // Remove Never arms from union: T | Never = T
             Type::Union(members) if members.iter().any(|m| matches!(m, Type::Never)) => {
                 let filtered: Vec<Type> = members
@@ -693,7 +687,13 @@ impl Type {
                 // Replace all IntLiterals with Int, then re-normalize
                 let promoted: Vec<Type> = members
                     .into_iter()
-                    .map(|m| if matches!(m, Type::IntLiteral(_)) { Type::Int } else { m })
+                    .map(|m| {
+                        if matches!(m, Type::IntLiteral(_)) {
+                            Type::Int
+                        } else {
+                            m
+                        }
+                    })
                     .collect();
                 Type::simplify_type(Type::normalize_union(promoted))
             }
@@ -707,7 +707,13 @@ impl Type {
                 // Replace all StringLiterals with Str, then re-normalize
                 let promoted: Vec<Type> = members
                     .into_iter()
-                    .map(|m| if matches!(m, Type::StringLiteral(_)) { Type::Str } else { m })
+                    .map(|m| {
+                        if matches!(m, Type::StringLiteral(_)) {
+                            Type::Str
+                        } else {
+                            m
+                        }
+                    })
                     .collect();
                 Type::simplify_type(Type::normalize_union(promoted))
             }
@@ -718,15 +724,15 @@ impl Type {
             // 2. Supertype is not Negation — the conservative (_, Negation(_)) => true rule in
             //    is_subtype is an approximation and must not drive subsumption elimination.
             // 3. At least one pairwise (A, B) where A <: B and B is not Negation.
-            Type::Union(members) if members.iter().all(|m| !m.has_inference_vars()) && {
-                members.iter().enumerate().any(|(i, a)| {
-                    members.iter().enumerate().any(|(j, b)| {
-                        i != j
-                            && !matches!(b, Type::Negation(_))
-                            && Type::is_subtype(a, b)
+            Type::Union(members)
+                if members.iter().all(|m| !m.has_inference_vars()) && {
+                    members.iter().enumerate().any(|(i, a)| {
+                        members.iter().enumerate().any(|(j, b)| {
+                            i != j && !matches!(b, Type::Negation(_)) && Type::is_subtype(a, b)
+                        })
                     })
-                })
-            } => {
+                } =>
+            {
                 // Remove members that are strict subtypes of another non-Negation member
                 let mut to_keep: Vec<bool> = vec![true; members.len()];
                 for i in 0..members.len() {
@@ -790,9 +796,7 @@ impl Type {
             Type::Intersection(members) => {
                 Type::Intersection(members.into_iter().map(Type::simplify_type).collect())
             }
-            Type::Negation(inner) => {
-                Type::Negation(Box::new(Type::simplify_type(*inner)))
-            }
+            Type::Negation(inner) => Type::Negation(Box::new(Type::simplify_type(*inner))),
             Type::Record(row) => {
                 let fields = row
                     .fields
@@ -802,19 +806,25 @@ impl Type {
                 Type::Record(Row { fields })
             }
             Type::Seq(elem) => Type::Seq(Box::new(Type::simplify_type(*elem))),
-            Type::Map(k, v) => {
-                Type::Map(
-                    Box::new(Type::simplify_type(*k)),
-                    Box::new(Type::simplify_type(*v)),
-                )
-            }
-            Type::Function { params, ret, variadic } => {
+            Type::Map(k, v) => Type::Map(
+                Box::new(Type::simplify_type(*k)),
+                Box::new(Type::simplify_type(*v)),
+            ),
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
                 let params = params
                     .into_iter()
                     .map(|(name, ty)| (name, Type::simplify_type(ty)))
                     .collect();
                 let ret = Box::new(Type::simplify_type(*ret));
-                Type::Function { params, ret, variadic }
+                Type::Function {
+                    params,
+                    ret,
+                    variadic,
+                }
             }
             // Primitive types and type variables have no children to recurse into
             other => other,
@@ -2931,7 +2941,11 @@ mod tests {
             &mut state,
             span,
         );
-        assert!(result.is_ok(), "BAS: extra fields in unification are not errors, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "BAS: extra fields in unification are not errors, got: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -3335,9 +3349,7 @@ mod tests {
         // Under BAS all records are closed (RowTail::Empty). Substitution applies to
         // field types (TypeVars) but there is no row_map to follow.
         let mut subst = Substitution::new();
-        subst
-            .type_map
-            .insert("a".into(), Type::Str);
+        subst.type_map.insert("a".into(), Type::Str);
 
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
@@ -3400,9 +3412,10 @@ mod tests {
 
     #[test]
     fn test_unify_closed_records_different_keys() {
-        // Under BAS width subtyping, unifying two records with non-overlapping fields
-        // unifies only the shared fields (none here). Extra fields on either side are
-        // NOT an error in unification — subtyping (is_subtype) handles openness.
+        // Two records with completely disjoint concrete field sets are incompatible under
+        // unification: no value can simultaneously be [a: Int] and [b: Int] with those as
+        // the ONLY fields. BAS subtyping (is_subtype) handles the open/width direction, but
+        // unification of two concrete disjoint records is a type mismatch.
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
@@ -3417,9 +3430,10 @@ mod tests {
             &mut state,
             span,
         );
-        // BAS: unifying records only requires shared fields to be compatible — non-shared
-        // fields are handled by is_subtype (width subtyping). No error expected.
-        assert!(result.is_ok(), "BAS: non-overlapping record fields unify OK");
+        assert!(
+            result.is_err(),
+            "disjoint concrete records should fail unification: [a: Int] vs [b: Int]"
+        );
     }
 
     #[test]
@@ -4299,9 +4313,11 @@ mod tests {
     // Fields unique to one side are NOT an error — BAS width subtyping handles openness
     // via is_subtype rather than unification binding.
 
-    /// BAS: two records with disjoint fields unify successfully (no shared fields to conflict)
+    /// Two concrete records with disjoint fields fail unification.
+    /// BAS width subtyping handles field differences via is_subtype (not unification).
+    /// Unifying [a: Int] with [b: Str] is a type mismatch — no shared fields, all concrete.
     #[test]
-    fn test_unify_remainders_bas_disjoint_fields_ok() {
+    fn test_unify_disjoint_concrete_records_fails() {
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
@@ -4311,7 +4327,6 @@ mod tests {
         let mut f2 = HashMap::new();
         f2.insert("b".into(), Type::Str);
 
-        // BAS: disjoint field sets — no shared fields to unify, so Ok(())
         let result = unify(
             &closed_record(f1),
             &closed_record(f2),
@@ -4319,9 +4334,45 @@ mod tests {
             &mut state,
             span,
         );
-        assert!(result.is_ok(), "BAS: disjoint fields is not a unification error");
-        // BAS: no row bindings created
+        assert!(
+            result.is_err(),
+            "disjoint concrete records [a: Int] vs [b: Str] should fail unification"
+        );
+    }
 
+    /// Two records with disjoint fields but TypeVars in field types: conservative — no error.
+    /// When field types contain inference variables, we cannot prove incompatibility statically.
+    #[test]
+    fn test_unify_disjoint_records_with_typevars_conservative() {
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        // Register a TypeVar level so level-lowering can find it
+        state.levels.insert("_t0".into(), 1);
+
+        let mut f1 = HashMap::new();
+        f1.insert("a".into(), Type::TypeVar("_t0".into(), 1));
+        let mut f2 = HashMap::new();
+        f2.insert("b".into(), Type::Str);
+
+        let result = unify(
+            &closed_record(f1),
+            &closed_record(f2),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        // Conservative: TypeVar in field type → cannot prove incompatibility, no error.
+        assert!(
+            result.is_ok(),
+            "disjoint records with TypeVar in field type should not fail unification conservatively"
+        );
+        // TypeVar _t0 should have been lowered to level 0 (prevents unsound generalization)
+        assert_eq!(
+            state.levels.get("_t0").copied(),
+            Some(0),
+            "TypeVar level should be zeroed when records are disjoint"
+        );
     }
 
     /// BAS: unifying records with overlapping and extra fields — shared fields unified, extras ignored
@@ -4432,7 +4483,10 @@ mod tests {
             &mut state,
             span,
         );
-        assert!(result.is_ok(), "BAS: unifying records with subset of shared fields is Ok");
+        assert!(
+            result.is_ok(),
+            "BAS: unifying records with subset of shared fields is Ok"
+        );
     }
 
     /// Row occurs check: nested-in-field cycle — ρ unified with row containing a field of type Record(ρ)
@@ -4533,8 +4587,11 @@ mod tests {
 
         // "a" gets bound to "b"; its level is lowered to min(4, 2) = 2
         let applied = subst.apply(&Type::TypeVar("a".into(), 4));
-        assert!(matches!(applied, Type::TypeVar(ref n, _) if n == "b") || matches!(applied, Type::TypeVar(ref n, _) if n == "a"),
-            "a should unify with b, got {applied}");
+        assert!(
+            matches!(applied, Type::TypeVar(ref n, _) if n == "b")
+                || matches!(applied, Type::TypeVar(ref n, _) if n == "a"),
+            "a should unify with b, got {applied}"
+        );
     }
 
     /// RowVar vs Empty — RowVar must bind to Row { fields: {}, tail: Empty }
@@ -4989,21 +5046,13 @@ mod tests {
              sub is missing required sup field 'a' (fields_ok fails before tail check)"
         );
 
-        unify(&a, &b, &mut subst, &mut state, span).unwrap();
-
-        // BAS: no row bindings created
-        // BAS: no row bindings (no RowVar tails)
-
-        // BAS: after unification, no bindings created.
-        // a = {a:Int} and b = {b:Str} are disjoint — neither is a subtype of the other.
-        // Unification succeeds because there are no conflicting shared fields (BAS is
-        // more permissive than subtyping). This is the key difference: is_subtype is
-        // directional and conservative; unify is bidirectional and field-by-field.
-        let sa = subst.apply(&a);
-        let sb = subst.apply(&b);
-        // Neither direction holds for disjoint records (each requires a field the other lacks)
-        assert!(!Type::is_subtype(&sa, &sb), "BAS: {{a:Int}} is not a subtype of {{b:Str}}");
-        assert!(!Type::is_subtype(&sb, &sa), "BAS: {{b:Str}} is not a subtype of {{a:Int}}");
+        // Disjoint concrete records now fail unification: [a: Int] and [b: Str] share
+        // no fields and both have concrete (non-inference-variable) field types.
+        let result = unify(&a, &b, &mut subst, &mut state, span);
+        assert!(
+            result.is_err(),
+            "disjoint concrete records [a:Int] vs [b:Str] should fail unification"
+        );
     }
 
     /// Case 4b: (RowVar(r1), RowVar(r2)) — both open, shared field only (Wand Case 1 path).
@@ -5124,16 +5173,14 @@ mod tests {
              sub is missing required sup field 'a' (fields_ok fails)"
         );
 
-        // BAS: unify({a:Int}, {b:Str}) — no shared fields to conflict, so Ok(())
-        // is_subtype rejects both directions (missing required fields), but unification
-        // is field-by-field (BAS Step 3): only shared fields need to be compatible.
+        // Disjoint concrete records now fail unification: no shared fields, all-concrete types.
         let span = test_span(1, 1, 1, 5);
         let mut subst = Substitution::new();
         let mut state = InferState::new();
         let result = unify(&a, &b, &mut subst, &mut state, span);
         assert!(
-            result.is_ok(),
-            "BAS: unify({{a:Int}}, {{b:Str}}) should succeed — no shared fields to conflict"
+            result.is_err(),
+            "disjoint concrete records {{a:Int}} vs {{b:Str}} should fail unification"
         );
     }
 
@@ -5231,14 +5278,19 @@ mod tests {
         // BAS: sa = {point: {x:Int, y:Int}}, sb = {point: {x:Int}}
         // sa <: sb: {x:Int, y:Int} has all fields of {x:Int} (plus extra y) → TRUE
         // sb <: sa: {x:Int} is missing field y of {x:Int, y:Int} → FALSE
-        assert!(Type::is_subtype(&sa, &sb), "S(A) <: S(B) — A has all of B's fields");
-        assert!(!Type::is_subtype(&sb, &sa), "S(B) not <: S(A) — B missing 'y'");
+        assert!(
+            Type::is_subtype(&sa, &sb),
+            "S(A) <: S(B) — A has all of B's fields"
+        );
+        assert!(
+            !Type::is_subtype(&sb, &sa),
+            "S(B) not <: S(A) — B missing 'y'"
+        );
     }
 
-    /// Same row variable with different unique fields should fail
-    /// This catches the soundness bug: unifying {x: Int, ...rho} with {y: Str, ...rho}
-    /// would silently succeed before the fix, but it's unsound because rho cannot
-    /// simultaneously provide both x and y fields.
+    /// Two records with completely disjoint concrete fields should fail unification.
+    /// Unifying {x: Int} with {y: Str}: no shared fields, all-concrete types → type mismatch.
+    /// (BAS subtyping handles width/openness via is_subtype, not via unification silencing.)
     #[test]
     fn test_unify_same_rho_different_unique_fields_errors() {
         let span = test_span(1, 1, 1, 5);
@@ -5250,8 +5302,6 @@ mod tests {
         let mut f2 = HashMap::new();
         f2.insert("y".into(), Type::Str);
 
-        // BAS: both are now closed records; {x:Int} and {y:Str} have no shared fields
-        // → unification succeeds (BAS: only shared fields need to be compatible)
         let result = unify(
             &closed_record(f1),
             &closed_record(f2),
@@ -5260,16 +5310,14 @@ mod tests {
             span,
         );
         assert!(
-            result.is_ok(),
-            "BAS: disjoint-field records unify OK — no shared fields to conflict"
+            result.is_err(),
+            "disjoint concrete records [x: Int] vs [y: Str] should fail unification"
         );
     }
 
-    /// Same row variable with asymmetric unique-field counts should fail.
-    /// This tests: {x: Int, z: Bool, ...rho} ~ {y: Str, ...rho}
-    /// The left side has TWO unique fields (x, z) and the right has ONE (y).
-    /// All three fields are exclusive to one side, so rho cannot simultaneously
-    /// provide x, y, and z — the error arm must fire even with mismatched cardinalities.
+    /// Two concrete records with asymmetric disjoint field sets should fail unification.
+    /// Unifying {x: Int, z: Bool} with {y: Str}: zero shared fields, all-concrete types → error.
+    /// The error fires regardless of cardinality asymmetry (2 fields vs 1 field).
     #[test]
     fn test_unify_same_rowvar_asymmetric_unique_field_counts_errors() {
         let span = test_span(1, 1, 1, 5);
@@ -5282,20 +5330,18 @@ mod tests {
         let mut f2 = HashMap::new();
         f2.insert("y".into(), Type::Str);
 
-        // Left has two unique fields, right has one — all three are side-exclusive
+        // Left has two unique fields, right has one — all three are side-exclusive, all concrete
         let result = unify(
-            &row_var_record(f1, "rho", 0),
-            &row_var_record(f2, "rho", 0),
+            &closed_record(f1),
+            &closed_record(f2),
             &mut subst,
             &mut state,
             span,
         );
 
-        // BAS: both are closed records; {x:Int, z:Bool} and {y:Str} have no shared fields
-        // → unification succeeds (BAS: only shared fields need to be compatible)
         assert!(
-            result.is_ok(),
-            "BAS: records with disjoint fields unify OK"
+            result.is_err(),
+            "disjoint concrete records [x: Int, z: Bool] vs [y: Str] should fail unification"
         );
     }
 
@@ -5319,7 +5365,10 @@ mod tests {
         unify(&left, &Type::Int, &mut subst, &mut state, span).unwrap();
 
         // After unification with Int, t_inner is bound (not generalized freely)
-        assert!(subst.type_map.contains_key("t_inner"), "t_inner should be bound");
+        assert!(
+            subst.type_map.contains_key("t_inner"),
+            "t_inner should be bound"
+        );
 
         // Generalize at level 1 — t_inner is bound to Int (concrete), not in the scheme body
         let scheme = generalize(1, &Type::Int, &state);
@@ -5542,8 +5591,12 @@ mod tests {
 
         // Unify many closed records — none should create row bindings
         for _ in 0..100 {
-            let rec1 = Type::Record(Row { fields: HashMap::new() });
-            let rec2 = Type::Record(Row { fields: HashMap::new() });
+            let rec1 = Type::Record(Row {
+                fields: HashMap::new(),
+            });
+            let rec2 = Type::Record(Row {
+                fields: HashMap::new(),
+            });
             let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
             assert!(result.is_ok(), "BAS: empty closed records always unify");
         }
@@ -5565,7 +5618,11 @@ mod tests {
             let result = unify(&var, &concrete, &mut subst, &mut state, span);
 
             if i <= MAX_SUBST_SIZE - 1 {
-                assert!(result.is_ok(), "type var unify should succeed for binding {}", i);
+                assert!(
+                    result.is_ok(),
+                    "type var unify should succeed for binding {}",
+                    i
+                );
             } else {
                 assert!(
                     result.is_err(),
@@ -6034,7 +6091,9 @@ mod tests {
 
     #[test]
     fn test_constraint_mappable_satisfied_by_dict_and_seq() {
-        let dict_ty = Type::Record(Row { fields: HashMap::new() });
+        let dict_ty = Type::Record(Row {
+            fields: HashMap::new(),
+        });
         let seq_ty = Type::Seq(Box::new(Type::Int));
         assert!(satisfies_constraint(&dict_ty, "Mappable"));
         assert!(satisfies_constraint(&seq_ty, "Mappable"));
@@ -6837,20 +6896,14 @@ mod tests {
     fn test_simplify_type_seq_recurses() {
         // Seq(Union([Int])) → Seq(Int)
         let ty = Type::Seq(Box::new(Type::Union(vec![Type::Int])));
-        assert_eq!(
-            Type::simplify_type(ty),
-            Type::Seq(Box::new(Type::Int))
-        );
+        assert_eq!(Type::simplify_type(ty), Type::Seq(Box::new(Type::Int)));
     }
 
     #[test]
     fn test_simplify_type_negation_recurses() {
         // Negation(Union([Int])) → Negation(Int)
         let ty = Type::Negation(Box::new(Type::Union(vec![Type::Int])));
-        assert_eq!(
-            Type::simplify_type(ty),
-            Type::Negation(Box::new(Type::Int))
-        );
+        assert_eq!(Type::simplify_type(ty), Type::Negation(Box::new(Type::Int)));
     }
 
     #[test]
@@ -6930,5 +6983,4 @@ mod tests {
             other => panic!("expected Function, got {other}"),
         }
     }
-
 }

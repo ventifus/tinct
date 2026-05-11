@@ -434,34 +434,55 @@ fn unify_rows(
     }
 
     // General case: unify only fields that appear in BOTH rows (intersection).
-    // Fields unique to one side are not errors — BAS width subtyping handles them.
+    // Fields unique to one side are not errors — BAS width subtyping handles them via is_subtype.
     let mut shared_count = 0;
+    let mut row1_has_inference_vars = false;
+    let mut row2_has_inference_vars = false;
     for (key, ty1) in &row1.fields {
+        if ty1.has_inference_vars() {
+            row1_has_inference_vars = true;
+        }
         if let Some(ty2) = row2.fields.get(key) {
             shared_count += 1;
             unify(ty1, ty2, subst, state, span)?;
         }
     }
+    for ty2 in row2.fields.values() {
+        if ty2.has_inference_vars() {
+            row2_has_inference_vars = true;
+        }
+    }
 
-    // Conservative completeness diagnostic: if two non-empty records have ZERO field overlap,
-    // prevent any TypeVars in either from being generalized by lowering their levels to 0.
-    // This ensures we don't infer overly-polymorphic schemes for structurally disjoint records.
-    // Unification still succeeds (backward compatible) but prevents unsound generalization.
+    // Disjoint record detection: two non-empty records with ZERO shared fields and all-concrete
+    // field types are incompatible — no value can satisfy both `[a: Int]` and `[b: Str]` under
+    // unification (BAS width subtyping is handled by is_subtype, not unification).
+    //
+    // Conservative guard: if either row contains inference variables (TypeVars), we cannot
+    // determine incompatibility statically — the variable might be bound to a compatible type.
+    // In that case, fall back to level-zeroing to prevent unsound generalization.
     if shared_count == 0 && !row1.fields.is_empty() && !row2.fields.is_empty() {
-        // Collect all TypeVars from both records.
-        use std::collections::HashSet;
-        let mut vars = HashSet::new();
-        for ty in row1.fields.values() {
-            ty.collect_type_vars(&mut vars);
-        }
-        for ty in row2.fields.values() {
-            ty.collect_type_vars(&mut vars);
-        }
-        // Lower all collected TypeVars to level 0 to prevent generalization.
-        for var_name in vars {
-            if let Some(current_level) = state.levels.get_mut(&var_name) {
-                *current_level = 0;
+        if row1_has_inference_vars || row2_has_inference_vars {
+            // Conservative path: cannot prove incompatibility statically.
+            // Lower all TypeVars to level 0 to prevent unsound generalization.
+            let mut vars = HashSet::new();
+            for ty in row1.fields.values() {
+                ty.collect_type_vars(&mut vars);
             }
+            for ty in row2.fields.values() {
+                ty.collect_type_vars(&mut vars);
+            }
+            for var_name in vars {
+                if let Some(current_level) = state.levels.get_mut(&var_name) {
+                    *current_level = 0;
+                }
+            }
+        } else {
+            // Both rows have concrete field types and no shared fields: structurally incompatible.
+            return Err(TypeError::type_mismatch(
+                &Type::Record(row1.clone()),
+                &Type::Record(row2.clone()),
+                span,
+            ));
         }
     }
 
@@ -962,36 +983,39 @@ pub fn unify(
             Ok(())
         }
 
-        // Literal-to-parent promotions
-        // Note: These rules are bidirectional (IntLiteral <-> Int) for unification symmetry.
-        // In a pure subtyping system, only IntLiteral <: Int would hold (not vice versa).
-        // Bidirectional promotion simplifies unification but reduces diagnostic precision:
-        // unify(Int, IntLiteral(42)) succeeds, whereas is_subtype(Int, IntLiteral(42)) = false.
+        // Literal type promotion shortcuts (performance optimization over U-SUBSUME).
+        //
+        // These arms are logically redundant with [U-SUBSUME] at the bottom of this match:
+        //   - IntLiteral(_) <: Int <: Number via S-NEVER/is_subtype, so U-SUBSUME passes both ways
+        //   - Float <: Number via is_subtype, so U-SUBSUME passes
+        //   - StringLiteral(_) <: Str via is_subtype, so U-SUBSUME passes
+        //
+        // They are retained as explicit fast-paths to avoid the has_inference_vars() guards
+        // on [U-SUBSUME], which would be a minor overhead for very common unification patterns
+        // (e.g., integer literals in arithmetic expressions).
+        //
+        // SEMANTIC NOTE: unify(Int, IntLiteral(42)) succeeds here (and via U-SUBSUME bidirectional
+        // check). This is correct: is_subtype(IntLiteral(42), Int) = true, so U-SUBSUME's
+        // `is_subtype(&b, &a)` arm fires. The "bidirectionality" is from the symmetric U-SUBSUME
+        // check, not from asserting Int = IntLiteral(42) — Int is the wider type, IntLiteral(42)
+        // is the narrower, and subtyping allows the narrower to satisfy the wider.
         (Type::IntLiteral(_), Type::Int | Type::Number) | (Type::Int, Type::Number) => Ok(()),
         (Type::Int | Type::Number, Type::IntLiteral(_)) | (Type::Number, Type::Int) => Ok(()),
         (Type::Float, Type::Number) | (Type::Number, Type::Float) => Ok(()),
         (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => Ok(()),
-        (Type::IntLiteral(v1), Type::IntLiteral(v2)) => {
-            if v1 == v2 {
-                Ok(())
-            } else {
-                Err(TypeError::type_mismatch(
-                    &Type::IntLiteral(*v1),
-                    &Type::IntLiteral(*v2),
-                    span,
-                ))
-            }
-        }
-        (Type::StringLiteral(s1), Type::StringLiteral(s2)) => {
-            if s1 == s2 {
-                Ok(())
-            } else {
-                Err(TypeError::type_mismatch(
-                    &Type::StringLiteral(s1.clone()),
-                    &Type::StringLiteral(s2.clone()),
-                    span,
-                ))
-            }
+        // Same-value literals: covered by the `a == b` early-return above, but listed here
+        // for completeness. Different-value literals fall through to U-SUBSUME → type_mismatch.
+        (Type::IntLiteral(v1), Type::IntLiteral(v2)) if v1 != v2 => Err(TypeError::type_mismatch(
+            &Type::IntLiteral(*v1),
+            &Type::IntLiteral(*v2),
+            span,
+        )),
+        (Type::StringLiteral(s1), Type::StringLiteral(s2)) if s1 != s2 => {
+            Err(TypeError::type_mismatch(
+                &Type::StringLiteral(s1.clone()),
+                &Type::StringLiteral(s2.clone()),
+                span,
+            ))
         }
         (
             Type::Function {
@@ -1053,8 +1077,20 @@ pub fn unify(
 
         (Type::Proxy, Type::Proxy) => Ok(()),
 
-        // Never unification: Never unifies with anything (it's the bottom type)
-        // TypeVar cases are handled by the general TypeVar patterns above (lines 1553, 1575)
+        // Never unification: Never (⊥) unifies with any type — sound because Never is the
+        // bottom type and no value can inhabit it. Any constraint involving Never is vacuously
+        // satisfiable: if a branch is unreachable (type Never), it cannot produce a value that
+        // would violate a type constraint. This is dual to Top (⊤) which absorbs all via subtyping.
+        //
+        // This is correct unification behavior, NOT a soundness hole:
+        //   - S-NEVER: Never <: T for all T (Never is a subtype of everything)
+        //   - U-SUBSUME would also allow this (is_subtype(Never, T) = true)
+        //   - TypeVar arms above (lines 925, 947) handle Never vs TypeVar correctly
+        //
+        // KNOWN LIMITATION: unify(Never, Int) succeeds silently, meaning a Never-typed value
+        // "appears" to have type Int through unification. In practice this is fine because Never
+        // values cannot be constructed — any code that produces Never is dead code. If you want
+        // to detect dead-code branches at the type level, use is_subtype(scrutinee, Never) instead.
         (Type::Never, _) | (_, Type::Never) => Ok(()),
 
         // Negation unification: structural (for now, basic support)
