@@ -3082,6 +3082,14 @@ The letrec TypeVar bug fix is already implemented in `src/typecheck_dict.rs`. Se
 - [x] [Minor] Per-entry propagation overlap arm now pushes unify errors
 - [x] [Minor] Registered each/each-key/each-kv in TypeEnv with 1-param signatures; updated 14 corpus baselines
 
+### lsp-completion: Implement textDocument/completion
+
+- [x] [Major] completion_at() in analysis.rs: dict key names, builtin names, prelude names with dedup via HashSet
+- [x] [Major] Builtin name completions from standard_builtins() with lazy static caching
+- [x] [Major] Completion::METHOD handler in server.rs with position-to-offset conversion
+- [x] [Minor] completion_provider registered in ServerCapabilities
+- [x] [Minor] Prelude function completions from stdlib/prelude.llt with lazy static caching
+
 ## Codebase Health
 
 ### cycle-216-findings: Cycle #216 analysis findings

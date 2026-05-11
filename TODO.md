@@ -14,17 +14,6 @@ See DONE.md for the full history of completed sprints.
 - [x] [Minor] Extract shared `load_doc_from_uri` helper in document.rs
 - [x] [Minor] Add 3 LSP corpus tests for unopened document hover/goto/caps
 
-### lsp-completion: Implement textDocument/completion
-
-Autocomplete is the single highest-value missing LSP feature for VS Code users. Complete
-dict keys visible in the current scope, `$`-prefixed builtins, and prelude function names.
-
-- [ ] [Major] Add `completion_at(doc: &Document, uri: &Url, offset: usize, include_graph: &IncludeGraph) -> Vec<CompletionItem>` to `src/lsp/analysis.rs`: walk the AST to collect all dict entry key names visible at the cursor's scope depth, return each as a `CompletionItem` with `kind: Variable`
-- [ ] [Major] Add builtin name completions: when the cursor is after `$` or at a bare word, include all builtin names from `standard_builtins()` as `CompletionItem` with `kind: Function` — source the list from `src/builtins.rs`
-- [ ] [Major] Add `Completion::METHOD` handler in `src/lsp/server.rs`: convert LSP position to offset, call `completion_at`, serialize to `CompletionResponse::Array`
-- [ ] [Minor] Register `completion_provider: Some(CompletionOptions::default())` in the `ServerCapabilities` block in `src/lsp/server.rs`
-- [ ] [Minor] Add prelude function completions: seed completion list with names exported by `stdlib/prelude.llt` (parse prelude at LSP startup, extract top-level key names) — reuse the include-graph infrastructure already in place
-
 ---
 
 ## Doc Verification
