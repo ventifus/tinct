@@ -9,7 +9,6 @@ use lsp_types::Uri;
 use crate::ast::{File, Spanned};
 use crate::builtins::create_stdlib_env;
 use crate::error::EvalError;
-use crate::eval::{eval_file, materialize};
 use crate::parser::{parse2, ParseError};
 use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, SchemeMap, TypeMap};
 use crate::types::TypeError;
@@ -64,7 +63,7 @@ impl DocumentState {
             Err(err) => Err(err),
         };
         let mut type_errors = Vec::new();
-        let mut eval_errors = Vec::new();
+        let eval_errors = Vec::new();
         let mut type_map = TypeMap::new();
         let mut doc_map = DocMap::new();
         let mut scheme_map = SchemeMap::new();
@@ -227,15 +226,18 @@ impl DocumentState {
                 env
             };
 
-            // Attempt evaluation to catch runtime errors early.
-            match eval_file(&file.node, lsp_eval_env, eval_ctx) {
-                Err(err) => eval_errors.push(*err),
-                Ok(thunk) => {
-                    if let Err(err) = materialize(&thunk, None, eval_ctx) {
-                        eval_errors.push(*err);
-                    }
-                }
-            }
+            // Evaluation intentionally skipped in LSP context.
+            //
+            // The type checker (above) provides everything LSP features need: type_map
+            // for hover, doc_map for docs, scheme_map for constraints, type_errors for
+            // diagnostics. Running the evaluator here causes false-positive diagnostics
+            // for any program that uses caps (%pwd, %nc, etc.) because the LSP cannot
+            // supply real capability values — file I/O, network, and env access all fail
+            // with misleading errors (E080 file-not-found, E002 undefined-var, etc.).
+            //
+            // If pure-eval diagnostics are added in future, gate them on the document
+            // declaring no caps and using no % variables.
+            let _ = lsp_eval_env; // suppress unused-variable warning
 
             ast = Ok(file);
         }
@@ -675,8 +677,8 @@ mod tests {
         let state = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), None);
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty());
-        // TypeAssert without default: also errors at runtime on type mismatch.
-        assert!(!state.eval_errors.is_empty());
+        // LSP skips eval — eval_errors always empty; type_errors covers the diagnostic.
+        assert!(state.eval_errors.is_empty());
     }
 
     #[test]
@@ -684,8 +686,9 @@ mod tests {
         let env = test_env();
         let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
         assert!(state.ast.is_ok());
-        assert!(!state.type_errors.is_empty()); // undefined variable is also a type error
-        assert!(!state.eval_errors.is_empty());
+        assert!(!state.type_errors.is_empty()); // undefined variable caught by type checker
+        // LSP skips eval — eval_errors always empty.
+        assert!(state.eval_errors.is_empty());
     }
 
     #[test]
@@ -754,9 +757,9 @@ mod tests {
 
     #[test]
     fn test_lsp_capless_include_rejected() {
-        // Capless [include "foo"] is no longer supported — include requires a DirCap
-        // as its first argument (e.g. [include %libdir "foo.llt"]). Passing a bare
-        // string should produce an eval error about the wrong argument type.
+        // Capless [include "foo"] is no longer supported — include requires a DirCap.
+        // LSP skips eval entirely, so eval_errors is always empty.
+        // The type checker catches arity/type issues; this test verifies no eval side-effects.
         let env = test_env();
         let ctx = test_ctx();
         let state = DocumentState::new(
@@ -767,15 +770,9 @@ mod tests {
         );
         assert!(state.ast.is_ok(), "parse should succeed");
         assert!(
-            !state.eval_errors.is_empty(),
-            "capless include should produce an eval error; got no errors"
-        );
-        // Must NOT be an IncludeForbidden (E042) — that was the no_fs=true path.
-        let error_msg = format!("{}", state.eval_errors[0]);
-        assert!(
-            !error_msg.contains("E042"),
-            "capless include error must not be IncludeForbidden (E042); got: {}",
-            error_msg
+            state.eval_errors.is_empty(),
+            "LSP eval is skipped — eval_errors must be empty; got: {:?}",
+            state.eval_errors
         );
     }
 

@@ -205,6 +205,46 @@ The `Mappable` class subsumes the current hardcoded constraint. It is a supertyp
 
 `Foldable` is the companion to `Functor`: `Functor` maps over structure, `Foldable` collapses structure. Together they enable generic container processing without knowing the concrete container type. The method is named `fold` (not `foldl`/`foldr`) because tinct sequences are finite and materialized — the left/right distinction applies only to lazy infinite structures. `FoldableSeq.fold = reduce` maps cleanly since both use accumulator-first, element-second argument order.
 
+### Traversable
+
+`Traversable` combines `Functor` and `Foldable`: it maps a structure-preserving function over a container while collecting effects into an `Applicative`. It is what makes `sequence` and `traverse` generic over any container, not just `Seq`:
+
+```tinct
+[Traversable: [class [t@Operator]
+  extends [Functor t]
+  extends [Foldable t]
+  [traverse: [fn@[f [t b]] [f@Applicative  fn@[f b] [a]  [t a]]]]]]
+
+[TraversableSeq: [instance [Traversable Seq]
+  [traverse: [fn [f xs] [sequence f [map f xs]]]]]]
+
+[TraversableResult: [instance [Traversable Result]
+  [traverse: [fn [f r]
+    [match r
+      [Ok a]  [f.fmap Ok [f a]]
+      [Err e] [f.pure [Err e]]]]]]]
+
+[TraversableMaybe: [instance [Traversable Maybe]
+  [traverse: [fn [f ma]
+    [match ma
+      [Some a] [f.fmap Some [f a]]
+      [None]   [f.pure [None]]]]]]]
+```
+
+With `Traversable`, `sequence` and `traverse` are fully generic over any traversable container:
+
+```tinct
+# sequence: t (f a) → f (t a) — collect effects from any Traversable
+sequence: [fn@[f [t a]] [f@Monad  t@Traversable  xs@[t [f a]]]
+  [traverse f [fn [x] x] xs]]
+
+# traverse: (a → f b) → t a → f (t b) — map with effects over any Traversable
+traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
+  [t.traverse f xs]]
+```
+
+This replaces the `Seq`-specific implementations in §Generic Functions.
+
 ### Appendable
 
 `Appendable` is a kind-`*` typeclass (not `Operator`-kinded) that generalizes concatenation. It replaces the current hardcoded fixed-instance set in `src/typecheck.rs`:
@@ -510,11 +550,13 @@ New unification cases (`src/type_unify.rs`): `UNIFY-OPERATOR` and `UNIFY-APP` as
 
 New generic functions: `sequence`, `traverse`, `forM`, `when`, `liftM2`.
 
-New class declarations: `Functor`, `Applicative`, `Monad`, `Foldable`, `Mappable`, `Appendable`.
+New class declarations: `Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`, `Mappable`, `Appendable`, `Equatable`, `Comparable`, `Showable`.
 
 New type: `Maybe` ADT (`[Some a] | [None]`).
 
-New instances: `FunctorResult`, `ApplicativeResult`, `MonadResult`, `FoldableResult`, `FunctorSeq`, `ApplicativeSeq`, `MonadSeq`, `FoldableSeq`, `FoldableRecord`, `MappableSeq`, `MappableRecord`, `AppendableStr`, `AppendableSeq`, `AppendableRecord`, `FunctorMaybe`, `ApplicativeMaybe`, `MonadMaybe`.
+New instances: `FunctorResult`, `ApplicativeResult`, `MonadResult`, `FoldableResult`, `TraversableResult`, `FunctorSeq`, `ApplicativeSeq`, `MonadSeq`, `FoldableSeq`, `TraversableSeq`, `FoldableRecord`, `MappableSeq`, `MappableRecord`, `AppendableStr`, `AppendableSeq`, `AppendableRecord`, `FunctorMaybe`, `ApplicativeMaybe`, `MonadMaybe`, `TraversableMaybe`.
+
+`Numeric` remains a hardcoded fixed-instance set — its mixed-type arithmetic semantics (`Int + Float → Float`) require multi-parameter type classes to express correctly, which are out of scope. The other four previously-hardcoded constraints (`Equatable`, `Comparable`, `Showable`, `Mappable`, `Appendable`) are all replaced by proper class/instance declarations.
 
 ### Documentation (`doc/06-type-inference.md`)
 
