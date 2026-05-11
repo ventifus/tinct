@@ -607,6 +607,66 @@ For field descriptions, see [Data Model](03-data-model.md) §URI Values.
 - `url`: Parse error if not a valid URI; type error if no authority (host) component is present
 - `urn`: Parse error if not a valid URI; type error if scheme is not `"urn"`
 
+### ICMP Echo — icmp-ping
+
+Send an ICMP echo request (ping) to a host and return the round-trip time.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `icmp-ping` | 3 | `S × S × S → D` | Dict | `cap host timeout-ms` — sends ICMP echo request, returns `{ok: {latency-ms: Int}}` or `{err: String}` |
+
+**Signature:**
+
+```
+icmp-ping : [fn [cap@NetCap  host@String  timeout-ms@Int]]
+            → {ok: {latency-ms: Int}} | {err: String}
+```
+
+**Usage:**
+
+```tinct
+[r: [icmp-ping net "8.8.8.8" 1000]]
+[if [= [$r.ok?] true]
+  [str "RTT: " r.ok.latency-ms "ms"]
+  [str "failed: " r.err]]
+```
+
+`timeout-ms` is the maximum wait time in milliseconds. A value of `0` disables the timeout (not recommended). The host may be an IPv4 address string or a hostname — DNS resolution is performed before sending.
+
+**Returned dict:** Always returns a dict (never throws on network failure):
+- Success: `{ok: {latency-ms: Int}}` — latency in whole milliseconds
+- Failure: `{err: String}` — human-readable error message
+
+Failure cases that produce `{err: ...}`:
+- DNS resolution failure
+- Timeout
+- ICMP socket creation failure (see privilege requirements below)
+- `sendto` or `recv` syscall failure
+- Unexpected ICMP reply type (not Echo Reply type 0)
+
+**Privilege requirements (Linux):** Uses `SOCK_DGRAM + IPPROTO_ICMP` (unprivileged ICMP ping sockets, available since Linux 3.11+). Root is **not** required, but the kernel must allow your group to create ICMP sockets. Check and configure via:
+
+```sh
+# Check current setting (default: 1 65534, includes all non-root users)
+cat /proc/sys/net/ipv4/ping_group_range
+
+# Allow all users (if restricted):
+sysctl -w net.ipv4.ping_group_range="0 65534"
+```
+
+If socket creation fails, the error dict includes a message explaining the `ping_group_range` requirement.
+
+**Platform support:** Linux only. On non-Unix platforms (Windows, etc.), `icmp-ping` always returns `{err: "icmp-ping: ICMP ping is not supported on this platform"}`.
+
+**NetCap allowlist:** The host is checked against the `NetCap` allowlist before any socket operations. Port-based allowlist entries (`hostname:port`) do not match (ICMP has no ports); hostname and CIDR entries apply normally.
+
+**Error cases (hard errors, not `{err: ...}` dict):**
+- Type mismatch if `cap` is not a `NetCap` (E010)
+- Type mismatch if `host` is not a String (E010)
+- Type mismatch if `timeout-ms` is not an Int (E010)
+- Negative `timeout-ms` (E080)
+- `cap` allowlist violation before socket creation (E080)
+
 ### Implementation Note: Tokio Runtime Strategy for Future Async Builtins
 
 When `quic-session` or other async network builtins (`http2-session`, `http3-session`) are implemented, the Tokio runtime strategy must be carefully managed to avoid the "cannot start a runtime from within a runtime" panic.

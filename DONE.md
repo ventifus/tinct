@@ -2752,7 +2752,8 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 - [x] Register transport variants (UnixStream, UnixDatagram, NamedPipe, Icmp) + Url type alias (`src/builtins.rs`, `src/type_env.rs`)
 - [x] Document Connector capability policy in `doc/11a-builtins.md` §Network
 - [x] Update `check_net_cap_allowlist` for ICMP (host-only, no port) (`src/builtins_io.rs`)
-- [x] Corpus tests: connect arity, UDP stub, UnixStream arity, tls-layer no raw_tcp, NamedPipe stub (`tests/corpus/eval/builtins/`)
+- [x] Corpus tests: connect arity, UDP stub, UnixStream arity, tls-layer no raw_tcp, NamedPipe stub, icmp-ping arity, icmp-ping wrong cap type (`tests/corpus/eval/builtins/`)
+- [x] Document `icmp-ping` in `doc/11a-builtins.md` §Network — signature, return dict, privilege requirements, `ping_group_range`, platform support note (`doc/11a-builtins.md`)
 - [x] Update `doc/11a-builtins.md` §Network: transport-generic connect, tls-layer, removed Proxy Tunnels
 
 ### `http-sessions`: QUIC, HTTP/2, HTTP/3 Sessions
