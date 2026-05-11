@@ -3,5 +3,3 @@
 [x: 100  y: 200  z: 300] | each-key | collect
 === out
 Dict({0: String("x"), 1: String("y"), 2: String("z")})
-=== warn
-undefined variable: each-key at 2:28-2:36

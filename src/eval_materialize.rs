@@ -131,8 +131,8 @@ pub(crate) struct MemoizeData {
     pub(crate) origin: Option<Rc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
-    // Changed to Option to support lazy creation: None means "reconstruct if needed"
-    // (currently always Some, but enables future optimization)
+    // None for paths where restoration is not possible (e.g., default fallback).
+    // Some when the original thunk state can be restored on error.
     pub(crate) restore: Option<RestoreState>,
     pub(crate) ctx: Rc<EvalContext>,
 }
@@ -187,14 +187,13 @@ pub(crate) struct TypeAssertCheckData {
 pub(crate) struct BuiltinForceArgData {
     pub(crate) thunk: Rc<Thunk>,
     pub(crate) def: crate::value::BuiltinDef,
-    pub(crate) args: Box<Vec<Rc<Thunk>>>,
+    pub(crate) args: Vec<Rc<Thunk>>,
     pub(crate) named: Option<IndexMap<String, Rc<Thunk>>>,
     pub(crate) call_span: Span,
     pub(crate) ctx: Rc<EvalContext>,
     pub(crate) origin: Option<Rc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
-    pub(crate) restore: RestoreState,
     pub(crate) arg_idx: usize,
 }
 
@@ -469,35 +468,35 @@ pub(crate) fn force_step(
             .eval_stack
             .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
-        let restore = RestoreState::PendingBuiltin {
-            def,
-            args: Box::new(args.clone()),
-            named: named.clone(),
-            call_span,
-            ctx: thunk_ctx.clone(),
-        };
+        // Wrap args/named in Option so each exclusive match arm can move them
+        // without cloning. Taking ownership avoids the pre-clone of Vec/IndexMap
+        // that was previously done on every successful builtin call to build RestoreState.
+        // Each arm calls .take().expect("...") exactly once to extract the owned value.
+        let mut args = Some(args);
+        let mut named = Some(named);
 
         // W1 dispatch-time materialization: scan pos_strictness for first Seq/Spine position.
         // Pre-materialize strict args iteratively to prevent Rust stack growth and enable
         // the builtin to skip redundant materialize() calls (thunk memoization fast-path).
         use crate::value::Strictness;
         if let Some((arg_idx, _)) = def.pos_strictness.iter().enumerate().find(|(i, &s)| {
-            *i < args.len()
+            *i < args.as_ref().expect("args set above").len()
                 && (s == Strictness::Seq || s == Strictness::Spine)
-                && args[*i].try_get_materialized().is_none()
+                && args.as_ref().expect("args set above")[*i]
+                    .try_get_materialized()
+                    .is_none()
         }) {
-            let arg_thunk = Rc::clone(&args[arg_idx]);
+            let arg_thunk = Rc::clone(&args.as_ref().expect("args set above")[arg_idx]);
             stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                 thunk: Rc::clone(thunk),
                 def,
-                args: Box::new(args),
-                named,
+                args: args.take().expect("args set above"),
+                named: named.take().expect("named set above"),
                 call_span,
                 ctx: thunk_ctx,
                 origin,
                 thunk_span,
                 mat_span,
-                restore,
                 arg_idx,
             })));
             return Action::Materialize {
@@ -509,8 +508,8 @@ pub(crate) fn force_step(
         // `named` is None for internally-created thunks (common case); only $apply
         // passes named args through. Use an empty map ref for the None case.
         let builtin_args = crate::value::BuiltinArgs {
-            args: &args,
-            named: named.as_ref(),
+            args: args.as_ref().expect("args set above"),
+            named: named.as_ref().expect("named set above").as_ref(),
             call_span,
             ctx: Rc::clone(&thunk_ctx),
         };
@@ -519,11 +518,20 @@ pub(crate) fn force_step(
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion
                 if let Some(value) = result_thunk.try_get_materialized() {
+                    // args/named are no longer needed; drop them implicitly.
                     // Pop from eval_stack before fast-path return
                     thunk_ctx.state.borrow_mut().eval_stack.pop();
                     thunk.set_state(ThunkState::Materialized(value.clone()));
                     Action::Continue(Ok(value))
                 } else {
+                    // Move args/named into RestoreState — no clone needed.
+                    let restore = RestoreState::PendingBuiltin {
+                        def,
+                        args: Box::new(args.take().expect("args set above")),
+                        named: named.take().expect("named set above"),
+                        call_span,
+                        ctx: Rc::clone(&thunk_ctx),
+                    };
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Rc::clone(thunk),
                         origin,
@@ -550,7 +558,14 @@ pub(crate) fn force_step(
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure(&decorated);
                 } else {
-                    restore.restore(thunk);
+                    // Move args/named into PendingBuiltin — no clone needed.
+                    thunk.set_state(ThunkState::PendingBuiltin {
+                        def,
+                        args: Box::new(args.take().expect("args set above")),
+                        named: named.take().expect("named set above"),
+                        call_span,
+                        ctx: thunk_ctx,
+                    });
                 }
                 Action::Continue(Err(decorated))
             }
@@ -764,6 +779,46 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         }
                     }
                     Value::Builtin(def) => {
+                        // Check if any strict (Seq/Spine) args need pre-materialization.
+                        // If so, convert to PendingBuiltin and re-dispatch via force_step
+                        // so the BuiltinForceArg continuation can handle them iteratively.
+                        //
+                        // This is critical for TCO: builtins like $if call materialize()
+                        // internally on their args. If called with unevaluated args, each
+                        // recursive call adds Rust frames (materialize → run). Pre-materializing
+                        // args in the CEK machine (heap-allocated continuations) prevents this.
+                        //
+                        // Note: we pop eval_stack BEFORE converting to PendingBuiltin so that
+                        // force_step(PendingBuiltin) can push a fresh entry — avoiding a
+                        // duplicate that would cause an extra pop on completion.
+                        use crate::value::Strictness;
+                        let has_strict_unevaluated =
+                            def.pos_strictness.iter().enumerate().any(|(i, &s)| {
+                                i < args.as_ref().expect("args set above").len()
+                                    && (s == Strictness::Seq || s == Strictness::Spine)
+                                    && args.as_ref().expect("args set above")[i]
+                                        .try_get_materialized()
+                                        .is_none()
+                            });
+
+                        if has_strict_unevaluated {
+                            // Pop the eval_stack entry pushed by force_step(PendingCall).
+                            // force_step(PendingBuiltin) will push a new entry for this thunk.
+                            thunk_ctx.state.borrow_mut().eval_stack.pop();
+                            // Transition thunk from InProgress → PendingBuiltin.
+                            // args is Box<Vec<...>> (matches ThunkState::PendingBuiltin.args).
+                            // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
+                            thunk.set_state(ThunkState::PendingBuiltin {
+                                def,
+                                args: args.take().expect("args set above"),
+                                named: named.take().expect("named set above").map(|b| *b),
+                                call_span,
+                                ctx: thunk_ctx,
+                            });
+                            return Action::Materialize { thunk, mat_span };
+                        }
+
+                        // All strict args are already materialized — call the builtin directly.
                         // The block scopes the borrows of args/named so the borrow
                         // checker allows args.take()/named.take() in the match arms below.
                         let builtin_result = {
@@ -1108,12 +1163,16 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 origin,
                 thunk_span,
                 mat_span,
-                restore,
                 arg_idx,
             } = *data;
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
             };
+
+            // Wrap args/named in Option so each exclusive match arm can move them
+            // without cloning, following the same pattern as the initial PendingBuiltin branch.
+            let mut args = Some(args);
+            let mut named = Some(named);
 
             // W1 dispatch-time materialization: after arg at arg_idx has been materialized,
             // scan for the next Seq/Spine position. If found, force it; otherwise call builtin.
@@ -1127,23 +1186,24 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         .enumerate()
                         .skip(arg_idx + 1)
                         .find(|(i, &s)| {
-                            *i < args.len()
+                            *i < args.as_ref().expect("args set above").len()
                                 && (s == Strictness::Seq || s == Strictness::Spine)
-                                && args[*i].try_get_materialized().is_none()
+                                && args.as_ref().expect("args set above")[*i]
+                                    .try_get_materialized()
+                                    .is_none()
                         })
                     {
-                        let next_arg = Rc::clone(&args[next_idx]);
+                        let next_arg = Rc::clone(&args.as_ref().expect("args set above")[next_idx]);
                         stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                             thunk,
                             def,
-                            args,
-                            named,
+                            args: args.take().expect("args set above"),
+                            named: named.take().expect("named set above"),
                             call_span,
                             ctx: thunk_ctx,
                             origin,
                             thunk_span,
                             mat_span,
-                            restore,
                             arg_idx: next_idx,
                         })));
                         return Action::Materialize {
@@ -1154,19 +1214,28 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
 
                     // All strict args materialized — call the builtin.
                     let builtin_args = crate::value::BuiltinArgs {
-                        args: &args,
-                        named: named.as_ref(),
+                        args: args.as_ref().expect("args set above"),
+                        named: named.as_ref().expect("named set above").as_ref(),
                         call_span,
                         ctx: Rc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args).map_err(&decorate) {
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
+                                // args/named are no longer needed; drop them implicitly.
                                 // Pop from eval_stack before fast-path return
                                 thunk_ctx.state.borrow_mut().eval_stack.pop();
                                 thunk.set_state(ThunkState::Materialized(value.clone()));
                                 Action::Continue(Ok(value))
                             } else {
+                                // Move args/named into RestoreState — no clone needed.
+                                let restore = RestoreState::PendingBuiltin {
+                                    def,
+                                    args: Box::new(args.take().expect("args set above")),
+                                    named: named.take().expect("named set above"),
+                                    call_span,
+                                    ctx: Rc::clone(&thunk_ctx),
+                                };
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Rc::clone(&thunk),
                                     origin,
@@ -1187,7 +1256,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             if e.kind.is_cacheable() {
                                 thunk.cache_failure(&e);
                             } else {
-                                restore.restore(&thunk);
+                                // Move args/named into PendingBuiltin — no clone needed.
+                                thunk.set_state(ThunkState::PendingBuiltin {
+                                    def,
+                                    args: Box::new(args.take().expect("args set above")),
+                                    named: named.take().expect("named set above"),
+                                    call_span,
+                                    ctx: thunk_ctx,
+                                });
                             }
                             Action::Continue(Err(e))
                         }
@@ -1200,7 +1276,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
-                        restore.restore(&thunk);
+                        // Move args/named into PendingBuiltin — no clone needed.
+                        thunk.set_state(ThunkState::PendingBuiltin {
+                            def,
+                            args: Box::new(args.take().expect("args set above")),
+                            named: named.take().expect("named set above"),
+                            call_span,
+                            ctx: thunk_ctx,
+                        });
                     }
                     Action::Continue(Err(e))
                 }

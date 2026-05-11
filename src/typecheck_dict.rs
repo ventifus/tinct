@@ -136,18 +136,22 @@ pub(crate) fn infer_dict(
                                     Some(existing) if existing != *v => {
                                         // Overlapping key: unify to reconcile constraints
                                         temp_subst.type_map.remove(k.as_str());
-                                        if let Ok(()) = unify(
+                                        match unify(
                                             &existing,
                                             v,
                                             &mut temp_subst,
                                             state,
                                             entry.node.value.span,
                                         ) {
-                                            let resolved = temp_subst.apply(v);
-                                            temp_subst.type_map.insert(k.clone(), resolved);
-                                        } else {
-                                            // Restore on failure
-                                            temp_subst.type_map.insert(k.clone(), existing);
+                                            Ok(()) => {
+                                                let resolved = temp_subst.apply(v);
+                                                temp_subst.type_map.insert(k.clone(), resolved);
+                                            }
+                                            Err(e) => {
+                                                // Restore on failure and record the error
+                                                temp_subst.type_map.insert(k.clone(), existing);
+                                                errors.push(e);
+                                            }
                                         }
                                     }
                                     None => {

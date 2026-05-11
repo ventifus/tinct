@@ -2,6 +2,3 @@
 [each-key "hello"]
 === error
 [E010] each-key: expected Dict, got String
-
-=== warn
-undefined variable: each-key at 1:2-1:10
