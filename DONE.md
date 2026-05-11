@@ -3090,6 +3090,14 @@ The letrec TypeVar bug fix is already implemented in `src/typecheck_dict.rs`. Se
 - [x] [Minor] completion_provider registered in ServerCapabilities
 - [x] [Minor] Prelude function completions from stdlib/prelude.llt with lazy static caching
 
+### doc-verify-error-codes: doc/10-errors.md missing and mismatched error code entries
+
+- [x] Add UriParseError (E063) and SchemaViolation (E090) to all three tables
+- [x] Fix CircularDependency variant (add cycle_path field and constructor)
+- [x] Fix EvalError struct (sec_span→secondary_span, add 3 missing fields)
+- [x] Fix variant count (34→36), Internal range (E090-E099→E095-E099)
+- [x] Fix Display verb (infer_materialization_verb), secondary_span sites, depth_exceeded test-only
+
 ## Codebase Health
 
 ### cycle-216-findings: Cycle #216 analysis findings

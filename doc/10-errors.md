@@ -60,12 +60,15 @@ This section formalizes how errors are represented, propagated, decorated, memoi
 An evaluation error `ε` is a record with five fields:
 
 ```
-ε = ⟨kind, def_span, mat_span?, sec_span?, stack⟩  where
-  kind      : ErrorKind              — structured error variant with domain-specific data
-  def_span  : Span                   — where the problematic value was defined
-  mat_span  : Option<Span>           — where the value was first materialized (if different)
-  sec_span  : Option<(Span, String)> — secondary "value origin" span with label (see below)
-  stack     : [StackFrame]           — chain of materialization contexts, outermost last
+ε = ⟨kind, def_span, mat_span?, secondary_span?, macro_expansion?, blame?, pipeline_stage?, stack⟩  where
+  kind             : ErrorKind                 — structured error variant with domain-specific data
+  def_span         : Span                      — where the problematic value was defined
+  mat_span         : Option<Span>              — where the value was first materialized (if different)
+  secondary_span   : Option<(Span, String)>    — secondary "value origin" span with label (see below)
+  macro_expansion  : Option<(String, Span)>    — macro expansion provenance (macro name, call site)
+  blame            : Option<BlameLabel>        — gradual typing boundary label
+  pipeline_stage   : Option<PipelineBlame>     — pipeline stage provenance
+  stack            : [StackFrame]              — chain of materialization contexts, outermost last
 ```
 
 **Dual-span model:** Every error carries two source locations: the **definition site** (where the error-producing expression was written) and the **materialization site** (where a consumer materialized the thunk that failed). When these coincide, `mat_span` is `None`. When a Failed thunk is re-accessed from a third location, the new access site is pushed onto `stack` as a frame — `def_span` and `mat_span` are never overwritten after initial assignment.
@@ -74,17 +77,16 @@ The **definition site** and **materialization site** form a dual-span model: "th
 
 Example: given `[x: [/ 1 0]  y: x]`, accessing `y` produces an error with definition site at `[/ 1 0]` (where the division was written) and materialization site at `x` (where the thunk was first materialized).
 
-**Secondary span — value origin (Nickel dual-position pattern):** For lazy evaluation errors where the **value that caused the failure** was produced far from the error site, `sec_span` carries a labeled pointer to the value's creation span. This is the Nickel `EvaluationError` dual-position pattern: "error triggered here, but the offending value came from there." The `Thunk.span` field (set at thunk creation time) provides this origin span without requiring any additional storage.
+**Secondary span — value origin (Nickel dual-position pattern):** For lazy evaluation errors where the **value that caused the failure** was produced far from the error site, `secondary_span` carries a labeled pointer to the value's creation span. This is the Nickel `EvaluationError` dual-position pattern: "error triggered here, but the offending value came from there." The `Thunk.span` field (set at thunk creation time) provides this origin span without requiring any additional storage.
 
-`sec_span` is populated at three specific eval sites:
+`secondary_span` is populated at two specific eval sites:
 
-| Site | `def_span` (error site) | `sec_span` (value origin) | Label |
+| Site | `def_span` (error site) | `secondary_span` (value origin) | Label |
 |------|------------------------|--------------------------|-------|
 | `ThunkState::Guarded` validation failure | TypeAssert annotation span (`guard_span`) | `inner.span` (the annotated expression's creation span) | `"value produced here"` |
-| Builtin argument type mismatch (`require_num`, `require_string`, `require_dict`, `require_bool`) | Call expression span (`call_span`) | `args[i].span` (failing argument's creation span) | `"argument produced here"` |
 | `if` condition type mismatch (non-Bool condition) | Condition expression span | condition thunk's `span` | `"condition evaluated to {type} here"` |
 
-`sec_span` is always optional and never overwrites `def_span`/`mat_span`. When the secondary span equals `def_span`, it is suppressed (no duplicate location notes). Display format: `"\n  note: {label} at {span}"`.
+`secondary_span` is always optional and never overwrites `def_span`/`mat_span`. When the secondary span equals `def_span`, it is suppressed (no duplicate location notes). Display format: `"\n  note: {label} at {span}"`.
 
 **Stack frames:** Each frame is `⟨label, span⟩` where `label` identifies the context (e.g., the thunk's origin name, `"materialized"` for re-access) and `span` is the source location. Frames are added by `attach_materialization_context` during propagation and by the Failed state handler during re-access.
 
@@ -98,7 +100,7 @@ All errors are constructed via `EvalError` methods that create an error with a s
 | `type_mismatch(expected, got, span)` | `TypeMismatch { context: None, expected, got }` | `"type mismatch: expected {expected}, got {got}"` | Expression producing wrong type |
 | `type_mismatch_ctx(context, expected, got, span)` | `TypeMismatch { context: Some(context), expected, got }` | `"{context}: expected {expected}, got {got}"` | Expression producing wrong type |
 | `arity_mismatch(expected, got, span)` | `ArityMismatch { expected, got }` | `"arity mismatch: expected {expected} arguments, got {got}"` | Call expression |
-| `circular_dependency(name, span)` | `CircularDependency { name }` | `"circular dependency detected while evaluating {name}"` | Thunk definition |
+| `circular_dependency(name, definition_span, cycle_path)` | `CircularDependency { name, cycle_path }` | `"circular dependency detected while evaluating {name}"` | Thunk definition |
 | `depth_exceeded(limit, span)` | `DepthExceeded { limit }` | `"maximum evaluation depth exceeded ({limit})"` | Thunk being materialized when limit hit |
 | `user_error(message, span)` | `UserError { message }` | `"{message}"` (user-provided) | `error` call site |
 | `integer_overflow(op, span)` | `IntegerOverflow { op }` | `"{op}: integer overflow"` | Arithmetic expression |
@@ -108,9 +110,12 @@ All errors are constructed via `EvalError` methods that create an error with a s
 | `empty_collection(op, span)` | `EmptyCollection { op }` | `"{op} on empty collection"` | Builtin call expression |
 | `named_arg_rejected(builtin, span)` | `NamedArgRejected { builtin }` | `"{builtin} does not accept named arguments"` | Call expression |
 | `resource_limit_exceeded(message, span)` | `ResourceLimitExceeded { message }` | `"{message}"` (caller-provided) | Resource-checking site |
+| `schema_violation(violations, span)` | `SchemaViolation { violations }` | `"schema validation failed with {n} error(s):\n  {field}: {msg}\n..."` | Schema validation expression |
 | `internal(message, span)` | `Internal { message }` | `"{message}"` (implementation-defined) | Context-dependent |
 
-See `src/error.rs` for the full set of `ErrorKind` variants and their constructors. The table above shows representative error constructors; additional variants not listed include: `UndefinedVariable`, `TypeAssertFailed`, `NamedArgConflict`, `UnknownNamedArg`, `DuplicateKey`, `ValueNotSerializable`, `JsonDepthExceeded`, `IncludeForbidden`, `IncludeNotAvailable`, `IncludeIoError`, `IncludeCycle`, `IncludeParseFailed`, `IncludeFileTooLarge`, `ParseConversion`, `JsonParse`, and `JsonRange`.
+See `src/error.rs` for the full set of `ErrorKind` variants and their constructors. The table above shows representative error constructors; additional variants not listed include: `UndefinedVariable`, `TypeAssertFailed`, `NamedArgConflict`, `UnknownNamedArg`, `DuplicateKey`, `ValueNotSerializable`, `JsonDepthExceeded`, `IncludeForbidden`, `IncludeNotAvailable`, `IncludeIoError`, `IncludeCycle`, `IncludeParseFailed`, `IncludeFileTooLarge`, `IncludeHashMismatch`, `IncludeHashRequired`, `IncludePathNotAllowed`, `ParseConversion`, `JsonParse`, `JsonRange`, and `UriParseError`.
+
+**Note:** The `depth_exceeded(limit, span)` constructor is marked `#[cfg(test)]` and only available in test builds.
 
 **Special error properties:**
 
@@ -419,7 +424,7 @@ pub enum ErrorKind {
     ArityMismatch { expected: ArityBound, got: usize },
     MissingRequiredParam { param: String },
     NamedArgConflict { param: String },
-    UnknownNamedArg { name: String },
+    UnknownNamedArg { name: String, valid_params: Vec<String> },
     NamedArgRejected { builtin: String },
 
     // --- Value errors (E030-E039) ---
@@ -464,14 +469,18 @@ pub enum ErrorKind {
     ParseConversion { builtin: String, input: String, target: String },
     JsonParse { detail: String },
     JsonRange,
+    UriParseError { detail: String },
 
     // --- Evaluation structure (E070-E079) ---
-    CircularDependency { name: String },
+    CircularDependency { name: String, cycle_path: Vec<(String, Span)> },
 
     // --- User-generated (E080-E089) ---
     UserError { message: String },
 
-    // --- Escape hatch (E090-E099) ---
+    // --- Schema validation (E090-E094) ---
+    SchemaViolation { violations: Vec<(String, String)> },
+
+    // --- Escape hatch (E095-E099) ---
     Internal { message: String },
 }
 ```
@@ -538,8 +547,10 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E060 | `ParseConversion` | Conversion |
 | E061 | `JsonParse` | Conversion |
 | E062 | `JsonRange` | Conversion |
+| E063 | `UriParseError` | Conversion |
 | E070 | `CircularDependency` | Evaluation |
 | E080 | `UserError` | User |
+| E090 | `SchemaViolation` | Schema validation |
 | E099 | `Internal` | Internal |
 
 **Numbering scheme:** Codes are grouped in decades by domain with explicit ranges:
@@ -555,7 +566,8 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E060–E069 | Conversion |
 | E070–E079 | Evaluation |
 | E080–E089 | User |
-| E090–E099 | Internal |
+| E090–E094 | Schema validation |
+| E095–E099 | Internal |
 
 Gaps between codes within each range allow inserting new variants without renumbering existing codes.
 
@@ -593,8 +605,10 @@ impl ErrorKind {
             Self::ParseConversion { .. } => "E060",
             Self::JsonParse { .. } => "E061",
             Self::JsonRange => "E062",
+            Self::UriParseError { .. } => "E063",
             Self::CircularDependency { .. } => "E070",
             Self::UserError { .. } => "E080",
+            Self::SchemaViolation { .. } => "E090",
             Self::Internal { .. } => "E099",
         }
     }
@@ -698,10 +712,29 @@ impl fmt::Display for ErrorKind {
                 write!(f, "from-json: invalid JSON: {detail}"),
             Self::JsonRange =>
                 write!(f, "JSON number outside representable range"),
-            Self::CircularDependency { name } =>
-                write!(f, "circular dependency detected while evaluating {name}"),
+            Self::UriParseError { detail } =>
+                write!(f, "URI parse error: {detail}"),
+            Self::CircularDependency { name, cycle_path } => {
+                write!(f, "circular dependency detected while evaluating {name}")?;
+                if !cycle_path.is_empty() {
+                    write!(f, "\n  cycle:")?;
+                    for (label, span) in cycle_path {
+                        write!(f, " {} ({})", label, span)?;
+                        write!(f, " →")?;
+                    }
+                    write!(f, " [back to {}]", name)?;
+                }
+                Ok(())
+            }
             Self::UserError { message } =>
                 write!(f, "{message}"),
+            Self::SchemaViolation { violations } => {
+                writeln!(f, "schema validation failed with {} error(s):", violations.len())?;
+                for (field, msg) in violations {
+                    writeln!(f, "  {}: {}", field, msg)?;
+                }
+                Ok(())
+            }
             Self::Internal { message } =>
                 write!(f, "{message}"),
         }
@@ -761,10 +794,15 @@ Example output: `[E001] key not found: name (defined at 3:5-3:10) (materialized 
 The display format is:
 
 ```
-[E0XX] {message} (defined at {line}:{col}-{line}:{col}) (materialized at {line}:{col}-{line}:{col})
+[E0XX] {message} (defined at {line}:{col}-{line}:{col}) ({verb} {line}:{col}-{line}:{col})
   in {label} at {line}:{col}-{line}:{col}
   in {label} at {line}:{col}-{line}:{col}
 ```
+
+The materialization clause uses a context-sensitive verb determined by `infer_materialization_verb()`:
+- `"called at"` when the first visible stack frame starts with `'['` (function call)
+- `"accessed at"` when the stack contains frames with "access", `.`, or "bracket" (field access)
+- `"materialized at"` as the fallback
 
 The materialization clause is omitted when it equals the definition site or is absent. Stack frames are printed in the order they were added during propagation — innermost (closest to the error source) first, outermost (closest to the output root) last.
 
@@ -886,7 +924,7 @@ Builtin error messages are prefixed with the builtin name when the error origina
 
 ## Error Categories — Complete Reference
 
-All 34 `ErrorKind` variants map to stable error codes and human-readable messages. Each error code requires at least one corpus test in `tests/corpus/eval/errors/` demonstrating the error is raised correctly with the expected error code prefix.
+All 36 `ErrorKind` variants map to stable error codes and human-readable messages. Each error code requires at least one corpus test in `tests/corpus/eval/errors/` demonstrating the error is raised correctly with the expected error code prefix.
 
 | ErrorKind Variant | Error Code | Message Pattern | Definition Site |
 |-------------------|------------|----------------|-----------------|
@@ -922,7 +960,7 @@ All 34 `ErrorKind` variants map to stable error codes and human-readable message
 | **JsonParse** | E061 | `"from-json: invalid JSON: {detail}"` | `from-json` call expression |
 | **JsonRange** | E062 | `"JSON number outside representable range"` | `from-json` call expression |
 | **UriParseError** | E063 | `"URI parse error: {detail}"` | `uri`/`url`/`urn` call expression |
-| **CircularDependency** | E070 | `"circular dependency detected while evaluating {name}"` | Thunk definition (dict entry) |
+| **CircularDependency** | E070 | `"circular dependency detected while evaluating {name}"` (appends cycle path visualization when `cycle_path` is non-empty) | Thunk definition (dict entry) |
 | **UserError** | E080 | `"{message}"` (user-provided) | `error` call expression |
 | **SchemaViolation** | E090 | `"schema validation failed with N error(s):\n  {field}: {msg}\n  ..."` (one violation per line, N = violation count) | Schema validation expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
