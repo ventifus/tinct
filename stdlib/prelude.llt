@@ -351,7 +351,7 @@ not@[doc: "Boolean negation"]: [fn@Bool [x] [builtin-if x false true]]
 # Type: (Any -> Any -> Any)
 # Example: [and true "yes"] => "yes"
 # Example: [and false [expensive]] => false   (expensive never called)
-and@[doc: "Short-circuit AND"]: [fn [a b] [builtin-if a b false]]
+and@[doc: "Short-circuit AND"]: [fn@Unknown [a b] [builtin-if a b false]]
 
 # Short-circuit OR: if a is truthy, returns a; otherwise returns b.
 # Type: (Any -> Any -> Any)
@@ -360,7 +360,7 @@ and@[doc: "Short-circuit AND"]: [fn [a b] [builtin-if a b false]]
 # NOTE: Both references to `a` in `[builtin-if a a b]` are bound to
 # the same parameter — the parameter binding is shared, so the thunk is forced
 # at most once (Launchbury 1993). The second reference is a cache hit.
-or@[doc: "Short-circuit OR"]: [fn [a b] [builtin-if a a b]]
+or@[doc: "Short-circuit OR"]: [fn@Unknown [a b] [builtin-if a a b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.
 # Type: ((a -> Bool) -> Dict a -> Bool)
@@ -494,12 +494,12 @@ words@[doc: "Split string on spaces into words"]: [fn@Seq [s@String]
 # Evaluates body if pred is true, otherwise returns [].
 # assert: [when true result] => result
 # assert: [when false result] => []
-when@[doc: "Evaluate body if predicate is true"]: [fn@Any [pred body] [builtin-if pred body []]]
+when@[doc: "Evaluate body if predicate is true"]: [fn@Unknown [pred body] [builtin-if pred body []]]
 
 # Evaluates body if pred is false, otherwise returns [].
 # assert: [unless false result] => result
 # assert: [unless true result] => []
-unless@[doc: "Evaluate body if predicate is false"]: [fn@Any [pred body] [builtin-if pred [] body]]
+unless@[doc: "Evaluate body if predicate is false"]: [fn@Unknown [pred body] [builtin-if pred [] body]]
 
 # Multi-branch conditional. Takes a list of [condition result] pairs.
 # Returns [] (empty dict) when no branch matches.
@@ -508,7 +508,7 @@ unless@[doc: "Evaluate body if predicate is false"]: [fn@Any [pred body] [builti
 #   [[> x 0]  "positive"]
 #   [true     "other"]
 # ]]
-cond@[doc: "Multi-branch conditional"]: [fn@Any [pairs@Dict] [cond-impl pairs 0]]
+cond@[doc: "Multi-branch conditional"]: [fn@Unknown [pairs@Dict] [cond-impl pairs 0]]
 
 # until: Moved to Rust builtin to avoid recursion depth limit.
 # The LLT recursive version hit MAX_EVAL_DEPTH at ~230 iterations.
@@ -521,7 +521,7 @@ cond@[doc: "Multi-branch conditional"]: [fn@Any [pairs@Dict] [cond-impl pairs 0]
 # Get value by key from a dict.
 # Signature: Key → Dict → Any (curried for pipeline composition)
 # assert: [get "b" [a: 1  b: 2]] => 2
-get@[doc: "Get value by key with error if missing"]: [fn [k xs@Dict] [builtin-get k xs]]
+get@[doc: "Get value by key with error if missing"]: [fn@Unknown [k xs@Dict] [builtin-get k xs]]
 
 # Check if a key exists in a dict. Uses try around get access.
 # assert: [has? [x: 1] "x"] => true
@@ -532,7 +532,7 @@ has?@[doc: "Check if dict has key"]: [fn@Bool [xs@Dict k]
 # Get value by key with a default if key is missing.
 # assert: [get-or [x: 1] "x" 99] => 1
 # assert: [get-or [x: 1] "y" 99] => 99
-get-or@[doc: "Get value by key with default"]: [fn [xs@Dict k default]
+get-or@[doc: "Get value by key with default"]: [fn@Unknown [xs@Dict k default]
     [builtin-if [has? xs k] [get k xs] default]]
 
 # Traverse nested dicts by a list of keys.
@@ -540,7 +540,7 @@ get-or@[doc: "Get value by key with default"]: [fn [xs@Dict k default]
 # Use get-in-or for a default fallback on missing keys.
 # Usage: [get-in data [key1 key2 key3]]
 # Inherently materializing: must traverse nested dict path, accessing each level.
-get-in@[doc: "Get nested value by path"]: [fn@Any [xs path@Dict]
+get-in@[doc: "Get nested value by path"]: [fn@Unknown [xs path@Dict]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
@@ -551,7 +551,7 @@ get-in@[doc: "Get nested value by path"]: [fn@Any [xs path@Dict]
 # Returns default when any intermediate key is missing.
 # Usage: [get-in-or data [key1 key2 key3] fallback]
 # Inherently materializing: must traverse nested dict path, accessing each level.
-get-in-or@[doc: "Get nested value by path with default"]: [fn@Any [xs path@Dict default]
+get-in-or@[doc: "Get nested value by path with default"]: [fn@Unknown [xs path@Dict default]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
@@ -722,7 +722,7 @@ map-entries@[doc: "Apply function to each key-value entry"]: [fn@Dict [f@Fn xs@D
 # Both are left folds: f receives (accumulator, element) and the result becomes
 # the new accumulator. Starting accumulator is init.
 # Example: [fold [fn [acc x] [+ acc x]] 0 [1 2 3 4]] => 10
-fold@[doc: "Left fold (alias for reduce)"]: [fn [f@Fn init xs] [builtin-reduce f init xs]]
+fold@[doc: "Left fold (alias for reduce)"]: [fn@Unknown [f@Fn init xs] [builtin-reduce f init xs]]
 
 # Take a slice by position (start inclusive, end exclusive). Preserves original keys.
 # Type: (Dict a -> Int -> Int -> Dict a)
@@ -744,7 +744,7 @@ slice@[doc: "Take slice by position (preserves keys)"]: [fn@Dict [xs@Dict start@
 # Pair entries from two collections by position. Returns a list of pairs.
 # If both xs and ys are Seq: lazy Seq of pairs.
 # Otherwise: collect Seqs to Dicts, then use eager zip-dict-impl.
-zip@[doc: "Pair entries from two collections by position"]: [fn@Any [xs ys]
+zip@[doc: "Pair entries from two collections by position"]: [fn@Unknown [xs ys]
     [builtin-if [and [seq? xs] [seq? ys]]
         [zip-seq-impl xs ys]
         [zip-dict-impl
@@ -830,10 +830,10 @@ flat-map@[doc: "Map and flatten results"]: [fn@Dict [f@Fn xs]
 
 # Return the first element satisfying pred, or error if none found.
 # filter on Dict returns a Seq; head gets the first element (errors if Seq is empty).
-find-first@[doc: "Find first element matching predicate"]: [fn [pred@Fn xs] [builtin-head [builtin-filter pred xs]]]
+find-first@[doc: "Find first element matching predicate"]: [fn@Unknown [pred@Fn xs] [builtin-head [builtin-filter pred xs]]]
 
 # Return the first element satisfying pred, or default if none found.
-find-first-or@[doc: "Find first matching element or return default"]: [fn [pred@Fn default xs]
+find-first-or@[doc: "Find first matching element or return default"]: [fn@Unknown [pred@Fn default xs]
     [try-or [fn [] [find-first pred xs]] default]]
 
 # Group elements of xs into a dict of lists, keyed by the result of applying f.
@@ -922,7 +922,7 @@ product@[doc: "Product of all elements"]: [fn@Number [xs] [builtin-reduce [fn [a
 
 # Return the minimum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic min).
-min@[doc: "Minimum element"]: [fn [xs]
+min@[doc: "Minimum element"]: [fn@Unknown [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] a b]]
         [builtin-first xs]
@@ -930,7 +930,7 @@ min@[doc: "Minimum element"]: [fn [xs]
 
 # Return the maximum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic max).
-max@[doc: "Maximum element"]: [fn [xs]
+max@[doc: "Maximum element"]: [fn@Unknown [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] b a]]
         [builtin-first xs]
@@ -1043,7 +1043,7 @@ Err: Err
 # Type: (Result a -> (a -> Result b) -> Result b)
 # Example: [and-then [Ok 21] [fn [x] [Ok [* x 2]]]] => [Ok 42]
 # Example: [and-then [Err "bad"] [fn [x] [Ok [* x 2]]]] => [Err "bad"]
-and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass through"]: [fn [result f]
+and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass through"]: [fn@Unknown [result f]
     [match result
         [Ok v] [f v]
         [Err msg] [Err msg]]]
@@ -1052,7 +1052,7 @@ and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass throug
 # Type: ((a -> b) -> Result a -> Result b)
 # Example: [result-map [fn [x] [* x 2]] [Ok 21]] => [Ok 42]
 # Example: [result-map [fn [x] [* x 2]] [Err "bad"]] => [Err "bad"]
-result-map@[doc: "Map over Ok value, pass Err through"]: [fn [f result]
+result-map@[doc: "Map over Ok value, pass Err through"]: [fn@Unknown [f result]
     [match result
         [Ok v] [Ok [f v]]
         [Err msg] [Err msg]]]
@@ -1061,7 +1061,7 @@ result-map@[doc: "Map over Ok value, pass Err through"]: [fn [f result]
 # Type: (a -> Result a -> a)
 # Example: [result-or 99 [Ok 42]] => 42
 # Example: [result-or 99 [Err "bad"]] => 99
-result-or@[doc: "Return Ok value or the default on Err"]: [fn [default result]
+result-or@[doc: "Return Ok value or the default on Err"]: [fn@Unknown [default result]
     [match result
         [Ok v] v
         [Err _] default]]
@@ -1069,7 +1069,7 @@ result-or@[doc: "Return Ok value or the default on Err"]: [fn [default result]
 # Wrap a value in Ok.
 # Type: (a -> Result a)
 # Example: [result-ok 42] => [Ok 42]
-result-ok@[doc: "Wrap a value in Ok"]: [fn [v] [Ok v]]
+result-ok@[doc: "Wrap a value in Ok"]: [fn@Unknown [v] [Ok v]]
 
 # Result monad dict for [do result ...] chains.
 # Provides bind (and-then) and pure (result-ok) for the do macro.
@@ -1092,7 +1092,7 @@ result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  p
 
 # Assert a condition; if false, raise an error with the given message.
 # Inherently materializing: must materialize condition to check.
-assert@[doc: "Assert condition with error message"]: [fn@Bool [cond msg@String] [builtin-if cond true [error msg]]]
+assert@[doc: "Assert condition with error message"]: [fn@Unknown [cond msg@String] [builtin-if cond true [error msg]]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
@@ -1168,21 +1168,21 @@ str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1
 # assert: [[between 0 255] 42] => true
 # assert: [[between 0 255] -1] => false
 # assert: [[between 0 255] 256] => false
-between@[doc: "Predicate factory for range check (inclusive)"]: [fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
+between@[doc: "Predicate factory for range check (inclusive)"]: [fn@Fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
 
 # non-negative: predicate — checks v >= 0.
 # non-negative: Int -> Bool
 # assert: [non-negative 0] => true
 # assert: [non-negative 42] => true
 # assert: [non-negative -1] => false
-non-negative@[doc: "Check if value is non-negative"]: [fn [v] [>= v 0]]
+non-negative@[doc: "Check if value is non-negative"]: [fn@Bool [v] [>= v 0]]
 
 # positive: predicate — checks v > 0.
 # positive: Int -> Bool
 # assert: [positive 1] => true
 # assert: [positive 0] => false
 # assert: [positive -1] => false
-positive@[doc: "Check if value is positive"]: [fn [v] [> v 0]]
+positive@[doc: "Check if value is positive"]: [fn@Bool [v] [> v 0]]
 
 # ============================================================================
 # Sequence / List Wrappers (shadowable wrappers for builtin-NAME functions)

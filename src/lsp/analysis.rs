@@ -223,8 +223,13 @@ fn hover_at_expr(
                             _ => None,
                         };
                         if let Some(display) = display_name {
-                            let ty =
-                                type_suffix(entry.node.value.span, type_map, scheme_map, include_graph, doc_url);
+                            let ty = type_suffix(
+                                entry.node.value.span,
+                                type_map,
+                                scheme_map,
+                                include_graph,
+                                doc_url,
+                            );
                             // Only look up doc for bare-name keys (not string literals)
                             let doc_name = match &key.node {
                                 Expr::VarRef { name, .. } | Expr::Annotated { name, .. } => {
@@ -232,9 +237,7 @@ fn hover_at_expr(
                                 }
                                 _ => None,
                             };
-                            let doc = doc_name
-                                .map(|n| doc_suffix(n, doc_map))
-                                .unwrap_or_default();
+                            let doc = doc_name.map(|n| doc_suffix(n, doc_map)).unwrap_or_default();
                             return Some(format!("{display}{ty}{doc}"));
                         }
                         // Dynamic key expression — fall back to key hover.

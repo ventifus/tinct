@@ -9,13 +9,14 @@ You are a language design partner for LLT. You work interactively with the user 
 
 ## Item Types
 
-Three kinds of items flow through this skill, each with a different scope and output:
+Four kinds of items flow through this skill, each with a different scope and output:
 
-| Prefix | Scope | Output | Agent review? |
-|--------|-------|--------|---------------|
+| Prefix / Signal | Scope | Output | Agent review? |
+|-----------------|-------|--------|---------------|
 | `Design [topic]` | Substantial — new construct, model, formal spec | doc/*.md section | Yes (full panel) |
 | `Decide [topic]` | Focused — binary/small choice gating an implementation item | Decision recorded inline in TODO.md (checked-off item text) | Optional (1–2 agents if non-obvious) |
 | `Research [topic]` | Exploratory — open question, no commitment yet | `doc/whatif/[name].md` proposal | No (proposal is the deliverable) |
+| Blocked sprint | Sprint with unmet `**Depends on:**` or unresolvable dependency | Unblocking action: Design/Decide/Research item, reordering, or user decision | Depends on unblocking action |
 
 The workflow below describes the **Design** path in full. **Decide** and **Research** items use lighter variants described in §Decide Path and §Research Path.
 
@@ -31,15 +32,19 @@ The workflow below describes the **Design** path in full. **Decide** and **Resea
 Scan TODO.md for unchecked design work:
 
 1. **Find existing items**: grep for `- [ ]` items whose text starts with "Design", "Decide", or "Research" (these are explicit items for this skill)
-2. **Find hedged items**: grep unchecked `- [ ]` items for weasel words — `optional`, `optionally`, `consider`, `possibly`, `if needed`, `if desired`, `may want to`, `might`, `could also`. Every such item is an undecided choice masquerading as a task. Surface each one with a recommendation to either **commit** (rewrite as a plain task) or **cut** (remove from TODO entirely). Never leave a hedged item as-is.
-3. **Identify sprints missing items**: look at unchecked sprints (### headings with unchecked items) that describe substantial new features, architecture, or semantics but have no design/decide/research checkbox. Signs a sprint needs one:
+2. **Find blocked sprints**: look for `###` sprints that carry a `**Depends on:**` line whose target sprint still has unchecked items. For each blocked sprint:
+   - Identify the blocking sprint(s) and whether they are in-progress, not-started, or themselves blocked
+   - Determine the root cause: missing implementation (→ surface to user to prioritize), unresolved design question (→ insert a Design/Decide/Research item in the blocking sprint), or an external constraint (→ surface to user for resolution)
+   - Flag the chain: if sprint A depends on B and B depends on C, report the full dependency chain so the user sees the root blocker
+3. **Find hedged items**: grep unchecked `- [ ]` items for weasel words — `optional`, `optionally`, `consider`, `possibly`, `if needed`, `if desired`, `may want to`, `might`, `could also`. Every such item is an undecided choice masquerading as a task. Surface each one with a recommendation to either **commit** (rewrite as a plain task) or **cut** (remove from TODO entirely). Never leave a hedged item as-is.
+4. **Identify sprints missing items**: look at unchecked sprints (### headings with unchecked items) that describe substantial new features, architecture, or semantics but have no design/decide/research checkbox. Signs a sprint needs one:
    - Introduces a new language construct or runtime concept → **Design**
    - Describes a binary policy or strategy choice that gates implementation → **Decide**
    - Explores a speculative feature or alternative approach → **Research**
    - Has TODO items that say "design", "decide", "choose", "model", "policy", "consider", or "either...or"
    - Affects user-facing semantics (not just internal refactoring, nits, docs, or tests)
-4. **Insert missing items**: for sprints that need work but lack an item, insert the appropriate checkbox (`Design`, `Decide`, or `Research`) as the first unchecked item in that sprint. Research items include the target path: `— write proposal to doc/whatif/[name].md`
-5. **Present the list**: show the user all unchecked items (existing + newly inserted), grouped by type — Design/Decide/Research first, then hedged items — and ask which to start with, or proceed in document order
+5. **Insert missing items**: for sprints that need work but lack an item, insert the appropriate checkbox (`Design`, `Decide`, or `Research`) as the first unchecked item in that sprint. Research items include the target path: `— write proposal to doc/whatif/[name].md`
+6. **Present the list**: show the user all unchecked items (existing + newly inserted), grouped by type — Design/Decide/Research first, then blocked sprints, then hedged items — and ask which to start with, or proceed in document order
 
 ### Step 2: Design Dialog (for `Design` items)
 
@@ -269,11 +274,36 @@ No agent review — the proposal is exploratory, not a commitment.
 
 Proceed to the next unchecked item automatically. If no items remain, report completion.
 
-### Step 5: Accept Path (accepting a whatif into the project)
+### Step 5: Unblock Path (for blocked sprints)
+
+A blocked sprint has a `**Depends on:**` line whose target is not yet complete. The Unblock Path determines what is preventing progress and takes the lightest action that moves things forward.
+
+#### 5a: Diagnose the Block
+
+1. Read the blocked sprint and its `**Depends on:**` target(s)
+2. Check whether each dependency sprint has unchecked items — if so, it is not yet complete
+3. Walk the dependency chain: if the dependency is itself blocked, keep tracing until you reach the root blocker
+4. Classify the root blocker:
+   - **Missing implementation** — the dependency sprint exists, has no design gaps, but just hasn't been run yet → surface to user, recommend prioritizing the dependency sprint in `/cycle`
+   - **Unresolved design** — the dependency sprint has unchecked Design/Decide/Research items → work those items (follow the appropriate path in this skill)
+   - **Phantom dependency** — the dependency sprint no longer exists, is checked off, or its `**Depends on:**` reference is stale → remove or update the stale reference
+   - **External constraint** — the block is outside TODO.md (e.g., waiting on a library release, a policy decision from outside the project) → surface to user with a clear description and ask how to proceed
+
+#### 5b: Act
+
+- **Unresolved design**: insert and work the missing Design/Decide/Research item in the blocking sprint (use Steps 2–4 as appropriate). Once resolved, the dependency sprint can be picked up by `/cycle`.
+- **Phantom dependency**: remove or update the stale `**Depends on:**` line. If the blocked sprint is now unblocked, note this to the user.
+- **Missing implementation** or **External constraint**: present findings clearly — blocked sprint, root blocker, full dependency chain if multi-level — and ask the user how they want to proceed. Do not make structural changes without direction.
+
+#### 5c: Next Item
+
+Proceed to the next unchecked item automatically. If no items remain, report completion.
+
+### Step 6: Accept Path (accepting a whatif into the project)
 
 The Accept path takes a completed `doc/whatif/*.md` proposal and formally integrates it into the project. Trigger this path when the user wants to accept a specific whatif doc. This is not tied to TODO.md items — invoke it directly when the user says "accept [name]" or "let's accept [whatif]".
 
-#### 5a: Readiness Check
+#### 6a: Readiness Check
 
 Before accepting, verify the proposal is ready:
 
@@ -283,7 +313,7 @@ Before accepting, verify the proposal is ready:
 4. Check whether listed prerequisites are either complete (checked off in TODO.md) or have scheduled sprints
 5. If anything is missing, report the gap and ask the user whether to address it first or proceed anyway
 
-#### 5b: Mark State
+#### 6b: Mark State
 
 Add `**State:** Accepted — YYYY-MM-DD` (use today's date) as the second line of the whatif doc, immediately after the `# What If:` title and before the opening question:
 
@@ -295,11 +325,11 @@ Add `**State:** Accepted — YYYY-MM-DD` (use today's date) as the second line o
 What would it take to...?
 ```
 
-#### 5c: Design Review (optional)
+#### 6c: Design Review (optional)
 
 For proposals that touch formal semantics, multiple subsystems, or introduce new runtime or type system behavior, dispatch specialist agents to review soundness before writing to `doc/*.md`. Use the same agent panel as Design items (§2e). For simple or already-vetted proposals, skip — whatif docs are advocates, not vetted designs, so complex ones warrant a soundness pass.
 
-#### 5d: Integrate into Spec
+#### 6d: Integrate into Spec
 
 Update the relevant `doc/*.md` chapters:
 
@@ -307,13 +337,13 @@ Update the relevant `doc/*.md` chapters:
 2. Write in **present tense** — final-end-state principle: no "planned", "will be", "when X is implemented", or TODO references
 3. Add citations inline for formal sources; update `doc/17-references.md` for new entries
 
-#### 5e: Create Implementation Sprints
+#### 6e: Create Implementation Sprints
 
 For each phase in the **Phased Adoption** section, create a sprint in TODO.md. These sprints must be **design-complete** — fully ready for `/sprint` to execute without any additional design work.
 
 **Sprint readiness checklist** — every sprint must have all of the following before creation:
-- [ ] All Design/Decide/Research items for this phase are checked off (from Steps 5a–5d above)
-- [ ] The relevant `doc/*.md` sections are written in present tense (from Step 5d)
+- [ ] All Design/Decide/Research items for this phase are checked off (from Steps 6a–6d above)
+- [ ] The relevant `doc/*.md` sections are written in present tense (from Step 6d)
 - [ ] At least one "Spec chapters:" reference pointing to the doc/*.md section(s) that cover this sprint's scope
 - [ ] Implementation tasks derived from the finalized `doc/*.md` content (not from the whatif proposal's phase description — the spec is the authoritative source)
 - [ ] Explicit test tasks: at least one task for corpus tests (per feature, in `tests/corpus/eval/`), one for error cases, and one for edge cases. Mention the labeled-section format (`=== out`, `=== warn`, `=== error`) so agents produce correct test files.
@@ -338,14 +368,14 @@ See doc/[chapter].md §[Section Name]. **Spec chapters:** `doc/[chapter].md §Se
 
 Place new `###` sprint headings under the relevant `##` design section in TODO.md. If no matching `##` section exists, create one. Never place sprint headings at `##` level.
 
-#### 5f: Update Index
+#### 6f: Update Index
 
 In `doc/whatif/index.md`:
 
 1. Move the proposal's entry from its current adoption bucket (Adopt Now, Wait for Trigger, etc.) to the **Accepted** section at the top of the Adoption Analysis
 2. Add the acceptance date as a third column: `| [Name](file.md) | Summary | YYYY-MM-DD |`
 
-#### 5g: Save to Mempalace
+#### 6g: Save to Mempalace
 
 Record the acceptance decision: what was accepted, why now, what doc/*.md sections were updated, and what sprints were created.
 

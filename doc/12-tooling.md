@@ -137,9 +137,9 @@ Comments are stripped in `--oneline` and `--minimize` modes (comments cannot sur
 
 ### Tinct-Hosted Formatter
 
-The compact and pretty formatters are implemented in `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt`. A full tinct-hosted formatter (`stdlib/formatter/format.llt`) that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source is planned but not yet implemented. The Rust formatter (`src/formatter.rs`) is retained for LSP use (where loading a tinct program would be too slow).
+The compact and pretty formatters are implemented in `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt`. A full tinct-hosted formatter (`stdlib/formatter/format.llt`) that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source is not yet implemented. The Rust formatter (`src/formatter.rs`) is retained for LSP use (where loading a tinct program would be too slow).
 
-See `doc/whatif/tinct-hosted-formatter.md` and `doc/whatif/plans/macros-cluster.md` for the full design.
+See `doc/whatif/completed/tinct-hosted-formatter.md` for the full design.
 
 ## Inline Expressions and I/O Formatters (`tinct run`)
 

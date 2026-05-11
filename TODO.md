@@ -6,31 +6,17 @@ See DONE.md for the full history of completed sprints.
 
 ## Research (requires /rnd before implementing)
 
-- Constraint annotation syntax — should users be able to write explicit type class constraints in annotations (e.g. `@[Equatable a]`)? Currently constraints are implicit and inferred. Motivating use cases: LSP hover copy-paste principle (constraint info is advisory-only today); stdlib authors wanting to explicitly declare polymorphic interface requirements. Write design note in `doc/whatif/` first.
+- [x] Research constraint annotations — see `doc/whatif/constraint-annotations.md`. Decision: `fn@[...]` becomes a named-key metadata dict with `return:`, `constraint:`, and `doc:` keys; `constraint: [a: Comparable]` uses binding syntax (lowercase TypeVar key, uppercase class value); `fn@Type` shorthand permanent.
+
+- [x] Research union annotations with named TypeVars — verified: `ann_mapping` propagates through all positional union entries in `resolve_annotation` → `resolve_type_expr` → `resolve_type_name`; `a` in `fn@[a Null]` shares the same TypeVar as `body@a`. **This is a sprint, not research.** Follow-up tasks added to `prelude-type-annotations` below. Prerequisite: `constraint-annotations` sprint (fixes `fn@[...]` positional-union path).
+
+- [ ] Research row-access types for `get`/`get-in` — literature survey in progress; see R&D session 2026-05-11. Interim: `fn@Any` confirmed correct over `fn@Unknown`; full proposal pending.
+
+- [x] Research LSP prelude go-to-definition — `Span` carries no file path but `find_definition` already returns `(Uri, Span)` as separate values; `llt_span_to_lsp_range` takes source text separately, so path-less spans work fine. Approach: parse prelude once at LSP startup using the embedded `include_str!()` source; cache the `Spanned<File>` AST; extend `definition_at()` to search it after local/include miss; resolve URI via `find_libdir_path().join("prelude.llt")` + `file_path_to_uri()`. **This is a sprint.** Tasks added to `lsp-gaps`.
 
 ---
 
 ## Type System Cleanup
-
-### prelude-type-annotations: Fix type annotations in stdlib/prelude.llt
-
-Audit findings from 2026-05-11. Focus: public-facing functions only. Internal helpers (`-impl`, `-step`, `-check`, `sort-merge`, etc.) excluded.
-
-- [ ] `when`/`unless` (lines 497–502): change `fn@Any` → `fn@Unknown` — the `@Any` annotation is semantically wrong; the return is either the unannotated `body` arg or `[]` (Null), which is the gradual-typing `Unknown` case, not the lattice ceiling `Any`
-- [ ] `cond` (line 511): change `fn@Any` → `fn@Unknown` — delegates to `cond-impl`; returns the untyped `result` branch or `[]` (Null when no branch matches); same `Any`→`Unknown` mismatch as `when`/`unless`
-- [ ] `get` (line 524): add `fn@Unknown` return annotation — currently bare `fn`; delegates to `builtin-get` whose return type is unknown at the static level; unannotated and knowable
-- [ ] `get-or` (line 535): add `fn@Unknown` return annotation — bare `fn`; returns either the dict value or the `default` param, both untyped; unannotated and knowable
-- [ ] `get-in` (line 543): change `fn@Any` → `fn@Unknown` — traverses nested dicts; return is a leaf value whose type is unknown; `Unknown` is the correct gradual annotation
-- [ ] `get-in-or` (line 554): change `fn@Any` → `fn@Unknown` — same issue as `get-in`; on the missing-key path returns unannotated `default` param
-- [ ] `zip` (line 747): change `fn@Any` → `fn@Unknown` — always returns a collection (Seq or Dict depending on inputs), but the dual-dispatch return cannot be pinned to either; `Unknown` is more honest than `Any` (lattice ceiling)
-- [ ] `and`/`or` (lines 354/363): add `fn@Unknown` return annotation — both bare `fn`; `and` returns `b` or `false`, `or` returns `a` or `b`; neither is statically pinnable without union types; currently unannotated and knowable
-- [ ] `find-first`/`find-first-or` (lines 833/836): add `fn@Unknown` return annotation — both bare `fn`; return single element from filtered collection whose type is unknown statically; currently unannotated and knowable
-- [ ] `min`/`max` (lines 925/933): add `fn@Unknown` return annotation — both bare `fn`; return the winning element (type equals element type, unknown without parametric annotation); currently unannotated and knowable
-- [ ] `between` (line 1171): add `fn@Fn` return annotation — bare `fn [lo hi]`; always returns a closure (the inner `[fn [v] ...]`); `@Fn` is the correct annotation; currently unannotated
-- [ ] `non-negative`/`positive` (lines 1178/1185): add `fn@Bool` return annotation — both bare `fn [v]`; always return Bool (they delegate to `>=` and `>`); currently unannotated and clearly knowable
-- [ ] `assert` (line 1095): change `fn@Bool` return annotation to `fn@Unknown` — currently annotated `@Bool` but the false path calls `[error msg]` which diverges (never returns); the true path returns literal `true`; until `Never` is in the prelude type system, `Unknown` is more accurate than claiming it always returns Bool
-- [ ] `fold` (line 725): add `fn@Unknown` return annotation — bare `fn [f@Fn init xs]`; delegates to `builtin-reduce`; return type is the accumulator type (equals `init`'s type, statically unknown); currently unannotated and knowable
-- [ ] `result-map`/`result-or`/`and-then`/`result-ok` (lines 1046–1073): add `fn@Unknown` return annotations to all four — all bare `fn`; all operate on Result values whose type system representation is `Unknown` until `Type::Variant` is added; currently unannotated and knowable
 
 ### builtin-type-audit: Fix Unknown→Any/Never in builtin type registrations
 
@@ -48,6 +34,12 @@ Audit and fix incorrect `Type::Unknown` uses in `TypeEnv::with_builtins()` (`src
 - [ ] `env` return: `Unknown` → `String` — reads environment variable as a string (`src/type_env.rs`)
 - [ ] Add param names to `with_builtins()` registrations for common builtins (aids LSP hover): `set`, `get`, `has?`, `append`, `merge`, `if`, `map`, `filter`, `reduce` at minimum
 - [ ] `infer_fn` unannotated params: change `None => Ok(Type::Unknown)` (line 3074 `src/typecheck.rs`) to `None => Ok(state.new_type_var(span))` — unannotated params should get fresh TypeVars for proper HM inference, not Unknown (gradual opt-out). This enables constraint propagation (e.g. `[fn [a b] [= a b]]` infers `Equatable a => Fn@Bool [a a]`) and LSP hover shows `a` not `Unknown`. This is a significant behavior change — audit for test breakage.
+- [ ] **Prelude follow-ups** (gate on the two items above — `error → Never` and `infer_fn` TypeVar fix — both landing first):
+  - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — lowercase TypeVar annotations already share via `ann_mapping` in `src/typecheck_annot.rs`; `a` in `fn@a` and `init@a` binds return type to the accumulator type, which is exactly correct (`stdlib/prelude.llt`)
+  - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference on `[builtin-if cond true [error msg]]` produces `Bool | Never = Bool`, making `@Bool` correct and not a lie (`stdlib/prelude.llt`)
+- [ ] **Prelude follow-ups** (gate on `constraint-annotations` sprint — `fn@[...]` positional-union path fixed first): update `when`/`unless` → `fn@[a Null] [pred body@a]`, `cond` → `fn@[a Null] [branches]`, `and` → `fn@[a Bool] [p b@a]`, `or` → `fn@a [a@a b@a]`, `get-or` → `fn@a [xs key default@a]`, `find-first` → `fn@[a Null] [pred xs@Seq@a]`, `find-first-or` → `fn@a [pred xs@Seq@a default@a]` (`stdlib/prelude.llt`)
+- [ ] Fix `result` monad dict description in `doc/11-stdlib.md` line ~554: currently lists `map:`, `or:`, `ok?:` fields that don't exist; actual prelude has only `bind: and-then  pure: result-ok` (`doc/11-stdlib.md`)
+- [ ] Fix `assert` short-form table entry in `doc/11-stdlib.md` line ~582: still shows `[fn [cond msg] ...]`, should show `fn@Unknown [cond msg@String]` to match the Prelude Type Signatures table (`doc/11-stdlib.md`)
 
 ---
 
@@ -115,6 +107,7 @@ See `doc/whatif/completed/hkt-monads.md` §Mappable Constraint, §The Typeclass 
 - [ ] Write `Comparable` class (extends Equatable, `[< [fn@Bool [a a]]]` plus `<=`/`>`/`>=`) and instances for `Int`, `Str`, `Float` in `stdlib/prelude.llt`; remove `Comparable` from `satisfies_constraint`
 - [ ] Write `Showable` class (`[class [a] [show [fn@Str [a]]]]`) and instances for `Int`, `Str`, `Bool`, `Float`, `Null` in `stdlib/prelude.llt`; remove `Showable` from `satisfies_constraint`; `Numeric` remains hardcoded — its mixed-type arithmetic (`Int + Float → Float`) requires multi-parameter type classes (out of scope)
 - [ ] Tests: Mappable on user-defined type (success), `map` on non-Mappable `Int` (constraint violation), `concat` on mixed Appendable/non-Appendable (error), `AppendableSeq [Seq b]` resolving for different element types, `AppendableStr` instance works for string concat, `Equatable`/`Comparable`/`Showable` constraints on user types (`tests/corpus/eval/typecheck/`)
+- [ ] **Prelude follow-up:** once `MappableSeq` and `MappableRecord` instances are working, annotate `zip` (prelude.llt:747) — currently `fn@Unknown` because dual-dispatch (Seq×Seq→Seq, Dict×Dict→Dict) cannot be pinned without Mappable; correct annotation will be determined by the Mappable class design (`stdlib/prelude.llt`)
 
 **Depends on:** `hkt-kind-inference`
 
@@ -174,3 +167,80 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 - [ ] Tests: LSP hover corpus tests for `Type::App` display, kind mismatch error corpus tests with `[E091]` prefix (`tests/lsp_corpus_tests.rs`, `tests/corpus/eval/errors/`)
 
 **Depends on:** `hkt-stdlib`, `hkt-bas`
+
+---
+
+## Code Housekeeping
+
+### stale-todo-cleanup: Remove stale sprint-label TODO comments
+
+These TODO comments reference completed sprints but were never cleaned up. Several reference sprints whose approach was later revised (arena FlatEnv, perf-ast-rc migration). Each item is small — verify, then remove or update.
+
+- [ ] `src/eval_dict.rs:94`: Remove stale `// TODO(ast-rc)` comment block — `perf-ast-rc` sprint is done and the code already uses `Rc::clone(&entry.node.value)`, meaning the migration happened; the comment gives the false impression work is still pending; delete the comment entirely
+- [ ] `src/type_unify.rs:681`: Remove stale "when gradual-typing-split is complete, this needs refinement" comment — `gradual-typing-split` sprint is done (DONE.md); verify that the current `Unknown ~ τ as always satisfiable` rule is the correct post-split semantics; if it needs refinement, add a concrete task; otherwise just delete the comment
+- [ ] `src/arena.rs:239`: Delete the dead `migrate_for_next_section` function — it is `#[allow(dead_code)]`, contains `unimplemented!()`, and references "arena-eval sprint" which is done (DONE.md); Phase 3 selective migration was never needed since the Rc model was retained throughout
+- [ ] `src/resolve.rs:133`: Remove stale `// TODO(arena-phase2)` comment about FlatEnv slot pre-sizing — `arena-phase2` is done (DONE.md) but the FlatEnv/de Bruijn approach was not adopted; replace with a one-line note explaining the current approach (linked environments) is correct
+- [ ] `src/eval.rs:602`: Remove stale `// TODO(arena-phase2)` comment about O(1) VarRef slot lookup — same reason as resolve.rs; the linked-environment model is the current design; the `let _ = resolved;` suppressor can remain or be removed depending on whether the field is still useful
+- [ ] `src/typecheck.rs:9121` and `src/type_env.rs:1358`: Update stale `// TODO(result-nominal)` comments to say "see `builtin-type-audit` sprint item `try` return type" — result-nominal is done (DONE.md); the remaining work (`try` returning Unknown) is already tracked at TODO.md `builtin-type-audit` line 44
+- [ ] `src/parser.rs:3931`: Remove stale `// TODO: Pin patterns ($name) require tracking...` comment — `Pattern::Pin` is fully implemented: parser produces it at line 4082 via the `escaped` field, eval handles it at `eval.rs:1939`, typecheck at `typecheck.rs:1225`, formatter at `formatter.rs:1101`, coverage at `coverage.rs:286`; the comment predates a now-complete implementation
+- [x] `doc/12-tooling.md:140`: Fix stale link `doc/whatif/tinct-hosted-formatter.md` → `doc/whatif/completed/tinct-hosted-formatter.md` — done
+- [x] `doc/12-tooling.md:142`: Remove broken ref to `doc/whatif/plans/macros-cluster.md` — done; design lives in `doc/whatif/completed/tinct-hosted-formatter.md`
+
+---
+
+## Networking
+
+### net-gaps: QUIC datagrams, SPKI correctness, HTTP/3 concurrent driver
+
+Genuine deferred items from the `http-sessions` and `connector-tls` sprints. Each is a deliberate "implement later" stub.
+
+- [ ] **SPKI X.509 field extraction** (`src/builtins_io.rs:3268`): Replace the current "hash raw DER bytes" workaround with correct SPKI field extraction — parse the certificate DER with `x509-parser` or `rustls-pki-types` to locate the SubjectPublicKeyInfo field, then hash only that field; the current implementation does not match real SPKI pins computed by browsers and tools like `openssl` — this is a correctness bug for TLS pinning users
+- [ ] **QUIC unreliable datagram support** (`src/builtins_io.rs:4451-4504`): Implement `quic-open-datagram` builtin — add `Value::QuicDatagramHandle(Rc<quinn::Connection>)` variant; add `send-datagram`/`recv-datagram` overloads dispatching on it via `block_on(conn.send_datagram(...))`/`block_on(conn.read_datagram())`; currently the function returns a user error directing to `quic-open-stream`
+- [ ] **HTTP/3 connection driver for concurrent requests** (`src/builtins_io.rs:4695`): The h3 `Connection` driver is currently discarded (`let (_driver, send_request) = ...`), making the session sequential-only. Fix: (1) add `async_rt::spawn<F>(fut: F) -> JoinHandle<F::Output>` that calls `TOKIO_RT.with(|rt| rt.spawn(fut))` — tokio `current_thread` runs spawned tasks during `block_on`; (2) spawn the h3 driver there and store the `JoinHandle` in a new `Http3SessionState { send_request, _driver: JoinHandle<_> }` to keep it alive; (3) change `Value::Http3Session` to wrap `Rc<RefCell<Http3SessionState>>` — no R&D needed, but requires extending the Value type
+
+---
+
+## LSP
+
+### lsp-gaps: Prelude go-to-definition and remaining LSP quality items
+
+**Note:** `lsp-gaps` requires design work before implementation — see Research item below.
+
+- [ ] **Prelude go-to-definition** (`src/lsp/analysis.rs:802`): Parse the embedded prelude source (`include_str!("../../stdlib/prelude.llt")`) once at LSP startup into a `Spanned<File>` AST and cache it in `DocumentStore`; extend `definition_at()` in `src/lsp/analysis.rs` to search the cached prelude AST using the existing `find_key_definition()` recursion after local/include lookup fails; resolve the prelude URI via `find_libdir_path().join("prelude.llt")` + `file_path_to_uri()` for the `Location` response; `llt_span_to_lsp_range` works unchanged since it takes source text separately from spans (`src/lsp/analysis.rs`, `src/lsp/document.rs`)
+
+---
+
+## Evaluator and Macros
+
+### eval-gaps: Unquote nesting, error span threading
+
+Two correctness/quality gaps in the evaluator noted in source comments.
+
+- [ ] **Unquote in nested positions** (`src/eval.rs:1343`): The `eval_quote` path handles top-level `[unquote ...]` and `[unquote-splice ...]` but the fallback arm (`_ =>`) calls `ast_to_dict_expr` which does not recursively process unquote markers inside nested subexpressions; fix by extending `ast_dict.rs` to accept an optional `unquote_handler: Option<&dyn Fn(...)>` callback, or by adding a recursive `eval_quote_expr` pass that rewrites the AST before serializing; add corpus tests for nested `[unquote ...]` inside list and dict forms
+- [ ] **`mat_span` threading through DotAccessForceData** (`src/eval_materialize.rs:1344`, `src/eval_materialize.rs:1379`): When `.field` access in an access chain triggers materialization, the `mat_span` used is the access expression span rather than the outer materialization context's span — this loses the outermost call-site span in error messages for chained access like `a.b.c`; fix by threading `outer_mat_span: Option<Span>` through `DotAccessForceData` and using it in `Action::Materialize`; corresponding test is at `src/eval.rs:5559` (currently asserts the wrong span as a known limitation — update when fixed)
+
+---
+
+## CLI
+
+### cli-gaps: --libdir-path override and other deferred CLI features
+
+- [ ] **`--libdir-path PATH` flag** (`src/main.rs:1106`): Add CLI flag to override the standard library directory — the comment at line 1106 was deferred from `io-phase2` (which is done); useful for custom installations or alternative stdlib testing; wire through `main.rs` arg parsing, override the auto-detected `%libdir` in the root env; add `--help` text and a test
+
+---
+
+## Tooling
+
+### tinct-hosted-formatter: Implement stdlib/formatter/format.llt
+
+Accepted 2026-05-05. See `doc/whatif/completed/tinct-hosted-formatter.md` for the full design.
+The Rust formatter (`src/formatter.rs`) is retained for LSP use; this formatter receives the AST dict from `ast_to_dict` and returns formatted source as a tinct string.
+
+- [ ] Implement `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` as tinct programs that receive `%` as the AST dict (from `ast_to_dict(Some(src), Some(comments))`) and return formatted source; wire `tinct fmt --compact`/`--pretty` to invoke these via the evaluator
+- [ ] Implement `stdlib/formatter/format.llt` as the full formatter — layout algorithm, indentation, comment attachment, multi-line decisions per `doc/whatif/completed/tinct-hosted-formatter.md`; wire to `tinct fmt` (default mode)
+- [ ] The Rust formatter (`src/formatter.rs`) is retained for LSP use — add a `FormatterMode` enum to dispatch between Rust and tinct-hosted based on invocation context; LSP always uses Rust formatter
+- [ ] Tests: round-trip corpus tests (format → re-parse → compare AST); test compact/pretty/full modes; test comment preservation
+
+### doc-weave-result-substitution: Document pipeline result substitution
+
+- [ ] **Document result substitution** (`doc/09-documents.md:953`): Implement `weave` mode inline result marker replacement — after evaluating each tinct code block, replace the trailing `<!-- tinct-result: ... -->` HTML comment in the Markdown with the block's JSON output; currently these markers are inserted but never updated on re-run; requires threading the Markdown source through `weave` output generation and scanning for marker positions

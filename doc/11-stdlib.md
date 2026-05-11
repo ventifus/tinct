@@ -415,9 +415,9 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `when` | `[fn [pred body] ...]` | Returns `body` if `pred` is true, else `[]` |
-| `unless` | `[fn [pred body] ...]` | Returns `body` if `pred` is false, else `[]` |
-| `cond` | `[fn [pairs] ...]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
+| `when` | `fn@Unknown [pred body]` | Returns `body` if `pred` is true, else `[]` |
+| `unless` | `fn@Unknown [pred body]` | Returns `body` if `pred` is false, else `[]` |
+| `cond` | `fn@Unknown [pairs@Dict]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
 | `until` | Rust native builtin — no LLT wrapper | Iterate function until predicate holds. Applies `f` repeatedly to `x` until `pred(x)` is true. Implemented in Rust using an explicit loop to avoid recursion depth limits (unlimited iterations) |
 
 **Field Interception:**
@@ -430,11 +430,11 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `get` | `[fn [k xs] ...]` | Key accessor, curried for pipeline composition: `[get "name" dict]`, `dict \| [get $key]` |
+| `get` | `fn@Unknown [k xs@Dict]` | Key accessor, curried for pipeline composition: `[get "name" dict]`, `dict \| [get $key]` |
 | `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `try` around access) |
-| `get-or` | `[fn [xs k default] ...]` | Get value by key with fallback default |
-| `get-in` | `[fn [xs path] ...]` | Traverse nested dicts by a list of keys; errors on missing key |
-| `get-in-or` | `[fn [xs path default] ...]` | Traverse nested dicts with fallback default |
+| `get-or` | `fn@Unknown [xs@Dict k default]` | Get value by key with fallback default |
+| `get-in` | `fn@Unknown [xs path@Dict]` | Traverse nested dicts by a list of keys; errors on missing key |
+| `get-in-or` | `fn@Unknown [xs path@Dict default]` | Traverse nested dicts with fallback default |
 | `empty?` | `[fn [xs] ...]` | Check if a collection has zero entries |
 | `set` | `[fn [xs k v] ...]` | Return new dict with key added/updated |
 | `remove` | `[fn [xs k] ...]` | Return new dict with key removed |
@@ -539,18 +539,18 @@ Functions primarily used internally by other stdlib functions, but also availabl
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `between` | `[fn [lo hi] ...]` | Predicate factory `lo hi → (v → Bool)` for inclusive range check |
-| `non-negative` | `[fn [v] ...]` | Predicate for `v >= 0` |
-| `positive` | `[fn [v] ...]` | Predicate for `v > 0` |
+| `between` | `fn@Fn [lo hi]` | Predicate factory `lo hi → (v → Bool)` for inclusive range check |
+| `non-negative` | `fn@Bool [v]` | Predicate for `v >= 0` |
+| `positive` | `fn@Bool [v]` | Predicate for `v > 0` |
 
 **Result Type Combinators:**
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `and-then` | `[fn [f res] ...]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Err e]`, propagate the error |
-| `result-map` | `[fn [f res] ...]` | Map over Result: if `res` is `[Ok v]`, return `[Ok [f v]]`; if `[Err e]`, propagate the error |
-| `result-or` | `[fn [default res] ...]` | Extract value from Result with fallback: if `res` is `[Ok v]`, return `v`; if `[Err e]`, return `default` |
-| `result-ok` | `[fn [res] ...]` | Return true if `res` is `[Ok ...]`, false otherwise |
+| `and-then` | `fn@Unknown [result f]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Err e]`, propagate the error |
+| `result-map` | `fn@Unknown [f result]` | Map over Result: if `res` is `[Ok v]`, return `[Ok [f v]]`; if `[Err e]`, propagate the error |
+| `result-or` | `fn@Unknown [default result]` | Extract value from Result with fallback: if `res` is `[Ok v]`, return `v`; if `[Err e]`, return `default` |
+| `result-ok` | `fn@Unknown [v]` | Wrap a value in `Ok`: returns `[Ok v]` (the `pure`/`return` operation for the Result monad) |
 | `result` | Dict (monad dict) | Result ADT monad dict with combinators: `[bind: and-then  map: result-map  or: result-or  ok?: result-ok]` |
 
 **Error Handling:**
@@ -1204,8 +1204,8 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `not` | `(Any -> Bool)` | `fn@Bool [x]` — materializes x |
-| `and` | `(Any -> Any -> Any)` | No annotation — short-circuit; returns `b` or `false` |
-| `or` | `(Any -> Any -> Any)` | No annotation — short-circuit; returns `a` or `b` |
+| `and` | `(Any -> Any -> Any)` | `fn@Unknown [a b]` — short-circuit; returns `b` or `false` |
+| `or` | `(Any -> Any -> Any)` | `fn@Unknown [a b]` — short-circuit; returns `a` or `b` |
 | `any?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Bool [pred@Fn xs@Dict]` |
 | `all?` | `((a -> Bool) -> Dict a -> Bool)` | `fn@Bool [pred@Fn xs@Dict]` |
 
@@ -1246,19 +1246,19 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `if` | `(Any -> a -> a -> a)` | No annotation — shadowable; returns chosen branch |
-| `when` | `(Any -> a -> a)` | No annotation — returns body or `[]` |
-| `unless` | `(Any -> a -> a)` | No annotation — returns body or `[]` |
-| `cond` | `(Dict [Dict, Any] -> Any)` | `fn [pairs@Dict]` — no return annotation; polymorphic result |
+| `when` | `(Any -> a -> a)` | `fn@Unknown [pred body]` — returns body or `[]` |
+| `unless` | `(Any -> a -> a)` | `fn@Unknown [pred body]` — returns body or `[]` |
+| `cond` | `(Dict [Dict, Any] -> Any)` | `fn@Unknown [pairs@Dict]` — polymorphic result |
 
 ### Dict Operations
 
 | Function | Type signature | Notes |
 |----------|---------------|-------|
-| `get` | `(a -> Dict b -> b)` | No return annotation — polymorphic value type |
+| `get` | `(a -> Dict b -> b)` | `fn@Unknown [k xs@Dict]` — polymorphic value type |
 | `has?` | `(Dict a -> b -> Bool)` | `fn@Bool [xs@Dict k]` |
-| `get-or` | `(Dict a -> b -> a -> a)` | No return annotation — polymorphic; result is value type or default |
-| `get-in` | `(Dict a -> Dict -> a)` | No return annotation — polymorphic; errors on missing key |
-| `get-in-or` | `(Dict a -> Dict -> a -> a)` | No return annotation — polymorphic; returns default on missing key |
+| `get-or` | `(Dict a -> b -> a -> a)` | `fn@Unknown [xs@Dict k default]` — polymorphic; result is value type or default |
+| `get-in` | `(Dict a -> Dict -> a)` | `fn@Unknown [xs path@Dict]` — polymorphic; errors on missing key |
+| `get-in-or` | `(Dict a -> Dict -> a -> a)` | `fn@Unknown [xs path@Dict default]` — polymorphic; returns default on missing key |
 | `empty?` | `(Any -> Bool)` | `fn@Bool [xs]` — false for Seq (never empty by definition) |
 | `set` | `(Dict a -> b -> a -> Dict a)` | `fn@Dict [xs@Dict k v]` |
 | `remove` | `(Dict a -> b -> Dict a)` | `fn@Dict [xs@Dict k]` |
@@ -1294,10 +1294,10 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 | `take-while` | `((a -> Bool) -> Dict a -> Dict a)` | `fn@Dict [pred@Fn xs@Dict]` |
 | `drop-while` | `((a -> Bool) -> Dict a -> Dict a)` | `fn@Dict [pred@Fn xs@Dict]` |
 | `map-entries` | `(([key: k  value: a] -> b) -> Dict a -> Dict b)` | `fn@Dict [f@Fn xs@Dict]` |
-| `fold` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn init xs]` — no return annotation; delegates to `builtin-reduce` |
+| `fold` | `((b -> a -> b) -> b -> c -> b)` | `fn@Unknown [f@Fn init xs]` — delegates to `builtin-reduce` |
 | `foldr` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn acc xs]` — no return annotation |
 | `slice` | `(Dict a -> Int -> Int -> Dict a)` | `fn@Dict [xs@Dict start@Int end@Int]` |
-| `zip` | `(a -> b -> Dict [Dict, Dict])` | No return annotation — polymorphic; lazy for Seq+Seq, eager for Dict |
+| `zip` | `(a -> b -> Dict [Dict, Dict])` | `fn@Unknown [xs ys]` — lazy for Seq+Seq, eager for Dict |
 | `flatten` | `(Dict a -> Dict b)` | `fn@Dict [xs@Dict]` — one level deep |
 | `find-deep` | `(Dict a -> b -> a)` | `fn [xs@Dict target]` — no return annotation; searches recursively for key; errors with E000 if key not found |
 | `sort-by` | `((a -> a -> Bool) -> Dict a -> Dict a)` | `fn@Dict [cmp@Fn xs@Dict]` |
@@ -1315,8 +1315,8 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 | `with-entries` | `(Dict a -> ([key: k  value: a] -> b) -> Dict b)` | `fn@Dict [xs@Dict f@Fn]` |
 | `partition` | `((a -> Bool) -> b -> [pass: Dict a  fail: Dict a])` | `fn@Dict [pred@Fn xs]` |
 | `flat-map` | `((a -> Dict b) -> c -> Dict b)` | `fn@Dict [f@Fn xs]` |
-| `find-first` | `((a -> Bool) -> b -> a)` | `fn [pred@Fn xs]` — no return annotation; errors if none found |
-| `find-first-or` | `((a -> Bool) -> b -> c -> b)` | `fn [pred@Fn default xs]` — no return annotation |
+| `find-first` | `((a -> Bool) -> b -> a)` | `fn@Unknown [pred@Fn xs]` — errors if none found |
+| `find-first-or` | `((a -> Bool) -> b -> c -> b)` | `fn@Unknown [pred@Fn default xs]` |
 | `group-by` | `((a -> k) -> b -> Dict (Dict a))` | `fn@Dict [f@Fn xs]` |
 | `deep-merge` | `(Dict a -> Dict a -> Dict a)` | `fn@Dict [a@Dict b@Dict]` |
 | `walk` | `((a -> b) -> c -> b)` | `fn [f@Fn xs]` — no return annotation; bottom-up tree transform |
@@ -1331,8 +1331,8 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 |----------|---------------|-------|
 | `sum` | `(c -> Number)` | `fn@Number [xs]` — no collection type constraint in annotation |
 | `product` | `(c -> Number)` | `fn@Number [xs]` |
-| `min` | `(c -> a)` | `fn [xs]` — no annotation; polymorphic; errors on empty |
-| `max` | `(c -> a)` | `fn [xs]` — no annotation; polymorphic; errors on empty |
+| `min` | `(c -> a)` | `fn@Unknown [xs]` — polymorphic; errors on empty |
+| `max` | `(c -> a)` | `fn@Unknown [xs]` — polymorphic; errors on empty |
 | `count` | `((a -> Bool) -> c -> Int)` | `fn@Int [pred@Fn xs]` |
 | `contains?` | `(c -> a -> Bool)` | `fn@Bool [xs val]` |
 | `uniq` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
@@ -1357,4 +1357,4 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `try-or` | `(Fn -> a -> a)` | `fn [f@Fn default]` — no return annotation; returns default on error |
-| `assert` | `(Any -> String -> Bool)` | `fn@Bool [cond msg@String]` |
+| `assert` | `(Any -> String -> Bool)` | `fn@Unknown [cond msg@String]` — true path returns true; false path diverges via `[error]`; @Bool pending error→Never |
