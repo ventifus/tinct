@@ -1,6 +1,6 @@
 # Builtin Reference
 
-This chapter provides a complete reference for all 178 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
+This chapter provides a complete reference for all 189 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
 
 ## Notation
 
@@ -46,7 +46,7 @@ Both comparison operators materialize both arguments and return Bool values.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `=` | 2 | `S × S → V` | Bool | Cross-type equality; dicts use reference equality (always false unless same Rc) |
+| `=` | 2 | `S × S → V` | Bool | Cross-type equality with Int/Float promotion; dicts use structural equality (order-insensitive key comparison, recursive value comparison with cycle detection); variants support recursive structural equality; functions and seqs return false |
 | `<` | 2 | `S × S → V` | Bool | Less-than comparison; works on Int, Float, String (lexicographic) |
 
 **Error cases:**
@@ -56,7 +56,7 @@ Both comparison operators materialize both arguments and return Bool values.
 
 | Builtin | Arity | Signature | Category | Description |
 |---------|-------|-----------|----------|-------------|
-| `if` | 3 | `S × Sc × Sc → Θ` | Selective | Materializes condition; returns chosen branch thunk without forcing it |
+| `if` | 3 | `S × Sc × Sc → Θ` | Selective | Materializes condition; returns chosen branch thunk without materializing it |
 
 **Selective materialization:** Exactly one of the branch arguments is returned; the other is never materialized. This is the foundation for short-circuit evaluation in the stdlib (`and`, `or`, `when`, `unless`, `cond`).
 
@@ -137,16 +137,20 @@ Control over evaluation order and error handling.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `eval` | 1 | `S → V` | Any | Deep materialization — recursively forces all thunks in the value tree |
+| `eval` | 1 | `S → V` | Any | Deep materialization — recursively materializes all thunks in the value tree |
 | `error` | 1 | `S → ⊥` | Never returns | Materializes arg as error message, raises catchable error |
-| `try` | 1 | `S → D` | Dict | Materializes function arg, invokes it with no args, catches errors; returns `[ok: result]` or `[error: msg]` |
+| `try` | 1 | `S → D` | Variant | Materializes function arg, invokes it with no args, catches errors; returns `[Ok result]` or `[Err message]` (ADT variants, destructured with `match`) |
 | `apply` | 2 | `S × S → Θ` | Any | Materialize function and dict, call function with dict as named args |
+| `force` | 1 | `S → V` | Any | Force WHNF (weak head normal form) evaluation: materializes the thunk but does not recursively materialize nested thunks |
+| `eval-ast` | 1 | `S → V` | Any | Evaluate an AST value (experimental; requires AST representation in Value) |
 
 **Error cases:**
-- `eval`: Propagates any error from deep forcing
+- `eval`: Propagates any error from deep materialization
 - `error`: Always raises (by design)
 - `try`: Type mismatch if arg is not a function (zero-arity)
 - `apply`: Type mismatch if first arg is not a function or second is not a dict
+- `force`: Propagates any error from materialization
+- `eval-ast`: Type mismatch if arg is not an AST value
 
 ## Type Introspection
 
@@ -162,10 +166,68 @@ Control over evaluation order and error handling.
 | `dict?` | 1 | `S → V` | Bool | Return true if arg is a Dict (includes lists, which are dicts with integer keys) |
 | `fn?` | 1 | `S → V` | Bool | Return true if arg is callable (Function or Builtin) |
 | `seq?` | 1 | `S → V` | Bool | Return true if arg is a Seq |
+| `record?` | 1 | `S → V` | Bool | Return true if arg is a Dict with string keys only (record subtype) |
+| `map?` | 1 | `S → V` | Bool | Return true if arg is a Dict with at least one non-string key (map subtype) |
+| `bytes?` | 1 | `S → V` | Bool | Return true if arg is a Bytes value |
 
-Each predicate materializes its argument (forcing the thunk) and checks the `Value` variant. `num?` checks both `Int` and `Float`, mirroring the `Number` supertype. `fn?` checks both `Function` and `Builtin`, since both are callable. No `list?` **builtin** exists because lists are dicts (Principle 1: Dicts Are Fundamental) — "list-ness" is a convention, not a type distinction — `list?` is available as a standard library function (see [Standard Library](11-stdlib.md) §Type Predicates).
+Each predicate materializes its argument and checks the `Value` variant. `num?` checks both `Int` and `Float`, mirroring the `Number` supertype. `fn?` checks both `Function` and `Builtin`, since both are callable. `record?` and `map?` distinguish dict subtypes: records have string-only keys (used for typed records), maps have at least one non-string key. No `list?` **builtin** exists because lists are dicts (Principle 1: Dicts Are Fundamental) — "list-ness" is a convention, not a type distinction — `list?` is available as a standard library function (see [Standard Library](11-stdlib.md) §Type Predicates).
 
 **Error cases:** None.
+
+## Meta & Code Generation
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `gensym` | 0-1 | `() or S → V` | String | Generate a unique symbol string; optional prefix arg for debugging (e.g., `[gensym "tmp"]` → `"tmp_42"`) |
+| `llt-repr` | 1 | `S → V` | String | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
+
+**Error cases:**
+- `gensym`: None
+- `llt-repr`: None (all values have a repr)
+
+## Variant Construction
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `variant` | 2 | `S × S → V` | Variant | Construct a variant value: `[variant "Ok" value]` → `Value::Variant { tag: "Ok", payload: Some(value) }` |
+| `tag-of` | 1 | `S → V` | String | Extract tag from variant: `[tag-of [Ok 42]]` → `"Ok"` |
+
+**Error cases:**
+- `variant`: Type mismatch if tag is not String
+- `tag-of`: Type mismatch if arg is not a Variant
+
+## Numeric Type Conversion
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `float` | 1 | `S → V` | Float | Convert Int to Float; pass-through for Float; type error otherwise |
+| `decimal` | 1 | `S → V` | Decimal | Convert String or Int to Decimal (extended numeric type for exact decimal arithmetic) |
+| `big-int` | 1 | `S → V` | BigInt | Convert String or Int to BigInt (arbitrary-precision integer) |
+
+**Error cases:**
+- `float`: Type mismatch if arg is not Int or Float
+- `decimal`: Type mismatch if arg is not String or Int; parse error for malformed string
+- `big-int`: Type mismatch if arg is not String or Int; parse error for malformed string
+
+## Dict Access
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `get?` | 2 | `S × S → V` | Bool or Value | Optional key lookup: returns `[Ok value]` if key exists, `[Err "key not found"]` otherwise (Result variant) |
+
+**Error cases:**
+- Type mismatch if first arg is not Dict or second arg is not a valid key type (Int or String)
+
+## Datagram I/O
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `send-datagram` | 2 | `S × S → V` | Int | Send bytes to a datagram Handle; returns number of bytes sent |
+| `recv-datagram` | 1-2 | `S (× S)? → V` | String | Receive bytes from datagram Handle; optional max-size arg (default 65536) |
+
+**Error cases:**
+- `send-datagram`: Type mismatch if first arg is not Handle or second arg is not Bytes/String; capability error if Handle does not carry `Datagram` capability; I/O error on send failure
+- `recv-datagram`: Type mismatch if arg is not Handle; capability error if Handle does not carry `Datagram` capability; I/O error on receive failure
 
 ## Schema Validation
 
@@ -272,11 +334,11 @@ Sequence constructors create lazy Seq values; destructors materialize the Seq sp
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
 | `seq` | 2 | `L × L → D` | Seq | Construct Seq from head and tail thunks (both pass through; coinductive guard) |
-| `range` | 1-2 | `S (× S)? → LT` | Seq | Finite integer range: `[call $range 5]` → 0..5, `[call $range 2 5]` → 2..5 |
+| `range` | 1-2 | `S (× S)? → LT` | Seq | Integer range: 1-arg form creates infinite Seq starting from arg (`[call $range 5]` → infinite Seq: `5, 6, 7, ...`); 2-arg form creates finite range (`[call $range 2 5]` → `2, 3, 4`, end exclusive) |
 | `repeat` | 1 | `L → LT` | Seq | Infinite repetition of a value (arg passes through as thunk) |
 | `cycle` | 1 | `S → LT` | Seq | Infinite repetition of a dict's values (materializes dict, constructs PendingBuiltin step) |
 | `iterate` | 2 | `L × L → LT` | Seq | Infinite sequence: `x, f(x), f(f(x)), ...` (both args pass through; co-recursive PendingCall + PendingBuiltin) |
-| `unfold` | 2 | `L × L → Θ` | Seq | General unfold: `f(state) → [value: v  next: state']`; returns PendingBuiltin thunk |
+| `unfold` | 2 | `L × L → Θ` | Seq | General unfold: `f(state) → dict`; step dict must have value as **first** entry and next state as **second** entry (insertion order matters; key names are ignored); returns PendingBuiltin thunk |
 
 **Error cases:**
 - `seq`: None (any values can be head/tail)
@@ -290,8 +352,8 @@ Sequence constructors create lazy Seq values; destructors materialize the Seq sp
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `head` | 1 | `S → Θ` | Any | Materialize arg to verify Seq, return head thunk (not forced) |
-| `tail` | 1 | `S → Θ` | Seq or Dict | Materialize arg to verify Seq, return tail thunk (not forced) |
+| `head` | 1 | `S → Θ` | Any | Materialize arg to verify Seq, return head thunk (not materialized) |
+| `tail` | 1 | `S → Θ` | Seq or Dict | Materialize arg to verify Seq, return tail thunk (not materialized) |
 | `collect` | 1 | `S → D` | Dict | Materialize entire Seq spine (all tails until terminal `[]`); head thunks pass through into Dict |
 
 **Error cases:**
@@ -324,17 +386,17 @@ All have **dual dispatch** on Dict/Seq. Dict paths preserve keys; Seq paths retu
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `proxy` | 1 | `S → D` | Dict (Proxy) | Wrap dict in error-capturing proxy; defers errors until access (experimental) |
+| `proxy` | 1 | `Fn → Proxy` | Value::Proxy | Takes a handler function; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables virtual namespaces, mock objects, and computed fields. |
 
-**Error cases:** Type mismatch if arg is not Dict.
+**Error cases:** Type mismatch if arg is not a function.
 
-**Proxy behavior:** When a dict key access or builtin operation fails inside a proxy, the error is captured and stored. Subsequent operations propagate the error. This enables error-tolerant pipelines.
+**Proxy behavior:** A Proxy wraps a handler function. When a field is accessed via dot syntax (e.g., `p.name`), the handler is called with the field name as its argument and the result is returned. This is a field-intercept pattern — the proxy does not contain actual dict entries.
 
 ## Network
 
 Network builtins create and operate on `Value::Handle`, `Value::HttpConn`, and URI value types. For the Handle capability row model, see [Data Model](03-data-model.md) §Handles.
 
-All network operations materialize their non-Handle arguments. Handle arguments are passed by reference — they carry the connection state and are not forced as thunks.
+All network operations materialize their non-Handle arguments. Handle arguments are passed by reference — they carry the connection state and are not materialized as thunks.
 
 **Connector security policy:** User-defined Connectors are pure-tinct functions that cannot call I/O builtins directly. All network I/O flows through `connect` which enforces the NetCap allowlist. Custom Connectors (WireGuard clients, test fakes, protocol layers) receive allowlist-validated connections from `connect` and may transform them, but cannot bypass the allowlist to create new OS-level network connections.
 
@@ -378,32 +440,29 @@ The first argument is any Connector — a capability value that authorizes conne
 | `NamedPipe` | `DirCap` (Windows) | `path` | `Binary Readable Writable Stream` |
 | `Icmp` | `NetCap` or custom | `host` | `Binary Readable Datagram` |
 
-**Implementation status:** `Tcp` is fully implemented. `UnixStream` is implemented on Linux only (uses `/proc/self/fd` for path resolution). `Udp`, `UnixDatagram`, `NamedPipe`, and `Icmp` are stubs — they return "not yet implemented" errors pending datagram infrastructure and platform-specific socket support.
+**Implementation status:** `Tcp` is fully implemented. `UnixStream` is implemented on Linux only (uses `/proc/self/fd` for path resolution). `Udp`, `UnixDatagram`, `NamedPipe`, and `Icmp` are stubs — they return runtime errors pending datagram infrastructure and platform-specific socket support.
 
 **Error cases:** Type mismatch if arguments don't match the transport's requirements; connection refused or timeout at the OS level; Connector rejects the connection (allowlist violation for `NetCap`, path escape for `DirCap`); unsupported transport variant.
 
-### TLS — tls-connect
+### TLS — tls-layer
 
 Establishes a TLS 1.3 session and returns a `Handle` with the `Tls` capability.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `tls-connect` | 2–5 | `S × … → Handle` | Handle | Two forms: Connector form or Handle form |
+| `tls-layer` | 3 | `S × S × S → Handle` | Handle | Layer TLS: `handle sni opts` → Handle with Tls capability |
 
-**Two call forms:**
+**Usage:**
 
 ```tinct
-# Connector form — opens TCP connection and layers TLS:
-[tls-connect net Tcp "api.example.com" 443 opts]
-# → Handle{ Binary Readable Writable Stream Tls }
-
-# Handle form — layers TLS on an existing stream Handle:
-[tcp: [connect net Tcp "10.0.0.5" 443]]          # connect to specific IP
-[tls: [tls-connect tcp "api.example.com" opts]]   # TLS with SNI for domain
+[tcp: [connect net Tcp "10.0.0.5" 443]]
+[tls: [tls-layer tcp "api.example.com" []]]
 # → Handle{ Binary Readable Writable Stream Tls }
 ```
 
-The SNI hostname must always be provided explicitly. It may differ from the IP actually connected to (e.g., when bypassing DNS or routing through a proxy).
+`tls-layer` is the general Layer pattern for composing Handle transformations. It consumes the underlying Handle's raw TCP stream (via `raw_tcp: Option<TcpStream>`) and returns a new Handle wrapping the TLS session. After `tls-layer` extracts the TCP stream, the original Handle is invalidated — subsequent operations on it produce a runtime error.
+
+The `sni` argument is the Server Name Indication hostname for the TLS handshake. It may differ from the IP connected to (e.g., when connecting to a specific IP but validating a certificate for a domain).
 
 **Default trust:** System CA roots via `rustls-native-certs` (Linux: `/etc/ssl/certs`; macOS: Keychain; Windows: Certificate Store). Override via the `opts` dict.
 
@@ -426,14 +485,14 @@ All three trust sources (`ca-bundle`, system roots, Mozilla roots) union when co
 ```tinct
 [cert: [open fs "certs/client.pem" Readable]]
 [key:  [open fs "certs/client-key.pem" Readable]]
-[h: [tls-connect net "api.internal" 443 [client-cert: cert  client-key: key]]]
+[h: [tls-layer tcp "api.internal" [client-cert: cert  client-key: key]]]
 ```
 
-**Error cases:** Type mismatch if host/SNI is not String or port is not Int; TLS handshake failure (certificate verification, expired cert, hostname mismatch); SPKI pin mismatch if `pins` is specified and the leaf cert matches none; unsupported transport (Transport must produce a `Stream` Handle in the Connector form).
+**Error cases:** Type mismatch if handle is not a Handle or sni is not String; capability error if the Handle does not carry the `Stream` capability or the underlying TCP stream has already been consumed; TLS handshake failure (certificate verification, expired cert, hostname mismatch); SPKI pin mismatch if `pins` is specified and the leaf cert matches none.
 
 ### SPKI Pinning
 
-SPKI (Subject Public Key Info) hash pinning locks a `tls-connect` call to a specific public key, defending against CA compromise. Pinning survives certificate rotation as long as the key is reused.
+SPKI (Subject Public Key Info) hash pinning locks a `tls-layer` call to a specific public key, defending against CA compromise. Pinning survives certificate rotation as long as the key is reused.
 
 A `SpkiPin` value carries the hash algorithm and raw fingerprint bytes:
 
@@ -444,31 +503,7 @@ A `SpkiPin` value carries the hash algorithm and raw fingerprint bytes:
 
 `SpkiPin` is constructed via the `spki-pin` stdlib function (two positional args: `HashAlgorithm` variant and `Bytes`). SHA-3 (Keccak construction) is preferred for new deployments; SHA-256 is accepted for compatibility with existing tooling.
 
-Maintain both current and next-rotation pins to allow key rotation without a service outage — `tls-connect` succeeds if the leaf SPKI matches any pin in the list using that pin's algorithm.
-
-### TLS Layer — tls-layer
-
-Upgrades an existing `Stream` Handle to TLS, returning a new Handle with the `Tls` capability.
-
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `tls-layer` | 3 | `S × S × S → Handle` | Handle | Layer TLS: `handle sni opts` → Handle with Tls capability |
-
-**Usage:**
-
-```tinct
-[tcp: [connect net Tcp "10.0.0.5" 443]]
-[tls: [tls-layer tcp "api.example.com" []]]
-# → Handle{ Binary Readable Writable Stream Tls }
-```
-
-`tls-layer` is the general Layer pattern for composing Handle transformations. It consumes the underlying Handle's raw TCP stream (via `raw_tcp: Option<TcpStream>`) and returns a new Handle wrapping the TLS session. After `tls-layer` extracts the TCP stream, the original Handle is invalidated — subsequent operations on it produce a runtime error.
-
-The `sni` argument is the Server Name Indication hostname for the TLS handshake. It may differ from the IP connected to (e.g., when connecting to a specific IP but validating a certificate for a domain).
-
-The `opts` dict accepts the same keys as `tls-connect`: `ca-bundle`, `no-system-roots`, `mozilla-roots`, `client-cert`, `client-key`, `pins`, `alpn`.
-
-**Error cases:** Type mismatch if handle is not a Handle or sni is not String; capability error if the Handle does not carry the `Stream` capability or the underlying TCP stream has already been consumed; TLS handshake failure; SPKI pin mismatch.
+Maintain both current and next-rotation pins to allow key rotation without a service outage — `tls-layer` succeeds if the leaf SPKI matches any pin in the list using that pin's algorithm.
 
 ### TLS Introspection — tls-peer-cert
 
@@ -521,39 +556,6 @@ Read capability data from the Handle's capability row.
 
 **Error cases:** Type mismatch if first arg is not Handle or second arg is not String; key-not-found error from `cap-data` if capability is absent.
 
-### HTTP Sessions — http-connect
-
-Opens a persistent HTTP connection pool and returns a `Value::HttpConn`.
-
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `http-connect` | 2–4 | `S × … → HttpConn` | HttpConn | Two forms: Connector form or Handle form |
-
-**Two call forms:**
-
-```tinct
-# Connector form — http-connect picks the transport:
-[client: [http-connect wg "api.example.com" 443 []]]
-# → HttpConn (HTTP/2 or HTTP/3 via ALPN negotiation)
-
-# Handle form — use an existing TLS stream:
-[tcp: [connect net Tcp "10.0.0.5" 443]]
-[tls: [tls-connect tcp "api.example.com" opts]]
-[client: [http-connect tls "api.example.com"]]
-# → HttpConn (reuses the established TLS stream)
-```
-
-`http-connect` selects the appropriate transport internally: HTTP/1.1 and HTTP/2 use `Tcp` with ALPN negotiation; HTTP/3 uses `Udp` and QUIC internally (handled by `reqwest`/`quinn`). When given a WireGuard Connector, `http-connect wg "api.example.com" 443 []` asks `wg` for a `Udp` Handle and runs QUIC over it — the Connector only needs to implement the transport layer.
-
-Passing the `HttpConn` to `http-get` reuses the connection:
-
-```tinct
-[users:  [http-get client "/v1/users"  []]]
-[posts:  [http-get client "/v1/posts"  []]]
-```
-
-**Error cases:** Connection refused; TLS handshake failure; protocol negotiation failure.
-
 ### HTTP Requests — http-get, fetch
 
 Single-shot HTTP requests. `http-get` is implemented in pure-tinct (`stdlib/net.llt`) over a `Handle[Binary Readable Writable]`; it handles both `http://` and `https://` by dispatching on `url.scheme`. `https-get` does not exist as a separate function.
@@ -570,7 +572,7 @@ http-get : [fn@Dict [connector@Connector  url@Url  headers@Dict  tls-opts@[TlsOp
 fetch    : [fn@Dict [connector@Connector  url@Url]]
 ```
 
-`http-get` accepts either a plain Connector (opens a fresh connection per call) or an `HttpConn` (reuses the existing session). When passed an `HttpConn`, the `tls-opts` argument is ignored — TLS was configured at `http-connect` time.
+`http-get` accepts a Connector and opens a fresh connection per call.
 
 The returned dict:
 
@@ -586,7 +588,7 @@ resp.status   # → 200
 resp.body     # → "{...}"
 ```
 
-**Error cases:** Type mismatch if url is not Url or HttpConn; unsupported scheme (only `"http"` and `"https"` are handled); connection or TLS errors; non-UTF-8 response body.
+**Error cases:** Type mismatch if url is not Url; unsupported scheme (only `"http"` and `"https"` are handled); connection or TLS errors; non-UTF-8 response body.
 
 ### URI Builtins — uri, url, urn
 
@@ -604,30 +606,6 @@ For field descriptions, see [Data Model](03-data-model.md) §URI Values.
 - `uri`: Parse error if string is not a valid RFC 3986 URI
 - `url`: Parse error if not a valid URI; type error if no authority (host) component is present
 - `urn`: Parse error if not a valid URI; type error if scheme is not `"urn"`
-
-### URI Helpers — uri-params, uri-origin, uri->string
-
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `uri-params` | 1 | `S → D` | Dict | Parse `u.query` → `{key: value, …}`; returns `{}` if query is null |
-| `uri-origin` | 1 | `S → V` | String | `"scheme://host:port"` — Url only (host is required) |
-| `uri->string` | 1 | `S → V` | String | Reconstruct the full URI/URL/URN string from a Uri, Url, or Urn value |
-
-```tinct
-[u: [url "https://api.example.com/search?q=tinct&page=1"]]
-[uri-params u]     # → [q: "tinct"  page: "1"]
-[uri-origin u]     # → "https://api.example.com:443"
-[uri->string u]    # → "https://api.example.com/search?q=tinct&page=1"
-```
-
-`uri-params` splits on `&`, then on `=`, URL-decoding both key and value. Repeated keys produce a dict with the last value (last-wins). An empty query string returns an empty dict.
-
-`uri-origin` requires a `Url` (host is guaranteed present); calling it on a `Uri` whose host is null is a type error.
-
-**Error cases:**
-- `uri-params`: Type mismatch if arg is not Uri or Url; malformed query string (percent-decode failure)
-- `uri-origin`: Type mismatch if arg is not Url
-- `uri->string`: Type mismatch if arg is not Uri, Url, or Urn
 
 ### Implementation Note: Tokio Runtime Strategy for Future Async Builtins
 
@@ -652,7 +630,7 @@ let result = rt.block_on(async { /* quinn QUIC handshake */ });
 
 **Not a concern for `tls-connect` / `connect`:** These use blocking `std::net::TcpStream` and `rustls::StreamOwned` synchronously — no Tokio required.
 
-**Future work:** If a session builtin needs to hold a live async connection across multiple builtin calls (e.g., streaming gRPC), the runtime must outlive the builtin call. In that case, store the runtime alongside the handle in the `Value::Handle` `caps` dict as an opaque Rust-managed resource. See TODO.md for the quic-session milestone.
+**Extension:** If a session builtin needs to hold a live async connection across multiple builtin calls (e.g., streaming gRPC), the runtime must outlive the builtin call. In that case, store the runtime alongside the handle in the `Value::Handle` `caps` dict as an opaque Rust-managed resource.
 
 ## Stable Aliases
 
@@ -677,24 +655,8 @@ These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<
 
 ## Summary
 
-**Total:** 90 Rust-native builtins + 12 stable aliases = 102 registered names. (dir-cap and net-cap were removed in the cap-remove-ambient sprint — caps now flow exclusively from CLI injection or runtime env.)
+**Total:** 189 Rust-native builtins + 27 stable aliases = 216 registered names.
 
-**By category:**
-- Arithmetic: 4 (+, -, *, /)
-- Comparison: 2 (=, <)
-- Control: 1 (if)
-- Dict primitives: 4 (keys, length, merge, append)
-- Dict access: 4 (builtin-get, each, each-key, each-kv)
-- Strings: 6 (str, split, replace, upper, lower, trim)
-- Numeric: 2 (floor, round)
-- Parsing: 2 (to-int, to-float)
-- Evaluation: 5 (eval, error, try, apply, until)
-- Type introspection: 10 (type-of, int?, float?, num?, str?, bool?, null?, dict?, fn?, seq?)
-- Schema validation: 1 (validate)
-- I/O: 13 (emit, env, open, slurp, narrow, revocable, revoke-cap, connect, lines, write, write-atomic, from-json, include)
-- Network: 13 (tls-connect, tls-peer-cert, cap-data, has-cap?, http-connect, http-get, fetch, socks5-connect, proxy-connect, uri, url, urn, uri-params, uri-origin, uri->string)
-- Sequences: 16 (seq, head, tail, collect, range, repeat, cycle, iterate, unfold, map, filter, take, drop, reduce, join, concat)
-- List operations: 4 (rest, cons, reverse, sort)
-- Proxy: 1
+Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation. The 27 stable aliases (prefixed `builtin-*`) provide access to raw Rust implementations bypassing LLT prelude wrappers.
 
 **Design principle:** These builtins are the minimal set of primitives that **cannot be expressed in LLT itself**. Everything else (sorting, logic operators, dict utilities, composition functions) is implemented in the [Standard Library](11-stdlib.md) using only these primitives plus LLT's syntax and lazy evaluation.
