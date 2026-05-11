@@ -1399,6 +1399,13 @@ fn infer_expr(
             if let Expr::VarRef { name, .. } = &func.node {
                 match env.get(name) {
                     Some(scheme) if !scheme.type_vars.is_empty() => {
+                        // Record scheme for LSP hover (shows constraints on the call-head VarRef).
+                        if !scheme.constraints.is_empty() || !scheme.type_vars.is_empty() {
+                            if let Some(ref mut smap) = state.scheme_map {
+                                let key = (func.span.start.offset, func.span.end.offset);
+                                smap.insert(key, scheme.clone());
+                            }
+                        }
                         // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
                         check_call_with_scheme(
                             scheme, func.span, args, named_args, env, expr.span, state, type_map,

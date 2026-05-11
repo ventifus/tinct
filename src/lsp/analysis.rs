@@ -210,18 +210,36 @@ fn hover_at_expr(
         Expr::Dict(entries) => {
             for entry in entries {
                 if let Some(ref key) = entry.node.key {
-                    if let Some(text) = hover_at_expr(
-                        &key.node,
-                        key.span,
-                        offset,
-                        type_map,
-                        scheme_map,
-                        doc_map,
-                        source,
-                        include_graph,
-                        doc_url,
-                    ) {
-                        return Some(text);
+                    if span_contains(key.span, offset) {
+                        // Cursor is on a binding key — show "name (type)\n\ndoc" so
+                        // the user sees both the binding name and its bound type.
+                        // Extract the plain name from VarRef or Annotated{ VarRef }.
+                        let binding_name: Option<&str> = match &key.node {
+                            Expr::VarRef { name, .. } => Some(name.as_str()),
+                            // `name@[doc: "..."]` or `name@Type` key annotation
+                            Expr::Annotated { name, .. } => Some(name.as_str()),
+                            _ => None,
+                        };
+                        if let Some(name) = binding_name {
+                            let ty =
+                                type_suffix(entry.node.value.span, type_map, scheme_map, include_graph, doc_url);
+                            let doc = doc_suffix(name, doc_map);
+                            return Some(format!("{name}{ty}{doc}"));
+                        }
+                        // Non-name key (dynamic expression) — fall back to key hover.
+                        if let Some(text) = hover_at_expr(
+                            &key.node,
+                            key.span,
+                            offset,
+                            type_map,
+                            scheme_map,
+                            doc_map,
+                            source,
+                            include_graph,
+                            doc_url,
+                        ) {
+                            return Some(text);
+                        }
                     }
                 }
                 if let Some(text) = hover_at_expr(
@@ -1494,23 +1512,27 @@ mod tests {
     #[test]
     fn test_hover_builtin_shows_constraint() {
         // Task 2: hover on a constrained builtin should show the constraint.
-        // `=` has scheme `Equatable a => Fn@Bool [a a]`.
-        // Hovering on `=` in head position should show the constraint.
+        // `builtin-eq` has scheme `Equatable a => Fn@Bool [a a]` and is NOT redefined
+        // by the prelude (unlike `=` which the prelude wraps as a concrete function).
+        //
+        // "[call $builtin-eq 1 2]"
+        //  0123456789...
+        //       ^ 6 = '$' of '$builtin-eq'
         let env = test_env();
-        let source = "[= 1 2]";
+        let source = "[call $builtin-eq 1 2]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
-        // Offset 1 is on "=" (the function name in head position)
-        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph());
-        assert!(hover.is_some(), "should have hover on =");
+        // Offset 6 is on '$builtin-eq'
+        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph());
+        assert!(hover.is_some(), "should have hover on $builtin-eq");
         let text = hover.unwrap();
         // Should show the "Equatable" constraint in the type display
         assert!(
             text.contains("Equatable"),
-            "hover should show Equatable constraint for =, got: {text}"
+            "hover should show Equatable constraint for $builtin-eq, got: {text}"
         );
         assert!(
             text.contains("Bool"),
-            "hover should show Bool return type for =, got: {text}"
+            "hover should show Bool return type for $builtin-eq, got: {text}"
         );
     }
 }
