@@ -4,7 +4,7 @@
 # Remaining 4 bytes: mask key.
 # Test that all 5 structural fields are correct in a single dict.
 
-[include "stdlib/protocols/websocket.llt"]
+[include %libdir "protocols/websocket.llt"]
 ---
 [call [fn [p]
     [set [set [set [set [set []

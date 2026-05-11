@@ -645,7 +645,7 @@ fn include_basic_dict() {
     let helper = dir.path().join("helper.llt");
     fs::write(&helper, "[x: 1 y: 2]").unwrap();
     let main = dir.path().join("main.llt");
-    fs::write(&main, "[result: [call $include \"helper.llt\"]]").unwrap();
+    fs::write(&main, "[result: [include %pwd \"helper.llt\"]]").unwrap();
 
     let output = Command::new(tinct_bin())
         .args(["run", "-o", "json", main.to_str().unwrap()])
@@ -671,7 +671,7 @@ fn include_namespaced() {
         "[double: [fn [n] [call $* $n 2]]]",
     )
     .unwrap();
-    let main_src = r#"[utils: [call $include "helper.llt"]]
+    let main_src = r#"[utils: [include %pwd "helper.llt"]]
 [result: [call $utils.double 21]]"#;
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
@@ -700,7 +700,7 @@ fn include_merged_scope_chain() {
     // First expression is an include (result merges into scope), second uses its bindings
     let dir = make_include_dir("merged_scope");
     fs::write(dir.path().join("helper.llt"), "[x: 10 y: 20]").unwrap();
-    let main_src = "[call $include \"helper.llt\"]\n[sum: [call $+ $x $y]]";
+    let main_src = "[include %pwd \"helper.llt\"]\n[sum: [call $+ $x $y]]";
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
     let output = Command::new(tinct_bin())
@@ -730,12 +730,12 @@ fn include_nested_a_includes_b_includes_c() {
     fs::write(dir.path().join("c.llt"), "[val: 99]").unwrap();
     fs::write(
         dir.path().join("b.llt"),
-        "[inner: [call $include \"c.llt\"]]",
+        "[inner: [include %pwd \"c.llt\"]]",
     )
     .unwrap();
     fs::write(
         dir.path().join("a.llt"),
-        "[outer: [call $include \"b.llt\"]]",
+        "[outer: [include %pwd \"b.llt\"]]",
     )
     .unwrap();
 
@@ -763,8 +763,8 @@ fn include_nested_a_includes_b_includes_c() {
 fn include_circular_error() {
     // A includes B, B includes A — circular dependency
     let dir = make_include_dir("circular");
-    fs::write(dir.path().join("a.llt"), "[call $include \"b.llt\"]").unwrap();
-    fs::write(dir.path().join("b.llt"), "[call $include \"a.llt\"]").unwrap();
+    fs::write(dir.path().join("a.llt"), "[include %pwd \"b.llt\"]").unwrap();
+    fs::write(dir.path().join("b.llt"), "[include %pwd \"a.llt\"]").unwrap();
 
     let output = Command::new(tinct_bin())
         .args(["run", dir.path().join("a.llt").to_str().unwrap()])
@@ -786,7 +786,7 @@ fn include_circular_error() {
 fn include_self_circular_error() {
     // File includes itself — degenerate circular case
     let dir = make_include_dir("self_circular");
-    fs::write(dir.path().join("self.llt"), "[call $include \"self.llt\"]").unwrap();
+    fs::write(dir.path().join("self.llt"), "[include %pwd \"self.llt\"]").unwrap();
 
     let output = Command::new(tinct_bin())
         .args(["run", dir.path().join("self.llt").to_str().unwrap()])
@@ -809,7 +809,7 @@ fn include_file_not_found_error() {
     let dir = make_include_dir("file_not_found");
     fs::write(
         dir.path().join("main.llt"),
-        "[call $include \"nonexistent.llt\"]",
+        "[include %pwd \"nonexistent.llt\"]",
     )
     .unwrap();
 
@@ -838,7 +838,7 @@ fn include_relative_path_from_subdirectory() {
     fs::write(sub.join("utils.llt"), "[pi: 3.14]").unwrap();
     fs::write(
         dir.path().join("main.llt"),
-        "[math: [call $include \"lib/utils.llt\"]]",
+        "[math: [include %pwd \"lib/utils.llt\"]]",
     )
     .unwrap();
 
@@ -877,12 +877,12 @@ fn include_relative_path_from_included_file() {
     // second expression wraps the result.
     fs::write(
         sub.join("a.llt"),
-        "[call $include \"b.llt\"]\n[nested: $val]",
+        "[include %pwd \"b.llt\"]\n[nested: $val]",
     )
     .unwrap();
     fs::write(
         dir.path().join("main.llt"),
-        "[wrapper: [call $include \"sub/a.llt\"]]",
+        "[wrapper: [include %pwd \"sub/a.llt\"]]",
     )
     .unwrap();
 
@@ -913,7 +913,7 @@ fn include_with_stdlib_builtins() {
     fs::write(dir.path().join("math.llt"), "[sum: [call $+ 10 20]]").unwrap();
     fs::write(
         dir.path().join("main.llt"),
-        "[result: [call $include \"math.llt\"]]",
+        "[result: [include %pwd \"math.llt\"]]",
     )
     .unwrap();
 
@@ -944,7 +944,7 @@ fn include_returns_scalar() {
     fs::write(dir.path().join("answer.llt"), "42").unwrap();
     fs::write(
         dir.path().join("main.llt"),
-        "[answer: [call $include \"answer.llt\"]]",
+        "[answer: [include %pwd \"answer.llt\"]]",
     )
     .unwrap();
 
@@ -975,7 +975,7 @@ fn include_returns_string() {
     fs::write(dir.path().join("greeting.llt"), "\"hello world\"").unwrap();
     fs::write(
         dir.path().join("main.llt"),
-        "[msg: [call $include \"greeting.llt\"]]",
+        "[msg: [include %pwd \"greeting.llt\"]]",
     )
     .unwrap();
 
@@ -1007,17 +1007,17 @@ fn include_diamond_pattern_no_cycle() {
     fs::write(dir.path().join("c.llt"), "[shared: 100]").unwrap();
     fs::write(
         dir.path().join("a.llt"),
-        "[a_data: [call $include \"c.llt\"]]",
+        "[a_data: [include %pwd \"c.llt\"]]",
     )
     .unwrap();
     fs::write(
         dir.path().join("b.llt"),
-        "[b_data: [call $include \"c.llt\"]]",
+        "[b_data: [include %pwd \"c.llt\"]]",
     )
     .unwrap();
     let main_src = r#"[
-  a: [call $include "a.llt"]
-  b: [call $include "b.llt"]
+  a: [include %pwd "a.llt"]
+  b: [include %pwd "b.llt"]
 ]"#;
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
@@ -1053,7 +1053,7 @@ fn include_isolation_no_caller_scope() {
     let dir = make_include_dir("isolation");
     // The included file tries to reference $caller_var which is only in main's scope
     fs::write(dir.path().join("helper.llt"), "[val: $caller_var]").unwrap();
-    let main_src = "[caller_var: 999]\n[result: [call $include \"helper.llt\"]]";
+    let main_src = "[caller_var: 999]\n[result: [include %pwd \"helper.llt\"]]";
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
     let output = Command::new(tinct_bin())
@@ -1083,7 +1083,7 @@ fn include_with_deep_materialize() {
     fs::write(dir.path().join("nested.llt"), "[a: [b: [c: 42]]]").unwrap();
     fs::write(
         dir.path().join("main.llt"),
-        "[data: [call $include \"nested.llt\"]]",
+        "[data: [include %pwd \"nested.llt\"]]",
     )
     .unwrap();
 
@@ -1113,11 +1113,7 @@ fn include_llt_format_output() {
     // Include test with LLT display format output
     let dir = make_include_dir("llt_format");
     fs::write(dir.path().join("helper.llt"), "[x: 42]").unwrap();
-    fs::write(
-        dir.path().join("main.llt"),
-        "[call $include \"helper.llt\"]",
-    )
-    .unwrap();
+    fs::write(dir.path().join("main.llt"), "[include %pwd \"helper.llt\"]").unwrap();
 
     let output = Command::new(tinct_bin())
         .args([
@@ -1149,7 +1145,7 @@ fn include_path_traversal_parent_dir() {
     fs::write(dir.path().join("parent.llt"), "[greeting: hello]").unwrap();
     fs::write(
         subdir.join("child.llt"),
-        "[data: [call $include \"../parent.llt\"]]",
+        "[data: [include %pwd \"../parent.llt\"]]",
     )
     .unwrap();
 
@@ -1183,7 +1179,7 @@ fn include_underscore_desugar() {
     // Main file: use a scope chain to include the helper, bind it to a variable
     // in the first expression, then call it in the second expression and only
     // return the result (not the function, since functions aren't JSON-serializable)
-    let main_src = r#"[get_name: [call $include "mapper.llt"]]
+    let main_src = r#"[get_name: [include %pwd "mapper.llt"]]
 [result: [call $get_name [name: "Alice"]]]"#;
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
@@ -1294,7 +1290,7 @@ fn include_with_dircap_and_hash() {
 #[test]
 fn no_fs_flag_blocks_include() {
     // --no-fs flag should prevent $include from accessing the filesystem
-    let (path, _dir) = write_temp_llt("no_fs_flag", "[call $include \"some_file.llt\"]");
+    let (path, _dir) = write_temp_llt("no_fs_flag", "[include %pwd \"some_file.llt\"]");
     let output = Command::new(tinct_bin())
         .args(["run", "--no-fs", path.to_str().unwrap()])
         .output()
@@ -1328,7 +1324,7 @@ fn allow_path_permits_include_from_allowed_dir() {
     let included_path = dir.path().join("lib.llt");
     fs::write(&included_path, "[value: 42]").expect("failed to write lib.llt");
     let main_path = dir.path().join("allow_path_permit.llt");
-    fs::write(&main_path, "[call $include \"lib.llt\"]").expect("failed to write main llt");
+    fs::write(&main_path, "[include %pwd \"lib.llt\"]").expect("failed to write main llt");
 
     let dir_str = dir.path().to_str().unwrap();
     let output = Command::new(tinct_bin())
@@ -1374,7 +1370,7 @@ fn allow_path_blocks_include_outside_allowed_dir() {
 
     // Write the main file into main_dir.
     let main_path = main_dir.path().join("allow_path_block.llt");
-    fs::write(&main_path, "[call $include \"secret.llt\"]").expect("failed to write main llt");
+    fs::write(&main_path, "[include %pwd \"secret.llt\"]").expect("failed to write main llt");
 
     // Canonicalize allowed_dir so the comparison is stable even under symlinks.
     let allowed_canonical =
@@ -1592,7 +1588,7 @@ fn no_fs_flag_and_timeout_flag_conjunctive_enforcement() {
     // not due to timeout.
     let (path, _dir) = write_temp_llt(
         "conjunctive_enforcement",
-        "[call $include \"some_file.llt\"]",
+        "[include %pwd \"some_file.llt\"]",
     );
     let output = Command::new(tinct_bin())
         .args(["run", "--no-fs", "--timeout", "5s", path.to_str().unwrap()])
@@ -1705,7 +1701,7 @@ fn no_landlock_with_allow_path_accepted() {
     let included = dir.path().join("data.llt");
     fs::write(&included, "[value: 99]").unwrap();
     let main = dir.path().join("main.llt");
-    fs::write(&main, "[call $include \"data.llt\"]").unwrap();
+    fs::write(&main, "[include %pwd \"data.llt\"]").unwrap();
 
     let dir_str = dir.path().to_str().unwrap();
     let output = Command::new(tinct_bin())
@@ -1741,7 +1737,7 @@ fn landlock_with_allow_path_permits_include() {
     let included = dir.path().join("lib.llt");
     fs::write(&included, "[result: 42]").unwrap();
     let main = dir.path().join("main.llt");
-    fs::write(&main, "[call $include \"lib.llt\"]").unwrap();
+    fs::write(&main, "[include %pwd \"lib.llt\"]").unwrap();
 
     let dir_str = dir.path().to_str().unwrap();
     let output = Command::new(tinct_bin())

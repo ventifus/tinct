@@ -103,55 +103,92 @@ impl DocumentState {
             // Run type checker (advisory), collecting the span-to-type map for hover.
             // Seed the type environment with prelude types and resolved includes via the
             // shared imports module to suppress false "undefined variable" errors.
-            // Respect no_fs: skip include resolution when filesystem access is disabled.
-            let type_base_dir = if eval_ctx.config.no_fs {
-                None
-            } else {
-                base_dir
-            };
-            let seeded_env = crate::imports::build_type_env(&file.node, type_base_dir);
+            let seeded_env = crate::imports::build_type_env(&file.node, base_dir);
             let (errs, map, docs) = typecheck_file_with_types_and_env(&file.node, seeded_env);
             type_errors = errs;
             type_map = map;
             doc_map = docs;
 
-            // LSP-specific caps injection: pre-seed the eval environment with stub caps
-            // for any caps declared in the document's `--- caps:` sections. This prevents
-            // spurious eval errors when the LSP analyzes cap-declaring programs (LSP never
-            // receives --cap-fs/--cap-net CLI args, so caps validation would always fail).
-            // The type checker already handles caps correctly (typecheck.rs:502-521).
+            // Build the LSP eval environment, mirroring what main.rs does at startup.
+            // The type checker gets runtime percent-vars via build_type_env(); we inject
+            // real DirCap values here so the evaluator can resolve [include %libdir ...]
+            // and [include %pwd ...] without spurious E002 errors.
             let lsp_eval_env = {
-                use crate::ast::Annotation;
+                use crate::ast::{Annotation, Span};
                 use crate::value::{Thunk, Value};
                 use indexmap::IndexMap;
 
-                let mut env = Rc::clone(stdlib_env);
+                // Always create a fresh child env — never mutate the shared stdlib_env.
+                let env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                    stdlib_env,
+                ))));
 
-                // Collect all caps declarations from all documents in the file
+                {
+                    let mut e = env.borrow_mut();
+                    let zero = Span::origin();
+
+                    // %libdir — actual stdlib directory (same path build_type_env uses).
+                    if let Some(libdir_path) = crate::find_libdir_path() {
+                        if let Ok(dir) = cap_std::fs::Dir::open_ambient_dir(
+                            &libdir_path,
+                            cap_std::ambient_authority(),
+                        ) {
+                            e.insert(
+                                "%libdir".to_string(),
+                                Rc::new(Thunk::new_materialized(Value::DirCap(Rc::new(dir)), zero)),
+                            );
+                        }
+                    }
+
+                    // %pwd — document's directory.
+                    if let Some(pwd_path) = base_dir {
+                        if let Ok(dir) = cap_std::fs::Dir::open_ambient_dir(
+                            pwd_path,
+                            cap_std::ambient_authority(),
+                        ) {
+                            e.insert(
+                                "%pwd".to_string(),
+                                Rc::new(Thunk::new_materialized(Value::DirCap(Rc::new(dir)), zero)),
+                            );
+                        }
+                    }
+
+                    // %stdin — stub string; LSP has no real stdin.
+                    let source = Rc::<str>::from("lsp-stub-stdin");
+                    e.insert(
+                        "%stdin".to_string(),
+                        Rc::new(Thunk::new_materialized(
+                            Value::String {
+                                source: Rc::clone(&source),
+                                start: 0,
+                                end: source.len(),
+                            },
+                            zero,
+                        )),
+                    );
+                }
+
+                // Inject stub caps for capabilities declared in `--- caps:` sections.
                 for doc in &file.node.documents {
                     if let Some(ref caps_ann) = doc.node.caps {
                         for (cap_name, annotation) in &caps_ann.node {
                             let full_cap_name = format!("%{}", cap_name);
 
-                            // Skip if already present (e.g., auto-injected caps like %pwd, %stdin, %libdir)
+                            // Skip if already injected above.
                             if env.borrow().get(&full_cap_name).is_some() {
                                 continue;
                             }
 
-                            // Create a stub value based on the annotation type
                             let stub_value = match annotation {
                                 Annotation::Simple(type_name) if type_name == "NetCap" => {
-                                    // Empty NetCap allowlist
                                     Value::NetCap(Rc::new(vec![]))
                                 }
                                 Annotation::Simple(type_name) if type_name == "DirCap" => {
-                                    // Stub DirCap: use stdlib_env's base_dir (fallback to ".")
                                     let stub_dir = cap_std::fs::Dir::open_ambient_dir(
                                         ".",
                                         cap_std::ambient_authority(),
                                     )
                                     .unwrap_or_else(|_| {
-                                        // Last resort: open temp_dir
                                         cap_std::fs::Dir::open_ambient_dir(
                                             std::env::temp_dir(),
                                             cap_std::ambient_authority(),
@@ -161,7 +198,6 @@ impl DocumentState {
                                     Value::DirCap(Rc::new(stub_dir))
                                 }
                                 Annotation::Simple(type_name) if type_name == "Handle" => {
-                                    // Stub Handle: string value (minimal representation)
                                     let source = Rc::<str>::from("lsp-stub-handle");
                                     Value::String {
                                         source: Rc::clone(&source),
@@ -170,27 +206,15 @@ impl DocumentState {
                                     }
                                 }
                                 Annotation::Simple(type_name) if type_name == "ClockCap" => {
-                                    // Stub ClockCap: use Fixed(0) for determinism
                                     Value::ClockCap(Rc::new(crate::value::ClockCapInner::Fixed(0)))
                                 }
-                                _ => {
-                                    // Generic fallback: empty dict
-                                    Value::Dict(IndexMap::new())
-                                }
+                                _ => Value::Dict(IndexMap::new()),
                             };
 
-                            let stub_thunk =
-                                Rc::new(Thunk::new_materialized(stub_value, caps_ann.span));
-
-                            // Create a child environment if not already done
-                            if Rc::strong_count(&env) > 1 {
-                                // stdlib_env is shared; create a child scope
-                                env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-                                    &env,
-                                ))));
-                            }
-
-                            env.borrow_mut().insert(full_cap_name, stub_thunk);
+                            env.borrow_mut().insert(
+                                full_cap_name,
+                                Rc::new(Thunk::new_materialized(stub_value, caps_ann.span)),
+                            );
                         }
                     }
                 }
@@ -198,9 +222,7 @@ impl DocumentState {
                 env
             };
 
-            // Attempt evaluation to catch runtime errors early (child scope of cached stdlib env).
-            // Always materialize (even when no_fs=true) so that IncludeForbidden errors
-            // are reported as diagnostics in the LSP.
+            // Attempt evaluation to catch runtime errors early.
             match eval_file(&file.node, lsp_eval_env, eval_ctx) {
                 Err(err) => eval_errors.push(*err),
                 Ok(thunk) => {
@@ -424,7 +446,7 @@ impl DocumentStore {
         //
         // Fallback chain for base_dir: try "." first, then temp_dir, then "/" as last resort.
         // This handles systemd socket activation, chroots, and containers where CWD or
-        // temp may be inaccessible. Since no_fs=true, the Dir is never used for actual I/O.
+        // temp may be inaccessible.
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .or_else(|_| {
                 cap_std::fs::Dir::open_ambient_dir(
@@ -438,7 +460,11 @@ impl DocumentStore {
                 cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
                     .expect("failed to open any base_dir (tried ., temp_dir, /)")
             });
-        let base_eval_ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), true);
+        // no_fs=false: the capability model (DirCap / RESOLVE_BENEATH in cap_std) provides
+        // path-traversal protection. %libdir and %pwd are injected as real DirCaps in
+        // DocumentState::new(), which limits access to the stdlib dir and document dir
+        // respectively. Bare capless includes are rejected by builtin_include (see builtins_meta.rs).
+        let base_eval_ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
 
         Self {
             docs: HashMap::new(),
@@ -457,8 +483,7 @@ impl DocumentStore {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         // Fallback chain: try document's directory first, then ".", then base_eval_ctx's Dir.
         // This handles cases where the document's directory becomes inaccessible mid-session
-        // (e.g., unmounted network share, deleted directory). Since no_fs=true, the Dir is
-        // never used for actual I/O.
+        // (e.g., unmounted network share, deleted directory).
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_path, cap_std::ambient_authority())
             .or_else(|_| cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()))
             .unwrap_or_else(|_| {
@@ -587,7 +612,7 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     let eval_ctx = Rc::new(crate::eval::EvalContext::new(
         base_dir,
         Rc::clone(&stdlib_env),
-        true, // no_fs=true for LSP security
+        false,
     ));
 
     // Create document state with the file's directory as base_dir for include resolution
@@ -612,7 +637,7 @@ mod tests {
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, test_env(), true)
+        crate::eval::EvalContext::new(base_dir, test_env(), false)
     }
 
     #[test]
@@ -722,10 +747,10 @@ mod tests {
     }
 
     #[test]
-    fn test_lsp_include_forbidden_with_no_fs() {
-        // Regression test: LSP context has no_fs=true (line 102) to prevent path traversal
-        // when opening malicious .llt files. This test ensures that a future revert of
-        // true → false is caught by verifying $include produces an eval error.
+    fn test_lsp_capless_include_rejected() {
+        // Capless [include "foo"] is no longer supported — include requires a DirCap
+        // as its first argument (e.g. [include %libdir "foo.llt"]). Passing a bare
+        // string should produce an eval error about the wrong argument type.
         let env = test_env();
         let ctx = test_ctx();
         let state = DocumentState::new(
@@ -737,13 +762,13 @@ mod tests {
         assert!(state.ast.is_ok(), "parse should succeed");
         assert!(
             !state.eval_errors.is_empty(),
-            "eval should produce IncludeForbidden error when no_fs=true; got no errors"
+            "capless include should produce an eval error; got no errors"
         );
-        // Verify it's specifically the include-forbidden error
+        // Must NOT be an IncludeForbidden (E042) — that was the no_fs=true path.
         let error_msg = format!("{}", state.eval_errors[0]);
         assert!(
-            error_msg.contains("E042") || error_msg.contains("filesystem access is disabled"),
-            "expected IncludeForbidden error (E042), got: {}",
+            !error_msg.contains("E042"),
+            "capless include error must not be IncludeForbidden (E042); got: {}",
             error_msg
         );
     }

@@ -1009,13 +1009,39 @@ fn run_eval(
     let _ = allow_network;
 
     // Inject `%pwd` DirCap into the root environment (unless --no-pwd is set).
+    // `%pwd` points to the directory of the first input file (or the process cwd when
+    // evaluating stdin/inline expressions). This allows `[include %pwd "sibling.llt"]`
+    // to resolve relative to the evaluated file, which is the most natural behavior.
     // --no-pwd enforcement: when the flag is set, `%pwd` is NOT injected, so
     // any reference to `%pwd` in the program will fail with "undefined variable".
-    // This is the correct enforcement mechanism — no special runtime checks needed.
     if !no_pwd {
         use tinct::Value;
-        let pwd_path = std::env::current_dir()
-            .map_err(|e| format!("cannot determine working directory for %pwd: {e}"))?;
+        // Determine %pwd: file's parent dir if a file is given, otherwise cwd.
+        // Use canonicalize() so symlinks are resolved; fall back to cwd if the
+        // parent directory doesn't exist (e.g., the file itself is missing —
+        // the open error will be reported shortly with the correct message).
+        let pwd_path = {
+            let first_file = file_paths.iter().find(|p| p.as_str() != "-");
+            match first_file {
+                Some(fp) => {
+                    let p = std::path::Path::new(fp);
+                    let parent = p.parent().filter(|d| !d.as_os_str().is_empty());
+                    match parent {
+                        Some(dir) => dir.canonicalize().unwrap_or_else(|_| {
+                            // Parent doesn't exist yet (e.g., file is missing). Fall back to
+                            // cwd; the file-not-found error will be reported shortly.
+                            std::env::current_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                        }),
+                        None => std::env::current_dir().map_err(|e| {
+                            format!("cannot determine working directory for %pwd: {e}")
+                        })?,
+                    }
+                }
+                None => std::env::current_dir()
+                    .map_err(|e| format!("cannot determine working directory for %pwd: {e}"))?,
+            }
+        };
         let pwd_dir = cap_std::fs::Dir::open_ambient_dir(&pwd_path, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open %pwd directory: {e}"))?;
         let pwd_value = Value::DirCap(Rc::new(pwd_dir));

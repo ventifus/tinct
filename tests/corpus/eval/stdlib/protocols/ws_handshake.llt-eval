@@ -1,7 +1,7 @@
 # build-ws-handshake: returns a valid HTTP/1.1 WebSocket upgrade request string.
 # All output is printable ASCII — safe to compare exactly.
 
-[include "stdlib/protocols/websocket.llt"]
+[include %libdir "protocols/websocket.llt"]
 ---
 [call %.build-ws-handshake "example.com" "/" "dGhlIHNhbXBsZQ=="]
 === out

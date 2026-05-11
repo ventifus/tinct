@@ -1,6 +1,6 @@
 # DNS QTYPE constants and flag values.
 
-[include "stdlib/protocols/dns.llt"]
+[include %libdir "protocols/dns.llt"]
 ---
 [set [set [set [set [set [set [set [set [set []
     "A"              %.A]

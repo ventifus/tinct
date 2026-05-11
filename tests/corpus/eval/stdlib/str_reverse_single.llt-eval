@@ -1,5 +1,5 @@
 # str-reverse: single character string
-[include "stdlib/strings.llt"]
+[include %libdir "strings.llt"]
 ---
 [call %.str-reverse "a"]
 === out

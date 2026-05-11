@@ -1,6 +1,6 @@
 # Verify opcode constants are exported with correct values.
 
-[include "stdlib/protocols/websocket.llt"]
+[include %libdir "protocols/websocket.llt"]
 ---
 [set [set [set [set [set [set []
     "Continuation" %.Continuation]

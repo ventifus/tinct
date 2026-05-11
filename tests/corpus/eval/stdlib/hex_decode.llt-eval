@@ -1,4 +1,4 @@
-[include "stdlib/encoding.llt"]
+[include %libdir "encoding.llt"]
 ---
 # Round-trip test
 [call %.hex-decode [call %.hex-encode "hello"]]

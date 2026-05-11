@@ -1,7 +1,7 @@
 # build-socks5-greeting with two methods: NO-AUTH + USERNAME/PASSWORD.
 # VER(1) + NMETHODS(1) + METHOD(1) + METHOD(1) = 4 bytes.
 
-[include "stdlib/protocols/socks5.llt"]
+[include %libdir "protocols/socks5.llt"]
 ---
 [length [call %.build-socks5-greeting [0: %.NO-AUTH 1: %.AUTH-USERNAME-PASSWORD]]]
 === out

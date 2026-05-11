@@ -1,5 +1,5 @@
 # env: format simple dict
-[include "stdlib/out/env.llt"]
+[include %libdir "out/env.llt"]
 ---
 [call %.env [
   API_KEY: "secret123"

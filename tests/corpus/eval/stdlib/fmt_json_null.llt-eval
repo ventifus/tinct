@@ -1,5 +1,5 @@
 # json: null handling (empty dict)
-[include "stdlib/out/json.llt"]
+[include %libdir "out/json.llt"]
 ---
 [call %.json [
   value: []

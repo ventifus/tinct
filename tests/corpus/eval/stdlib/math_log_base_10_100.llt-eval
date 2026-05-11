@@ -1,4 +1,4 @@
-[include "stdlib/math.llt"]
+[include %libdir "math.llt"]
 ---
 # log₁₀(100) = 2
 [call %.log-base 10 100]

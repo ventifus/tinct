@@ -1,5 +1,5 @@
 # path-parts: split path into components
-[include "stdlib/path.llt"]
+[include %libdir "path.llt"]
 ---
 [call %.path-parts "a/b/c.txt"]
 === out

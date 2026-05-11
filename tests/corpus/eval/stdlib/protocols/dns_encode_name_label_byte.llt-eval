@@ -1,7 +1,7 @@
 # encode-dns-name: verify the first byte is chr(7) for "example.com"
 # (length of the first label "example").
 
-[include "stdlib/protocols/dns.llt"]
+[include %libdir "protocols/dns.llt"]
 ---
 [char-code [str-slice [call %.encode-dns-name "example.com"] 0 1]]
 === out

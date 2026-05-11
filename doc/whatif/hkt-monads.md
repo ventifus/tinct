@@ -1,6 +1,6 @@
 # What If: Higher-Kinded Types and Generic Monadic Composition for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-11
 
 What would it take to give tinct rank-1 higher-kinded types, making `[do]` inference-driven and enabling generic functions polymorphic over any Functor or Monad — without adding full System F-omega or breaking the existing explicit-dispatch model?
 
@@ -30,6 +30,8 @@ Any value with a `bind:` field is a valid monad for `[do]`. This works today wit
 
 3. **No `Functor`, `Applicative`, `Monad` typeclass hierarchy.** Generic combinators like `fmap`, `liftA2`, `sequence`, `forM`, `mapM` cannot be expressed as typed library functions — they all require a type variable of kind `* → *`.
 
+4. **`Mappable` is hardcoded.** The existing `Mappable` constraint gives `$map` and `$filter` precise types over `Record` and `Seq`, but it is implemented as a fixed instance set in `src/typecheck.rs` with no user-extensibility. User-defined types cannot declare themselves `Mappable`. Full `Mappable` is the concrete near-term motivation for this proposal — see §Mappable Constraint.
+
 ## Why Rank-1 HKT Matters for tinct
 
 The explicit `[do monad]` syntax is not wrong — F# has used exactly this model for decades, and F#'s community finds it sufficient. The question is whether tinct wants generic abstraction over the monad, not just convenient syntax for one monad at a time.
@@ -45,97 +47,225 @@ The explicit `[do monad]` syntax is not wrong — F# has used exactly this model
 
 `sequence` is a function of type `Seq (m a) → m (Seq a)` where `m` ranges over monads. Without HKT, this cannot be typed. With rank-1 HKT and a `Monad` typeclass, it is expressible and the type checker enforces that the elements of the sequence have the same monad type as the result.
 
-**The type-checker inference benefit.** With a `Monad` instance, the type checker knows that `[do ...]` inside a function annotated `@Result` uses `and-then` — so it can type-check the binding expressions against `{ok: T} | {err: String}` and report errors if a non-Result expression appears in a binding position.
+**The type-checker inference benefit.** With a `Monad` instance, the type checker knows that `[do ...]` inside a function annotated `@Result` uses `and-then` — so it can type-check the binding expressions against `[ok: T  err: String]` and report errors if a non-Result expression appears in a binding position.
 
-## Design
+## Syntax Design
 
-### The Kind System Extension
+### Kind Annotations
 
-Tinct's type system currently has two kinds:
-- Kind `*` — concrete types (`Int`, `String`, `Bool`, `Result`, `{ok: T}`)
-- Kind `Row` — row types (field sets for `Handle[...]` and record types)
+Tinct avoids infix operators. The kind `* → *` (type constructor) is written as the reserved kind-level name `Operator`. Kind annotations follow the existing `@Type` annotation syntax:
 
-This proposal adds one new kind:
-- Kind `* → *` — type constructors: parameterized types where the parameter is a concrete type
+| Annotation | Meaning |
+|------------|---------|
+| `f@Operator` | `f` is an unconstrained type constructor (kind `* → *`) |
+| `m@Monad` | `m` is a type constructor with a `Monad` instance |
+| `f@Functor` | `f` is a type constructor with a `Functor` instance |
+| `f@Mappable` | `f` is a type constructor with a `Mappable` instance |
 
-Examples of type constructors (kind `* → *`):
-- `Result` — `Result a` is `{ok: a} | {err: String}` for any `a : *`
-- `Seq` — `Seq a` is a lazy sequence of values of type `a`
-- `Maybe` — `Maybe a` is `a | Null` (absent or present)
+A constrained annotation like `m@Monad` implies `Operator` — no separate kind annotation is needed when the constraint provides the kind.
 
-The **rank-1 restriction** bounds the complexity: type constructor variables (kind `* → *`) appear only at the outermost level of typeclass constraints. They cannot appear as arguments to other type constructors (`f (g a)` where both `f` and `g` are variables is excluded). This makes kind inference decidable and type checking tractable.
+### Type Constructor Application in Annotation Positions
 
-### The Typeclass Hierarchy
+In annotation positions (after `@`, in class method signatures, in `fn@Return [Params]`), square brackets without colons denote type constructor application:
+
+| Syntax | Meaning |
+|--------|---------|
+| `@[m a]` | Type constructor `m` applied to type `a` |
+| `@[Seq Int]` | `Seq` applied to `Int` (a sequence of integers) |
+| `@[m [Seq a]]` | `m` applied to `Seq a` (nested application) |
+| `@[key: T]` | Record type with field `key` of type `T` (has colon — not application) |
+
+The disambiguation rule: square brackets in annotation position with at least one colon form a record type; without any colon they form type constructor application.
+
+### Class and Instance Declarations
+
+Class declarations use existing `class` syntax with `@Operator` kind annotations:
 
 ```tinct
-# Functor: map a function over the contents of a container
-[Functor: [class [f@(* → *)]
-  [fmap: [fn@(f b) [fn@b [a]] [f@(f a)]]]]]
-
-# Applicative: apply a wrapped function to a wrapped value
-[Applicative: [class [f@(* → *)]  extends [Functor f]
-  [pure:  [fn@(f a) [a]]]
-  [lift2: [fn@(f c) [fn@c [a b]] [f@(f a)] [f@(f b)]]]]]
-
-# Monad: sequential composition
-[Monad: [class [m@(* → *)]  extends [Applicative m]
-  [bind: [fn@(m b) [m@(m a)] [fn@(m b) [a]]]]]]
+[ClassName: [class [typeParam@Operator]
+  [method: method-type]
+  [method: method-type]]]
 ```
 
-Instances for the stdlib types:
+With superclass constraint (prefix `extends`):
+
+```tinct
+[ClassName: [class [typeParam@Operator] extends [SuperClass typeParam]
+  [method: method-type]]]
+```
+
+Instance declarations bind a concrete type constructor to a class:
+
+```tinct
+[InstanceName: [instance [ClassName ConcreteType]
+  [method: implementation]]]
+```
+
+## The Typeclass Hierarchy
+
+### Functor
+
+```tinct
+[Functor: [class [f@Operator]
+  [fmap: [fn@[f b] [fn@b [a]  [f a]]]]]]
+```
+
+`fmap` takes a function `a → b` and an `f a`, returning `f b`.
+
+Instances:
 
 ```tinct
 [FunctorResult: [instance [Functor Result]
   [fmap: result-map]]]
 
+[FunctorSeq: [instance [Functor Seq]
+  [fmap: map]]]
+```
+
+### Applicative
+
+```tinct
+[Applicative: [class [f@Operator] extends [Functor f]
+  [pure:  [fn@[f a] [a]]]
+  [lift2: [fn@[f c] [fn@c [a b]  [f a]  [f b]]]]]]
+```
+
+`pure` wraps a value in the container. `lift2` applies a two-argument function inside the container.
+
+Instances:
+
+```tinct
 [ApplicativeResult: [instance [Applicative Result]
   [pure:  result-ok]
   [lift2: [fn [f ra rb]
-    [and-then ra [fn [a] [and-then rb [fn [b] [result-ok [f a b]]]]]]]]]]]
+    [and-then ra [fn [a]
+    [and-then rb [fn [b]
+      [result-ok [f a b]]]]]]]]]]
 
+[ApplicativeSeq: [instance [Applicative Seq]
+  [pure:  [fn [x] [x]]]
+  [lift2: [fn [f sa sb]
+    [flat-map sa [fn [a]
+      [map [fn [b] [f a b]] sb]]]]]]]
+```
+
+### Monad
+
+```tinct
+[Monad: [class [m@Operator] extends [Applicative m]
+  [bind: [fn@[m b] [[m a]  fn@[m b] [a]]]]]]
+```
+
+`bind` sequences a monadic value with a function that returns a new monadic value.
+
+Instances:
+
+```tinct
 [MonadResult: [instance [Monad Result]
   [bind: and-then]]]
 
-[FunctorSeq: [instance [Functor Seq]
-  [fmap: map]]]
-
 [MonadSeq: [instance [Monad Seq]
-  [pure:  [fn [x] [x]]]
-  [bind:  flat-map]]]
+  [bind: flat-map]]]
 ```
 
-### `[do]` Inference
+### Mappable
 
-With `Monad` instances registered, `[do]` without an explicit monad argument is valid when the enclosing return type provides enough context:
+The `Mappable` class subsumes the current hardcoded constraint. It is a supertype of `Functor` — every `Functor` is `Mappable`, but `Mappable` requires only a weaker `map` contract (no naturality law enforcement):
 
 ```tinct
-# Explicit (current — always works)
-[do result
-  [r: [fetch %nc url]]
-  [r.body]]
+[Mappable: [class [f@Operator]
+  [map: [fn@[f b] [fn@b [a]  [f a]]]]]]
 
-# Inferred (future — requires @Result annotation in scope)
-[fetch-and-parse: [fn@Result [url@String]
-  [do
-    [r:    [fetch %nc url]]      # type checker infers m = Result from @Result
-    [data: [from-json r.body]]
-    [get "items" data]]]]
+[MappableSeq:    [instance [Mappable Seq]    [map: map]]]
+[MappableRecord: [instance [Mappable Record] [map: map]]]
 ```
 
-**Inference rules:**
-1. If the enclosing function or binding has a return type annotation `@Result`, `m = Result` and `MonadResult` is resolved.
-2. If the `[do]` block's first expression has inferred type `{ok: T} | {err: E}`, `m = Result`.
-3. If neither provides context, `[do]` requires an explicit monad argument (backward compat).
+`$map` and `$filter` are given precise types via `Mappable` rather than hardcoded special cases in `src/typecheck.rs`. User-defined types can implement `Mappable` by declaring an instance.
 
-The explicit `[do monad ...]` form always works and takes priority over inference. Old code is unaffected.
+### Foldable
 
-### Generic Functions
-
-With rank-1 HKT and the typeclass hierarchy, the following generic functions become expressible and type-checked:
+`Foldable` generalizes fold/reduce over any container structure. It enables `sequence` and `traverse` to work on any foldable container, not just `Seq`:
 
 ```tinct
-# sequence: Seq (m a) → m (Seq a) — collect monadic values into one monad
-sequence: [fn@(m (Seq a)) [m@Monad xs@(Seq (m a))]
+[Foldable: [class [t@Operator]
+  [foldr: [fn@b [fn@b [a b]  b  [t a]]]]
+  [to-seq: [fn@[Seq a] [[t a]]]]]]
+
+[FoldableSeq:    [instance [Foldable Seq]
+  [foldr: reduce]
+  [to-seq: [fn [xs] xs]]]]
+
+[FoldableRecord: [instance [Foldable Record]
+  [foldr: reduce]
+  [to-seq: values]]]
+```
+
+`Foldable` is the companion to `Functor`: `Functor` maps over structure, `Foldable` collapses structure. Together they enable generic container processing without knowing the concrete container type.
+
+### Appendable
+
+`Appendable` is a kind-`*` typeclass (not `Operator`-kinded) that generalizes concatenation. It replaces the current hardcoded fixed-instance set in `src/typecheck.rs`:
+
+```tinct
+[Appendable: [class [a]
+  [append: [fn@a [a a]]]
+  [empty:  a]]]
+
+[AppendableStr:    [instance [Appendable Str]    [append: str]     [empty: ""]]]
+[AppendableSeq:    [instance [Appendable [Seq b]] [append: concat]  [empty: []]]]
+[AppendableRecord: [instance [Appendable Record]  [append: merge]   [empty: []]]]
+```
+
+`$concat` and `$conj` are given precise types via `Appendable` rather than hardcoded special cases. `Appendable` does not require `Operator` kind — it is a standard kind-`*` typeclass included here because it completes the replacement of all hardcoded constraint sets alongside `Mappable`.
+
+### Maybe
+
+`Maybe` is a stdlib ADT representing optional values. It is the simplest non-trivial `Monad` instance and serves as a test case for the full typeclass hierarchy:
+
+```tinct
+Maybe: [type [a] [Some a] | [None]]
+
+[FunctorMaybe: [instance [Functor Maybe]
+  [fmap: [fn [f ma]
+    [match ma
+      [Some a] [Some [f a]]
+      [None]   [None]]]]]]
+
+[ApplicativeMaybe: [instance [Applicative Maybe]
+  [pure: Some]
+  [lift2: [fn [f ma mb]
+    [match ma
+      [Some a] [match mb
+        [Some b] [Some [f a b]]
+        [None]   [None]]
+      [None] [None]]]]]]
+
+[MonadMaybe: [instance [Monad Maybe]
+  [bind: [fn [ma f]
+    [match ma
+      [Some a] [f a]
+      [None]   [None]]]]]]
+```
+
+Usage:
+
+```tinct
+# Safe dict lookup chaining — short-circuits on first missing key
+[do MonadMaybe
+  [user:  [get? "user" config]]
+  [email: [get? "email" user]]
+  [domain: [get? "domain" [parse-email email]]]
+  domain]
+# → [Some "example.com"] | [None]
+```
+
+## Generic Functions
+
+With rank-1 HKT and the typeclass hierarchy, the following generic functions become expressible and type-checked. The monad is passed as an explicit first argument — this preserves the existing `[do monad ...]` dispatch model and avoids implicit typeclass dictionary threading at the expression level.
+
+```tinct
+# sequence: collect a Seq of monadic values into a single monad
+sequence: [fn@[m [Seq a]] [m@Monad  xs@[Seq [m a]]]
   [reduce
     [fn [acc x]
       [m.bind acc [fn [as]
@@ -144,17 +274,23 @@ sequence: [fn@(m (Seq a)) [m@Monad xs@(Seq (m a))]
     [m.pure []]
     xs]]
 
-# traverse: (a → m b) → Seq a → m (Seq b)
-traverse: [fn@(m (Seq b)) [m@Monad f@Fn xs@(Seq a)]
+# traverse: map a monadic function over a Seq and collect results
+traverse: [fn@[m [Seq b]] [m@Monad  f@fn@[m b] [a]  xs@[Seq a]]
   [sequence m [map f xs]]]
 
-# when: m () conditioned on a Bool
-when: [fn@(m Null) [m@Monad cond@Bool action@(m Null)]
+# forM: traverse with arguments flipped (collection before function)
+forM: [fn@[m [Seq b]] [m@Monad  xs@[Seq a]  f@fn@[m b] [a]]
+  [traverse m f xs]]
+
+# when: conditionally execute a monadic action
+when: [fn@[m []] [m@Monad  cond@Bool  action@[m []]]
   [if cond action [m.pure []]]]
 
-# liftM2: generalisation of lift2 through bind
-liftM2: [fn@(m c) [m@Monad f@Fn ma@(m a) mb@(m b)]
-  [m.bind ma [fn [a] [m.bind mb [fn [b] [m.pure [f a b]]]]]]]
+# liftM2: lift a two-argument function into the monad
+liftM2: [fn@[m c] [m@Monad  f@fn@c [a b]  ma@[m a]  mb@[m b]]
+  [m.bind ma [fn [a]
+  [m.bind mb [fn [b]
+    [m.pure [f a b]]]]]]]
 ```
 
 Usage:
@@ -162,120 +298,219 @@ Usage:
 ```tinct
 # Fetch all URLs, short-circuit on first failure
 [sequence result [map [fn [url] [fetch %nc url]] urls]]
-# → {ok: [r1 r2 r3]} | {err: "..."}
+# → [ok: [r1 r2 r3]] | [err: "..."]
 
-# Same, with explicit URL processing
-[traverse result [fn [url] [do result [r: [fetch %nc url]] [from-json r.body]]] urls]
-# → {ok: [data1 data2 data3]} | {err: "..."}
+# Fetch and parse all URLs
+[traverse result [fn [url]
+  [do result
+    [r:    [fetch %nc url]]
+    [from-json r.body]]]
+  urls]
+# → [ok: [data1 data2 data3]] | [err: "..."]
 
 # List comprehension with Seq monad
-[do seq-monad
+[do MonadSeq
   [x: [1 2 3]]
   [y: [10 100]]
-  [seq-monad.pure [* x y]]]
+  [MonadSeq.pure [* x y]]]
 # → [10 100 20 200 30 300]
 ```
 
-### Interaction with Row Polymorphism
+## `[do]` Inference
 
-Tinct already has `Handle[R]` where `R` is a row type — this is effectively `Handle : Row → *`, a type constructor taking a row. The new `* → *` kind is the value-type-parameter analog. They are orthogonal:
+With `Monad` instances registered, `[do]` can infer the monad from the enclosing return type annotation:
 
-- `Handle[Tls Stream]` uses kind `Row`
-- `Result a` uses kind `* → *`
-- `Map[K V]` uses kind `* → * → *` (which rank-1 HKT supports for concrete applications)
+```tinct
+# Explicit form (current — always works)
+[do result
+  [r: [fetch %nc url]]
+  [r.body]]
 
-Row variables (kind `Row`) remain unchanged. Type constructor variables (kind `* → *`) are new and separate.
+# Inferred form (requires @Result annotation on enclosing function)
+[fetch-and-parse: [fn@[ok: Str  err: Str] [url@Str]
+  [do
+    [r:    [fetch %nc url]]
+    [data: [from-json r.body]]
+    [get "items" data]]]]
+```
 
-### Interaction with BAS
+**Inference rules (in priority order):**
 
-BAS operates on types (kind `*`). With rank-1 HKT, the BAS lattice needs to handle:
-- `m a | m b` — union of applications of the same type constructor to different types
-- Subtype rules for `m a <: m b` when `f : Functor` and `a <: b` (functorial subtyping)
+1. If the enclosing function has an explicit return type annotation `@T` where `T` matches a known Monad instance, use that instance. (`@[ok: T  err: E]` → `MonadResult`)
+2. If the first `[do]` binding's right-hand side has inferred type `[m a]` for a known `m`, use that monad.
+3. If neither provides context, `[do]` requires an explicit monad argument. Backward compatible — existing `[do monad ...]` calls are unaffected.
 
-These are extensions of BAS to the parameterized case. For covariant type constructors (Seq, Result's ok branch), `a <: b` implies `m a <: m b`. For invariant or contravariant positions, the rule differs. BAS's lattice structure accommodates this by extending the boolean algebra to parameterized types — `m a` is an atom in the lattice for each concrete `(m, a)` pair, and `m a | m b` is their join.
+The explicit `[do monad ...]` form always takes priority over inference. Existing code is unaffected.
 
-This is a non-trivial extension but a principled one: the BAS lattice remains boolean and the constraint solver handles parameterized types by treating applications as lattice atoms during constraint generation.
+## Formal Type Rules
 
-### Why Not Effects Systems
+### Kind System
+
+The kind grammar extends with one new production:
+
+```
+Kind ::= *              -- concrete types
+       | Row            -- record field sets
+       | Operator        -- type constructors (kind * → *)
+```
+
+`Operator` is notation for `* → *`. The parser treats it as a reserved kind-level name, not a type.
+
+### Type Constructor Application
+
+Two new `Type` variants in `src/types.rs`:
+
+```rust
+pub enum Kind { Star, Row, Operator }
+
+pub enum Type {
+    // ... existing variants ...
+    App(Box<Type>, Box<Type>),  // type constructor application: f applied to a
+    TyCon(String),              // type constructor variable: f, m, t
+}
+```
+
+Unification extends to handle `App`:
+
+```
+UNIFY-APP:
+  unify(f₁, f₂) = θ₁    unify(θ₁(a₁), θ₁(a₂)) = θ₂
+  ─────────────────────────────────────────────────────
+         unify(App(f₁, a₁), App(f₂, a₂)) = θ₂ ∘ θ₁
+```
+
+### Typeclass Resolution for HKT
+
+A typeclass constraint `C m` where `m : Operator` resolves by:
+
+1. Look up `m` in the `ClassEnv` instance table.
+2. Find an `instance [C M]` entry where `M` unifies with `m`.
+3. Substitute the instance's method implementations.
+
+For type inference, `App(TyCon("m"), a)` is unified against known concrete applications (`App(Result, T)`, `App(Seq, T)`) to resolve `m`.
+
+### Kind Checking
+
+Kind checking is a pre-pass before type inference:
+
+```
+KIND-TYCON:
+  Γ ⊢ f : Operator    Γ ⊢ a : *
+  ─────────────────────────────
+       Γ ⊢ [f a] : *
+
+KIND-CLASS-PARAM:
+  annotation is @Operator or @C where C is an Operator class
+  ─────────────────────────────────────────────────────────
+         parameter has kind Operator in method signatures
+```
+
+The rank-1 restriction: `TyCon` variables appear only at the outermost position of class constraints. `App(TyCon("f"), TyCon("g"))` (where `g` is also a variable) is excluded. This keeps kind inference decidable.
+
+## Interaction with Row Polymorphism
+
+Tinct already has `Handle[R]` where `R` is a row type — this is `Handle : Row → *`, a type constructor taking a row argument. The new `Operator` kind is the value-type-parameter analog. They are orthogonal:
+
+- `Handle[Tls Stream]` uses `Row` kind
+- `@[Result T]` uses `Operator` kind
+- `@[Map K V]` uses `Operator → Operator → *` (rank-2, supported for concrete applications only)
+
+Row variables remain unchanged. `TyCon` variables are new and separate. The existing `Row`-kinded `Handle` is not affected.
+
+## Interaction with BAS
+
+BAS operates on types of kind `*`. With rank-1 HKT, the BAS constraint solver extends to handle type constructor applications:
+
+- **Application atoms:** `App(f, a)` is an atom in the BAS lattice for each concrete `(f, a)` pair. `App(Result, Int)` and `App(Result, Str)` are distinct atoms.
+- **Covariant functorial subtyping:** For covariant type constructors (all `Functor` instances are covariant in their argument), `a <: b` implies `App(f, a) <: App(f, b)`. This is the functorial subtyping rule.
+- **Union of applications:** `App(m, a) | App(m, b)` is their join in the BAS lattice, which is `App(m, a | b)` for covariant `m`.
+
+The BAS lattice remains boolean. The constraint solver handles `App` by treating concrete applications as atoms during constraint generation and applying functorial subtyping during the subtype check.
+
+Contravariant positions (e.g., the input type of a function inside a container) require explicit annotation or remain `Unknown`. This is acceptable at rank-1.
+
+## Why Not Effect Systems
 
 Algebraic effects (Koka, Frank, Unison) are the major alternative to monads for structuring side effects. They are not appropriate for tinct for one reason: **lazy evaluation and algebraic effects do not compose cleanly**.
 
-In a strict (eager) language, an effectful expression executes when evaluated — effects are ordered by control flow. In a lazy language, a thunk is evaluated on demand, potentially reordering or deduplicating effects. Haskell's IO monad exists precisely to give effects a total order in an otherwise lazy language. Algebraic effects assume strict evaluation.
+In a strict language, an effectful expression executes when evaluated — effects are ordered by control flow. In a lazy language, a thunk is evaluated on demand, potentially reordering or deduplicating effects. Haskell's IO monad exists precisely to give effects a total order in an otherwise lazy language. Algebraic effects assume strict evaluation.
 
-Tinct's lazy evaluation model makes the IO monad (and Result monad for failure) the right abstraction — they explicitly sequence effects through bind. Effects systems would require tinct to become strict or to add explicit thunk materialization in the effects semantics, neither of which is acceptable.
+Tinct's lazy evaluation model makes the IO monad (and Result monad for failure) the right abstraction — they explicitly sequence effects through bind. Effect systems would require tinct to become strict or to add explicit thunk materialization in the effects semantics, neither of which is acceptable.
 
-### Backward Compatibility
+## Mappable Constraint
+
+The existing `Mappable` constraint gives `$map` and `$filter` precise types over both `Record` and `Seq`. It is currently implemented as a hardcoded fixed-instance set in `src/typecheck.rs` — the constraint is checked but no user-defined type can declare itself `Mappable`, and the implementation does not go through the normal typeclass resolution path.
+
+Full `Mappable` requires `Operator` kind support: `Mappable` is a class parameterized by a type constructor `f`, and `$map` is given the type `fn@[f b] [fn@b [a]  [f a]]` via the `Mappable f` constraint. Once rank-1 HKT is available:
+
+1. The hardcoded `Mappable` special case in `src/typecheck.rs` is replaced by a normal class declaration.
+2. `MappableSeq` and `MappableRecord` become normal instance declarations.
+3. User types can implement `Mappable` by declaring an instance.
+
+`Mappable` is a weaker contract than `Functor` — it requires only a `map` operation with no naturality law enforcement. `Functor` implies `Mappable` but not vice versa.
+
+## Backward Compatibility
 
 Every existing `[do monad ...]` call is valid in the new model:
-- The explicit monad argument is still accepted — it takes priority over inference
-- The bind-field dispatch (looking up `monad.bind`) still works for dicts without a registered `Monad` instance
-- User-defined monad dicts that predate the `Monad` typeclass are unaffected
+- The explicit monad argument is still accepted and takes priority over inference.
+- The bind-field dispatch (looking up `monad.bind`) still works for dicts without a registered `Monad` instance.
+- User-defined monad dicts that predate the `Monad` typeclass are unaffected.
 
 The upgrade path: existing code compiles unchanged. New code can drop the explicit monad argument when the return type is annotated. No migration is required.
 
 ## What Would Change
 
+### Parser (`src/parser.rs`, `src/lexer.rs`)
+
+- Recognize `Operator` as a reserved kind-level name in annotation positions.
+- In annotation positions, parse `[f a]` (no colons) as `Expr::TypeApp(f, a)` rather than a call or record.
+- Extend `class` declaration parsing to accept `extends [SuperClass param]` clause.
+
 ### Type System (`src/types.rs`)
 
-**New kind:**
+New variants:
 ```rust
-pub enum Kind {
-    Star,          // *  — concrete types (existing)
-    Row,           // Row — record field types (existing)
-    Arrow(Box<Kind>, Box<Kind>),  // * → * — NEW: type constructor kinds
-}
-```
+pub enum Kind { Star, Row, Operator }
 
-**New type form:**
-```rust
 pub enum Type {
     // ... existing variants ...
-    App(Box<Type>, Box<Type>),   // NEW: type constructor application (Result a, Seq Int, etc.)
-    TyCon(String),               // NEW: type constructor variable (f, m, t — kind * → *)
+    App(Box<Type>, Box<Type>),  // type constructor application
+    TyCon(String),              // type constructor variable
 }
 ```
 
-**Impact:** Moderate — new variants require new inference rules and kind checking.
+New unification case (`src/type_unify.rs`): `UNIFY-APP` as above.
 
 ### Type Checker (`src/typecheck.rs`)
 
-**Kind inference:** Determine kinds of type expressions; check that `m` in `Monad m` is used at kind `* → *`.
-
-**Typeclass resolution:** Extend the existing typeclass instance resolution to handle `* → *` typeclasses. When `[do]` is used without an explicit monad, consult the return type annotation for `m` and resolve the `Monad m` instance.
-
-**Application type inference:** `m a` where `m : * → *` and `a : *` produces an `App(TyCon(m), a)` type, unified against concrete types (`Result`, `Seq`) at call sites.
-
-**Impact:** Moderate to major — the most significant type checker change since typeclasses were added.
+- **Kind inference pass:** Determine kinds of type expressions before HM inference. Check type constructor variables are used at kind `Operator` in class method signatures.
+- **Typeclass resolution for HKT:** Extend `ClassEnv` lookup to handle `* → *` classes. When `[do]` is used without an explicit monad, consult the return type for `m` and resolve the `Monad m` instance.
+- **`App` type inference:** Unify `App(TyCon("m"), a)` against concrete applications to resolve `m`.
+- **`Mappable` + `Appendable` rewrite:** Remove both hardcoded fixed-instance sets; replace with normal class + instance resolution.
 
 ### Standard Library (`stdlib/prelude.llt`)
 
-New generic functions (once HKT is available):
-- `sequence` — `Seq (m a) → m (Seq a)`
-- `traverse` — `(a → m b) → Seq a → m (Seq b)`
-- `liftM2` — `(a → b → c) → m a → m b → m c`
-- `when` — `Bool → m () → m ()`
-- `forM` — flipped `traverse` (xs before f, for readability)
+New generic functions: `sequence`, `traverse`, `forM`, `when`, `liftM2`.
 
-New typeclass instances:
-- `MonadResult`, `FunctorResult`, `ApplicativeResult`
-- `MonadSeq`, `FunctorSeq`, `ApplicativeSeq`
-- `FunctorMaybe`, `MonadMaybe` (if `Maybe` is added as a stdlib type)
+New class declarations: `Functor`, `Applicative`, `Monad`, `Foldable`, `Mappable`, `Appendable`.
 
-**Impact:** Additive — new functions alongside existing ones.
+New type: `Maybe` ADT (`[Some a] | [None]`).
+
+New instances: `FunctorResult`, `ApplicativeResult`, `MonadResult`, `FoldableResult`, `FunctorSeq`, `ApplicativeSeq`, `MonadSeq`, `FoldableSeq`, `FoldableRecord`, `MappableSeq`, `MappableRecord`, `AppendableStr`, `AppendableSeq`, `AppendableRecord`, `FunctorMaybe`, `ApplicativeMaybe`, `MonadMaybe`.
+
+### Documentation (`doc/06-type-inference.md`)
+
+Add §Type Classes formal rules section (deferred from `type-classes-full`): constraint generation rules, entailment checking algorithm, dictionary elaboration, instance resolution, superclass extraction. This section documents the existing `ClassEnv`/`InstanceEnv` machinery plus the new HKT extensions.
 
 ### `[do]` Macro (`stdlib/macros.llt`)
 
-Extended to support both forms:
-- `[do monad steps...]` — existing explicit form (unchanged)
-- `[do steps...]` — new inferred form; macro emits a typeclass constraint for resolution
-
-**Impact:** Minor — the desugaring is identical; only the monad lookup changes.
+Extended to support inferred form: when no explicit monad argument is present, the macro emits a typeclass constraint for resolution by the type checker. The desugaring is identical; only the monad lookup changes.
 
 ## Prerequisites
 
-- **Boolean Algebraic Subtyping** (`doc/whatif/boolean-algebraic-subtyping.md`) — required for `m a | m b` as a well-formed union type in the type checker; BAS's constraint solver handles parameterized type application in the lattice.
-- **Existing typeclasses** — the `Eq`, `Ord` typeclass infrastructure from the typing cluster (complete); `Monad` extends this to kind `* → *`.
-- **`[do]` macro** — already implemented via `error-patterns` proposal; the explicit-dict form is the implementation base.
+- **Boolean Algebraic Subtyping** (completed) — required for `App(m, a) | App(m, b)` as a well-formed union type; BAS's constraint solver extends to handle type constructor application atoms.
+- **Existing typeclasses** (completed) — `Eq`, `Ord`, `Numeric`, `Mappable` fixed-instance infrastructure; `Monad` extends this to `Operator` kind.
+- **`[do]` macro** (completed) — already implemented via `error-patterns` proposal; the explicit-dict form is the implementation base.
 
 ## References
 

@@ -1,4 +1,4 @@
-[include "stdlib/math.llt"]
+[include %libdir "math.llt"]
 ---
 # Pythagorean theorem with a=1, b=1: sqrt(2)
 [call %.hypot 1 1]

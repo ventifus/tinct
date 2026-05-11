@@ -1,6 +1,6 @@
 # build-ws-frame errors if mask-key is not exactly 4 bytes.
 
-[include "stdlib/protocols/websocket.llt"]
+[include %libdir "protocols/websocket.llt"]
 ---
 [try [fn [] [call %.build-ws-frame 1 "Hello" "ABC"]]]
 === out

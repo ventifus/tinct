@@ -2,7 +2,7 @@
 # 4-byte response: VER=5, REP=5, RSV=0, ATYP=1.
 # Expected: success?=false, rep=5, status="Connection refused".
 
-[include "stdlib/protocols/socks5.llt"]
+[include %libdir "protocols/socks5.llt"]
 ---
 [call [fn [p]
     [set [set [set []

@@ -5,7 +5,7 @@
 # bytes 4-7: mask key
 # Expected: payload-len=256, header-len=8 (2+2+4), opcode=2
 
-[include "stdlib/protocols/websocket.llt"]
+[include %libdir "protocols/websocket.llt"]
 ---
 [call [fn [p]
     [set [set [set []

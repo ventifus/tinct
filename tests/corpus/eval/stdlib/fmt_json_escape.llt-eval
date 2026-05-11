@@ -1,5 +1,5 @@
 # json: string escaping
-[include "stdlib/out/json.llt"]
+[include %libdir "out/json.llt"]
 ---
 [call %.json [
   text: "Hello \"world\"\nNew line\tTab"

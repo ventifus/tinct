@@ -1,5 +1,5 @@
 # toml-lite: integration test (Cargo.toml-like structure)
-[include "stdlib/toml-lite.llt"]
+[include %libdir "toml-lite.llt"]
 
 ---
 

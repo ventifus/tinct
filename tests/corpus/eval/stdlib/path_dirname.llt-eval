@@ -1,5 +1,5 @@
 # dirname: get directory portion of path
-[include "stdlib/path.llt"]
+[include %libdir "path.llt"]
 ---
 [call %.dirname "/foo/bar.txt"]
 === out

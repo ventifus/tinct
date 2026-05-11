@@ -1,4 +1,4 @@
-[include "stdlib/encoding.llt"]
+[include %libdir "encoding.llt"]
 ---
 # Test ASCII character 'A' (code 65)
 [call %.hex-encode "A"]

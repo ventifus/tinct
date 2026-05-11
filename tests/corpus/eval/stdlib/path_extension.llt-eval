@@ -1,5 +1,5 @@
 # extension: get file extension
-[include "stdlib/path.llt"]
+[include %libdir "path.llt"]
 ---
 [call %.extension "file.tar.gz"]
 === out
