@@ -155,7 +155,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `type-of` | **Materializing** — must evaluate to determine type. Returns `"Function"` for both user-defined functions and Rust-native builtins (intentionally indistinguishable to user code). |
 | `assert` | **Materializing** — must evaluate condition |
 | `error` | Structural — constructs error value, not materialized until propagated |
-| `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[ok: value]` on success or `[err: message]` on failure (tagged dict, not a special type). |
+| `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[Ok value]` on success or `[Err message]` on failure (ADT variants, destructured with `match`). |
 
 **Materialization** (runtime-supported):
 - `eval` — recursively materializes all thunks (runtime-supported, may diverge on infinite structures)
@@ -294,7 +294,7 @@ The stdlib follows four organizing principles:
 
 ## Stdlib Function Reference
 
-**Architecture:** 189 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 29 shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`). All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
+**Architecture:** 189 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`). All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
@@ -306,8 +306,8 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Extended math** (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?` as Rust builtins; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` in `stdlib/math.llt`) — trigonometric, exponential, and logarithmic functions; NaN/infinity checks; constants and derived functions require `[include libdir "math.llt"]`
 - **Bitwise & Encoding** (`band`, `bor`, `bxor`, `shl`, `shr` as Rust builtins; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives and binary encoding; pure-tinct encoding functions require `[include libdir "encoding.llt"]`
 - **Bytes** (`bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?` as Rust builtins) — byte buffer operations with constant-time equality for cryptographic use
-- **Datetime** (`parse-timestamp`, `format-timestamp`, `timestamp-to-unix`, `unix-to-timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp-lt`, `timestamp-gt`, `timestamp-eq`, `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts`, `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration-to-seconds`, `duration-to-nanos`, `load-tz`, `timestamp-in-tz`, `local-to-timestamp`, `local-tz-name` as Rust builtins) — RFC 3339 timestamp parsing/formatting, Unix epoch conversion, arithmetic, timezone handling
-- **URI & HTTP** (`uri`, `url`, `urn`, `uri-params`, `uri-origin`, `uri->string` as Rust builtins; `http-get`, `fetch` in `stdlib/net.llt`) — RFC 3986/8141 URI parsing; HTTP client operations via reqwest
+- **Datetime** (`parse-timestamp`, `format-timestamp`, `timestamp->unix`, `unix->timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp-lt`, `timestamp-gt`, `timestamp-eq`, `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts`, `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration->seconds`, `duration->nanos`, `load-tz`, `timestamp-in-tz`, `local-to-timestamp`, `local-tz-name` as Rust builtins) — RFC 3339 timestamp parsing/formatting, Unix epoch conversion, arithmetic, timezone handling
+- **URI & HTTP** (`uri`, `url`, `urn` as Rust builtins; `uri-params`, `uri-origin`, `uri->string`, `http-get`, `fetch` in `stdlib/net.llt`) — RFC 3986/8141 URI parsing; HTTP client operations via reqwest
 - **Network handles** (`connect`, `tls-connect`, `tls-peer-cert`, `spki-pin`, `http-connect`, `socks5-connect`, `proxy-connect` as Rust builtins) — TCP/UDP/TLS connections with capability security; SPKI pinning; HTTP/2+3 connection pools; SOCKS5 and HTTP proxy tunneling
 - **I/O handles** (`open`, `slurp`, `lines`, `write`, `write-atomic`, `cap-data`, `has-cap?`, `write-handle`, `flush`, `close` as Rust builtins; `write-line` in `stdlib/io.llt`) — file/stream I/O with capability rows (Readable/Writable/Binary/Text/Seekable/Stream/Datagram/Tls); WriteHandle streaming output
 
@@ -418,7 +418,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `when` | `[fn [pred body] ...]` | Returns `body` if `pred` is true, else `[]` |
 | `unless` | `[fn [pred body] ...]` | Returns `body` if `pred` is false, else `[]` |
 | `cond` | `[fn [pairs] ...]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
-| `until` | `[fn [pred f x] ...]` | Iterate function until predicate holds. Applies `f` repeatedly to `x` until `pred(x)` is true. Recursive; hits MAX_EVAL_DEPTH (~256) on large inputs |
+| `until` | Rust native builtin — no LLT wrapper | Iterate function until predicate holds. Applies `f` repeatedly to `x` until `pred(x)` is true. Implemented in Rust using an explicit loop to avoid recursion depth limits (unlimited iterations) |
 
 **Field Interception:**
 
@@ -464,6 +464,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `sort` | `[fn [xs] ...]` | Sort using natural ordering (mergesort) |
 | `sort-by` | `[fn [cmp xs] ...]` | Sort using a custom comparator function |
+| `sorted` | `[fn [xs] ...]` | Like `sort` but accepts Seq or Dict input; collects a Seq first before sorting |
+| `sorted-by` | `[fn [cmp xs] ...]` | Like `sort-by` but accepts Seq or Dict input |
 
 **Universal Collection Operations (preserve keys):**
 
@@ -533,6 +535,24 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `seq?` | Rust builtin | Return true if value is a Seq |
 | `list?` | LLT stdlib | Return true if value is a Dict whose keys are all integers (i.e., a list-shaped dict) |
 
+**Numeric Predicates:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `between` | `[fn [lo hi] ...]` | Predicate factory `lo hi → (v → Bool)` for inclusive range check |
+| `non-negative` | `[fn [v] ...]` | Predicate for `v >= 0` |
+| `positive` | `[fn [v] ...]` | Predicate for `v > 0` |
+
+**Result Type Combinators:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `and-then` | `[fn [f res] ...]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Err e]`, propagate the error |
+| `result-map` | `[fn [f res] ...]` | Map over Result: if `res` is `[Ok v]`, return `[Ok [f v]]`; if `[Err e]`, propagate the error |
+| `result-or` | `[fn [default res] ...]` | Extract value from Result with fallback: if `res` is `[Ok v]`, return `v`; if `[Err e]`, return `default` |
+| `result-ok` | `[fn [res] ...]` | Return true if `res` is `[Ok ...]`, false otherwise |
+| `result` | Dict (monad dict) | Result ADT monad dict with combinators: `[bind: and-then  map: result-map  or: result-or  ok?: result-ok]` |
+
 **Error Handling:**
 
 | Function | Signature | Description |
@@ -547,7 +567,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `repeat` | `[fn [val] ...]` | Infinite Seq of copies of val; for finite, use `[take n [repeat val]]` |
 | `cycle` | `[fn [xs] ...]` | Infinite Seq cycling through dict entries; for finite, use `[take n [cycle xs]]` |
 | `iterate` | `[fn [f x] ...]` | Infinite seq: x, f(x), f(f(x)), ... |
-| `unfold` | `[fn [step seed] ...]` | Seq from step function; step returns `[value state]` or `[]` to stop |
+| `unfold` | `[fn [step seed] ...]` | Seq from step function; step returns a dict where the **first** entry (by insertion order) is the value and the **second** entry is the next state (key names are ignored; only position matters); return `[]` to stop |
 | `take` | `[fn [n xs] ...]` | Dual-dispatch: on Dict, take first n entries preserving keys; on Seq, return finite Seq of first n elements |
 | `seq` | `[fn [head tail] ...]` | Low-level seq constructor (cons cell) |
 | `collect` | `[fn [s] ...]` | Materialize seq into dict with integer keys 0..n |
@@ -830,6 +850,8 @@ Both builtins require exactly 2 positional arguments and reject named arguments 
 | Bool(a) | Bool(b) | a == b | EQ-BOOL |
 | Int(a) | Float(b) | (a as f64) == b | EQ-PROMOTE-IF |
 | Float(a) | Int(b) | a == (b as f64) | EQ-PROMOTE-FI |
+| Dict(a) | Dict(b) | structural equality (order-insensitive, recursive with cycle detection) | EQ-DICT |
+| Variant(t₁,p₁) | Variant(t₂,p₂) | t₁ == t₂ ∧ recursive structural equality on payloads | EQ-VARIANT |
 | _ | _ | false | EQ-INCOMP |
 
 **`dispatch_lt(v₁, v₂) → bool | ⊥`:**
