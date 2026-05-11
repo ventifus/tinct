@@ -70,7 +70,7 @@ fn type_suffix(
 
     // Try document type map first
     if let Some(ty) = type_map.get(&key) {
-        return format!(" ({ty})");
+        return format!(" ({})", crate::types::pretty_type(ty));
     }
 
     // Try direct includes' type maps
@@ -78,7 +78,7 @@ fn type_suffix(
         for include_url in &node.includes {
             if let Some(include_node) = include_graph.get(include_url) {
                 if let Some(ty) = include_node.state.type_map.get(&key) {
-                    return format!(" ({ty})");
+                    return format!(" ({})", crate::types::pretty_type(ty));
                 }
             }
         }

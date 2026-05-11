@@ -293,6 +293,88 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
     }
 }
 
+/// Pretty-print a type for user-facing output (LSP hover, completions).
+///
+/// Renames internal TypeVars (`_t266`) to short alphabetic names (`a`, `b`, …)
+/// in order of first appearance, left-to-right through the formatted type string.
+/// All occurrences of the same TypeVar in one type receive the same short name.
+pub fn pretty_type(ty: &Type) -> String {
+    let raw = ty.to_string();
+    pretty_type_str(&raw)
+}
+
+/// Same renaming pass applied to an already-formatted type string.
+/// Useful when the type was formatted via Display (e.g. TypeScheme).
+pub fn pretty_type_str(raw: &str) -> String {
+    // First pass: collect _tN names in left-to-right order without duplicates.
+    let mut vars: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i..].starts_with("_t") {
+            let digit_start = i + 2;
+            let digit_end = raw[digit_start..]
+                .bytes()
+                .position(|c| !c.is_ascii_digit())
+                .map(|p| digit_start + p)
+                .unwrap_or(raw.len());
+            if digit_end > digit_start {
+                let varname = &raw[i..digit_end];
+                if !vars.contains(&varname) {
+                    vars.push(varname);
+                }
+                i = digit_end;
+                continue;
+            }
+        }
+        i += raw[i..].chars().next().map_or(1, |c| c.len_utf8());
+    }
+
+    if vars.is_empty() {
+        return raw.to_string();
+    }
+
+    // Build rename table: _tN → a, b, …, z, a1, b1, …
+    let rename: HashMap<&str, String> = vars
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (*name, tvar_display_name(idx)))
+        .collect();
+
+    // Second pass: emit the string, substituting _tN tokens.
+    let mut result = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i..].starts_with("_t") {
+            let digit_start = i + 2;
+            let digit_end = raw[digit_start..]
+                .bytes()
+                .position(|c| !c.is_ascii_digit())
+                .map(|p| digit_start + p)
+                .unwrap_or(raw.len());
+            if digit_end > digit_start {
+                let varname = &raw[i..digit_end];
+                result.push_str(&rename[varname]);
+                i = digit_end;
+                continue;
+            }
+        }
+        let c = raw[i..].chars().next().unwrap();
+        result.push(c);
+        i += c.len_utf8();
+    }
+    result
+}
+
+/// Map a 0-based index to a display name: 0→a, 1→b, …, 25→z, 26→a1, 27→b1, …
+fn tvar_display_name(idx: usize) -> String {
+    let letter = (b'a' + (idx % 26) as u8) as char;
+    if idx < 26 {
+        letter.to_string()
+    } else {
+        format!("{}{}", letter, idx / 26)
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
