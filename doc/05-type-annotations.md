@@ -270,7 +270,7 @@ A: [type [b_field: B]]  B: [type [a_field: A]]
 
 **Semantics: equi-recursive, not iso-recursive.** Type aliases are transparent — they unfold automatically during type checking. There is no explicit `fold`/`unfold` syntax (iso-recursive semantics). This matches Amadio & Cardelli (1993) equi-recursive type equality with a depth guard for decidability.
 
-**Current limitation:** Recursive references within an alias body resolve to `Unknown` (the universal escape hatch). This is sound but imprecise. Full support for recursive algebraic data types requires parameterized type aliases. For configuration use cases, recursive types are uncommon — this feature primarily supports self-hosting stdlib functions that operate on tree-like structures.
+**Recursive types:** Parameterized type aliases support recursive algebraic data types. A type alias can reference itself in its body, with the recursive reference resolved through the alias table. The recursion guard prevents infinite expansion, and the depth limit (256 layers) provides decidability. For configuration use cases, recursive types are uncommon — this feature primarily supports self-hosting stdlib functions that operate on tree-like structures.
 
 **Example:**
 

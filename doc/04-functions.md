@@ -31,6 +31,8 @@ Syntactically, `[f x]` is a bracket expression with unkeyed entries (the same pa
 
 ### Formal Grammar
 
+These grammar rules are excerpts; see [Syntax](02-syntax.md) §Complete Grammar for the full definition including `keyword_call` and `keyword_fn`.
+
 ```ebnf
 call_form = { keyword_call ~ value ~ call_args }
 
@@ -310,11 +312,11 @@ fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
 }
 ```
 
-**Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`. The migration resolved TODO.md:44 ("_ desugaring AST shape mismatch between type checker and evaluator").
+**Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`.
 
 #### Testing Requirements
 
-Corpus tests are required for each WRAP rule (WRAP-CALL, WRAP-DICT, WRAP-DOT, WRAP-PIPE) and each exclusion position (func position in Call, dict entry keys). Tests should verify that desugaring produces the expected `Fn([_], ...)` wrapper and that excluded positions do not trigger wrapping. (WRAP-BRACKET and WRAP-RANGE were removed in access-pipeline-phase2.)
+Corpus tests are required for each WRAP rule (WRAP-CALL, WRAP-DICT, WRAP-DOT, WRAP-PIPE) and each exclusion position (func position in Call, dict entry keys). Tests should verify that desugaring produces the expected `Fn([_], ...)` wrapper and that excluded positions do not trigger wrapping. (WRAP-BRACKET and WRAP-RANGE are not supported — bracket access is not part of the language.)
 
 ## Call Convention — Formal Specification
 
@@ -526,7 +528,7 @@ All constraints satisfied. ∎
 
 No error is produced. ∎
 
-**Corollary (Unique binding).** Since the solution is unique and the algorithm computes it, `bind_args_thunks` produces the unique valid binding for any given call. There are no alternative valid bindings that the algorithm might miss.
+**Corollary (Unique binding).** Since at most one valid binding exists (Uniqueness) and the algorithm produces a binding whenever one exists (Completeness + Soundness), `bind_args_thunks` produces exactly the unique valid binding — or an error if no valid binding exists.
 
 ### Part 4: Error Taxonomy
 
@@ -569,7 +571,7 @@ $apply:        default_env = closure environment  (env_c)
 
 **Variadic typing precision:** The type checker assigns variadic parameters type `Record([], Closed)` regardless of actual arguments (§Type Inference Algorithm, Limitation #8). The runtime Dict has integer-keyed entries with the excess args' types. A precise type would require dependent types (the length depends on `|pos| - |P|`). The current typing is a sound over-approximation — accessing variadic fields produces type errors that succeed at runtime. See Limitation #8 for the correct type (`Record([], Open)` or `Any`).
 
-**PendingCall interaction:** When a `PendingCall` thunk is forced, it invokes `invoke_function`, which calls `bind_args_thunks` — the same binding algorithm specified above. The forcing semantics (state transitions, memoization, error handling) are specified in §Thunk Lifecycle — Formal Specification, rules FORCE-CALL and FORCE-CALL-BUILTIN.
+**PendingCall interaction:** When a `PendingCall` thunk is materialized, it invokes `invoke_function`, which calls `bind_args_thunks` — the same binding algorithm specified above. The materialization semantics (state transitions, memoization, error handling) are specified in §Thunk Lifecycle — Formal Specification, rules MATERIALIZE-CALL and MATERIALIZE-CALL-BUILTIN.
 
 ### Part 6: Worked Example
 
@@ -612,11 +614,7 @@ Without the Kotlin model, this call would fail — `name` has no `default:`, so 
 
 To make dict-returning operations lazy, the thunk model gains a new state:
 
-```
-PendingCall(function: Rc<Thunk>, args: Vec<Rc<Thunk>>, call_span: Span)
-```
-
-`PendingCall` represents "apply this function to these arguments when forced." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result (transitioning to `Materialized`), just like `PendingBuiltin` does for builtin calls.
+`PendingCall` represents "apply this function to these arguments when materialized." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result (transitioning to `Materialized`), just like `PendingBuiltin` does for builtin calls. The full field set (including `named` args, `caller_env`, and `EvalContext`) is specified in [Evaluation](08-evaluation.md) §Thunk Lifecycle, [MATERIALIZE-CALL].
 
 This is different from `PendingBuiltin` in a key way:
 - **PendingBuiltin** stores a Rust function pointer (`BuiltinFn`) and its arguments — the builtin runs when materialized
@@ -626,6 +624,6 @@ Both support lazy evaluation, but `PendingCall` works at the Tinct function leve
 
 **Type transparency:** `PendingCall` is invisible to the type system — a `PendingCall(f, [x])` has the same inferred type as `f(x)`. No new `Type` variant is needed; HM type inference is unchanged.
 
-**Error reporting:** When `PendingCall` materialization fails, the definition-site span comes from the function's body, the materialization-site span from where the thunk was forced, and a stack frame is added with the deferred call's creation span (from `call_span`).
+**Error reporting:** When `PendingCall` materialization fails, the definition-site span comes from the function's body, the materialization-site span from where the thunk was materialized, and a stack frame is added with the deferred call's creation span (from `call_span`).
 
 **Motivation:** Operations like `map` on dicts need to create new thunks that apply a function to each value, but they can't store AST nodes (the function comes from a runtime variable). `PendingCall` lets them defer function application without needing to construct new AST `CallExpr` nodes.

@@ -43,7 +43,7 @@
 **Pipeline phases:** Source text → Parser → Desugar → TypeCheck → Evaluator → Serializer → Output
 
 **Key contracts:**
-- `BuiltinFn` signature: `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>` where `BuiltinArgs` carries `args: &[Rc<Thunk>]`, `named: &IndexMap<String, Rc<Thunk>>`, `depth: usize`, `call_span: Span`, `ctx: Rc<EvalContext>`
+- `BuiltinFn` signature: `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>` where `BuiltinArgs` carries `args: &[Rc<Thunk>]`, `named: &IndexMap<String, Rc<Thunk>>`, `call_span: Span`, `ctx: Rc<EvalContext>`
 - `Value` serialization: every `Value` variant must have handlers in both `value_to_json()` and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
 - AST coverage: every `Expr` variant requires both an `eval` handler (src/eval.rs) and a `typecheck` handler (src/typecheck.rs)
@@ -58,7 +58,9 @@
 
 ### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
 
-> **Status:** Phase 1 (materialize) complete via iterative-eval-a — `materialize_rc` replaced by iterative `run()` loop with `Vec<Cont>` stack. Phase 2 (PendingCall lazy dispatch) complete via iterative-eval-b1 — `eval_call` returns PendingCall thunks. Phase 3 (access chains) complete via iterative-eval-b2 — DotAccessForce/BracketForceTarget continuations. Phase 4 (eval step conversion) PARTIALLY COMPLETE via iterative-eval-b4 — `eval_step()` stub exists, delegates to `eval_recursive()` for inner expression (line 1855); TypeAssertCheck default expressions now iterative (Action::Eval), removing 5 recursive calls. **Remaining recursive: 1 eval_recursive call** (TypeAssert inner expression at eval_materialize.rs:1855 — needs thunk without forcing, can't use Action::Eval which goes through wrap_thunk). Phase 5 (structural cleanup) complete via iterative-eval-b3 — MatCont→Cont rename, Action enum, run() function. Module extractions: `eval_call.rs` (eval-split-a), `eval_deep.rs` (eval-split-d), `eval_access.rs` (eval-split-d).
+> For the formal evaluation semantics (thunk lifecycle, materialization rules, laziness design), see [Evaluation](08-evaluation.md). For the type system extensions that interact with evaluation (TypeAssert contracts, row polymorphism), see [Type System Extensions](07-type-extensions.md).
+
+> **Implementation status:** `materialize_rc` is replaced by the iterative `run()` loop with `Vec<Cont>` stack. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions are iterative (Action::Eval). **Remaining recursive: 1 `eval_recursive` call** (TypeAssert inner expression at eval_materialize.rs:1855 — needs a thunk without materializing, can't use Action::Eval which goes through wrap_thunk). Structural cleanup complete: MatCont→Cont rename, Action enum, run() function. Modules: `eval_call.rs`, `eval_deep.rs`, `eval_access.rs`.
 
 The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.
 
@@ -85,10 +87,10 @@ enum Cont {
         dict_map: Box<IndexMap<Key, Rc<Thunk>>>,
     },
 
-    // function call: force the function expression, then dispatch
+    // function call: materialize the function expression, then dispatch
     // Captures all free variables needed to complete the call after func is known.
     PendingCallForceFunc {
-        thunk: Rc<Thunk>,     // the deferred function-position thunk being forced
+        thunk: Rc<Thunk>,     // the deferred function-position thunk being materialized
         args: Box<Vec<Rc<Thunk>>>,
         named: Box<IndexMap<String, Rc<Thunk>>>,
         call_span: Span,
@@ -108,11 +110,11 @@ enum Cont {
     },
 
     // ... ~14 additional variants for $if branches, TypeAssert, Guarded validation,
-    //     deep_materialize traversal, builtin arg forcing, etc.
+    //     deep_materialize traversal, builtin arg materialization, etc.
 }
 ```
 
-**`PendingCallForceFunc` carries `named`:** The `named` field (`Box<IndexMap<String, Rc<Thunk>>>`) is required because named args are free variables of the continuation — they were bound at the call site and must survive until the function is forced and `bind_args_thunks` is called. Omitting `named` would silently discard named arguments, breaking the Kotlin-model call convention. (Reynolds 1972: defunctionalized continuations must capture all free variables of the original closure.)
+**`PendingCallForceFunc` carries `named`:** The `named` field (`Box<IndexMap<String, Rc<Thunk>>>`) is required because named args are free variables of the continuation — they were bound at the call site and must survive until the function is materialized and `bind_args_thunks` is called. Omitting `named` would silently discard named arguments, breaking the Kotlin-model call convention. (Reynolds 1972: defunctionalized continuations must capture all free variables of the original closure.)
 
 **Main loop sketch:**
 
@@ -148,23 +150,29 @@ fn run(initial: Action, _ctx: &Rc<EvalContext>) -> EvalResult<Value> {
 
 ### EvalContext — Evaluation Infrastructure Context
 
-The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and builtin dispatch. This separates evaluation infrastructure (file resolution, sandboxing) from variable bindings (`Environment`) and stack depth tracking (`depth`).
+The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and builtin dispatch. This separates evaluation infrastructure (file resolution, sandboxing) from variable bindings (`Environment`).
 
-**Migration status:** Types defined and threaded (evalcontext-types sprint). Thread-local `INCLUDE_CTX` fully removed — no longer present in codebase.
+**Status:** Types defined and threaded throughout the evaluator. Thread-local `INCLUDE_CTX` fully removed — no longer present in codebase. Iterative CEK machine eliminated depth tracking.
 
 **Config/State split:** EvalContext separates immutable session configuration from mutable evaluation state. Config is `Rc` (no RefCell) — the compiler enforces immutability. State is `Rc<RefCell>` for interior mutability.
 
 ```rust
 struct EvalConfig {
-    base_dir: PathBuf,
+    base_dir: cap_std::fs::Dir,
     stdlib_env: Rc<RefCell<Environment>>,
     no_fs: bool,
-    // future: allowed_paths (cap-std include-fd-hardening sprint)
+    require_integrity: bool,
+    allowed_paths: Vec<std::path::PathBuf>,
+    base_dir_path: Option<std::path::PathBuf>,
 }
 
 struct EvalState {
-    include_guard: HashSet<PathBuf>,
-    include_cache: HashMap<PathBuf, Rc<Thunk>>,
+    include_guard: HashSet<(u64, u64)>,        // (dev, ino) file identity
+    include_cache: HashMap<(u64, u64), Rc<Thunk>>,
+    include_chain: Vec<(String, Span)>,
+    eval_stack: Vec<(String, Span)>,
+    class_registry: HashMap<String, RuntimeClassDecl>,
+    instance_registry: HashMap<(String, String), Rc<Thunk>>,
     // future: trace_log, eval_stats
 }
 
@@ -175,16 +183,15 @@ struct EvalContext {
 ```
 
 **What stays separate:**
-- `depth: usize` — stack-depth counter, passed by value and incremented per recursive call (`eval(expr, env, ctx, depth + 1)`). Not session state — it's naturally fork-friendly for parallel evaluation paths.
 - `Environment` — variable bindings and lexical scope chain. Created and nested per scope.
 
 **Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping; depth is call-stack tracking. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope and depth increments per recursive call.
 
 **Threading pattern:** `Rc<EvalContext>` — thunks capture `Rc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. Unlike `Environment` (which uses `Rc<RefCell<...>>`), EvalContext does not need an outer RefCell because it achieves interior mutability through its `state: Rc<RefCell<EvalState>>` field — the config is immutable by construction and only the state needs mutation.
 
-**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<EvalContext>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is forced, it uses the captured context for include resolution, sandboxing, etc.
+**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<EvalContext>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is materialized, it uses the captured context for include resolution, sandboxing, etc.
 
-**BuiltinArgs:** Gains a `ctx: Rc<EvalContext>` field. The existing `depth: usize` field remains (call-site depth, captured at PendingBuiltin creation time). Most builtins ignore ctx; only `$include` and future I/O builtins use it.
+**BuiltinArgs:** Carries `ctx: Rc<EvalContext>`. Most builtins ignore ctx; only `$include` and future I/O builtins use it. The `depth` field was removed when the CEK machine (see §Iterative Evaluator) eliminated depth tracking from the core loop.
 
 **Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. The `set_include_context()` / `clear_include_context()` functions are removed — the fragile set/clear ceremony is replaced by straightforward parameter passing.
 
@@ -214,7 +221,7 @@ enum Value {
     },
     Builtin(fn(BuiltinArgs) -> Result<Rc<Thunk>, Error>),
     // BuiltinArgs<'a> { args: &'a [Rc<Thunk>], named: &'a IndexMap<String, Rc<Thunk>>,
-    //                   depth: usize, call_span: Span, ctx: Rc<EvalContext> }
+    //                   call_span: Span, ctx: Rc<EvalContext> }
 }
 
 struct Thunk {
@@ -271,7 +278,7 @@ struct Environment {
 - LSP inlay hints: `[materialized]` / `[lazy]` next to arguments
 - Auto-generated docs: annotate stdlib reference with materialization behavior
 
-**Explicit materialization:** Use `$eval` to materialize a value eagerly at binding time. A syntax-level `[! expr]` force annotation is not part of the language — `$eval` serves this purpose.
+**Explicit materialization:** Use `$eval` to materialize a value eagerly at binding time. A syntax-level `[! expr]` eager-materialization annotation is not part of the language — `$eval` serves this purpose.
 
 ### Builtin Argument Strictness Annotations
 
@@ -284,18 +291,18 @@ Builtins declare per-position argument demand using `BuiltinDef`, a struct that 
 #[non_exhaustive]     // future variants (e.g. Full for deep demand) won't break match arms
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strictness {
-    /// W&H "id" — identity projection. Argument never forced at the dispatch site;
-    /// the builtin receives the thunk and decides whether and when to force it.
+    /// W&H "id" — identity projection. Argument never materialized at the dispatch site;
+    /// the builtin receives the thunk and decides whether and when to materialize it.
     Id,
 
-    /// W&H "seq" — force to head-normal form (WHNF) before the builtin is called.
+    /// W&H "seq" — materialize to head-normal form (WHNF) before the builtin is called.
     /// Note: the name "seq" derives from Haskell's `seq` combinator (Wadler & Hughes
     /// use "STR" on flat domains); it is unrelated to the `$seq` LLT builtin.
     /// Arithmetic, comparison, string, and numeric builtins are Seq in all positions.
     Seq,
 
-    /// W&H spine projection — force the structural layer without element values.
-    /// For Seq: force the outer thunk to Value::Seq(head_thunk, tail_thunk); head values
+    /// W&H spine projection — materialize the structural layer without element values.
+    /// For Seq: materialize the outer thunk to Value::Seq(head_thunk, tail_thunk); head values
     /// stay lazy. For Dict: equivalent to Seq (WHNF already exposes the full key set).
     /// Used for collection arguments of dual-dispatch builtins ($map, $filter, etc.)
     /// where the type (Dict vs Seq) must be known but element values are not yet needed.
@@ -307,7 +314,7 @@ pub enum Strictness {
     /// concept in Wadler & Hughes (1987) rather than an explicitly named projection.
     ///
     /// W1 behavior: operationally identical to Seq at the dispatch site — one
-    /// materialize() call forces the collection to its outermost constructor. The
+    /// materialize() call materializes the collection to its outermost constructor. The
     /// Seq/Spine distinction exists for documentation accuracy and W2 code generation.
     Spine,
 }
@@ -398,52 +405,52 @@ S = Seq, I = Id, Sp = Spine
 
 | Builtin | Strictness | Notes |
 |---------|-----------|-------|
-| `+`, `-`, `*`, `/` | [S, S] | Both operands always forced |
-| `=`, `<` | [S, S] | Both operands forced for comparison |
+| `+`, `-`, `*`, `/` | [S, S] | Both operands always materialized |
+| `=`, `<` | [S, S] | Both operands materialized for comparison |
 | `if` | [S, I, I] | Condition only; branches returned as thunks |
-| `str`, `upper`, `lower`, `trim` | [S] | String forced for operation |
+| `str`, `upper`, `lower`, `trim` | [S] | String materialized for operation |
 | `split` | [S, S] | String and separator |
 | `replace` | [S, S, S] | String, pattern, replacement |
-| `floor`, `round` | [S] | Numeric forced |
+| `floor`, `round` | [S] | Numeric materialized |
 | `to-int`, `to-float` | [S] | Conversion |
-| `eval` | [S] | Forces evaluation explicitly |
-| `error` | [S] | Message forced for display |
+| `eval` | [S] | Triggers materialization explicitly |
+| `error` | [S] | Message materialized for display |
 | `try` | [I] | 1-arg; function thunk deferred; `try` evaluates it internally catching errors |
-| `apply` | [S, S] | Function and args-dict both forced |
+| `apply` | [S, S] | Function and args-dict both materialized |
 | `until` | [I, I, I] | pred, f, init applied lazily per iteration |
 | `type-of`, `seq?` | [S] | Type inspection requires WHNF |
 | `from-json` | [S] | String parsed |
-| `include` | [S] | Path forced; hash named arg is `Id` (excluded) |
+| `include` | [S] | Path materialized; hash named arg is `Id` (excluded) |
 | `seq` | [I, I] | Both head and tail deferred (constructor) |
-| `head`, `tail` | [S] | Seq forced to expose structure |
-| `collect` | [Sp] | Spine forced; element values forced by builtin loop |
-| `range` | [S, S] | Both bounds forced |
-| `repeat` | [I] | Element deferred (infinite repetition without forcing) |
+| `head`, `tail` | [S] | Seq materialized to expose structure |
+| `collect` | [Sp] | Spine materialized; element values materialized by builtin loop |
+| `range` | [S, S] | Both bounds materialized |
+| `repeat` | [I] | Element deferred (infinite repetition without materializing) |
 | `cycle` | [Sp] | Base collection spine traversed |
 | `iterate`, `unfold` | [I, I] | Function and seed deferred per-step |
-| `keys` | [Sp] | Dict spine forced for key enumeration |
-| `length` | [Sp] | Spine forced for count |
-| `merge` | [I, I] | Constructs Value::Overlay without forcing either arg; pre-materializing would change error-surfacing semantics (detectable via `$try`) |
-| `append` | [S, I] | arg[0] (target dict) forced; arg[1] (value to append) inserted as thunk, preserving laziness |
-| `map`, `filter` | [I, Sp] | fn/pred lazy; collection spine forced for type dispatch |
-| `take`, `drop` | [S, Sp] | n forced; collection spine forced for dispatch |
-| `reduce` | [I, I, Sp] | f and init lazy; collection spine forced for dispatch |
-| `join` | [S, Sp] | Separator forced; collection spine forced; elements forced by builtin |
-| `concat` | [Sp, S] | First collection spine forced for dispatch; second always forced by builtin |
-| `sort`, `reverse`, `rest` | [Sp] | Sequence structure forced |
-| `cons` | [I, Sp] | Element deferred; collection spine forced for dispatch |
-| `proxy` | [I] | Wraps thunk without forcing |
+| `keys` | [Sp] | Dict spine materialized for key enumeration |
+| `length` | [Sp] | Spine materialized for count |
+| `merge` | [I, I] | Constructs Value::Overlay without materializing either arg; pre-materializing would change error-surfacing semantics (detectable via `$try`) |
+| `append` | [S, I] | arg[0] (target dict) materialized; arg[1] (value to append) inserted as thunk, preserving laziness |
+| `map`, `filter` | [I, Sp] | fn/pred lazy; collection spine materialized for type dispatch |
+| `take`, `drop` | [S, Sp] | n materialized; collection spine materialized for dispatch |
+| `reduce` | [I, I, Sp] | f and init lazy; collection spine materialized for dispatch |
+| `join` | [S, Sp] | Separator materialized; collection spine materialized; elements materialized by builtin |
+| `concat` | [Sp, S] | First collection spine materialized for dispatch; second always materialized by builtin |
+| `sort`, `reverse`, `rest` | [Sp] | Sequence structure materialized |
+| `cons` | [I, Sp] | Element deferred; collection spine materialized for dispatch |
+| `proxy` | [I] | Wraps thunk without materializing |
 
 #### W1: Dispatch-Time Materialization
 
 **Implementation via `BuiltinForceArgData` generalization.** The CEK machine is iterative and cannot pre-materialize multiple arguments in a single step. W1 generalizes the existing `Cont::BuiltinForceArg` continuation (which already pre-materializes `args[0]` unconditionally) to cover all `Seq`/`Spine` positions:
 
-1. `BuiltinForceArgData` gains an `arg_idx: usize` field tracking which position is currently being forced.
+1. `BuiltinForceArgData` gains an `arg_idx: usize` field tracking which position is currently being materialized.
 2. When `PendingBuiltin { def, args, ... }` is dispatched, instead of immediately building `BuiltinArgs`, the dispatcher finds the first `Seq`/`Spine` position in `def.pos_strictness`, pushes `Cont::BuiltinForceArg { def, args, named, ..., arg_idx: i }`, and returns `Action::Materialize { thunk: args[i] }`.
 3. In `apply_cont` for `Cont::BuiltinForceArg`, after the arg at `arg_idx` is materialized, find the next `Seq`/`Spine` position. If one exists, push another `Cont::BuiltinForceArg` with the incremented index. If none remain, construct `BuiltinArgs` and call `def.func`.
 4. The existing `builtin_name == "apply"` string comparison at `eval_materialize.rs:1114` is deleted — it becomes a specific instance of this general mechanism, since `$apply` is annotated `[Seq, Seq]`.
 
-Because `materialize()` updates the thunk's `RefCell<ThunkState>` in place, the builtin's own subsequent `materialize(args[i])` call is a no-op read after W1 has forced it. This eliminates the per-argument state-machine cost for `Seq` and `Spine` positions.
+Because `materialize()` updates the thunk's `RefCell<ThunkState>` in place, the builtin's own subsequent `materialize(args[i])` call is a no-op read after W1 has materialized it. This eliminates the per-argument state-machine cost for `Seq` and `Spine` positions.
 
 Error propagation: if pre-materialization of any `Seq`/`Spine` argument fails, the error surfaces before the builtin executes — preserving sequential error semantics and making the error site predictable regardless of the builtin's own argument access order.
 
@@ -471,7 +478,7 @@ These costs are negligible for ordinary use but can accumulate in tight recursiv
 - **Thunk boxing cost**: Every value is wrapped in `Rc<RefCell<ThunkState>>`. Lazy evaluation requires this indirection but adds allocation and refcounting overhead.
 - **Substitution::apply() is O(type_size)**: Type inference calls `apply()` per unification. Each call allocates a `HashSet<String>` for cycle detection and walks the entire type tree.
 
-**Known bottlenecks** (see `TODO.md` for roadmap):
+**Known bottlenecks:**
 - Rc clone frequency in dict construction loops
 - AST deep-clone per call argument (until AST nodes become Rc)
 - Type tree traversal during multi-pass dict inference
@@ -519,17 +526,23 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 3. **Error memoization**: Failed thunks cache errors in `ThunkState::Failed` to prevent repeated evaluation of broken computations
 4. **Depth tracking**: All recursive eval/materialize/typecheck paths check depth limits **before** recursion, not after
 5. **LSP crash prevention**: Document size limit, method name cap, `no_fs=true` by default, panic-safe error handling
+6. **Kernel-level sandboxing**: rlimits, Landlock filesystem ACLs, and seccomp-bpf syscall filtering (see §Implemented Kernel-Level Sandboxing)
 
-### Planned Hardening (Roadmap)
+### Implemented Kernel-Level Sandboxing
 
-The following security features are documented in `doc/12-tooling.md` and tracked in `TODO.md` but **not yet implemented**:
+The following kernel-level security features are implemented in `src/main.rs` and documented in [Tooling](12-tooling.md):
 
-- **Landlock filesystem ACLs** (Linux 5.13+): Confine `$include` to allowed directory trees with graceful degradation on older kernels
-- **seccomp-bpf syscall filtering**: Block network syscalls (socket, connect, bind) and process creation (fork, execve)
-- **rlimit resource caps**: `RLIMIT_AS` (address space), `RLIMIT_CPU` (eval-only), `RLIMIT_NOFILE`, `RLIMIT_FSIZE`
-- **Import integrity hashes**: `$include` with optional hash verification (Dhall-inspired) to detect file tampering; `--require-integrity` flag to enforce hashes on all includes
-- **File descriptor-based `$include`**: Eliminate TOCTOU race (canonicalize → metadata → read) by using `cap-std` for fd-based path resolution with `RESOLVE_BENEATH` semantics
-- **Dependency scanning**: `cargo audit` as CI gate to surface RustSec advisories before they accumulate
+- **rlimit resource caps** (`src/main.rs:447`): `RLIMIT_AS` (virtual memory, default 512 MB), `RLIMIT_CPU` (CPU time via `--max-cpu`), `RLIMIT_NOFILE` (file descriptors, default 64). Applied early in startup before evaluation begins. Unix-only; flags accepted on other platforms for CLI compatibility but have no effect.
+- **Landlock filesystem ACLs** (`src/main.rs:639`, Linux 5.13+): When `--allow-path` is specified, confines `$include` to allowed directory trees. Graceful degradation on older kernels. Defense-in-depth: catches unauthorized paths at the kernel level even if application-level checks have bugs. Disabled with `--no-landlock`.
+- **seccomp-bpf syscall filtering** (`src/main.rs:541`, Linux only): Blocks network syscalls (`socket`, `connect`, `bind`, `listen`, `accept`) and process creation (`fork`, `clone`, `execve`) unless `--allow-network` is set. Graceful degradation: if seccomp cannot be applied, a warning is printed and evaluation continues.
+
+### Security Hardening
+
+The following security features are implemented:
+
+- **Import integrity hashes**: `$include` with optional hash verification (Dhall-inspired) to detect file tampering; `--require-integrity` flag to enforce hashes on all includes (DONE.md:2492)
+- **File descriptor-based `$include`**: Eliminates TOCTOU race (canonicalize → metadata → read) by using `cap-std` for fd-based path resolution with `RESOLVE_BENEATH` semantics (DONE.md:3932)
+- **Dependency scanning**: `cargo audit` as CI gate to surface RustSec advisories before they accumulate (DONE.md:2487)
 
 ### Attack Surface Analysis
 
@@ -546,13 +559,13 @@ The following security features are documented in `doc/12-tooling.md` and tracke
 
 **Panic hygiene**:
 - All user-reachable code paths return `Err(...)`, not `panic!()`
-- Two `expect("collection too large")` sites remain on index casts after MAX_COLLECT_SIZE check (tracked as nit in TODO.md)
+- Two `expect("collection too large")` sites remain on index casts after MAX_COLLECT_SIZE check
 - `unsafe` blocks limited to SIGALRM handler setup and alarm cancellation (`src/main.rs:168,176-190,302-304`) — audited and sound
 
 **Dependency hygiene**:
 - All dependencies are actively maintained stable crates (clap, indexmap, serde_json, lsp-server, lsp-types, rustyline)
 - No known CVEs as of last audit (April 2026)
-- `cargo audit` not yet automated in CI (planned)
+- `cargo audit` is automated in CI
 
 ## Testing Strategy
 
@@ -565,9 +578,9 @@ Tinct uses a multi-layer testing approach that matches the component architectur
 - Builtin unit tests in `src/builtins.rs` — argument validation, error paths, edge cases
 
 **Corpus tests** (end-to-end, ~200+ tests):
-- `tests/corpus/valid/<category>/` — parsing + evaluation succeeds, output matches expected
-- `tests/corpus/invalid/<category>/` — parsing or evaluation fails, error message matches expected
-- Format: `.txt` files with `===` delimiter between input and expected output
+- `tests/corpus/eval/<category>/` — evaluation tests (parse + desugar + eval), output matches expected
+- `tests/corpus/parse/<category>/` — parse-only tests, AST or error matches expected
+- Format: `.llt-eval` and `.llt-parse` files with `===` delimiter between input and expected output (see [Tooling](12-tooling.md) §Corpus Test Format)
 - Coverage: all language features, edge cases, error conditions
 
 **CLI integration tests** (REPL and LSP):

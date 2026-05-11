@@ -1121,7 +1121,7 @@ Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's or
 
 ### Part 5: Lazy Overlay Compatibility
 
-The current `merge` eagerly materializes both operands. The lazy overlay design defers the merge operation itself:
+The `merge` implementation eagerly materializes both operands. The lazy overlay design defers the merge operation itself:
 
 ```
 Overlay(L, R) — O(1) construction

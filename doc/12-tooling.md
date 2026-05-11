@@ -1,10 +1,10 @@
 # Tooling
 
-## Formatter (`llt fmt`)
+## Formatter (`tinct fmt`)
 
 **Zero-configuration** code formatter for Tinct files.
 
-**Planned Architecture:** The formatter will walk the `Spanned<File>` AST from `ParseOutput`, using the comment maps (`leading_comments`, `trailing_comments`) for comment placement. Comments will be stored as span-keyed side tables, not in the AST nodes — `Spanned<T>` is unchanged. Error nodes (`Expr::Error(Span)`) will be rendered by emitting the original source text verbatim. The current formatter is a token-stream walker; the AST-based formatter is accepted but not yet implemented. See `doc/whatif/parser-rewrite.md` §AST-Based Formatter.
+The current formatter (`src/formatter.rs`) is an AST-based formatter that walks the `Spanned<File>` AST from `ParseOutput`, using comment maps for placement. It applies the line-breaking, comment, and spacing rules described below. See `doc/whatif/completed/parser-rewrite.md` §AST-Based Formatter for the design.
 
 ### Line-Breaking: Width + Element Count
 
@@ -135,11 +135,11 @@ $ tinct fmt --minimize file.llt | tinct fmt --minimize -
 
 Comments are stripped in `--oneline` and `--minimize` modes (comments cannot survive without newlines). Section headers with `%name@Type` and `expects: @Type` metadata survive all modes.
 
-### Tinct-Hosted Formatter (Future)
+### Tinct-Hosted Formatter
 
-The formatter is currently implemented in Rust (`src/formatter.rs`). A future tinct-hosted formatter will be implemented in `stdlib/formatter/format.llt` — a tinct program that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source. The Rust formatter will be retained for LSP use (where loading a tinct program would be too slow).
+The compact and pretty formatters are implemented in `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt`. A full tinct-hosted formatter (`stdlib/formatter/format.llt`) that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source is planned but not yet implemented. The Rust formatter (`src/formatter.rs`) is retained for LSP use (where loading a tinct program would be too slow).
 
-See `doc/whatif/tinct-hosted-formatter.md` and `doc/whatif/plans/macros-cluster.md` for the full design. The tinct-hosted formatter depends on the `ast-dict-source` sprint (AST dict schema with source info and comments).
+See `doc/whatif/tinct-hosted-formatter.md` and `doc/whatif/plans/macros-cluster.md` for the full design.
 
 ## Inline Expressions and I/O Formatters (`tinct run`)
 
@@ -242,8 +242,7 @@ A VS Code extension that provides Tinct language support: live diagnostics and h
 Build from source and install:
 
 ```bash
-just ext                                              # compile TypeScript
-just ext-package                                      # produce tinct-0.1.0.vsix
+just ext                                              # compile, package → tinct-0.1.0.vsix
 code --install-extension tinct-0.1.0.vsix            # install in VS Code
 ```
 
@@ -255,7 +254,7 @@ The extension spawns `tinct lsp` as a child process and communicates via stdio (
 
 - **Diagnostics** — parse errors and type errors appear as squiggly underlines in real time
 - **Hover** — hovering over an expression shows its inferred type
-- **Go To Definition** — F12 on a variable reference jumps to the dict entry key that defines it (intra-document only; cross-file resolution for `$include` and prelude names is planned in `lsp-include-prelude` sprint)
+- **Go To Definition** — F12 on a variable reference jumps to the dict entry key that defines it; includes cross-file resolution for `$include` and prelude names
 
 ### Configuration
 
@@ -275,7 +274,7 @@ Then set `args` to `["run", "--", "lsp"]` by editing the extension source direct
 
 ### Extension Files
 
-The extension lives in `editors/vscode/`:
+The extension lives in `integrations/vscode/`:
 
 | File | Purpose |
 |------|---------|
@@ -464,7 +463,7 @@ All runners are in `tests/corpus_tests.rs`.
 
 ## Sandboxing & Security
 
-Tinct provides multiple unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags.
+Tinct provides multiple unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags. For the document pipeline model (how sandbox flags interact with multi-document evaluation and `%` pipeline), see [Documents](09-documents.md).
 
 **Implemented features:**
 - `--no-fs`: Application-level filesystem blocking (disables `$include` entirely)
@@ -474,7 +473,7 @@ Tinct provides multiple unprivileged sandboxing layers to restrict what evaluati
 - **Landlock** (Linux 5.13+): Kernel-enforced filesystem ACLs as defense-in-depth
 - **seccomp-bpf** (Linux): Network/process syscall blocking
 - **rlimit caps**: `--max-memory`, `--max-cpu`, `--max-fds` resource limits
-- **Object capability flags**: `--no-pwd`, `--no-stdin`, `--cap-fs NAME=PATH`, `--cap-file NAME=PATH:MODE` (injects as `%NAME`)
+- **Object capability flags**: `--no-pwd`, `--no-libdir`, `--cap-fs NAME=PATH`, `--cap-file NAME=PATH:MODE` (injects as `%NAME`)
 
 ### Object Capability Model (io-phase1)
 
@@ -484,15 +483,15 @@ The runtime injects three capability values into the root environment at startup
 
 | Name | Type | Authority | Suppressed by |
 |------|------|-----------|---------------|
-| `%pwd` | `DirCap` | Current working directory at `llt eval` time | `--no-pwd` |
+| `%pwd` | `DirCap` | Current working directory at `tinct run` time | `--no-pwd` |
 | `%libdir` | `DirCap` | Tinct standard library directory | `--no-libdir` |
-| `%stdin` | `Handle` | File descriptor 0 (standard input) | `--no-stdin` |
+| `%stdin` | `Handle` | File descriptor 0 (standard input) | Only injected when `-i`/`--input` is present |
 
 The `%` prefix on injected cap names makes them visually distinct from user-defined variables. User programs use `%pwd`, `%libdir`, and `%stdin` directly as identifiers (no `$` needed — they are plain bare-word identifiers that happen to start with `%`).
 
 **`--no-pwd`** — Suppresses `%pwd`. Programs that attempt `[open %pwd ...]` or `[include %pwd ...]` receive an undefined variable error. Use for programs that should not access the filesystem even via the working directory.
 
-**`--no-stdin`** — Suppresses `%stdin`. Programs that attempt `[slurp %stdin]` or `[lines %stdin]` receive an undefined variable error. Use for batch jobs that must not read from stdin.
+**`%stdin` injection** — `%stdin` is only injected into the root environment when `-i`/`--input` is present on the command line (indicating a formatter pipeline that reads from stdin). When `-i` is absent, stdin is consumed by the JSON auto-detection path instead. There is no `--no-stdin` flag; stdin access is controlled by the presence or absence of `-i`.
 
 **`--no-libdir`** — Suppresses `%libdir`. Programs that attempt `[include %libdir "io.llt"]` receive an undefined variable error. The embedded stdlib (prelude) is always available via builtins; `--no-libdir` only affects `[include %libdir ...]` calls. Rarely needed — libdir is safe language infrastructure.
 
@@ -500,7 +499,7 @@ The `%` prefix on injected cap names makes them visually distinct from user-defi
 
 ```bash
 # %data is a DirCap for /var/data; %out is a DirCap for /tmp/output
-llt eval --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
+tinct run --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
 ```
 
 Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program can call `[open %data "config.json" "r"]` but cannot open files outside `/var/data` via `%data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
@@ -530,8 +529,8 @@ Mode suffix:
 **Fully sandboxed invocation:**
 
 ```bash
-# No filesystem caps (not even %pwd), no %stdin, no env vars, 5s timeout
-llt eval --no-pwd --no-stdin --no-env --timeout 5s script.llt
+# No filesystem caps (not even %pwd), no env vars, 5s timeout
+tinct run --no-pwd --no-env --timeout 5s script.llt
 ```
 
 `%libdir` is retained even in sandboxed invocations so stdlib modules remain accessible. Suppress it explicitly with `--no-libdir` if needed.
@@ -595,18 +594,13 @@ The hash is a quoted string with the format `"algo:hexdigest"`. The algorithm na
 
 **Default algorithm: BLAKE3.** BLAKE3 (O'Connor et al. 2020) is the default and preferred algorithm. Against quantum adversaries, Grover's algorithm halves the bit-security of any hash function. BLAKE3 outputs 256 bits, giving 128 bits of quantum security — well above the threshold considered infeasible even with near-term quantum hardware. BLAKE3 is also significantly faster than SHA-2 or SHA-3, though for typical config files (< 1 MB) this is imperceptible.
 
-**Multiple algorithms supported:** The hash prefix determines the algorithm. Supported algorithms:
+**Currently supported algorithm:** Only BLAKE3 is supported. The hash prefix determines the algorithm:
 
 | Prefix | Algorithm | Hex length | Quantum security |
 |--------|-----------|-----------|-----------------|
 | `blake3:` | BLAKE3 | 64 chars (256 bits) | 128 bits |
-| `sha3-256:` | SHA3-256 (FIPS 202) | 64 chars (256 bits) | 128 bits † |
-| `sha3-512:` | SHA3-512 (FIPS 202) | 128 chars (512 bits) | 256 bits † |
-| `sha256:` | SHA-256 | 64 chars (256 bits) | ~85 bits (Grover) |
 
-† SHA-3's sponge construction gives capacity-based quantum security bounds that differ from the simple "output-bits ÷ 2" rule. SHA3-256 has capacity 512, giving 256 bits of classical collision resistance and 128 bits against Grover; SHA3-512 has capacity 1024, giving 256 bits of quantum security. The bounds are sound but derive from different assumptions than SHA-2.
-
-`sha256:` is accepted for interoperability but not recommended for new programs — Grover's algorithm reduces its effective collision resistance to ~85 bits. `llt hash` defaults to BLAKE3.
+Additional algorithms (SHA3-256, SHA3-512, SHA-256) may be added in the future for interoperability. `tinct hash` outputs BLAKE3.
 
 The hex digest must be exactly the correct length for the algorithm. Shorter or longer strings are rejected with a clear error before any file access.
 
@@ -614,17 +608,14 @@ The hex digest must be exactly the correct length for the algorithm. Shorter or 
 
 **Why raw bytes and not semantic content:** A semantic hash would require evaluating the include before verifying it — circular, since evaluation IS the import. Tinct also has no canonical normal form (general recursion means normalization does not always terminate). Raw bytes are simpler, stable, and independently verifiable with standard tools.
 
-**Generating the hash:** The `llt hash <file>` subcommand outputs the hash in the correct format:
+**Generating the hash:** The `tinct hash <file>` subcommand outputs the hash in the correct format:
 
 ```bash
-$ llt hash config/settings.llt
+$ tinct hash config/settings.llt
 blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e
-
-$ llt hash --algo sha3-256 config/settings.llt
-sha3-256:a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
 ```
 
-(The example digests above are the BLAKE3 and SHA3-256 hashes of the empty string — real files produce different values.)
+(The example digest above is the BLAKE3 hash of the empty string — real files produce different values.)
 
 Use the output as the second argument to `[include ...]`:
 
@@ -634,10 +625,10 @@ Use the output as the second argument to `[include ...]`:
 
 **Cache integration:** When a file is first included with a hash, `builtin_include` reads the raw bytes (`Vec<u8>`), computes the hash, verifies it matches the expected value, and stores `{evaluated_result, hash_map: HashMap<Algo, HexDigest>}` in the session cache keyed by canonical path. On subsequent includes of the same path:
 
-- If the new include provides a hash: look up the algorithm in `hash_map`. Hit → compare; match returns cached result, mismatch errors. Miss (algorithm not seen before) → re-read the file, compute the new algorithm's hash, verify, store the new entry in `hash_map`, return the same cached evaluated result. This ensures integrity is always verified against fresh bytes for each new algorithm, while the evaluated result is reused (files are assumed not to change during a single `llt eval` session).
+- If the new include provides a hash: look up the algorithm in `hash_map`. Hit → compare; match returns cached result, mismatch errors. Miss (algorithm not seen before) → re-read the file, compute the new algorithm's hash, verify, store the new entry in `hash_map`, return the same cached evaluated result. This ensures integrity is always verified against fresh bytes for each new algorithm, while the evaluated result is reused (files are assumed not to change during a single `tinct run` session).
 - If the new include has no hash: return cached result without hash verification (same as today).
 
-The cache is session-scoped and held in memory — it does not persist across `llt eval` invocations. Stdlib is embedded via `include_str!` at compile time and is not subject to hash verification.
+The cache is session-scoped and held in memory — it does not persist across `tinct run` invocations. Stdlib is embedded via `include_str!` at compile time and is not subject to hash verification.
 
 **Error on mismatch:**
 
@@ -652,7 +643,7 @@ include: hash mismatch for 'config/settings.llt'
 **Require-integrity mode:** `--require-integrity` makes any `[include ...]` without a hash a hard error. Use for environments where all dependencies must be content-addressed:
 
 ```bash
-llt eval --require-integrity --allow-path ./vendor main.llt
+tinct run --require-integrity --allow-path ./vendor main.llt
 ```
 
 Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redundant. `--require-integrity` is meaningful alongside `--allow-path`, where `$include` is permitted but must always carry a hash.
@@ -663,12 +654,12 @@ Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redun
 
 ### Network Sandbox (seccomp-bpf)
 
-No network features exist yet, but the sandbox is designed so future features (`$fetch`, remote includes) have a security model ready.
+Network syscalls are controlled by the `--cap-net` flag.
 
-- Default: network blocked. seccomp-bpf blocks `socket`, `connect`, `bind`, `listen`, `accept` syscalls. Even if a future vulnerability allows code injection, the process cannot make network connections.
-- `--allow-network` lifts the restriction (for future network features). Global flag.
+- Default: network blocked. seccomp-bpf blocks `socket`, `connect`, `bind`, `listen`, `accept` syscalls. Even if a vulnerability allows code injection, the process cannot make network connections.
+- Network syscalls are allowed automatically when any `--cap-net NAME=ENTRY` flag is present — the presence of a network capability implies network authority. There is no separate `--allow-network` flag.
 - `--allow-host <host:port>` for fine-grained control (future — requires application-level checking since seccomp cannot filter by host).
-- Seccomp filter installed in `main()` before evaluation starts (process-level, not per-eval).
+- Seccomp filter installed in `run_eval()` after Landlock, before evaluation starts (process-level, not per-eval).
 - Linux-only; on other platforms, network features are controlled at the application level. Logs a warning on non-Linux.
 
 ### Resource Sandbox (rlimit)
@@ -681,7 +672,6 @@ Prevents evaluation from consuming unbounded resources (DoS protection, runaway 
 | `RLIMIT_CPU` | 30s | `--max-cpu 60` | `eval` only |
 | Wall-clock | none | `--timeout <duration>` | `eval` only |
 | `RLIMIT_NOFILE` | 64 | `--max-fds 128` | All subcommands |
-| `RLIMIT_FSIZE` | 10MB | — | All subcommands |
 
 `RLIMIT_CPU` and `--timeout` apply only to `eval`. `RLIMIT_CPU` measures CPU time (time the process spends on-CPU); `--timeout` measures wall-clock time (elapsed real time). For adversarial inputs where the distinction matters (e.g. a program that sleeps or performs many syscalls), use `--timeout`. Both limits coexist — whichever fires first terminates evaluation.
 
@@ -697,16 +687,20 @@ Tinct is a pure configuration language — it should never spawn child processes
 
 ### Initialization Order
 
-Sandbox setup in `main()` follows this sequence:
+Sandbox setup in `run_eval()` follows this sequence:
 
 1. Parse CLI (clap) — get `--allow-path`, `--max-memory`, etc.
-2. Set up rlimit (resource caps)
-3. Set up seccomp-bpf (network block, process block)
-4. Set up Landlock (filesystem ACLs from `--allow-path`)
+2. Set up timeout (SIGALRM)
+3. Set up rlimit (resource caps: RLIMIT_AS, RLIMIT_CPU, RLIMIT_NOFILE)
+4. Read stdin (JSON auto-detection)
 5. Load stdlib (`create_stdlib_env()` — uses `include_str!`, no filesystem access)
-6. Dispatch subcommand (eval/repl/lsp)
+6. Canonicalize `--allow-path` entries
+7. Set up Landlock (filesystem ACLs from `--allow-path`)
+8. Set up seccomp-bpf (network block, process block)
+9. Inject capabilities (`%pwd`, `%stdin`, `%libdir`, `--cap-fs`, `--cap-net`)
+10. Dispatch evaluation
 
-Seccomp and Landlock are applied before any evaluation. `prctl(PR_SET_NO_NEW_PRIVS)` is called before seccomp installation.
+Landlock and seccomp are applied after stdlib loading (stdlib uses `include_str!` at compile time, so no filesystem access is needed). `prctl(PR_SET_NO_NEW_PRIVS)` is called before seccomp installation.
 
 ### Platform Support
 
@@ -722,7 +716,7 @@ On non-Linux platforms, the application-level filesystem check and rlimit (where
 
 ### EvalConfig Integration
 
-The filesystem allowlist lives in `EvalConfig` (immutable per evaluation session):
+The filesystem allowlist lives in `EvalConfig` (immutable per evaluation session). For the full `EvalConfig`/`EvalState` specification, see [Architecture](16-architecture.md) §EvalContext.
 
 ```rust
 struct EvalConfig {
@@ -737,12 +731,12 @@ struct EvalConfig {
 
 ### Adversarial Evaluation
 
-For services that evaluate attacker-controlled tinct programs (playgrounds, API endpoints, CTF infrastructure), `llt eval` is designed to be used as a sandboxed child process. The calling service is the parent — it spawns `llt eval` with the appropriate flags, captures stdout/stderr, and inspects the exit code. `llt eval` is one-shot per request; the caller handles concurrency by spawning multiple child processes.
+For services that evaluate attacker-controlled tinct programs (playgrounds, API endpoints, CTF infrastructure), `tinct run` is designed to be used as a sandboxed child process. The calling service is the parent — it spawns `tinct run` with the appropriate flags, captures stdout/stderr, and inspects the exit code. `tinct run` is one-shot per request; the caller handles concurrency by spawning multiple child processes.
 
 **Flags for adversarial use:**
 
 ```bash
-llt eval --no-fs --timeout 5s --max-memory 64M --max-cpu 10 main.llt
+tinct run --no-fs --timeout 5s --max-memory 64M --max-cpu 10 main.llt
 ```
 
 | Flag | Effect |
@@ -761,11 +755,11 @@ llt eval --no-fs --timeout 5s --max-memory 64M --max-cpu 10 main.llt
 | 2 | Timeout — wall-clock limit exceeded (`--timeout`) |
 | 3 | Resource limit — memory or CPU cap hit (SIGXCPU/SIGXFSZ) |
 
-**Architecture:** `llt eval` is the sandboxed process. The parent service uses the exit code to distinguish timeout (code 2) from hard resource exhaustion (code 3) from user errors (code 1). All four sandboxing layers (filesystem allowlist, network seccomp, rlimit, process seccomp) compose — `--no-fs --timeout 5s --max-memory 64M` enables all simultaneously.
+**Architecture:** `tinct run` is the sandboxed process. The parent service uses the exit code to distinguish timeout (code 2) from hard resource exhaustion (code 3) from user errors (code 1). All four sandboxing layers (filesystem allowlist, network seccomp, rlimit, process seccomp) compose — `--no-fs --timeout 5s --max-memory 64M` enables all simultaneously.
 
 **Security note:** The `IncludeForbidden` error raised by `$include` in `--no-fs` mode is catchable via `$try` (intentional, following the Nix `tryEval` model for graceful degradation). An attacker can detect `--no-fs` mode by wrapping `$include` in `$try`. This is accepted because making the error uncatchable would prevent legitimate programs from falling back to embedded defaults when external config files are unavailable. See doc/10-errors.md §Special error properties for the full rationale.
 
-**Comparison with VM-level isolation (e.g. Cloudflare Workers / V8 isolates):** V8 isolates achieve language-level sandboxing with microsecond startup time and planet-scale density, at the cost of tying the sandbox to a specific JavaScript engine. `llt eval` uses OS-level process isolation — a stronger security boundary (separate address space, separate file descriptor table, kernel enforcement via seccomp and Landlock) at the cost of per-process overhead (~10ms fork+exec). For tinct's scale (configuration evaluation, not request-per-millisecond hot path), OS process isolation is the correct tradeoff.
+**Comparison with VM-level isolation (e.g. Cloudflare Workers / V8 isolates):** V8 isolates achieve language-level sandboxing with microsecond startup time and planet-scale density, at the cost of tying the sandbox to a specific JavaScript engine. `tinct run` uses OS-level process isolation — a stronger security boundary (separate address space, separate file descriptor table, kernel enforcement via seccomp and Landlock) at the cost of per-process overhead (~10ms fork+exec). For tinct's scale (configuration evaluation, not request-per-millisecond hot path), OS process isolation is the correct tradeoff.
 
 ### Rust Crates
 
