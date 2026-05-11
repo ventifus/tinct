@@ -242,6 +242,44 @@ pub(crate) fn infer_dict(
     // in the same document can see the letrec bindings from this dict.
     // Without this, access-chain constraints in later dicts won't resolve TypeVars
     // that were bound during this dict's letrec unification.
+    //
+    // Mirror Pass 3b logic: unify overlapping keys instead of blindly overwriting.
+    // If state.subst was modified by sibling dict inference between Pass 3a clone and now,
+    // blindly inserting from local subst would overwrite those bindings without unification.
+    {
+        let state_entries: Vec<(String, Type)> = state
+            .subst
+            .type_map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (k, state_ty) in state_entries {
+            let applied_state_ty = subst.apply(&state_ty);
+            match subst.type_map.get(&k).cloned() {
+                Some(local_ty) => {
+                    // Both substs have a binding for this key.
+                    // Remove from local subst before unifying to prevent apply() cycles.
+                    subst.type_map.remove(&k);
+                    // Unify to reconcile constraints from both sources.
+                    if let Err(e) = unify(&local_ty, &applied_state_ty, &mut subst, state, span) {
+                        errors.push(e);
+                        // Restore local binding on failure as a safe fallback.
+                        subst.type_map.insert(k, local_ty);
+                        continue;
+                    }
+                    // Re-insert the unified result into local subst.
+                    let resolved = subst.apply(&applied_state_ty);
+                    subst.type_map.insert(k, resolved);
+                }
+                None => {
+                    // No conflict: local subst doesn't have this key yet.
+                    subst.type_map.insert(k, applied_state_ty);
+                }
+            }
+        }
+    }
+
+    // Now merge the reconciled local subst back into state.subst.
     for (k, v) in &subst.type_map {
         state.subst.type_map.insert(k.clone(), v.clone());
     }

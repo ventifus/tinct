@@ -24,6 +24,12 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Cycle 231 Findings
+
+### cycle-231-findings: Cycle #231 analysis findings
+
+All items implemented.
+
 ## Research (requires /rnd before implementing)
 
 - Mappable constraint checking — requires HKT design (`f :: * → *`); write design note in `doc/whatif/` first

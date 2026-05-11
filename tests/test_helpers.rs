@@ -21,6 +21,7 @@ pub struct TestExpectations {
 }
 
 /// Parsed test file with optional directives.
+#[derive(Debug)]
 pub struct TestFile {
     /// The LLT source code to evaluate (directives stripped).
     pub input: String,
@@ -48,8 +49,8 @@ pub struct TestFile {
 /// - `=== warn` — expected type-warning substring; absent means assert zero type warnings
 /// - `=== error` — expected error substring (must include [EXXX] error code)
 ///
-/// A bare `===` (without a label) is a parse error — use `=== out` instead.
-pub fn split_test_file(content: &str) -> TestFile {
+/// A bare `===` (without a label) returns an error — use `=== out` instead.
+pub fn split_test_file(content: &str) -> Result<TestFile, String> {
     // Check for directives on the first line
     let (directives_line, rest) = if let Some(newline_pos) = content.find('\n') {
         let (first_line, remainder) = content.split_at(newline_pos);
@@ -130,7 +131,7 @@ pub fn split_test_file(content: &str) -> TestFile {
 
     // If no sections found, the entire content is input
     if sections.is_empty() {
-        return TestFile {
+        return Ok(TestFile {
             input: content.to_string(),
             expectations: TestExpectations {
                 out: None,
@@ -139,7 +140,7 @@ pub fn split_test_file(content: &str) -> TestFile {
             },
             no_fs,
             cap_net,
-        };
+        });
     }
 
     // First section starts at input, ends at first delimiter
@@ -196,23 +197,26 @@ pub fn split_test_file(content: &str) -> TestFile {
             }
             "" => {
                 // Bare === without label
-                panic!("bare '===' is no longer valid; use '=== out', '=== warn', or '=== error'");
+                return Err(
+                    "bare '===' is no longer valid; use '=== out', '=== warn', or '=== error'"
+                        .to_string(),
+                );
             }
             other => {
-                panic!(
+                return Err(format!(
                     "unknown section label '{}'; valid labels are 'out', 'warn', 'error'",
                     other
-                );
+                ));
             }
         }
     }
 
-    TestFile {
+    Ok(TestFile {
         input: input.to_string(),
         expectations: TestExpectations { out, warn, error },
         no_fs,
         cap_net,
-    }
+    })
 }
 
 /// Outcome from running a corpus test through a pipeline.
@@ -312,7 +316,16 @@ pub fn run_corpus_dir(
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let test = split_test_file(&content);
+        let test = match split_test_file(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.push(Failure {
+                    path: relative_path.to_path_buf(),
+                    message: format!("test file format error: {}", e),
+                });
+                continue;
+            }
+        };
 
         // Guard: === out and === error are mutually exclusive
         if test.expectations.out.is_some() && test.expectations.error.is_some() {
@@ -501,7 +514,7 @@ pub fn run_corpus_dir(
 #[test]
 fn test_split_test_file_no_fs_directive() {
     let content = "# no_fs\n[call $include \"file.llt\"]\n=== out\nfilesystem access is disabled";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[call $include \"file.llt\"]\n");
     assert_eq!(
         test.expectations.out.as_deref(),
@@ -513,7 +526,7 @@ fn test_split_test_file_no_fs_directive() {
 #[test]
 fn test_split_test_file_no_fs_substring_false_positive() {
     let content = "# testing no_fs filesystem semantics\n[x: 1]\n=== out\n[\"x\": 1]";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1]\n");
     assert_eq!(test.expectations.out.as_deref(), Some("[\"x\": 1]"));
     assert!(
@@ -525,7 +538,7 @@ fn test_split_test_file_no_fs_substring_false_positive() {
 #[test]
 fn test_split_test_file_no_fs_prefix_false_positive() {
     let content = "# no_fs_path\n[x: 1]\n=== out\n[\"x\": 1]";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1]\n");
     assert_eq!(test.expectations.out.as_deref(), Some("[\"x\": 1]"));
     assert!(
@@ -537,7 +550,7 @@ fn test_split_test_file_no_fs_prefix_false_positive() {
 #[test]
 fn test_split_test_file_no_directive() {
     let content = "[x: 1 y: 2]\n=== out\n[\"x\": 1  \"y\": 2]";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1 y: 2]\n");
     assert_eq!(
         test.expectations.out.as_deref(),
@@ -549,7 +562,7 @@ fn test_split_test_file_no_directive() {
 #[test]
 fn test_split_test_file_eof_without_trailing_newline() {
     let content = "[x: 1]\n=== out\n[\"x\": 1]";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1]\n");
     assert_eq!(test.expectations.out.as_deref(), Some("[\"x\": 1]"));
     assert!(!test.no_fs);
@@ -558,7 +571,7 @@ fn test_split_test_file_eof_without_trailing_newline() {
 #[test]
 fn test_split_test_file_missing_delimiter() {
     let content = "[x: 1]";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1]");
     assert_eq!(test.expectations.out, None);
     assert!(!test.no_fs);
@@ -567,7 +580,7 @@ fn test_split_test_file_missing_delimiter() {
 #[test]
 fn test_split_test_file_delimiter_in_expected() {
     let content = "[x: 1]\n=== out\n[\"x\": 1]  # comment with === in it";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1]\n");
     assert_eq!(
         test.expectations.out.as_deref(),
@@ -579,7 +592,7 @@ fn test_split_test_file_delimiter_in_expected() {
 #[test]
 fn test_split_test_file_error_section() {
     let content = "[call $error \"boom\"]\n=== error\n[E024]";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[call $error \"boom\"]\n");
     assert_eq!(test.expectations.error.as_deref(), Some("[E024]"));
     assert!(!test.no_fs);
@@ -588,7 +601,7 @@ fn test_split_test_file_error_section() {
 #[test]
 fn test_split_test_file_warn_section() {
     let content = "[x: 1]\n=== warn\ndeprecated feature used";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1]\n");
     assert_eq!(
         test.expectations.warn.as_deref(),
@@ -599,7 +612,7 @@ fn test_split_test_file_warn_section() {
 #[test]
 fn test_split_test_file_empty_content() {
     let content = "";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "");
     assert_eq!(test.expectations.out, None);
     assert!(!test.no_fs);
@@ -608,7 +621,7 @@ fn test_split_test_file_empty_content() {
 #[test]
 fn test_split_test_file_multiple_sections() {
     let content = "[x: 1]\n=== out\n[\"x\": 1]\n=== warn\ndeprecated\n=== error\nshould not reach";
-    let test = split_test_file(content);
+    let test = split_test_file(content).unwrap();
     assert_eq!(test.input, "[x: 1]\n");
     assert_eq!(test.expectations.out.as_deref(), Some("[\"x\": 1]"));
     assert_eq!(test.expectations.warn.as_deref(), Some("deprecated"));
@@ -616,10 +629,23 @@ fn test_split_test_file_multiple_sections() {
 }
 
 #[test]
-#[should_panic(expected = "bare '===' is no longer valid")]
-fn test_split_test_file_bare_delimiter_panics() {
+fn test_split_test_file_bare_delimiter_returns_error() {
     let content = "[x: 1]\n===\n[\"x\": 1]";
-    let _ = split_test_file(content);
+    let result = split_test_file(content);
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("bare '===' is no longer valid"));
+}
+
+#[test]
+fn test_split_test_file_unknown_label_returns_error() {
+    let content = "[x: 1]\n=== invalid\n[\"x\": 1]";
+    let result = split_test_file(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err();
+    assert!(err_msg.contains("unknown section label"));
+    assert!(err_msg.contains("invalid"));
 }
 
 // ---------------------------------------------------------------------------

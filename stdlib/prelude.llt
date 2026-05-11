@@ -29,21 +29,21 @@
 # These functions depend on the following Rust-native builtins being available
 # in the parent environment:
 #
-#   Primary-name operators defined as shadowable wrappers (in public dict):
-#     <  =  +  -  *  /  if  filter  map  reduce  take  drop
-#     seq  head  tail  collect  range  repeat  cycle  iterate  unfold
-#     join  concat  first  last  rest  cons  reverse  sort
-#   These delegate to stable builtin-* aliases, allowing domain modules
-#   to shadow the primary names via include while the prelude continues
-#   to work correctly via builtin-lt, builtin-eq, etc.
-#
-#   Stable builtin-* aliases used internally (cannot be shadowed):
+#   Stable builtin-* aliases (used internally by prelude; cannot be shadowed):
 #     builtin-lt  builtin-eq  builtin-add  builtin-sub  builtin-mul  builtin-div
 #     builtin-if  builtin-filter  builtin-map  builtin-reduce  builtin-take  builtin-drop
 #     builtin-seq  builtin-head  builtin-tail  builtin-collect  builtin-range
 #     builtin-repeat  builtin-cycle  builtin-iterate  builtin-unfold
 #     builtin-join  builtin-concat  builtin-first  builtin-last  builtin-rest
-#     builtin-cons  builtin-reverse  builtin-sort
+#     builtin-cons  builtin-reverse  builtin-sort  builtin-get
+#
+#   Primary-name shadowable wrappers (defined in public dict at end of file):
+#     <  =  +  -  *  /  if  filter  map  reduce  take  drop
+#     seq  head  tail  collect  range  repeat  cycle  iterate  unfold
+#     join  concat  first  last  rest  cons  reverse  sort
+#   These delegate to the builtin-* aliases above, allowing domain modules
+#   to shadow the primary names via include while the prelude continues
+#   to work correctly.
 #
 #   Non-shadowed Rust builtins (commonly used, partial list — see src/builtins.rs):
 #     Dict:        keys  length  merge  append  builtin-get

@@ -82,7 +82,16 @@ fn test_invalid_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let test = split_test_file(&content);
+        let test = match split_test_file(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!("test file format error: {}", e),
+                ));
+                continue;
+            }
+        };
 
         let expected_substr = match &test.expectations.out {
             Some(e) => e,
@@ -288,7 +297,16 @@ fn test_typecheck_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let test = split_test_file(&content);
+        let test = match split_test_file(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!("test file format error: {}", e),
+                ));
+                continue;
+            }
+        };
 
         // Type check should succeed for all files in tests/corpus/eval/typecheck/
         match typecheck_source(&test.input) {
@@ -349,7 +367,16 @@ fn test_typecheck_error_corpus_eval() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let test = split_test_file(&content);
+        let test = match split_test_file(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!("test file format error: {}", e),
+                ));
+                continue;
+            }
+        };
 
         let expected_substr = match &test.expectations.out {
             Some(e) => e,
@@ -433,7 +460,16 @@ fn test_typecheck_warnings_corpus() {
                     .strip_prefix(env!("CARGO_MANIFEST_DIR"))
                     .unwrap_or(test_file);
 
-                let test = split_test_file(&content);
+                let test = match split_test_file(&content) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            format!("test file format error: {}", e),
+                        ));
+                        continue;
+                    }
+                };
 
                 // Both === out and === warn are required in this corpus.
                 let expected_out = match &test.expectations.out {
@@ -558,7 +594,16 @@ fn test_typecheck_error_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let test = split_test_file(&content);
+        let test = match split_test_file(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!("test file format error: {}", e),
+                ));
+                continue;
+            }
+        };
 
         let expected_substr = match &test.expectations.out {
             Some(e) => e,
