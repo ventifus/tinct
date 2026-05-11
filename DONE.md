@@ -3059,6 +3059,16 @@ The letrec TypeVar bug fix is already implemented in `src/typecheck_dict.rs`. Se
 - [x] Bump x509-parser from 0.16.0 to 0.18.1 in `Cargo.toml` and update `Cargo.lock` via `just update-precise x509-parser 0.18.1`
 - [x] Run `just test` again to confirm all tests pass after x509-parser bump
 
+## Test Infrastructure
+
+### test-corpus-quality: Enforce error codes, zero-warning contract, and add warning corpus tests
+
+- [x] [Critical] Enforce zero-warning contract in corpus runner (already existed in test_helpers.rs)
+- [x] [Critical] Add error code validation to error corpus tests — runner guard + 26 test files updated with [EXXX] prefixes
+- [x] [Major] Add warning corpus tests — 8 quality tests covering all real type checker warning paths (function return type, parameter type, constraint, arity, argument type, lambda annotation, lambda return, subsumption)
+- [x] [Major] Add `just coverage` recipe using `cargo llvm-cov --html` (justfile updated)
+- [x] [Minor] Add forward-reference letrec sibling test — `[b: [length a]  a: "hello"]` case added to letrec_sibling_typevar_resolves.llt-eval
+
 ## Codebase Health
 
 ### cycle-216-findings: Cycle #216 analysis findings

@@ -186,10 +186,10 @@ doc-open:
 bench:
     {{container}} run {{run_flags}} {{rust_image}} cargo bench
 
-# Generate LLVM coverage report (requires cargo-llvm-cov; install with: cargo install cargo-llvm-cov)
-# Opens the HTML report in the default browser after generation.
+# Generate LLVM coverage report
+# Output: target/llvm-cov/html/index.html
 coverage:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add llvm-tools-preview 2>/dev/null; cargo llvm-cov --open"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add llvm-tools-preview 2>/dev/null; cargo install cargo-llvm-cov --locked && cargo llvm-cov --html"
 
 # ---------------------------------------------------------------------------
 # Fuzz Testing (cargo-fuzz, requires nightly Rust)

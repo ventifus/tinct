@@ -6,7 +6,7 @@
 
 [broken 1]
 === error
-in expansion of `broken`
+[E001] key not found
 
 === warn
 [E001] key not found: 5 (available keys: 0) (defined at 524:70-524:88) (called at 1:1-1:1)

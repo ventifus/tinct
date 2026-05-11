@@ -3,7 +3,7 @@
 [connect %pwd UnixDatagram]
 
 === error
-connect: UnixDatagram transport requires path (3 args total), got 2
+[E080] connect: UnixDatagram transport requires path (3 args total), got 2
 
 === warn
 arity mismatch: expected 4 argument(s), got 2 (2 positional, 0 named) at 2:1-2:28

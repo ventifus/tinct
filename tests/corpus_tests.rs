@@ -3,7 +3,9 @@ mod test_helpers;
 use std::fs;
 use std::path::PathBuf;
 use test_helpers::{find_test_files, run_corpus_dir, split_test_file, CorpusOutcome};
-use tinct::{eval_source_with_cap_net, eval_source_with_config, parse, parse_expression, typecheck_source};
+use tinct::{
+    eval_source_with_cap_net, eval_source_with_config, parse, parse_expression, typecheck_source,
+};
 
 #[test]
 fn test_valid_corpus() {

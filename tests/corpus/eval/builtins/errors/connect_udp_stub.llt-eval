@@ -3,4 +3,4 @@
 [connect %pwd Udp "localhost" 1234]
 
 === error
-connect: expected NetCap, got DirCap
+[E010] connect: expected NetCap, got DirCap

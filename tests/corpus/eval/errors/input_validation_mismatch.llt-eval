@@ -8,7 +8,7 @@
 %.foo
 
 === error
-expected Dict, got Int
+[E011] type assertion failed: expected Dict, got Int
 
 === warn
 expected record type, got 42 at 7:1-7:6

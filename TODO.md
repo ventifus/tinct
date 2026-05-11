@@ -4,18 +4,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Test Infrastructure
-
-### test-corpus-quality: Enforce error codes, zero-warning contract, and add warning corpus tests
-
-Closes three Critical test-crafter gaps. See `tests/corpus_tests.rs` and `tests/corpus/`.
-
-- [ ] [Critical] Enforce zero-warning contract in corpus runner: update `tests/corpus_tests.rs:34-43` so tests without `=== warn` section fail when unexpected type warnings are produced — currently silent false negatives
-- [ ] [Critical] Add error code validation to 123 error corpus tests (`tests/corpus/eval/errors/*.llt-eval`): update runner to require `[EXXX]` prefix in error assertions and update all test files to include the error code
-- [ ] [Major] Add 40+ warning corpus tests covering row polymorphism, TypeAssert, literal widening, and all warning-producing type checker paths (`tests/corpus/eval/typecheck/warnings/`)
-- [ ] [Major] Add `just coverage` recipe using `cargo llvm-cov --html` — no coverage measurement currently exists (`justfile`)
-- [ ] [Minor] Add forward-reference letrec sibling test to `tests/corpus/eval/typecheck/letrec_sibling_typevar_resolves.llt-eval` — current test only covers backward-reference (`a` before `b`); add `[b: [length a]  a: "hello"]` case to guard against regression of per-entry propagation when B appears before A in source order (type-theorist, integration-verifier, test-crafter)
-
 ---
 
 ## Performance & Doc Fixes

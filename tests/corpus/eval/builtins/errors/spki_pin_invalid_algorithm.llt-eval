@@ -5,4 +5,4 @@
 [spki-pin InvalidAlgorithm [bytes-of [65 66 67]]]
 
 === error
-spki-pin: invalid hash algorithm 'InvalidAlgorithm'
+[E080] spki-pin: invalid hash algorithm 'InvalidAlgorithm'

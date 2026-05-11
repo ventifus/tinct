@@ -3,4 +3,4 @@
 [connect %nc Tcp "github.com" 443]
 
 === error
-resolved IPs for 'github.com'
+[E080] connect: resolved IPs for 'github.com'

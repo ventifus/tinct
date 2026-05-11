@@ -6,4 +6,4 @@
 [p: [proxy [fn [key] [error "proxy-error"]]]
  result: p.test]
 === error
-proxy field access
+[E080] proxy-error

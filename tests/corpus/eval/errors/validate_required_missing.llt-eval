@@ -11,7 +11,7 @@
   result: [validate $schema [hostname: "localhost"]]
 ].result
 === error
-required field is missing
+[E090] schema validation failed
 
 === warn
 undefined variable: validate at 10:12-10:20

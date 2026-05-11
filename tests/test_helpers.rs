@@ -349,6 +349,22 @@ pub fn run_corpus_dir(
             }
         }
 
+        // Guard: === error section must contain [EXXX] error code prefix
+        if let Some(ref err_text) = test.expectations.error {
+            if !has_error_code_prefix(err_text) {
+                failed.push(Failure {
+                    path: relative_path.to_path_buf(),
+                    message: format!(
+                        "error test missing [EXXX] code prefix in === error section\n\
+                         --- current error text ---\n{}\n\
+                         All error tests must include the error code (e.g., [E001], [E020], etc.)",
+                        err_text
+                    ),
+                });
+                continue;
+            }
+        }
+
         // Run the pipeline
         let outcome = pipeline(&test);
 

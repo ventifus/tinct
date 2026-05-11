@@ -3,7 +3,7 @@
 [icmp-ping %pwd]
 
 === error
-icmp-ping: expected 3 arguments (cap host timeout-ms), got 1
+[E080] icmp-ping: expected 3 arguments (cap host timeout-ms), got 1
 
 === warn
 arity mismatch: expected 3 argument(s), got 1

@@ -1,7 +1,7 @@
 # validate: type mismatch produces error
 [validate [type: "Int"] "not an int"]
 === error
-expected type Int, got String
+[E090] schema validation failed
 
 === warn
 undefined variable: validate at 1:2-1:10
