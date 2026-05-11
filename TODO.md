@@ -47,6 +47,7 @@ Audit and fix incorrect `Type::Unknown` uses in `TypeEnv::with_builtins()` (`src
 - [ ] `slurp` return: `Unknown` → `String` — reads file contents as a string (`src/type_env.rs`)
 - [ ] `env` return: `Unknown` → `String` — reads environment variable as a string (`src/type_env.rs`)
 - [ ] Add param names to `with_builtins()` registrations for common builtins (aids LSP hover): `set`, `get`, `has?`, `append`, `merge`, `if`, `map`, `filter`, `reduce` at minimum
+- [ ] `infer_fn` unannotated params: change `None => Ok(Type::Unknown)` (line 3074 `src/typecheck.rs`) to `None => Ok(state.new_type_var(span))` — unannotated params should get fresh TypeVars for proper HM inference, not Unknown (gradual opt-out). This enables constraint propagation (e.g. `[fn [a b] [= a b]]` infers `Equatable a => Fn@Bool [a a]`) and LSP hover shows `a` not `Unknown`. This is a significant behavior change — audit for test breakage.
 
 ---
 
