@@ -154,7 +154,16 @@ fn test_lsp_corpus() {
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
             .unwrap_or(test_file);
 
-        let test = split_test_file(&content);
+        let test = match split_test_file(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.push((
+                    relative_path.to_path_buf(),
+                    format!("test file format error: {}", e),
+                ));
+                continue;
+            }
+        };
 
         // Skip files with ANY labeled sections — those are owned by the eval corpus runner
         if test.expectations.out.is_some()

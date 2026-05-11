@@ -303,9 +303,7 @@ impl Substitution {
                         // is cycle-protected by visited_types; depth guards structural
                         // recursion only. Resetting prevents premature truncation of
                         // long-but-shallow substitution chains (items 5/6).
-                        let result = self
-                            .apply_type(bound, 0, visited_types)
-                            .into_owned();
+                        let result = self.apply_type(bound, 0, visited_types).into_owned();
                         visited_types.remove(name);
                         Cow::Owned(result)
                     }
@@ -326,38 +324,24 @@ impl Substitution {
                     .map(|(name, p_ty)| {
                         (
                             name.clone(),
-                            self.apply_type(p_ty, depth + 1, visited_types)
-                                .into_owned(),
+                            self.apply_type(p_ty, depth + 1, visited_types).into_owned(),
                         )
                     })
                     .collect(),
-                ret: Box::new(
-                    self.apply_type(ret, depth + 1, visited_types)
-                        .into_owned(),
-                ),
+                ret: Box::new(self.apply_type(ret, depth + 1, visited_types).into_owned()),
                 variadic: *variadic,
             }),
             Type::Seq(elem) => Cow::Owned(Type::Seq(Box::new(
-                self.apply_type(elem, depth + 1, visited_types)
-                    .into_owned(),
+                self.apply_type(elem, depth + 1, visited_types).into_owned(),
             ))),
             Type::Map(key, val) => Cow::Owned(Type::Map(
-                Box::new(
-                    self.apply_type(key, depth + 1, visited_types)
-                        .into_owned(),
-                ),
-                Box::new(
-                    self.apply_type(val, depth + 1, visited_types)
-                        .into_owned(),
-                ),
+                Box::new(self.apply_type(key, depth + 1, visited_types).into_owned()),
+                Box::new(self.apply_type(val, depth + 1, visited_types).into_owned()),
             )),
             Type::Union(members) => {
                 let applied_members: Vec<Type> = members
                     .iter()
-                    .map(|m| {
-                        self.apply_type(m, depth + 1, visited_types)
-                            .into_owned()
-                    })
+                    .map(|m| self.apply_type(m, depth + 1, visited_types).into_owned())
                     .collect();
                 // Re-normalize after substitution to maintain invariants
                 Cow::Owned(Type::normalize_union(applied_members))
@@ -365,10 +349,7 @@ impl Substitution {
             Type::Intersection(members) => {
                 let applied_members: Vec<Type> = members
                     .iter()
-                    .map(|m| {
-                        self.apply_type(m, depth + 1, visited_types)
-                            .into_owned()
-                    })
+                    .map(|m| self.apply_type(m, depth + 1, visited_types).into_owned())
                     .collect();
                 // Re-normalize after substitution to maintain invariants
                 Cow::Owned(Type::normalize_intersection(applied_members))
@@ -401,8 +382,7 @@ impl Substitution {
             .map(|(k, v)| {
                 (
                     k.clone(),
-                    self.apply_type(v, depth + 1, visited_types)
-                        .into_owned(),
+                    self.apply_type(v, depth + 1, visited_types).into_owned(),
                 )
             })
             .collect();
@@ -455,11 +435,36 @@ fn unify_rows(
 
     // General case: unify only fields that appear in BOTH rows (intersection).
     // Fields unique to one side are not errors — BAS width subtyping handles them.
+    let mut shared_count = 0;
     for (key, ty1) in &row1.fields {
         if let Some(ty2) = row2.fields.get(key) {
+            shared_count += 1;
             unify(ty1, ty2, subst, state, span)?;
         }
     }
+
+    // Conservative completeness diagnostic: if two non-empty records have ZERO field overlap,
+    // prevent any TypeVars in either from being generalized by lowering their levels to 0.
+    // This ensures we don't infer overly-polymorphic schemes for structurally disjoint records.
+    // Unification still succeeds (backward compatible) but prevents unsound generalization.
+    if shared_count == 0 && !row1.fields.is_empty() && !row2.fields.is_empty() {
+        // Collect all TypeVars from both records.
+        use std::collections::HashSet;
+        let mut vars = HashSet::new();
+        for ty in row1.fields.values() {
+            ty.collect_type_vars(&mut vars);
+        }
+        for ty in row2.fields.values() {
+            ty.collect_type_vars(&mut vars);
+        }
+        // Lower all collected TypeVars to level 0 to prevent generalization.
+        for var_name in vars {
+            if let Some(current_level) = state.levels.get_mut(&var_name) {
+                *current_level = 0;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1060,7 +1065,9 @@ pub fn unify(
         // holds, the intersection is provably Never. For all other cases (uncertain overlap), we
         // remain conservative and allow unification to succeed. Runtime value_matches_type handles
         // the residual constraint for `[@[[without T]] expr]` TypeAsserts.
-        (concrete, Type::Negation(inner)) if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) => {
+        (concrete, Type::Negation(inner))
+            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
+        {
             if Type::is_subtype(concrete, inner) {
                 Err(TypeError::new(
                     format!(
@@ -1073,7 +1080,9 @@ pub fn unify(
                 Ok(()) // conservative: may still be empty but can't prove it statically
             }
         }
-        (Type::Negation(inner), concrete) if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) => {
+        (Type::Negation(inner), concrete)
+            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
+        {
             if Type::is_subtype(concrete, inner) {
                 Err(TypeError::new(
                     format!(
