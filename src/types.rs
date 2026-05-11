@@ -1289,6 +1289,15 @@ impl fmt::Display for TypeScheme {
     }
 }
 
+/// Maps expression spans `(start_offset, end_offset)` to the TypeScheme of the variable
+/// referenced there. Only populated for `VarRef` expressions that resolve to a polymorphic
+/// scheme (schemes with constraints or type variables). Used by LSP hover to display
+/// constraints (e.g., `Equatable a => Fn@Bool [a a]`).
+///
+/// Stored in `InferState.scheme_map` during inference, then extracted and returned as part
+/// of the type-checking result for LSP consumers.
+pub type SchemeMap = HashMap<(usize, usize), TypeScheme>;
+
 /// Inference state for levels-based let-generalization
 #[derive(Debug, Clone)]
 pub struct InferState {
@@ -1323,6 +1332,12 @@ pub struct InferState {
     /// Used to annotate downstream T002 "undefined variable" errors with a "caused by" note
     /// that points to the failed definition site instead of just saying "not in scope".
     pub failed_bindings: HashMap<String, Span>,
+    /// Span-keyed map from VarRef sites to the TypeScheme of the variable they reference.
+    /// Only populated when the caller enables scheme collection (non-None). Used by LSP hover
+    /// to display type class constraints alongside the instantiated type.
+    ///
+    /// Enabled by setting this to `Some(SchemeMap::new())` before running inference.
+    pub scheme_map: Option<SchemeMap>,
 }
 
 impl InferState {
@@ -1390,6 +1405,7 @@ impl InferState {
             class_env,
             instance_env: InstanceEnv::new(),
             failed_bindings: HashMap::new(),
+            scheme_map: None,
         }
     }
 

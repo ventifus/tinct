@@ -175,7 +175,7 @@ impl ReplSession {
         crate::resolve::resolve_file(&file.node);
         // Type errors are advisory; evaluation proceeds regardless.
         // Collect type and doc information for meta-commands.
-        let (_type_errors, type_map, doc_map) =
+        let (_type_errors, type_map, doc_map, _scheme_map) =
             crate::typecheck::typecheck_file_with_types(&file.node);
         // Extend (not replace) the session's type and doc maps with the new information
         self.type_map.extend(type_map);

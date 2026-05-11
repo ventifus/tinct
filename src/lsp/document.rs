@@ -11,7 +11,7 @@ use crate::builtins::create_stdlib_env;
 use crate::error::EvalError;
 use crate::eval::{eval_file, materialize};
 use crate::parser::{parse2, ParseError};
-use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, TypeMap};
+use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, SchemeMap, TypeMap};
 use crate::types::TypeError;
 use crate::value::Environment;
 
@@ -34,6 +34,8 @@ pub struct DocumentState {
     pub type_map: TypeMap,
     /// Map from variable/parameter names to documentation strings (for hover).
     pub doc_map: DocMap,
+    /// Map from VarRef spans to their TypeScheme (for hover constraint display).
+    pub scheme_map: SchemeMap,
 }
 
 impl DocumentState {
@@ -65,6 +67,7 @@ impl DocumentState {
         let mut eval_errors = Vec::new();
         let mut type_map = TypeMap::new();
         let mut doc_map = DocMap::new();
+        let mut scheme_map = SchemeMap::new();
 
         if let Ok(file) = ast {
             // Expand macros before desugar: rewrites [defmacro ...] and macro calls.
@@ -87,6 +90,7 @@ impl DocumentState {
                         eval_errors: vec![],
                         type_map: TypeMap::new(),
                         doc_map: DocMap::new(),
+                        scheme_map: SchemeMap::new(),
                     };
                 }
             };
@@ -104,10 +108,11 @@ impl DocumentState {
             // Seed the type environment with prelude types and resolved includes via the
             // shared imports module to suppress false "undefined variable" errors.
             let seeded_env = crate::imports::build_type_env(&file.node, base_dir);
-            let (errs, map, docs) = typecheck_file_with_types_and_env(&file.node, seeded_env);
+            let (errs, map, docs, smap) = typecheck_file_with_types_and_env(&file.node, seeded_env);
             type_errors = errs;
             type_map = map;
             doc_map = docs;
+            scheme_map = smap;
 
             // Build the LSP eval environment, mirroring what main.rs does at startup.
             // The type checker gets runtime percent-vars via build_type_env(); we inject
@@ -243,6 +248,7 @@ impl DocumentState {
             eval_errors,
             type_map,
             doc_map,
+            scheme_map,
         }
     }
 }
