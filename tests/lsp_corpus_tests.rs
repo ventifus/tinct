@@ -222,6 +222,120 @@ fn test_lsp_corpus() {
     );
 }
 
+/// Task 5: LSP on-demand analysis tests for unopened documents.
+///
+/// Verifies that the LSP can handle hover and goto-definition requests for
+/// documents that were never opened via `textDocument/didOpen`. This is the
+/// scenario when Claude Code's LSP tool sends requests directly without prior
+/// document management.
+///
+/// Tests the `load_doc_from_uri` helper and on-demand analysis paths in the
+/// hover and goto-definition handlers.
+#[test]
+#[cfg(feature = "lsp")]
+fn test_lsp_unopened_document_hover() {
+    use tinct::lsp::analysis::hover_at;
+    use tinct::lsp::document::load_doc_from_uri;
+
+    // Create a temporary test file
+    let temp_dir = std::env::temp_dir();
+    let test_file = temp_dir.join("lsp_test_unopened_hover.llt");
+    std::fs::write(&test_file, "[x: 42]").expect("Failed to write test file");
+
+    // Convert to URI
+    let uri = format!("file://{}", test_file.display())
+        .parse::<lsp_types::Uri>()
+        .expect("Failed to parse URI");
+
+    // Load document from URI (without opening it in the store)
+    let doc = load_doc_from_uri(&uri).expect("Failed to load unopened document");
+
+    // Test hover at offset 4 (on '42')
+    let include_graph = std::collections::HashMap::new();
+    let hover = hover_at(&doc, &uri, 4, &include_graph);
+
+    assert!(hover.is_some(), "hover should work on unopened document");
+    let text = hover.unwrap();
+    assert!(text.contains("Int"), "hover should show type, got: {text}");
+
+    // Cleanup
+    std::fs::remove_file(&test_file).ok();
+}
+
+#[test]
+#[cfg(feature = "lsp")]
+fn test_lsp_unopened_document_goto_definition() {
+    use tinct::lsp::analysis::definition_at;
+    use tinct::lsp::document::load_doc_from_uri;
+
+    // Create a temporary test file
+    let temp_dir = std::env::temp_dir();
+    let test_file = temp_dir.join("lsp_test_unopened_goto.llt");
+    std::fs::write(&test_file, "[x: 42  y: $x]").expect("Failed to write test file");
+
+    // Convert to URI
+    let uri = format!("file://{}", test_file.display())
+        .parse::<lsp_types::Uri>()
+        .expect("Failed to parse URI");
+
+    // Load document from URI (without opening it in the store)
+    let doc = load_doc_from_uri(&uri).expect("Failed to load unopened document");
+
+    // Test goto-definition at offset 12 (on '$x' in "y: $x")
+    // "[x: 42  y: $x]"
+    //  0123456789012345
+    let include_graph = std::collections::HashMap::new();
+    let def_result = definition_at(&doc, &uri, 12, &include_graph);
+
+    assert!(
+        def_result.is_some(),
+        "goto-definition should work on unopened document"
+    );
+    let (_target_uri, span) = def_result.unwrap();
+    // Key "x" is at offset 1, one character long
+    assert_eq!(span.start.offset, 1, "should point to definition of 'x'");
+    assert_eq!(span.end.offset, 2);
+
+    // Cleanup
+    std::fs::remove_file(&test_file).ok();
+}
+
+#[test]
+#[cfg(feature = "lsp")]
+fn test_lsp_unopened_document_with_caps() {
+    use tinct::lsp::document::load_doc_from_uri;
+
+    // Create a temporary test file with caps declaration
+    let temp_dir = std::env::temp_dir();
+    let test_file = temp_dir.join("lsp_test_unopened_caps.llt");
+    // Use proper caps syntax: dict literal with % prefix
+    std::fs::write(&test_file, "--- caps: [%api: @NetCap]\n---\n[result: %api]")
+        .expect("Failed to write test file");
+
+    // Convert to URI
+    let uri = format!("file://{}", test_file.display())
+        .parse::<lsp_types::Uri>()
+        .expect("Failed to parse URI");
+
+    // Load document from URI (without opening it in the store)
+    let doc = load_doc_from_uri(&uri).expect("Failed to load unopened document with caps");
+
+    // The document should parse and eval without errors (caps are stubbed)
+    assert!(
+        doc.ast.is_ok(),
+        "parse should succeed; got error: {:?}",
+        doc.ast.as_ref().err()
+    );
+    assert!(
+        doc.eval_errors.is_empty(),
+        "eval should succeed with stubbed caps; got errors: {:?}",
+        doc.eval_errors
+    );
+
+    // Cleanup
+    std::fs::remove_file(&test_file).ok();
+}
+
 #[test]
 #[cfg(feature = "lsp")]
 fn test_lsp_stdlib_clean() {

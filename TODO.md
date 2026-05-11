@@ -8,11 +8,11 @@ See DONE.md for the full history of completed sprints.
 
 ### lsp-caps-and-on-demand: LSP caps assumption + on-demand file loading
 
-- [ ] [Major] Skip caps validation in LSP mode: `eval_pipeline.rs:47-104` checks that declared caps are present at runtime, but the LSP never injects caps (no `--cap-net` etc.), so any `--- caps:` program fails eval with spurious diagnostics. Fix: when running in `no_fs=true` LSP mode (or add a `lsp_mode: bool` flag to `EvalConfig`), pre-seed the eval env with stub values matching the caps declarations so cap validation succeeds. Type checker already handles this correctly (`src/typecheck.rs:502-521`). (Verified by assumption-skeptic agent, 2026-05-10)
-- [ ] [Major] In `src/lsp/server.rs` hover handler: before calling `hover_at`, check if the URI is in the document map; if not, read the file from disk via `std::fs::read_to_string` and construct a temporary `Document` (run parse + typecheck), then call `hover_at` on it — same pattern as `document.rs` open handler
-- [ ] [Major] Apply the same on-demand loading to the `GotoDefinition` handler in `src/lsp/server.rs`
-- [ ] [Minor] Extract the shared "load document from URI path" logic into a helper `fn load_doc_from_uri(uri: &Url) -> Option<Document>` in `src/lsp/document.rs` to avoid duplicating the parse+typecheck sequence across handlers
-- [ ] [Minor] Add LSP corpus tests in `tests/lsp_corpus_tests.rs` that send hover/goto requests without a prior `didOpen` and assert non-empty results
+- [x] [Major] Skip caps validation in LSP mode — pre-seed eval env with stub cap values
+- [x] [Major] On-demand hover for unopened documents — load from disk if not in document map
+- [x] [Major] On-demand goto-definition for unopened documents
+- [x] [Minor] Extract shared `load_doc_from_uri` helper in document.rs
+- [x] [Minor] Add 3 LSP corpus tests for unopened document hover/goto/caps
 
 ### lsp-completion: Implement textDocument/completion
 
