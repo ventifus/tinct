@@ -1073,20 +1073,26 @@ mod tests {
 
     #[test]
     fn test_diagnostics_eval_error() {
+        // LSP skips the eval pass entirely — eval_errors is always empty.
+        // Undefined variables are caught by the type checker instead.
         let env = test_env();
         let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
         let diags = diagnostics_for(&doc, &test_uri());
         assert!(!diags.is_empty());
-        let eval_diag = diags
-            .iter()
-            .find(|d| d.source.as_deref() == Some("tinct-eval"))
-            .unwrap();
-        assert_eq!(eval_diag.severity, Some(DiagnosticSeverity::ERROR));
-        assert_eq!(
-            eval_diag.code,
-            Some(lsp_types::NumberOrString::String("E002".to_string())),
-            "eval diagnostic should include error code E002 (UndefinedVariable)"
+        // No eval diagnostic — eval is skipped in LSP context.
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.source.as_deref() != Some("tinct-eval")),
+            "LSP eval is skipped — no tinct-eval diagnostics expected; got: {:?}",
+            diags
         );
+        // The type checker catches the undefined variable reference.
+        let type_diag = diags
+            .iter()
+            .find(|d| d.source.as_deref() == Some("tinct-typecheck"))
+            .expect("tinct-typecheck diagnostic expected for $undefined");
+        assert_eq!(type_diag.severity, Some(DiagnosticSeverity::WARNING));
     }
 
     #[test]
