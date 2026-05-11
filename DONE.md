@@ -3069,6 +3069,19 @@ The letrec TypeVar bug fix is already implemented in `src/typecheck_dict.rs`. Se
 - [x] [Major] Add `just coverage` recipe using `cargo llvm-cov --html` (justfile updated)
 - [x] [Minor] Add forward-reference letrec sibling test — `[b: [length a]  a: "hello"]` case added to letrec_sibling_typevar_resolves.llt-eval
 
+## Performance & Doc Fixes
+
+### perf-doc-fixes: Eliminate PendingBuiltin pre-clone, fix stale stdlib/error docs
+
+- [x] [Major] PendingBuiltin pre-clone eliminated — moved args/named/ctx clones to depth-exceeded branch only; also fixed regression where PendingCall→Builtin path bypassed strict-arg materialization (causing stack overflow in TCO tests)
+- [x] [Major] Updated stdlib doc builtin count 178→189, wrapper count 12→29; added collect-kv/str-repeat/str-find; documented _ placeholder lambda; removed nonexistent versions.llt ref
+- [x] [Major] Added UriParseError (E063) and SchemaViolation (E090) to doc/10-errors.md with correct message formats
+- [x] [Minor] Fixed error.rs comment syntax (/ → ///)
+- [x] [Minor] Fixed interpolated string inner span loss in parser.rs
+- [x] [Minor] Documented instantiate_at_level as intentional (all-vars design for CALL-POLY)
+- [x] [Minor] Per-entry propagation overlap arm now pushes unify errors
+- [x] [Minor] Registered each/each-key/each-kv in TypeEnv with 1-param signatures; updated 14 corpus baselines
+
 ## Codebase Health
 
 ### cycle-216-findings: Cycle #216 analysis findings

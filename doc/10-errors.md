@@ -14,7 +14,7 @@
 
 **Why:** Simple default path — most code lets errors propagate. Lazy eval means unmaterialized errors never happen ("pay for what you use"). `try` available when explicit handling is needed.
 
-**Implementation note:** Thunks must record definition-site source location. When materialized, the materialization-site span is passed as a parameter to `materialize()`, not stored in the thunk. Error messages include both locations and a reconstructed call stack showing the chain of materializations. The evaluator depth limit (256) counts nesting depth of evaluation calls, not total operations — deeply nested function calls hit the limit, but a linear chain of thunks does not.
+**Implementation note:** Thunks must record definition-site source location. When materialized, the materialization-site span is passed as a parameter to `materialize()`, not stored in the thunk. Error messages include both locations and a reconstructed call stack showing the chain of materializations. The core evaluator uses an iterative CEK machine (see [Architecture](16-architecture.md) §Iterative Evaluator) with no recursive depth limit; individual builtins may impose domain-specific depth limits (e.g., `MAX_EVAL_DEPTH` for builtin-internal recursion).
 
 ### Lazy Error Behavior
 
@@ -23,8 +23,8 @@ Errors in tinct are lazy — they don't occur until a value is materialized:
 ```tinct
 [
     x: [/ 1 0]        # No error yet — x is a thunk
-    y: [+ x 1]        # Materializing y forces x → error
-    z: 42             # Fine — x never forced through z
+    y: [+ x 1]        # Materializing y materializes x → error
+    z: 42             # Fine — x never materialized through z
 ]
 ```
 
@@ -63,16 +63,16 @@ An evaluation error `ε` is a record with five fields:
 ε = ⟨kind, def_span, mat_span?, sec_span?, stack⟩  where
   kind      : ErrorKind              — structured error variant with domain-specific data
   def_span  : Span                   — where the problematic value was defined
-  mat_span  : Option<Span>           — where the value was first forced (if different)
+  mat_span  : Option<Span>           — where the value was first materialized (if different)
   sec_span  : Option<(Span, String)> — secondary "value origin" span with label (see below)
   stack     : [StackFrame]           — chain of materialization contexts, outermost last
 ```
 
-**Dual-span model:** Every error carries two source locations: the **definition site** (where the error-producing expression was written) and the **materialization site** (where a consumer forced the thunk that failed). When these coincide, `mat_span` is `None`. When a Failed thunk is re-accessed from a third location, the new access site is pushed onto `stack` as a frame — `def_span` and `mat_span` are never overwritten after initial assignment.
+**Dual-span model:** Every error carries two source locations: the **definition site** (where the error-producing expression was written) and the **materialization site** (where a consumer materialized the thunk that failed). When these coincide, `mat_span` is `None`. When a Failed thunk is re-accessed from a third location, the new access site is pushed onto `stack` as a frame — `def_span` and `mat_span` are never overwritten after initial assignment.
 
 The **definition site** and **materialization site** form a dual-span model: "the error was *defined* here but *triggered* there." When both sites are the same (e.g., an immediate expression like `[call $/ 1 0]`), the materialization site is omitted.
 
-Example: given `[x: [/ 1 0]  y: x]`, accessing `y` produces an error with definition site at `[/ 1 0]` (where the division was written) and materialization site at `x` (where the thunk was first forced).
+Example: given `[x: [/ 1 0]  y: x]`, accessing `y` produces an error with definition site at `[/ 1 0]` (where the division was written) and materialization site at `x` (where the thunk was first materialized).
 
 **Secondary span — value origin (Nickel dual-position pattern):** For lazy evaluation errors where the **value that caused the failure** was produced far from the error site, `sec_span` carries a labeled pointer to the value's creation span. This is the Nickel `EvaluationError` dual-position pattern: "error triggered here, but the offending value came from there." The `Thunk.span` field (set at thunk creation time) provides this origin span without requiring any additional storage.
 
@@ -99,7 +99,7 @@ All errors are constructed via `EvalError` methods that create an error with a s
 | `type_mismatch_ctx(context, expected, got, span)` | `TypeMismatch { context: Some(context), expected, got }` | `"{context}: expected {expected}, got {got}"` | Expression producing wrong type |
 | `arity_mismatch(expected, got, span)` | `ArityMismatch { expected, got }` | `"arity mismatch: expected {expected} arguments, got {got}"` | Call expression |
 | `circular_dependency(name, span)` | `CircularDependency { name }` | `"circular dependency detected while evaluating {name}"` | Thunk definition |
-| `depth_exceeded(limit, span)` | `DepthExceeded { limit }` | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
+| `depth_exceeded(limit, span)` | `DepthExceeded { limit }` | `"maximum evaluation depth exceeded ({limit})"` | Thunk being materialized when limit hit |
 | `user_error(message, span)` | `UserError { message }` | `"{message}"` (user-provided) | `error` call site |
 | `integer_overflow(op, span)` | `IntegerOverflow { op }` | `"{op}: integer overflow"` | Arithmetic expression |
 | `division_by_zero(op, span)` | `DivisionByZero { op }` | `"{op}: division by zero"` | Division expression |
@@ -137,7 +137,7 @@ DECORATE(ε, mat_span, origin, thunk_span):
 
 Rule (1) sets the materialization span on first decoration. Rule (2) adds subsequent materialization sites as stack frames without overwriting the original. Rule (3) adds the thunk's origin label (e.g., variable name) as a frame — the `origin` parameter corresponds to the thunk's origin name as described in §Scope Chain Semantics — Formal Specification. The deduplication guards (`s ∉ stack`, `∄f matching (label, span)`) prevent redundant frames when the same span propagates through nested `materialize` calls.
 
-**Invariant:** `ε.mat_span`, once set to `Some(s)`, is never changed to `Some(s')` where `s ≠ s'`. The materialization span records the *first* site that forced the thunk; subsequent sites become stack frames.
+**Invariant:** `ε.mat_span`, once set to `Some(s)`, is never changed to `Some(s')` where `s ≠ s'`. The materialization span records the *first* site that materialized the thunk; subsequent sites become stack frames.
 
 ### Part 4: Error Propagation
 
@@ -189,7 +189,7 @@ materialize(thunk, mat_span, d) ⇒ Err(ε')
 
 **PendingCall coverage:** PendingCall thunks have four error paths (function materialization, invoke_function, result materialization, type mismatch). All follow the same DECORATE + conditional-cache pattern: function materialization failures and type mismatches are decorated inline; result materialization follows PROP-RESULT; invoke_function failures are decorated and conditionally cached. PendingCall restoration requires cloning `func`, `args`, and `named` before evaluation (all `Rc::clone` — no materialization) since `take_pending_call()` consumes ownership.
 
-**Nested forcing materialization span:** When a PendingCall handler forces `func_thunk` and that forcing fails, the error's `materialization_span` is set to `call_span` (the site where the function call was written), not the span of the inner expression that actually failed. This follows from passing `Some(&call_span)` as the `mat_span` parameter to `materialize(&func_thunk, ...)`. The same behavior applies to PendingBuiltin when materializing arguments — the builtin's `call_span` becomes the materialization site for nested errors. This ensures that error reports consistently attribute forcing to the call site, even when the actual failure occurs in a deeply nested thunk chain.
+**Nested materialization span:** When a PendingCall handler materializes `func_thunk` and that materialization fails, the error's `materialization_span` is set to `call_span` (the site where the function call was written), not the span of the inner expression that actually failed. This follows from passing `Some(&call_span)` as the `mat_span` parameter to `materialize(&func_thunk, ...)`. The same behavior applies to PendingBuiltin when materializing arguments — the builtin's `call_span` becomes the materialization site for nested errors. This ensures that error reports consistently attribute materialization to the call site, even when the actual failure occurs in a deeply nested thunk chain.
 
 **[PROP-CYCLE]** — Circular dependency:
 
@@ -202,7 +202,7 @@ thunk.state ← Failed(ε)
 materialize(thunk, mat_span, d) ⇒ Err(ε)
 ```
 
-Note: PROP-CYCLE constructs the error inline at the detection site — it does *not* pass through DECORATE. This is the only propagation rule that bypasses decoration, because the error originates at the forcing site itself rather than propagating from a deeper call.
+Note: PROP-CYCLE constructs the error inline at the detection site — it does *not* pass through DECORATE. This is the only propagation rule that bypasses decoration, because the error originates at the materialization site itself rather than propagating from a deeper call.
 
 **[PROP-DEPTH]** — Depth limit exceeded:
 
@@ -216,7 +216,7 @@ materialize(thunk, mat_span, d) ⇒ Err(ε)
 
 Note: PROP-DEPTH does *not* transition to Failed — the thunk state is unchanged (§Thunk Lifecycle, Semantic Commitment #3). The same thunk may succeed at a lower depth.
 
-**Propagation path:** In a chain `θ₁ → θ₂ → θ₃` where θ₃ fails, the error propagates θ₃ → θ₂ → θ₁, each level applying DECORATE. The result is an error with `def_span` from θ₃ (where the problem was defined), `mat_span` from the first forcing site, and stack frames from intermediate materialization points.
+**Propagation path:** In a chain `θ₁ → θ₂ → θ₃` where θ₃ fails, the error propagates θ₃ → θ₂ → θ₁, each level applying DECORATE. The result is an error with `def_span` from θ₃ (where the problem was defined), `mat_span` from the first materialization site, and stack frames from intermediate materialization points.
 
 ### Part 5: Failed State Memoization
 
@@ -314,7 +314,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **Arity constraint:** The function must take zero parameters. If `params.len() > 0`, `try` raises an error (not caught): `"try: expected a zero-argument function, got {n} parameters"`.
 
-**Interaction with Failed state:** When `try` forces a Failed thunk *inside* the body, the cached error is returned via MEMO-REACCESS and caught by `try`. The Failed thunk's cache is updated (stack frame added) but the error is converted to `[err: message]` — it does not propagate past `try`.
+**Interaction with Failed state:** When `try` materializes a Failed thunk *inside* the body, the cached error is returned via MEMO-REACCESS and caught by `try`. The Failed thunk's cache is updated (stack frame added) but the error is converted to `[err: message]` — it does not propagate past `try`.
 
 **`try` interaction with structured errors:** `try` currently extracts `ε.kind.to_string()` — the Display output of ErrorKind. This preserves the behavior that the caught value is a human-readable error message string, not a structured error object. Error codes are not exposed through `try`.
 
@@ -330,7 +330,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **E3 — Propagation preserves definition site:** DECORATE never modifies `ε.def_span`. The definition site is set at error construction and propagated unchanged through any number of materialization layers.
 
-**E4 — Materialization site is first-access:** `ε.mat_span` records the first site that triggered materialization. Subsequent access sites become stack frames. This is enforced by DECORATE rule (1) (set only if None) and MEMO-REACCESS rule (1).
+**E4 — Materialization site is first-materialization:** `ε.mat_span` records the first site that triggered materialization. Subsequent access sites become stack frames. This is enforced by DECORATE rule (1) (set only if None) and MEMO-REACCESS rule (1).
 
 **E5 — `try` isolation:** Errors caught by `try` do not propagate to `try`'s caller. `try` converts errors to values — the error is consumed, not rethrown. There is no `$rethrow` mechanism.
 
@@ -439,7 +439,7 @@ pub enum ErrorKind {
     FloatOutOfRange { builtin: String, value: f64 },
 
     // --- Limit errors (E040-E049) ---
-    /// Evaluation depth limit (recursive thunk forcing).
+    /// Evaluation depth limit (recursive thunk materialization).
     DepthExceeded { limit: usize },
     /// JSON nesting depth limit (distinct from eval depth — applies during
     /// `$from-json` parsing of deeply nested JSON structures).
@@ -494,7 +494,7 @@ pub enum ArityBound {
 - **`DivisionByZero` carries `op`** to preserve the operator prefix in Display output (e.g., `"/: division by zero"`). This maintains `try` message compatibility and future-proofs for additional division operators.
 - **`FloatNotFinite`** covers NaN, Infinity, and -Infinity — all non-finite `f64` values. Named `NotFinite` rather than `OutOfRange` because NaN is not a range concept.
 - **`FloatOutOfRange`** (E036) covers finite values outside the `i64` range (e.g., `1e19`). Named `OutOfRange` rather than `NotFinite` because the value is mathematically finite — it simply exceeds the integer domain of `$floor`/`$round`. Distinct from `FloatNotFinite` because the conditions and user-facing diagnostics differ: `FloatNotFinite` is "not a finite number", `FloatOutOfRange` is "out of range for Int".
-- **`DepthExceeded` vs `JsonDepthExceeded`:** Eval depth (recursive thunk forcing) and JSON nesting depth (`$from-json` parsing) are semantically different limits with different error codes. A JSON depth error at E041 does not indicate runaway evaluation.
+- **`DepthExceeded` vs `JsonDepthExceeded`:** Eval depth (recursive thunk materialization) and JSON nesting depth (`$from-json` parsing) are semantically different limits with different error codes. A JSON depth error at E041 does not indicate runaway evaluation.
 - **`IncludeIoError`** covers both "cannot open" (canonicalize failure) and "cannot read" (metadata/read failure) — both are filesystem IO failures distinguished by the `detail` field.
 - **`Internal` is an escape hatch**, not a permanent category. It accepts a freeform message string for incremental migration. New error sites should use a typed variant; `Internal` should trend toward zero usage over time.
 - **Terminology:** "Type error" in this section always means a *runtime* type mismatch (`ErrorKind::TypeMismatch`). Static type checking failures are `TypeError` in `src/types.rs` — a separate type, separate system, separate error reporting path.
@@ -906,7 +906,7 @@ All 34 `ErrorKind` variants map to stable error codes and human-readable message
 | **EmptyCollection** | E034 | `"{op} on empty collection"` | Builtin call expression |
 | **ValueNotSerializable** | E035 | `"cannot serialize {value_type} to JSON"` | Value being serialized |
 | **FloatOutOfRange** | E036 | `"{builtin}: {value} is out of range for Int"` | Builtin call expression |
-| **DepthExceeded** | E040 | `"maximum evaluation depth exceeded ({limit})"` | Thunk being forced when limit hit |
+| **DepthExceeded** | E040 | `"maximum evaluation depth exceeded ({limit})"` | Thunk being materialized when limit hit |
 | **JsonDepthExceeded** | E041 | `"maximum JSON nesting depth exceeded ({limit})"` | `from-json` call expression |
 | **IncludeForbidden** | E042 | `"filesystem access is disabled (--no-fs)"` | `include` call expression |
 | **ResourceLimitExceeded** | E043 | `"{message}"` (implementation-defined) | Context-dependent |
@@ -921,15 +921,17 @@ All 34 `ErrorKind` variants map to stable error codes and human-readable message
 | **ParseConversion** | E060 | `"{builtin}: cannot parse {input:?} as {target}"` | Builtin call expression |
 | **JsonParse** | E061 | `"from-json: invalid JSON: {detail}"` | `from-json` call expression |
 | **JsonRange** | E062 | `"JSON number outside representable range"` | `from-json` call expression |
+| **UriParseError** | E063 | `"URI parse error: {detail}"` | `uri`/`url`/`urn` call expression |
 | **CircularDependency** | E070 | `"circular dependency detected while evaluating {name}"` | Thunk definition (dict entry) |
 | **UserError** | E080 | `"{message}"` (user-provided) | `error` call expression |
+| **SchemaViolation** | E090 | `"schema validation failed with N error(s):\n  {field}: {msg}\n  ..."` (one violation per line, N = violation count) | Schema validation expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
 The variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
 ## Known Span Assignment Issues
 
-**Note:** These corrections are not yet implemented. The table below describes current behavior and the correct future behavior.
+**Note:** The table below describes current behavior and the intended correct behavior. These corrections are not yet implemented.
 
 The following span assignments should be implemented:
 
@@ -938,6 +940,6 @@ The following span assignments should be implemented:
 | Builtin errors use `call_span` for definition site | Error points to `[merge ...]` for both spans | `def_span` should be the operand that caused the error; `call_span` becomes `mat_span` |
 | Access chain errors lack materialization site | `dict.key` errors show only definition site | Should include materialization site when access is in a different expression than the dict |
 | Builtin name missing from stack frames | Stack traces show generic `"materialized"` for builtin-originating errors | Should include the builtin name as the stack frame label (e.g., `"in merge at ..."`) |
-| Depth limit errors lack call-site context | `def_span` points to the thunk being forced | Should also include `mat_span` pointing to the call site that triggered the depth limit |
+| Depth limit errors lack call-site context | `def_span` points to the thunk being materialized | Should also include `mat_span` pointing to the call site that triggered the depth limit |
 | Access vs. call span attribution | Access expression errors (`d.k`) and call expression errors (`[f ...]`) use the same span logic | Access chains should attribute `def_span` to the access target; call expressions should attribute `def_span` to the call site |
 | Desugared lambda spans | `wrap_expr_in_lambda` (for `_.field` desugaring) assigns outer expression span to both Fn node and body | Type errors in desugared lambda bodies point to outer call site; inner expression span is lost during AST transformation |

@@ -126,7 +126,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Arithmetic & comparison** (materializing — must evaluate operands):
 - `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
 - `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
-- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural/deep equality of dicts is intentionally not provided (forcing nested fields would violate lazy evaluation, and pointer equality would be inconsistent with value semantics).
+- `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural/deep equality of dicts is intentionally not provided (materializing nested fields would violate lazy evaluation, and pointer equality would be inconsistent with value semantics).
 - `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
 
 **Strings** (materializing — must evaluate arguments):
@@ -158,7 +158,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[ok: value]` on success or `[err: message]` on failure (tagged dict, not a special type). |
 
 **Materialization** (runtime-supported):
-- `eval` — recursively forces all thunks (runtime-supported, may diverge on infinite structures)
+- `eval` — recursively materializes all thunks (runtime-supported, may diverge on infinite structures)
 - `from-json` — parses JSON string into Tinct dict (pure function, safe on untrusted input)
 
 **Key implications for lazy evaluation:**
@@ -192,13 +192,13 @@ first-ten: [collect [take 10 squares]]
 |-------|-------------|--------------|-----------|
 | Arithmetic | `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). |
 | Comparison | `builtin-lt`, `builtin-eq` | `<`, `=` | Cross-type Int/Float coercion at host level. `>`, `<=`, `>=` are derived from `<` and `not`. |
-| Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is forced. |
+| Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is materialized. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
 | Dict primitives | — | `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. |
 | Strings | — | `str`, `split`, `replace`, `upper`, `lower`, `trim`, `join` | Strings are opaque; all content operations require Rust. `join` uses an O(n) string builder (dual-dispatch Dict/Seq); no stable alias needed. |
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
-| Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-forces; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |
+| Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-materializes; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |
 | Type introspection | — | `type-of`, `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. |
 | Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `concat` (no stable aliases needed). |
 | I/O | — | `from-json`, `include` | serde_json, filesystem access. |
@@ -294,7 +294,7 @@ The stdlib follows four organizing principles:
 
 ## Stdlib Function Reference
 
-**Architecture:** 178 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 12 shadowable wrappers). Of the 178 Rust builtins, 12 are wrapped by LLT functions (`<`, `=`, `+`, `-`, `*`, `/`, `if`, `filter`, `map`, `reduce`, `take`, `drop`) to enable shadowing via `$include`. The wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv` is a pure LLT implementation in `prelude.llt` built on `builtin-reduce` — it is shadowable via `$include` like other prelude functions, but has no `builtin-collect-kv` alias.
+**Architecture:** 189 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including 29 shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`). All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
@@ -314,6 +314,43 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 These additions bring Tinct's stdlib coverage closer to mature configuration languages while maintaining the LLT-first principle; predicate builtins are Rust-native, `list?` is LLT-implemented on top of them.
 
 > **Note:** Overrides apply to the initial dispatch only; Seq corecursion steps always call the underlying Rust implementation directly.
+
+### Placeholder Lambda Syntax (`_`)
+
+The `_` placeholder creates anonymous single-argument lambda functions, enabling concise composition with `map`, `filter`, `reduce`, and other higher-order functions.
+
+**Syntax:** Any expression containing `_` in argument position is automatically wrapped in `[fn [_] ...]`.
+
+```tinct
+# These are equivalent:
+[map [+ _ 1] list]
+[map [fn [_] [+ _ 1]] list]
+
+# Multiple uses of _ in the same expression all refer to the same argument:
+[map [* _ _] [1 2 3]]  # => [1 4 9] — squares each element
+
+# Works with field access:
+[map _.name users]
+[map [fn [_] _.name] users]  # equivalent
+
+# Compose with other functions:
+[filter [> _ 0] numbers]
+[reduce [+ _ _] 0 numbers]  # sum (both _ refer to the same arg in binary position)
+```
+
+**Limitations:**
+
+- Only works for **single-argument** functions — `_` cannot create multi-argument lambdas
+- All `_` occurrences in the same expression refer to the **same** argument (no `_1`, `_2` pattern)
+- `_` is desugared at parse time — it's not a special value, just syntax sugar
+
+**When to use:**
+
+- ✅ Short inline transformations: `[map [+ _ 1] xs]`
+- ✅ Field extraction: `[map _.id records]`
+- ✅ Simple predicates: `[filter [> _ threshold] values]`
+- ❌ Multi-argument functions: use explicit `[fn [a b] ...]`
+- ❌ Complex logic with local bindings: use explicit `fn`
 
 **Utility Functions:**
 
@@ -371,6 +408,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `join` | Rust native builtin — no LLT wrapper | Join values as strings with separator (O(n) string builder; dual-dispatch Dict/Seq) |
 | `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq). Derived from `str`, `split`, and `filter`. |
+| `str-repeat` | `fn@Str [s@Str n@Int]` | Repeat string `s` exactly `n` times. Pure LLT implementation using `reduce` over `range` |
+| `str-find` | `fn@Int [haystack@String needle@String]` | Find first occurrence of `needle` in `haystack`; returns character index or -1 if not found. Pure LLT implementation |
 
 **Control Flow:**
 
@@ -403,6 +442,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list; preserves dict insertion order |
 | `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts; preserves dict insertion order |
 | `from-entries` | `[fn [pairs] ...]` | Reconstruct a dict from a list or Seq of `[key: k value: v]` pairs |
+| `collect-kv` | `fn@Dict [xs]` | Reconstruct dict from key-value pairs (as produced by `each-kv`). Takes a Seq of `[key: K value: V]` dicts. Pure LLT implementation using `reduce` and `merge` |
 
 **List Operations (integer keys, dense 0..n output):**
 
@@ -776,7 +816,7 @@ LT(θ₁, θ₂, d, s) :
 
 The `_` in `materialize(θ, _, d)` is the materialization span (`Option<&Span>`), passed as `None` by both builtins — it is a diagnostic concern, not a semantic parameter. The span `s` is the call-site span: unused in EQ (total function, never errors) but required for LT error reporting.
 
-Both builtins require exactly 2 positional arguments and reject named arguments (`reject_named`). Both are **inherently materializing**: they must inspect the concrete values of both operands to produce a result. This is a §Selective Materialization boundary — comparison always forces. If materialization of either operand raises an error (cycle detection, division by zero, depth limit), that error propagates immediately — comparison dispatch is never reached.
+Both builtins require exactly 2 positional arguments and reject named arguments (`reject_named`). Both are **inherently materializing**: they must inspect the concrete values of both operands to produce a result. This is a §Selective Materialization boundary — comparison always materializes. If materialization of either operand raises an error (cycle detection, division by zero, depth limit), that error propagates immediately — comparison dispatch is never reached.
 
 ### Part 2: Type-Dispatch Tables
 
@@ -818,7 +858,7 @@ Loss example: Int(2⁵³ + 1) promotes to Float(2⁵³)
               → EQ-PROMOTE: [call $= 9007199254740993 9007199254740992.0] = true  (!)
 ```
 
-**Design rationale:** The alternative — rejecting cross-type comparison entirely — would force users to manually cast in every mixed expression. The promotion follows JavaScript, Python, Ruby, and Lua conventions. The precision-loss edge case affects only integers outside the safe range, which is rare in configuration contexts.
+**Design rationale:** The alternative — rejecting cross-type comparison entirely — would require users to manually cast in every mixed expression. The promotion follows JavaScript, Python, Ruby, and Lua conventions. The precision-loss edge case affects only integers outside the safe range, which is rare in configuration contexts.
 
 Promotion is **symmetric**: `EQ-PROMOTE-IF` and `EQ-PROMOTE-FI` always produce the same result because IEEE 754 `==` is symmetric and `as f64` is deterministic.
 
@@ -898,7 +938,7 @@ The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (n
 
 ### Part 8: Properties
 
-**P1 — EQ reflexivity (conditional):** `∀v. dispatch_eq(v, v) = true` **iff** `v ∉ {NaN, Dict, Function, Builtin, Seq}`. NaN violates reflexivity per IEEE 754. Dict/Function/Builtin/Seq return false even for identity (same Rc pointer) because no structural comparison is performed — structural dict equality would violate lazy evaluation by forcing all field thunks (e.g., comparing `[x: [/ 1 0]]` with itself would force the division-by-zero error in an unreferenced field). **Future breaking change:** if typeclasses add user-defined equality, `[= [x: 1] [x: 1]]` would change from `false` to `true`. Current code relying on dicts always being unequal may break.
+**P1 — EQ reflexivity (conditional):** `∀v. dispatch_eq(v, v) = true` **iff** `v ∉ {NaN, Dict, Function, Builtin, Seq}`. NaN violates reflexivity per IEEE 754. Dict/Function/Builtin/Seq return false even for identity (same Rc pointer) because no structural comparison is performed — structural dict equality would violate lazy evaluation by materializing all field thunks (e.g., comparing `[x: [/ 1 0]]` with itself would materialize the division-by-zero error in an unreferenced field). **Future breaking change:** if typeclasses add user-defined equality, `[= [x: 1] [x: 1]]` would change from `false` to `true`. Current code relying on dicts always being unequal may break.
 
 **P2 — EQ symmetry:** `∀v₁, v₂. dispatch_eq(v₁, v₂) = dispatch_eq(v₂, v₁)`. Holds unconditionally — the dispatch table is symmetric (EQ-PROMOTE-IF and EQ-PROMOTE-FI produce identical results; EQ-INCOMP is symmetric; IEEE 754 `==` is symmetric).
 
@@ -916,7 +956,7 @@ The divergence is intentional: `Value::PartialEq` uses Rust's native dispatch (n
 
 **P9 — Partiality of LT:** `<` errors on type pairs not in the dispatch table (LT-ERROR). The comparable domain is: {Int, Float} × {Int, Float} ∪ String × String ∪ Bool × Bool.
 
-**P10 — Materialization obligation:** Both `=` and `<` call `materialize(θ, _, d)` on both arguments before dispatch. This is a forcing operation (§Thunk Lifecycle: FORCE-EVAL, FORCE-BUILTIN, or FORCE-CALL depending on the thunk's state) — the thunk moves from Unevaluated/PendingCall/PendingBuiltin to Evaluated, and the resulting value is cached for subsequent access. If materialization detects a cycle (thunk in InProgress state), it raises a circular dependency error via FORCE-CYCLE — comparison dispatch is never reached. Note: for Dict/Seq values, `=` materializes the outer structure (forces the thunk to produce a `Value::Dict` or `Value::Seq`) but does NOT recursively force field values — it matches on the Value variant and returns `false` (EQ-INCOMP) immediately.
+**P10 — Materialization obligation:** Both `=` and `<` call `materialize(θ, _, d)` on both arguments before dispatch. This is a materialization operation (§Thunk Lifecycle: MATERIALIZE-UNEVALUATED, MATERIALIZE-BUILTIN, or MATERIALIZE-CALL depending on the thunk's state) — the thunk moves from Unevaluated/PendingCall/PendingBuiltin to Evaluated, and the resulting value is cached for subsequent access. If materialization detects a cycle (thunk in InProgress state), it raises a circular dependency error via MATERIALIZE-CYCLE — comparison dispatch is never reached. Note: for Dict/Seq values, `=` materializes the outer structure (materializes the thunk to produce a `Value::Dict` or `Value::Seq`) but does NOT recursively materialize field values — it matches on the Value variant and returns `false` (EQ-INCOMP) immediately.
 
 ## Merge — Formal Specification
 
@@ -970,7 +1010,7 @@ order(D) = order_L(L, R) ++ new(R, L)  where
 
 Left keys retain their positions. Right keys that collide replace the value at the left key's position. Right keys that are new are appended in their original order.
 
-**Strictness:** `S × S → D` (§Selective Materialization). Both operands are materialized eagerly to produce the result dict. Values are `Rc::clone` (thunk pointers copied, not forced). See Part 5 for a planned lazy overlay optimization.
+**Strictness:** `S × S → D` (§Selective Materialization). Both operands are materialized eagerly to produce the result dict. Values are `Rc::clone` (thunk pointers copied, not materialized). See Part 5 for the lazy overlay design.
 
 When both operands are list-dicts (integer keys `0..n`), `merge` performs positional override, not concatenation: `merge([a b c], [x y])` produces `{0:x, 1:y, 2:c}`. Use `concat` for list concatenation.
 
@@ -1057,11 +1097,9 @@ Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's or
 
 **P8 — Value preservation:** `merge` never materializes, transforms, or copies values. It copies thunk pointers (`Rc::clone`). After `D = L ⊕ R`, for any key k, `D(k)` is the exact same `Rc<Thunk>` as `R(k)` or `L(k)` — not a new thunk wrapping the old one. This preserves sharing (§Thunk Lifecycle: evaluate-at-most-once).
 
-### Part 5: Lazy Overlay Compatibility (Planned Future Design)
+### Part 5: Lazy Overlay Compatibility
 
-**Current implementation:** `merge` eagerly materializes both operands (lines 437-438 in `builtins.rs`). The specification below describes a planned lazy overlay optimization that would defer materialization.
-
-The lazy overlay representation would defer the merge operation itself:
+The current `merge` eagerly materializes both operands. The lazy overlay design defers the merge operation itself:
 
 ```
 Overlay(L, R) — O(1) construction
@@ -1081,7 +1119,7 @@ The overlay introduces two observable differences, both intentional:
 
 **Error ordering:** When both operands contain errors, eager merge reports L's error first (L is materialized before R at `builtins.rs:446-447`). Overlay reports whichever operand's error is triggered first by access patterns. Programs should not depend on which operand's error is reported when both are broken.
 
-**Chained overlays:** `Overlay(Overlay(A, B), C)` has O(k) access per key for k chained merges. Flattening on iteration prevents unbounded chain depth during traversal. Overlay chain traversal is structural (key lookup, not thunk forcing) and does not consume depth budget from `MAX_EVAL_DEPTH` — it is analogous to `$get` on a nested scope chain, not to recursive materialization.
+**Chained overlays:** `Overlay(Overlay(A, B), C)` has O(k) access per key for k chained merges. Flattening on iteration prevents unbounded chain depth during traversal. Overlay chain traversal is structural (key lookup, not thunk materialization) and does not consume depth budget from `MAX_EVAL_DEPTH` — it is analogous to `$get` on a nested scope chain, not to recursive materialization.
 
 ### Part 6: Implementation Correspondence
 

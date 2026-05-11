@@ -2,5 +2,3 @@
 [collect [each [a: 10  b: 20  c: 30]]]
 === out
 Dict({0: Int(10), 1: Int(20), 2: Int(30)})
-=== warn
-undefined variable: each at 1:11-1:15

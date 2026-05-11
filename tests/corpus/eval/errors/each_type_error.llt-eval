@@ -2,6 +2,3 @@
 [each 42]
 === error
 [E010] each: expected Dict, got Int
-
-=== warn
-undefined variable: each at 1:2-1:6

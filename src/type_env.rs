@@ -44,6 +44,17 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
 /// Unlike `instantiate()`, this function registers the fresh variables in `state.levels`
 /// so they participate in level-based generalization. Without this, fresh variables
 /// default to level 0 and are permanently excluded from generalization by [U-VAR-LEVEL].
+///
+/// **Design note:** This function intentionally freshens ALL type variables in the input type,
+/// not just quantified ones (unlike `instantiate_scheme`). This is correct for CALL-POLY because
+/// the input `func_ty` is a raw type from `infer_expr(func, ...)`, not a type scheme body.
+/// Any type variables in `func_ty` at this point are either:
+/// - Fresh variables from the function's own inference (e.g., from type annotations)
+/// - Unbound inference variables that need fresh instances for this call site
+///
+/// Free variables from the enclosing scope would already be bound in `state.subst` and would
+/// not appear as TypeVars in the input type. Per Algorithm W, instantiation only applies to
+/// the syntactic type variables present in the type expression, which are all treated uniformly here.
 pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // Use Vec instead of HashSet to avoid hash computation overhead for small types.
     // Deduplication is handled by the contains_key guard below: only the first occurrence
@@ -700,7 +711,7 @@ impl TypeEnv {
                 name.to_string(),
                 TypeScheme {
                     type_vars: vec!["a".to_string()],
-                        constraints: vec![Constraint::new("Numeric", "a")],
+                    constraints: vec![Constraint::new("Numeric", "a")],
                     body: Type::Function {
                         params: vec![
                             (None, Type::TypeVar("a".to_string(), 0)),
@@ -784,7 +795,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row { fields: HashMap::new() }),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
                 )],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
@@ -815,14 +828,20 @@ impl TypeEnv {
                 params: vec![
                     (
                         None,
-                        Type::Record(Row { fields: HashMap::new() }),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
                     ),
                     (
                         None,
-                        Type::Record(Row { fields: HashMap::new() }),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
                     ),
                 ],
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -832,11 +851,15 @@ impl TypeEnv {
                 params: vec![
                     (
                         None,
-                        Type::Record(Row { fields: HashMap::new() }),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
                     ),
                     (None, Type::Unknown),
                 ],
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1163,7 +1186,9 @@ impl TypeEnv {
                     ),
                     (
                         None,
-                        Type::Record(Row { fields: HashMap::new() }),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
                     ),
                 ],
                 ret: Box::new(Type::Unknown),
@@ -1311,7 +1336,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1360,7 +1387,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1369,7 +1398,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1386,7 +1417,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1411,7 +1444,9 @@ impl TypeEnv {
                     (None, Type::DatagramHandle), // socket
                     (None, Type::Unknown),        // String or Bytes
                 ],
-                ret: Box::new(Type::Record(crate::types::Row { fields: std::collections::HashMap::new() })), // null
+                ret: Box::new(Type::Record(crate::types::Row {
+                    fields: std::collections::HashMap::new(),
+                })), // null
                 variadic: false,
             },
         );
@@ -1481,10 +1516,10 @@ impl TypeEnv {
             "quic-session".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::NetCap),   // cap
-                    (None, Type::Str),      // host
-                    (None, Type::Int),      // port
-                    (None, Type::Unknown),  // opts dict
+                    (None, Type::NetCap),  // cap
+                    (None, Type::Str),     // host
+                    (None, Type::Int),     // port
+                    (None, Type::Unknown), // opts dict
                 ],
                 ret: Box::new(Type::QuicSession),
                 variadic: false,
@@ -1510,9 +1545,9 @@ impl TypeEnv {
             "http2-session".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::NetCap),   // capability
-                    (None, Type::Str),      // base_url (scheme://host:port)
-                    (None, Type::Unknown),  // opts dict
+                    (None, Type::NetCap),  // capability
+                    (None, Type::Str),     // base_url (scheme://host:port)
+                    (None, Type::Unknown), // opts dict
                 ],
                 ret: Box::new(Type::Http2Session),
                 variadic: false,
@@ -1533,11 +1568,14 @@ impl TypeEnv {
             "http-request".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Union(vec![Type::Http2Session, Type::Http3Session])),  // Http2Session or Http3Session
-                    (None, Type::Str),      // method
-                    (None, Type::Str),      // path
-                    (None, Type::Unknown),  // headers dict
-                    (None, Type::Unknown),  // body (Bytes or Null)
+                    (
+                        None,
+                        Type::Union(vec![Type::Http2Session, Type::Http3Session]),
+                    ), // Http2Session or Http3Session
+                    (None, Type::Str),     // method
+                    (None, Type::Str),     // path
+                    (None, Type::Unknown), // headers dict
+                    (None, Type::Unknown), // body (Bytes or Null)
                 ],
                 ret: Box::new(Type::Unknown), // Returns Dict {status, headers, body}
                 variadic: false,
@@ -1547,9 +1585,9 @@ impl TypeEnv {
             "icmp-ping".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::NetCap),  // cap
-                    (None, Type::Str),     // host
-                    (None, Type::Int),     // timeout_ms
+                    (None, Type::NetCap), // cap
+                    (None, Type::Str),    // host
+                    (None, Type::Int),    // timeout_ms
                 ],
                 ret: Box::new(Type::Unknown), // Returns Dict {rtt_ms, success}
                 variadic: false,
@@ -1592,7 +1630,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::Handle)], // WriteHandle
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1641,7 +1681,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1650,7 +1692,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1659,7 +1703,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1668,7 +1714,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1677,7 +1725,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1741,7 +1791,9 @@ impl TypeEnv {
             "builtin-collect".to_string(),
             Type::Function {
                 params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1913,10 +1965,7 @@ impl TypeEnv {
         env.insert(
             "builtin-concat".to_string(),
             Type::Function {
-                params: vec![
-                    (None, Type::Unknown),
-                    (None, Type::Unknown),
-                ],
+                params: vec![(None, Type::Unknown), (None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -1929,9 +1978,13 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row { fields: HashMap::new() }),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
                 )],
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1943,10 +1996,14 @@ impl TypeEnv {
                     (None, Type::Unknown),
                     (
                         None,
-                        Type::Record(Row { fields: HashMap::new() }),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
                     ),
                 ],
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1956,9 +2013,13 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row { fields: HashMap::new() }),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
                 )],
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -1968,9 +2029,13 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(
                     None,
-                    Type::Record(Row { fields: HashMap::new() }),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
                 )],
-                ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
                 variadic: false,
             },
         );
@@ -2322,7 +2387,9 @@ impl TypeEnv {
             "Url".to_string(),
             TypeAlias {
                 params: vec![],
-                body: Type::Record(Row { fields: HashMap::new() }),
+                body: Type::Record(Row {
+                    fields: HashMap::new(),
+                }),
             },
         );
 
@@ -2355,7 +2422,24 @@ impl TypeEnv {
                 name.to_string(),
                 Type::Function {
                     params: vec![(None, Type::Str)],
-                    ret: Box::new(Type::Record(Row { fields: HashMap::new() })),
+                    ret: Box::new(Type::Record(Row {
+                        fields: HashMap::new(),
+                    })),
+                    variadic: false,
+                },
+            );
+        }
+
+        // Iteration builtins: each, each-key, each-kv
+        // These have complex polymorphic types (lazy sequence transformers with callback functions),
+        // so we register them as Unknown to avoid false "undefined variable" warnings in LSP.
+        // Their runtime types are enforced by the builtin implementations in src/builtins.rs.
+        for name in ["each", "each-key", "each-kv"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![(None, Type::Unknown)],
+                    ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
             );

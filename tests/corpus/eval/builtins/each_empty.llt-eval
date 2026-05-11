@@ -2,5 +2,3 @@
 [each []]
 === out
 Dict({})
-=== warn
-undefined variable: each at 1:2-1:6

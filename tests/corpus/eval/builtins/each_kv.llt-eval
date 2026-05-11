@@ -3,5 +3,3 @@
 [head [each-kv [x: 99  y: 100]]]
 === out
 Dict({"key": String("x"), "value": Int(99)})
-=== warn
-undefined variable: each-kv at 2:8-2:15

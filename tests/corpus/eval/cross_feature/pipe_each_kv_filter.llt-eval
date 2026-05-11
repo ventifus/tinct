@@ -4,5 +4,3 @@
 [a: 1  b: 2  c: 3  d: 4] | each-kv | [filter [fn [pair] [call $= 0 [call $mod pair.value 2]]]] | collect
 === out
 Dict({0: Dict({"key": String("b"), "value": Int(2)}), 1: Dict({"key": String("d"), "value": Int(4)})})
-=== warn
-undefined variable: each-kv at 3:28-3:35

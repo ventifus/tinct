@@ -238,12 +238,12 @@ pub enum ErrorKind {
         cycle_path: Vec<(String, Span)>,
     },
 
-    // --- User-generated (E080-E089) ---
+    /// User-generated (E080-E089)
     UserError {
         message: String,
     },
 
-    // --- Schema validation (E090-E094) ---
+    /// Schema validation (E090-E094)
     SchemaViolation {
         /// List of (field_path, error_message) tuples for each violation.
         /// Field paths use dot notation: "user.address.zip"

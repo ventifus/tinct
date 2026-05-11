@@ -145,10 +145,16 @@ fn emit_tmpl_call(
                         // so that evaluation errors point to a reasonable location.
                         expr_args.push(Rc::new(Spanned::new(inner_expr.node, span)));
                     }
-                    Err(_) => {
-                        // Fallback: include the raw text as a quoted string.
-                        // This preserves output at the cost of incorrect runtime behavior.
-                        expr_args.push(Rc::new(Spanned::new(Expr::Str(source.clone()), span)));
+                    Err(inner_error) => {
+                        // Return an error including the inner error message to preserve
+                        // both the outer span (the interpolated string) and the inner error details.
+                        return Err(ParseError {
+                            message: format!(
+                                "failed to parse expression inside `${{...}}`: {} (inner error: {})",
+                                source, inner_error.message
+                            ),
+                            span: Some(span),
+                        });
                     }
                 }
             }
