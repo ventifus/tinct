@@ -1,0 +1,5 @@
+# Appendable constraint: builtin-concat on two dicts type-checks without warning.
+# The Appendable constraint on builtin-concat admits Record (Dict) as an instance.
+[builtin-concat [1 2] [3 4]]
+=== out
+Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)})

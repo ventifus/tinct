@@ -1961,13 +1961,27 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // builtin-concat is 2-arg: (xs, ys) — corrects the old 1-arg TypeEnv bug.
-        env.insert(
+        // builtin-concat: Appendable a, Appendable b => a -> b -> Unknown
+        // Each argument must be Appendable (Record/Seq), but both args need not be the
+        // same concrete type (e.g. two dicts with different field types are both Appendable).
+        // Return type is Unknown because the output shape depends on runtime values.
+        // This causes a type warning when concat is called with a non-Appendable (e.g. Int).
+        env.insert_scheme(
             "builtin-concat".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-                ret: Box::new(Type::Unknown),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string(), "b".to_string()],
+                constraints: vec![
+                    Constraint::new("Appendable", "a"),
+                    Constraint::new("Appendable", "b"),
+                ],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("b".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::Unknown),
+                    variadic: false,
+                },
             },
         );
 
