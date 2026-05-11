@@ -115,10 +115,93 @@ impl DocumentState {
             type_map = map;
             doc_map = docs;
 
+            // LSP-specific caps injection: pre-seed the eval environment with stub caps
+            // for any caps declared in the document's `--- caps:` sections. This prevents
+            // spurious eval errors when the LSP analyzes cap-declaring programs (LSP never
+            // receives --cap-fs/--cap-net CLI args, so caps validation would always fail).
+            // The type checker already handles caps correctly (typecheck.rs:502-521).
+            let lsp_eval_env = {
+                use crate::ast::Annotation;
+                use crate::value::{Thunk, Value};
+                use indexmap::IndexMap;
+
+                let mut env = Rc::clone(stdlib_env);
+
+                // Collect all caps declarations from all documents in the file
+                for doc in &file.node.documents {
+                    if let Some(ref caps_ann) = doc.node.caps {
+                        for (cap_name, annotation) in &caps_ann.node {
+                            let full_cap_name = format!("%{}", cap_name);
+
+                            // Skip if already present (e.g., auto-injected caps like %pwd, %stdin, %libdir)
+                            if env.borrow().get(&full_cap_name).is_some() {
+                                continue;
+                            }
+
+                            // Create a stub value based on the annotation type
+                            let stub_value = match annotation {
+                                Annotation::Simple(type_name) if type_name == "NetCap" => {
+                                    // Empty NetCap allowlist
+                                    Value::NetCap(Rc::new(vec![]))
+                                }
+                                Annotation::Simple(type_name) if type_name == "DirCap" => {
+                                    // Stub DirCap: use stdlib_env's base_dir (fallback to ".")
+                                    let stub_dir = cap_std::fs::Dir::open_ambient_dir(
+                                        ".",
+                                        cap_std::ambient_authority(),
+                                    )
+                                    .unwrap_or_else(|_| {
+                                        // Last resort: open temp_dir
+                                        cap_std::fs::Dir::open_ambient_dir(
+                                            std::env::temp_dir(),
+                                            cap_std::ambient_authority(),
+                                        )
+                                        .expect("failed to open stub dir for LSP caps")
+                                    });
+                                    Value::DirCap(Rc::new(stub_dir))
+                                }
+                                Annotation::Simple(type_name) if type_name == "Handle" => {
+                                    // Stub Handle: string value (minimal representation)
+                                    let source = Rc::<str>::from("lsp-stub-handle");
+                                    Value::String {
+                                        source: Rc::clone(&source),
+                                        start: 0,
+                                        end: source.len(),
+                                    }
+                                }
+                                Annotation::Simple(type_name) if type_name == "ClockCap" => {
+                                    // Stub ClockCap: use Fixed(0) for determinism
+                                    Value::ClockCap(Rc::new(crate::value::ClockCapInner::Fixed(0)))
+                                }
+                                _ => {
+                                    // Generic fallback: empty dict
+                                    Value::Dict(IndexMap::new())
+                                }
+                            };
+
+                            let stub_thunk =
+                                Rc::new(Thunk::new_materialized(stub_value, caps_ann.span));
+
+                            // Create a child environment if not already done
+                            if Rc::strong_count(&env) > 1 {
+                                // stdlib_env is shared; create a child scope
+                                env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                                    &env,
+                                ))));
+                            }
+
+                            env.borrow_mut().insert(full_cap_name, stub_thunk);
+                        }
+                    }
+                }
+
+                env
+            };
+
             // Attempt evaluation to catch runtime errors early (child scope of cached stdlib env).
             // Always materialize (even when no_fs=true) so that IncludeForbidden errors
             // are reported as diagnostics in the LSP.
-            match eval_file(&file.node, Rc::clone(stdlib_env), eval_ctx) {
+            match eval_file(&file.node, lsp_eval_env, eval_ctx) {
                 Err(err) => eval_errors.push(*err),
                 Ok(thunk) => {
                     if let Err(err) = materialize(&thunk, None, eval_ctx) {
@@ -481,6 +564,40 @@ impl Default for DocumentStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Load and analyze a document from a file URI without adding it to the store.
+///
+/// Used by hover and goto-definition handlers to support on-demand analysis of
+/// unopened documents (e.g., when Claude Code's LSP tool sends requests without
+/// a prior `textDocument/didOpen`).
+///
+/// Returns `None` if the URI cannot be converted to a file path or the file
+/// cannot be read.
+pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
+    // Convert URI to file path
+    let path = crate::lsp::convert::uri_to_file_path(uri)?;
+
+    // Read the file from disk
+    let text = std::fs::read_to_string(&path).ok()?;
+
+    // Create minimal environment for LSP analysis
+    let stdlib_env = create_stdlib_env().ok()?;
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
+    let eval_ctx = Rc::new(crate::eval::EvalContext::new(
+        base_dir,
+        Rc::clone(&stdlib_env),
+        true, // no_fs=true for LSP security
+    ));
+
+    // Create document state with the file's directory as base_dir for include resolution
+    let base_path = path.parent().map(|p| p.to_path_buf());
+    Some(DocumentState::new(
+        text,
+        &stdlib_env,
+        &eval_ctx,
+        base_path.as_deref(),
+    ))
 }
 
 #[cfg(test)]
