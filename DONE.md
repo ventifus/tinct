@@ -3311,6 +3311,22 @@ Consolidated from: test-framework-b, test-advanced
 - [x] Add function variance transitivity test or property test — transitivity assumed but not proven for subtyping (`src/types.rs:74-80`) [Major, type-theorist]
 - [x] Add corpus tests for MAX_PARSE_DEPTH boundary: depth_limit_255_succeeds.llt-eval (255 nested brackets) and depth_limit_256_fails.llt-eval (256 nested brackets → error) (`tests/corpus/`) [Minor, grammar-architect C81] (parser_depth_exceeded.llt-eval already exists; boundary tests covered)
 
+## LSP Improvements
+
+### lsp-caps-and-on-demand: LSP caps assumption + on-demand file loading
+
+- [x] [Major] Skip caps validation in LSP mode — pre-seed eval env with stub cap values
+- [x] [Major] On-demand hover for unopened documents — load from disk if not in document map
+- [x] [Major] On-demand goto-definition for unopened documents
+- [x] [Minor] Extract shared `load_doc_from_uri` helper in document.rs
+- [x] [Minor] Add 3 LSP corpus tests for unopened document hover/goto/caps
+
+## Cycle 231 Findings
+
+### cycle-231-findings: Cycle #231 analysis findings
+
+All items implemented (Pass 3d unify-on-overlap, unify_rows zero-overlap diagnostic, split_test_file graceful failure, stdlib doc fixes).
+
 ## Miscellaneous Fixes
 
 ### misc-nits-c: Miscellaneous Nits (Part 3)
