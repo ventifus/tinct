@@ -731,7 +731,10 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
             };
 
-            // Check allowlist before connecting
+            // Check application-level host allowlist first (--allow-host)
+            check_allowed_hosts(&ctx.config.allowed_hosts, &host, port, call_span)?;
+
+            // Check NetCap allowlist before connecting
             // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
             let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
 
@@ -944,7 +947,10 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
             };
 
-            // Check allowlist before connecting
+            // Check application-level host allowlist first (--allow-host)
+            check_allowed_hosts(&ctx.config.allowed_hosts, &host, port, call_span)?;
+
+            // Check NetCap allowlist before connecting
             let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
 
             let addr = if let Some(ip) = resolved_ip {
@@ -1023,8 +1029,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 // Resolve the full socket path via the DirCap's file descriptor
                 use std::os::unix::io::AsRawFd;
                 let dir_fd = dir.as_raw_fd();
-                let proc_path =
-                    std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
+                let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
                 let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
                     EvalError::user_error(
                         format!("connect: failed to resolve DirCap path: {}", e),
@@ -1035,16 +1040,12 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 // Autobind (anonymous local address): bind to empty string so the OS
                 // assigns an abstract socket name in the Linux autobind namespace.
-                let socket =
-                    std::os::unix::net::UnixDatagram::bind("").map_err(|e| {
-                        EvalError::user_error(
-                            format!(
-                                "connect: failed to autobind Unix datagram socket: {}",
-                                e
-                            ),
-                            call_span,
-                        )
-                    })?;
+                let socket = std::os::unix::net::UnixDatagram::bind("").map_err(|e| {
+                    EvalError::user_error(
+                        format!("connect: failed to autobind Unix datagram socket: {}", e),
+                        call_span,
+                    )
+                })?;
 
                 // Connect to the remote path so send()/recv() work without addresses
                 socket.connect(&full_path).map_err(|e| {
@@ -1084,6 +1085,41 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
         }
     }
+}
+
+/// Check if a connection to host:port is allowed by the --allow-host application-level allowlist.
+///
+/// This is a simple allowlist check that runs BEFORE the NetCap capability check and
+/// before socket creation. When `allowed_hosts` is non-empty, only exact "host:port"
+/// matches are permitted. When empty (default), all hosts are allowed (backward compatible).
+///
+/// Returns Ok(()) if allowed, Err(...) if denied.
+fn check_allowed_hosts(
+    allowed_hosts: &[String],
+    host: &str,
+    port: u16,
+    span: Span,
+) -> EvalResult<()> {
+    // Empty list = unrestricted (current behavior, backward compatible)
+    if allowed_hosts.is_empty() {
+        return Ok(());
+    }
+
+    // Check for exact "host:port" match in the allowlist
+    let target = format!("{}:{}", host, port);
+    if allowed_hosts.contains(&target) {
+        return Ok(());
+    }
+
+    // Not in allowlist — deny
+    Err(EvalError::user_error(
+        format!(
+            "connect: connection to {} blocked by --allow-host policy",
+            target
+        ),
+        span,
+    )
+    .into())
 }
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
@@ -4033,10 +4069,7 @@ mod tests {
 
         // Denied host (different hostname, same port) → Err
         let result = check_net_cap_allowlist(&entries, "evil.example.com", Some(443), span);
-        assert!(
-            result.is_err(),
-            "evil.example.com:443 should be denied"
-        );
+        assert!(result.is_err(), "evil.example.com:443 should be denied");
         let msg = result.unwrap_err().message().to_string();
         assert!(
             msg.contains("denied"),
@@ -4052,7 +4085,8 @@ mod tests {
 
         // Any allowlist → allows everything
         let any_entries = vec![NetCapEntry::Any];
-        let result = check_net_cap_allowlist(&any_entries, "anything.example.com", Some(1234), span);
+        let result =
+            check_net_cap_allowlist(&any_entries, "anything.example.com", Some(1234), span);
         assert!(
             result.is_ok(),
             "NetCapEntry::Any should allow any host:port"
@@ -4252,6 +4286,9 @@ pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
         }
     };
 
+    // Check application-level host allowlist first (--allow-host)
+    check_allowed_hosts(&ctx.config.allowed_hosts, &host_str, port, call_span)?;
+
     // Validate against NetCap allowlist (DNS-rebinding mitigation)
     let resolved_ip = check_net_cap_allowlist(&entries, &host_str, Some(port), call_span)?;
 
@@ -4384,7 +4421,7 @@ pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
 
     let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
     let write_inner = Some(Rc::new(RefCell::new(
-        Box::new(writer) as Box<dyn std::io::Write>,
+        Box::new(writer) as Box<dyn std::io::Write>
     )));
 
     let mut caps = HashMap::new();
@@ -4523,6 +4560,13 @@ pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     // Parse the base_url to extract host and port for cap validation.
     // We need a host for the allowlist check. Parse scheme://host[:port].
     let (host, port) = parse_origin_host_port(&base_url, call_span)?;
+
+    // Check application-level host allowlist first (--allow-host)
+    // parse_origin_host_port always returns Some(port) because it infers defaults
+    if let Some(p) = port {
+        check_allowed_hosts(&ctx.config.allowed_hosts, &host, p, call_span)?;
+    }
+
     check_net_cap_allowlist(&entries, &host, port, call_span)?;
 
     // Build the reqwest blocking client. Use rustls TLS (already the default via
@@ -4652,13 +4696,13 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     // concurrently with requests. For a blocking runtime we need a background task.
     // For now the SendRequest can issue requests but the driver won't run unless
     // block_on is called, which is sufficient for sequential request/response patterns.
-    let (_driver, send_request) =
-        crate::async_rt::block_on(h3::client::builder().build(h3_conn)).map_err(|e| {
-            EvalError::user_error(
-                format!("http3-session: HTTP/3 handshake failed: {}", e),
-                call_span,
-            )
-        })?;
+    let (_driver, send_request) = crate::async_rt::block_on(h3::client::builder().build(h3_conn))
+        .map_err(|e| {
+        EvalError::user_error(
+            format!("http3-session: HTTP/3 handshake failed: {}", e),
+            call_span,
+        )
+    })?;
 
     ok_val(
         Value::Http3Session(Rc::new(RefCell::new(send_request))),
@@ -4720,7 +4764,8 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
                 };
                 let thunk = ctx.thunk_arena.borrow().get(*val_id).clone();
                 let val_materialized = materialize(&thunk, Some(&call_span), &ctx)?;
-                let val_str = require_string("http-request header value", val_materialized, call_span)?;
+                let val_str =
+                    require_string("http-request header value", val_materialized, call_span)?;
                 out.push((key_str, val_str));
             }
             out
@@ -4737,29 +4782,25 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     };
 
     match session_val {
-        Value::Http3Session(send_request_rc) => {
-            http_request_h3(
-                send_request_rc,
-                method_str,
-                path_str,
-                req_headers,
-                body_str,
-                call_span,
-                &ctx,
-            )
-        }
-        Value::Http2Session { client, base_url } => {
-            http_request_h2(
-                client,
-                base_url,
-                method_str,
-                path_str,
-                req_headers,
-                body_str,
-                call_span,
-                &ctx,
-            )
-        }
+        Value::Http3Session(send_request_rc) => http_request_h3(
+            send_request_rc,
+            method_str,
+            path_str,
+            req_headers,
+            body_str,
+            call_span,
+            &ctx,
+        ),
+        Value::Http2Session { client, base_url } => http_request_h2(
+            client,
+            base_url,
+            method_str,
+            path_str,
+            req_headers,
+            body_str,
+            call_span,
+            &ctx,
+        ),
         other => Err(EvalError::type_mismatch_ctx(
             "http-request".to_string(),
             "Http2Session or Http3Session",
@@ -4824,11 +4865,7 @@ fn http_request_h2(
     let response = match builder.send() {
         Ok(r) => r,
         Err(e) => {
-            return http_request_err_val(
-                format!("http-request: request failed: {}", e),
-                span,
-                ctx,
-            );
+            return http_request_err_val(format!("http-request: request failed: {}", e), span, ctx);
         }
     };
 
@@ -4942,11 +4979,7 @@ fn http_request_h3(
 
     // Signal end of request stream (no trailers).
     if let Err(e) = crate::async_rt::block_on(stream.finish()) {
-        return http_request_err_val(
-            format!("http-request: finish failed: {}", e),
-            span,
-            ctx,
-        );
+        return http_request_err_val(format!("http-request: finish failed: {}", e), span, ctx);
     }
 
     // Receive response headers.
@@ -4974,10 +5007,7 @@ fn http_request_h3(
                 String::from_utf8_lossy(value.as_bytes()).into_owned()
             }
         };
-        headers_map.insert(
-            k,
-            ctx.alloc_thunk(ok_val(string_val(&v), span)?),
-        );
+        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span)?));
     }
 
     // Collect response body DATA frames.
@@ -5130,7 +5160,11 @@ fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> Eval
 }
 
 /// Build a `{ok: {latency-ms: Int}}` result dict value.
-fn icmp_ok_val(latency_ms: i64, span: Span, ctx: &crate::eval::EvalContext) -> EvalResult<Rc<Thunk>> {
+fn icmp_ok_val(
+    latency_ms: i64,
+    span: Span,
+    ctx: &crate::eval::EvalContext,
+) -> EvalResult<Rc<Thunk>> {
     use crate::value::Key;
     // Inner dict: {latency-ms: Int}
     let mut inner = IndexMap::new();
@@ -5181,9 +5215,7 @@ fn icmp_ping_impl(
     };
 
     // Create unprivileged ICMP socket (SOCK_DGRAM + IPPROTO_ICMP, Linux 3.11+)
-    let sock_fd = unsafe {
-        libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP)
-    };
+    let sock_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
     if sock_fd < 0 {
         let os_err = std::io::Error::last_os_error();
         return icmp_err_val(
@@ -5201,7 +5233,9 @@ fn icmp_ping_impl(
     struct SockGuard(libc::c_int);
     impl Drop for SockGuard {
         fn drop(&mut self) {
-            unsafe { libc::close(self.0); }
+            unsafe {
+                libc::close(self.0);
+            }
         }
     }
     let _guard = SockGuard(sock_fd);
@@ -5237,9 +5271,9 @@ fn icmp_ping_impl(
     let seq: u16 = 1;
     const DATA: &[u8] = b"tinct-ping";
     let mut packet = vec![0u8; 8 + DATA.len()];
-    packet[0] = 8;  // ICMP Echo Request type
-    packet[1] = 0;  // code
-    packet[2] = 0;  // checksum (computed below)
+    packet[0] = 8; // ICMP Echo Request type
+    packet[1] = 0; // code
+    packet[2] = 0; // checksum (computed below)
     packet[3] = 0;
     packet[4] = (id >> 8) as u8;
     packet[5] = (id & 0xFF) as u8;
@@ -5292,11 +5326,7 @@ fn icmp_ping_impl(
     };
     if sent < 0 {
         let os_err = std::io::Error::last_os_error();
-        return icmp_err_val(
-            format!("icmp-ping: sendto failed ({})", os_err),
-            span,
-            ctx,
-        );
+        return icmp_err_val(format!("icmp-ping: sendto failed ({})", os_err), span, ctx);
     }
 
     // Receive ICMP Echo Reply
@@ -5325,11 +5355,7 @@ fn icmp_ping_impl(
                 ctx,
             );
         }
-        return icmp_err_val(
-            format!("icmp-ping: recv failed ({})", os_err),
-            span,
-            ctx,
-        );
+        return icmp_err_val(format!("icmp-ping: recv failed ({})", os_err), span, ctx);
     }
 
     // Validate reply: must be at least 8 bytes, type=0 (Echo Reply)

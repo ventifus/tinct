@@ -104,6 +104,14 @@ pub struct EvalConfig {
     /// include paths in the allowlist check. `None` when not set (allowlist
     /// unused or context created without a known absolute base path).
     pub base_dir_path: Option<std::path::PathBuf>,
+    /// Network host allowlist for connect/http2-session/http3-session builtins.
+    /// When non-empty, only "host:port" pairs in this list are permitted.
+    /// When empty (the default), all hosts are unrestricted (only NetCap controls access).
+    ///
+    /// This is an application-level filter that runs before the NetCap capability
+    /// check and before socket creation. Format: "host:port" strings (e.g., "api.example.com:443").
+    /// Empty list = all hosts allowed (backward compatible, current behavior).
+    pub allowed_hosts: Vec<String>,
 }
 
 /// Mutable evaluation state (include guard, caching).
@@ -212,6 +220,7 @@ impl EvalContext {
             no_fs,
             require_integrity,
             Vec::new(),
+            Vec::new(),
             None,
         )
     }
@@ -222,6 +231,7 @@ impl EvalContext {
         no_fs: bool,
         require_integrity: bool,
         allowed_paths: Vec<std::path::PathBuf>,
+        allowed_hosts: Vec<String>,
         env_allowed: Option<HashSet<String>>,
     ) -> Rc<Self> {
         Self::new_with_full_options(
@@ -231,6 +241,7 @@ impl EvalContext {
             no_fs,
             require_integrity,
             allowed_paths,
+            allowed_hosts,
             env_allowed,
         )
     }
@@ -244,6 +255,7 @@ impl EvalContext {
         no_fs: bool,
         require_integrity: bool,
         allowed_paths: Vec<std::path::PathBuf>,
+        allowed_hosts: Vec<String>,
         env_allowed: Option<HashSet<String>>,
     ) -> Rc<Self> {
         Rc::new(Self {
@@ -254,6 +266,7 @@ impl EvalContext {
                 require_integrity,
                 allowed_paths,
                 base_dir_path,
+                allowed_hosts,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -302,6 +315,7 @@ impl EvalContext {
                 require_integrity: self.config.require_integrity,
                 allowed_paths: self.config.allowed_paths.clone(),
                 base_dir_path,
+                allowed_hosts: self.config.allowed_hosts.clone(),
             }),
             state: Rc::clone(&self.state),
             thunk_arena: Rc::clone(&self.thunk_arena),
@@ -430,7 +444,9 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
                     }
                 }
             }
-            Some(Cow::Owned(Row { fields: merged_fields }))
+            Some(Cow::Owned(Row {
+                fields: merged_fields,
+            }))
         }
         _ => None,
     }
@@ -1250,8 +1266,9 @@ pub(crate) fn eagerly_register_constructors(
     let constructors = extract_nominal_constructors(body);
     for (tag, has_payload) in constructors {
         let constructor_value = if has_payload {
-            let constructor_env =
-                Rc::new(RefCell::new(Environment::with_parent(Rc::clone(target_env))));
+            let constructor_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                target_env,
+            ))));
             constructor_env.borrow_mut().insert(
                 VARIANT_TAG_MARKER.to_string(),
                 Rc::new(Thunk::new_materialized(string_val(&tag), span)),
@@ -8289,10 +8306,11 @@ mod tests {
                 let parsed = crate::parse(&source).expect("parse should succeed");
                 let mut file = parsed.node;
                 crate::desugar::desugar_file(&mut file);
-                let env =
-                    crate::builtins::create_stdlib_env().expect("stdlib env creation should succeed");
-                let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-                    .expect("failed to open test base_dir");
+                let env = crate::builtins::create_stdlib_env()
+                    .expect("stdlib env creation should succeed");
+                let base_dir =
+                    cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+                        .expect("failed to open test base_dir");
                 let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
                 let thunk = eval_file(&file, env, &ctx).expect("eval_file should succeed");
                 let dict_val =

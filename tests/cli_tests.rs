@@ -3524,3 +3524,39 @@ fn describe_json_mode_with_doc_string() {
         }
     }
 }
+
+#[test]
+fn allow_host_blocks_unlisted_connection() {
+    // With --allow-host, connections to unlisted host:port pairs are blocked.
+    // This test verifies the error message without actually connecting to the network.
+    let llt_content = r#"
+[connect %nc Tcp "example.com" 443]
+"#;
+    let (path, _dir) = write_temp_llt("allow_host_block", llt_content);
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--cap-net",
+            "nc=any", // NetCap allows all
+            "--allow-host",
+            "allowed.example.com:443", // But --allow-host only permits this host
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    // Should fail with --allow-host policy error
+    assert!(
+        !output.status.success(),
+        "expected failure when connecting to unlisted host"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked by --allow-host policy"),
+        "expected --allow-host policy error, got: {}",
+        stderr
+    );
+}
+
