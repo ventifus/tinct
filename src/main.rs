@@ -240,6 +240,9 @@ enum Commands {
         mode: LiterateMode,
         /// Markdown file to process.
         file: String,
+        /// Skip inline marker substitution in weave mode (preserve <!-- tinct-result: ... --> markers).
+        #[arg(long)]
+        no_substitute: bool,
     },
 }
 
@@ -356,7 +359,7 @@ fn main() {
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
         Commands::Describe { json, file } => run_describe(&file, json),
         Commands::Explain { code } => run_explain(&code),
-        Commands::Literate { mode, file } => run_literate(&file, &mode),
+        Commands::Literate { mode, file, no_substitute } => run_literate(&file, &mode, no_substitute),
     };
 
     match result {
@@ -1862,7 +1865,7 @@ fn read_stdin_json() -> Result<Option<serde_json::Value>, String> {
 /// - **`eval`** — join the blocks, evaluate the resulting pipeline, print JSON.
 /// - **`weave`** — evaluate each block in pipeline order; output the original
 ///   Markdown with the JSON result appended as a comment after each tinct block.
-fn run_literate(file_path: &str, mode: &LiterateMode) -> Result<(), String> {
+fn run_literate(file_path: &str, mode: &LiterateMode, no_substitute: bool) -> Result<(), String> {
     let markdown = read_source(file_path)?;
     let blocks = literate::extract_code_blocks(&markdown);
 
@@ -1895,7 +1898,7 @@ fn run_literate(file_path: &str, mode: &LiterateMode) -> Result<(), String> {
             run_literate_eval(&tangled, file_path)
         }
 
-        LiterateMode::Weave => run_literate_weave(&markdown, &blocks, file_path),
+        LiterateMode::Weave => run_literate_weave(&markdown, &blocks, file_path, no_substitute),
     }
 }
 
@@ -1999,12 +2002,13 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
 /// Each block is evaluated in pipeline order — `%` from block N becomes the input
 /// to block N+1 — matching the tangle/eval semantics exactly.
 ///
-/// Full result substitution (replacing inline markers like `<!-- tinct: expr -->`)
-/// is a future refinement.
+/// Full result substitution (replacing inline markers like `<!-- tinct-result: expr -->`)
+/// happens by default unless `no_substitute` is true.
 fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
     markdown_path: &str,
+    no_substitute: bool,
 ) -> Result<(), String> {
     // Evaluate the pipeline incrementally: process one block at a time, threading
     // % between them. This lets us annotate each block with the result at that point.
@@ -2109,8 +2113,180 @@ fn run_literate_weave(
         }
     }
 
+    // If no_substitute is false, perform inline marker substitution.
+    if !no_substitute {
+        output = substitute_inline_markers(&output, &block_results, &base_eval_ctx, &env, &base_dir_path)?;
+    }
+
     print!("{output}");
     Ok(())
+}
+
+/// Substitute inline `<!-- tinct-result: ... -->` markers in Markdown output.
+///
+/// Markers with an expression (e.g., `<!-- tinct-result: expr -->`) evaluate that expression
+/// with the most recent block result available as `%`. Markers without an expression
+/// (just `<!-- tinct-result -->`) are replaced with the most recent block result.
+///
+/// This function scans the output for markers and replaces them with evaluated results.
+fn substitute_inline_markers(
+    output: &str,
+    _block_results: &[String],
+    base_eval_ctx: &EvalContext,
+    env: &Rc<std::cell::RefCell<tinct::Environment>>,
+    base_dir_path: &std::path::PathBuf,
+) -> Result<String, String> {
+    use regex::Regex;
+
+    // Pattern to match <!-- tinct-result: EXPR --> or <!-- tinct-result -->
+    // Capture group 1: optional expression content
+    let marker_re = Regex::new(r"<!--\s*tinct-result:\s*([^>]*?)\s*-->")
+        .expect("invalid regex");
+
+    let mut result = String::with_capacity(output.len());
+    let mut last_pos = 0;
+    let mut most_recent_result: Option<&str> = None;
+
+    // Track which block result we're seeing as we scan through the output
+    // by counting <!-- tinct-result: JSON --> comments (the ones after code blocks)
+    for cap in marker_re.captures_iter(output) {
+        let full_match = cap.get(0).unwrap();
+        let expr_opt = cap.get(1).map(|m| m.as_str().trim());
+
+        // Append everything before this marker
+        result.push_str(&output[last_pos..full_match.start()]);
+
+        // Check if this is a block result comment (contains JSON) or an inline marker
+        let is_block_comment = if let Some(expr) = expr_opt {
+            // If it starts with { or [ or ", it's likely JSON from a block result
+            // Otherwise it's an inline marker expression
+            let trimmed = expr.trim();
+            if trimmed.is_empty() {
+                // Empty expression: <!-- tinct-result: -->
+                // Treat as inline marker requesting most recent result
+                false
+            } else if trimmed.starts_with('{') || trimmed.starts_with('[')
+                || trimmed.starts_with('"') || trimmed == "(emit)" {
+                // This is a block result comment, not an inline marker
+                true
+            } else {
+                // This is an inline marker with an expression
+                false
+            }
+        } else {
+            // No expression at all - this shouldn't match our regex, but handle it
+            false
+        };
+
+        if is_block_comment {
+            // This is a block result comment - track it and preserve it
+            if let Some(expr) = expr_opt {
+                most_recent_result = Some(expr);
+            }
+            // Preserve the block result comment as-is
+            result.push_str(full_match.as_str());
+        } else {
+            // This is an inline marker - substitute it
+            let substitution = if let Some(expr) = expr_opt {
+                if expr.is_empty() {
+                    // Empty expression: use most recent result
+                    if let Some(recent) = most_recent_result {
+                        recent.to_string()
+                    } else {
+                        // No block evaluated yet - leave marker as-is
+                        full_match.as_str().to_string()
+                    }
+                } else {
+                    // Evaluate the expression with % bound to the most recent result
+                    evaluate_marker_expression(expr, most_recent_result, base_eval_ctx, env, base_dir_path)?
+                }
+            } else {
+                // No expression: use most recent result
+                if let Some(recent) = most_recent_result {
+                    recent.to_string()
+                } else {
+                    // No block evaluated yet - leave marker as-is
+                    full_match.as_str().to_string()
+                }
+            };
+
+            result.push_str(&substitution);
+        }
+
+        last_pos = full_match.end();
+    }
+
+    // Append remaining content
+    result.push_str(&output[last_pos..]);
+
+    Ok(result)
+}
+
+/// Evaluate an inline marker expression with the most recent block result as %.
+fn evaluate_marker_expression(
+    expr: &str,
+    most_recent_json: Option<&str>,
+    base_eval_ctx: &EvalContext,
+    env: &Rc<std::cell::RefCell<tinct::Environment>>,
+    base_dir_path: &std::path::PathBuf,
+) -> Result<String, String> {
+    // Parse the expression
+    let ast = parse(expr).map_err(|e| format!("parse error in inline marker: {e}"))?;
+
+    // Convert the most recent JSON result back to a Thunk for %
+    let pipeline_input = if let Some(json_str) = most_recent_json {
+        if json_str == "(emit)" {
+            // Special case: (emit) is not valid JSON, treat as null
+            None
+        } else {
+            let json_val: serde_json::Value = serde_json::from_str(json_str)
+                .map_err(|e| format!("JSON parse error in recent result: {e}"))?;
+            // Create a temporary eval context for json_to_value
+            // We can't clone base_eval_ctx, so we need to create a new one
+            let temp_dir =
+                cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
+                    .map_err(|e| format!("cannot open base directory: {e}"))?;
+            let temp_ctx = base_eval_ctx.with_base_dir_and_path(temp_dir, Some(base_dir_path.clone()));
+            let temp_ctx_rc = Rc::new(temp_ctx);
+
+            let thunk = tinct::json_to_value(&json_val, 0, Span::origin(), &temp_ctx_rc)
+                .map_err(|e| format!("error converting JSON to value: {e}"))?;
+            Some(thunk)
+        }
+    } else {
+        None
+    };
+
+    // Expand, desugar, resolve, typecheck
+    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    let mut ast = expand_result.file;
+    tinct::desugar::desugar_file(&mut ast.node);
+    tinct::resolve::resolve_file(&ast.node);
+    let _ = tinct::typecheck::typecheck_file(&ast.node);
+
+    // Create a per-expression eval context
+    let base_dir =
+        cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open base directory: {e}"))?;
+    let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
+
+    // Evaluate
+    let eval_ctx_rc = Rc::new(eval_ctx);
+    let thunk = eval_file_with_input(&ast.node, Rc::clone(env), &eval_ctx_rc, pipeline_input)
+        .map_err(|e| format!("error evaluating inline marker: {e}"))?;
+
+    let val = materialize(&thunk, None, &eval_ctx_rc)
+        .map_err(|e| format!("error materializing inline marker: {e}"))?;
+
+    // Convert to JSON and return as string
+    if eval_ctx_rc.emitted.get() {
+        Ok("(emit)".to_string())
+    } else {
+        let json = value_to_json(&val, &eval_ctx_rc)
+            .map_err(|e| format!("error serializing inline marker result: {e}"))?;
+        serde_json::to_string(&json)
+            .map_err(|e| format!("JSON serialization error in inline marker: {e}"))
+    }
 }
 
 /// Schema keys recognized by the `describe` subcommand heuristic.
