@@ -1,7 +1,7 @@
 # Macros cannot shadow registered builtins
 [defmacro str [fn [args] [get 0 args]]]
 === error
-macro name 'str' collides with registered builtin — macros cannot shadow builtins
+[E080] macro name 'str' collides with registered builtin — macros cannot shadow builtins
 
 === warn
 [E080] macro name 'str' collides with registered builtin — macros cannot shadow builtins (defined at 1:1-1:40)

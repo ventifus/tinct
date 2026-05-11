@@ -3,4 +3,4 @@
 [connect %nc Tcp "github.com" 443]
 
 === error
-connect: connection to github.com:443 denied by NetCap allowlist
+[E080] connect: connection to github.com:443 denied by NetCap allowlist

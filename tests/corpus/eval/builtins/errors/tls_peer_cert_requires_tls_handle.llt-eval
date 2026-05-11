@@ -6,7 +6,7 @@
 [tls-peer-cert h]
 
 === error
-tls-peer-cert: expected Handle, got Dict
+[E010] tls-peer-cert: expected Handle, got Dict
 
 === warn
 cannot unify Handle with []

@@ -3,7 +3,7 @@
 [icmp-ping %pwd "localhost" 1000]
 
 === error
-icmp-ping: expected NetCap, got DirCap
+[E010] icmp-ping: expected NetCap, got DirCap
 
 === warn
 cannot unify NetCap with DirCap

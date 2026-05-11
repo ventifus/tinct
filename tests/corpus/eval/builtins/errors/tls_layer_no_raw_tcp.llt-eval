@@ -3,4 +3,4 @@
 [tls-layer handle "example.com" []]
 
 === error
-tls-layer: handle does not have a raw TCP stream (not created by connect cap Tcp)
+[E080] tls-layer: handle does not have a raw TCP stream (not created by connect cap Tcp)

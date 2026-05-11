@@ -1,0 +1,6 @@
+# Lambda return type incompatible with expected
+[@[Fn@String [Int]] [fn [x] 42]]
+=== out
+Function(x)
+=== warn
+cannot unify String with 42 at 1:29-1:31

@@ -10,4 +10,4 @@
 
 [div-zero 42]
 === error
-division by zero
+[E031] /: division by zero
