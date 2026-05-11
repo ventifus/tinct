@@ -1,0 +1,9 @@
+# Appendable constraint violation: builtin-concat with an Int argument.
+# Int is not an Appendable instance (Appendable admits Str, Record, Seq).
+# The type checker reports a constraint violation warning.
+# Eval proceeds — the advisory type error does not prevent evaluation.
+[f: [fn [x@Int] [builtin-concat x x]]]
+=== out
+Dict({"f": Function(x)})
+=== warn
+does not satisfy constraint Appendable
