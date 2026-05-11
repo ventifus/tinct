@@ -1,6 +1,6 @@
 # build-grpc-frame with compressed=false: byte 0 of the frame must be chr(0).
 
-[include "stdlib/protocols/grpc.llt"]
+[include %libdir "protocols/grpc.llt"]
 ---
 [char-code [str-slice [call %.build-grpc-frame "data" false] 0 1]]
 === out

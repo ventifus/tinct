@@ -1,5 +1,5 @@
 # json-pretty: format simple dict
-[include "stdlib/out/json-pretty.llt"]
+[include %libdir "out/json-pretty.llt"]
 ---
 [call %.json-pretty [
   name: "Alice"

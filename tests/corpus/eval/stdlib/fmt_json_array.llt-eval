@@ -1,5 +1,5 @@
 # json: format array (list-shaped dict)
-[include "stdlib/out/json.llt"]
+[include %libdir "out/json.llt"]
 ---
 [call %.json [1 2 3]]
 === out

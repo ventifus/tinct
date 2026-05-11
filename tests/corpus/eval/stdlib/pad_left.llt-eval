@@ -1,5 +1,5 @@
 # pad-left: left-pad a string to target width
-[include "stdlib/strings.llt"]
+[include %libdir "strings.llt"]
 ---
 [call %.pad-left "hi" 5 " "]
 === out

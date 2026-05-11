@@ -1,5 +1,5 @@
 # Test dot wildcard (not yet implemented - using literal match for now)
-[include "stdlib/regex.llt"]
+[include %libdir "regex.llt"]
 
 ---
 

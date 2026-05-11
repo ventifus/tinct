@@ -2,7 +2,7 @@
 # ID=257 => byte0=chr(1), byte1=chr(1).
 # char-code of byte 0 should be 1.
 
-[include "stdlib/protocols/dns.llt"]
+[include %libdir "protocols/dns.llt"]
 ---
 [char-code [str-slice [call %.build-dns-query 257 "a.b" %.A] 0 1]]
 === out

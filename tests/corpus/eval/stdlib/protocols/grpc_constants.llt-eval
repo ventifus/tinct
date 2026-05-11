@@ -1,6 +1,6 @@
 # gRPC protocol exports the GRPC-HEADER-LEN constant.
 
-[include "stdlib/protocols/grpc.llt"]
+[include %libdir "protocols/grpc.llt"]
 ---
 %.GRPC-HEADER-LEN
 === out

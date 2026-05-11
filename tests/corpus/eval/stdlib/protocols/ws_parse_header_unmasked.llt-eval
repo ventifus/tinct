@@ -3,7 +3,7 @@
 # byte1 = 0x00 (MASK=0, payload-len=0)
 # Expected: fin=true, opcode=10, masked=false, payload-len=0, header-len=2
 
-[include "stdlib/protocols/websocket.llt"]
+[include %libdir "protocols/websocket.llt"]
 ---
 [call [fn [p]
     [set [set [set [set [set []

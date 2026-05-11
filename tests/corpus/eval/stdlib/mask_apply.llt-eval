@@ -1,4 +1,4 @@
-[include "stdlib/encoding.llt"]
+[include %libdir "encoding.llt"]
 ---
 # Test XOR masking round-trip
 [call %.mask-apply [call %.mask-apply "hello" "key"] "key"]

@@ -1,5 +1,5 @@
 # toml-lite: simple array table — assert specific field
-[include "stdlib/toml-lite.llt"]
+[include %libdir "toml-lite.llt"]
 
 ---
 

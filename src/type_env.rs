@@ -1747,12 +1747,10 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // include: accepts 1–3 positional args (runtime: builtins_meta.rs:builtin_include).
-        //   [include "path"]               — 1 arg: path String
-        //   [include "path" "hash"]        — 2 args: path + integrity hash
+        // include: accepts 2–3 positional args (runtime: builtins_meta.rs:builtin_include).
         //   [include $cap "path"]          — 2 args: DirCap + path
         //   [include $cap "path" "hash"]   — 3 args: DirCap + path + hash
-        // First arg is Unknown to accept both DirCap and String; variadic covers 2- and 3-arg forms.
+        // First arg is Unknown (DirCap); variadic covers 2- and 3-arg forms.
         env.insert(
             "include".to_string(),
             Type::Function {

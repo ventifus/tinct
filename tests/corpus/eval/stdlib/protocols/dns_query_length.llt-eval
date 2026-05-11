@@ -4,7 +4,7 @@
 # QNAME breakdown: chr(7)+"example"+chr(3)+"com"+chr(0)
 #   = 8 + 4 + 1 = 13 bytes.
 
-[include "stdlib/protocols/dns.llt"]
+[include %libdir "protocols/dns.llt"]
 ---
 [length [call %.build-dns-query 1 "example.com" %.A]]
 === out

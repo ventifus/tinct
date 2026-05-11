@@ -1,6 +1,6 @@
 # Test that macros work within an included file
 [
-  lib: [include "tests/corpus/eval/macros/macro_lib.llt"]
+  lib: [include %pwd "tests/corpus/eval/macros/macro_lib.llt"]
 ]
 === out
 Dict({"lib": Dict({"result": Int(3)})})

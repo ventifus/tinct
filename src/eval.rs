@@ -6653,25 +6653,36 @@ mod tests {
 
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
             .expect("failed to open temp_dir");
-        let ctx = EvalContext::new(
-            base_dir,
-            crate::builtins::create_stdlib_env().unwrap(),
-            false,
-        );
+        let stdlib_env = crate::builtins::create_stdlib_env().unwrap();
+        let ctx = EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
 
-        // First include: should evaluate and cache
+        // Create an env with %pwd bound to the test directory so [include %pwd "..."] works.
+        let test_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
+                    .expect("open temp_dir for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                Span::origin(),
+            ));
+            test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+
+        // First include: should evaluate and cache.
+        // Use 2-arg form [include %pwd "test_cache.llt"].
         let include_expr1 = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![rsp(Expr::Str("test_cache.llt".into()))],
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test_cache.llt".into())),
+            ],
             named_args: vec![],
             implied: false,
         });
-        let result1 = eval(
-            Rc::new(include_expr1.clone()),
-            Rc::clone(&ctx.config.stdlib_env),
-            &ctx,
-        )
-        .unwrap();
+        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&test_env), &ctx).unwrap();
         let val1 = materialize(&result1, None, &ctx).unwrap();
 
         // Verify the cache contains the file
@@ -6684,16 +6695,14 @@ mod tests {
         // Second include of the same file: should hit cache
         let include_expr2 = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![rsp(Expr::Str("test_cache.llt".into()))],
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test_cache.llt".into())),
+            ],
             named_args: vec![],
             implied: false,
         });
-        let result2 = eval(
-            Rc::new(include_expr2.clone()),
-            Rc::clone(&ctx.config.stdlib_env),
-            &ctx,
-        )
-        .unwrap();
+        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&test_env), &ctx).unwrap();
         let val2 = materialize(&result2, None, &ctx).unwrap();
 
         // Both results should be the same value
@@ -6723,11 +6732,8 @@ mod tests {
 
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
             .expect("failed to open temp_dir");
-        let ctx = EvalContext::new(
-            base_dir,
-            crate::builtins::create_stdlib_env().unwrap(),
-            false,
-        );
+        let stdlib_env = crate::builtins::create_stdlib_env().unwrap();
+        let ctx = EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
 
         // Manually insert the file identity (dev, ino) into the include guard
         #[cfg(unix)]
@@ -6746,19 +6752,32 @@ mod tests {
         };
         ctx.state.borrow_mut().include_guard.insert(file_id);
 
-        // Attempt to include the file: should detect cycle
+        // Create an env with %pwd bound to temp_dir for the 2-arg include form.
+        let test_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
+                    .expect("open temp_dir for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                Span::origin(),
+            ));
+            test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+
+        // Attempt to include the file via [include %pwd "guard_test.llt"]: should detect cycle
         let include_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![rsp(Expr::Str("guard_test.llt".into()))],
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("guard_test.llt".into())),
+            ],
             named_args: vec![],
             implied: false,
         });
-        let result = eval(
-            Rc::new(include_expr.clone()),
-            Rc::clone(&ctx.config.stdlib_env),
-            &ctx,
-        )
-        .unwrap();
+        let result = eval(Rc::new(include_expr.clone()), Rc::clone(&test_env), &ctx).unwrap();
         let err = materialize(&result, None, &ctx).unwrap_err();
 
         assert!(
@@ -6805,34 +6824,56 @@ mod tests {
             false,
         );
 
-        // Include test.llt from ctx1
+        // Include test.llt from ctx1 using 2-arg form with %pwd = temp_dir1.
+        let env1 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx1.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir1 =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
+                    .expect("open temp_dir1 for %pwd");
+            let pwd_thunk1 = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap(Rc::new(pwd_dir1)),
+                Span::origin(),
+            ));
+            env1.borrow_mut().insert("%pwd".to_string(), pwd_thunk1);
+        }
         let include_expr1 = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![rsp(Expr::Str("test.llt".into()))],
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test.llt".into())),
+            ],
             named_args: vec![],
             implied: false,
         });
-        let result1 = eval(
-            Rc::new(include_expr1.clone()),
-            Rc::clone(&ctx1.config.stdlib_env),
-            &ctx1,
-        )
-        .unwrap();
+        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&env1), &ctx1).unwrap();
         let val1 = materialize(&result1, None, &ctx1).unwrap();
 
-        // Include test.llt from ctx2
+        // Include test.llt from ctx2 using 2-arg form with %pwd = temp_dir2.
+        let env2 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx2.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir2 =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
+                    .expect("open temp_dir2 for %pwd");
+            let pwd_thunk2 = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap(Rc::new(pwd_dir2)),
+                Span::origin(),
+            ));
+            env2.borrow_mut().insert("%pwd".to_string(), pwd_thunk2);
+        }
         let include_expr2 = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![rsp(Expr::Str("test.llt".into()))],
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test.llt".into())),
+            ],
             named_args: vec![],
             implied: false,
         });
-        let result2 = eval(
-            Rc::new(include_expr2.clone()),
-            Rc::clone(&ctx2.config.stdlib_env),
-            &ctx2,
-        )
-        .unwrap();
+        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&env2), &ctx2).unwrap();
         let val2 = materialize(&result2, None, &ctx2).unwrap();
 
         // Verify that the two contexts resolved different files
@@ -6905,19 +6946,31 @@ mod tests {
             "ctx2 should share the same state Rc as ctx1"
         );
 
-        // Include a file using ctx1 - this populates the include_cache
+        // Include a file using ctx1 - this populates the include_cache.
+        // Use 2-arg form with %pwd = temp_dir1.
+        let env_ctx1 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx1.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
+                    .expect("open temp_dir1 for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                Span::origin(),
+            ));
+            env_ctx1.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
         let include_expr1 = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![rsp(Expr::Str("shared_test.llt".into()))],
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("shared_test.llt".into())),
+            ],
             named_args: vec![],
             implied: false,
         });
-        let result1 = eval(
-            Rc::new(include_expr1.clone()),
-            Rc::clone(&ctx1.config.stdlib_env),
-            &ctx1,
-        )
-        .unwrap();
+        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&env_ctx1), &ctx1).unwrap();
         let _val1 = materialize(&result1, None, &ctx1).unwrap();
 
         // Verify that ctx1's include_cache has one entry
@@ -6970,20 +7023,32 @@ mod tests {
             "ctx2 include_guard should contain the file identity inserted via ctx1"
         );
 
-        // Attempt to include the guarded file using ctx2 - should detect cycle
-        // This resolves to temp_dir2/guard_test.llt which is in the shared guard
+        // Attempt to include the guarded file using ctx2 - should detect cycle.
+        // This resolves to temp_dir2/guard_test.llt which is in the shared guard.
+        // Use 2-arg form with %pwd = temp_dir2.
+        let env_ctx2 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx2.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
+                    .expect("open temp_dir2 for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                Span::origin(),
+            ));
+            env_ctx2.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
         let include_expr2 = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![rsp(Expr::Str("guard_test.llt".into()))],
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("guard_test.llt".into())),
+            ],
             named_args: vec![],
             implied: false,
         });
-        let result2 = eval(
-            Rc::new(include_expr2.clone()),
-            Rc::clone(&ctx2.config.stdlib_env),
-            &ctx2,
-        )
-        .unwrap();
+        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&env_ctx2), &ctx2).unwrap();
         let err = materialize(&result2, None, &ctx2).unwrap_err();
 
         assert!(

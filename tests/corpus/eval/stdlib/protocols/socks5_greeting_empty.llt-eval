@@ -1,6 +1,6 @@
 # build-socks5-greeting errors on empty methods dict.
 
-[include "stdlib/protocols/socks5.llt"]
+[include %libdir "protocols/socks5.llt"]
 ---
 [try [fn [] [call %.build-socks5-greeting []]]]
 === out

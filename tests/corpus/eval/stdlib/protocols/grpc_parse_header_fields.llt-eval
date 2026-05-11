@@ -2,7 +2,7 @@
 # byte0=0 (uncompressed), bytes1-4=0 (length=0).
 # Expected: {compressed: false, length: 0, header-len: 5}.
 
-[include "stdlib/protocols/grpc.llt"]
+[include %libdir "protocols/grpc.llt"]
 ---
 [call %.parse-grpc-frame-header
     [str [chr 0] [chr 0] [chr 0] [chr 0] [chr 0]]]

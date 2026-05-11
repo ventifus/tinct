@@ -1,5 +1,5 @@
 # json: format simple dict
-[include "stdlib/out/json.llt"]
+[include %libdir "out/json.llt"]
 ---
 [call %.json [
   name: "Alice"

@@ -201,8 +201,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
-    // Inject `%pwd` DirCap for the current directory (mirrors the CLI run_eval behavior).
-    // This allows corpus tests to use `%pwd` for file operations without dir-cap.
+    // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
+    // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
         if let Ok(pwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
@@ -210,6 +210,15 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             let pwd_val = Value::DirCap(Rc::new(pwd_dir));
             let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
             env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+        if let Some(libdir_path) = find_libdir_path() {
+            if let Ok(libdir_dir) =
+                cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority())
+            {
+                let libdir_val = Value::DirCap(Rc::new(libdir_dir));
+                let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
+                env.borrow_mut().insert("%libdir".to_string(), libdir_thunk);
+            }
         }
     }
     let thunk = eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
@@ -1743,31 +1752,38 @@ mod tests {
 
 /// Resolve the stdlib directory path from the binary location.
 ///
-/// Tries two layouts in order:
-/// 1. Development: `<exe_grandparent>/stdlib/`
-/// 2. Installed: `<exe_parent>/../share/tinct/stdlib/`
+/// Tries multiple layouts in order:
+/// 1. Development release binary: `target/debug/tinct` → `<project-root>/stdlib/`
+///    (2 parent levels: debug/ → target/ → project root → stdlib/)
+/// 2. Test binary: `target/debug/deps/tinct-HASH` → `<project-root>/stdlib/`
+///    (3 parent levels: deps/ → debug/ → target/ → project root → stdlib/)
+/// 3. Installed: `bin/tinct` → `<prefix>/share/tinct/stdlib/`
+///    (2 parent levels: bin/ → prefix/ → share/tinct/stdlib/)
 ///
-/// Returns `None` if neither directory exists.
+/// Returns `None` if no stdlib directory exists at any candidate path.
 ///
-/// This is used by the type checker to resolve `%libdir` cap-qualified includes.
+/// This is used by the type checker and runtime to resolve `%libdir` cap-qualified includes.
 pub fn find_libdir_path() -> Option<std::path::PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
-            exe.parent() // target/debug
-                .and_then(|p| p.parent()) // target
-                .and_then(|p| p.parent()) // project root
-                .map(|root| root.join("stdlib"))
-        })
-        .filter(|p| p.is_dir())
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| {
-                    exe.parent() // bin/
-                        .and_then(|p| p.parent()) // <prefix>/
-                        .map(|prefix| prefix.join("share").join("tinct").join("stdlib"))
-                })
-                .filter(|p| p.is_dir())
-        })
+    let exe = std::env::current_exe().ok()?;
+    // Collect candidate stdlib dirs by walking up the directory hierarchy.
+    // Each ancestor that contains a "stdlib" subdirectory is a valid candidate.
+    // We try up to 4 levels up to handle both release binaries (2 levels) and
+    // test binaries (3 levels: target/debug/deps/tinct-HASH → target/ → root).
+    let mut dir = exe.parent()?.to_path_buf();
+    for _ in 0..4 {
+        let candidate = dir.join("stdlib");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        // Also check the installed layout: <prefix>/share/tinct/stdlib/
+        let installed = dir.join("share").join("tinct").join("stdlib");
+        if installed.is_dir() {
+            return Some(installed);
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent.to_path_buf(),
+            None => break,
+        }
+    }
+    None
 }

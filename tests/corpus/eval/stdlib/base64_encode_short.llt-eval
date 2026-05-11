@@ -1,4 +1,4 @@
-[include "stdlib/encoding.llt"]
+[include %libdir "encoding.llt"]
 ---
 # Test base64 encoding with padding (2 bytes)
 [call %.base64-encode "hi"]

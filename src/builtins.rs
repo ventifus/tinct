@@ -7731,6 +7731,14 @@ mod tests {
         crate::eval::EvalContext::new(dir, stdlib_env, false)
     }
 
+    /// Helper: create a Value::DirCap for a given directory path.
+    fn dir_cap_val(base_dir: &std::path::Path) -> Value {
+        Value::DirCap(Rc::new(
+            cap_std::fs::Dir::open_ambient_dir(base_dir, cap_std::ambient_authority())
+                .expect("open dir for DirCap"),
+        ))
+    }
+
     /// Helper: write a temp file and return its path.
     fn write_temp_file(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf {
         let path = dir.join(name);
@@ -7744,7 +7752,9 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(Value::Int(42))];
+        // Pass 2 args where first is Int (not DirCap): arity check passes (2 args OK),
+        // then type-mismatch fires because Int != DirCap.
+        let args = vec![thunk(Value::Int(42)), thunk(string_val("path.llt"))];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7767,7 +7777,10 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("nonexistent.llt".into()))];
+        let args = vec![
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("nonexistent.llt")),
+        ];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7790,7 +7803,7 @@ mod tests {
         write_temp_file(&dir, "lib.llt", "[x: 42 y: \"hello\"]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("lib.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("lib.llt"))];
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7817,7 +7830,7 @@ mod tests {
         write_temp_file(&dir, "num.llt", "42");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("num.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("num.llt"))];
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7835,7 +7848,7 @@ mod tests {
         write_temp_file(&dir, "bad.llt", "[x: ]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("bad.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("bad.llt"))];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7858,11 +7871,11 @@ mod tests {
         // File A includes file B at top level (not inside a dict entry, so
         // the include is evaluated eagerly during eval_file). File B includes
         // file A the same way, triggering the cycle.
-        write_temp_file(&dir, "a.llt", "[call $include \"b.llt\"]");
-        write_temp_file(&dir, "b.llt", "[call $include \"a.llt\"]");
+        write_temp_file(&dir, "a.llt", "[include %pwd \"b.llt\"]");
+        write_temp_file(&dir, "b.llt", "[include %pwd \"a.llt\"]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("a.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("a.llt"))];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7882,10 +7895,10 @@ mod tests {
     fn include_self_circular() {
         let dir = std::env::temp_dir().join("llt_test_include_self");
         std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "self.llt", "[call $include \"self.llt\"]");
+        write_temp_file(&dir, "self.llt", "[include %pwd \"self.llt\"]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("self.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("self.llt"))];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7909,12 +7922,12 @@ mod tests {
         write_temp_file(
             &dir,
             "outer.llt",
-            "[inner: [call $include \"sub/inner.llt\"]]",
+            "[inner: [include %pwd \"sub/inner.llt\"]]",
         );
         write_temp_file(&dir.join("sub"), "inner.llt", "[val: 99]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("outer.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("outer.llt"))];
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7948,7 +7961,11 @@ mod tests {
         std::fs::create_dir_all(&other_dir).ok();
         let ctx = include_ctx(&other_dir);
 
-        let args = vec![thunk(string_val(&file_path.to_string_lossy()))];
+        // DirCap points to other_dir, path is absolute — cap-std RESOLVE_BENEATH rejects it.
+        let args = vec![
+            thunk(dir_cap_val(&other_dir)),
+            thunk(string_val(&file_path.to_string_lossy())),
+        ];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -7971,7 +7988,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let ctx = include_ctx(&dir);
 
-        // No arguments
+        // No arguments (include requires 2 or 3 args)
         let err = builtin_include(BuiltinArgs {
             args: &[],
             named: no_named(),
@@ -7985,14 +8002,14 @@ mod tests {
             err.message()
         );
 
-        // Four arguments (include accepts 1, 2, or 3 args; 4 is an arity error)
+        // Four arguments (include requires 2 or 3 args; 4 is an arity error)
         // Pattern: [include $cap "path" "hash"] uses 3 args (cap + path + hash), so 4 triggers arity error.
         let args = vec![
+            thunk(dir_cap_val(&dir)),
             thunk(string_val("a.llt")),
             thunk(string_val(
                 "blake3:0000000000000000000000000000000000000000000000000000000000000000",
             )),
-            thunk(string_val("extra")),
             thunk(string_val("too-many")),
         ];
         let err = builtin_include(BuiltinArgs {
@@ -8016,9 +8033,10 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("test.llt".into()))];
+        // Pass 2 positional args (arity OK) + named arg — named arg rejection fires.
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("test.llt"))];
         let mut named = IndexMap::new();
-        named.insert("path".to_string(), thunk(string_val("x".into())));
+        named.insert("path".to_string(), thunk(string_val("x")));
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: Some(&named),
@@ -8042,7 +8060,7 @@ mod tests {
         write_temp_file(&dir, "multi.llt", "[x: 10]\n---\n[y: %.x]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("multi.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("multi.llt"))];
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -8067,7 +8085,10 @@ mod tests {
         write_temp_file(&dir, "stdlib_test.llt", "[result: [call $+ 1 2]]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("stdlib_test.llt".into()))];
+        let args = vec![
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("stdlib_test.llt")),
+        ];
         let result = mat(builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -8098,7 +8119,10 @@ mod tests {
         write_temp_file(&dir, "cached_ptr.llt", "[value: 99]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("cached_ptr.llt".into()))];
+        let args = vec![
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("cached_ptr.llt")),
+        ];
 
         // First include — builds and caches the Thunk
         let raw1 = builtin_include(BuiltinArgs {
@@ -8138,7 +8162,7 @@ mod tests {
         write_temp_file(&dir, "cached.llt", "[value: 42]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("cached.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("cached.llt"))];
 
         // First include
         let result1 = mat(builtin_include(BuiltinArgs {
@@ -8182,7 +8206,7 @@ mod tests {
         let ctx = include_ctx(&dir);
 
         // First include with relative path
-        let args1 = vec![thunk(string_val("./target.llt".into()))];
+        let args1 = vec![thunk(dir_cap_val(&dir)), thunk(string_val("./target.llt"))];
         let result1 = mat(builtin_include(BuiltinArgs {
             args: &args1,
             named: no_named(),
@@ -8191,7 +8215,10 @@ mod tests {
         }));
 
         // Second include with normalized path
-        let args2 = vec![thunk(string_val("subdir/../target.llt".into()))];
+        let args2 = vec![
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("subdir/../target.llt")),
+        ];
         let result2 = mat(builtin_include(BuiltinArgs {
             args: &args2,
             named: no_named(),
@@ -8220,12 +8247,12 @@ mod tests {
         let dir = std::env::temp_dir().join("llt_test_include_cache_nested");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "shared.llt", "[shared: 123]");
-        write_temp_file(&dir, "file_a.llt", "[a: [call $include \"shared.llt\"]]");
-        write_temp_file(&dir, "file_c.llt", "[c: [call $include \"shared.llt\"]]");
+        write_temp_file(&dir, "file_a.llt", "[a: [include %pwd \"shared.llt\"]]");
+        write_temp_file(&dir, "file_c.llt", "[c: [include %pwd \"shared.llt\"]]");
         let ctx = include_ctx(&dir);
 
         // Include file_a (which includes shared.llt)
-        let args_a = vec![thunk(string_val("file_a.llt".into()))];
+        let args_a = vec![thunk(dir_cap_val(&dir)), thunk(string_val("file_a.llt"))];
         let result_a = mat(builtin_include(BuiltinArgs {
             args: &args_a,
             named: no_named(),
@@ -8234,7 +8261,7 @@ mod tests {
         }));
 
         // Include file_c (which also includes shared.llt -- should hit cache)
-        let args_c = vec![thunk(string_val("file_c.llt".into()))];
+        let args_c = vec![thunk(dir_cap_val(&dir)), thunk(string_val("file_c.llt"))];
         let result_c = mat(builtin_include(BuiltinArgs {
             args: &args_c,
             named: no_named(),
@@ -8308,6 +8335,7 @@ mod tests {
     #[test]
     fn include_with_correct_blake3_hash() {
         // $include with a correct blake3 hash should succeed.
+        // 3-arg form: [include DirCap "path" "blake3:hex"]
         let dir = std::env::temp_dir().join("llt_test_include_hash_ok");
         std::fs::create_dir_all(&dir).ok();
         let content = "[x: 99]";
@@ -8316,7 +8344,8 @@ mod tests {
         let ctx = include_ctx(&dir);
 
         let args = vec![
-            thunk(string_val("hashed.llt".into())),
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("hashed.llt")),
             thunk(string_val(&format!("blake3:{expected_hex}"))),
         ];
         let result = mat(builtin_include(BuiltinArgs {
@@ -8338,6 +8367,7 @@ mod tests {
     #[test]
     fn include_with_wrong_blake3_hash_errors() {
         // $include with a wrong blake3 hash should return IncludeHashMismatch.
+        // 3-arg form: [include DirCap "path" "blake3:wrong"]
         let dir = std::env::temp_dir().join("llt_test_include_hash_mismatch");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "data.llt", "[x: 1]");
@@ -8345,7 +8375,8 @@ mod tests {
         let ctx = include_ctx(&dir);
 
         let args = vec![
-            thunk(string_val("data.llt".into())),
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("data.llt")),
             thunk(string_val(&format!("blake3:{wrong_hex}"))),
         ];
         let err = builtin_include(BuiltinArgs {
@@ -8366,14 +8397,16 @@ mod tests {
     #[test]
     fn include_hash_invalid_format_errors() {
         // A hash string without a colon should produce an error.
+        // 3-arg form: [include DirCap "path" "notahash"]
         let dir = std::env::temp_dir().join("llt_test_include_hash_format");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "file.llt", "[x: 1]");
         let ctx = include_ctx(&dir);
 
         let args = vec![
-            thunk(string_val("file.llt".into())),
-            thunk(string_val("notahash".into())),
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("file.llt")),
+            thunk(string_val("notahash")),
         ];
         let err = builtin_include(BuiltinArgs {
             args: &args,
@@ -8393,14 +8426,16 @@ mod tests {
     #[test]
     fn include_hash_unsupported_algo_errors() {
         // An unsupported algorithm should produce a clear error.
+        // 3-arg form: [include DirCap "path" "md5:abc"]
         let dir = std::env::temp_dir().join("llt_test_include_hash_algo");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "file.llt", "[x: 1]");
         let ctx = include_ctx(&dir);
 
         let args = vec![
-            thunk(string_val("file.llt".into())),
-            thunk(string_val("md5:abc".into())),
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("file.llt")),
+            thunk(string_val("md5:abc")),
         ];
         let err = builtin_include(BuiltinArgs {
             args: &args,
@@ -8420,6 +8455,7 @@ mod tests {
     #[test]
     fn include_require_integrity_rejects_hashless() {
         // With require_integrity=true, a hashless $include should error with IncludeHashRequired.
+        // 2-arg form: [include DirCap "path"] without hash — IncludeHashRequired fires.
         let dir = std::env::temp_dir().join("llt_test_include_require_integrity");
         std::fs::create_dir_all(&dir).ok();
         write_temp_file(&dir, "file.llt", "[x: 1]");
@@ -8429,7 +8465,7 @@ mod tests {
             .expect("open dir");
         let ctx = crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true);
 
-        let args = vec![thunk(string_val("file.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("file.llt"))];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -8448,6 +8484,7 @@ mod tests {
     #[test]
     fn include_require_integrity_accepts_hashed() {
         // With require_integrity=true, a $include with a correct hash should succeed.
+        // 3-arg form: [include DirCap "path" "blake3:hex"]
         let dir = std::env::temp_dir().join("llt_test_include_require_integrity_ok");
         std::fs::create_dir_all(&dir).ok();
         let content = "[y: 55]";
@@ -8460,7 +8497,8 @@ mod tests {
         let ctx = crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true);
 
         let args = vec![
-            thunk(string_val("ok.llt".into())),
+            thunk(dir_cap_val(&dir)),
+            thunk(string_val("ok.llt")),
             thunk(string_val(&format!("blake3:{hex}"))),
         ];
         let result = mat(builtin_include(BuiltinArgs {
@@ -8498,14 +8536,14 @@ mod tests {
 
         // bad.llt: parse error
         write_temp_file(&dir, "bad.llt", "[x: ]");
-        // middle.llt: includes bad.llt
-        write_temp_file(&dir, "middle.llt", "[call $include \"bad.llt\"]");
-        // outer.llt: includes middle.llt
-        write_temp_file(&dir, "outer.llt", "[call $include \"middle.llt\"]");
+        // middle.llt: includes bad.llt via cap-qualified form
+        write_temp_file(&dir, "middle.llt", "[include %pwd \"bad.llt\"]");
+        // outer.llt: includes middle.llt via cap-qualified form
+        write_temp_file(&dir, "outer.llt", "[include %pwd \"middle.llt\"]");
 
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("outer.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("outer.llt"))];
         let err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -8562,7 +8600,7 @@ mod tests {
         write_temp_file(&dir, "ok.llt", "42");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("ok.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("ok.llt"))];
         let _result = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),
@@ -8589,7 +8627,7 @@ mod tests {
         write_temp_file(&dir, "bad.llt", "[x: ]");
         let ctx = include_ctx(&dir);
 
-        let args = vec![thunk(string_val("bad.llt".into()))];
+        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("bad.llt"))];
         let _err = builtin_include(BuiltinArgs {
             args: &args,
             named: no_named(),

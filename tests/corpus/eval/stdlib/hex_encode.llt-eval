@@ -1,4 +1,4 @@
-[include "stdlib/encoding.llt"]
+[include %libdir "encoding.llt"]
 ---
 [call %.hex-encode "hello"]
 === out

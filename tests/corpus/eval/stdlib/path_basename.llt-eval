@@ -1,5 +1,5 @@
 # basename: get last component of path
-[include "stdlib/path.llt"]
+[include %libdir "path.llt"]
 ---
 [call %.basename "/foo/bar.txt"]
 === out

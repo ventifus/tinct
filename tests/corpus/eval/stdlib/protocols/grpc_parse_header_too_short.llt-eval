@@ -1,6 +1,6 @@
 # parse-grpc-frame-header with fewer than 5 bytes returns a dict with "err" key.
 
-[include "stdlib/protocols/grpc.llt"]
+[include %libdir "protocols/grpc.llt"]
 ---
 [get "err" [call %.parse-grpc-frame-header
     [str [chr 0] [chr 0] [chr 0] [chr 0]]]]

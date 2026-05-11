@@ -1,5 +1,5 @@
 # str-reverse: reverse a string
-[include "stdlib/strings.llt"]
+[include %libdir "strings.llt"]
 ---
 [call %.str-reverse "hello"]
 === out

@@ -1,6 +1,6 @@
 # encode-dns-name "" encodes the DNS root as a single zero byte.
 
-[include "stdlib/protocols/dns.llt"]
+[include %libdir "protocols/dns.llt"]
 ---
 [length [call %.encode-dns-name ""]]
 === out

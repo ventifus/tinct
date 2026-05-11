@@ -1,6 +1,6 @@
 # Verify SOCKS5 constants are exported with correct values (RFC 1928).
 
-[include "stdlib/protocols/socks5.llt"]
+[include %libdir "protocols/socks5.llt"]
 ---
 [set [set [set [set [set [set [set []
     "SOCKS5-VERSION"         %.SOCKS5-VERSION]

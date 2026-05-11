@@ -1,5 +1,5 @@
 # Compact formatter: simple dict with mixed types
-[include "stdlib/formatter/compact.llt"]
+[include %libdir "formatter/compact.llt"]
 ---
 [call %.format [
   type: "file"

@@ -1,6 +1,6 @@
 # parse-socks5-response errors if fewer than 4 bytes provided.
 
-[include "stdlib/protocols/socks5.llt"]
+[include %libdir "protocols/socks5.llt"]
 ---
 [try [fn [] [call %.parse-socks5-response [str [chr 5] [chr 0]]]]]
 === out
