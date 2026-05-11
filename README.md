@@ -6,8 +6,6 @@ Also: a testbed for fully automated *agentic virtuous-loop* software development
 
 **Vision:** One language where structured data is the native citizen. No impedance mismatch between your data model and your transformation logic — no shell pipelines to glue things together, no separate query language, no JSON-in-strings. Lazy evaluation keeps large structures efficient, Hindley-Milner types catch shape errors before they reach production, and generator-native pipelines (think jq, but typed and composable) make data flow a first-class concern.
 
-**Status:** hand-written iterative parser, fully spanned AST, lazy evaluator with letrec dict scoping, scope chains, `%` pipeline, function evaluation, Hindley-Milner type inference with row polymorphism, union types, algebraic data types, nominal variants, type classes, gradual typing (`Unknown`/`Top`), parameterized type aliases, path-sensitive narrowing, pattern matching with exhaustiveness checking, structural contracts, Decimal/BigInt/range numeric types, object capability model (`--cap-fs`/`--cap-net`/`--cap-file`, `%` prefix convention), TLS/HTTPS networking (`tls-connect`, CA roots, mTLS, ALPN, SPKI pinning), macros (`[defmacro]`, `[quote]`/`[unquote]`, quasiquoting), string interpolation (`i"..."` via `[defmacro tmpl]`), generator pipelines (`|` pipe, `each`/`each-key`/`each-kv`), rich diagnostics (error codes `T001`–`T004`, Rust-style source snippets, `tinct explain`), `caps:` pragma, Rust-native builtins and Tinct standard library, interactive REPL with line editing and history, source formatter with tinct-hosted compact modes, AST dict schema (`ast_to_dict`), LSP server with diagnostics and hover, comprehensive test suite.
-
 ## Syntax at a Glance
 
 ```tinct
@@ -70,12 +68,12 @@ Function application uses `[f args...]` where `f` is a bare identifier, making c
 
 ### Lazy evaluation
 
-Everything is a thunk — computed only when forced. Unused branches cost nothing; large structures can be partially accessed without evaluating the whole.
+Everything is a thunk — computed only when materialized. Unused branches cost nothing; large structures can be partially accessed without evaluating the whole.
 
 ```tinct
 [
     all-records: [load "large-dataset.json"]
-    first-name:  all-records.0.name   # forces only what's needed
+    first-name:  all-records.0.name   # materializes only what's needed
 ]
 ```
 
@@ -159,14 +157,21 @@ Supplemental modules are available but must be loaded explicitly with `[include 
 
 | Module | Contents |
 |--------|----------|
-| `strings.llt` | Extended string utilities: `str-pad`, `str-trim`, `str-center`, `str-wrap`, etc. |
-| `math.llt` | Math functions: `floor`, `ceil`, `clamp`, `lerp`, `gcd`, `log`, `pow`, etc. |
-| `encoding.llt` | Base64, hex, percent-encoding encode/decode |
+| `strings.llt` | String utilities: `pad-left`, `pad-right`, `str-find`, `str-reverse` |
+| `math.llt` | Math constants (`pi`, `e`, `phi`) and functions (`hypot`, `deg->rad`, `rad->deg`, `log-base`) |
+| `encoding.llt` | Base64 and hex encode/decode; XOR masking |
+| `numeric.llt` | Numeric type aliases: `UInt8`/`UInt16`/`UInt32`, `Int8`/`Int16`/`Int32` |
+| `path.llt` | Path manipulation: `basename`, `dirname`, `extension`, `path-join`, `path-parts` |
+| `io.llt` | File I/O helpers: `read-file`, `read-lines`, `println`, `write-file`, `write-file-atomic` |
 | `datetime.llt` | `Timestamp`, `Duration`, `ClockCap`, timezone support |
-| `regex.llt` | Thompson NFA regex engine in pure Tinct; `re-compile`/`re-match`/`re-find`/`re-replace`/`re-split` |
-| `net.llt` | Pure-Tinct HTTP helpers: `parse-url`, `http-get`, `fetch`, `parse-http-response` |
-| `toml-lite.llt` | TOML subset parser written in pure Tinct |
-| `macros.llt` | `tmpl` macro and macro utilities (auto-loaded by the expander) |
+| `regex.llt` | Literal matching regex engine; `re-compile`/`re-match`/`re-find`/`re-replace`/`re-split` |
+| `net.llt` | HTTP helpers: `http-get`, `fetch` (HTTPS via reqwest ALPN), `parse-http-response`, URL utilities |
+| `toml-lite.llt` | TOML subset parser in pure Tinct |
+| `protocols/dns.llt` | DNS query wire format (RFC 1035): `encode-dns-name`, `build-dns-query`, QTYPE constants |
+| `protocols/websocket.llt` | WebSocket frame encoding/decoding + HTTP upgrade handshake |
+| `protocols/socks5.llt` | SOCKS5 proxy wire helpers |
+| `protocols/grpc.llt` | gRPC frame encoding/decoding |
+| `macros.llt` | `tmpl` and `do` macro transformers (auto-loaded by the expander) |
 
 ### Interactive REPL
 
@@ -276,7 +281,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/desugar.rs` | Desugarer: `$_` implicit lambda; source-to-source pass between parsing and type checking |
 | `src/resolve.rs` | Variable resolution pass: de Bruijn slot assignment, free-variable detection |
 | `src/imports.rs` | Shared import resolution: `build_prelude_env()`, `collect_include_paths()`, `build_type_env()` |
-| `src/types.rs` | Type system: `Type` enum, `Row`/`RowTail`, `Substitution` (kinded unification), `TypeEnv`, `TypeError`, `InferState` (levels-based generalization) |
+| `src/types.rs` | Type system: `Type` enum (including `Union`, `Intersection`, `Negation`, `Never`, `Top`, `Map`); `Row` (flat, no tail after BAS); `Substitution` (kinded unification); `TypeEnv`, `TypeError`, `InferState` (levels-based generalization) |
 | `src/type_env.rs` | Builtin type registrations: seeds `TypeEnv` with types for all builtins; `%pwd`/`%libdir`/`%stdin` cap types |
 | `src/type_unify.rs` | Unification engine: `unify()`, occurs check, row unification, level adjustment |
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, five-pass dict inference, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, row polymorphism |
@@ -292,7 +297,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/eval_pipeline.rs` | Document pipeline evaluation: scope chains, `%` pipeline, document-level Sequential |
 | `src/eval_deep.rs` | `deep_materialize()`: recursive full forcing of all thunks |
 | `src/builtins.rs` | Builtin registry: `standard_builtins()`, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
-| `src/builtins_io.rs` | I/O builtins: `open`, `slurp`, `write`, `lines`, `connect`, `tls-connect`, `tls-peer-cert`, `spki-pin`, `http-connect` |
+| `src/builtins_io.rs` | I/O builtins: `open`, `slurp`, `write`, `lines`; `connect` (transport-generic: Tcp/Udp/UnixStream/UnixDatagram/Icmp); `tls-layer`, `tls-peer-cert`, `spki-pin`; `quic-session`, `quic-open-stream`, `http2-session`, `http3-session`, `http-request`, `icmp-ping`; `src/async_rt.rs` tokio runtime |
 | `src/builtins_math.rs` | Math builtins: arithmetic, `floor`, `ceil`, `round`, `pow`, `log`, `sqrt`, etc. |
 | `src/builtins_string.rs` | String builtins: `str`, `str-find`, `str-split`, `str-replace`, `str-chars`, etc. |
 | `src/builtins_meta.rs` | Meta builtins: `type-of`, `tag-of`, `eval`, `try`, `apply`, `force`, `validate` |
@@ -313,15 +318,19 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/repl.rs` | REPL session: scope chains, bracket matching, `:describe`/`:type`/`:help` meta-commands, error recovery |
 | `src/lsp/` | LSP server: `tinct lsp` with `textDocument/didOpen`, `didChange`, `publishDiagnostics`, and hover |
 | `src/main.rs` | CLI (`tinct` binary): `eval`, `fmt`, `repl`, `lsp`, `explain` subcommands; `--cap-fs`/`--cap-net`/`--cap-file` cap injection |
-| `stdlib/prelude.llt` | Core stdlib (auto-loaded): collection ops, string utils, math, control flow |
-| `stdlib/strings.llt` | Extended string utilities (explicit include required) |
-| `stdlib/math.llt` | Extended math functions (explicit include required) |
-| `stdlib/encoding.llt` | Base64/hex/percent-encoding (explicit include required) |
-| `stdlib/datetime.llt` | Date/time support (explicit include required) |
-| `stdlib/regex.llt` | Thompson NFA regex engine in pure Tinct (explicit include required) |
-| `stdlib/net.llt` | HTTP helpers: `http-get`, `fetch`, `parse-url` (explicit include required) |
+| `stdlib/prelude.llt` | Core stdlib (auto-loaded): collection ops, string utils, control flow, Result type, `str-find`, `str-repeat`, `make-entry` |
+| `stdlib/strings.llt` | String utilities: `pad-left`, `pad-right`, `str-reverse` (explicit include required) |
+| `stdlib/math.llt` | Math constants + functions: `pi`, `e`, `phi`, `hypot`, `deg->rad`, `log-base` (explicit include required) |
+| `stdlib/encoding.llt` | Base64/hex encode/decode, XOR masking (explicit include required) |
+| `stdlib/numeric.llt` | Integer type aliases: `UInt8`–`UInt32`, `Int8`–`Int32` (explicit include required) |
+| `stdlib/path.llt` | Path manipulation: `basename`, `dirname`, `extension`, `path-join` (explicit include required) |
+| `stdlib/io.llt` | File I/O helpers: `read-file`, `read-lines`, `println`, `write-file` (explicit include required) |
+| `stdlib/datetime.llt` | Date/time support: `Timestamp`, `Duration`, `ClockCap` (explicit include required) |
+| `stdlib/regex.llt` | Regex engine in pure Tinct: `re-match`, `re-find`, `re-replace` (explicit include required) |
+| `stdlib/net.llt` | HTTP helpers: `http-get`, `fetch`, URL utilities (explicit include required) |
 | `stdlib/toml-lite.llt` | TOML subset parser in pure Tinct (explicit include required) |
-| `stdlib/macros.llt` | `tmpl` macro and macro utilities (auto-loaded by expander) |
+| `stdlib/macros.llt` | `tmpl` and `do` macro transformers (auto-loaded by expander) |
+| `stdlib/protocols/` | Wire format libraries: `dns.llt`, `websocket.llt`, `socks5.llt`, `grpc.llt` (explicit include required) |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |
 | `tests/cli_tests.rs` | CLI integration tests: file eval, format flags, stdin JSON, error handling |
@@ -402,7 +411,7 @@ the domain/type/protocol comes first, the verb second:
 str-find      str-length    str-chars     str-repeat
 bytes-find    bytes-of      bytes-equal?
 timestamp-add timestamp-diff timestamp-year
-http-get      https-get     tls-connect
+http-get      tls-layer     quic-session
 dir-cap       net-cap       tag-of        type-of
 ```
 

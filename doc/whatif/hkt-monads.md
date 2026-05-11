@@ -202,7 +202,7 @@ Algebraic effects (Koka, Frank, Unison) are the major alternative to monads for 
 
 In a strict (eager) language, an effectful expression executes when evaluated — effects are ordered by control flow. In a lazy language, a thunk is evaluated on demand, potentially reordering or deduplicating effects. Haskell's IO monad exists precisely to give effects a total order in an otherwise lazy language. Algebraic effects assume strict evaluation.
 
-Tinct's lazy evaluation model makes the IO monad (and Result monad for failure) the right abstraction — they explicitly sequence effects through bind. Effects systems would require tinct to become strict or to add explicit thunk forcing in the effects semantics, neither of which is acceptable.
+Tinct's lazy evaluation model makes the IO monad (and Result monad for failure) the right abstraction — they explicitly sequence effects through bind. Effects systems would require tinct to become strict or to add explicit thunk materialization in the effects semantics, neither of which is acceptable.
 
 ### Backward Compatibility
 

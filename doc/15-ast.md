@@ -10,7 +10,7 @@ Tinct uses a **hand-written iterative descent parser** composed of two phases:
 
 2. **Parsing** (`src/parser.rs`): Consumes the token stream using an explicit `Vec<StackFrame>` to avoid Rust call-stack recursion. The iterative parser enforces a maximum nesting depth (`MAX_PARSE_DEPTH = 256`) before allocating stack frames, preventing unbounded memory use.
 
-**Historical note:** Tinct originally used a pest PEG grammar. The hand-written parser replaced pest in sprint parser-core-c3 (commit cc8333c) to gain precise control over error messages, whitespace sensitivity, and stack depth limits.
+**Historical note:** Tinct originally used a pest PEG grammar. The hand-written parser (commit cc8333c) replaced pest to gain precise control over error messages, whitespace sensitivity, and stack depth limits.
 
 ## AST Node Types
 
@@ -78,7 +78,7 @@ enum Expr {
     // `VarRef(name)` shorthand used in doc examples represents:
     //   `VarRef { name, escaped: false, resolved: RefCell::new(None) }`
     // The `resolved` field is a three-state sentinel populated by the variable
-    // resolution pass (Phase 1 of arena allocation, src/resolve.rs):
+    // resolution pass (src/resolve.rs):
     //   - Outer None              = not yet processed (initial state)
     //   - Outer Some(None)        = processed, unresolvable
     //   - Outer Some(Some((l,s))) = resolved to (level, slot) de Bruijn coordinates
@@ -187,7 +187,7 @@ enum Annotation {
 | `Float(3.14)` | `3.14` | Float literal |
 | `Bool(true)` | `true` | Boolean literal |
 | `Str("hello")` | `"hello"` | String literal (quoted) |
-| `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by Phase 1 resolution pass |
+| `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by the variable resolution pass |
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
 | `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the post-parse AST and eliminated by the desugar pass (`src/desugar.rs`) before type checking and evaluation. The evaluator and type checker never see `Expr::Pipe`.** See §Pipe Desugaring below for the three desugar rules (WRAP-PIPE, CALL-EXTEND, CALL-WRAP). |

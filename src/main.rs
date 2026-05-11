@@ -359,7 +359,11 @@ fn main() {
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
         Commands::Describe { json, file } => run_describe(&file, json),
         Commands::Explain { code } => run_explain(&code),
-        Commands::Literate { mode, file, no_substitute } => run_literate(&file, &mode, no_substitute),
+        Commands::Literate {
+            mode,
+            file,
+            no_substitute,
+        } => run_literate(&file, &mode, no_substitute),
     };
 
     match result {
@@ -2115,7 +2119,13 @@ fn run_literate_weave(
 
     // If no_substitute is false, perform inline marker substitution.
     if !no_substitute {
-        output = substitute_inline_markers(&output, &block_results, &base_eval_ctx, &env, &base_dir_path)?;
+        output = substitute_inline_markers(
+            &output,
+            &block_results,
+            &base_eval_ctx,
+            &env,
+            &base_dir_path,
+        )?;
     }
 
     print!("{output}");
@@ -2140,8 +2150,7 @@ fn substitute_inline_markers(
 
     // Pattern to match <!-- tinct-result: EXPR --> or <!-- tinct-result -->
     // Capture group 1: optional expression content
-    let marker_re = Regex::new(r"<!--\s*tinct-result:\s*([^>]*?)\s*-->")
-        .expect("invalid regex");
+    let marker_re = Regex::new(r"<!--\s*tinct-result:\s*([^>]*?)\s*-->").expect("invalid regex");
 
     let mut result = String::with_capacity(output.len());
     let mut last_pos = 0;
@@ -2165,8 +2174,11 @@ fn substitute_inline_markers(
                 // Empty expression: <!-- tinct-result: -->
                 // Treat as inline marker requesting most recent result
                 false
-            } else if trimmed.starts_with('{') || trimmed.starts_with('[')
-                || trimmed.starts_with('"') || trimmed == "(emit)" {
+            } else if trimmed.starts_with('{')
+                || trimmed.starts_with('[')
+                || trimmed.starts_with('"')
+                || trimmed == "(emit)"
+            {
                 // This is a block result comment, not an inline marker
                 true
             } else {
@@ -2198,7 +2210,13 @@ fn substitute_inline_markers(
                     }
                 } else {
                     // Evaluate the expression with % bound to the most recent result
-                    evaluate_marker_expression(expr, most_recent_result, base_eval_ctx, env, base_dir_path)?
+                    evaluate_marker_expression(
+                        expr,
+                        most_recent_result,
+                        base_eval_ctx,
+                        env,
+                        base_dir_path,
+                    )?
                 }
             } else {
                 // No expression: use most recent result
@@ -2246,7 +2264,8 @@ fn evaluate_marker_expression(
             let temp_dir =
                 cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
                     .map_err(|e| format!("cannot open base directory: {e}"))?;
-            let temp_ctx = base_eval_ctx.with_base_dir_and_path(temp_dir, Some(base_dir_path.clone()));
+            let temp_ctx =
+                base_eval_ctx.with_base_dir_and_path(temp_dir, Some(base_dir_path.clone()));
             let temp_ctx_rc = Rc::new(temp_ctx);
 
             let thunk = tinct::json_to_value(&json_val, 0, Span::origin(), &temp_ctx_rc)
@@ -2265,9 +2284,8 @@ fn evaluate_marker_expression(
     let _ = tinct::typecheck::typecheck_file(&ast.node);
 
     // Create a per-expression eval context
-    let base_dir =
-        cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open base directory: {e}"))?;
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory: {e}"))?;
     let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
 
     // Evaluate

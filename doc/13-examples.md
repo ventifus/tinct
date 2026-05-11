@@ -1,6 +1,6 @@
 # Worked Examples
 
-### 8.1 Simple Dict
+### 13.1 Simple Dict
 
 **Input:**
 ```tinct
@@ -17,7 +17,7 @@ Dict([
 
 Note: Entries with explicit `key:` syntax produce `Entry { key: Some(...), value: ... }` nodes. The dict preserves insertion order for iteration.
 
-### 8.2 Simple List
+### 13.2 Simple List
 
 **Input:**
 ```tinct
@@ -35,7 +35,7 @@ Dict([
 
 Note: Unkeyed entries produce `Entry { key: None, value: ... }` nodes. The evaluator assigns auto-incrementing integer keys `0, 1, 2, ...` during evaluation.
 
-### 8.3 Nested Dict
+### 13.3 Nested Dict
 
 **Input:**
 ```tinct
@@ -66,7 +66,7 @@ Dict([
 
 Note: Nested dicts are simply `Dict` expressions appearing as entry values. Letrec scoping allows entries to reference each other at any nesting level.
 
-### 8.4 Function Call with Named Args
+### 13.4 Function Call with Named Args
 
 **Input:**
 ```tinct
@@ -87,7 +87,7 @@ Call {
 
 Note: Named arguments appear in a separate `named_args` list in the Call AST node. The evaluator binds named args after positional args via the C-PRIORITY chain.
 
-### 8.5 Function Definition with Annotations
+### 13.5 Function Definition with Annotations
 
 **Input:**
 ```tinct
@@ -115,7 +115,7 @@ Fn {
 
 Note: Parameter annotations can be simple type names (`Simple("Number")`) or property dicts containing `type`, `default`, or `description` fields. The type checker validates annotations against the inferred parameter types.
 
-### 8.6 Pipeline with `_` Shorthand
+### 13.6 Pipeline with `_` Shorthand
 
 **Input:**
 ```tinct
@@ -164,7 +164,7 @@ Call {
 
 Note: After desugaring, `_`-containing expressions become `Fn { params: [Param { name: "_", ... }], body: ... }` nodes. The desugaring happens before type checking.
 
-### 8.7 Access Chains
+### 13.7 Access Chains
 
 **Input:**
 ```tinct
@@ -182,9 +182,9 @@ DotAccess {
 }
 ```
 
-Note: Bracket access was removed in access-pipeline-phase2. The old `config.services[0].host` is now written as `[get 0 config.services].host`. Access chains still parse as nested AST nodes; the evaluator reduces inside-out, forcing each target before the next projection.
+Note: Bracket access is not supported. The old `config.services[0].host` syntax is written as `[get 0 config.services].host`. Access chains parse as nested AST nodes; the evaluator reduces inside-out, materializing each target before the next projection.
 
-### 8.8 Subsequence Operations (replaces Range Access)
+### 13.8 Subsequence Operations (replaces Range Access)
 
 **Input:**
 ```tinct
@@ -199,9 +199,9 @@ Call {
 }
 ```
 
-Note: Range access (`data[2..5]`) was removed in access-pipeline-phase2. Use the `slice`, `take`, and `drop` stdlib functions for subsequences. `[slice data 2 5]` returns entries at positions 2, 3, 4 (half-open interval). `[take 3 data]` returns the first 3 entries. `[drop 2 data]` returns all entries after the first 2.
+Note: Range access syntax (`data[2..5]`) is not supported. Use the `slice`, `take`, and `drop` stdlib functions for subsequences. `[slice data 2 5]` returns entries at positions 2, 3, 4 (half-open interval). `[take 3 data]` returns the first 3 entries. `[drop 2 data]` returns all entries after the first 2.
 
-### 8.9 Type Assertion
+### 13.9 Type Assertion
 
 **Input:**
 ```tinct
@@ -216,9 +216,9 @@ TypeAssert {
 }
 ```
 
-Note: `TypeAssert` nodes materialize the inner expression and check its type. Type assertions are strict — they force evaluation immediately.
+Note: `TypeAssert` nodes materialize the inner expression and check its type. Type assertions are strict — they materialize the value immediately.
 
-### 8.10 Type Assertion with Fallback
+### 13.10 Type Assertion with Fallback
 
 **Input:**
 ```tinct
@@ -238,7 +238,7 @@ TypeAssert {
 
 Note: Property dict annotations allow fallback defaults. If type checking fails, the evaluator uses the `default` value instead of erroring.
 
-### 8.11 Type Alias
+### 13.11 Type Alias
 
 **Input:**
 ```tinct
@@ -260,7 +260,7 @@ Entry {
 
 The type checker interprets `Annotated { name: "Fn", ... }` as a function type constructor.
 
-### 8.12 Comments
+### 13.12 Comments
 
 **Input:**
 ```tinct
@@ -281,7 +281,7 @@ Dict([
 
 Note: Comments are discarded during tokenization and do not appear in the AST.
 
-### 8.13 Variadic Function
+### 13.13 Variadic Function
 
 **Input:**
 ```tinct
@@ -306,7 +306,7 @@ Fn {
 
 Note: Variadic parameters (marked with `...`) collect all remaining positional arguments into a dict. The `variadic: true` flag signals this to the evaluator.
 
-### 8.14 Mixed Positional and Named Entries
+### 13.14 Mixed Positional and Named Entries
 
 **Input:**
 ```tinct
@@ -326,7 +326,7 @@ Call {
 
 Note: Call syntax distinguishes positional (`args`) and named (`named_args`) arguments. The parser places keyed arguments in `named_args`, unkeyed arguments in `args`.
 
-### 8.15 Multi-Expression Document
+### 13.15 Multi-Expression Document
 
 **Input:**
 ```tinct
@@ -349,9 +349,9 @@ File {
 }
 ```
 
-Note: Multiple top-level expressions in a document are merged into a single dict during evaluation. Each expression is evaluated in the merged environment.
+Note: Multiple top-level expressions in a document form a scope chain: each expression's dict becomes the parent scope for the following expression. Names from earlier expressions are visible via parent lookup but can be shadowed. Only the last expression's value is returned. See [Documents](09-documents.md) §Within a Document: Scope Chains.
 
-### 8.16 Multi-Document File
+### 13.16 Multi-Document File
 
 **Input:**
 ```tinct

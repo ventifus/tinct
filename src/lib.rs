@@ -18,9 +18,9 @@
 
 pub(crate) mod arena;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
-pub mod async_rt;
 pub mod ast;
 pub mod ast_dict;
+pub mod async_rt;
 pub(crate) mod coverage;
 pub(crate) mod error;
 pub(crate) mod eval;
@@ -236,8 +236,8 @@ pub fn eval_source_with_cap_net(
     // Parse cap_net entries into grouped allowlists
     let mut grouped: HashMap<String, Vec<crate::value::NetCapEntry>> = HashMap::new();
     for (name, entry_str) in cap_net {
-        let entry = parse_net_cap_entry(entry_str)
-            .map_err(|e| format!("cap_net directive error: {e}"))?;
+        let entry =
+            parse_net_cap_entry(entry_str).map_err(|e| format!("cap_net directive error: {e}"))?;
         grouped.entry(name.clone()).or_default().push(entry);
     }
 
@@ -312,7 +312,10 @@ fn parse_net_cap_entry(s: &str) -> Result<crate::value::NetCapEntry, String> {
     }
     if s.contains('*') {
         if !s.starts_with("*.") {
-            return Err(format!("only prefix wildcards supported (e.g. '*.internal'), got '{}'", s));
+            return Err(format!(
+                "only prefix wildcards supported (e.g. '*.internal'), got '{}'",
+                s
+            ));
         }
         return Ok(NetCapEntry::HostnameGlob(s.to_string()));
     }
@@ -515,10 +518,12 @@ pub fn visit_value<V: ValueVisitor>(
             "QuicSession".to_string(),
             ast::Span::origin(),
         ))),
-        value::Value::Http2Session { .. } => Err(Box::new(error::EvalError::value_not_serializable(
-            "Http2Session".to_string(),
-            ast::Span::origin(),
-        ))),
+        value::Value::Http2Session { .. } => {
+            Err(Box::new(error::EvalError::value_not_serializable(
+                "Http2Session".to_string(),
+                ast::Span::origin(),
+            )))
+        }
         value::Value::Http3Session(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Http3Session".to_string(),
             ast::Span::origin(),

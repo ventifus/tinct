@@ -8,8 +8,8 @@ use std::rc::Rc;
 use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Pattern, Span, Spanned};
 use crate::coverage;
 use crate::types::{
-    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, Row,
-    Substitution, Type, TypeAlias, TypeEnv, TypeError, TypeScheme,
+    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, Row, Substitution,
+    Type, TypeAlias, TypeEnv, TypeError, TypeScheme,
 };
 
 // Split modules — annotation resolution and dict inference
@@ -47,7 +47,9 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
     let mut env = crate::imports::build_prelude_env();
     let mut state = InferState::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row { fields: HashMap::new() });
+    let mut pipeline_type = Type::Record(Row {
+        fields: HashMap::new(),
+    });
 
     for doc in &file.documents {
         match typecheck_document(
@@ -267,7 +269,9 @@ pub fn typecheck_file_with_types_and_env(
     let mut type_map = TypeMap::new();
     let mut doc_map = DocMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row { fields: HashMap::new() });
+    let mut pipeline_type = Type::Record(Row {
+        fields: HashMap::new(),
+    });
 
     for doc in &file.documents {
         match typecheck_document(
@@ -413,7 +417,9 @@ fn typecheck_document_simple(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
-    let empty_record = Type::Record(Row { fields: HashMap::new() });
+    let empty_record = Type::Record(Row {
+        fields: HashMap::new(),
+    });
     let named_types = HashMap::new();
     typecheck_document(
         doc,
@@ -514,7 +520,9 @@ fn typecheck_document(
         env = Rc::new(env_mut);
     }
 
-    let mut result_type = Type::Record(Row { fields: HashMap::new() });
+    let mut result_type = Type::Record(Row {
+        fields: HashMap::new(),
+    });
 
     let exprs = &doc.node.expressions;
     if exprs.is_empty() {
@@ -589,7 +597,6 @@ fn typecheck_document(
                             map.insert(key, ty.clone());
                         }
                         let mut new_env = TypeEnv::with_parent(&env);
-                        // Thread schemes into the environment
                         for (name, scheme) in &schemes {
                             new_env.insert_scheme(name.clone(), scheme.clone());
                         }
@@ -919,7 +926,9 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                             // dict? narrows to open record with fresh RowVar
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Record(Row { fields: HashMap::new() }),
+                                ty: Type::Record(Row {
+                                    fields: HashMap::new(),
+                                }),
                             }];
                         }
                     }
@@ -953,7 +962,9 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                             // null? narrows to empty closed record
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Record(Row { fields: HashMap::new() }),
+                                ty: Type::Record(Row {
+                                    fields: HashMap::new(),
+                                }),
                             }];
                         }
                     }
@@ -1030,7 +1041,9 @@ fn try_type_of(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowing>
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
                                 "Bool" => Some(Type::Bool),
-                                "Dict" => Some(Type::Record(Row { fields: HashMap::new() })),
+                                "Dict" => Some(Type::Record(Row {
+                                    fields: HashMap::new(),
+                                })),
                                 "Seq" => Some(Type::Seq(Box::new(Type::Unknown))),
                                 "Number" => Some(Type::Number),
                                 _ => None,
@@ -1179,7 +1192,6 @@ fn infer_if(
     Ok(result_ty)
 }
 
-
 /// Collect variable bindings introduced by a pattern, with their types.
 ///
 /// Returns `Vec<(name, type)>` pairs used to extend the TypeEnv before
@@ -1287,7 +1299,9 @@ fn infer_expr(
             // Each expression's result dict extends the type environment for the next.
             // The last expression's type is the overall result type.
             if exprs.is_empty() {
-                return Ok(Type::Record(Row { fields: HashMap::new() }));
+                return Ok(Type::Record(Row {
+                    fields: HashMap::new(),
+                }));
             }
 
             let mut current_env = Rc::clone(env);
@@ -1451,7 +1465,9 @@ fn infer_expr(
         Expr::Quote(_inner) => {
             // [quote expr] produces a dict representing the AST.
             // Type: empty record (BAS: width subtyping allows any fields).
-            Ok(Type::Record(Row { fields: HashMap::new() }))
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+            }))
         }
 
         Expr::Unquote(inner) => {
@@ -1467,7 +1483,9 @@ fn infer_expr(
             let inner_ty = infer_expr(inner, env, state, type_map)?;
 
             // The inner expression should be a Dict (list).
-            let expected_list_ty = Type::Record(Row { fields: HashMap::new() });
+            let expected_list_ty = Type::Record(Row {
+                fields: HashMap::new(),
+            });
 
             let mut subst = std::mem::take(&mut state.subst);
             let result = unify(&inner_ty, &expected_list_ty, &mut subst, state, inner.span);
@@ -1693,7 +1711,9 @@ fn infer_expr(
             state.class_env.insert(class_decl);
 
             // ClassDecl expressions evaluate to empty record (see eval.rs)
-            Ok(Type::Record(Row { fields: HashMap::new() }))
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+            }))
         }
 
         Expr::InstanceDecl {
@@ -1750,7 +1770,9 @@ fn infer_expr(
             }
 
             // InstanceDecl expressions evaluate to empty record (see eval.rs)
-            Ok(Type::Record(Row { fields: HashMap::new() }))
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+            }))
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(
@@ -2097,7 +2119,9 @@ fn check_get(
         let dict_ty = state.subst.apply(&dict_ty);
 
         // Null type: empty closed record (Value::Dict(empty) at runtime).
-        let null_ty = Type::Record(Row { fields: HashMap::new() });
+        let null_ty = Type::Record(Row {
+            fields: HashMap::new(),
+        });
 
         let make_nullable = |ty: Type| -> Type {
             if is_optional {
@@ -2183,10 +2207,7 @@ fn check_dot_access(
     // on the same target are visible (doc/07-type-extensions.md Part 5).
     let target_ty = state.subst.apply(&target_ty);
     match target_ty {
-        Type::Record(Row {
-            ref fields,
-            ..
-        }) => match fields.get(field_str) {
+        Type::Record(Row { ref fields, .. }) => match fields.get(field_str) {
             Some(ty) => Ok(ty.clone()),
             // BAS: field not found in known fields — return Unknown (width subtyping:
             // the field may be present in the concrete value via extra fields).
@@ -3173,9 +3194,9 @@ mod tests {
     fn assert_has_field(ty: &Type, field: &str, expected: &Type) {
         match type_get_field(ty, field) {
             Some(actual) if actual == expected => {}
-            Some(actual) => panic!(
-                "field '{field}' has type {actual}, expected {expected} (in {ty})"
-            ),
+            Some(actual) => {
+                panic!("field '{field}' has type {actual}, expected {expected} (in {ty})")
+            }
             None => panic!("field '{field}' not found in {ty}"),
         }
     }
@@ -3198,7 +3219,9 @@ mod tests {
         };
         let mut state = InferState::new();
         let mut named_types: HashMap<String, Type> = HashMap::new();
-        let mut pipeline_type = Type::Record(Row { fields: HashMap::new() });
+        let mut pipeline_type = Type::Record(Row {
+            fields: HashMap::new(),
+        });
         for doc in &file.node.documents {
             match typecheck_document(
                 doc,
@@ -3378,7 +3401,10 @@ mod tests {
         // because the concrete value may have extra fields (width subtyping). Runtime will
         // signal a missing-field error if the field is truly absent.
         // In new syntax, string literals require quotes.
-        let ty = result_field("[person: [name: \"Andrew\"]]\n[result: $person.age]", "result");
+        let ty = result_field(
+            "[person: [name: \"Andrew\"]]\n[result: $person.age]",
+            "result",
+        );
         assert!(
             matches!(ty, Type::Unknown),
             "BAS: missing field access returns Unknown (not an error), got {ty}"
@@ -3464,7 +3490,10 @@ mod tests {
     fn test_multi_field_annotation_dot_access_works() {
         // Dot access on a value annotated with `@[x: Int  y: String]` should find fields.
         // The intersection-of-open-records form supports field access via the Intersection arm.
-        let ty = result_field("[p: [@[x: Int  y: String] [x: 1  y: \"hi\"]]]\n[rx: $p.x]", "rx");
+        let ty = result_field(
+            "[p: [@[x: Int  y: String] [x: 1  y: \"hi\"]]]\n[rx: $p.x]",
+            "rx",
+        );
         assert!(
             matches!(ty, Type::Int | Type::IntLiteral(_)),
             "expected Int-like for .x on multi-field annotation, got {ty}"
@@ -3572,7 +3601,8 @@ mod tests {
         assert!(
             result.is_ok(),
             "BAS: accessing unknown field on forward reference returns Unknown, not an error; \
-             got: {:?}", result.unwrap_err()
+             got: {:?}",
+            result.unwrap_err()
         );
 
         // Note: The types.rs row occurs checks ARE tested (see test_row_occurs_check_direct_tail_cycle
@@ -5512,11 +5542,7 @@ mod tests {
                  [x: $x  y: $y]]]
         "#;
         let result = check(code);
-        assert!(
-            result.is_ok(),
-            "type check should succeed: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "type check should succeed: {:?}", result);
 
         // Verify the inferred type has record params
         let ty = result_field(code, "f");
@@ -5525,11 +5551,13 @@ mod tests {
                 // BAS: both params should be record types
                 assert!(
                     matches!(&params[0].1, Type::Record(_)),
-                    "x param should be Record type, got {:?}", params[0].1
+                    "x param should be Record type, got {:?}",
+                    params[0].1
                 );
                 assert!(
                     matches!(&params[1].1, Type::Record(_)),
-                    "y param should be Record type, got {:?}", params[1].1
+                    "y param should be Record type, got {:?}",
+                    params[1].1
                 );
             }
             other => panic!("expected function type, got {other}"),
@@ -5544,11 +5572,7 @@ mod tests {
              g: [fn [y@[b: String ...]] $y.b]]
         "#;
         let result = check(code);
-        assert!(
-            result.is_ok(),
-            "type check should succeed: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "type check should succeed: {:?}", result);
 
         // Under BAS: both f and g should have record params (RowTail::Empty)
         let ty_f = result_field(code, "f");
@@ -5585,11 +5609,13 @@ mod tests {
             Type::Function { params, .. } => {
                 assert!(
                     matches!(&params[0].1, Type::Record(_)),
-                    "x param should be Record, got {:?}", params[0].1
+                    "x param should be Record, got {:?}",
+                    params[0].1
                 );
                 assert!(
                     matches!(&params[1].1, Type::Record(_)),
-                    "y param should be Record, got {:?}", params[1].1
+                    "y param should be Record, got {:?}",
+                    params[1].1
                 );
             }
             other => panic!("expected function type, got {other}"),
@@ -8319,7 +8345,8 @@ mod tests {
             Type::Function { params, ret, .. } => {
                 assert!(
                     matches!(&params[0].1, Type::Record(_)),
-                    "param should be Record type, got {:?}", params[0].1
+                    "param should be Record type, got {:?}",
+                    params[0].1
                 );
                 assert!(
                     matches!(ret.as_ref(), Type::Record(_)),
@@ -8579,7 +8606,9 @@ mod tests {
     #[test]
     fn test_union_nullable_pattern() {
         // Union(Int, Record(Empty)) — nullable integer pattern
-        let null_type = Type::Record(Row { fields: HashMap::new() });
+        let null_type = Type::Record(Row {
+            fields: HashMap::new(),
+        });
         let union = Type::normalize_union(vec![Type::Int, null_type.clone()]);
         match union {
             Type::Union(members) => {
@@ -9536,7 +9565,9 @@ mod tests {
     #[test]
     fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
         // Dict pattern with key not present in Record → Unknown fallback
-        let scrutinee = Type::Record(Row { fields: HashMap::new() });
+        let scrutinee = Type::Record(Row {
+            fields: HashMap::new(),
+        });
         let mut out = Vec::new();
         collect_pattern_bindings(
             &Pattern::Dict {
@@ -9669,7 +9700,10 @@ mod tests {
         let a = Type::Int;
         let b = Type::Union(vec![Type::Int, Type::TypeVar(var_name.clone(), 1)]);
         let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
-        assert!(result.is_ok(), "C-Var1 already covered should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "C-Var1 already covered should succeed: {result:?}"
+        );
         // TypeVar should NOT be bound (Int already covered by non-var member)
         assert!(
             subst.get(&var_name).is_none(),
@@ -9687,7 +9721,10 @@ mod tests {
         let a = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
         let b = Type::Int;
         let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
-        assert!(result.is_ok(), "C-Var1 symmetric should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "C-Var1 symmetric should succeed: {result:?}"
+        );
         assert_eq!(
             subst.get(&var_name),
             Some(&Type::Int),
@@ -9757,7 +9794,11 @@ mod tests {
         // @Never should resolve to Type::Never
         let env = doc_env_with_builtins("[T: [type Never]]");
         let alias = env.get_type_alias("T").expect("T alias should exist");
-        assert_eq!(alias.body, Type::Never, "Never type alias should resolve to Type::Never");
+        assert_eq!(
+            alias.body,
+            Type::Never,
+            "Never type alias should resolve to Type::Never"
+        );
     }
 
     #[test]
@@ -9765,7 +9806,11 @@ mod tests {
         // @Top should resolve to Type::Top
         let env = doc_env_with_builtins("[T: [type Top]]");
         let alias = env.get_type_alias("T").expect("T alias should exist");
-        assert_eq!(alias.body, Type::Top, "Top type alias should resolve to Type::Top");
+        assert_eq!(
+            alias.body,
+            Type::Top,
+            "Top type alias should resolve to Type::Top"
+        );
     }
 
     // --- False-branch narrowing ---
@@ -9819,7 +9864,10 @@ mod tests {
         // The I-Case3 narrowing means the second arm sees remaining_scrutinee ∩ ~first-tag.
         let source = "[x: \"ok\"]\n[result: [match x\n    \"ok\" 1\n    \"err\" 2\n    _ 0]]";
         let result = check(source);
-        assert!(result.is_ok(), "match with TypeTag should type-check: {result:?}");
+        assert!(
+            result.is_ok(),
+            "match with TypeTag should type-check: {result:?}"
+        );
     }
 
     #[test]
@@ -9873,7 +9921,9 @@ mod tests {
         let result_env =
             typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
                 .unwrap();
-        let null_ty = Type::Record(Row { fields: HashMap::new() });
+        let null_ty = Type::Record(Row {
+            fields: HashMap::new(),
+        });
         match result_env.get("result").map(|s| &s.body) {
             Some(Type::Union(members)) => {
                 assert!(
@@ -9887,7 +9937,9 @@ mod tests {
                     members
                 );
             }
-            Some(other) => panic!("expected Union(Int|Null) from get? on Map[String Int], got {other}"),
+            Some(other) => {
+                panic!("expected Union(Int|Null) from get? on Map[String Int], got {other}")
+            }
             None => panic!("field 'result' not found"),
         }
     }
@@ -9913,13 +9965,19 @@ mod tests {
             "[rec: [a: 42]]\n\
              [result: [get? \"a\" rec]]",
         );
-        let null_ty = Type::Record(Row { fields: HashMap::new() });
+        let null_ty = Type::Record(Row {
+            fields: HashMap::new(),
+        });
         match env.get("result").map(|s| &s.body) {
             Some(Type::Union(members)) => {
                 let has_int = members
                     .iter()
                     .any(|m| matches!(m, Type::Int | Type::IntLiteral(_)));
-                assert!(has_int, "Union should contain Int or IntLiteral, got {:?}", members);
+                assert!(
+                    has_int,
+                    "Union should contain Int or IntLiteral, got {:?}",
+                    members
+                );
                 assert!(
                     members.contains(&null_ty),
                     "Union should contain Null, got {:?}",
