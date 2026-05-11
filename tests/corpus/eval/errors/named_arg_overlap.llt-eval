@@ -3,5 +3,7 @@
 # Evaluator catches it as a missing-argument error at runtime
 [f: [fn [x@Int y@Int] [+ x y]]
  result: [f 42 x: 99]]
+=== warn
+named argument 'x' conflicts with positional argument at position 0 at 4:19-4:21
 === error
 [E024] missing argument

@@ -3,5 +3,7 @@
   f: [fn [a b c] [+ a [+ b c]]]
   result: [f 1 2 3 b: 99]
 ]
+=== warn
+arity mismatch: expected 3 argument(s), got 4 (3 positional, 1 named) at 3:11-3:26
 === error
 [E021] parameter 'b' received both positional and named argument

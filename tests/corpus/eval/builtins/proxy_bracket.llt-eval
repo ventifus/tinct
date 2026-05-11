@@ -7,5 +7,3 @@
 ]
 === out
 Dict({"handler": Function(name), "p": Proxy, "a": String("foo"), "b": String("bar")})
-=== warn
-cannot unify Fn@_ [String] with _t0 at 3:13-3:20

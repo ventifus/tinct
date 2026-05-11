@@ -125,6 +125,38 @@ pub(crate) fn infer_dict(
                             state.failed_bindings.insert(name.clone(), entry.span);
                         } else {
                             field_types.insert(name.clone(), value_ty);
+                            // Propagate new bindings from local subst into state.subst so
+                            // subsequent sibling entries can resolve forward-reference TypeVars.
+                            // Algorithm W substitution composition: when both maps bind the same
+                            // variable, unify to reconcile constraints rather than silently drop.
+                            // Use std::mem::take to avoid borrowing both state.subst and state.
+                            let mut temp_subst = std::mem::take(&mut state.subst);
+                            for (k, v) in &subst.type_map {
+                                match temp_subst.type_map.get(k.as_str()).cloned() {
+                                    Some(existing) if existing != *v => {
+                                        // Overlapping key: unify to reconcile constraints
+                                        temp_subst.type_map.remove(k.as_str());
+                                        if let Ok(()) = unify(
+                                            &existing,
+                                            v,
+                                            &mut temp_subst,
+                                            state,
+                                            entry.node.value.span,
+                                        ) {
+                                            let resolved = temp_subst.apply(v);
+                                            temp_subst.type_map.insert(k.clone(), resolved);
+                                        } else {
+                                            // Restore on failure
+                                            temp_subst.type_map.insert(k.clone(), existing);
+                                        }
+                                    }
+                                    None => {
+                                        temp_subst.type_map.insert(k.clone(), v.clone());
+                                    }
+                                    _ => {} // Same binding, no-op
+                                }
+                            }
+                            state.subst = temp_subst;
                         }
                     } else {
                         field_types.insert(name.clone(), value_ty);
@@ -163,11 +195,24 @@ pub(crate) fn infer_dict(
             let applied_v = subst.apply(&v);
             match subst.type_map.get(&k).cloned() {
                 Some(existing) => {
-                    // Remove binding before calling unify to prevent apply() from chasing
-                    // k -> existing -> k in a cycle during resolution (mirrors row_map path).
+                    // Remove before calling unify to prevent apply() from chasing
+                    // k → existing → k in a cycle during resolution.
                     subst.type_map.remove(&k);
-                    // Both maps bind the same variable: unify to reconcile constraints
-                    unify(&existing, &applied_v, &mut subst, state, span).map_err(|e| vec![e])?;
+                    // Both maps bind the same variable: unify to reconcile constraints.
+                    if let Err(e) = unify(&existing, &applied_v, &mut subst, state, span) {
+                        // Push to accumulated errors rather than early-returning so previously
+                        // collected Pass 3 diagnostics are not silently dropped. Restore the
+                        // original binding so pass 3c can apply a safe fallback.
+                        errors.push(e);
+                        subst.type_map.insert(k, existing);
+                        continue;
+                    }
+                    // Re-insert the resolved binding so pass 3c can apply it.
+                    // Removal was only to break the self-reference cycle during apply();
+                    // the reconciled value must remain in subst for field_types containing
+                    // TypeVars (e.g., [a: $b  b: 42] where field_types["a"] = TypeVar _tb).
+                    let resolved = subst.apply(&applied_v);
+                    subst.type_map.insert(k, resolved);
                 }
                 None => {
                     subst.type_map.insert(k, applied_v);
@@ -208,7 +253,9 @@ pub(crate) fn infer_dict(
     // Restore enclosing level
     state.level = enclosing_level;
 
-    let record_type = Type::Record(Row { fields: field_types });
+    let record_type = Type::Record(Row {
+        fields: field_types,
+    });
 
     if errors.is_empty() {
         Ok((record_type, schemes))

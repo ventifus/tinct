@@ -51,7 +51,7 @@ webpki-roots = "1"  # Mozilla CA roots (opt-in via mozilla-roots: true)
 sha2 = "0.11"  # SHA-2 hash algorithms (SHA-256, SHA-384, SHA-512) for SPKI pins
 sha3 = "0.11"  # SHA3 hash algorithms for SPKI pins
 rustls-pemfile = "2"  # PEM file parsing for CA bundles and client certificates
-x509-parser = "0.16"  # X.509 certificate parsing for tls-peer-cert and SPKI extraction
+x509-parser = "0.18.1"  # X.509 certificate parsing for tls-peer-cert and SPKI extraction
 reqwest = { version = "0.13", features = ["blocking", "rustls"], default-features = false }  # HTTP client for http-connect/http-get
 tokio = { version = "1", features = ["full"] }  # Async runtime for QUIC/HTTP3 builtins (via async_rt::block_on)
 quinn = { version = "0.11", default-features = false, features = ["rustls", "ring"] }  # QUIC transport for http3-session

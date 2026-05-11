@@ -147,7 +147,7 @@ ts-parse FILE:
 
 # Build and package the VS Code extension as a .vsix file
 ext:
-    {{container}} run --rm -v .:/workspace:z -w /workspace/editors/vscode {{node_image}} sh -c "npm install && npm run compile && npx @vscode/vsce package --no-dependencies"
+    {{container}} run --rm -v .:/workspace:z -w /workspace/integrations/vscode {{node_image}} sh -c "npm install && npm run compile && npx @vscode/vsce package --no-dependencies"
 
 # Format LLT source file and print to stdout
 fmt-llt FILE:
@@ -172,7 +172,7 @@ version:
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --strict --cap-net nc=any samples/versions.llt"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --strict --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt"
 
 # Build documentation
 doc:

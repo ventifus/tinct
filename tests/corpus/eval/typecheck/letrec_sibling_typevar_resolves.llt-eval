@@ -1,0 +1,7 @@
+# Letrec type inference: sibling TypeVar must resolve to concrete type.
+# Before the fix, b's type would remain TypeVar rather than resolving to Int.
+# Sibling b references sibling a: [length a] where a: "hello" must produce Int(5).
+# The absence of === warn asserts that no spurious type warnings are emitted.
+[a: "hello"  b: [length a]]
+=== out
+Dict({"a": String("hello"), "b": Int(5)})
