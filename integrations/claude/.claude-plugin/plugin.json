@@ -1,0 +1,18 @@
+{
+  "name": "tinct-lsp",
+  "version": "0.1.0",
+  "description": "Tinct language server for .llt files — diagnostics, hover types, and go-to-definition",
+  "author": {
+    "name": "Andrew Denton"
+  },
+  "lspServers": {
+    "tinct": {
+      "command": "tinct",
+      "args": ["lsp"],
+      "extensionToLanguage": {
+        ".llt": "llt",
+        ".tinct": "llt"
+      }
+    }
+  }
+}

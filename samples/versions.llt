@@ -6,18 +6,22 @@
 
 --- caps: [%nc: @NetCap]
 
-[include %libdir "strings.llt"]
-[net: [include %libdir "net.llt"]]
+[
+  strings: [include %libdir "strings.llt"]
+  net:     [include %libdir "net.llt"]
+]
 
-[cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]]
-[cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]]
+[
 
 # Convert structural http-get result to nominal Ok/Err for and-then chaining.
-[response->ok: [fn [r]
-  [if [has? r "ok"] [Ok r.ok.body] [Err r.err]]]]
+response->ok: [fn [r]
+  [if [has? r "ok"] [Ok r.ok.body] [Err r.err]]]
+
+cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]
+cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]
 
 # Fetch Rust stable channel TOML, extract version — returns "?" on any failure.
-[latest-rust: [result-or "?"
+latest-rust: [result-or "?"
   [and-then
     [response->ok [net.http-get %nc [url "https://static.rust-lang.org/dist/channel-rust-stable.toml"]]]
     [fn [raw]
@@ -33,19 +37,19 @@
             state]]
         [set [set [] "in-pkg-rust" false] "version" ""]
         [split "\n" raw]].version]
-      [if [= [length ver] 0] [Err "version not found"] [Ok ver]]]]]]
+      [if [= [length ver] 0] [Err "version not found"] [Ok ver]]]]]
 
-[latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]]
+latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]
 
 # Collect direct dep names from all dependency sections in Cargo.toml.
-[dep-name-from: [fn@String [t@String]
-  [trim [first [split "=" t]]]]]
+dep-name-from: [fn@String [t@String]
+  [trim [first [split "=" t]]]]
 
-[dep-name-append: [fn [state t@String]
+dep-name-append: [fn [state t@String]
   [name: [dep-name-from t]]
-  [if [= [length name] 0] state [set state "names" [append state.names name]]]]]
+  [if [= [length name] 0] state [set state "names" [append state.names name]]]]
 
-[dep-names: [sorted [reduce
+dep-names: [sorted [reduce
   [fn [state line]
     [t: [trim line]]
     [if [starts-with? t "["]
@@ -54,53 +58,55 @@
         [dep-name-append state t]
         state]]]
   [set [set [] "in-deps" false] "names" []]
-  [split "\n" cargo-toml-text]].names]]
+  [split "\n" cargo-toml-text]].names]
 
 # Find a package's locked version in Cargo.lock.
-[ver-after: [fn@String [after@String]
+ver-after: [fn@String [after@String]
   [ver-line: [trim [get 1 [split "\n" after]]]]
-  [str-slice ver-line 11 [trunc [- [length ver-line] 1]]]]]
+  [str-slice ver-line 11 [trunc [- [length ver-line] 1]]]]
 
-[find-locked: [fn@String [name@String]
+find-locked: [fn@String [name@String]
   [pattern: [str "\nname = \"" name "\""]]
   [if [str-contains? cargo-lock-text pattern]
     [ver-after [get 1 [split pattern cargo-lock-text]]]
-    "—"]]]
+    "—"]]
 
 # Fetch the latest stable version for a crate from crates.io — "?" on failure.
-[crate-latest: [fn@String [name@String]
+crate-latest: [fn@String [name@String]
   [result-or "?"
     [and-then
       [response->ok [net.http-get %nc [url [str "https://crates.io/api/v1/crates/" name]]]]
       [fn [body]
         [if [= [length body] 0]
           [Err "empty response"]
-          [Ok [get "max_stable_version" [get "crate" [from-json body]]]]]]]]]]
+          [Ok [get "max_stable_version" [get "crate" [from-json body]]]]]]]]]
 
-[rust-version: [env "RUST_VERSION"]]
-[mark: [fn [a b] [if [= a b] "✓" "←"]]]
+rust-version: [env "RUST_VERSION"]
+mark: [fn [a b] [if [= a b] "✓" "←"]]
 
-[dep-row: [fn@String [name@String]
+dep-row: [fn@String [name@String]
   [locked: [find-locked name]]
   [latest: [crate-latest name]]
   [str
-    "  " [pad-right name   22 " "]
-    "  " [pad-right locked 12 " "]
-    "  " [pad-right latest 12 " "]
+    "  " [strings.pad-right name   22 " "]
+    "  " [strings.pad-right locked 12 " "]
+    "  " [strings.pad-right latest 12 " "]
     "  " [mark locked latest]
-    "\n"]]]
+    "\n"]]
+
+]
 
 [emit [str
   "\nRust toolchain\n"
-  "  " [pad-right "pinned:" 10 " "] " " rust-version "\n"
-  "  " [pad-right "latest:" 10 " "] " " latest-rust-short
+  "  " [strings.pad-right "pinned:" 10 " "] " " rust-version "\n"
+  "  " [strings.pad-right "latest:" 10 " "] " " latest-rust-short
     "  " [mark rust-version latest-rust-short] "\n"
   "\nDirect dependencies (Cargo.lock → crates.io latest)\n"
-  "  " [pad-right "crate"                 22 " "]
-    "  " [pad-right "locked" 12 " "]
-    "  " [pad-right "latest" 12 " "] "\n"
-  "  " [pad-right "─────────────────────" 22 " "]
-    "  " [pad-right "──────────" 12 " "]
-    "  " [pad-right "──────────" 12 " "] "\n"
+  "  " [strings.pad-right "crate"                 22 " "]
+    "  " [strings.pad-right "locked" 12 " "]
+    "  " [strings.pad-right "latest" 12 " "] "\n"
+  "  " [strings.pad-right "─────────────────────" 22 " "]
+    "  " [strings.pad-right "──────────" 12 " "]
+    "  " [strings.pad-right "──────────" 12 " "] "\n"
   [join "" [map dep-row dep-names]]
   "\n"]]
