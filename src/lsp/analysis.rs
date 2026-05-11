@@ -1405,3 +1405,283 @@ mod tests {
         );
     }
 }
+
+/// Generate completion items for the given byte offset in the document.
+///
+/// Returns a list of completion items including:
+/// - Dict entry keys visible at the cursor position (from ALL containing scopes)
+/// - Builtin function names from `standard_builtins()`
+/// - Prelude function names from the stdlib environment
+///
+/// # Implementation notes
+///
+/// - Dict keys are extracted from all enclosing dict scopes, not just the innermost one
+/// - Builtins are cached in a static/lazy list to avoid recomputing on every request
+/// - Prelude names are extracted from the shared prelude environment
+pub fn completion_at(
+    doc: &DocumentState,
+    _uri: &Uri,
+    offset: usize,
+) -> Vec<lsp_types::CompletionItem> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+
+    // Add dict entry keys from all visible scopes
+    if let Ok(ref file) = doc.ast {
+        for document in &file.node.documents {
+            for expr in &document.node.expressions {
+                collect_dict_keys_in_scope(&expr.node, expr.span, offset, &mut items, &mut seen);
+            }
+        }
+    }
+
+    // Add builtin function names
+    for item in builtin_completions() {
+        if seen.insert(item.label.clone()) {
+            items.push(item.clone());
+        }
+    }
+
+    // Add prelude function names (cached globally)
+    for item in prelude_completions() {
+        if seen.insert(item.label.clone()) {
+            items.push(item.clone());
+        }
+    }
+
+    items
+}
+
+/// Collect dict entry keys that are visible at the given offset.
+///
+/// Walks the expression tree and extracts string literal keys from all
+/// dict scopes that contain the cursor position.
+fn collect_dict_keys_in_scope(
+    expr: &Expr,
+    span: Span,
+    offset: usize,
+    items: &mut Vec<lsp_types::CompletionItem>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use lsp_types::{CompletionItem, CompletionItemKind};
+
+    if !span_contains(span, offset) {
+        return;
+    }
+
+    match expr {
+        Expr::Dict(entries) => {
+            // Add all keys from this dict
+            for entry in entries {
+                if let Some(ref key) = entry.node.key {
+                    if let Some(name) = key_name(&key.node) {
+                        if seen.insert(name.to_string()) {
+                            items.push(CompletionItem {
+                                label: name.to_string(),
+                                kind: Some(CompletionItemKind::VARIABLE),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+                // Recurse into nested dicts in the value
+                collect_dict_keys_in_scope(
+                    &entry.node.value.node,
+                    entry.node.value.span,
+                    offset,
+                    items,
+                    seen,
+                );
+            }
+        }
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            collect_dict_keys_in_scope(&func.node, func.span, offset, items, seen);
+            for arg in args {
+                collect_dict_keys_in_scope(&arg.node, arg.span, offset, items, seen);
+            }
+            for na in named_args {
+                collect_dict_keys_in_scope(
+                    &na.node.value.node,
+                    na.node.value.span,
+                    offset,
+                    items,
+                    seen,
+                );
+            }
+        }
+        Expr::Fn { body, .. } => {
+            collect_dict_keys_in_scope(&body.node, body.span, offset, items, seen);
+        }
+        Expr::DotAccess { expr: target, .. } => {
+            collect_dict_keys_in_scope(&target.node, target.span, offset, items, seen);
+        }
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                collect_dict_keys_in_scope(&seq_expr.node, seq_expr.span, offset, items, seen);
+            }
+        }
+        Expr::Pipe { lhs, rhs } => {
+            collect_dict_keys_in_scope(&lhs.node, lhs.span, offset, items, seen);
+            collect_dict_keys_in_scope(&rhs.node, rhs.span, offset, items, seen);
+        }
+        Expr::TypeAlias { body, .. } => {
+            collect_dict_keys_in_scope(&body.node, body.span, offset, items, seen);
+        }
+        Expr::TypeAssert { expr: inner, .. } => {
+            collect_dict_keys_in_scope(&inner.node, inner.span, offset, items, seen);
+        }
+        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            collect_dict_keys_in_scope(&inner.node, inner.span, offset, items, seen);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_dict_keys_in_scope(&scrutinee.node, scrutinee.span, offset, items, seen);
+            for arm in arms {
+                collect_dict_keys_in_scope(&arm.body.node, arm.body.span, offset, items, seen);
+            }
+        }
+        Expr::ClassDecl { methods, .. } => {
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    collect_dict_keys_in_scope(&key.node, key.span, offset, items, seen);
+                }
+                collect_dict_keys_in_scope(
+                    &method.node.value.node,
+                    method.node.value.span,
+                    offset,
+                    items,
+                    seen,
+                );
+            }
+        }
+        Expr::InstanceDecl {
+            instance_type,
+            methods,
+            ..
+        } => {
+            collect_dict_keys_in_scope(
+                &instance_type.node,
+                instance_type.span,
+                offset,
+                items,
+                seen,
+            );
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    collect_dict_keys_in_scope(&key.node, key.span, offset, items, seen);
+                }
+                collect_dict_keys_in_scope(
+                    &method.node.value.node,
+                    method.node.value.span,
+                    offset,
+                    items,
+                    seen,
+                );
+            }
+        }
+        Expr::DefMacro { transformer, .. } => {
+            collect_dict_keys_in_scope(&transformer.node, transformer.span, offset, items, seen);
+        }
+        _ => {}
+    }
+}
+
+/// Return a static reference to builtin function completions.
+///
+/// Uses a lazy static to avoid recomputing the list on every completion request.
+fn builtin_completions() -> &'static [lsp_types::CompletionItem] {
+    use lsp_types::{CompletionItem, CompletionItemKind};
+    use std::sync::OnceLock;
+
+    static BUILTIN_ITEMS: OnceLock<Vec<CompletionItem>> = OnceLock::new();
+
+    BUILTIN_ITEMS.get_or_init(|| {
+        crate::builtins::standard_builtins()
+            .iter()
+            .map(|def| CompletionItem {
+                label: def.name.to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                ..Default::default()
+            })
+            .collect()
+    })
+}
+
+/// Return a static reference to prelude function completions.
+///
+/// Uses a lazy static to avoid recomputing the list on every completion request.
+/// Extracts all dict entry names from the prelude source by parsing it.
+fn prelude_completions() -> &'static [lsp_types::CompletionItem] {
+    use lsp_types::CompletionItem;
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    static PRELUDE_ITEMS: OnceLock<Vec<CompletionItem>> = OnceLock::new();
+
+    PRELUDE_ITEMS.get_or_init(|| {
+        let prelude_source = include_str!("../../stdlib/prelude.llt");
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+
+        // Build builtin set once for O(1) lookups
+        let builtin_names: HashSet<&str> = crate::builtins::standard_builtins()
+            .iter()
+            .map(|def| def.name)
+            .collect();
+
+        // Parse the prelude source and extract all dict entry names
+        if let Ok(file) = crate::parser::parse(prelude_source) {
+            for document in &file.node.documents {
+                for expr in &document.node.expressions {
+                    extract_names_from_expr(&expr.node, &mut items, &mut seen, &builtin_names);
+                }
+            }
+        }
+
+        items
+    })
+}
+
+/// Extract completion items from an expression tree (for prelude names).
+fn extract_names_from_expr(
+    expr: &Expr,
+    items: &mut Vec<lsp_types::CompletionItem>,
+    seen: &mut std::collections::HashSet<String>,
+    builtin_names: &std::collections::HashSet<&str>,
+) {
+    use lsp_types::{CompletionItem, CompletionItemKind};
+
+    match expr {
+        Expr::Dict(entries) => {
+            for entry in entries {
+                if let Some(ref key) = entry.node.key {
+                    if let Some(name) = key_name(&key.node) {
+                        // Skip if already seen or is a builtin
+                        if builtin_names.contains(name) {
+                            continue;
+                        }
+                        if seen.insert(name.to_string()) {
+                            items.push(CompletionItem {
+                                label: name.to_string(),
+                                kind: Some(CompletionItemKind::FUNCTION),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                extract_names_from_expr(&seq_expr.node, items, seen, builtin_names);
+            }
+        }
+        _ => {}
+    }
+}

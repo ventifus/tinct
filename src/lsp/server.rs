@@ -8,14 +8,14 @@ use lsp_types::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
         PublishDiagnostics,
     },
-    request::{GotoDefinition, HoverRequest, Request as _},
-    Diagnostic, DiagnosticSeverity, GotoDefinitionParams, GotoDefinitionResponse, HoverContents,
-    HoverParams, InitializeParams, InitializeResult, Location, MarkedString,
-    PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    request::{Completion, GotoDefinition, HoverRequest, Request as _},
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    GotoDefinitionParams, GotoDefinitionResponse, HoverContents, HoverParams, InitializeParams,
+    InitializeResult, Location, MarkedString, PublishDiagnosticsParams, Range, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
-use crate::lsp::analysis::{definition_at, diagnostics_for, hover_at};
+use crate::lsp::analysis::{completion_at, definition_at, diagnostics_for, hover_at};
 use crate::lsp::convert::{llt_span_to_lsp_range, lsp_position_to_offset};
 use crate::lsp::document::DocumentStore;
 
@@ -46,6 +46,7 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
+        completion_provider: Some(CompletionOptions::default()),
         ..Default::default()
     };
 
@@ -216,6 +217,51 @@ fn handle_request(
             .map(GotoDefinitionResponse::Scalar);
 
             let result = serde_json::to_value(location)?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        Completion::METHOD => {
+            let params: CompletionParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", Completion::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document_position.text_document.uri;
+            let pos = params.text_document_position.position;
+
+            // On-demand completion: if the document is not in the store (not opened),
+            // load it from disk and analyze it on the fly.
+            let items = if let Some(doc) = store.get(&uri) {
+                // Document is open in editor: use cached state
+                lsp_position_to_offset(&pos, &doc.text)
+                    .map(|offset| completion_at(doc, &uri, offset))
+                    .unwrap_or_default()
+            } else {
+                // Document is not open: load from URI and analyze
+                use crate::lsp::document::load_doc_from_uri;
+                load_doc_from_uri(&uri)
+                    .and_then(|doc| {
+                        lsp_position_to_offset(&pos, &doc.text)
+                            .map(|offset| completion_at(&doc, &uri, offset))
+                    })
+                    .unwrap_or_default()
+            };
+
+            let result = serde_json::to_value(CompletionResponse::Array(items))?;
             connection.sender.send(Message::Response(Response {
                 id: req.id,
                 result: Some(result),
