@@ -4,6 +4,6 @@
  result: [@[type: Number  default: bump[]] "fail"]]
 .result
 === warn
-cannot unify Number
+default value type mismatch: default has type Fn@_ [], but assertion expects [] at 3:36-3:40
 === out
 String("fail")

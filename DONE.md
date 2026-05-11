@@ -3047,6 +3047,18 @@ Organizing principles for `stdlib/`:
 - [x] `str_find*.llt-eval` tests updated to call `[str-find ...]` directly (no include needed); `strings_scoping` only tests `pad-right` (`tests/corpus/eval/stdlib/`)
 - [x] `just test` passes after all changes (`tests/`)
 
+## Letrec Fix & Cleanup
+
+### letrec-fix-verify: Verify letrec fix, strengthen per-entry merge, restructure versions.llt, bump x509-parser
+
+The letrec TypeVar bug fix is already implemented in `src/typecheck_dict.rs`. See mempalace `tinct/decisions` for design notes.
+
+- [x] Run `just test` and confirm all tests pass with the letrec fix in place (`src/typecheck_dict.rs`)
+- [x] [Major] Strengthen per-entry propagation in `src/typecheck_dict.rs:132-134`: replace `or_insert_with` with unify-based merge (remove-then-unify-then-reinsert for overlapping keys) matching pass 3b pattern — eliminates asymmetric substitution merge that can silently drop state.subst bindings (Algorithm W threading invariant)
+- [x] Restructure `samples/versions.llt` to sequential individual-binding format — verify `just versions` passes with `--strict`
+- [x] Bump x509-parser from 0.16.0 to 0.18.1 in `Cargo.toml` and update `Cargo.lock` via `just update-precise x509-parser 0.18.1`
+- [x] Run `just test` again to confirm all tests pass after x509-parser bump
+
 ## Codebase Health
 
 ### cycle-216-findings: Cycle #216 analysis findings

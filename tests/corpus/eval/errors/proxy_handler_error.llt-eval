@@ -18,6 +18,3 @@
 [p: [proxy [fn [key] [error "handler called"]]]  result: p.test]
 === error
 [E080] handler called
-
-=== warn
-cannot unify Proxy with [test: _t2] at 17:1-17:65

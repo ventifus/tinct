@@ -2,5 +2,3 @@
 [handler: [fn [field] field]  p: [proxy handler]  result: p.test]
 === out
 Dict({"handler": Function(field), "p": Proxy, "result": String("test")})
-=== warn
-cannot unify Fn@_ [String] with _t0 at 1:41-1:48

@@ -7,6 +7,3 @@
  result: p.test]
 === error
 proxy field access
-
-=== warn
-cannot unify Proxy with [test: _t2] at 5:1-6:17

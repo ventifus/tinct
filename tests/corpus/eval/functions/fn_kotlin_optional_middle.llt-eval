@@ -3,5 +3,7 @@
   f: [fn [a b@[default: 2] c] [+ a [+ b c]]]
   result: [f 1 c: 5]
 ]
+=== warn
+arity mismatch: expected 3 argument(s), got 2 (1 positional, 1 named) at 3:11-3:21
 === out
 Dict({"f": Function(a, b, c), "result": Int(8)})

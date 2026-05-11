@@ -119,7 +119,7 @@ Dicts are inferred in five sequential passes using the [DICT-GEN] rule — see �
 
 ```
 For each param pᵢ:
-    if variadic (...pᵢ): σᵢ = Unknown                   (see Limitation #4)
+    if variadic (...pᵢ): σᵢ = Unknown                   (see Limitation #3)
     else if annotated pᵢ@σᵢ: use σᵢ
     else: σᵢ = Unknown
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
@@ -567,30 +567,36 @@ Pass 3 — Infer values: at level ℓ+1, for each non-alias
          
          Implementation note: Pass 3 splits into sub-passes 3a/3b/3c/3d
          to handle the two-substitution model (local + state.subst).
-         3a: clone state.subst → local subst; 3: unify into local;
-         3b: merge state.subst updates → local; 3c: apply merged → fields;
+         3a: clone state.subst → local subst;
+         3:  for each entry, infer value, unify αᵢ with inferred type into
+             local subst; on success, propagate all local subst bindings
+             into state.subst (per-entry) so that subsequent sibling
+             infer_expr calls can resolve forward-reference TypeVars bound
+             in earlier siblings — this is the mechanism that makes letrec
+             sibling cross-references work (e.g. `[a: "hi"  b: [length a]]`);
+         3b: merge state.subst updates → local subst (unify-based reconciliation);
+         3c: apply merged subst to all field types;
          3d: merge local subst back into state.subst for subsequent dicts.
 
          Pass 3b merge algorithm (Algorithm W substitution composition,
-         Damas & Milner 1982) — applied separately to type_map and row_map:
+         Damas & Milner 1982) — applied to type_map:
 
              for each (k, v) in state.subst.type_map:
                  applied_v = local_subst.apply(v)
                  if k ∈ local_subst.type_map:
                      existing = local_subst.type_map[k]
                      local_subst.type_map.remove(k)   // prevent apply() cycle k→existing→k
-                     unify(existing, applied_v, local_subst, state)  // may error
+                     if error e = unify(existing, applied_v, local_subst, state):
+                         errors.push(e)
+                         local_subst.type_map[k] = existing  // restore original on failure
+                         continue
+                     // Re-insert resolved binding so pass 3c can apply it.
+                     // (e.g. field_types["a"] = TypeVar(_tb) in [a: $b  b: 42]
+                     //  needs resolution via pass 3c's apply call)
+                     resolved = local_subst.apply(applied_v)
+                     local_subst.type_map[k] = resolved
                  else:
                      local_subst.type_map[k] = applied_v
-
-             for each (k, row) in state.subst.row_map:
-                 applied_row = Row { fields: local_subst.apply(row.fields), tail: row.tail }
-                 if k ∈ local_subst.row_map:
-                     existing = local_subst.row_map[k]
-                     local_subst.row_map.remove(k)    // prevent apply() cycle k→existing→k
-                     unify(Record(existing), Record(applied_row), local_subst, state)  // may error
-                 else:
-                     local_subst.row_map[k] = applied_row
 
          The remove-before-unify step is required because `apply()` chases
          bound variables transitively: if k is in the map during unify(),
