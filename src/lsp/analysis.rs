@@ -213,20 +213,31 @@ fn hover_at_expr(
                     if span_contains(key.span, offset) {
                         // Cursor is on a binding key — show "name (type)\n\ndoc" so
                         // the user sees both the binding name and its bound type.
-                        // Extract the plain name from VarRef or Annotated{ VarRef }.
-                        let binding_name: Option<&str> = match &key.node {
-                            Expr::VarRef { name, .. } => Some(name.as_str()),
+                        // Extract the display name from the key, covering all key forms.
+                        let display_name: Option<String> = match &key.node {
+                            Expr::VarRef { name, .. } => Some(name.clone()),
                             // `name@[doc: "..."]` or `name@Type` key annotation
-                            Expr::Annotated { name, .. } => Some(name.as_str()),
+                            Expr::Annotated { name, .. } => Some(name.clone()),
+                            // String literal keys: `"response->ok":` or hyphenated names
+                            Expr::Str(s) => Some(s.clone()),
                             _ => None,
                         };
-                        if let Some(name) = binding_name {
+                        if let Some(display) = display_name {
                             let ty =
                                 type_suffix(entry.node.value.span, type_map, scheme_map, include_graph, doc_url);
-                            let doc = doc_suffix(name, doc_map);
-                            return Some(format!("{name}{ty}{doc}"));
+                            // Only look up doc for bare-name keys (not string literals)
+                            let doc_name = match &key.node {
+                                Expr::VarRef { name, .. } | Expr::Annotated { name, .. } => {
+                                    Some(name.as_str())
+                                }
+                                _ => None,
+                            };
+                            let doc = doc_name
+                                .map(|n| doc_suffix(n, doc_map))
+                                .unwrap_or_default();
+                            return Some(format!("{display}{ty}{doc}"));
                         }
-                        // Non-name key (dynamic expression) — fall back to key hover.
+                        // Dynamic key expression — fall back to key hover.
                         if let Some(text) = hover_at_expr(
                             &key.node,
                             key.span,
