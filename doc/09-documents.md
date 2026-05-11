@@ -1,5 +1,21 @@
 # Documents & Pipelines
 
+## Document Structure
+
+A Tinct **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
+
+```
+file
+├── document 1
+│   ├── expression 1  (e.g., [include "utils.llt"])
+│   ├── expression 2  (e.g., [x: 10  double: [fn [n] [* n 2]]])
+│   └── expression 3  (e.g., [result: [double x]])
+├── ---
+└── document 2
+    ├── expression 1
+    └── expression 2
+```
+
 ## Pipeline Model
 
 Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `%` for the next. Documents can be named with `--- %name` to allow later sections to reference them by name:
@@ -20,13 +36,13 @@ The CLI accepts multiple `.llt` files as a pipeline. Each file's output becomes 
 
 ```bash
 # Single file (existing behavior)
-tinct eval config.llt
+tinct run config.llt
 
 # Two-stage pipeline: data → formatter
-tinct eval data.llt formatter.llt
+tinct run data.llt formatter.llt
 
 # Three-stage pipeline: data → transform → format
-tinct eval raw.llt transform.llt format.llt
+tinct run raw.llt transform.llt format.llt
 ```
 
 This is equivalent to concatenating files with `---` separators, but allows separate files to be composed at the CLI level.
@@ -51,7 +67,7 @@ This is equivalent to concatenating files with `---` separators, but allows sepa
 ```
 
 ```bash
-tinct eval data.llt filter.llt
+tinct run data.llt filter.llt
 # Output: {"adults": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}
 ```
 
@@ -65,7 +81,7 @@ When any file in the pipeline calls `emit`, the string is written directly to st
 ```
 
 ```bash
-tinct eval data.llt to-yaml.llt
+tinct run data.llt to-yaml.llt
 # Output:
 # users:
 #   - Alice
@@ -80,25 +96,11 @@ tinct eval data.llt to-yaml.llt
 - Each file's `$include` calls resolve relative to that file's directory
 - The final file's output is JSON-serialized unless `emit` was called
 
-## Document Structure
-
-A Tinct **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
-
-```
-file
-├── document 1
-│   ├── expression 1  (e.g., [include "utils.llt"])
-│   ├── expression 2  (e.g., [x: 10  double: [fn [n] [* n 2]]])
-│   └── expression 3  (e.g., [result: [double x]])
-├── ---
-└── document 2
-    ├── expression 1
-    └── expression 2
-```
-
 ## Within a Document: Scope Chains
 
-Tinct has one scoping mechanism -- lexical scope with parent chains -- applied at two levels:
+For an informal introduction to letrec dict scoping and scope chains, see [Evaluation](08-evaluation.md) §Recursive Dict Scoping. The formal specification with proof properties follows in §Scope Chain Semantics below.
+
+Tinct has one scoping mechanism — lexical scope with parent chains — applied at two levels:
 
 1. **Within a dict (letrec):** All entries in a single `[...]` share one environment. Entries can reference each other regardless of order, including mutual recursion. This is the same as Haskell's `let`/`where` or OCaml's `let rec`.
 
@@ -123,7 +125,7 @@ Builtins ($+, $eval, $if, ...)
 ]
 ```
 
-All entries share one environment. Order of definition does not matter -- `y` can reference `double` even if `double` appeared after `y` in the source. This enables mutual recursion:
+All entries share one environment. Order of definition does not matter — `y` can reference `double` even if `double` appeared after `y` in the source. This enables mutual recursion:
 
 ```tinct
 [
@@ -201,7 +203,7 @@ The builtin scope (stdlib functions like `+`, `map`, `eval`, etc.) is the root o
 | Nix | Attribute set (`rec { }`, mutual ref) | `let ... in` (sequential) | Similar to Tinct |
 | Jsonnet | Object (self/super, late binding) | No sequential model | Similar within-block |
 
-Tinct is closest to **Nix**: `rec { }` attribute sets are letrec (mutual visibility), and `let x = ...; in` introduces sequential bindings. The key difference is that Tinct uses the same `[...]` syntax for both -- a single dict is letrec, and sequential expressions in a document form a chain. There is no separate `let` keyword.
+Tinct is closest to **Nix**: `rec { }` attribute sets are letrec (mutual visibility), and `let x = ...; in` introduces sequential bindings. The key difference is that Tinct uses the same `[...]` syntax for both — a single dict is letrec, and sequential expressions in a document form a chain. There is no separate `let` keyword.
 
 ### Scope Chain Semantics — Formal Specification
 
@@ -247,17 +249,17 @@ eval_dict(entries, ρ_parent, d) ⇒ Dict([(k₁,θ₁), ..., (kₙ,θₙ)])
 
 When `entries = []` (empty dict), the quantifications over `i ∈ 1..n` are vacuous, and the rule produces `Dict([])` with `ρ_dict` containing no bindings.
 
-The `∀i` is processed sequentially (source order). Bindings are inserted incrementally, so entry `i+1`'s thunk is created after entry `i`'s binding exists in `ρ_dict`. However, because no thunk is forced during construction (all remain `Unevaluated` — see construction-time non-forcing invariant below), the final state of `ρ_dict` is independent of insertion order, and the sequential semantics is observationally equivalent to simultaneous binding.
+The `∀i` is processed sequentially (source order). Bindings are inserted incrementally, so entry `i+1`'s thunk is created after entry `i`'s binding exists in `ρ_dict`. However, because no thunk is materialized during construction (all remain `Unevaluated` — see construction-time non-materialization invariant below), the final state of `ρ_dict` is independent of insertion order, and the sequential semantics is observationally equivalent to simultaneous binding.
 
-**Construction-time non-forcing invariant:** No thunk in `ρ_dict` is forced during the execution of the DICT-SCOPE `∀i` loop. `Thunk::new_unevaluated` creates thunks without forcing them, and `eval_key` evaluates in `ρ_parent` (not `ρ_dict`), so key evaluation cannot trigger forcing of sibling value thunks. Therefore, by the time any thunk is subsequently forced, `ρ_dict.B` contains all string-keyed bindings. This is the analogue of Launchbury's (1993) heap allocation step, which adds all letrec bindings before evaluating the body.
+**Construction-time non-materialization invariant:** No thunk in `ρ_dict` is materialized during the execution of the DICT-SCOPE `∀i` loop. `Thunk::new_unevaluated` creates thunks without materializing them, and `eval_key` evaluates in `ρ_parent` (not `ρ_dict`), so key evaluation cannot trigger materialization of sibling value thunks. Therefore, by the time any thunk is subsequently materialized, `ρ_dict.B` contains all string-keyed bindings. This is the analogue of Launchbury's (1993) heap allocation step, which adds all letrec bindings before evaluating the body.
 
 **Key isolation invariant:** Key expressions evaluate in `ρ_parent`, not `ρ_dict`. This prevents key computation from depending on sibling values that are unevaluated thunks, ensuring key evaluation is deterministic regardless of entry order. Without this invariant, `[x: 1  [call $x]: 2]` would cause the key expression `[call $x]` to reference `x` from `ρ_dict`, creating a dependency on the sibling entry `x: 1` (an unevaluated thunk), which breaks key evaluation determinism. Key evaluation itself requires materialization of the key expression's result (to obtain a concrete `String` or `Int` key) — this is inherent materialization in the sense of §Selective Materialization, since the key's identity must be known to populate `dict_map`.
 
 **Computed keys cannot reference sibling entries.** Because keys evaluate in `ρ_parent`, a computed key like `$k` in `[k: hello  $k: 42]` resolves `k` via `ρ_parent`, not the dict's own letrec scope `ρ_dict`. If `k` is not bound in any enclosing scope, this is an unbound-variable error. This is intentional: allowing computed keys to see the dict's own bindings would create order-dependent key evaluation (the key at position 2 depends on the binding at position 1, which hasn't been evaluated yet during key computation). The key isolation invariant is strict — no exceptions for "earlier" entries.
 
-**Letrec sharing invariant:** All value thunks `θᵢ` capture `ρ_dict` — the same mutable environment. When any `θᵢ` is forced, it evaluates in `ρ_dict`, which by then contains bindings for all string-keyed siblings (guaranteed by the construction-time non-forcing invariant). This is the mechanism behind mutual recursion: `even?` and `odd?` both capture the same `ρ_dict` and can reference each other through it.
+**Letrec sharing invariant:** All value thunks `θᵢ` capture `ρ_dict` — the same mutable environment. When any `θᵢ` is materialized, it evaluates in `ρ_dict`, which by then contains bindings for all string-keyed siblings (guaranteed by the construction-time non-materialization invariant). This is the mechanism behind mutual recursion: `even?` and `odd?` both capture the same `ρ_dict` and can reference each other through it.
 
-**Referential integrity:** For any string-keyed entry `sᵢ ↦ θᵢ`, the thunk accessible via `lookup(sᵢ, ρ_dict)` (scope chain) and via `dict_map[String(sᵢ)]` (dict field access) is the same `Rc<Thunk>` identity (`eval.rs:348-353` uses `Rc::clone`). Forcing either access path memoizes the result for both — there is no divergence between `$x` within a dict and `.x` access on the dict from outside.
+**Referential integrity:** For any string-keyed entry `sᵢ ↦ θᵢ`, the thunk accessible via `lookup(sᵢ, ρ_dict)` (scope chain) and via `dict_map[String(sᵢ)]` (dict field access) is the same `Rc<Thunk>` identity (`eval.rs:348-353` uses `Rc::clone`). Materializing either access path memoizes the result for both — there is no divergence between `$x` within a dict and `.x` access on the dict from outside.
 
 **[SEQ-SCOPE]** — Sequential expression scope chain within a document
 
@@ -273,7 +275,7 @@ Recursive case:
 
   ∀i ∈ 1..n-1:                                (intermediate expressions)
     θᵢ = eval(eᵢ, ρᵢ₋₁, d)
-    vᵢ = force(θᵢ, d)                         (intermediate results are materialized)
+    vᵢ = materialize(θᵢ, d)                   (intermediate results are materialized)
     vᵢ = Dict(mapᵢ)                           (intermediate must be Dict — type error otherwise)
     ρᵢ = ({}, Some(ρᵢ₋₁))                    (fresh child env linked to prior scope)
     ∀(k, θ) ∈ mapᵢ:
@@ -289,11 +291,11 @@ When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_d
 
 **Return value:** Only `θₙ` (the last expression's thunk) is returned. Intermediate expressions `e₁..eₙ₋₁` contribute bindings to the scope chain but are not part of the document's value. This is the formal basis for module-style encapsulation: helpers placed in earlier expressions are lexically visible within the document but are excluded from the returned value and therefore not accessible to callers.
 
-**Intermediate materialization (strict let\* semantics):** Expressions `e₁..eₙ₋₁` are forced to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Beyond extracting the dict structure, **named (string-keyed) entry values are also forced to WHNF at binding time** — this is strict `let*` semantics. Each binding is fully evaluated before the next expression sees it. Consequences:
+**Intermediate materialization (strict let\* semantics):** Expressions `e₁..eₙ₋₁` are materialized to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Beyond extracting the dict structure, **named (string-keyed) entry values are also shallowly materialized (one-level forcing) at binding time** — this is strict `let*` semantics. Each binding's outermost thunk is forced before the next expression sees it. Consequences:
 
 - **Dead-but-erroring bindings fail eagerly.** If a named binding computes an error, it fails at binding time even if no subsequent expression uses that name. Previously such bindings were silently ignored.
-- **WHNF only, not deep.** Dict values within a bound value remain lazy — only the outer thunk is forced. Use `[eval ...]` for deep forcing.
-- **Use `[force expr]` for explicit control.** The `$force` builtin provides WHNF forcing for function bodies and other lazy contexts where auto-forcing does not apply.
+- **Shallow only, not deep.** The outer thunk is forced to produce a concrete `Value`; inner thunks (e.g., dict entry values) remain unevaluated. This is analogous to WHNF in call-by-need languages but is more precisely called shallow or one-level materialization in tinct's context. Use `[eval ...]` for deep materialization.
+- **Use `[force expr]` for explicit control.** The `$force` builtin provides shallow materialization for function bodies and other lazy contexts where auto-materialization does not apply.
 
 The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-by-need semantics.
 
@@ -321,11 +323,11 @@ d = depth                                    (evaluation depth; 0 at top-level)
 eval_file(documents, ρ_base, input_thunk, d) ⇒ θₘ
 ```
 
-The anonymous pipeline variable is `%` — the binding name is `"%"`, and `%` in source resolves to `VarRef("%")`. Named sections bind as `%name` (binding name `"%name"`). Note: the earlier syntax included a `$` binding for the previous document's output; this was removed in the new-syntax-a sprint — only `%` and `%name` bindings exist now. At top-level invocation `d = 0`; when called from `include` (`builtins.rs:1126`), `d = depth + 1`.
+The anonymous pipeline variable is `%` — the binding name is `"%"`, and `%` in source resolves to `VarRef("%")`. Named sections bind as `%name` (binding name `"%name"`). Only `%` and `%name` bindings exist — there is no `$` binding for the previous document's output. At top-level invocation `d = 0`; when called from `include` (`builtins.rs:1126`), `d = depth + 1`.
 
 Documents are totally isolated — `ρ_docⱼ` inherits only from `ρ_base` (builtins), not from prior documents' scope chains. Data flows exclusively through pipeline bindings (`%` and `%name`). Named section bindings accumulate strictly in order — a section cannot reference its own name or a later section's name (both produce `UndefinedVariable`). Duplicate section names within a file are a parse error. A bare `%` with no following identifier on a section header (`--- %` followed by whitespace or end-of-line) is also a parse error.
 
-**Lazy pipeline boundary:** `θⱼ₋₁` is passed without materialization. Named section thunks in `Σⱼ` are also stored as raw unevaluated thunks — the `---` boundary does not force evaluation. The pipeline is lazy end-to-end. See Semantic Commitment 4 in §Thunk Lifecycle — Formal Specification.
+**Lazy pipeline boundary:** `θⱼ₋₁` is passed without materialization. Named section thunks in `Σⱼ` are also stored as raw unevaluated thunks — the `---` boundary does not trigger materialization. The pipeline is lazy end-to-end. See Semantic Commitment 4 in §Thunk Lifecycle — Formal Specification.
 
 #### Part 3: Variable Lookup
 
@@ -356,9 +358,9 @@ Five properties that hold for all well-formed tinct programs. Each property foll
 
 **Property 2: Mutual Visibility (Letrec)**
 
-*Statement:* For a dict constructed by DICT-SCOPE with entries `{s₁, ..., sₙ}` (string keys), forcing any thunk `θᵢ` can resolve `$sⱼ` for all `j ∈ 1..n`, including `j = i`.
+*Statement:* For a dict constructed by DICT-SCOPE with entries `{s₁, ..., sₙ}` (string keys), materializing any thunk `θᵢ` can resolve `$sⱼ` for all `j ∈ 1..n`, including `j = i`.
 
-*Proof sketch:* By DICT-SCOPE, all `θᵢ = Unevaluated(eᵢ, ρ_dict)`. By the construction-time non-forcing invariant, no thunk is forced during DICT-SCOPE construction, so by the time any `θᵢ` is subsequently forced, `ρ_dict.B` contains `{s₁ ↦ θ₁, ..., sₙ ↦ θₙ}` — all string-keyed bindings are present. When `θᵢ` is forced, `eval(eᵢ, ρ_dict, d)` has access to `ρ_dict`, and `lookup(sⱼ, ρ_dict)` succeeds via LOOKUP clause (1) for any `j`. Self-reference (`i = j`) is valid because forcing `θᵢ` transitions it to `InProgress` — a subsequent self-reference triggers FORCE-CYCLE (§Thunk Lifecycle), producing a cycle error rather than diverging. Mutual reference (`i ≠ j`) succeeds provided `θⱼ` is not already `InProgress` (no transitive cycle). This matches Nakata & Hasegawa's (2009) operational treatment of cyclic call-by-need: the `InProgress` state acts as a blackhole, ensuring termination for all reference patterns. ∎
+*Proof sketch:* By DICT-SCOPE, all `θᵢ = Unevaluated(eᵢ, ρ_dict)`. By the construction-time non-materialization invariant, no thunk is materialized during DICT-SCOPE construction, so by the time any `θᵢ` is subsequently materialized, `ρ_dict.B` contains `{s₁ ↦ θ₁, ..., sₙ ↦ θₙ}` — all string-keyed bindings are present. When `θᵢ` is materialized, `eval(eᵢ, ρ_dict, d)` has access to `ρ_dict`, and `lookup(sⱼ, ρ_dict)` succeeds via LOOKUP clause (1) for any `j`. Self-reference (`i = j`) is valid because materializing `θᵢ` transitions it to `InProgress` — a subsequent self-reference triggers MATERIALIZE-CYCLE (§Thunk Lifecycle), producing a cycle error rather than diverging. Mutual reference (`i ≠ j`) succeeds provided `θⱼ` is not already `InProgress` (no transitive cycle). This matches Nakata & Hasegawa's (2009) operational treatment of cyclic call-by-need: the `InProgress` state acts as a blackhole, ensuring termination for all reference patterns. ∎
 
 **Property 3: Heap Monotonicity**
 
@@ -378,9 +380,9 @@ Five properties that hold for all well-formed tinct programs. Each property foll
 
 *Statement:* For the pure subset of tinct (no I/O builtins such as `$include`), `eval_document(exprs, ρ, d)` produces the same result thunk for the same input tuple `(exprs, ρ, d)`, and `lookup(x, ρ)` returns the same thunk for the same name and environment.
 
-*Proof sketch:* LOOKUP is deterministic by construction — it is a linear scan of a fixed chain with a deterministic stopping condition (first match or `None`). DICT-SCOPE processes entries in source order; key evaluation in `ρ_parent` is deterministic by induction (keys are expressions evaluated in an already-determined environment); duplicate detection is deterministic (insertion-order `IndexMap`). SEQ-SCOPE processes expressions in source order, materializing each intermediate result deterministically. The only potential source of non-determinism — letrec evaluation order — is resolved by lazy evaluation: thunks are created in source order but forced on demand, and Ariola & Felleisen's (1997) confluence theorem (for the storeless calculus, transferred to tinct's heap model via Launchbury's (1993) adequacy result) guarantees that the order of forcing does not affect the final value in the pure call-by-need calculus. Non-determinism enters only through `$include` (file system I/O), which is outside the pure subset. ∎
+*Proof sketch:* LOOKUP is deterministic by construction — it is a linear scan of a fixed chain with a deterministic stopping condition (first match or `None`). DICT-SCOPE processes entries in source order; key evaluation in `ρ_parent` is deterministic by induction (keys are expressions evaluated in an already-determined environment); duplicate detection is deterministic (insertion-order `IndexMap`). SEQ-SCOPE processes expressions in source order, materializing each intermediate result deterministically. The only potential source of non-determinism — letrec evaluation order — is resolved by lazy evaluation: thunks are created in source order but materialized on demand, and Ariola & Felleisen's (1997) confluence theorem (for the storeless calculus, transferred to tinct's heap model via Launchbury's (1993) adequacy result) guarantees that the materialization order does not affect the final value in the pure call-by-need calculus. Non-determinism enters only through `$include` (file system I/O), which is outside the pure subset. ∎
 
-**Depth and FORCE-DEPTH:** Determinism holds for the full input tuple `(exprs, ρ, d)` — depth `d` is part of the input, not ambient context. The same thunk may produce different results when forced at different depths (FORCE-DEPTH is the only forcing rule that does not transition thunk state — see Semantic Commitment 3 in §Thunk Lifecycle). This is not non-determinism but context-sensitivity: `eval_document` with a fixed `d` is a deterministic function. The CEK machine removes MAX_EVAL_DEPTH, making this caveat moot.
+**Depth and MATERIALIZE-DEPTH:** Determinism holds for the full input tuple `(exprs, ρ, d)` — depth `d` is part of the input, not ambient context. The same thunk may produce different results when materialized at different depths (MATERIALIZE-DEPTH is the only materialization rule that does not transition thunk state — see Semantic Commitment 3 in §Thunk Lifecycle). This is not non-determinism but context-sensitivity: `eval_document` with a fixed `d` is a deterministic function. The CEK machine removes MAX_EVAL_DEPTH, making this caveat moot.
 
 #### Part 5: Implementation Correspondence
 
@@ -389,8 +391,8 @@ The formal rules map directly to the implementation:
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
 | DICT-SCOPE | `eval_dict()` | `eval.rs:309-352` |
-| SEQ-SCOPE | `eval_document()` | `eval.rs:199-249` |
-| DOC-PIPELINE | `eval_file_with_input()` (binds `%` + `%name`) | `eval.rs:820-859` |
+| SEQ-SCOPE | `eval_document()` | `eval_pipeline.rs:33` |
+| DOC-PIPELINE | `eval_file_with_input()` (binds `%` + `%name`) | `eval_pipeline.rs:256` |
 | DOC-PIPELINE Σ accumulation | Named-section map `named: IndexMap<String, Rc<Thunk>>` | `eval.rs:830, 842-846, 851-853` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
 | Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
@@ -418,8 +420,8 @@ The formal rules map directly to the implementation:
 
 DICT-SCOPE creates `ρ_dict` with parent `ρ_builtins`:
 - `ρ_dict.B = {even? ↦ θ₁, odd? ↦ θ₂, result ↦ θ₃}` where all `θᵢ = Unevaluated(eᵢ, ρ_dict)`
-- Forcing `θ₃` evaluates `[even? 4]` in `ρ_dict`
-- `lookup(even?, ρ_dict)` → `θ₁` (clause 1) → forces `θ₁` → creates closure capturing `ρ_dict`
+- Materializing `θ₃` evaluates `[even? 4]` in `ρ_dict`
+- `lookup(even?, ρ_dict)` → `θ₁` (clause 1) → materializes `θ₁` → creates closure capturing `ρ_dict`
 - The closure body references `odd?` → `lookup(odd?, ρ_dict)` → `θ₂` (clause 1) ✓ mutual visibility
 - Evaluation terminates: `even?(4) → odd?(3) → even?(2) → odd?(1) → even?(0) → true`
 
@@ -529,7 +531,7 @@ cap_entry         = "%" ~ ident_char+ ~ ":" ~ "@" ~ ident_char+   // e.g., %nc: 
 
 **Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), input contract (`--- expects: InputType`), and/or required capability declarations (`--- caps: [%nc: @NetCap  %data: @DirCap]`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error. The components may appear in any order.
 
-**`caps:` pragma** — declares capabilities that must be injected by the caller before this document can run:
+**`caps:` pragma** — declares capabilities that must be injected by the caller before this document can run. Capability types (`NetCap`, `DirCap`, etc.) are described in [Data Model](03-data-model.md) §Handles — Capability Row.
 
 ```tinct
 --- caps: [%nc: @NetCap  %data: @DirCap  %store: @DirCap]
@@ -580,7 +582,7 @@ An empty file (or one containing only whitespace/comments) is valid and produces
 
 ## Include Mechanism
 
-`include` evaluates a file and returns its dict. Two usage patterns:
+`include` evaluates the target file and returns its output — the last expression's value, fully materialized. The returned value is typically a dict of named functions or constants. Two usage patterns:
 
 **Namespaced** (like Python's `import module`):
 
@@ -647,16 +649,21 @@ This section formalizes the inter-file include mechanism. The intra-file documen
 The include system maintains mutable state `Σ` shared across nested include calls:
 
 ```
-Σ = ⟨base_dir, guard, cache, stdlib_env⟩  where
-  base_dir   : Path              — directory of the currently-evaluating file
-  guard      : Set<Path>         — canonical paths currently being evaluated (cycle detection)
-  cache      : Map<Path, Rc<Thunk>>  — canonical path → evaluated result (memoization)
-  stdlib_env : ρ                 — environment for included files (builtins + stdlib)
+Σ = ⟨guard, cache, include_chain, eval_stack, stdlib_env⟩  where
+  guard         : Set<(u64, u64)>              — file identities (dev, ino) currently being evaluated (cycle detection)
+  cache         : Map<(u64, u64), Rc<Thunk>>   — file identity → evaluated result (memoization)
+  include_chain : Vec<(String, Span)>          — stack of active $include calls (error reporting)
+  eval_stack    : Vec<(String, Span)>          — stack of thunks being evaluated (cycle path)
+  stdlib_env    : ρ                            — environment for included files (builtins + stdlib)
 ```
 
-`Σ` is stored in a thread-local (`INCLUDE_CTX`). All mutations are scoped: `guard` entries are pushed before recursion and popped after (even on error); `base_dir` is saved and restored around each include. `cache` entries are append-only — once a file is cached, its result is never replaced.
+`base_dir` is NOT part of `Σ` — it is carried in `EvalConfig` (immutable within a context), updated per-include via `ctx.with_base_dir(dir)` which constructs a child context.
 
-**Threading model:** `Σ` is threaded via `Rc<RefCell<EvalContext>>` — the `EvalContext` parameter passed through all evaluation functions. The formal semantics are independent of the threading mechanism — `Σ` transitions are the same regardless of how `Σ` is carried.
+`Σ` is stored in `EvalState` (an `Rc<RefCell<EvalState>>`), accessed via `ctx.state.borrow_mut()`. It is carried through all evaluation functions via `Rc::clone` on `EvalContext`, not a thread-local. All mutations are scoped: `guard` entries are pushed before recursion and popped after (even on error). `cache` entries are append-only — once a file is cached, its result is never replaced.
+
+**Cache key semantics:** The cache uses `(dev, ino)` file identity tuples (from `std::fs::metadata`) rather than canonical `PathBuf`. This makes include caching robust across symlinks and hard links — two paths pointing to the same inode will share a single cached result. On platforms where inode identity is unavailable, the behavior degrades gracefully.
+
+**Threading model:** `Σ` is threaded via `Rc<RefCell<EvalState>>` inside `EvalContext` — the `EvalContext` parameter passed through all evaluation functions. The formal semantics are independent of the threading mechanism — `Σ` transitions are the same regardless of how `Σ` is carried.
 
 ### Part 2: Path Resolution
 
@@ -672,7 +679,7 @@ resolve(path_str, Σ.base_dir):
   ⇒ canonical : Path
 ```
 
-Canonicalization serves two purposes: (1) cycle detection requires path identity — `./lib/../lib/utils.llt` and `lib/utils.llt` must resolve to the same key; (2) caching requires the same identity guarantee. Canonicalization fails with an I/O error if the path does not exist on the filesystem.
+Canonicalization serves two purposes: (1) cycle detection requires path identity — `./lib/../lib/utils.llt` and `lib/utils.llt` must resolve to the same key; (2) caching requires the same identity guarantee. After canonicalization, the file's `(dev, ino)` identity is extracted via `std::fs::metadata` for use as the cache and cycle-detection key. Canonicalization fails with an I/O error if the path does not exist on the filesystem.
 
 **Allowlist check:** An INCLUDE-DENY rule is inserted between RESOLVE and INCLUDE-HIT, rejecting paths outside allowed directories before consulting the cache. The check ordering is: canonicalize → allowlist → cache → cycle → read.
 
@@ -680,37 +687,39 @@ Canonicalization serves two purposes: (1) cycle detection requires path identity
 
 Three rules cover the three possible outcomes of an include call. They are checked in priority order: cache → cycle → evaluate. A fourth outcome — INCLUDE-DENY — precedes all three when the path falls outside the allowed directories.
 
-In all rules below, `d` is the evaluation depth and `s` is the call-site span (used for error reporting but not for rule selection).
+In all rules below, `s` is the call-site span (used for error reporting but not for rule selection). The iterative evaluator has eliminated depth threading; there is no `d` parameter.
 
 **[INCLUDE-HIT]** — Cache hit (memoized result):
 
 ```
-resolve(path_str, Σ.base_dir) ⇒ canonical
-canonical ∈ dom(Σ.cache)
+resolve(path_str, config.base_dir) ⇒ canonical
+identity(canonical) ⇒ (dev, ino)
+(dev, ino) ∈ dom(Σ.cache)
 ────────────────────────────────────────
-include(path_str, Σ, d, s) ⇒ Ok(Rc::clone(Σ.cache[canonical]))
+include(path_str, Σ, s) ⇒ Ok(Rc::clone(Σ.cache[(dev, ino)]))
 ```
 
-Cache hits return a clone of the cached thunk pointer. No file I/O, no evaluation. This is Jsonnet-style import memoization: multiple includes of the same file share a single evaluation result.
+Cache hits return a clone of the cached thunk pointer. No file I/O, no evaluation. This is Jsonnet-style import memoization: multiple includes of the same file share a single evaluation result. The `(dev, ino)` key ensures that symlinks and hard links to the same file are correctly deduplicated.
 
 **Cache implementation details:**
 
-- **Cache key:** Canonical `PathBuf` (after symlink resolution and normalization via `std::fs::canonicalize`). Different relative paths that resolve to the same file share a single cache entry — `./lib/utils.llt` and `subdir/../lib/utils.llt` hit the same cache key if they canonicalize to the same absolute path.
+- **Cache key:** `(dev, ino)` file identity tuple (from `std::fs::metadata` after `std::fs::canonicalize`). Different relative paths, symlinks, and hard links that resolve to the same inode share a single cache entry — `./lib/utils.llt` and `subdir/../lib/utils.llt` hit the same cache key if they point to the same file.
 
-- **Cache scope:** Thread-local, stored in `EvalContext::state::include_cache` (`eval.rs:43`, `HashMap<PathBuf, Rc<Thunk>>`). Each thread has its own cache; no cross-thread sharing. The cache is shared across all nested `$include` calls within a single evaluation session.
+- **Cache scope:** Stored in `EvalContext::state::include_cache` (`eval.rs:116`, `HashMap<(u64, u64), Rc<Thunk>>`). Shared via `Rc<RefCell<EvalState>>` across all nested `$include` calls within a single evaluation session.
 
-- **Cache lifetime:** Lives as long as the `EvalContext`. In the CLI, a single `EvalContext` is created per `tinct eval` invocation and cleared on exit. In the REPL, the `EvalContext` persists across REPL inputs, so included files are cached for the entire REPL session — a file modified on disk mid-session will not be re-read until the REPL is restarted.
+- **Cache lifetime:** Lives as long as the `EvalContext`. In the CLI, a single `EvalContext` is created per `tinct run` invocation and cleared on exit. In the REPL, the `EvalContext` persists across REPL inputs, so included files are cached for the entire REPL session — a file modified on disk mid-session will not be re-read until the REPL is restarted.
 
 - **Error non-caching:** Failed includes are NOT cached. If `$include("broken.llt")` fails (parse error, I/O error, eval error), subsequent `$include("broken.llt")` calls re-attempt evaluation. Only successful results populate the cache. Note that the call-site thunk caches the failure (via `ThunkState::Failed`) — the same call site will not retry — but a different call site including the same file will retry the file-level evaluation.
 
 **[INCLUDE-CYCLE]** — Cycle detection:
 
 ```
-resolve(path_str, Σ.base_dir) ⇒ canonical
-canonical ∉ dom(Σ.cache)
-canonical ∈ Σ.guard
+resolve(path_str, config.base_dir) ⇒ canonical
+identity(canonical) ⇒ (dev, ino)
+(dev, ino) ∉ dom(Σ.cache)
+(dev, ino) ∈ Σ.guard
 ────────────────────────────────────────
-include(path_str, Σ, d, s) ⇒ Err("circular include detected: {canonical}")
+include(path_str, Σ, s) ⇒ Err("circular include detected: {canonical}")
 ```
 
 A file currently being evaluated (present in the guard set) cannot be included again. This catches direct cycles (`A includes A`) and transitive cycles (`A includes B includes A`). The error is raised at the include call site — no evaluation of the cyclic file is attempted.
@@ -718,47 +727,46 @@ A file currently being evaluated (present in the guard set) cannot be included a
 **[INCLUDE-EVAL]** — Fresh evaluation:
 
 ```
-resolve(path_str, Σ.base_dir) ⇒ canonical
-canonical ∉ dom(Σ.cache)
-canonical ∉ Σ.guard
+resolve(path_str, config.base_dir) ⇒ canonical
+identity(canonical) ⇒ (dev, ino)
+(dev, ino) ∉ dom(Σ.cache)
+(dev, ino) ∉ Σ.guard
 assert file_size(canonical) ≤ MAX_FILE_SIZE             (10 MB; prevents resource exhaustion)
 source = read_file(canonical)                           (I/O: file read)
 file = parse(source)                                    (parse tinct source)
 desugar(file)                                           (AST transformation: $_ implicit lambdas)
 
-Σ.guard ← Σ.guard ∪ {canonical}                        (push guard)
-saved_base = Σ.base_dir
-Σ.base_dir ← parent(canonical)                         (set base_dir for nested includes)
+Σ.guard ← Σ.guard ∪ {(dev, ino)}                       (push guard)
+ctx' = ctx.with_base_dir(parent(canonical))             (child context for nested includes)
 
-θ = eval_file(file, Σ.stdlib_env, d + 1)               (evaluate all documents)
-v = materialize(θ, None, d + 1)                         (EAGER materialization — see Part 4)
+θ = eval_file(file, Σ.stdlib_env, ctx')                 (evaluate all documents)
+v = materialize(θ, None, ctx')                          (EAGER materialization — see Part 4)
 
-Σ.base_dir ← saved_base                                (restore base_dir)
-Σ.guard ← Σ.guard \ {canonical}                        (pop guard)
+Σ.guard ← Σ.guard \ {(dev, ino)}                       (pop guard)
 
 θ_result = Materialized(v)                              (pure allocation — no evaluation)
-Σ.cache[canonical] ← θ_result                          (cache result)
+Σ.cache[(dev, ino)] ← θ_result                         (cache result)
 ────────────────────────────────────────
-include(path_str, Σ, d, s) ⇒ Ok(θ_result)
+include(path_str, Σ, s) ⇒ Ok(θ_result)
 ```
 
-On error at any step (file read, parse, eval, materialize), the `base_dir` and `guard` are restored before the error propagates — the INCLUDE-RESTORE invariant (Property 3 below).
+On error at any step (file read, parse, eval, materialize), the guard is restored before the error propagates — the INCLUDE-RESTORE invariant (Property 3 below). The `base_dir` does not need explicit restore because it is carried in the child context `ctx'`, not mutated in `Σ`.
 
-The `d + 1` depth propagation means nested includes consume evaluation depth. Deep include chains eventually hit `MAX_EVAL_DEPTH`, providing an independent bound on include recursion beyond the guard set.
+The iterative evaluator does not track depth, so nested includes do not consume evaluation depth. The guard set provides the cycle detection bound on include recursion.
 
 The included file evaluates with `Σ.stdlib_env` as its root scope and `%` initialized to the empty dict (`eval_file` passes `None` as `initial_input` to `eval_file_with_input`, which defaults to `Materialized(Dict([]))`). It does *not* receive the including file's scope chain — include isolation is strict (Property 5).
 
 ### Part 4: Eager Materialization Invariant
 
-`$include` is one of three builtins that eagerly materialize their result (the others are `$eval` and `$try`). `$include` uses single-level `materialize` (forces the outer dict but leaves nested values as thunks), while `$eval` uses `deep_materialize` (recursively forces all nested thunks with cycle detection). `$try` materializes the function body result to determine success or failure. The eager materialization in INCLUDE-EVAL is required for correctness of the guard-based cycle detection:
+`$include` is one of three builtins that eagerly materialize their result (the others are `$eval` and `$try`). `$include` uses single-level `materialize` (materializes the outer dict but leaves nested values as thunks), while `$eval` uses `deep_materialize` (recursively materializes all nested thunks with cycle detection). `$try` materializes the function body result to determine success or failure. The eager materialization in INCLUDE-EVAL is required for correctness of the guard-based cycle detection:
 
 **Why not lazy?** If `$include` returned `θ` (the unevaluated result thunk) instead of `Materialized(v)`:
 
-1. **Cycle detection breaks.** The guard entry for `canonical` is popped immediately after `eval_file` returns. A lazy result defers actual evaluation of nested `$include` calls within the result — when those deferred thunks are later forced, `canonical` is no longer in the guard set, so a transitive cycle would go undetected.
+1. **Cycle detection breaks.** The guard entry for `canonical` is popped immediately after `eval_file` returns. A lazy result defers actual evaluation of nested `$include` calls within the result — when those deferred thunks are later materialized, `canonical` is no longer in the guard set, so a transitive cycle would go undetected.
 
 2. **Path resolution breaks.** The `base_dir` is restored to the parent file's directory after the include returns. If the included file's result contains nested `$include` calls (as unevaluated thunks), those calls would resolve relative paths against the *parent's* `base_dir`, not the included file's directory.
 
-3. **Cache coherence breaks.** The cached result must be a fully evaluated value so that all consumers receive semantically equivalent data. A lazy cached thunk could produce different results depending on evaluation context (depth, base_dir at the time of forcing).
+3. **Cache coherence breaks.** The cached result must be a fully evaluated value so that all consumers receive semantically equivalent data. A lazy cached thunk could produce different results depending on evaluation context (depth, base_dir at the time of materialization).
 
 Formally: eager materialization is required because the guard set and `base_dir` are stack-scoped (pushed before the call, popped after), but lazy thunks outlive their stack frame. The alternative — extending guard lifetime to match thunk lifetime — would require thunk-to-file provenance tracking that conflicts with tinct's thunk lifecycle model (thunks are anonymous after construction).
 
@@ -807,7 +815,7 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 
 | Spec element | Implementation |
 |-------------|----------------|
-| Σ (EvalState) | `eval.rs:41-45` (`include_guard`, `include_cache`) |
+| Σ (EvalState) | `eval.rs:109-144` (`include_guard`, `include_cache`, `include_chain`, `eval_stack`) |
 | Σ context | `EvalContext` (`eval.rs:52-55`) |
 | RESOLVE | `builtins.rs:1248-1260` (resolve + canonicalize) |
 | INCLUDE-HIT | `builtins.rs:1263-1265` (cache lookup + Rc::clone) |
@@ -818,38 +826,38 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
-| DOC-PIPELINE (cross-ref) | `eval_file_with_input` (`eval.rs:820-859`) |
-| SEQ-SCOPE (cross-ref) | `eval_document` (`eval.rs:199-249`) |
+| DOC-PIPELINE (cross-ref) | `eval_file_with_input` (`eval_pipeline.rs:256`) |
+| SEQ-SCOPE (cross-ref) | `eval_document` (`eval_pipeline.rs:33`) |
 
 ## Pure Language, CLI Handles I/O
 
 Tinct is a pure data transformation language with no in-language side effects, modulo `$include`, which performs filesystem I/O as a controlled side effect with sandboxing (similar to Nix's `import` and Dhall's `import`). The program evaluates to a value; the CLI serializes it:
 
 ```
-tinct eval file.llt              # evaluate, output result as JSON
-tinct eval --eval file.llt       # deep-force all thunks before serializing (surfaces errors before partial output)
-tinct eval -                     # read Tinct source from stdin
-cat data.json | tinct eval file.llt  # stdin JSON parsed and injected as % for first document
+tinct run file.llt              # evaluate, output result as JSON
+tinct run --eval file.llt       # deep-materialize all thunks before serializing (surfaces errors before partial output)
+tinct run -                     # read Tinct source from stdin
+cat data.json | tinct run file.llt  # stdin JSON parsed and injected as % for first document
 ```
 
-**Default output formatter:** The JSON output produced by `tinct eval` is generated by `stdlib/out/json.llt` — a pure-tinct JSON serializer that lives in the standard library. This formatter is user-visible: you can inspect it, customize it, or use it directly in your own programs via `[include libdir "out/json.llt"]`. If `stdlib/out/json.llt` is not found (e.g. when running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. The output is indented (2-space pretty-printed) by default.
+**Default output formatter:** The JSON output produced by `tinct run` is generated by `stdlib/out/json.llt` — a pure-tinct JSON serializer that lives in the standard library. This formatter is user-visible: you can inspect it, customize it, or use it directly in your own programs via `[include libdir "out/json.llt"]`. If `stdlib/out/json.llt` is not found (e.g. when running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. The output is indented (2-space pretty-printed) by default.
 
 This is the Jsonnet/Nix model: the language produces data, an external tool handles I/O. Unreferenced dict entries are never computed. There is no `$write`, `$read`, `$stdout`, `$stdin`, or channel system.
 
-`$eval` is a runtime-supported function that recursively forces all thunks in its argument. It performs full materialization: the entire structure is forced into memory. The implementation caps recursion at depth 256 and returns an error if exceeded. On infinite or cyclic structures, `$eval` will hit the depth limit rather than diverging. Use `$take` to bound infinite sequences before passing them to `$eval`.
+`$eval` is a runtime-supported function that recursively materializes all thunks in its argument. It performs full materialization: the entire structure is materialized in memory. The implementation caps recursion at depth 256 and returns an error if exceeded. On infinite or cyclic structures, `$eval` will hit the depth limit rather than diverging. Use `$take` to bound infinite sequences before passing them to `$eval`.
 
 ```tinct
 # Without eval: CLI serializes lazily (streaming, may partially output then hit an error)
 [result: [map %.data [fn [x] [+ x 1]]]]
 
-# With eval: everything forced into memory first (errors caught before any output)
+# With eval: everything materialized in memory first (errors caught before any output)
 [result: [eval [map %.data [fn [x] [+ x 1]]]]]
 
 # Safe on infinite sequences: take bounds before eval
 [result: [eval [take 100 %.sequence]]]
 ```
 
-**Why pure?** In-language I/O in a lazy language creates a forcing problem: side-effecting expressions buried in lazy dict entries may never execute, and execution order becomes unpredictable. By making the language pure, lazy evaluation is semantically transparent — the result is the same regardless of evaluation order. The CLI is the only I/O boundary, and it forces exactly what it needs to serialize the output.
+**Why pure?** In-language I/O in a lazy language creates a materialization problem: side-effecting expressions buried in lazy dict entries may never execute, and execution order becomes unpredictable. By making the language pure, lazy evaluation is semantically transparent — the result is the same regardless of evaluation order. The CLI is the only I/O boundary, and it materializes exactly what it needs to serialize the output.
 
 **Security:** External input (stdin, files) is parsed by the CLI and injected as structured data (`%`). The language never evaluates untrusted input as code. `$from-json` is a pure function that converts a JSON string to a dict — safe on untrusted input.
 
@@ -912,7 +920,7 @@ tinct literate eval config.md
 
 ### Tangle Mode
 
-`tangle` extracts code blocks and prints them joined with `\n---\n` separators. The output is valid tinct source that can be piped into `tinct eval -` or redirected to a `.llt` file:
+`tangle` extracts code blocks and prints them joined with `\n---\n` separators. The output is valid tinct source that can be piped into `tinct run -` or redirected to a `.llt` file:
 
 ```bash
 tinct literate tangle config.md
@@ -925,7 +933,7 @@ tinct literate tangle config.md
 
 ### Eval Mode
 
-`eval` is equivalent to `tangle` followed by `tinct eval`. Extracts blocks, joins them, evaluates the resulting pipeline, and prints JSON.
+`eval` is equivalent to `tangle` followed by `tinct run`. Extracts blocks, joins them, evaluates the resulting pipeline, and prints JSON.
 
 If no tinct code blocks are found in the Markdown file, `eval` exits with an error.
 
@@ -942,7 +950,7 @@ If no tinct code blocks are found in the Markdown file, `eval` exits with an err
 <!-- tinct-result: {"port": 8080} -->
 ```
 
-The result at each block is the intermediate pipeline value at that point — the output of that block after receiving `%` from all preceding blocks. Full result substitution (replacing inline markers in prose) is a future refinement.
+The result at each block is the intermediate pipeline value at that point — the output of that block after receiving `%` from all preceding blocks. Full result substitution (replacing inline markers in prose) is not yet implemented.
 
 If the Markdown file contains no tinct blocks, `weave` outputs the file unchanged.
 
@@ -952,14 +960,14 @@ Literate mode composes with the `emit` builtin. If a code block calls `emit`, th
 
 ### Base Directory
 
-For `$include` resolution within literate code blocks, the base directory is the directory containing the Markdown file (not the current working directory). This matches the behavior of `tinct eval file.llt`.
+For `$include` resolution within literate code blocks, the base directory is the directory containing the Markdown file (not the current working directory). This matches the behavior of `tinct run file.llt`.
 
 ### Formal Relationship to `---` Pipeline
 
 `tinct literate eval file.md` is semantically equivalent to:
 
 ```bash
-tinct literate tangle file.md | tinct eval -
+tinct literate tangle file.md | tinct run -
 ```
 
 The Markdown extraction is a preprocessing pass that produces a tinct source string with `---` separators. The existing parser and evaluator handle the rest unchanged. No new evaluation semantics are introduced — literate mode is purely a source-level transformation.
