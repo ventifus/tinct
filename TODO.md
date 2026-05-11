@@ -51,14 +51,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-### span-corrections-remaining: Remaining Span Assignment Issues
-
-`doc/10-errors.md:930-944` documents a "Known Span Assignment Issues" table with a note "These corrections are not yet implemented." Several rows in this table were addressed in earlier sprints (`span-builtins`, `span-errors`), but at least two remain unimplemented: (1) "Depth limit errors lack call-site context" — `DepthExceeded` errors use `def_span` pointing to the thunk being materialized, but do not include `mat_span` pointing to the call site that triggered the limit; (2) "Desugared lambda spans" — `wrap_expr_in_lambda` at `src/desugar.rs:158,174` assigns the outer expression span to both the generated `Fn` node and its body, so type errors inside `$_.field` lambdas point to the whole outer call site rather than the inner expression.
-
-- [ ] [Minor] Fix `DepthExceeded` error to include call-site materialization span — in `src/eval_materialize.rs` where `DepthExceeded` is constructed for builtins-only depth violations, chain `.with_materialization_span(call_span)` so the error shows both the thunk definition site and the call site that triggered the limit (`src/eval_materialize.rs`, `src/error.rs`)
-- [ ] [Minor] Fix `wrap_expr_in_lambda` in `src/desugar.rs` to assign the inner expression's span to the generated `Fn` body — currently `desugar.rs:158,174` assigns `expr.span` to the entire `Fn` node; use the inner `_.field` sub-expression span for the body so type errors point to the actual failing sub-expression rather than the outer call site (`src/desugar.rs:158,174`)
-- [ ] [Minor] Update `doc/10-errors.md` §Known Span Assignment Issues table to mark the two addressed rows as implemented and remove the blanket "not yet implemented" note for rows that were fixed in `span-builtins` and `span-errors` sprints
-
 ---
 
 ### stub-network-protocols: Implement Stub Network Builtins

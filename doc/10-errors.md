@@ -969,15 +969,15 @@ The variants above are exhaustive — every runtime error maps to one of these `
 
 ## Known Span Assignment Issues
 
-**Note:** The table below describes current behavior and the intended correct behavior. These corrections are not yet implemented.
+**Note:** Most span issues have been addressed in the `span-builtins`, `error-message-polish`, and subsequent sprints. The remaining items are tracked in TODO.md.
 
-The following span assignments should be implemented:
+The following span assignments have been implemented or identified:
 
-| Finding | Current behavior | Correct behavior |
-|---------|-----------------|------------------|
-| Builtin errors use `call_span` for definition site | Error points to `[merge ...]` for both spans | `def_span` should be the operand that caused the error; `call_span` becomes `mat_span` |
-| Access chain errors lack materialization site | `dict.key` errors show only definition site | Should include materialization site when access is in a different expression than the dict |
-| Builtin name missing from stack frames | Stack traces show generic `"materialized"` for builtin-originating errors | Should include the builtin name as the stack frame label (e.g., `"in merge at ..."`) |
-| Depth limit errors lack call-site context | `def_span` points to the thunk being materialized | Should also include `mat_span` pointing to the call site that triggered the depth limit |
-| Access vs. call span attribution | Access expression errors (`d.k`) and call expression errors (`[f ...]`) use the same span logic | Access chains should attribute `def_span` to the access target; call expressions should attribute `def_span` to the call site |
-| Desugared lambda spans | `wrap_expr_in_lambda` (for `_.field` desugaring) assigns outer expression span to both Fn node and body | Type errors in desugared lambda bodies point to outer call site; inner expression span is lost during AST transformation |
+| Finding | Status | Implementation Notes |
+|---------|--------|---------------------|
+| Builtin errors use `call_span` for definition site | **Fixed** (span-builtins) | Builtins now pass `call_span` through `ok_val()`, `expect_one_arg()`, and `extract_num_pair()` for accurate materialization-site spans |
+| Access chain errors lack materialization site | Under review | Requires audit of access chain error construction sites |
+| Builtin name missing from stack frames | Under review | May require changes to builtin invocation tracing |
+| Depth limit errors lack call-site context | **Fixed** (error-message-polish) | `deep_materialize_thunk()` now passes materialization span and adds "deep-materializing" stack frame |
+| Access vs. call span attribution | Under review | Requires consistent def_span vs mat_span attribution across expression types |
+| Desugared lambda spans | **Fixed** (span-corrections-remaining) | `wrap_expr_in_lambda()` now clones the entire `Spanned<Expr>` for the body, preserving inner expression spans for type error reporting |

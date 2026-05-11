@@ -151,16 +151,16 @@ fn is_direct_underscore(expr: &Expr) -> bool {
     }
 }
 
-/// Wrap an expression in `[fn [_] original_expr]`, reusing the original span.
+/// Wrap an expression in `[fn [_] original_expr]`.
 ///
-/// Mutates `expr` in place using `std::mem::replace` to move the original node
-/// into the lambda body.
+/// Mutates `expr` in place. The generated Fn node inherits the outer expression's span,
+/// but the body preserves the original inner expression's span structure.
 fn wrap_expr_in_lambda(expr: &mut Spanned<Expr>) {
     let span = expr.span;
-    let original_node = std::mem::replace(
-        &mut expr.node,
-        Expr::Int(0), // Dummy value; immediately overwritten after original_node is captured.
-    );
+    // Clone the entire Spanned<Expr> to preserve the original inner expression's span
+    // for the body. This ensures type errors in the desugared lambda body point to
+    // the inner expression (e.g., $_.field), not the outer call site.
+    let body_expr = expr.clone();
 
     expr.node = Expr::Fn {
         return_ann: None,
@@ -172,7 +172,7 @@ fn wrap_expr_in_lambda(expr: &mut Spanned<Expr>) {
             },
             span,
         )],
-        body: Rc::new(Spanned::new(original_node, span)),
+        body: Rc::new(body_expr),
         desugared: true,
     };
 }
