@@ -1,4 +1,0 @@
-[
-  f: [fn [x@Int] x]
-  result: [f "hello"]
-]
