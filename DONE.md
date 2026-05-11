@@ -5543,4 +5543,26 @@ Fixes for type checker issues: named arg types, Sequential scoping, match arm sc
 - [x] Remove duplicate prelude functions from encoding.llt + str-repeat from strings.llt
 - [x] apply() fast-path extended with 8 concrete types
 - [x] doc/11-stdlib.md builtin count corrected (191→178)
+
+## Type System Cleanup
+
+### prelude-type-annotations: Fix type annotations in stdlib/prelude.llt
+
+Audit findings from 2026-05-11. Focus: public-facing functions only. Internal helpers (`-impl`, `-step`, `-check`, `sort-merge`, etc.) excluded.
+
+- [x] `when`/`unless` (lines 497–502): change `fn@Any` → `fn@Unknown` — the `@Any` annotation is semantically wrong; the return is either the unannotated `body` arg or `[]` (Null), which is the gradual-typing `Unknown` case, not the lattice ceiling `Any`
+- [x] `cond` (line 511): change `fn@Any` → `fn@Unknown` — delegates to `cond-impl`; returns the untyped `result` branch or `[]` (Null when no branch matches); same `Any`→`Unknown` mismatch as `when`/`unless`
+- [x] `get` (line 524): add `fn@Unknown` return annotation — currently bare `fn`; delegates to `builtin-get` whose return type is unknown at the static level; unannotated and knowable
+- [x] `get-or` (line 535): add `fn@Unknown` return annotation — bare `fn`; returns either the dict value or the `default` param, both untyped; unannotated and knowable
+- [x] `get-in` (line 543): change `fn@Any` → `fn@Unknown` — traverses nested dicts; return is a leaf value whose type is unknown; `Unknown` is the correct gradual annotation
+- [x] `get-in-or` (line 554): change `fn@Any` → `fn@Unknown` — same issue as `get-in`; on the missing-key path returns unannotated `default` param
+- [x] `zip` (line 747): change `fn@Any` → `fn@Unknown` — always returns a collection (Seq or Dict depending on inputs), but the dual-dispatch return cannot be pinned to either; `Unknown` is more honest than `Any` (lattice ceiling)
+- [x] `and`/`or` (lines 354/363): add `fn@Unknown` return annotation — both bare `fn`; `and` returns `b` or `false`, `or` returns `a` or `b`; neither is statically pinnable without union types; currently unannotated and knowable
+- [x] `find-first`/`find-first-or` (lines 833/836): add `fn@Unknown` return annotation — both bare `fn`; return single element from filtered collection whose type is unknown statically; currently unannotated and knowable
+- [x] `min`/`max` (lines 925/933): add `fn@Unknown` return annotation — both bare `fn`; return the winning element (type equals element type, unknown without parametric annotation); currently unannotated and knowable
+- [x] `between` (line 1171): add `fn@Fn` return annotation — bare `fn [lo hi]`; always returns a closure (the inner `[fn [v] ...]`); `@Fn` is the correct annotation; currently unannotated
+- [x] `non-negative`/`positive` (lines 1178/1185): add `fn@Bool` return annotation — both bare `fn [v]`; always return Bool (they delegate to `>=` and `>`); currently unannotated and clearly knowable
+- [x] `assert` (line 1095): change `fn@Bool` return annotation to `fn@Unknown` — currently annotated `@Bool` but the false path calls `[error msg]` which diverges (never returns); the true path returns literal `true`; until `Never` is in the prelude type system, `Unknown` is more accurate than claiming it always returns Bool
+- [x] `fold` (line 725): add `fn@Unknown` return annotation — bare `fn [f@Fn init xs]`; delegates to `builtin-reduce`; return type is the accumulator type (equals `init`'s type, statically unknown); currently unannotated and knowable
+- [x] `result-map`/`result-or`/`and-then`/`result-ok` (lines 1046–1073): add `fn@Unknown` return annotations to all four — all bare `fn`; all operate on Result values whose type system representation is `Unknown` until `Type::Variant` is added; currently unannotated and knowable
 - [x] 7 items verified already correct (PartialEq, ErrorKind, Substitution, bytes_to_seq, Span filter, help_suggestion format)

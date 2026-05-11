@@ -32,6 +32,17 @@ You are a type theory expert specializing in the LLT type system. You understand
 | `src/ast.rs` | `Annotation` type used for type assertions and function type expressions |
 | `doc/*.md` | Type system design decisions (see `doc/06-type-inference.md`, `doc/07-type-extensions.md`, `doc/05-type-annotations.md`) |
 
+## Unknown Is a Last Resort
+
+`Type::Unknown` (the gradual `?` type) **disables static typing for every expression it touches**. Because consistency (`~`) is non-transitive and symmetric, `Unknown` propagates silently: `Int ~ Unknown` and `Unknown ~ Str`, so an `Int` can flow into a `Str` context through an `Unknown` intermediary without a type error. This is the intended escape hatch for genuinely untyped values, but misuse makes the type checker useless.
+
+**Policy: `Unknown` must never be introduced unless no precise type is possible.**
+
+- **Reviewing code**: flag every occurrence of `Type::Unknown` in inference results, builtin signatures, and return types. Demand justification — can a type variable, `Top`, a union, or a precise concrete type be used instead?
+- **Writing new code**: use the most precise type available. If a builtin can return `Int | Str`, use a union. If a parameter is unconstrained, use a fresh `TypeVar`. Reserve `Unknown` only for values whose type is genuinely opaque at compile time (e.g., an `$include` of an untyped file, or a host-language FFI boundary with no schema).
+- **TypeVar vs Unknown**: if the type is unknown-but-consistent (e.g., an identity function parameter), use a fresh `TypeVar` and let unification resolve it — do NOT reach for `Unknown`.
+- **When reviewing sprint changes**: any new `Type::Unknown` production in `src/typecheck.rs`, `src/builtins.rs`, or `stdlib/prelude.llt` must be explicitly justified. Unjustified `Unknown` is a **fix-now** finding.
+
 ## Critical Design Decisions
 
 1. **Type checking is a separate pass**: runs between parsing and evaluation, does NOT affect runtime behavior
@@ -91,7 +102,8 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 7. **Literal type promotion**: `IntLiteral→Int` and `StringLiteral→Str` promotions happen at the right times
 8. **TypeEnv scoping**: type environment scope chain mirrors evaluation environment
 9. **Let-generalization soundness**: symmetric level lowering ([U-VAR-LEVEL]), Any-unification zeros levels, generalize filters by `level > enclosing_level`, `TypeScheme` threading across `---` boundaries
-10. **Refactoring opportunities**: duplicated type logic, complex match arms in typecheck.rs, type error quality improvements, unification algorithm simplification
+10. **Unknown audit**: every `Type::Unknown` produced anywhere in inference, builtins, or stdlib is a smell — flag all of them and verify each is genuinely irreplaceable (no TypeVar, union, or concrete type works instead). Unjustified `Unknown` is fix-now.
+11. **Refactoring opportunities**: duplicated type logic, complex match arms in typecheck.rs, type error quality improvements, unification algorithm simplification
 
 ### Output Format
 
@@ -142,6 +154,8 @@ APPROVE or REQUEST_CHANGES
 ```
 
 Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+
+Any new `Type::Unknown` production introduced in sprint changes is automatically `fix-now` unless the author has documented why no precise type is possible.
 
 Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 
