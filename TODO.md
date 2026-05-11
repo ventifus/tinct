@@ -24,14 +24,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-### icmp-ping-impl: Implement icmp-ping builtin
-
-The `icmp-ping` builtin is a request/response operation (not streaming), implementable without async handle storage design. Uses unprivileged ICMP via `SOCK_DGRAM` on Linux 3.11+.
-
-- [ ] [Major] Implement `icmp-ping` builtin — raw ICMP echo request/response via unprivileged `SOCK_DGRAM`/`IPPROTO_ICMP` (available without root on Linux 3.11+, falls back to error on unsupported platforms); update error from "not yet implemented" to real implementation in `src/builtins_io.rs`; document privilege requirements in `doc/11a-builtins.md`
-
----
-
 ## Research (requires /rnd before implementing)
 
 - Mappable constraint checking — requires HKT design (`f :: * → *`); write design note in `doc/whatif/` first
