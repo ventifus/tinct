@@ -33,16 +33,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-### literate-full-substitution: Full Result Substitution in Weave Mode
-
-`doc/09-documents.md:953` documents a "future refinement" for the `tinct weave` command: "Full result substitution (replacing inline markers in prose)". Currently weave annotates code blocks with `<!-- tinct-result: ... -->` HTML comments, but does not replace inline `<!-- tinct-result -->` markers embedded in the Markdown prose itself. A full substitution mode would find `<!-- tinct-result: (emit) -->` markers in prose and replace them with the evaluated result of the preceding or named code block.
-
-- [ ] [Major] Implement inline marker substitution in `src/weave.rs` (or wherever weave is implemented) — after evaluating all code blocks, make a second pass over the Markdown source replacing `<!-- tinct-result: ... -->` markers in prose with the JSON/display-string result of the corresponding block; use block name (from `%name@Type` header) for named references
-- [ ] [Minor] Add `--no-substitute` flag to `tinct weave` to disable marker replacement (for environments that consume the HTML comments programmatically), preserving current behavior as an opt-out (`src/main.rs`)
-- [ ] [Minor] Add corpus tests for `tinct weave` with inline markers — verify marker replacement, named block reference, and `--no-substitute` passthrough (`tests/corpus/`)
-
----
-
 ---
 
 ### stub-network-protocols: Implement Stub Network Builtins

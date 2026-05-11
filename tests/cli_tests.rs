@@ -2563,6 +2563,111 @@ fn literate_weave_no_blocks_outputs_markdown_unchanged() {
 }
 
 #[test]
+fn literate_weave_inline_marker_substitution() {
+    // Test inline <!-- tinct-result --> markers get replaced with block results
+    let md = concat!(
+        "# Config\n\n",
+        "First block:\n\n",
+        "```tinct\n[x: 42]\n```\n\n",
+        "The value is <!-- tinct-result: -->\n\n",
+        "Second block:\n\n",
+        "```tinct\n[y: 100]\n```\n\n",
+        "Now the value is <!-- tinct-result: -->\n",
+    );
+    let (path, _dir) = write_temp_md("literate_weave_inline", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // First inline marker should be replaced with first block's result
+    assert!(
+        stdout.contains("The value is {\"x\":42}"),
+        "expected first inline marker replaced with first block result, got: {stdout}"
+    );
+
+    // Second inline marker should be replaced with second block's result
+    assert!(
+        stdout.contains("Now the value is {\"y\":100}"),
+        "expected second inline marker replaced with second block result, got: {stdout}"
+    );
+}
+
+#[test]
+fn literate_weave_inline_marker_with_expression() {
+    // Test inline markers with expressions like <!-- tinct-result: %.x -->
+    let md = concat!(
+        "# Test\n\n",
+        "```tinct\n[x: 42  y: 100]\n```\n\n",
+        "The x value is <!-- tinct-result: %.x -->\n\n",
+        "The y value is <!-- tinct-result: %.y -->\n",
+    );
+    let (path, _dir) = write_temp_md("literate_weave_expr", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("The x value is 42"),
+        "expected x field extracted, got: {stdout}"
+    );
+
+    assert!(
+        stdout.contains("The y value is 100"),
+        "expected y field extracted, got: {stdout}"
+    );
+}
+
+#[test]
+fn literate_weave_no_substitute_preserves_markers() {
+    // Test --no-substitute flag preserves inline markers
+    let md = concat!(
+        "# Test\n\n",
+        "```tinct\n[x: 42]\n```\n\n",
+        "The value is <!-- tinct-result: -->\n",
+    );
+    let (path, _dir) = write_temp_md("literate_weave_no_sub", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", "--no-substitute", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The inline marker should be preserved, not replaced
+    assert!(
+        stdout.contains("The value is <!-- tinct-result: -->"),
+        "expected inline marker preserved with --no-substitute, got: {stdout}"
+    );
+
+    // Should not contain the substituted value
+    assert!(
+        !stdout.contains("The value is {\"x\":42}"),
+        "expected marker NOT substituted with --no-substitute, got: {stdout}"
+    );
+}
+
+#[test]
 fn literate_missing_file_is_error() {
     let output = Command::new(tinct_bin())
         .args(["literate", "tangle", "/tmp/nonexistent_literate_test.md"])
