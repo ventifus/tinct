@@ -658,7 +658,7 @@ Network syscalls are controlled by the `--cap-net` flag.
 
 - Default: network blocked. seccomp-bpf blocks `socket`, `connect`, `bind`, `listen`, `accept` syscalls. Even if a vulnerability allows code injection, the process cannot make network connections.
 - Network syscalls are allowed automatically when any `--cap-net NAME=ENTRY` flag is present — the presence of a network capability implies network authority. There is no separate `--allow-network` flag.
-- `--allow-host <host:port>` for fine-grained control (future — requires application-level checking since seccomp cannot filter by host).
+- `--allow-host <host:port>` for fine-grained control at the application level (since seccomp cannot filter by host). When any `--allow-host` flag is present, only the specified host:port combinations are permitted for `connect`, `http2-session`, `http3-session`, and `quic-session` builtins. Empty list (default) allows all hosts (NetCap controls access). The check runs before the NetCap capability check and before socket creation.
 - Seccomp filter installed in `run_eval()` after Landlock, before evaluation starts (process-level, not per-eval).
 - Linux-only; on other platforms, network features are controlled at the application level. Logs a warning on non-Linux.
 

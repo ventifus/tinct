@@ -67,6 +67,13 @@ enum Commands {
         #[arg(long, value_name = "PATH")]
         allow_path: Vec<PathBuf>,
 
+        /// Restrict network connections to specific host:port pairs (may be repeated).
+        /// When any --allow-host flag is present, connect/http2-session/http3-session
+        /// may only access the listed host:port combinations. Empty list (default) allows
+        /// all hosts (NetCap controls access). Format: "host:port" (e.g., "api.example.com:443").
+        #[arg(long, value_name = "HOST:PORT")]
+        allow_host: Vec<String>,
+
         /// Disable Landlock filesystem ACL enforcement even when --allow-path is set.
         /// By default, when --allow-path is specified on Linux, Landlock is applied as
         /// defense-in-depth. This flag skips that step (e.g., for older kernels or
@@ -286,6 +293,7 @@ fn main() {
             strict,
             timeout,
             allow_path,
+            allow_host,
             no_landlock,
             max_memory,
             max_cpu,
@@ -311,6 +319,7 @@ fn main() {
             strict,
             timeout.as_deref(),
             allow_path,
+            allow_host,
             no_landlock,
             max_memory,
             max_cpu,
@@ -824,6 +833,7 @@ fn run_eval(
     strict: bool,
     timeout: Option<&str>,
     allow_path: Vec<PathBuf>,
+    allow_host: Vec<String>,
     no_landlock: bool,
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
@@ -1471,6 +1481,7 @@ fn run_eval(
                 no_fs,
                 require_integrity,
                 canonical_allowed_paths.clone(),
+                allow_host.clone(),
                 env_allowed.clone(),
             );
             // Convert stdin JSON using this context so ThunkIds go into the shared arena.

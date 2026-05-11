@@ -164,6 +164,7 @@ struct EvalConfig {
     require_integrity: bool,
     allowed_paths: Vec<std::path::PathBuf>,
     base_dir_path: Option<std::path::PathBuf>,
+    allowed_hosts: Vec<String>,
 }
 
 struct EvalState {

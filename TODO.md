@@ -31,14 +31,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-### allow-host-sandbox: Per-Host Network Capability Filtering
-
-`doc/12-tooling.md:661` documents `--allow-host <host:port>` for fine-grained network control as "future — requires application-level checking since seccomp cannot filter by host". Currently, when `--cap-net` is present, any host is reachable; the only granularity is all-or-nothing per capability. The `doc/16-architecture.md:726` EvalConfig struct shows `// future: allowed_hosts: Vec<String>` as a placeholder. This feature would enable sandbox policies like "this program may only connect to api.example.com:443".
-
-- [ ] [Major] Add `allowed_hosts: Vec<String>` to `EvalConfig` (`src/eval.rs`) and expose `--allow-host <host:port>` CLI flag that populates it (`src/main.rs`); multiple `--allow-host` flags are additive; empty list means all hosts allowed (current behavior, preserving backward compatibility)
-- [ ] [Major] Implement host/port allowlist check in `builtin_connect` and `builtin_http_request` — before opening a TCP connection, parse the target host and port; if `EvalConfig::allowed_hosts` is non-empty, reject connections to hosts not in the list with `ErrorKind::CapabilityViolation` (`src/builtins_io.rs`)
-- [ ] [Minor] Update `doc/12-tooling.md` §Network Sandbox section and `doc/16-architecture.md` EvalConfig struct to describe `--allow-host` as implemented (remove "future" qualifier and the comment placeholder in the struct)
-
 ---
 
 ### literate-full-substitution: Full Result Substitution in Weave Mode
