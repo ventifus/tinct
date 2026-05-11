@@ -362,7 +362,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     resolve::resolve_file(&file.node);
     // Type check the file with prelude-seeded environment
     let env = imports::build_prelude_env();
-    let (type_errors, _type_map, _doc_map) =
+    let (type_errors, _type_map, _doc_map, _scheme_map) =
         typecheck::typecheck_file_with_types_and_env(&file.node, env);
     if type_errors.is_empty() {
         Ok(())

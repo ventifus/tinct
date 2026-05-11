@@ -13,7 +13,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
-| [Higher-Kinded Types and Monadic `[do]`](hkt-monads.md) | Rank-1 kind polymorphism; `Monad m` typeclass at kind `* → *`; `[do]` inference from return type; `sequence`/`traverse` as generic functions; backward-compatible with existing `[do monad]` |
+| [Higher-Kinded Types and Monadic `[do]`](completed/hkt-monads.md) | **Accepted 2026-05-11.** `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2` |
 
 ## Internal Integrity
 

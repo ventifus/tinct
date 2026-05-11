@@ -1473,7 +1473,7 @@ fn run_eval(
                 tinct::build_prelude_env()
             }
         };
-        let (type_errors, _type_map, _doc_map) =
+        let (type_errors, _type_map, _doc_map, _scheme_map) =
             tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, type_env);
         if !type_errors.is_empty() {
             let file_name = match stage {
@@ -1737,7 +1737,7 @@ fn run_fmt(
         tinct::resolve::resolve_file(&ast.node);
 
         let env = tinct::build_prelude_env();
-        let (type_errors, _type_map, _doc_map) =
+        let (type_errors, _type_map, _doc_map, _scheme_map) =
             tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
 
         if !type_errors.is_empty() {
@@ -2367,7 +2367,7 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
 
     // Type check to get DocMap (for doc strings)
     let env = tinct::build_prelude_env();
-    let (_type_errors, _type_map, doc_map) =
+    let (_type_errors, _type_map, doc_map, _scheme_map) =
         tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
 
     // Collect contract information from each document section.

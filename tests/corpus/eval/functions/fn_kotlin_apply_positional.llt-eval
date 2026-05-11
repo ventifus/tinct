@@ -7,4 +7,4 @@
 === out
 Dict({"f": Function(x, y), "args": Dict({0: Int(10), 1: Int(20)}), "result": Int(30)})
 === warn
-cannot unify Fn@_ [_] with Fn@Number [_ _] at 4:18-4:19
+cannot unify Fn@_ [_] with Fn@Number [x: _ y: _] at 4:18-4:19

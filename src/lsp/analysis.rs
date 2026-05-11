@@ -7,8 +7,8 @@ use crate::error::render_span_snippet;
 use crate::lsp::convert::llt_span_to_lsp_range;
 use crate::lsp::document::DocumentState;
 use crate::parser::ParseError;
-use crate::typecheck::{DocMap, TypeMap};
-use crate::types::TypeError;
+use crate::typecheck::{DocMap, SchemeMap, TypeMap};
+use crate::types::{pretty_type_str, TypeError, TypeScheme};
 
 /// Generate hover text for the entity at the given byte offset.
 ///
@@ -39,6 +39,7 @@ pub fn hover_at(
                 expr.span,
                 offset,
                 &doc.type_map,
+                &doc.scheme_map,
                 &doc.doc_map,
                 &doc.text,
                 include_graph,
@@ -52,9 +53,33 @@ pub fn hover_at(
     None
 }
 
+/// Format a TypeScheme for LSP hover display.
+///
+/// Shows constraints and the body type without the `∀` quantifier, since the
+/// quantifier is an implementation detail (the caller already sees fresh type vars
+/// like `a`, `b` from the `pretty_type_str` renaming pass).
+///
+/// Examples:
+///   - `Equatable a => Fn@Bool [a a]` (constrained polymorphic)
+///   - `Fn@Bool [a a]` (polymorphic, no constraints)
+fn format_scheme_for_hover(scheme: &TypeScheme) -> String {
+    if scheme.constraints.is_empty() {
+        scheme.body.to_string()
+    } else {
+        let constraints = scheme
+            .constraints
+            .iter()
+            .map(|c| format!("{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{constraints} => {}", scheme.body)
+    }
+}
+
 /// Look up the inferred type for the given span in the type map.
 /// Returns a formatted suffix like " (Int)" or empty string if not found.
 ///
+/// Prefers the TypeScheme display (with constraints) for polymorphic VarRef sites.
 /// Falls back to direct includes' type maps if the document type map has no entry.
 ///
 /// Note: Prelude type map fallback is not currently supported after migration to
@@ -63,12 +88,21 @@ pub fn hover_at(
 fn type_suffix(
     span: Span,
     type_map: &TypeMap,
+    scheme_map: &SchemeMap,
     include_graph: &crate::lsp::document::IncludeGraph,
     doc_url: &Uri,
 ) -> String {
     let key = (span.start.offset, span.end.offset);
 
-    // Try document type map first
+    // Prefer TypeScheme display (has constraints) for polymorphic VarRef sites.
+    // This shows e.g. "Equatable a => Fn@Bool [a a]" instead of the instantiated
+    // "Fn@Bool [_t42 _t42]" which would be renamed to "Fn@Bool [a a]" but without constraints.
+    if let Some(scheme) = scheme_map.get(&key) {
+        let raw = format_scheme_for_hover(scheme);
+        return format!(" ({})", pretty_type_str(&raw));
+    }
+
+    // Try document type map next
     if let Some(ty) = type_map.get(&key) {
         return format!(" ({})", crate::types::pretty_type(ty));
     }
@@ -103,6 +137,7 @@ fn hover_at_expr(
     span: Span,
     offset: usize,
     type_map: &TypeMap,
+    scheme_map: &SchemeMap,
     doc_map: &DocMap,
     source: &str,
     include_graph: &crate::lsp::document::IncludeGraph,
@@ -127,25 +162,25 @@ fn hover_at_expr(
             };
             Some(format!(
                 "Variable: {display}{}{}",
-                type_suffix(span, type_map, include_graph, doc_url),
+                type_suffix(span, type_map, scheme_map, include_graph, doc_url),
                 doc_suffix(name, doc_map)
             ))
         }
         Expr::Int(n) => Some(format!(
             "Int literal: {n}{}",
-            type_suffix(span, type_map, include_graph, doc_url)
+            type_suffix(span, type_map, scheme_map, include_graph, doc_url)
         )),
         Expr::Float(f) => Some(format!(
             "Float literal: {f}{}",
-            type_suffix(span, type_map, include_graph, doc_url)
+            type_suffix(span, type_map, scheme_map, include_graph, doc_url)
         )),
         Expr::Bool(b) => Some(format!(
             "Bool literal: {b}{}",
-            type_suffix(span, type_map, include_graph, doc_url)
+            type_suffix(span, type_map, scheme_map, include_graph, doc_url)
         )),
         Expr::Str(s) => Some(format!(
             "String literal: {s:?}{}",
-            type_suffix(span, type_map, include_graph, doc_url)
+            type_suffix(span, type_map, scheme_map, include_graph, doc_url)
         )),
 
         Expr::DotAccess {
@@ -158,6 +193,7 @@ fn hover_at_expr(
                 target.span,
                 offset,
                 type_map,
+                scheme_map,
                 doc_map,
                 source,
                 include_graph,
@@ -166,7 +202,7 @@ fn hover_at_expr(
             .or_else(|| {
                 Some(format!(
                     "Field access: .{field}{}",
-                    type_suffix(span, type_map, include_graph, doc_url)
+                    type_suffix(span, type_map, scheme_map, include_graph, doc_url)
                 ))
             })
         }
@@ -179,6 +215,7 @@ fn hover_at_expr(
                         key.span,
                         offset,
                         type_map,
+                        scheme_map,
                         doc_map,
                         source,
                         include_graph,
@@ -192,6 +229,7 @@ fn hover_at_expr(
                     entry.node.value.span,
                     offset,
                     type_map,
+                    scheme_map,
                     doc_map,
                     source,
                     include_graph,
@@ -213,6 +251,7 @@ fn hover_at_expr(
             func.span,
             offset,
             type_map,
+            scheme_map,
             doc_map,
             source,
             include_graph,
@@ -225,6 +264,7 @@ fn hover_at_expr(
                     a.span,
                     offset,
                     type_map,
+                    scheme_map,
                     doc_map,
                     source,
                     include_graph,
@@ -239,6 +279,7 @@ fn hover_at_expr(
                     na.node.value.span,
                     offset,
                     type_map,
+                    scheme_map,
                     doc_map,
                     source,
                     include_graph,
@@ -263,6 +304,7 @@ fn hover_at_expr(
                 body.span,
                 offset,
                 type_map,
+                scheme_map,
                 doc_map,
                 source,
                 include_graph,
@@ -275,6 +317,7 @@ fn hover_at_expr(
             body.span,
             offset,
             type_map,
+            scheme_map,
             doc_map,
             source,
             include_graph,
@@ -286,6 +329,7 @@ fn hover_at_expr(
             inner.span,
             offset,
             type_map,
+            scheme_map,
             doc_map,
             source,
             include_graph,
@@ -299,6 +343,7 @@ fn hover_at_expr(
                 transformer.span,
                 offset,
                 type_map,
+                scheme_map,
                 doc_map,
                 source,
                 include_graph,
@@ -318,6 +363,7 @@ fn hover_at_expr(
                 inner.span,
                 offset,
                 type_map,
+                scheme_map,
                 doc_map,
                 source,
                 include_graph,
@@ -327,7 +373,7 @@ fn hover_at_expr(
                 Some(format!(
                     "Type assertion: @{}{}",
                     annotation.node,
-                    type_suffix(span, type_map, include_graph, doc_url)
+                    type_suffix(span, type_map, scheme_map, include_graph, doc_url)
                 ))
             })
         }
@@ -336,7 +382,7 @@ fn hover_at_expr(
             "Annotated: {}@{}{}",
             name,
             annotation.node,
-            type_suffix(span, type_map, include_graph, doc_url)
+            type_suffix(span, type_map, scheme_map, include_graph, doc_url)
         )),
 
         Expr::Rest(name) => Some(format!("Rest marker: {}", name.as_deref().unwrap_or("..."))),
@@ -348,6 +394,7 @@ fn hover_at_expr(
                     seq_expr.span,
                     offset,
                     type_map,
+                    scheme_map,
                     doc_map,
                     source,
                     include_graph,
@@ -364,6 +411,7 @@ fn hover_at_expr(
             lhs.span,
             offset,
             type_map,
+            scheme_map,
             doc_map,
             source,
             include_graph,
@@ -375,6 +423,7 @@ fn hover_at_expr(
                 rhs.span,
                 offset,
                 type_map,
+                scheme_map,
                 doc_map,
                 source,
                 include_graph,
@@ -387,6 +436,7 @@ fn hover_at_expr(
             scrutinee.span,
             offset,
             type_map,
+            scheme_map,
             doc_map,
             source,
             include_graph,
@@ -399,6 +449,7 @@ fn hover_at_expr(
                     arm.body.span,
                     offset,
                     type_map,
+                    scheme_map,
                     doc_map,
                     source,
                     include_graph,
@@ -418,6 +469,7 @@ fn hover_at_expr(
                         key.span,
                         offset,
                         type_map,
+                        scheme_map,
                         doc_map,
                         source,
                         include_graph,
@@ -431,6 +483,7 @@ fn hover_at_expr(
                     method.node.value.span,
                     offset,
                     type_map,
+                    scheme_map,
                     doc_map,
                     source,
                     include_graph,
@@ -451,6 +504,7 @@ fn hover_at_expr(
             instance_type.span,
             offset,
             type_map,
+            scheme_map,
             doc_map,
             source,
             include_graph,
@@ -464,6 +518,7 @@ fn hover_at_expr(
                         key.span,
                         offset,
                         type_map,
+                        scheme_map,
                         doc_map,
                         source,
                         include_graph,
@@ -477,6 +532,7 @@ fn hover_at_expr(
                     method.node.value.span,
                     offset,
                     type_map,
+                    scheme_map,
                     doc_map,
                     source,
                     include_graph,
@@ -1402,6 +1458,59 @@ mod tests {
         assert!(
             text.contains("the name"),
             "should show doc string on param hover, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_hover_function_param_names_in_type() {
+        // Task 1: parameter names should appear in function type display.
+        // A typed function [fn [x@Int y@Int] ...] stored in a dict key $f
+        // should show "x: Int y: Int" in the hover type.
+        let env = test_env();
+        // Use two-document pipeline: define f, then reference it.
+        // "[f: [fn [x@Int y@Int] 0]]" = 26 chars (0..25), \n at 26
+        // "[call $f 1 2]"  starts at 27
+        //  "$f" is at offset 33 ('$') and 34 ('f')
+        let source = "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]"
+        //  0         1         2         3
+        //  0123456789012345678901234567890123456789
+        //                                   ^ 33 = '$f'
+        let hover = hover_at(&doc, &test_uri(), 33, &test_include_graph());
+        assert!(hover.is_some(), "should have hover on $f");
+        let text = hover.unwrap();
+        assert!(
+            text.contains("Variable: $f"),
+            "should show variable name, got: {text}"
+        );
+        // The type should contain parameter names x and y
+        assert!(
+            text.contains("x:") && text.contains("y:"),
+            "hover should show parameter names in function type, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_hover_builtin_shows_constraint() {
+        // Task 2: hover on a constrained builtin should show the constraint.
+        // `=` has scheme `Equatable a => Fn@Bool [a a]`.
+        // Hovering on `=` in head position should show the constraint.
+        let env = test_env();
+        let source = "[= 1 2]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Offset 1 is on "=" (the function name in head position)
+        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph());
+        assert!(hover.is_some(), "should have hover on =");
+        let text = hover.unwrap();
+        // Should show the "Equatable" constraint in the type display
+        assert!(
+            text.contains("Equatable"),
+            "hover should show Equatable constraint for =, got: {text}"
+        );
+        assert!(
+            text.contains("Bool"),
+            "hover should show Bool return type for =, got: {text}"
         );
     }
 }

@@ -295,12 +295,118 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
 
 /// Pretty-print a type for user-facing output (LSP hover, completions).
 ///
-/// Renames internal TypeVars (`_t266`) to short alphabetic names (`a`, `b`, …)
-/// in order of first appearance, left-to-right through the formatted type string.
-/// All occurrences of the same TypeVar in one type receive the same short name.
+/// Differences from the internal `Display` impl:
+/// - `Type::Unknown` (`_`) → `any`
+/// - Empty record (`[]`) → `{}` (avoids confusion with empty list/function-call syntax)
+/// - Internal TypeVars (`_t266`) renamed to short alphabetic names (`a`, `b`, …)
+///   in order of first appearance; all occurrences of the same var get the same name
+/// - Parameter names shown when present (`name: Type` instead of just `Type`)
 pub fn pretty_type(ty: &Type) -> String {
-    let raw = ty.to_string();
-    pretty_type_str(&raw)
+    let mut vars_seen: Vec<String> = Vec::new();
+    collect_pretty_type_vars(ty, &mut vars_seen);
+    let rename: HashMap<String, String> = vars_seen
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (name.clone(), tvar_display_name(i)))
+        .collect();
+    format_type_pretty(ty, &rename)
+}
+
+fn collect_pretty_type_vars(ty: &Type, seen: &mut Vec<String>) {
+    match ty {
+        Type::TypeVar(name, _) if name.starts_with("_t") => {
+            if !seen.contains(name) {
+                seen.push(name.clone());
+            }
+        }
+        Type::Function { params, ret, .. } => {
+            for (_, p) in params {
+                collect_pretty_type_vars(p, seen);
+            }
+            collect_pretty_type_vars(ret, seen);
+        }
+        Type::Record(row) => {
+            for v in row.fields.values() {
+                collect_pretty_type_vars(v, seen);
+            }
+        }
+        Type::Seq(elem) => collect_pretty_type_vars(elem, seen),
+        Type::Map(k, v) => {
+            collect_pretty_type_vars(k, seen);
+            collect_pretty_type_vars(v, seen);
+        }
+        Type::Union(ms) | Type::Intersection(ms) => {
+            for m in ms {
+                collect_pretty_type_vars(m, seen);
+            }
+        }
+        Type::Negation(inner) => collect_pretty_type_vars(inner, seen),
+        _ => {}
+    }
+}
+
+fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
+    match ty {
+        // Use the tinct annotation names for user-facing display.
+        Type::Unknown => "Unknown".to_string(), // annotation: @Unknown or @_
+        Type::Top => "Any".to_string(),         // annotation: @Any
+        Type::Record(row) if row.fields.is_empty() => "Dict".to_string(), // annotation: @Dict
+        Type::TypeVar(name, _) => rename.get(name).cloned().unwrap_or_else(|| name.clone()),
+        Type::Record(row) => {
+            let mut fields: Vec<_> = row.fields.iter().collect();
+            fields.sort_by_key(|(k, _)| k.as_str());
+            let inner = fields
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", format_type_pretty(v, rename)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("[{inner}]")
+        }
+        Type::Function {
+            params,
+            ret,
+            variadic: _,
+        } => {
+            let ret_str = format_type_pretty(ret, rename);
+            let params_str = params
+                .iter()
+                .map(|(name, pty)| {
+                    let ty_str = match pty {
+                        Type::Function { .. } => format!("({})", format_type_pretty(pty, rename)),
+                        _ => format_type_pretty(pty, rename),
+                    };
+                    match name {
+                        Some(n) if !n.is_empty() => format!("{n}: {ty_str}"),
+                        _ => ty_str,
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            match **ret {
+                Type::Function { .. } => format!("Fn@({ret_str}) [{params_str}]"),
+                _ => format!("Fn@{ret_str} [{params_str}]"),
+            }
+        }
+        Type::Seq(elem) => format!("Seq[{}]", format_type_pretty(elem, rename)),
+        Type::Map(k, v) => format!(
+            "Map[{} {}]",
+            format_type_pretty(k, rename),
+            format_type_pretty(v, rename)
+        ),
+        Type::Union(ms) => ms
+            .iter()
+            .map(|m| format_type_pretty(m, rename))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Type::Intersection(ms) => ms
+            .iter()
+            .map(|m| format_type_pretty(m, rename))
+            .collect::<Vec<_>>()
+            .join(" & "),
+        Type::Negation(inner) => format!("!{}", format_type_pretty(inner, rename)),
+        // All other types: fall back to Display (concrete types have no TypeVars to rename)
+        other => other.to_string(),
+    }
 }
 
 /// Same renaming pass applied to an already-formatted type string.
@@ -412,14 +518,26 @@ impl fmt::Display for Type {
                     Type::Function { .. } => write!(f, "Fn@({ret}) [")?,
                     _ => write!(f, "Fn@{ret} [")?,
                 }
-                for (i, (_name, p_ty)) in params.iter().enumerate() {
+                for (i, (name, p_ty)) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, " ")?;
                     }
                     // Parenthesize nested function types in parameter position
                     match p_ty {
-                        Type::Function { .. } => write!(f, "({p_ty})")?,
-                        _ => write!(f, "{p_ty}")?,
+                        Type::Function { .. } => {
+                            if let Some(n) = name {
+                                write!(f, "{n}: ({p_ty})")?
+                            } else {
+                                write!(f, "({p_ty})")?
+                            }
+                        }
+                        _ => {
+                            if let Some(n) = name {
+                                write!(f, "{n}: {p_ty}")?
+                            } else {
+                                write!(f, "{p_ty}")?
+                            }
+                        }
                     }
                 }
                 write!(f, "]")

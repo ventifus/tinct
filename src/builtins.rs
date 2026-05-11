@@ -1553,7 +1553,7 @@ fn load_stdlib_module(
 
     // Type errors are advisory; evaluation proceeds regardless.
     let builtins_env = Rc::new(crate::types::TypeEnv::with_builtins());
-    let _ = crate::typecheck::typecheck_file_with_types_and_env(&file.node, builtins_env);
+    let _unused = crate::typecheck::typecheck_file_with_types_and_env(&file.node, builtins_env);
 
     let thunk = crate::eval::eval_file(&file.node, Rc::clone(env), ctx)?;
     let val = crate::eval::materialize(&thunk, None, ctx)?;
