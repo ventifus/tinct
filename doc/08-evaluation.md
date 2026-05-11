@@ -910,13 +910,13 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$when`, `$unless` | Materializes condition; body returned as thunk | Body returned lazy via `$if` |
 | `$cond` | Materializes conditions left-to-right; first matching branch returned as thunk | Delegates to `$if`; no code change needed |
 | **Dict Operations** | | |
-| `$merge` | Eagerly materializes both dicts; values pass through as thunks (Rc::clone) | Lazy overlay upgrade: see §Merge — Lazy Overlay Compatibility in doc/11-stdlib.md |
+| `$merge` | Eagerly materializes both dicts; values pass through as thunks (Rc::clone) | See §Merge — Lazy Overlay Compatibility in doc/11-stdlib.md for the lazy overlay design |
 | `$get`, `$get-or` | Returns value thunk (structural) | Already lazy |
 | `$keys` | Keys always evaluated | Keys are never thunks |
 | `$values` | Returns list of thunks | Already lazy |
 | `$entries` | Returns list of entry dicts (values stay as thunks) | Already lazy |
 | `$set`, `$remove` | Values stay as thunks | Already lazy on values |
-| `$update` | Calls `$set` → `$merge` (eager materialization) | Wrapper around $set → $merge; same eager semantics as $merge |
+| `$update` | Calls `$set` → `$merge` (eager materialization) | Wrapper around $set → $merge; same semantics as $merge |
 | `$has?` | Wraps `$try` around access (structural) | Already optimal |
 | `$get-in`, `$get-in-or` | Materializes each step of path | Must traverse nested dicts |
 | `$length` | Materializes dict to count entries | Must count entries |
@@ -1052,15 +1052,14 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 - **SmallVec**: `SmallVec<[Rc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
 - **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
 
-**Arena infrastructure (registry pattern).** The arena types and handles are established without changing allocation paths. This is the "registry/GC-root" approach:
-- `ThunkArena` and `EnvArena` exist in `EvalContext` but are unused (`#[allow(dead_code)]`)
-- `Value` variants use `ThunkId` / `EnvId` handles
-- Allocation still goes through `Rc::new(Thunk)` directly (not `arena.alloc()`)
-- Arena stores `Vec<Rc<Thunk>>` (Rc-wrapped, not direct ownership)
+**Arena allocation (current implementation).** The runtime uses `ThunkArena` with `ThunkId` handles for all thunk storage. This is the "arena-backed registry" approach implemented in the arena-eval sprint (DONE.md:4572):
+- `ThunkArena` exists in `EvalContext` with `RefCell` interior mutability
+- `Value` variants use `ThunkId` handles: `Dict(IndexMap<Key, ThunkId>)`, `Seq { head: ThunkId, tail: ThunkId }`, `Overlay(ThunkId, ThunkId)`
+- Allocation goes through `ctx.alloc_thunk(Thunk)` which wraps in `Rc<Thunk>` and stores in arena `Vec<Rc<Thunk>>`
 - Arena persists across `---` boundaries (append-only, no per-section deallocation)
-- **No migration needed**: ThunkIds are stable indices that never invalidate
+- **No migration needed**: ThunkIds are stable indices that never invalidate; `$include` cache stores standalone `Rc<Thunk>` (arena-independent)
 
-**Arena evaluation.** Full arena-based allocation enables per-section lifetimes:
+**Future: Full arena-based allocation for per-section lifetimes.** Further optimization would enable per-section lifetimes:
 - **Arena allocator**: Replace `Rc::new(Thunk)` call sites with `arena.alloc(Thunk)`. Arena stores `Vec<Thunk>` (direct ownership, not Rc-wrapped). Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB).
 - **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
 - **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.
