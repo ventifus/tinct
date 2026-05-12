@@ -237,7 +237,16 @@ escape_seq    = @{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
 
 Currently supports these 5 sequences. Unicode escapes (`\uXXXX`) are not yet supported — use `$from-json` for full Unicode string parsing.
 
-The parser handles quoted strings as atomic units — no implicit whitespace skipping between the quotes and content.
+The parser handles quoted strings as atomic units — no implicit whitespace skipping between the quotes and content. Literal newlines are permitted inside `"..."` strings — the lexer passes all characters through, including `\n`. A string may span multiple source lines:
+
+```tinct
+query: "SELECT *
+FROM users
+WHERE active = true"
+# value: "SELECT *\nFROM users\nWHERE active = true"
+```
+
+Note that raw source indentation is preserved verbatim. For indented multi-line content, use `unindent` or the `"""..."""` macro — see §2.3.6 Multi-Line Strings.
 
 Quoting forces string interpretation: `"true"` is the string `"true"`, `"42"` is the string `"42"`.
 
@@ -270,6 +279,49 @@ i"Hello $name, you are $age years old"
 ```
 
 **Type coercion:** The `str` builtin coerces all argument types to strings, so you can interpolate any value: `i"Count: $num"` works whether `num` is an integer, float, or string.
+
+#### 2.3.6 Multi-Line Strings
+
+`"""..."""` is a parse-stage macro that desugars to `[unindent "..."]`. The `unindent` stdlib function strips leading indentation using the last line as the baseline.
+
+```tinct
+query: """
+  SELECT *
+  FROM users
+  WHERE active = true
+  """
+# Result: "SELECT *\nFROM users\nWHERE active = true\n"
+```
+
+The closing `"""` on its own line serves as the indentation anchor — its leading whitespace determines how much indentation is stripped from each content line. Content aligns naturally with the surrounding code.
+
+`i"""..."""` desugars to `[unindent i"..."]`, combining interpolation with indentation stripping:
+
+```tinct
+server-block: i"""
+  server {
+    listen $port;
+    server_name $host;
+  }
+  """
+```
+
+Since `"""` is a macro over `unindent`, users can call `unindent` directly on any string — including strings read from files or built dynamically:
+
+```tinct
+[unindent [slurp "template.txt"]]
+[trim [unindent raw-block]]
+```
+
+One or two `"` characters inside `"""` content require no escaping — only `"""` itself needs the first quote escaped (`\"\"\"`).
+
+**Trailing newline.** The content before the closing `"""` includes a trailing newline. To suppress it, compose with `trim`:
+
+```tinct
+label: [trim """
+  Click here
+  """]
+```
 
 #### 2.3.6 Identifiers (Variable References)
 

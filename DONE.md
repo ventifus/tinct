@@ -5566,3 +5566,17 @@ Audit findings from 2026-05-11. Focus: public-facing functions only. Internal he
 - [x] `fold` (line 725): add `fn@Unknown` return annotation — bare `fn [f@Fn init xs]`; delegates to `builtin-reduce`; return type is the accumulator type (equals `init`'s type, statically unknown); currently unannotated and knowable
 - [x] `result-map`/`result-or`/`and-then`/`result-ok` (lines 1046–1073): add `fn@Unknown` return annotations to all four — all bare `fn`; all operate on Result values whose type system representation is `Unknown` until `Type::Variant` is added; currently unannotated and knowable
 - [x] 7 items verified already correct (PartialEq, ErrorKind, Substitution, bytes_to_seq, Span filter, help_suggestion format)
+
+### constraint-annotations: fn@[...] metadata dict with return:, constraint:, doc:
+
+Accepted 2026-05-11. See `doc/whatif/constraint-annotations.md`. Lands before HKT — uses existing hardcoded constraint infrastructure.
+
+- [x] Add `doc: Option<String>` field to `TypeScheme` in `src/types.rs`; default to `None` in `TypeScheme::mono()` and all `generalize()` construction sites; update `TypeScheme` `Display` to NOT include `doc` (LSP hover handles it separately)
+- [x] Add `resolve_fn_metadata()` helper in `src/typecheck_annot.rs` — called by `resolve_fn_type()` when PropertyDict has any named key matching `return:`/`constraint:`/`doc:`; processes keys in order: constraint → return → doc
+- [x] In `resolve_fn_metadata()`: extract `constraint:` entries as `(lowercase_key, uppercase_value)` pairs; create fresh TypeVar for each lowercase key via `ann_mapping` (or reuse if already present); validate class name — accepted names are the 6 hardcoded classes (Equatable, Comparable, Numeric, Showable, Mappable, Appendable) plus `HasField`; emit "unknown class 'Foo'" on mismatch; register `Constraint::Class { class, var }` in `state.constraints`; for list values `[a: [C1 C2]]`, expand to one Constraint per class (`src/typecheck_annot.rs`)
+- [x] In `resolve_fn_metadata()`: extract `return:` key and resolve via `resolve_type_expr()` — TypeVars referenced here must already be in `ann_mapping` from `constraint:` processing; if no `return:` key, infer return type from body (same as bare `fn`)
+- [x] In `resolve_fn_metadata()`: extract `doc:` key as a string literal; return `doc` as a third value from `resolve_fn_metadata()` alongside the resolved `Type` and updated `ann_mapping`; the caller (`infer_fn`) sets `scheme.doc = Some(text)` on the generalized `TypeScheme`
+- [x] Update `resolve_fn_type()` in `src/typecheck_annot.rs` to detect PropertyDict annotations: if any entry has a named key matching `return:`/`constraint:`/`doc:` → dispatch to `resolve_fn_metadata()`; if all entries are positional → dispatch to existing union return type path; reject mixed named+positional with a type error
+- [x] Extend LSP hover in `src/lsp/analysis.rs`: when a function binding's `TypeScheme` has `doc: Some(text)`, append the text below the type signature in hover output
+- [x] Add `## Function Annotations — Metadata Dict Form` section to `doc/05-type-annotations.md`; update `doc/04-functions.md` fn-annotation examples
+- [x] Tests: corpus tests for all forms including constraint enforcement at call sites; 7 error-path corpus tests in `tests/corpus/eval/errors/`

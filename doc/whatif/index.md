@@ -12,15 +12,17 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
-| [Constraint Annotations and fn@[...] Metadata](constraint-annotations.md) | Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
+| [Constraint Annotations and fn@[...] Metadata](constraint-annotations.md) | **Accepted 2026-05-11.** Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
-| [Higher-Kinded Types and Monadic `[do]`](completed/hkt-monads.md) | **Accepted 2026-05-11.** `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2` |
+| [Higher-Kinded Types, Monadic `[do]`, and Precise Field Access](completed/hkt-monads.md) | **Accepted 2026-05-11.** `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2`; `Kind::Label`; `HasField` constraint with `[HAS-FIELD-UNION]`/`[HAS-FIELD-INTER]`/`[HAS-FIELD-TOP]` BAS rules; label-polymorphic `get`/`get-in` |
+| [Inference Completeness](inference-completeness.md) | SCC-based binding group analysis (Tarjan) within DICT-GEN; independent generalization of non-mutually-recursive entries; polymorphic access through visible nested dicts; variadic params as `Seq(T)`; typeclass-based heterogeneous variadics (FormatResult pattern) |
+| [Advanced Typeclass Extensions](advanced-typeclasses.md) | 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
 
 ## Internal Integrity
 
 | Proposal | Summary |
 |----------|---------|
-| [builtin-* Privacy](builtin-privacy.md) | Restrict `builtin-*` stable aliases to prelude evaluation context; env-layer isolation + type-checker warning; migrate macros.llt, path.llt, toml-lite.llt first |
+| [builtin-* Privacy](builtin-privacy.md) | **Accepted 2026-05-11.** Restrict `builtin-*` stable aliases to prelude evaluation context; env-layer isolation + T009 type-checker warning; migrate macros.llt, path.llt, toml-lite.llt to public wrappers |
 
 ## Error Handling
 
@@ -62,12 +64,14 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, `tls-layer`, SpkiPin, system CA roots, mTLS, ALPN, SPKI pinning |
 | [Composable Networking v2](completed/lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
+| [Directory Capability Permissions](dir-cap-permissions.md) | **Accepted 2026-05-11.** `--cap-fs name=path:r` permission flags on DirCap; `Readable`, `Statable`, `Listable`, `Writable`, `Appendable`, `Deletable`, `Renameable`; letter bundles (`r`=read+list+stat, `w`=write+append+delete+rename) + extended `:[Cap1 Cap2 ...]` syntax; row-polymorphic `DirCap[Writable ...]` type; `narrow` for in-script attenuation; extends `--cap-file` with same extended syntax; no mode = full access |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
-## Templating
+## Syntax and Ergonomics
 
 | Proposal | Summary |
 |----------|---------|
+| [Multi-Line Strings](multi-line-strings.md) | **Accepted 2026-05-11.** `unindent` stdlib function strips indentation using last-line baseline; `"""..."""` is a parse-stage macro wrapping `[unindent "..."]`; `i"""..."""` for interpolation; no lexer changes needed |
 | [Template-Polarity Embedding](template-polarity.md) | `tinct template` subcommand — `{{ expr }}` / `{% block %}` Jinja-style preprocessing of foreign-format files (nginx.conf, Dockerfile, Makefile) |
 
 ## Standard Library

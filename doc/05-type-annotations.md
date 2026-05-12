@@ -215,6 +215,115 @@ double: [fn@String [x@Number] [* x 2]]    # Error: body returns Number, not Stri
 
 **Function type param lists:** `[Fn@Return [ParamTypes]]` is the full function type syntax. The type checker resolves both the return type annotation and parameter type list, producing `Type::Function { params, ret }`. All types in the param list must be specified explicitly.
 
+## fn@[...] Function Metadata Dict
+
+`fn@[...]` accepts a named-key metadata dict with three optional keys:
+
+| Key | Value | Semantics |
+|-----|-------|-----------|
+| `return:` | any type annotation | The function's return type |
+| `constraint:` | `[typevar: ClassName ...]` | TypeVar constraints enforced at call sites |
+| `doc:` | string literal | Documentation string surfaced in LSP hover |
+
+All three keys are optional. `fn@[...]` with no `return:` key infers the return type from the body. The existing `fn@Type` shorthand is permanent and equivalent to `fn@[return: Type]`.
+
+**Disambiguation.** If any entry has a recognized metadata key (`return:`, `constraint:`, or `doc:`), the dict is treated as a metadata dict. If ALL entries are positional, the dict is a union return type (`fn@[Int Null]` → function returning `Int | Null`). Mixed recognized metadata keys with positional entries is a type error: "fn annotation must use either named keys or positional entries, not both." An unrecognized named key alongside a recognized key is a type error: "unknown function annotation key". A dict with only unrecognized named keys (e.g. `fn@[name: Str]`) is interpreted as a record return type annotation.
+
+```tinct
+# Shorthand — unchanged, always valid
+min: [fn@a [xs@Seq@a] ...]
+
+# Full form — return type, constraint, and doc string
+min: [fn@[return: a  constraint: [a: Comparable]  doc: "Return smallest element"] [xs@Seq@a] ...]
+
+# Doc-only — return type inferred from body
+greet: [fn@[doc: "Format a greeting"] [name@String] [str "Hello " name]]
+
+# Constraint on TypeVar not used as return type
+check-all: [fn@[return: Bool  constraint: [a: Equatable]] [xs@Seq@a  target@a] ...]
+
+# Positional union (all-positional form — not a metadata dict)
+find: [fn@[Int Null] [xs@Seq@Int  target@Int] ...]
+```
+
+**Constraint syntax.** The `constraint:` value is a dict using the binding form `[typevar: ClassName]`. Lowercase keys name TypeVars; uppercase values name constraint classes.
+
+```tinct
+# Single constraint
+constraint: [a: Comparable]
+
+# Multiple TypeVars with different constraints
+constraint: [a: Comparable  b: Showable]
+
+# Multiple constraints on one TypeVar (list value)
+constraint: [a: [Comparable Showable]]
+```
+
+**Processing order.** `fn@[...]` resolves keys in a fixed internal order: `constraint:` first (registers TypeVars in `ann_mapping` with constraint registration in `state.constraints`), then `return:` (which may reference those TypeVars), then `doc:`. Source key order does not matter — the resolver uses this canonical sequence.
+
+**TypeVar scoping.** Constraint TypeVars share the `ann_mapping` mechanism with parameter annotations. A TypeVar named in `constraint:` is the same TypeVar referenced by the same name in `return:` or in a parameter annotation:
+
+```tinct
+# `a` appears in constraint:, return:, and xs@Seq@a — all the same TypeVar
+min: [fn@[return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]
+```
+
+**Interaction with inference.** Explicit constraints compose with inferred constraints. If `constraint: [a: Comparable]` is declared and the body also uses `a` in an `Equatable` context, both are registered; constraint simplification removes `Equatable a` since `Comparable` entails it via the superclass relation. If the declared constraint is stronger than what the body uses, it is still enforced at call sites — allowing library authors to declare a stricter interface than the body exercises.
+
+**`doc:` and LSP hover.** The doc string is stored in `TypeScheme.doc` and displayed in LSP hover below the inferred type signature. It does not affect type checking or runtime behavior.
+
+```
+min: Comparable a => Fn@a [Seq@a]
+Return smallest element
+```
+
+**Examples:**
+
+```tinct
+# Constraint on the return TypeVar
+min: [fn@[return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]
+# Inferred: Comparable a => Fn@a [Seq@a]
+
+# Multiple TypeVars with different constraints
+compare: [fn@[return: Bool  constraint: [a: Comparable  b: Showable]] 
+          [x@a  y@a  logger@b] ...]
+# Inferred: (Comparable a, Showable b) => Fn@Bool [a a b]
+
+# Multiple constraints on one TypeVar
+display-sorted: [fn@[return: String  constraint: [a: [Comparable Showable]]]
+                 [xs@Seq@a] ...]
+# Inferred: (Comparable a, Showable a) => Fn@String [Seq@a]
+
+# Constraint on TypeVar not used as return type
+check-all: [fn@[return: Bool  constraint: [a: Equatable]]
+            [xs@Seq@a  target@a] ...]
+# Inferred: Equatable a => Fn@Bool [Seq@a a]
+
+# Doc-only annotation — return type inferred from body
+greet: [fn@[doc: "Format a greeting string"] [name@String] [str "Hello " name]]
+# Hover: Fn@String [String]
+#        Format a greeting string
+
+# Constraint + doc + return
+between: [fn@[return: Fn@Bool [a]
+              constraint: [a: Comparable]
+              doc: "Return a predicate testing whether a value lies in [lo, hi)"]
+          [lo@a  hi@a]
+          [fn@Bool [x@a] [and [>= x lo] [< x hi]]]]
+# Hover: Comparable a => Fn@Fn@Bool [a] [a a]
+#        Return a predicate testing whether a value lies in [lo, hi)
+```
+
+**Label TypeVar annotations.** A string literal as an annotation value introduces a label TypeVar of kind `Label`. The string names the TypeVar (not the field):
+
+```tinct
+# key@"l" — parameter `key` bound to a fresh label TypeVar named `l`
+[fn [key@"l"  dict] [get key dict]]
+# inferred: ∀ (l : Label) d a. HasField l d a => StringLiteral(l) → d → a
+```
+
+See [Type Inference](06-type-inference.md) §Higher-Kinded Types and Type Classes §HasField for the `HasField` constraint that label TypeVars enable.
+
 ### Type Expressions
 
 Type expressions appear in type annotations and `[type ...]` declarations. They use the same `[]` syntax as data but are distinguished by context (after `@`, inside `type` form).

@@ -200,8 +200,216 @@ pub(crate) fn resolve_annotated(
     }
 }
 
+/// Resolve a function metadata dict `fn@[return: ... constraint: ... doc: ...]`.
+///
+/// Processes keys in fixed order:
+/// 1. `constraint:` — creates TypeVars in ann_mapping, registers Constraints in state.constraints
+/// 2. `return:` — resolves via resolve_type_expr (may reference TypeVars from constraint:)
+/// 3. `doc:` — extracts string literal, returned as Option<String>
+///
+/// Returns (return_type, doc_string).
+pub(crate) fn resolve_fn_metadata(
+    entries: &[Spanned<Entry>],
+    env: &TypeEnv,
+    span: Span,
+    state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+) -> Result<(Type, Option<String>), TypeError> {
+    // Valid hardcoded class names (pre-HKT)
+    const VALID_CLASSES: &[&str] = &[
+        "Equatable",
+        "Comparable",
+        "Numeric",
+        "Showable",
+        "Mappable",
+        "Appendable",
+    ];
+
+    let mut return_type: Option<Type> = None;
+    let mut doc_string: Option<String> = None;
+
+    // Step 1: Process constraint: entries
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let Expr::Str(key_name) = &key_expr.node {
+                if key_name == "constraint" {
+                    // constraint: [a: Comparable] or [a: [Comparable Showable]]
+                    match &entry.node.value.node {
+                        Expr::Dict(constraint_entries) => {
+                            for c_entry in constraint_entries {
+                                let typevar_name =
+                                    match &c_entry.node.key {
+                                        Some(k) => match &k.node {
+                                            Expr::Str(s) => s.clone(),
+                                            _ => return Err(TypeError::new(
+                                                "constraint key must be a bare word (TypeVar name)",
+                                                c_entry.span,
+                                            )),
+                                        },
+                                        None => {
+                                            return Err(TypeError::new(
+                                                "constraint entries must be keyed: [a: Comparable]",
+                                                c_entry.span,
+                                            ))
+                                        }
+                                    };
+
+                                // Create or get the TypeVar for this name
+                                let type_var = if let Some(ref mut mapping) = ann_mapping {
+                                    if let Some(existing_var) = mapping.get(&typevar_name) {
+                                        existing_var.clone()
+                                    } else {
+                                        let fresh = format!("_t{}", state.name_counter);
+                                        state.name_counter += 1;
+                                        state.levels.insert(fresh.clone(), state.level);
+                                        mapping.insert(typevar_name.clone(), fresh.clone());
+                                        fresh
+                                    }
+                                } else {
+                                    return Err(TypeError::new(
+                                        "constraint annotations require an annotation mapping context",
+                                        span,
+                                    ));
+                                };
+
+                                // Parse the class name(s) — can be a single name or a list
+                                match &c_entry.node.value.node {
+                                    Expr::VarRef { name, .. } => {
+                                        // Single class: [a: Comparable]
+                                        if !VALID_CLASSES.contains(&name.as_str()) {
+                                            return Err(TypeError::new(
+                                                format!("unknown constraint class '{}'", name),
+                                                c_entry.node.value.span,
+                                            ));
+                                        }
+                                        state.add_constraint(name.clone(), type_var.clone());
+                                    }
+                                    Expr::Dict(class_list) => {
+                                        // Multiple classes: [a: [Comparable Showable]]
+                                        for class_entry in class_list {
+                                            if class_entry.node.key.is_some() {
+                                                return Err(TypeError::new(
+                                                    "constraint class list must contain only positional entries",
+                                                    class_entry.span,
+                                                ));
+                                            }
+                                            match &class_entry.node.value.node {
+                                                Expr::VarRef { name, .. } => {
+                                                    if !VALID_CLASSES.contains(&name.as_str()) {
+                                                        return Err(TypeError::new(
+                                                            format!(
+                                                                "unknown constraint class '{}'",
+                                                                name
+                                                            ),
+                                                            class_entry.node.value.span,
+                                                        ));
+                                                    }
+                                                    state.add_constraint(
+                                                        name.clone(),
+                                                        type_var.clone(),
+                                                    );
+                                                }
+                                                _ => {
+                                                    return Err(TypeError::new(
+                                                        "constraint class must be a class name (e.g., Comparable)",
+                                                        class_entry.node.value.span,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(TypeError::new(
+                                            "constraint value must be a class name or list of class names",
+                                            c_entry.node.value.span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err(TypeError::new(
+                                "constraint: value must be a dict [a: Comparable]",
+                                entry.node.value.span,
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 2: Process return: entry
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let Expr::Str(key_name) = &key_expr.node {
+                if key_name == "return" {
+                    let ret = resolve_type_expr(
+                        &entry.node.value,
+                        env,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    )?;
+                    return_type = Some(ret);
+                }
+            }
+        }
+    }
+
+    // Step 3: Process doc: entry
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let Expr::Str(key_name) = &key_expr.node {
+                if key_name == "doc" {
+                    match &entry.node.value.node {
+                        Expr::Str(s) => {
+                            doc_string = Some(s.clone());
+                        }
+                        _ => {
+                            return Err(TypeError::new(
+                                "doc: value must be a string literal",
+                                entry.node.value.span,
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 4: Check for unknown keys
+    const VALID_KEYS: &[&str] = &["return", "constraint", "doc"];
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let Expr::Str(key_name) = &key_expr.node {
+                if !VALID_KEYS.contains(&key_name.as_str()) {
+                    return Err(TypeError::new(
+                        format!(
+                            "unknown function annotation key '{}' (valid keys: return, constraint, doc)",
+                            key_name
+                        ),
+                        key_expr.span,
+                    ));
+                }
+            }
+        }
+    }
+
+    // If no return: key, default to Unknown (infer from body)
+    let ret = return_type.unwrap_or(Type::Unknown);
+
+    Ok((ret, doc_string))
+}
+
 /// Resolve a bare `Fn@ReturnType` annotation (without parameter list) into a function type.
 /// `Fn@T` bare = zero-param function returning T; full function type with params uses `try_resolve_fn_type_expr`.
+///
+/// For `fn@[...]` PropertyDict annotations, dispatches to:
+/// - `resolve_fn_metadata()` if ANY entry has a named key matching `return:`, `constraint:`, or `doc:`
+/// - existing union return type path if ALL entries are positional
+/// - error if mixed named + positional
 fn resolve_fn_type(
     ann: &Annotation,
     env: &TypeEnv,
@@ -210,12 +418,73 @@ fn resolve_fn_type(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    let ret = resolve_annotation_as_type(ann, env, span, state, ann_mapping, row_ann_mapping)?;
-    Ok(Type::Function {
-        params: vec![],
-        ret: Box::new(ret),
-        variadic: false,
-    })
+    match ann {
+        Annotation::PropertyDict(entries) => {
+            // Check for metadata dict vs union return type
+            let has_metadata_key = entries.iter().any(|e| {
+                e.node.key.as_ref().is_some_and(|k| {
+                    matches!(
+                        &k.node,
+                        Expr::Str(s) if s == "return" || s == "constraint" || s == "doc"
+                    )
+                })
+            });
+
+            let all_positional = entries.iter().all(|e| e.node.key.is_none());
+
+            if has_metadata_key {
+                // Check for mixed named+positional
+                if !entries.iter().all(|e| e.node.key.is_some()) {
+                    return Err(TypeError::new(
+                        "fn annotation must use either named keys (return:, constraint:, doc:) or positional entries (union return type), not both",
+                        span,
+                    ));
+                }
+
+                // Metadata dict path — NOTE: doc string is discarded here
+                // (it's only stored on TypeScheme during function binding inference)
+                let (ret, _doc) =
+                    resolve_fn_metadata(entries, env, span, state, ann_mapping, row_ann_mapping)?;
+                Ok(Type::Function {
+                    params: vec![],
+                    ret: Box::new(ret),
+                    variadic: false,
+                })
+            } else if all_positional {
+                // Union return type path: fn@[Int Null]
+                // Resolve as a union type via resolve_annotation_as_type
+                let ret = resolve_annotation_as_type(
+                    ann,
+                    env,
+                    span,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )?;
+                Ok(Type::Function {
+                    params: vec![],
+                    ret: Box::new(ret),
+                    variadic: false,
+                })
+            } else {
+                // Mixed or unknown pattern
+                Err(TypeError::new(
+                    "fn annotation must use either named keys (return:, constraint:, doc:) or positional entries (union return type), not both",
+                    span,
+                ))
+            }
+        }
+        _ => {
+            // Simple(name) path: fn@Int, fn@a, etc.
+            let ret =
+                resolve_annotation_as_type(ann, env, span, state, ann_mapping, row_ann_mapping)?;
+            Ok(Type::Function {
+                params: vec![],
+                ret: Box::new(ret),
+                variadic: false,
+            })
+        }
+    }
 }
 
 /// Resolve an annotation in a context where a type expression is expected.

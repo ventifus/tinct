@@ -1246,6 +1246,9 @@ pub struct TypeScheme {
     pub type_vars: Vec<String>,
     pub constraints: Vec<Constraint>,
     pub body: Type,
+    /// Optional documentation string (from `fn@[doc: "..."]` annotations).
+    /// Not part of the type; used by LSP hover display.
+    pub doc: Option<String>,
 }
 
 impl TypeScheme {
@@ -1255,6 +1258,7 @@ impl TypeScheme {
             type_vars: vec![],
             constraints: vec![],
             body: ty,
+            doc: None,
         }
     }
 }
@@ -3684,6 +3688,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
                 variadic: false,
             },
+            doc: None,
         };
         assert_eq!(format!("{scheme}"), "∀a b. Fn@a [a b]");
     }
@@ -3694,6 +3699,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         assert_eq!(format!("{scheme}"), "∀a. a");
     }
@@ -3704,11 +3710,13 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         let s2 = TypeScheme {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         assert_eq!(s1, s2);
     }
@@ -3719,11 +3727,13 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::Int,
+            doc: None,
         };
         let s2 = TypeScheme {
             type_vars: vec!["b".into()],
             constraints: vec![],
             body: Type::Int,
+            doc: None,
         };
         assert_ne!(s1, s2);
     }
@@ -3742,6 +3752,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         assert_ne!(s1, s2);
     }
@@ -3817,6 +3828,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         env.insert_scheme("f".into(), scheme.clone());
         assert_eq!(env.get("f"), Some(&scheme));
@@ -3834,6 +3846,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         child.insert_scheme("x".into(), child_scheme.clone());
 
@@ -3863,6 +3876,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
                 variadic: false,
             },
+            doc: None,
         };
         let mut state = InferState::new();
         state.level = 3;
@@ -3903,6 +3917,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         let mut state = InferState::new();
 
@@ -3920,6 +3935,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            doc: None,
         };
         let mut state = InferState::new();
         state.level = 2;
@@ -4245,6 +4261,7 @@ mod tests {
             type_vars: vec![],
             constraints: vec![],
             body: closed_record(fields.clone()),
+            doc: None,
         };
 
         let mut state = InferState::new();
@@ -4276,6 +4293,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("b".into(), 1)),
                 variadic: false,
             },
+            doc: None,
         };
 
         let mut state = InferState::new();
@@ -6130,6 +6148,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
                 variadic: false,
             },
+            doc: None,
         };
 
         let mut state = InferState::new();

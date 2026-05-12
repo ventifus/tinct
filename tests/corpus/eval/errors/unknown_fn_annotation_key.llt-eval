@@ -1,0 +1,6 @@
+# Error: unknown key 'foo' in fn@[...] metadata dict
+[fn@[return: Int  foo: "bar"] [] 42]
+=== out
+Function()
+=== warn
+unknown function annotation key 'foo'

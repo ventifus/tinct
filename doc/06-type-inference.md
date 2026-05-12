@@ -699,7 +699,7 @@ Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) →
 
 ## Constrained Type Variables
 
-Tinct implements **Elm-style constrained type variables** to provide precise types for overloaded builtins without requiring full Haskell-style type classes. Constraints restrict which types can instantiate a type variable, enabling static rejection of invalid operations (e.g., `[= [fn [] 1] [fn [] 2]]`) while preserving parametric polymorphism for valid uses.
+Tinct implements **constrained type variables** to provide precise types for overloaded builtins and user-defined polymorphic functions. Constraints restrict which types can instantiate a type variable, enabling static rejection of invalid operations (e.g., `[= [fn [] 1] [fn [] 2]]`) while preserving parametric polymorphism for valid uses.
 
 ### Constraint Representation
 
@@ -720,20 +720,20 @@ TypeScheme {
 - `Numeric a, Showable b => Fn@Str [a b]` — multiple constraints comma-separated
 - `Fn@Int [Int Int]` — monomorphic schemes (no constraints) display as before
 
-### Fixed Instance Sets
+### Primitive Built-in Constraints
 
-Tinct uses **fixed, hardcoded instance sets** — there are no user-extensible class declarations. The following classes are built-in:
+Four classes have primitive built-in instances whose dispatch is handled by the Rust runtime. These instances cannot be overloaded by user-defined classes for the primitive operators (`=`, `<`, `+`, `str`):
 
-| Class | Instances | Example builtins |
-|-------|-----------|-----------------|
+| Class | Primitive instances | Example builtins |
+|-------|---------------------|-----------------|
 | `Equatable` | Int, IntLiteral, Float, Str, StringLiteral, Bool, Number | `=` |
 | `Comparable` | Int, IntLiteral, Float, Str, StringLiteral, Number | `<`, `>`, `<=`, `>=` |
 | `Numeric` | Int, IntLiteral, Float, Number | `+`, `-`, `*`, `/` |
 | `Showable` | all types except Error | `str` |
-| `Mappable` | Record, Seq | *(requires higher-kinded types; not yet constrained)* |
-| `Appendable` | Str, StringLiteral, Record, Seq | *(not yet constrained)* |
 
-**Rationale:** Function, Seq, and Record are excluded from Equatable because structural equality would force lazy thunks, violating lazy evaluation semantics (see `doc/whatif/typeclasses.md` §Equatable for Records).
+**Rationale:** Function, Seq, and Record are excluded from Equatable because structural equality would force lazy thunks, violating lazy evaluation semantics.
+
+All other classes (`Mappable`, `Appendable`, `Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`) are declared in the stdlib using `[class ...]` and `[instance ...]` forms and are fully user-extensible — see §Higher-Kinded Types and Type Classes.
 
 ### Constraint Generation and Checking
 
@@ -810,34 +810,192 @@ result: [= [fn [] 1] [fn [] 2]]
    - Error: "type Fn@Int [] does not satisfy constraint Equatable"
 ```
 
-### Current Limitations
+### Current Limitations of Hardcoded Constraints
 
-1. **No user-extensible classes:** Instance sets are hardcoded. Users cannot declare new classes or add instances to existing classes.
+1. **Numeric stays hardcoded:** `Numeric` cannot be expressed as a single-parameter class because `Int + Float → Float` requires multi-parameter type classes. It remains as a fixed instance set.
 
-2. **No dictionary passing:** Runtime behavior is unchanged — dual-dispatch builtins still use runtime type inspection. Constraints provide static checking only.
+2. **Primitive operators are not overloadable by user instances:** Builtin operators (`=`, `<`, `str`, etc.) dispatch via hardcoded Rust type inspection and cannot be routed through user-defined typeclass instances. User-defined instances are invoked by explicit dict method call (`inst.method args`); the primitive operators never implicitly delegate to instance dicts. This is by design — implicit dictionary threading (Haskell-style) is not supported. User-defined monads and other class instances DO dispatch at runtime via explicit instance dicts (the `[do monad ...]` form passes the monad dict explicitly).
 
-3. **No higher-kinded types:** Mappable requires higher-kinded type variables (`Mappable f => (a → b) → f a → f b`) (Jones 1993 constructor classes). `map` and `filter` remain typed as `Unknown → Unknown` until higher-kinded types are supported.
-
-4. **No constrained row variables:** `Equatable [name: a ...]` (requiring all fields in row-rest to satisfy Equatable) requires row-level constraints (Gaster & Jones 1996).
-
-### Extension Areas
-
-- **Full type classes:** Class declarations, instance declarations, superclass hierarchy, and dictionary passing (Wadler & Blott 1989; Jones 1995).
-- **Higher-kinded types:** Constructor classes (Jones 1993) for Mappable, Foldable over type constructors.
-- **Constrained row polymorphism:** Row-level constraints (Gaster & Jones 1996; PureScript-style qualified row variables).
+3. **No constrained row variables:** `Equatable [name: a ...]` (requiring all fields to satisfy Equatable) requires row-level constraints (Gaster & Jones 1996).
 
 **References:** Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." Jones, M.P. (1995). *Qualified types: Theory and practice.*
 
+## Higher-Kinded Types and Type Classes
+
+Tinct supports rank-1 higher-kinded types (Jones 1993 constructor classes) via an extension to the kind system. This enables a generic Functor/Applicative/Monad hierarchy, `[do]` monad inference, and precisely-typed `get`/`get-in` via label polymorphism.
+
+### Kind System
+
+The kind grammar has four kinds:
+
+```
+Kind ::= *         -- concrete types (Int, Str, Record, ...)
+       | Row        -- record field sets
+       | Operator   -- type constructors (* → *, written `Operator`)
+       | Label      -- type-level string labels (for HasField constraints)
+```
+
+`Operator` is notation for `* → *`. A TypeVar of kind `Operator` ranges over type constructors; a TypeVar of kind `Label` ranges over string field names.
+
+The kind of each TypeVar is tracked in `InferState.kind_env: HashMap<String, Kind>`. TypeVars of kind `Operator` arise from `@Operator` annotations on class parameters; TypeVars of kind `Label` arise from string-literal annotations (`key@"k"`).
+
+### Type Constructor Application
+
+Two new `Type` variants:
+
+- `Type::App(Box<Type>, Box<Type>)` — type constructor applied to an argument: `App(Result, Int)` is `Result Int`
+- `Type::Operator(String)` — a type constructor variable: `Operator("m")` for a Monad variable `m`
+
+In annotation positions, `[f a]` (no colons) is type constructor application when `f` is Operator-kinded or a user type alias. `@[m a]` applies constructor `m` to argument `a`.
+
+**Unification:**
+
+```
+UNIFY-OPERATOR:
+  m ∉ ftv(T)    kind_env ⊢ T : *
+  ──────────────────────────────────
+  unify(Operator(m), T) = [m ↦ T]
+
+  unify(Operator(m), Operator(n)) = [m ↦ Operator(n)]   (symmetric)
+
+UNIFY-APP:
+  unify(f₁, f₂) = θ₁    unify(θ₁(a₁), θ₁(a₂)) = θ₂
+  ─────────────────────────────────────────────────────
+  unify(App(f₁, a₁), App(f₂, a₂)) = θ₂ ∘ θ₁
+```
+
+### Typeclass Declarations and Instances
+
+Classes are declared with `[class ...]` and instances with `[instance ...]`:
+
+```tinct
+[Functor: [class [f@Operator]
+  [fmap: [fn@[f b] [fn@b [a]  [f a]]]]]]
+
+[FunctorResult: [instance [Functor Result]
+  [fmap: result-map]]]
+```
+
+**Superclass chains** use `extends`:
+
+```tinct
+[Applicative: [class [f@Operator] extends [Functor f]
+  [pure:  [fn@[f a] [a]]]
+  [lift2: [fn@[f c] [fn@c [a b]  [f a]  [f b]]]]]]
+
+[Monad: [class [m@Operator] extends [Applicative m]
+  [bind: [fn@[m b] [[m a]  fn@[m b] [a]]]]]]
+```
+
+The superclass chain provides method inheritance. `MonadResult` carries `bind` directly and inherits `pure`, `lift2`, and `fmap` from the superclass instances.
+
+**Rank-1 restriction:** `App(Operator("f"), Operator("g"))` (applying one Operator variable to another) is excluded. Multiple flat Operator quantifiers in one method type are allowed — `traverse` has both `f@Applicative` and `t@Traversable` in its signature, which is rank-1.
+
+**Instance resolution:** When a constraint `C m` where `m : Operator` is active, the type checker looks up `m` in the `ClassEnv`, finds an `[instance [C M] ...]` where `M` unifies with `m`, and substitutes the instance's method implementations. `App(Operator("m"), a)` is unified against known concrete applications (`App(Result, T)`, `App(Seq, T)`) to resolve `m`.
+
+### The Typeclass Hierarchy
+
+The stdlib defines the following typeclass hierarchy:
+
+| Class | Kind | Extends | Key methods |
+|-------|------|---------|-------------|
+| `Functor` | `Operator` | — | `fmap : (a → b) → f a → f b` |
+| `Applicative` | `Operator` | Functor | `pure : a → f a`, `lift2 : (a → b → c) → f a → f b → f c` |
+| `Monad` | `Operator` | Applicative | `bind : m a → (a → m b) → m b` |
+| `Foldable` | `Operator` | — | `fold : (b → a → b) → b → t a → b`, `to-seq : t a → Seq a` |
+| `Traversable` | `Operator` | Functor, Foldable | `traverse : (a → f b) → t a → f (t b)` |
+| `Mappable` | `Operator` | — | `map : (a → b) → f a → f b` (weaker than Functor) |
+| `Appendable` | `*` | — | `append : a → a → a`, `empty : a` |
+| `Equatable` | `*` | — | `= : a → a → Bool`, `not= : a → a → Bool` |
+| `Comparable` | `*` | Equatable | `< : a → a → Bool`, etc. |
+| `Showable` | `*` | — | `show : a → Str` |
+
+Instances cover `Result`, `Seq`, `Maybe`, `Record` as appropriate.
+
+### Generic Functions
+
+With the typeclass hierarchy, these generic functions are available:
+
+```tinct
+# collect effects from any Traversable container
+sequence: [fn@[f [t a]] [f@Monad  t@Traversable  xs@[t [f a]]]
+  [traverse f [fn [x] x] xs]]
+
+# map with effects over any Traversable
+traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
+  [t.traverse f xs]]
+
+# forM, when, liftM2 also defined
+```
+
+### `[do]` Inference
+
+The `[do]` macro infers the monad from context when no explicit monad argument is given:
+
+```tinct
+# Explicit form — always works
+[do result
+  [r: [fetch %nc url]]
+  [r.body]]
+
+# Inferred form — @Result annotation implies result monad
+[fetch-and-parse: [fn@[ok: Str  err: Str] [url@Str]
+  [do
+    [r:    [fetch %nc url]]
+    [data: [from-json r.body]]
+    [get "items" data]]]]
+```
+
+**Inference priority:**
+
+1. If the enclosing function's return type annotation unifies with `App(m, _)` for a registered Monad `m`, use that instance
+2. If the first binding's RHS infers as `App(m, a)` for a known Monad, use that instance
+3. Otherwise require an explicit monad argument
+
+The explicit `[do monad ...]` form always takes priority and is backward-compatible.
+
+### HasField — Label-Polymorphic Field Access
+
+`HasField l d a` is a qualified-type constraint asserting that record type `d` has a field at label `l` with type `a`. It carries a functional dependency `(l, d) → a` — given label and dict type, the field type is uniquely determined (Jones 1994).
+
+**`get` is label-polymorphic:**
+
+```
+get : ∀ (l : Label) (d : *) (a : *). HasField l d a => StringLiteral(l) → d → a
+```
+
+Field access is precise: `[get "host" config]` returns the type of `config.host`, not `Unknown`.
+
+**Instance resolution rules:**
+
+```
+HasField (Concrete l) Record(fields) τ         when l ∈ dom(fields) and fields(l) = τ
+HasField l (τ₁ | τ₂) (a₁ | a₂)               distributes over union [HAS-FIELD-UNION]
+HasField l (τ₁ & τ₂) (a₁ & a₂)               distributes over intersection
+HasField l ⊤ Unknown                            for BAS-collapsed disjoint-field unions
+HasField l Unknown Unknown                      gradual typing fallback
+```
+
+**Label TypeVars** are introduced by string-literal annotations (`key@"l"`) and tracked in `kind_env` with `Kind::Label`. They are generalized into `TypeScheme.label_vars` and re-registered at call sites.
+
+**Union distribution** is the key BAS contribution — `get "port" (A | B)` returns `A.port | B.port`, not `Unknown`.
+
+### BAS Interaction with HKT
+
+BAS operates on types of kind `*`. With HKT:
+
+- `App(f, a)` is a BAS lattice atom for each concrete `(f, a)` pair
+- **Covariant functorial subtyping:** `a <: b` implies `App(f, a) <: App(f, b)` for covariant functors (all stdlib Functor instances)
+- **Join (one-directional):** `App(m, a) | App(m, b) <: App(m, a | b)` — the reverse is unsound for diagonal functors
+
+`Kind::Label` vars are phantom indices — they do not introduce BAS lattice atoms. `HasField` constraints are resolved eagerly before BAS normalization to prevent S-RcdTop from collapsing union dict types to ⊤.
+
+**References:** Jones, M.P. (1993). "A system of constructor classes." Jones, M.P. (1994). "Qualified types." Gaster, B.R. & Jones, M.P. (1996). "A polymorphic type system for extensible records." Castagna, G. (2023). "Typing records, maps, and structs." ICFP.
+
 ## Limitations and Non-Guarantees
 
-1. **Unknown behaves as both top and bottom.** `Unknown` acts like both a supertype and subtype of all types during unification. In proper gradual typing (Abstract Gradual Typing, Garcia et al. 2016), `Unknown` (the `?` type) uses a **consistency** relation `~` (symmetric, non-transitive) that triggers runtime casts at boundaries, not subtyping. The current behavior is a known deviation from the AGT model.
+1. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
 
-   **Concrete consequence — TypeAssert escape via Unknown.** An unannotated function `f` has type `Fn(Unknown → Unknown)`. Calling `f` returns `Unknown`. A TypeAssert `[@Int [f "hello"]]` passes type checking because `Unknown` unifies with `Int`, but the runtime value is a string. The type annotation is misleading — it narrows `Unknown` to `Int` statically while the runtime value may be anything. This is the primary way tinct's type system fails the Damas-Milner principal type guarantee (Damas & Milner, 1982): the type `Int` is assigned to an expression whose runtime value has type `String`. Corpus test: `tests/corpus/eval/typecheck/principal_type_any_escape.llt-eval`.
+2. **Variadic params typed as Unknown.** Variadic parameters (`...args`) are assigned type `Unknown`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference.
 
-   **Mitigation path:** Garcia et al. (2016) show how to systematically derive a gradual type system from a static one. The key insight is replacing `Any <: τ` (unsound bottom) with a **consistency** relation `Any ~ τ` (symmetric, non-transitive) that triggers runtime casts at the `Any`/concrete boundary. Under AGT, `[@Int [f "hello"]]` would insert a runtime cast that fails when the actual value is a string — making the TypeAssert a true contract rather than a static-only assertion. See `doc/whatif/completed/gradual-typing.md` for the full analysis.
-
-2. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
-
-3. **Variadic params typed as Unknown.** Variadic parameters (`...args`) are assigned type `Unknown`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference. When `Seq` types are used for variadic collection, variadic params may collect into a typed `Seq<T>` instead.
-
-4. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.
+3. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.

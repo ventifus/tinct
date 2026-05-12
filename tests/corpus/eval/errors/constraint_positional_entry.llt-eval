@@ -1,0 +1,6 @@
+# Error 2: constraint: has positional entry (no key)
+[fn@[constraint: [Comparable] return: Int] [] 42]
+=== out
+Function()
+=== warn
+constraint: value must be a dict

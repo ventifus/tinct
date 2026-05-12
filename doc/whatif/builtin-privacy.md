@@ -1,6 +1,6 @@
 # What If: `builtin-*` Privacy for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-11
 
 What would it take to restrict `builtin-*` stable aliases to prelude-internal use only, preventing user code and non-prelude stdlib from calling them directly?
 

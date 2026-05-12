@@ -1,6 +1,6 @@
 # What If: Explicit Constraint Annotations for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-11
 
 What would it take to let users write typeclass constraints directly in function
 annotations, and to unify `fn@[...]` into a proper metadata dict?
@@ -118,16 +118,38 @@ constraint: [a: Comparable  b: Showable]
 constraint: [a: [Comparable Showable]]
 ```
 
+### Disambiguation: metadata dict vs. union return type
+
+`resolve_fn_type()` inspects the `PropertyDict` entries: if ANY entry has a
+named key matching `return:`, `constraint:`, or `doc:`, the dict is routed to
+`resolve_fn_metadata()` (metadata handler). If ALL entries are positional (no
+named keys), the dict is routed to the existing union return type handler
+(`fn@[Int Null]` → function returning `Int | Null`). Mixed named + positional
+entries are rejected: "fn annotation must use either named keys (return:,
+constraint:, doc:) or positional entries (union return type), not both."
+
+### Processing order
+
+`resolve_fn_metadata()` processes keys in a fixed order to ensure TypeVars
+exist before they are referenced:
+
+1. **`constraint:`** — creates fresh TypeVars in `ann_mapping`, sets levels in
+   `state.levels`, registers `Constraint` structs in `state.constraints`. For
+   list values (`[a: [Comparable Showable]]`), expand to one `Constraint` per
+   class. Validate class names against known classes (hardcoded set pre-HKT,
+   `ClassEnv` post-HKT) — emit "unknown class 'Foo'" on mismatch.
+2. **`return:`** — resolved as a type expression via `resolve_type_expr`. May
+   reference TypeVars created by `constraint:` via `ann_mapping`.
+3. **`doc:`** — stored as a string in `TypeScheme.doc`. Not part of the type.
+
 ### TypeVar scoping
 
 Constraint declaration and TypeVar naming use the same `ann_mapping` mechanism
 as today. Processing `constraint: [a: Comparable]` creates a fresh TypeVar
-`_t0`, registers `a → _t0` in `ann_mapping`, and adds `Constraint { class:
-"Comparable", var: "_t0" }` to `state.constraints`. When `return: a` or
-`xs@Seq@a` is resolved subsequently, `ann_mapping` looks up `a` and returns the
-same constrained `_t0`. Order of keys in the `fn@[...]` dict does not matter —
-`ann_mapping` is idempotent, and constraints are registered before unification
-begins.
+`_t0`, registers `a → _t0` in `ann_mapping` (and `state.levels[_t0] =
+state.level`), and adds `Constraint { class: "Comparable", var: "_t0" }` to
+`state.constraints`. When `return: a` or `xs@Seq@a` is resolved subsequently,
+`ann_mapping` looks up `a` and returns the same constrained `_t0`.
 
 ### Interaction with inference
 
@@ -188,6 +210,9 @@ infrastructure. The `fn@Type` shorthand path is untouched.
 
 **Proposed:** Add `doc: Option<String>` to `TypeScheme`. The field is `None` for
 all inferred schemes; set only when a `fn@[doc: "..."]` annotation is present.
+The `doc` field is populated exclusively during function annotation resolution
+(`resolve_fn_metadata`), not during general annotation resolution — non-function
+bindings always have `doc: None`.
 
 **Impact:** Minor. One new optional field; all construction sites default to
 `None`.
