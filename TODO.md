@@ -121,18 +121,6 @@ Three design corrections discovered after `hkt-field-access` was implemented:
 - [ ] Remove the stale note at the bottom of `hkt-field-access` sprint about `constraint-annotations` dependency for HasField syntax — both the dependency and the HasField annotation syntax were incorrect
 - [ ] Tests: `key@Label` generates HasField constraint and returns precise field type; `key@[label: l]` where same `l` is used in two parameters works; `get`/`get-or` return precise types at call sites with string literal keys (`tests/corpus/eval/typecheck/`, `tests/lsp_corpus_tests.rs`)
 
-### hkt-bas: BAS extension for App type atoms and functorial subtyping
-
-See `doc/whatif/completed/hkt-monads.md` §Interaction with BAS. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Interaction with BAS`.
-
-- [ ] Extend `is_subtype` in `src/types.rs`: add arm `(App(f₁, a), App(f₂, b))` — when `f₁ == f₂` and `is_subtype(a, b)`, the application is a subtype; restricted to known-covariant stdlib instances; no `ClassEnv` access needed
-- [ ] Verify `App(m, a) | App(m, b) <: App(m, a|b)` is derived automatically via UNION-ELIM + covariance — confirm via tests, no separate rule needed
-- [ ] Do NOT implement the reverse direction `App(m, a|b) <: App(m, a) | App(m, b)` — unsound for diagonal functors
-- [ ] Verify tree-walkers/apply_type handle `App`/`Operator` correctly (updated in `hkt-foundation-a`); run all BAS corpus tests to confirm no regressions
-- [ ] Tests: `App(Result, Int) <: App(Result, Int|Str)` (covariance), join via UNION-ELIM, reverse direction NOT accepted, mismatched constructors rejected (`tests/corpus/eval/typecheck/`)
-
-**Depends on:** `hkt-foundation-a`
-
 ### hkt-kind-inference: Kind checking pass and Operator-kinded class resolution
 
 See `doc/whatif/completed/hkt-monads.md` §Kind Checking, §Typeclass Resolution for HKT. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.

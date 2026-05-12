@@ -5728,3 +5728,15 @@ See `doc/whatif/completed/hkt-monads.md` §Field Access Typing. **Spec chapters:
 - [x] Tests: `[get "name" {name: String}]` → `String`; TypeVar dict → field constraint generated; `[get "name" (A|B)]` → `A.name|B.name`; `[get k dict]` with `k:Str` → `Unknown`; `[get-in ["a" "b"] nested]` → field type; variable path → `Unknown`; label-polymorphic fn inferred type; conflicting intersection warns (`tests/corpus/eval/typecheck/`, `=== out`/`=== error`)
 
 **Depends on:** `hkt-foundation-b`, `constraint-annotations`
+
+### hkt-bas: BAS extension for App type atoms and functorial subtyping
+
+See `doc/whatif/completed/hkt-monads.md` §Interaction with BAS. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Interaction with BAS`.
+
+- [x] Extend `is_subtype` in `src/types.rs`: add arm `(App(f₁, a), App(f₂, b))` — when `f₁ == f₂` and `is_subtype(a, b)`, the application is a subtype; restricted to known-covariant stdlib instances; no `ClassEnv` access needed
+- [x] Verify `App(m, a) | App(m, b) <: App(m, a|b)` is derived automatically via UNION-ELIM + covariance — confirm via tests, no separate rule needed
+- [x] Do NOT implement the reverse direction `App(m, a|b) <: App(m, a) | App(m, b)` — unsound for diagonal functors
+- [x] Verify tree-walkers/apply_type handle `App`/`Operator` correctly (updated in `hkt-foundation-a`); run all BAS corpus tests to confirm no regressions
+- [x] Tests: `App(Result, Int) <: App(Result, Int|Str)` (covariance), join via UNION-ELIM, reverse direction NOT accepted, mismatched constructors rejected (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** `hkt-foundation-a`
