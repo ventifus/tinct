@@ -88,7 +88,7 @@ impl fmt::Display for KindError {
 /// Used in `HasField { label: Label, dict_var: String, field_var: String }`.
 /// Provides compile-time structural enforcement that the label position is always
 /// a string literal or a label TypeVar name, never an arbitrary Type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(dead_code)] // Scaffolding for HasField constraint (hkt-mappable-appendable sprint)
 pub enum Label {
     /// Concrete label — a known field name like "host" or "port"
@@ -1313,16 +1313,25 @@ pub fn check_kind_wellformed(
     }
 }
 
-/// Constraint on a type variable (type class membership)
+/// Constraint on a type variable (type class membership or structural property)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Constraint {
-    pub class: String,
-    pub var: String,
+pub enum Constraint {
+    /// Type class constraint: `class var` (e.g., `Numeric a`)
+    Class { class: String, var: String },
+    /// HasField constraint: `HasField label dict_var field_var`
+    /// Asserts that dict_var has a field at label with type field_var.
+    /// Functional dependency: (label, dict_var) → field_var
+    HasField {
+        label: Label,
+        dict_var: String,
+        field_var: String,
+    },
 }
 
 impl Constraint {
+    /// Create a Class constraint (backward compatibility helper)
     pub fn new(class: impl Into<String>, var: impl Into<String>) -> Self {
-        Self {
+        Self::Class {
             class: class.into(),
             var: var.into(),
         }
@@ -1331,7 +1340,14 @@ impl Constraint {
 
 impl fmt::Display for Constraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.class, self.var)
+        match self {
+            Constraint::Class { class, var } => write!(f, "{} {}", class, var),
+            Constraint::HasField {
+                label,
+                dict_var,
+                field_var,
+            } => write!(f, "HasField {} {} {}", label, dict_var, field_var),
+        }
     }
 }
 
@@ -2707,8 +2723,10 @@ mod tests {
         let add_scheme = env.get("+").expect("+ should be registered");
         // Check constraints
         assert_eq!(add_scheme.constraints.len(), 1);
-        assert_eq!(add_scheme.constraints[0].class, "Numeric");
-        assert_eq!(add_scheme.constraints[0].var, "a");
+        assert!(matches!(
+            &add_scheme.constraints[0],
+            Constraint::Class { class, var } if class == "Numeric" && var == "a"
+        ));
         // Check type_vars
         assert_eq!(add_scheme.type_vars, vec!["a".to_string()]);
         match &add_scheme.body {
@@ -2732,7 +2750,10 @@ mod tests {
         let env = TypeEnv::with_builtins();
         let div_scheme = env.get("/").expect("/ should be registered");
         assert_eq!(div_scheme.constraints.len(), 1);
-        assert_eq!(div_scheme.constraints[0].class, "Numeric");
+        assert!(matches!(
+            &div_scheme.constraints[0],
+            Constraint::Class { class, .. } if class == "Numeric"
+        ));
         match &div_scheme.body {
             Type::Function { params, ret, .. } => {
                 assert_eq!(params.len(), 2);
@@ -2750,8 +2771,10 @@ mod tests {
         let env = TypeEnv::with_builtins();
         let eq_scheme = env.get("=").expect("= should be registered");
         assert_eq!(eq_scheme.constraints.len(), 1);
-        assert_eq!(eq_scheme.constraints[0].class, "Equatable");
-        assert_eq!(eq_scheme.constraints[0].var, "a");
+        assert!(matches!(
+            &eq_scheme.constraints[0],
+            Constraint::Class { class, var } if class == "Equatable" && var == "a"
+        ));
         match &eq_scheme.body {
             Type::Function {
                 params,
@@ -6336,9 +6359,10 @@ mod tests {
 
         // After instantiation, constraints should be copied with renamed variables
         assert_eq!(state.constraints.len(), 1);
-        assert_eq!(state.constraints[0].class, "Numeric");
-        // The variable should be renamed (e.g., _t0)
-        assert!(state.constraints[0].var.starts_with("_t"));
+        assert!(matches!(
+            &state.constraints[0],
+            Constraint::Class { class, var } if class == "Numeric" && var.starts_with("_t")
+        ));
     }
 
     #[test]
@@ -6806,8 +6830,10 @@ mod tests {
 
         // Only Numeric should remain (it entails Equatable)
         assert_eq!(constraints.len(), 1);
-        assert_eq!(constraints[0].class, "Numeric");
-        assert_eq!(constraints[0].var, "a");
+        assert!(matches!(
+            &constraints[0],
+            Constraint::Class { class, var } if class == "Numeric" && var == "a"
+        ));
     }
 
     #[test]
@@ -6824,7 +6850,10 @@ mod tests {
 
         // Only Comparable should remain
         assert_eq!(constraints.len(), 1);
-        assert_eq!(constraints[0].class, "Comparable");
+        assert!(matches!(
+            &constraints[0],
+            Constraint::Class { class, .. } if class == "Comparable"
+        ));
     }
 
     #[test]

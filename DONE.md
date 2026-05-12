@@ -5709,3 +5709,22 @@ See `doc/whatif/completed/hkt-monads.md` §Kind System §Kind::Label, §What Wou
 - [x] Tests: `key@"k"` creates label TypeVar, `promote_literal` skips for `Kind::Label`, kind error for `Seq(label_var)`, label_vars survive generalization and re-register at call sites (`tests/corpus/eval/typecheck/`)
 
 **Depends on:** `hkt-foundation-a`
+
+### hkt-field-access: HasField constraint, typed get/get-in
+
+See `doc/whatif/completed/hkt-monads.md` §Field Access Typing. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules §Field Access Typing`.
+
+- [x] Migrate `Constraint` from `{ class: String, var: String }` struct to `pub enum Constraint { Class { class: String, var: String }, HasField { label: Label, dict_var: String, field_var: String } }` (`src/types.rs`); `label: Label` uses the `Label` ADT from `hkt-foundation-b` (`pub enum Label { Concrete(String), Var(String) }`); update ALL Constraint creation sites to `Constraint::Class { class, var }` — search: `grep -n 'Constraint {' src/` (expected in `src/typecheck_annot.rs`, `src/type_unify.rs`, `src/typecheck.rs`, `src/type_env.rs`); update all match sites on `Constraint`
+- [x] Add `resolve_has_field(label, dict_type, field_var, state)` in `src/type_unify.rs` implementing `[HAS-FIELD-REC]`, `[HAS-FIELD-UNION]`, `[HAS-FIELD-INTER]`, `[HAS-FIELD-TOP]` (for S-RcdTop-collapsed unions), `[HAS-FIELD-UNKNOWN]`, `[HAS-FIELD-NEVER]`; uninhabitable-intersection warning; field-set merge accumulation; **BAS ordering**: in `check_get` (`src/typecheck.rs` line 2125), resolve `HasField` constraints on the inferred `dict_ty` BEFORE calling `Type::normalize_union` or `Type::simplify_type` on the dict type — the union must be processed in its un-normalized form so `[HAS-FIELD-UNION]` can fire before S-RcdTop collapses disjoint-field unions to ⊤
+- [x] Extend `check_get` in `src/typecheck.rs` (line 2125): add TypeVar arm — only when `kind_env[key_var] = Kind::Label` (key is a label TypeVar) emit `Constraint::HasField { label: Label::Var(name), ... }`; for unannotated TypeVar keys (not label-kinded), fall back to `Unknown` (existing behavior); add Union arm (`[HAS-FIELD-UNION]`), Intersection, Top/Unknown arms; deferred constraints in `state.constraints` as `Constraint::HasField`, merged by field-set union (not structural record unification)
+- [x] Add `check_get_in` in `src/typecheck.rs` — called as special-form handler receiving raw AST node; unfolds syntactic `Seq` literal paths where all elements are `StringLiteral` via `[GET-IN-CONS]`; falls back to `Unknown` for variable-length or non-literal paths
+- [x] Register `get`'s label-polymorphic scheme in `src/type_env.rs`: `∀ (l:Label) d a. HasField l d a => StringLiteral(l) → d → a`; register `get-in` as special form dispatched to `check_get_in`
+- [x] Update `stdlib/prelude.llt` `get`/`get-or`/`get-in` annotations (requires `constraint-annotations` sprint to have landed):
+  ```tinct
+  get:    [fn@[return: a  constraint: [HasField l d a]] [key@"l"  dict@d] ...]
+  get-or: [fn@[return: a  constraint: [HasField l d a]] [key@"l"  dict@d  default@a] ...]
+  get-in: [fn@[doc: "Chained field access — return type inferred from literal path"] [path  dict] ...]
+  ```
+- [x] Tests: `[get "name" {name: String}]` → `String`; TypeVar dict → field constraint generated; `[get "name" (A|B)]` → `A.name|B.name`; `[get k dict]` with `k:Str` → `Unknown`; `[get-in ["a" "b"] nested]` → field type; variable path → `Unknown`; label-polymorphic fn inferred type; conflicting intersection warns (`tests/corpus/eval/typecheck/`, `=== out`/`=== error`)
+
+**Depends on:** `hkt-foundation-b`, `constraint-annotations`
