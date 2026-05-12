@@ -2876,6 +2876,13 @@ impl TypeError {
         Self::new(format!("undefined type: {name}"), span)
     }
 
+    pub fn kind_mismatch(expected_kind: &str, got: &str, span: Span) -> Self {
+        Self::new(
+            format!("kind mismatch: expected `{expected_kind}`, got {got}"),
+            span,
+        )
+    }
+
     /// Returns the stable type error code for this error, based on message classification.
     ///
     /// Codes are parallel to the runtime E0xx codes:
@@ -2883,6 +2890,7 @@ impl TypeError {
     /// - T002: undefined variable or undefined type
     /// - T003: cannot unify / type mismatch / field not found / not a function / not a record
     /// - T004: type assert failure (annotation-site mismatch)
+    /// - T091: kind mismatch (expected `* → *`, got concrete type, etc.)
     /// - T000: other type errors not covered above
     pub fn code(&self) -> &'static str {
         let msg = &self.message;
@@ -2899,6 +2907,8 @@ impl TypeError {
             "T003"
         } else if msg.contains("type assert") || msg.starts_with("non-exhaustive match") {
             "T004"
+        } else if msg.starts_with("kind mismatch") {
+            "T091"
         } else {
             "T000"
         }
