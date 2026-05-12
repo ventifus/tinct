@@ -1000,6 +1000,15 @@ This table documents the laziness behavior of every operation and the rationale 
 | `builtin_keys` | Materializes dict | Keys are never thunks |
 | `TypeAssert` body (`[@Type expr]`) | Shape checked immediately (required keys present, cardinality for closed records); field type validation via Guarded thunks — each field's type constraint is checked lazily at first access | Known partial strictness: shape check cannot be deferred, but individual field types are validated lazily via `Cont::TypeAssertCheck` continuation. See [Type System Extensions](07-type-extensions.md) §TypeAssert Runtime Validation. |
 
+**Force-side-effect idiom.** Tinct has no `!` or `seq` operator. To force a side-effectful binding before returning a result, use the equality-check pattern:
+
+```tinct
+[w: [side-effect]]
+[if [= w w] result result]
+```
+
+This forces `w` via the equality check (which materializes both operands), then returns `result`. The `_` identifier cannot be used for this purpose because `_` triggers implicit lambda desugaring — `[fn [_] result]` — rather than being a discard.
+
 **Error reporting impact:** Operations that shift from eager to lazy (e.g., `$if`, `$merge`, `$map`) will report errors at access time rather than construction time. This provides more accurate source locations (pointing to where materialization failed) but changes error timing. Inherently materializing operations continue to produce errors at call time.
 
 ---

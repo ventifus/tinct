@@ -1398,7 +1398,7 @@ pub(crate) fn builtin_lines_step(
 
 /// `write`: Write a String to a file.
 /// Takes a DirCap, String path, and String content.
-/// Writes content to the file at path (creating or truncating), then returns null.
+/// Writes content to the file at path (creating or truncating), then returns empty dict `{}`.
 pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,

@@ -238,15 +238,6 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** 
 - [ ] Update `doc/02-syntax.md` and `doc/04-functions.md`: document that `[match ...]` arm bodies and `[defmacro ...]` bodies accept multiple sequential expressions; clarify that `[if ...]` branches and call arguments do not (no body delimiter) (`doc/02-syntax.md`, `doc/04-functions.md`)
 - [ ] Tests: match arm with binding dict + result expression, nested match arm multi-body, defmacro with multi-body, formatter round-trip of multi-body match arm (`tests/corpus/eval/`, `tests/corpus/format/`)
 
-### docgen-bugs: Fix bugs discovered during docgen.llt per-module refactor
-
-Three concrete issues surfaced during the `just docgen` refactor.
-
-- [ ] **`replace` arity mismatch in type checker:** `replace` is a 3-arg builtin (`pattern replacement input`) but `TypeEnv::with_builtins()` registers it as 2-arg; `[replace "/" "-" s]` type-checks as an arity error while working fine at runtime; fix the registration in `src/type_env.rs` to match `builtin_replace`'s actual 3-arg signature (`src/type_env.rs`) — tracked as `builtin-type-audit` gap
-- [ ] **`write` return value documented as null but returns `{}`:** `builtins_io.rs:1465` returns `Value::Dict(IndexMap::new())` but the doc comment says "returns null"; either fix the return to `ok_val(Value::Null, call_span)` or update the doc comment to say "empty dict `{}`"; the distinction matters for callers using the return value in boolean context (`src/builtins_io.rs:1401`, `src/builtins_io.rs:1465`)
-- [ ] **Document the `[= w w]` force-side-effect idiom:** tinct has no `!` or `seq` for forcing side effects; the canonical pattern is `[w: [side-effect]] [if [= w w] result result]` — forces `w` via equality check, always returns `result`; add this to `doc/08-evaluation.md §Laziness Design` as an explicit idiom note, including why `_` cannot be used (implicit lambda desugaring treats `_` as a lambda parameter, not a discard) (`doc/08-evaluation.md`)
-- [ ] **Type checker doesn't propagate scope from intermediate dict expressions:** in a document with multiple sequential expressions (e.g., `[dict1] [dict2] [expr3]`), the type checker fails to carry dict2's bindings into expr3's scope — `expr3` sees T002 "undefined variable" for names defined in dict2, even though the runtime pipeline materialises dict2 and adds its entries to scope; LSP go-to-definition correctly resolves these (confirming they exist), but hover/diagnostics show false errors; fix `typecheck_document` to propagate intermediate dict type environments into subsequent expression scopes the same way `eval_document` propagates runtime bindings (`src/typecheck.rs`)
-
 ---
 
 ## Capability System
