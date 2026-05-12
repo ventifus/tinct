@@ -298,19 +298,6 @@ Accepted 2026-05-11. See `doc/whatif/builtin-privacy.md`. **Spec chapters:** `do
 
 ---
 
-## Code Housekeeping
-
-### test-coverage-gaps: Fill critical corpus and unit test coverage gaps
-
-Gaps identified in Cycle #246 analysis. None require design work — these are concrete missing tests.
-
-- [ ] [Major] Type assertion corpus coverage is thin (currently ~4 files in `tests/corpus/eval/typecheck/`) — add ~6 more cases covering: TypeVar constraint propagation through nested dicts, constraint enforcement at multiple call sites for the same generic function, BAS subtyping in TypeAssert position (`@[[all A B]]`, `@[[without A]]`), intersection type narrowing in match arms, and `Type::Error` sentinel cascade prevention (`tests/corpus/eval/typecheck/`)
-- [ ] [Major] Laziness proof corpus tests are missing key coverage: add `tests/corpus/eval/lazy/` tests for `$map` on dicts (confirm values remain as PendingCall thunks, not forced), `$filter` selective materialization (predicate forced, non-selected elements not forced), `and`/`or` short-circuit (second arg thunk untouched when result determined by first), lazy `$concat` on seqs (O(1) chain, no element evaluation) (`tests/corpus/eval/lazy/`)
-- [ ] [Major] Resource limit corpus tests missing: add end-to-end corpus tests that trigger `MAX_COLLECT_SIZE` (collect into a >1M item dict) and `MAX_STRING_SIZE` (build a >64MB string via `str-repeat`) and verify correct `[E040]`/`[E081]`-coded errors (`tests/corpus/eval/errors/`)
-- [ ] [Minor] `split_test_file()` in `tests/test_helpers.rs` has zero unit tests despite being the core test infrastructure parser — add unit tests covering: `=== out` + `=== warn` + `=== error` sections, multiple sections in one file, missing `=== out` section, `#?`/`#!` comment lines, empty file, file with only comments (`tests/test_helpers.rs`)
-
----
-
 ## Networking
 
 ### net-gaps: QUIC datagrams, SPKI correctness, HTTP/3 concurrent driver
