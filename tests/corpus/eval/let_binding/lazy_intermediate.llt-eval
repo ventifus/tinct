@@ -1,7 +1,6 @@
-# Sequential strict let* semantics: intermediate bindings are forced to WHNF at bind time.
-# An unused binding in a fn-body Sequential still errors eagerly (strict let*).
-# To suppress, use $if or wrap in a lazy dict passed through ---.
-[test: [fn [x] [unused: [error "should not be evaluated"]] [+ x 1]]]
+# Sequential lazy let* semantics: unused bindings in fn bodies remain lazy.
+# Dead bindings are never forced — errors only fire when accessed.
+[test: [fn [x] [unused: [error "dead binding"]] [+ x 1]]]
 [test 41]
-=== error
-[E080] should not be evaluated
+=== out
+Int(42)

@@ -1,0 +1,7 @@
+# Calling a function whose body accesses a binding with an error forces
+# the error. The binding `x` is accessed in the return expression, so
+# the error fires at the call site.
+[f: [fn [] [x: [error "live"]] x]]
+[f]
+=== error
+[E080] live

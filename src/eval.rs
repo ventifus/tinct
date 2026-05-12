@@ -683,11 +683,8 @@ pub(crate) fn eval_recursive(
                     // Only string keys become scope bindings; int keys are positional, not named.
                     if let Key::String(name) = key {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
-                        // Force to WHNF: strict let* binding semantics.
-                        let forced_value = materialize(&val_thunk, Some(&seq_expr.span), ctx)?;
-                        let strict_thunk =
-                            Rc::new(Thunk::new_materialized(forced_value, seq_expr.span));
-                        child_env.borrow_mut().insert(name, strict_thunk);
+                        // Insert value as lazy thunk — only keys need to be known for scope chain.
+                        child_env.borrow_mut().insert(name, val_thunk);
                     }
                 }
                 current_env = child_env;

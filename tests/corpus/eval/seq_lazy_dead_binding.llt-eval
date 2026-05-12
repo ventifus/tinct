@@ -1,0 +1,5 @@
+# Function definition: the fn expression evaluates to a Function value
+# without calling it. The body (including the dead binding) is not executed.
+[fn [] [x: [error "dead"]] 42]
+=== out
+Function()
