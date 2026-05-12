@@ -1,0 +1,9 @@
+[
+    helper-merge: [fn [x] [error "from helper-merge"]]
+    public-fn: [fn [x] [helper-merge x]]
+    result: [public-fn 42]
+]
+=== error
+[E080] from helper-merge (defined at 2:27-2:54) (called at 1:1-1:1)
+  in [error ...] at 2:27-2:54
+  in [public-fn ...] at 4:13-4:27

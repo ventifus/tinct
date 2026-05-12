@@ -5664,3 +5664,11 @@ Design in `doc/07-type-extensions.md §TypeAssert Runtime Validation`. Closes th
 - [x] Evaluator: when `resolved_type` is `Some(ty)`, use `ty` for validation instead of `value.type_name()` string comparison; for primitive types (Int, Str, Bool, Float, Null, Seq), validate immediately; for `Record(fields, Closed)`, check key set + cardinality immediately, then create `Guarded` thunks for each field's type constraint (field type checked lazily at first access, preserving lazy semantics — Findler & Felleisen 2002); when `resolved_type` is `None` (`--no-typecheck` mode), degrade to current nominal behavior (`src/eval.rs`)
 - [x] Add `Cont::TypeAssertCheck(Type, Span)` continuation: fired when a Guarded thunk for a record TypeAssert field is first materialized; validates `value_matches_type(actual, field_ty)`, produces `TypeAssertFailed` on mismatch with the TypeAssert span as primary location (`src/eval.rs`)
 - [x] Tests: `[@[name: String] {name: "alice"}]` passes; `[@[name: String] {name: 42}]` → `TypeAssertFailed` at first access of `name`; `[@Int "hello"]` → immediate failure; `[@Unknown expr]` → always passes; `--no-typecheck` → nominal fallback; nested record assert validates inner structure (`tests/corpus/eval/typeassert/`)
+
+### stdlib-stack-frames: Stack frame filtering for stdlib error locations
+
+**Completed 2026-05-11.** Stdlib internal helper frames (suffixed with `-impl`, `-step`, `-check`, `-merge`) are now filtered from error display output. The filtering operates on the `EvalError::Display` implementation - the underlying `stack` field is preserved for programmatic access.
+
+- [x] Add stdlib-frame classifier to error rendering in `src/error.rs`: frames with labels ending in `-impl`, `-step`, `-check`, or `-merge` are filtered from display (`src/error.rs:1467`)
+- [x] Tests: corpus tests verify that `-impl` frames are hidden while user-facing frames remain visible (`tests/corpus/eval/errors/stdlib_internal_impl_filtered.llt-eval`, `stdlib_assert_user_callsite.llt-eval`, `stdlib_direct_error_call.llt-eval`)
+- [x] Documentation: stack frame filter policy documented in `doc/10-errors.md` §Part 8

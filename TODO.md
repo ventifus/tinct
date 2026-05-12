@@ -55,14 +55,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
 
-### stdlib-stack-frames: Stack frame filtering for stdlib error locations
-
-Limitation documented in `doc/11-stdlib.md §Known Limitations`. Stdlib functions that call `$error` internally show `prelude.llt` as the primary error location rather than the user's call site.
-
-- [ ] Add stdlib-frame classifier to error rendering in `src/error.rs`: a frame is "stdlib internal" when its source URI matches the prelude path (`find_libdir_path().join("prelude.llt")`) AND its function name carries a known internal suffix (`-impl`, `-step`, `-check`, `-merge`); internal frames are demoted to a secondary "from stdlib" note (`src/error.rs`)
-- [ ] Identify the user call-site frame: the outermost non-internal frame in the `eval_stack` becomes the primary error location; if all frames are stdlib-internal, fall back to innermost stdlib frame (current behavior unchanged) (`src/error.rs`, `src/eval.rs`)
-- [ ] Tests: `$error` called inside a stdlib function named with `-impl` suffix → user call site is primary error location; builtin that calls `$error` directly (not via prelude.llt) → unaffected; pure user code calling `$error` → unaffected (`tests/corpus/eval/errors/`)
-
 ---
 
 ## Higher-Kinded Types

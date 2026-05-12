@@ -841,24 +841,34 @@ These renderers are not specified here. The error construction sites are designe
 
 ### Part 8: Stack Frame Display Policy
 
-The `EvalError::Display` implementation filters certain stack frames from user-facing output to reduce noise from stdlib internals. Only frames for which `frame.label` does not end with `-impl`, `-step`, or `-check` are shown:
+The `EvalError::Display` implementation filters certain stack frames from user-facing output to reduce noise from stdlib internals. Only frames whose function name does not end with `-impl`, `-step`, `-check`, or `-merge` are shown.
+
+Note: frame labels in Phase 2 format are `"[name arg ...]"`. The implementation extracts `name` via `frame_name()` before checking suffixes, so `"[sort-merge ...]"` is correctly matched by the `-merge` suffix even though the raw label does not end with `-merge`.
 
 ```rust
 // In EvalError::Display, before printing stack frames:
 for frame in self.stack.iter().filter(|f| {
-    !f.label.ends_with("-impl") &&
-    !f.label.ends_with("-step") &&
-    !f.label.ends_with("-check")
+    let name = frame_name(&f.label); // extracts "name" from "[name ...]"
+    !name.ends_with("-impl") &&
+    !name.ends_with("-step") &&
+    !name.ends_with("-check") &&
+    !name.ends_with("-merge")
 }) {
     write!(f, "\n  in {} at {}", frame.label, frame.span)?;
 }
 ```
 
-**Convention:** Stdlib prelude functions that are implementation helpers (not user-callable entry points) should be named with one of these suffixes so they are automatically hidden from error output. For example, `$merge-impl`, `$get-in-step`, `$type-check` would all be filtered. This mirrors Nickel's `group_by_calls()` pattern which filters stdlib internal frames.
+**Convention:** Stdlib prelude functions that are implementation helpers (not user-callable entry points) should be named with one of these suffixes so they are automatically hidden from error output. For example, `$map-impl`, `$remove-step`, `$cond-check`, `$sort-merge` would all be filtered. This mirrors Nickel's `group_by_calls()` pattern which filters stdlib internal frames.
 
 **Important:** This filter operates only on `Display` output. The `self.stack` field is not modified — all frames are preserved for programmatic access (LSP diagnostics, future tooling).
 
-**Naming guidance for prelude authors:** If you write a helper function that should not appear in user-facing stack traces, suffix its name with `-impl` (implementation detail), `-step` (iteration step in a recursive helper), or `-check` (internal validation). Entry-point functions (those the user calls directly) should not use these suffixes.
+**Naming guidance for prelude authors:** If you write a helper function that should not appear in user-facing stack traces, suffix its name with:
+- `-impl` (implementation detail)
+- `-step` (iteration step in a recursive helper)
+- `-check` (internal validation)
+- `-merge` (merge helper)
+
+Entry-point functions (those the user calls directly) should not use these suffixes.
 
 ### Part 9: Style Guidelines
 
