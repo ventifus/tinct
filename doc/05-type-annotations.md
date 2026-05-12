@@ -339,11 +339,16 @@ The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annot
 
 **Note:** `Fn@Number` in a bare context (not inside `[]`) is also valid and parsed via the `annotated_bare` grammar rule, producing the same AST structure.
 
-**Row polymorphism** is supported via `rest_entry` syntax in type expressions. `...` marks an open record type (any additional fields are permitted), and `...name` introduces a named row variable for polymorphic record operations:
+**Row polymorphism syntax (removed under BAS):** The `...` and `...name` rest entry syntax that previously appeared in type expressions has been removed. Under BAS (Boolean-Algebraic Subtyping), all records are closed. Openness is now expressed via width subtyping: a record with MORE fields is a subtype of one with FEWER fields.
 
 ```tinct
-[name: String ...]            # open record: has name, allows other fields
-[name: String ...r]           # named row variable r captures the remaining fields
+# Previously valid (now removed):
+# [name: String ...]            # open record syntax — NO LONGER VALID
+# [name: String ...r]           # named row variable — NO LONGER VALID
+
+# Current BAS approach:
+# Width subtyping handles openness automatically.
+# [name: String  port: Int] <: [name: String]  (extra fields permitted)
 ```
 
 **Type conventions** (not enforced by parser, enforced by type checker):

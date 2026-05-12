@@ -246,8 +246,8 @@ Known gap: when the callee is a letrec forward reference (same-dict scope), the 
 ────────────────────────────────── [DOT]
 Γ ⊢ e.k : τ
 
-Γ ⊢ e ⇒ α,  β fresh,  ρ fresh
-S = unify(α ≐ Record({k: β}, RowVar(ρ)))
+Γ ⊢ e ⇒ α,  β fresh
+S = unify(α ≐ Record({k: β}))
 ────────────────────────────────── [DOT-VAR]
 Γ ⊢ e.k ⇒ β
 ```
@@ -392,12 +392,11 @@ StringLiteral(s) <: Str                          [S-STR]
 Float <: Number                                  [S-FLOAT]
 Seq(τ) <: Seq(σ)  if τ <: σ                      [S-SEQ]
 
-Record(F₁,ρ₁) <: Record(F₂,ρ₂) if:
-    ∀(k:σ) ∈ F₂, ∃(k:τ) ∈ F₁ with τ <: σ       (width+depth)
-    ∀(k:τ) ∈ F₁ \ F₂, τ is permitted              (width: sub may have extra fields)
-    Under BAS, all records are closed (no RowVar tail). Width subtyping
-    means a record with MORE fields is a subtype of one with FEWER fields,
-    provided the shared fields satisfy depth subtyping.              [S-REC]
+Record(F₁) <: Record(F₂) if:
+    ∀(k:σ) ∈ F₂, ∃(k:τ) ∈ F₁ with τ <: σ       (depth subtyping on shared fields)
+    Under BAS, all records are closed (no RowVar tail). Width subtyping:
+    a record with MORE fields is a subtype of one with FEWER fields.
+    Extra fields in F₁ beyond F₂ are permitted.                      [S-REC]
 
 Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
     |p| = |q|
@@ -412,24 +411,16 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
 
 ```
 instantiate(τ) = (S(τ), S)
-    where S has two kinded maps:
-      S.type_map = {α₁ ↦ _t0, α₂ ↦ _t1, ...}  (type vars → Type)
-      S.row_map  = {ρ₁ ↦ Row{...}, ...}       (row vars → Row)
+    where S.type_map = {α₁ ↦ _t0, α₂ ↦ _t1, ...}  (type vars → Type)
     for each αᵢ ∈ FTV(τ), fresh type var names _tN generated
-    for each ρᵢ ∈ FRV(τ), fresh row var names _tM generated
     from a shared monotonic per-file counter.
 
 FTV(τ) collects type variables via collect_type_vars().
-FRV(τ) collects row variables via collect_row_vars().
-Both can be collected in a single pass via collect_all_vars().
 
-Kinded substitution (Rémy 1994): type variables and row variables
-inhabit distinct kinds, enforced structurally by separate maps.
-type_map binds type variable names to Type; row_map binds row
-variable names to Row. A name cannot appear in both maps in
-well-formed substitutions. TypeScheme carries separate quantifier
-lists (type_vars: Vec<String>, row_vars: Vec<String>), and
-instantiate_scheme() routes each through its corresponding map.
+Under BAS, row variables have been removed. The substitution map
+contains only type_map (no row_map). TypeScheme carries only
+type_vars (no row_vars field). All records are closed; openness
+is expressed via width subtyping in is_subtype.
 ```
 
 This is alpha-renaming for call-site freshening. Each polymorphic call site gets independent type variables so unification at one site does not constrain another. With let-generalization (below), instantiation also handles let-bound polymorphic type schemes.
@@ -450,7 +441,7 @@ Implementation: `TypeEnv.bindings` changes from `HashMap<String, Type>` to `Hash
 #[derive(Debug, Clone)]
 pub struct TypeScheme {
     pub type_vars: Vec<String>,  // quantified type variable names
-    pub row_vars: Vec<String>,   // quantified row variable names
+    pub doc: Option<String>,     // documentation from annotations (added in constraint-annotations sprint)
     pub body: Type,
 }
 
@@ -458,22 +449,22 @@ impl TypeScheme {
     pub fn mono(ty: Type) -> Self {
         Self {
             type_vars: vec![],
-            row_vars: vec![],
+            doc: None,
             body: ty,
         }
     }
 }
 ```
 
-`PartialEq` for `TypeScheme` compares structurally (type_vars + row_vars + body). `Display` shows `∀a b. Fn(a → b)` for polymorphic schemes, or the bare type for monomorphic ones. Located in `types.rs`.
+`PartialEq` for `TypeScheme` compares structurally (type_vars + doc + body). `Display` shows `∀a b. Fn(a → b)` for polymorphic schemes, or the bare type for monomorphic ones. Located in `types.rs`.
 
 **Levels.** Every type variable α carries an integer level ℓ(α). The type checker maintains a current level counter ℓ_current, incremented at each dict boundary (every `infer_dict` call):
 
 - Fresh type variables are created at ℓ_current
 - `Type::TypeVar(String)` becomes `Type::TypeVar(String, u32)` (name + level)
 - `PartialEq` for `Type` is implemented manually: `TypeVar(a, _) == TypeVar(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
-- `RowTail::RowVar(String)` becomes `RowTail::RowVar(String, u32)` — row variables carry levels and participate in generalization identically to type variables. `RowTail` is the current name throughout the codebase (the enum was previously called `RowRest`: `RowRest::Closed` → `RowTail::Empty`, `RowRest::RowVar` → `RowTail::RowVar`).
-- `Display` for `TypeVar` and `RowVar` hides the level (internal inference state, not user-facing).
+- Under BAS, all records are closed. Row variables (`RowTail::RowVar`) have been removed — the `Row` struct now contains only `fields: HashMap<String, Type>` with no tail field. Width subtyping handles record openness.
+- `Display` for `TypeVar` hides the level (internal inference state, not user-facing).
 
 **Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Since `Type` is a value type, levels are stored in a separate mutable map alongside the substitution:
 
@@ -498,12 +489,12 @@ When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During
 unify(α, τ, S) = S[α ↦ τ]
     if α ∉ FV(τ)                                   [occurs check]
     and set ℓ(β) = min(ℓ(β), ℓ(α))
-        for all β ∈ FTV(τ) ∪ FRV(τ)                [U-VAR-LEVEL]
+        for all β ∈ FTV(τ)                         [U-VAR-LEVEL]
 
 unify(τ, α, S) = S[α ↦ τ]
     if α ∉ FV(τ)                                   [occurs check]
     and set ℓ(β) = min(ℓ(β), ℓ(α))
-        for all β ∈ FTV(τ) ∪ FRV(τ)                [U-VAR-LEVEL-SYM]
+        for all β ∈ FTV(τ)                         [U-VAR-LEVEL-SYM]
 ```
 
 Both rules lower levels symmetrically: when binding α to τ, every type variable β and every row variable ρ inside τ has its level lowered to `min(ℓ(β or ρ), ℓ(α))`. This prevents variables from escaping their scope through either side of a unification. Row variables must be lowered because τ may contain row variables through Record nesting (e.g., τ = Record({x: Int, ...ρ})).
@@ -514,9 +505,9 @@ Both rules lower levels symmetrically: when binding α to τ, every type variabl
 unify(α, Unknown, S) = S,  set ℓ(α) = 0               [U-UNKNOWN-VAR]
 unify(Unknown, α, S) = S,  set ℓ(α) = 0               [U-VAR-UNKNOWN]
 unify(Unknown, τ, S) = S,  set ℓ(β) = 0
-    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-UNKNOWN-COMPLEX]
+    for all β ∈ FTV(τ)                             [U-UNKNOWN-COMPLEX]
 unify(τ, Unknown, S) = S,  set ℓ(β) = 0
-    for all β ∈ FTV(τ) ∪ FRV(τ)                    [U-COMPLEX-UNKNOWN]
+    for all β ∈ FTV(τ)                             [U-COMPLEX-UNKNOWN]
 ```
 
 This ensures Unknown-touched variables are never generalized (since `ℓ(β) = 0` is never `> ℓ` for any binding level). The [U-UNKNOWN-VAR] and [U-VAR-UNKNOWN] rules are special cases of the complex rules where FTV(α) = {α}. The [U-UNKNOWN-COMPLEX] and [U-COMPLEX-UNKNOWN] rules handle cases like `unify(Unknown, Fn(β → Int))` where β must also be zeroed to prevent over-generalization.
@@ -527,9 +518,7 @@ This ensures Unknown-touched variables are never generalized (since `ℓ(β) = 0
 generalize(ℓ, τ) = ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ     [GEN]
 ```
 
-where ℓ(α) is read from `InferState.levels[α]` (the current, possibly lowered level). Type variables whose level exceeds the enclosing scope's level are local to the binding and can be universally quantified. Variables at or below level ℓ are free in the enclosing scope and must remain monomorphic. Row variables participate identically — `RowVar(r, _)` with `levels[r] > ℓ` is generalized.
-
-**Note on FTV and FRV:** FTV(τ) collects type variables only (TypeVar nodes). FRV(τ) collects row variables only (RowVar nodes in RowTail positions). The two sets are disjoint by construction — a variable name is either a type variable or a row variable, never both. This disjointness holds for fresh variables generated by `InferState.fresh_type_var()` and `fresh_row_var_name()`; names introduced via user annotations (`ann_mapping`) may violate this invariant (known open bug, see STATUS.md). The generalization formula above applies to type variables; row variables are generalized via an analogous rule `∀{ρ | ρ ∈ FRV(τ), ℓ(ρ) > ℓ}`, and both sets of quantified variables are stored in the TypeScheme.
+where ℓ(α) is read from `InferState.levels[α]` (the current, possibly lowered level). Type variables whose level exceeds the enclosing scope's level are local to the binding and can be universally quantified. Variables at or below level ℓ are free in the enclosing scope and must remain monomorphic.
 
 Implementation signature:
 
@@ -537,7 +526,7 @@ Implementation signature:
 pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme
 ```
 
-Collects type variables and row variables from ty via level-aware traversals (collect_type_vars and collect_row_vars, or combined via collect_all_vars), filters by `current_level > level`, returns `TypeScheme { type_vars, row_vars, body: ty.clone() }`.
+Collects type variables from ty via level-aware traversal (collect_type_vars), filters by `current_level > level`, returns `TypeScheme { type_vars, doc: None, body: ty.clone() }`.
 
 **[VAR-POLY] rule:** See §Inference Judgments: Γ ⊢ e ⇒ τ above. Variable references instantiate the type scheme stored in Γ at ℓ_current.
 
@@ -669,7 +658,6 @@ Mutually recursive entries constrain each other through unification during Pass 
 | Component | Specification |
 |-----------|--------------|
 | `Type::TypeVar` | `TypeVar(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
-| `RowTail::RowVar` | `RowVar(String, u32)` — levels for row generalization |
 | `TypeEnv.bindings` | `HashMap<String, TypeScheme>` |
 | `TypeEnv.type_aliases` | `HashMap<String, Type>` — aliases stay monomorphic |
 | `TypeEnv::get()` | Returns `&TypeScheme` |
@@ -685,10 +673,8 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `unify()` U-VAR | Bind + symmetric level lowering |
 | `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
 | `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32>, subst: Substitution }` |
-| `InferState.subst` | Accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR]; merged into letrec substitution in Pass 3b |
+| `InferState.subst` | Accumulates constraints from [DOT-VAR]; merged into letrec substitution in Pass 3b |
 | `collect_type_vars()` | `fn(&self, &mut HashSet<String>)` — collects type variables, no level |
-| `collect_row_vars()` | `fn(&self, &mut HashSet<String>)` — collects row variables, no level |
-| `collect_all_vars()` | `fn(&self, &mut HashSet<String>, &mut HashSet<String>)` — collects both in one pass |
 | `Type::Display` | Shows `TypeVar` name only (level hidden) |
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).
@@ -708,8 +694,8 @@ A **constraint** is a pair `(class, var)` where `class` is the type class name (
 ```
 TypeScheme {
     type_vars: Vec<String>,
-    row_vars: Vec<String>,
-    constraints: Vec<Constraint>,    // NEW: constraints on type_vars/row_vars
+    constraints: Vec<Constraint>,    // NEW: constraints on type_vars
+    doc: Option<String>,
     body: Type,
 }
 ```
