@@ -272,15 +272,17 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 
 ### Annotation Bracket Restriction
 
-Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) must contain only dict entries. Special forms within annotations are parse errors. When a `type:` key is present, rest entries (`...` or `...name`) are also forbidden — they have no defined semantics in property dict context:
+Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) must contain only dict entries or union type members. Special forms within annotations are parse errors. When a `type:` key is present, rest entries (`...` or `...name`) are also forbidden — they have no defined semantics in property dict context:
 
 ```tinct
 x@[type: Number  default: 30]    # valid: property dict
 x@Number                         # valid: simple annotation
 [@[name: String  ...] $val]      # valid: type expression with rest (no type: key)
-x@[call $f $x]                   # ERROR: special form in annotation bracket
-x@[fn [a] $a]                    # ERROR: special form in annotation bracket
-x@[type Number]                  # ERROR: special form in annotation bracket
+fn@[Int Null]                    # valid: union return type (two positional entries)
+fn@[a Null]                      # valid: union with type variable (lowercase VarRef head)
+x@[call $f $x]                   # ERROR: explicit call special form in annotation bracket
+x@[fn [a] $a]                    # ERROR: fn special form in annotation bracket
+x@[type Number]                  # ERROR: type special form in annotation bracket
 x@[@Number $val]                 # ERROR: type_assert_body in annotation bracket
 x@[type: Int  ...]               # ERROR: rest entry alongside type: key
 ```
@@ -289,12 +291,18 @@ The following constructs are rejected inside annotation brackets:
 
 | Rejected form | Why |
 |--------------|-----|
-| `call` | Special form — produces `Expr::Call`, not `Expr::Dict` |
+| `call` | Explicit call special form — `implied: false`, produces a rejected non-Dict, non-implied-VarRef-call result |
 | `fn` | Special form — produces `Expr::Fn`, not `Expr::Dict` |
 | `type` | Special form — produces `Expr::TypeAlias`, not `Expr::Dict` |
 | `type_assert_body` (`[@Annotation expr]`) | Produces `Expr::TypeAssert`, not `Expr::Dict` — rejected even though it is not a named special form keyword |
 
-All four are caught by the same check in `parse_annotation`: after re-parsing the bracket sub-string via `parse2`, any result that is not `Expr::Dict` is a parse error. `type_assert_body` is rejected on this basis, not because of keyword disambiguation.
+All four are caught by the same check in `parse_annotation`: after re-parsing the bracket sub-string via `parse2`, the result is classified as follows:
+
+- `Expr::Dict` → accepted as a property dict annotation (named entries, e.g. `[type: Number  default: 30]`).
+- `Expr::Call { implied: true, func: VarRef(..), .. }` → accepted as a positional union type annotation: the func and each arg become auto-indexed `Entry` values in a `PropertyDict`. This handles `fn@[Int Null]` (parameterized) and `fn@[a Null]` (type variable). Both uppercase and lowercase VarRef heads are accepted.
+- Anything else (explicit `call` form with `implied: false`, `Expr::Fn`, `Expr::TypeAlias`, `Expr::TypeAssert`) → parse error: "property dict annotation must be a dict expression".
+
+`type_assert_body` is rejected on the "anything else" basis, not because of keyword disambiguation.
 
 When no `type:` key is present, the bracket is interpreted as a type expression (record type), and rest entries are allowed for row polymorphism.
 

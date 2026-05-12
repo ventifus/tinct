@@ -950,7 +950,7 @@ Each static constraint enforced by the parser must have corpus tests demonstrati
 | **Duplicate Key Detection** | `tests/corpus/invalid/syntax_errors/duplicate_key.llt-eval`, `tests/corpus/invalid/syntax_errors/duplicate_varref_key.llt-eval` |
 | **Fn Parameter List Structure** | `tests/corpus/invalid/syntax_errors/multiple_variadics.llt-eval`, `tests/corpus/invalid/syntax_errors/param_after_variadic.llt-eval` |
 | **Bracket Nesting Depth Limit** | `tests/corpus/invalid/syntax_errors/parser_depth_exceeded.llt-eval` |
-| **Annotation Bracket Restriction** | `tests/corpus/invalid/syntax_errors/special_form_in_annotation.llt-eval` |
+| **Annotation Bracket Restriction** | `tests/corpus/invalid/syntax_errors/annotation_special_form_call.llt-eval`, `tests/corpus/invalid/syntax_errors/annotation_special_form_fn.llt-eval` |
 
 See doc/15-ast.md §Static Constraints for detailed constraint specifications.
 

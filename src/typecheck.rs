@@ -4012,6 +4012,44 @@ mod tests {
         assert!(errors[0].message.contains("cannot unify"));
     }
 
+    #[test]
+    fn test_fn_union_return_annotation_int_null() {
+        // Regression: fn@[Int Null] must route to union return type path.
+        // Previously failed with "property dict annotation must be a dict expression"
+        // because the parser rejected lowercase-headed implied calls in annotation position.
+        // After fix: [Int Null] is two positional entries → Union(Int, Null).
+        let ty = infer("[fn@[Int Null] [] []]");
+        match ty {
+            Type::Function { ret, .. } => {
+                // Return type should be Union(Int, empty-record) — the Null type
+                assert!(
+                    matches!(*ret, Type::Union(_)),
+                    "expected Union return type, got {ret}"
+                );
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_union_return_annotation_typevar_null() {
+        // Regression: fn@[a Null] must route to union return type path.
+        // 'a' is a lowercase type variable name; 'Null' is the empty record type.
+        // Both are positional entries → treated as union type members.
+        let ty = infer("[fn@[a Null] [] []]");
+        match ty {
+            Type::Function { ret, .. } => {
+                // Return type is Union(TypeVar, Record({})) — the [a Null] union annotation.
+                // Tighter check: must be Union, not just non-Error (which would pass Unknown).
+                assert!(
+                    matches!(*ret, Type::Union(_)),
+                    "expected Union return type, got {ret}"
+                );
+            }
+            other => panic!("expected Function, got {other}"),
+        }
+    }
+
     // -- Call --
 
     #[test]
@@ -9171,10 +9209,10 @@ mod tests {
 
     #[test]
     fn test_try_result_type() {
-        // `try` builtin returns Unknown — not a structural union — because the runtime
+        // `try` builtin returns Top — not a structural union — because the runtime
         // now returns nominal Value::Variant { tag: "Ok"/"Err" }. A structural union
         // {ok:T}|{err:Str} would cause T004 false positives when user code matches on
-        // constructor patterns [Ok v] / [Err msg]. Unknown avoids triggering coverage
+        // constructor patterns [Ok v] / [Err msg]. Top avoids triggering coverage
         // checking (infer_match only runs exhaustiveness when scrutinee is Type::Union).
         // TODO(result-nominal): replace with Ok[T]|Err[String] when Type::Variant is added.
         let env = TypeEnv::with_builtins();
@@ -9182,8 +9220,8 @@ mod tests {
         match &scheme.body {
             Type::Function { ret, .. } => {
                 assert!(
-                    matches!(ret.as_ref(), Type::Unknown),
-                    "try should return Unknown (not structural union — see comment), got {ret}"
+                    matches!(ret.as_ref(), Type::Top),
+                    "try should return Top (not structural union — see comment), got {ret}"
                 );
             }
             other => panic!("expected Function type for try, got {other}"),

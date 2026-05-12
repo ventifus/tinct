@@ -1004,16 +1004,16 @@ impl TypeEnv {
             },
         );
 
-        // Control flow: if takes Bool, returns Any (type depends on branches)
+        // Control flow: if takes Bool and two branches, returns Top (type depends on branches)
         env.insert(
             "if".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Bool),
-                    (None, Type::Unknown),
-                    (None, Type::Unknown),
+                    (Some("condition".to_string()), Type::Bool),
+                    (Some("then_".to_string()), Type::Top),
+                    (Some("else_".to_string()), Type::Top),
                 ],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Top),
                 variadic: false,
             },
         );
@@ -1035,18 +1035,19 @@ impl TypeEnv {
         env.insert(
             "length".to_string(),
             Type::Function {
-                // builtin_length dispatches on Value::Dict, Value::String, and Value::Bytes.
-                // The ideal type is Union([...], String, Bytes) but the unifier does not support
-                // Union types containing row variables in function parameter positions — it falls
-                // through to the wildcard error arm. Use Unknown so callers with any argument
-                // are accepted at typecheck time; runtime dispatches correctly on the three cases.
-                //
-                // TODO(length-narrow-type): when unify() gains a Union match arm, change to:
-                // params: vec![Type::Union(vec![
-                //     Type::Record(Row { fields: HashMap::new(), tail: RowTail::RowVar("_length_dict", 0) }),
-                //     Type::Str, Type::Bytes,
-                // ])]
-                params: vec![(None, Type::Unknown)],
+                // builtin_length dispatches on Value::Dict, Value::String, Value::Bytes,
+                // and integer-keyed Dicts (which are represented as Seq at the type level).
+                params: vec![(
+                    None,
+                    Type::Union(vec![
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                        Type::Str,
+                        Type::Bytes,
+                        Type::Seq(Box::new(Type::Top)),
+                    ]),
+                )],
                 ret: Box::new(Type::Int),
                 variadic: false,
             },
@@ -1056,13 +1057,13 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (
-                        None,
+                        Some("dict1".to_string()),
                         Type::Record(Row {
                             fields: HashMap::new(),
                         }),
                     ),
                     (
-                        None,
+                        Some("dict2".to_string()),
                         Type::Record(Row {
                             fields: HashMap::new(),
                         }),
@@ -1079,12 +1080,12 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (
-                        None,
+                        Some("dict".to_string()),
                         Type::Record(Row {
                             fields: HashMap::new(),
                         }),
                     ),
-                    (None, Type::Unknown),
+                    (Some("value".to_string()), Type::Top),
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1362,8 +1363,8 @@ impl TypeEnv {
         env.insert(
             "force".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
-                ret: Box::new(Type::Unknown),
+                params: vec![(None, Type::Top)],
+                ret: Box::new(Type::Top),
                 variadic: false,
             },
         );
@@ -1371,21 +1372,21 @@ impl TypeEnv {
             "error".to_string(),
             Type::Function {
                 params: vec![(None, Type::Str)],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Never),
                 variadic: false,
             },
         );
         // try: takes 1 arg — a zero-argument function. Returns Ok(v) or Err(String).
         // Runtime (builtins_meta.rs:builtin_try) enforces exactly 1 arg.
         //
-        // Return type is Unknown rather than a structural union `{ok:T}|{err:Str}` because:
+        // Return type is Top rather than a structural union `{ok:T}|{err:Str}` because:
         // 1. The runtime now returns nominal Value::Variant { tag: "Ok"/"Err" }, not a struct dict.
         // 2. A structural union would cause T004 "non-exhaustive match" when user code matches
         //    on constructor patterns `[Ok v]` / `[Err msg]` — the coverage checker would see
         //    DictKey("ok")/DictKey("err") in the sig but Variant("Ok")/Variant("Err") in arms.
-        // 3. Unknown avoids triggering exhaustiveness checking (Type::Union guard in infer_match).
+        // 3. Top avoids triggering exhaustiveness checking (Type::Union guard in infer_match).
         //
-        // TODO(result-nominal): replace Unknown with a proper `Ok[T] | Err[String]` union type
+        // TODO(result-nominal): replace Top with a proper `Ok[T] | Err[String]` union type
         // once Type::Variant is added to the type system (see doc/07-type-extensions.md).
         env.insert(
             "try".to_string(),
@@ -1394,11 +1395,11 @@ impl TypeEnv {
                     None,
                     Type::Function {
                         params: vec![],
-                        ret: Box::new(Type::Unknown),
+                        ret: Box::new(Type::Top),
                         variadic: false,
                     },
                 )],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Top),
                 variadic: false,
             },
         );
@@ -1409,8 +1410,8 @@ impl TypeEnv {
                     (
                         None,
                         Type::Function {
-                            params: vec![(None, Type::Unknown)],
-                            ret: Box::new(Type::Unknown),
+                            params: vec![(None, Type::Top)],
+                            ret: Box::new(Type::Top),
                             variadic: false,
                         },
                     ),
@@ -1421,7 +1422,7 @@ impl TypeEnv {
                         }),
                     ),
                 ],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Top),
                 variadic: false,
             },
         );
@@ -1576,7 +1577,11 @@ impl TypeEnv {
             "env".to_string(),
             Type::Function {
                 params: vec![(None, Type::Str)],
-                ret: Box::new(Type::Unknown), // returns Str or Null
+                // Returns Str when set; Null (empty dict) when unset, --no-env active, or not in allowlist
+                ret: Box::new(Type::normalize_union(vec![
+                    Type::Str,
+                    Type::Record(Row { fields: HashMap::new() }),
+                ])),
                 variadic: false,
             },
         );
@@ -1592,7 +1597,8 @@ impl TypeEnv {
             "slurp".to_string(),
             Type::Function {
                 params: vec![(None, Type::Handle)],
-                ret: Box::new(Type::Unknown), // Returns Str for Text handles, Bytes for Binary handles
+                // Returns Str for text handles ("r"); Bytes for binary handles ("rb")
+                ret: Box::new(Type::normalize_union(vec![Type::Str, Type::Bytes])),
                 variadic: false,
             },
         );
@@ -2104,14 +2110,14 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (
-                        None,
+                        Some("fn_".to_string()),
                         Type::Function {
                             params: vec![(None, Type::Unknown)],
                             ret: Box::new(Type::Unknown),
                             variadic: false,
                         },
                     ),
-                    (None, Type::Unknown),
+                    (Some("seq".to_string()), Type::Unknown),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -2122,14 +2128,14 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (
-                        None,
+                        Some("pred".to_string()),
                         Type::Function {
                             params: vec![(None, Type::Unknown)],
                             ret: Box::new(Type::Bool),
                             variadic: false,
                         },
                     ),
-                    (None, Type::Unknown),
+                    (Some("seq".to_string()), Type::Unknown),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -2164,15 +2170,15 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (
-                        None,
+                        Some("fn_".to_string()),
                         Type::Function {
                             params: vec![(None, Type::Unknown), (None, Type::Unknown)],
                             ret: Box::new(Type::Unknown),
                             variadic: false,
                         },
                     ),
-                    (None, Type::Unknown),
-                    (None, Type::Seq(Box::new(Type::Unknown))),
+                    (Some("init".to_string()), Type::Unknown),
+                    (Some("seq".to_string()), Type::Seq(Box::new(Type::Unknown))),
                 ],
                 ret: Box::new(Type::Unknown),
                 variadic: false,

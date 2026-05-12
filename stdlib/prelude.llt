@@ -30,12 +30,12 @@
 # in the parent environment:
 #
 #   Stable builtin-* aliases (used internally by prelude; cannot be shadowed):
-#     builtin-lt  builtin-eq  builtin-add  builtin-sub  builtin-mul  builtin-div
-#     builtin-if  builtin-filter  builtin-map  builtin-reduce  builtin-take  builtin-drop
-#     builtin-seq  builtin-head  builtin-tail  builtin-collect  builtin-range
-#     builtin-repeat  builtin-cycle  builtin-iterate  builtin-unfold
-#     builtin-join  builtin-concat  builtin-first  builtin-last  builtin-rest
-#     builtin-cons  builtin-reverse  builtin-sort  builtin-get
+#     See standard_builtins() in src/builtins.rs for the authoritative list.
+#     Aliases used here include: builtin-lt  builtin-eq  builtin-add  builtin-sub
+#     builtin-if  builtin-get  builtin-map  builtin-reduce  builtin-seq
+#     builtin-head  builtin-tail  builtin-mul  builtin-div  builtin-filter
+#     builtin-take  builtin-drop  builtin-collect  builtin-concat  builtin-join
+#     builtin-rest  builtin-cons  builtin-sort
 #
 #   Primary-name shadowable wrappers (defined in public dict at end of file):
 #     <  =  +  -  *  /  if  filter  map  reduce  take  drop
@@ -348,10 +348,10 @@ const@[doc: "Return first argument, ignore second (K combinator)"]: [fn [x] [fn 
 not@[doc: "Boolean negation"]: [fn@Bool [x] [builtin-if x false true]]
 
 # Short-circuit AND: if a is false, b is never evaluated.
-# Type: (Any -> Any -> Any)
+# Type: (Any -> a -> Union(a, Bool))
 # Example: [and true "yes"] => "yes"
 # Example: [and false [expensive]] => false   (expensive never called)
-and@[doc: "Short-circuit AND"]: [fn@Unknown [a b] [builtin-if a b false]]
+and@[doc: "Short-circuit AND"]: [fn@[a Bool] [p b@a] [builtin-if p b false]]
 
 # Short-circuit OR: if a is truthy, returns a; otherwise returns b.
 # Type: (Any -> Any -> Any)
@@ -360,6 +360,9 @@ and@[doc: "Short-circuit AND"]: [fn@Unknown [a b] [builtin-if a b false]]
 # NOTE: Both references to `a` in `[builtin-if a a b]` are bound to
 # the same parameter — the parameter binding is shared, so the thunk is forced
 # at most once (Launchbury 1993). The second reference is a cache hit.
+# NOTE: `fn@Unknown` rather than `fn@a [a@a b@a]` because the two arguments
+# need not be the same type — `[or nil "default"]` is a common use case.
+# A homogeneous-type annotation would emit spurious type errors on mixed-type callers.
 or@[doc: "Short-circuit OR"]: [fn@Unknown [a b] [builtin-if a a b]]
 
 # Short-circuit predicate test: returns true if any element satisfies pred.
@@ -437,7 +440,7 @@ ceil@[doc: "Ceiling (smallest integer >= x)"]: [fn@Int [x@Number] [builtin-sub 0
 # Example: [trunc 3.7] => 3
 # Example: [trunc -3.7] => -3
 # Inherently materializing: derived from arithmetic operations.
-trunc@[doc: "Truncate toward zero"]: [fn@Int [x@Number] [builtin-if [gte-impl x 0] [floor x] [ceil x]]]
+trunc@[doc: "Truncate toward zero"]: [fn@Int [x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
 
 # Absolute value: non-negative magnitude. Returns -x for negative, x otherwise.
 # Type: (Number -> Number)
@@ -494,12 +497,12 @@ words@[doc: "Split string on spaces into words"]: [fn@Seq [s@String]
 # Evaluates body if pred is true, otherwise returns [].
 # assert: [when true result] => result
 # assert: [when false result] => []
-when@[doc: "Evaluate body if predicate is true"]: [fn@Unknown [pred body] [builtin-if pred body []]]
+when@[doc: "Evaluate body if predicate is true"]: [fn@[a Null] [pred body@a] [builtin-if pred body []]]
 
 # Evaluates body if pred is false, otherwise returns [].
 # assert: [unless false result] => result
 # assert: [unless true result] => []
-unless@[doc: "Evaluate body if predicate is false"]: [fn@Unknown [pred body] [builtin-if pred [] body]]
+unless@[doc: "Evaluate body if predicate is false"]: [fn@[a Null] [pred body@a] [builtin-if pred [] body]]
 
 # Multi-branch conditional. Takes a list of [condition result] pairs.
 # Returns [] (empty dict) when no branch matches.
@@ -508,7 +511,7 @@ unless@[doc: "Evaluate body if predicate is false"]: [fn@Unknown [pred body] [bu
 #   [[> x 0]  "positive"]
 #   [true     "other"]
 # ]]
-cond@[doc: "Multi-branch conditional"]: [fn@Unknown [pairs@Dict] [cond-impl pairs 0]]
+cond@[doc: "Multi-branch conditional"]: [fn@[a Null] [pairs@Dict] [cond-impl pairs 0]]
 
 # until: Moved to Rust builtin to avoid recursion depth limit.
 # The LLT recursive version hit MAX_EVAL_DEPTH at ~230 iterations.
@@ -532,7 +535,7 @@ has?@[doc: "Check if dict has key"]: [fn@Bool [xs@Dict k]
 # Get value by key with a default if key is missing.
 # assert: [get-or [x: 1] "x" 99] => 1
 # assert: [get-or [x: 1] "y" 99] => 99
-get-or@[doc: "Get value by key with default"]: [fn@Unknown [xs@Dict k default]
+get-or@[doc: "Get value by key with default"]: [fn@a [xs@Dict k default@a]
     [builtin-if [has? xs k] [get k xs] default]]
 
 # Traverse nested dicts by a list of keys.
@@ -830,10 +833,10 @@ flat-map@[doc: "Map and flatten results"]: [fn@Dict [f@Fn xs]
 
 # Return the first element satisfying pred, or error if none found.
 # filter on Dict returns a Seq; head gets the first element (errors if Seq is empty).
-find-first@[doc: "Find first element matching predicate"]: [fn@Unknown [pred@Fn xs] [builtin-head [builtin-filter pred xs]]]
+find-first@[doc: "Find first element matching predicate; errors if none found"]: [fn@a [pred@Fn xs] [builtin-head [builtin-filter pred xs]]]
 
 # Return the first element satisfying pred, or default if none found.
-find-first-or@[doc: "Find first matching element or return default"]: [fn@Unknown [pred@Fn default xs]
+find-first-or@[doc: "Find first matching element or return default"]: [fn@a [pred@Fn default@a xs]
     [try-or [fn [] [find-first pred xs]] default]]
 
 # Group elements of xs into a dict of lists, keyed by the result of applying f.

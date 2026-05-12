@@ -1,0 +1,6 @@
+# fn@[Int Null] union return type annotation with concrete types (uppercase).
+# Regression test: the parser fix (removing uppercase-only VarRef restriction)
+# must preserve the existing behavior of [Int Null] routing to the union path.
+[f: [fn@[Int Null] [] 42]]
+=== out
+Dict({"f": Function()})

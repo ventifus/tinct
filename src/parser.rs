@@ -614,17 +614,19 @@ fn parse_annotation(
                             end_i + 1,
                         ))
                     }
-                    // Implied call with uppercase head: @[AliasName Arg1 Arg2] parsed as Call.
-                    // Convert to PropertyDict with auto-indexed entries so the
-                    // type resolver can detect parameterized alias applications.
-                    // Only applies when the func is an uppercase identifier (type name convention).
+                    // Implied call in annotation bracket: @[AliasName Arg1 Arg2] or @[a Null].
+                    // Convert to PropertyDict with auto-indexed entries so the type resolver can
+                    // detect parameterized alias applications (@[AliasName Arg]) and union return
+                    // type syntax (@[a Null], @[Int Null]).
+                    // Applies to any implied call whose func is a VarRef (uppercase or lowercase).
+                    // Uppercase: parameterized type alias applications.
+                    // Lowercase: type variable names in union return type syntax (fn@[a Null]).
                     Expr::Call {
                         implied: true,
                         func,
                         args,
                         ..
-                    } if matches!(&func.node, Expr::VarRef { name, .. } if name.starts_with(|c: char| c.is_uppercase())) =>
-                    {
+                    } if matches!(&func.node, Expr::VarRef { .. }) => {
                         let base = bracket_start_span.start;
                         let mut entries = Vec::new();
                         // func as first auto-indexed entry
