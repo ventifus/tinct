@@ -619,6 +619,8 @@ impl fmt::Display for Type {
                 }
             }
             Type::Never => write!(f, "\u{22a5}"), // ⊥ symbol
+            Type::App(func, arg) => write!(f, "[{func} {arg}]"),
+            Type::Operator(name) => write!(f, "{name}"),
         }
     }
 }

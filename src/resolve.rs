@@ -294,6 +294,7 @@ impl Resolver {
             | Expr::Bool(_)
             | Expr::Str(_)
             | Expr::Rest(_)
+            | Expr::TypeApp { .. }
             | Expr::Error(_) => {}
             Expr::Annotated { annotation, .. } => {
                 self.walk_annotation(annotation);

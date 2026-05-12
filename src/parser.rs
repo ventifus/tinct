@@ -436,6 +436,10 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             instance_type: Box::new(adjust_spanned_expr(*instance_type, base)),
             methods: adjust_entries(methods, base),
         },
+        Expr::TypeApp { func, arg } => Expr::TypeApp {
+            func: Box::new(adjust_spanned_expr(*func, base)),
+            arg: Box::new(adjust_spanned_expr(*arg, base)),
+        },
     }
 }
 

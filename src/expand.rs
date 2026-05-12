@@ -762,6 +762,7 @@ fn expand_expr_inner(
         | Expr::VarRef { .. }
         | Expr::Annotated { .. }
         | Expr::Rest(_)
+        | Expr::TypeApp { .. }
         | Expr::Error(_) => Ok(expr),
     }
 }
@@ -1097,6 +1098,7 @@ fn collect_and_rename_bindings(
         | Expr::VarRef { .. }
         | Expr::Annotated { .. }
         | Expr::Rest(_)
+        | Expr::TypeApp { .. }
         | Expr::Error(_)
         | Expr::DefMacro { .. } => {}
     }
@@ -1199,6 +1201,7 @@ fn rename_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
         | Expr::Str(_)
         | Expr::Annotated { .. }
         | Expr::Rest(_)
+        | Expr::TypeApp { .. }
         | Expr::Error(_)
         | Expr::DefMacro { .. } => {}
     }

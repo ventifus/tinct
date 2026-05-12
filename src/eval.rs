@@ -403,6 +403,9 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         // Negation: a value matches ~T iff it does NOT match T.
         // This is sound for ground types; RDNF normalization handles compound cases later.
         Type::Negation(inner) => !value_matches_type(value, inner),
+        // Type constructor application and variables: treat like TypeVar (accept any value)
+        // The type checker validates these; at runtime they're polymorphic.
+        Type::App(_, _) | Type::Operator(_) => true,
         // Error is a type-inference sentinel that should never reach runtime validation.
         // Type::Error indicates type inference failed; treating it as a match would mask bugs.
         Type::Error => {
@@ -1189,6 +1192,11 @@ pub(crate) fn eval_recursive(
         }
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
+            expr.span,
+        )
+        .into()),
+        Expr::TypeApp { .. } => Err(EvalError::internal(
+            "TypeApp is a type annotation node and cannot be evaluated".to_string(),
             expr.span,
         )
         .into()),

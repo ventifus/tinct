@@ -585,6 +585,8 @@ fn hover_at_expr(
             None
         }),
 
+        Expr::TypeApp { .. } => Some("Type application".to_string()),
+
         Expr::Error(span) => Some(format!(
             "Parse error at {}:{}",
             span.start.line, span.start.column

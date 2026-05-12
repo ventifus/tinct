@@ -62,24 +62,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
 Accepted 2026-05-11. See `doc/whatif/completed/hkt-monads.md` for the full design.
 Adds `Kind::Operator` (`* → *`), `Kind::Label`, `Type::App`/`Type::Operator`, the Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable typeclass hierarchy, Maybe ADT, `HasField` qualified-type constraint for precise `get`/`get-in` typing, generic functions (sequence, traverse, forM, when, liftM2), and inferred `[do]`.
 
-### hkt-foundation-a: Core type constructs — Kind, App/Operator, UNIFY rules
-
-See `doc/whatif/completed/hkt-monads.md` §Kind System, §Type Constructor Application. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.
-
-- [ ] Add `Kind::Operator` (as `Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Type))`) and `Kind::Label` variants to `Kind` enum (`src/types.rs`); display `Operator` as `"* → *"`, `Label` as `"Label"`
-- [ ] Add `Type::App(Box<Type>, Box<Type>)` and `Type::Operator(String)` variants; implement `PartialOrd`/`Ord` consistent with `normalize_union` sort order (`src/types.rs`)
-- [ ] Update ALL exhaustive `Type` match sites for `App`/`Operator`: `src/desugar.rs` (`_ => unreachable!()`), `src/eval.rs` main match (`EvalError::internal`) + `value_matches_type` (`App|Operator => true`), `src/typecheck.rs` (inference arms), `src/lsp/analysis.rs` (hover + Expr::TypeApp), `src/ast_dict.rs` (both directions), `src/type_unify.rs` (`unify`, `is_subtype` placeholder arms), `src/type_env.rs` Display
-- [ ] Update `Type` tree-walker functions in `src/type_unify.rs` — **required before UNIFY-APP/UNIFY-OPERATOR**: `collect_all_vars`, `collect_all_vars_check_occurs`, `collect_all_vars_vec`, `has_inference_vars`, `lower_levels_check_occurs` — add `App`/`Operator` arms recursing into both sub-types
-- [ ] Update `Substitution::apply_type`: add `App(f, a)` arm (recurse into both) and `Operator(m)` arm (look up in substitution map) (`src/type_unify.rs`)
-- [ ] Add `Display` for `Type::App` as `"[{f} {a}]"` and `Type::Operator(name)` as `"{name}"` (`src/type_env.rs`)
-- [ ] Add `UNIFY-OPERATOR`: `unify(Operator(m), T) = [m ↦ T]` with occurs check (m must not appear anywhere inside T, including inside `App` sub-expressions) + `kind_env ⊢ T : *` premise (prevents binding to Operator/Label-kinded types); symmetric `unify(T, Operator(m)) = [m ↦ T]`; also add `UNIFY-OPERATOR-SYM`: `unify(Operator(m), Operator(n))` where `m ≠ n` → `[m ↦ Operator(n)]` (bind one Operator var to another — needed when unifying two class params at an instance resolution site) (`src/type_unify.rs`)
-- [ ] Add `UNIFY-APP`: unify constructors first, apply substitution, unify arguments; return composed substitution (`src/type_unify.rs`)
-- [ ] Add `Expr::TypeApp(Box<Expr>, Box<Expr>)` to `src/ast.rs`; add eval handler returning `EvalError::internal` — annotation-only node (`src/eval.rs`); extend `src/parser.rs` annotation parsing: when a `[...]` annotation in type annotation position contains no `:` entries AND the first element resolves to an Operator-kinded var (checked in the type checker, not at parse time), emit `Expr::TypeApp(f, a)` rather than treating as a union type; add disambiguation corpus test for `@[Int Null]` (two positional elements, first is concrete type → union, not TypeApp)
-- [ ] Recognize `@Operator` annotation: emit `TypeError` "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression" (`src/typecheck_annot.rs` `resolve_type_name`)
-- [ ] Update ALL exhaustive `Type` match sites — note this includes `src/typecheck_annot.rs` (add `App|Operator` arms in `resolve_type_expr` and `resolve_type_name`); initial stub arms are sufficient in this sprint (quality improvement in `hkt-doc-lsp`)
-- [ ] Add `src/lsp/analysis.rs` initial stub match arms for `Type::App`/`Type::Operator` in hover (display as type string) and `Expr::TypeApp` in expression matches (quality improvement in `hkt-doc-lsp`)
-- [ ] Tests: `Type::App` display `[Result Int]`, UNIFY-APP/UNIFY-OPERATOR/UNIFY-OPERATOR-SYM unit tests, TypeApp eval handler error, `@Operator` annotation error, disambiguation test for `@[Int Null]` = union not TypeApp (`src/type_unify.rs`, `tests/corpus/eval/typecheck/`)
-
 ### hkt-foundation-b: Class/label infrastructure — kind_env, Label ADT, ClassDecl
 
 See `doc/whatif/completed/hkt-monads.md` §Kind System §Kind::Label, §What Would Change. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.
