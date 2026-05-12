@@ -65,7 +65,7 @@ Implementation:
 
 **Note:** The complete `check_expr` implementation handles lambda checking mode (propagating expected parameter types to unannotated lambda parameters when the expected type is fully concrete), annotated parameter type resolution, checking against expected return annotations, and subsumption via `[U-SUBSUME]`. See `src/typecheck.rs` for the full implementation (search for `fn check_expr`).
 
-`check_expr` is used only at positions where the expected type is fully concrete (no type variables): CALL-MONO arguments, concrete return annotations (no type variables), and TypeAssert. For CALL-POLY arguments (where type variables need binding), unification with subsumptive fallback is used instead — see [U-SUBSUME] in the Unification section.
+`check_expr` is used for both CALL-MONO and CALL-POLY argument checking (unified path as of 2026-05-11). When the expected type contains type variables (CALL-POLY), `check_expr` internally dispatches to unification to bind them. When the expected type is fully concrete (CALL-MONO), it uses subsumption checking. This unified approach eliminates verdict divergence between the two paths. See [U-SUBSUME] in the Unification section.
 
 **Checking positions** (expected type fully concrete, uses `check_expr` with [SUB]):
 
@@ -80,7 +80,7 @@ Implementation:
 
 | Position | Expected type | Mechanism |
 |----------|--------------|-----------|
-| Function arguments (CALL-POLY) | Instantiated param type (has type vars) | `unify` with [U-SUBSUME] fallback |
+| Function arguments (CALL-POLY) | Instantiated param type (has type vars) | `check_expr` (internally dispatches to `unify`) |
 | `infer_fn` with TypeVar return annotation | Body type vs return annotation | infer body + `unify` |
 | `check_expr` lambda with TypeVar param annotation | Declared param type | `unify` param into env |
 | `check_expr` lambda with TypeVar return annotation | Synthesized body type vs return annotation | infer body + `unify` |
@@ -95,7 +95,7 @@ Implementation:
 | Function definitions | `Fn(params → ret)` |
 | Access chains (dot, bracket, range) | Field type or `Unknown` |
 
-**Confluence.** CALL-POLY uses unification (not `check_expr`) for argument checking because type variables need binding. After substitution application resolves a type variable to a concrete type, subsequent unification attempts against that concrete type use [U-SUBSUME] — a bidirectional subsumption fallback that checks `is_subtype` in both directions. This ensures argument ordering does not affect whether type checking succeeds. See the Unification section for details.
+**Confluence.** Both CALL-MONO and CALL-POLY now use `check_expr`, which internally dispatches to unification when type variables are present (CALL-POLY) or to subsumption when the expected type is fully concrete (CALL-MONO). When unification resolves a type variable to a concrete type, subsequent unification attempts against that concrete type use [U-SUBSUME] — a bidirectional subsumption fallback that checks `is_subtype` in both directions. This ensures argument ordering does not affect whether type checking succeeds. See the Unification section for details.
 
 ## Inference Judgments: Γ ⊢ e ⇒ τ
 
@@ -205,9 +205,9 @@ S = unify(σ'₁ ≐ τ₁, ..., σ'ₙ ≐ τₙ)                  [with U-SUBS
 
 **Implementation note:** When the function expression is a VarRef to a polymorphic scheme (e.g., `[id 42]` where `id` is bound to `∀a. Fn(a → a)`), `check_call_with_scheme` is invoked directly with the scheme, bypassing the VAR-POLY instantiation step. This optimization instantiates the scheme once instead of twice (VAR-POLY followed by CALL-POLY). For other function expressions (inline lambdas, compound access chains), the normal path applies: infer the function expression (which may instantiate a scheme via VAR-POLY), then proceed to CALL-POLY. See `src/typecheck.rs` `infer_expr` Call case for the dispatch logic (lines ~441-451).
 
-Polymorphic path with unification: arguments are **synthesized** (not checked), then unified against instantiated parameter types. Unification binds type variables via [U-VAR] and handles concrete-type comparisons via [U-SUBSUME] (bidirectional subsumption fallback). This is critical for confluence: when multiple arguments constrain the same type variable with different precision (e.g., `IntLiteral(42)` and `Int`), the subsumptive fallback ensures type checking succeeds regardless of argument order. See the Unification section for [U-SUBSUME] details.
+Polymorphic path with unification: arguments are checked via `check_expr`, which internally dispatches to unification when the expected type contains type variables. Unification binds type variables via [U-VAR] and handles concrete-type comparisons via [U-SUBSUME] (bidirectional subsumption fallback). This is critical for confluence: when multiple arguments constrain the same type variable with different precision (e.g., `IntLiteral(42)` and `Int`), the subsumptive fallback ensures type checking succeeds regardless of argument order. See the Unification section for [U-SUBSUME] details.
 
-Note: CALL-POLY does NOT use `check_expr` because type variables require binding via unification. `check_expr` is reserved for fully concrete expected types (CALL-MONO, TypeAssert, return annotations).
+Note: Both CALL-MONO and CALL-POLY now use `check_expr` (unified path as of 2026-05-11). `check_expr` internally dispatches to unification when the expected type has type variables (CALL-POLY), or to subsumption when fully concrete (CALL-MONO).
 
 **CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is more permissive than CALL-MONO for most literal type pairs. The divergence arises because `unify()` has bidirectional literal promotion rules (5 type pairs × 2 directions = 10 match alternatives in `src/types.rs`), while `check_expr` uses directional `is_subtype(actual, expected)`. Concrete-type pair behavior across both paths (rows marked **fails** reject under both CALL-MONO and CALL-POLY; the `IntLiteral`/`Float` pair is documented here because [U-SUBSUME] correctly rejects it after removal of the former unsound promotion arm):
 
@@ -222,6 +222,8 @@ Note: CALL-POLY does NOT use `check_expr` because type variables require binding
 | `Float` | `IntLiteral(n)` | false | **fails** (no subtype relation in either direction) |
 
 In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. The [U-SUBSUME] fallback in `unify()` checks `is_subtype` in both directions for concrete type pairs, producing the same result as the explicit promotion arms for all valid subtype relationships. The `IntLiteral`/`Float` pair correctly fails under [U-SUBSUME] because they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`, but no `IntLiteral <: Float` rule exists). Full divergence elimination (making CALL-MONO and CALL-POLY agree on all cases) requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
+
+**Unified CALL-MONO/CALL-POLY path (implemented 2026-05-11).** The divergence described above has been eliminated. Both CALL-MONO and CALL-POLY now route through `check_expr`, which internally dispatches to `unify` when the expected type has inference vars (TypeVars), or to `is_subtype` when fully concrete. This ensures identical literal pairs receive consistent verdicts regardless of whether the function type has inference vars. The table above is retained for historical reference but no longer reflects implementation behavior.
 
 ```
 Γ ⊢ f ⇒ Unknown
