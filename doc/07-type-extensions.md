@@ -20,6 +20,8 @@ The type grammar is a Boolean algebra over atomic types:
 | `⊤` | `@Top` | true supertype |
 | `⊥` | `@Never` | true bottom |
 | `{f: τ}` | `@[f: τ]` | single-field record — existing annotation |
+| `α` | `@a` | type variable — bare lowercase identifier |
+| `μα.A` | `@[AliasName ...]` | recursive type alias — bracket form with alias name |
 
 Multi-field annotations are intersections: `@[x: T  y: U]` = `{x: T} ∧ {y: U}`. Width subtyping is a theorem of conjunction elimination (`A & B <: A`), not a special rule.
 
@@ -55,7 +57,7 @@ Dict = Record ∨ Map[K V]
 
 Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/completed/parameterized-dict.md`.
 
-See `doc/whatif/completed/boolean-algebraic-subtyping.md` for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.
+See `doc/feature/boolean-algebraic-subtyping.md` (canonical post-implementation document) and `doc/whatif/completed/boolean-algebraic-subtyping.md` (archived design) for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.
 
 ## Type System Extension Roadmap
 

@@ -66,6 +66,10 @@ These require special evaluation or parsing rules — they can't be expressed as
 - `call` — function application (exact arity required)
 - `fn` — function definition (creates scope, binds params)
 - `type` — type alias declaration
+- `match` — pattern matching with exhaustiveness checking and arm bindings
+- `quote` — captures AST as data without evaluating (code-as-data)
+- `unquote` — splices evaluated values into quoted templates (inside `quote` only)
+- `unquote-splice` — splices sequence elements into quoted list positions (inside `quote` only)
 
 ## Stdlib Functions
 
@@ -538,6 +542,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `dict?` | Rust builtin | Return true if value is a Dict (includes lists, which are dicts with integer keys) |
 | `fn?` | Rust builtin | Return true if value is callable (Function or Builtin) |
 | `seq?` | Rust builtin | Return true if value is a Seq |
+| `record?` | Rust builtin | Return true if value is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
+| `map?` | Rust builtin | Return true if value is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
 | `list?` | LLT stdlib | Return true if value is a Dict whose keys are all integers (i.e., a list-shaped dict) |
 
 **Numeric Predicates:**
@@ -1351,6 +1357,8 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 | `dict?` | `(Any -> Bool)` | Rust builtin |
 | `fn?` | `(Any -> Bool)` | Rust builtin |
 | `seq?` | `(Any -> Bool)` | Rust builtin |
+| `record?` | `(Any -> Bool)` | Rust builtin; runtime has no key-type tracking |
+| `map?` | `(Any -> Bool)` | Rust builtin; runtime has no key-type tracking |
 | `list?` | `(Any -> Bool)` | `fn@Bool [xs]` — LLT stdlib; checks all keys are integers |
 
 ### Error Handling and Assertions

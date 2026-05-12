@@ -142,7 +142,7 @@ Control over evaluation order and error handling.
 | `try` | 1 | `S → D` | Variant | Materializes function arg, invokes it with no args, catches errors; returns `[Ok result]` or `[Err message]` (ADT variants, destructured with `match`) |
 | `apply` | 2 | `S × S → Θ` | Any | Materialize function and dict, call function with dict as named args |
 | `force` | 1 | `S → V` | Any | Force WHNF (weak head normal form) evaluation: materializes the thunk but does not recursively materialize nested thunks |
-| `eval-ast` | 1 | `S → V` | Any | Evaluate an AST value (experimental; requires AST representation in Value) |
+| `eval-ast` | 1 | `S → V` | Any | Evaluate an AST dict (as produced by `[quote ...]`); converts via `dict_to_ast` and evaluates in the current environment |
 
 **Error cases:**
 - `eval`: Propagates any error from deep materialization
@@ -150,7 +150,7 @@ Control over evaluation order and error handling.
 - `try`: Type mismatch if arg is not a function (zero-arity)
 - `apply`: Type mismatch if first arg is not a function or second is not a dict
 - `force`: Propagates any error from materialization
-- `eval-ast`: Type mismatch if arg is not an AST value
+- `eval-ast`: Type mismatch if arg is not a Dict conforming to the AST schema; conversion error if the dict structure is invalid
 
 ## Type Introspection
 
@@ -166,11 +166,11 @@ Control over evaluation order and error handling.
 | `dict?` | 1 | `S → V` | Bool | Return true if arg is a Dict (includes lists, which are dicts with integer keys) |
 | `fn?` | 1 | `S → V` | Bool | Return true if arg is callable (Function or Builtin) |
 | `seq?` | 1 | `S → V` | Bool | Return true if arg is a Seq |
-| `record?` | 1 | `S → V` | Bool | Return true if arg is a Dict with string keys only (record subtype) |
-| `map?` | 1 | `S → V` | Bool | Return true if arg is a Dict with at least one non-string key (map subtype) |
+| `record?` | 1 | `S → V` | Bool | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
+| `map?` | 1 | `S → V` | Bool | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
 | `bytes?` | 1 | `S → V` | Bool | Return true if arg is a Bytes value |
 
-Each predicate materializes its argument and checks the `Value` variant. `num?` checks both `Int` and `Float`, mirroring the `Number` supertype. `fn?` checks both `Function` and `Builtin`, since both are callable. `record?` and `map?` distinguish dict subtypes: records have string-only keys (used for typed records), maps have at least one non-string key. No `list?` **builtin** exists because lists are dicts (Principle 1: Dicts Are Fundamental) — "list-ness" is a convention, not a type distinction — `list?` is available as a standard library function (see [Standard Library](11-stdlib.md) §Type Predicates).
+Each predicate materializes its argument and checks the `Value` variant. `num?` checks both `Int` and `Float`, mirroring the `Number` supertype. `fn?` checks both `Function` and `Builtin`, since both are callable. `record?` and `map?` both return true for any `Dict` or `Overlay` value — the key-type distinction (string keys vs mixed keys) exists only at the type level. The runtime does not track key types, so both predicates behave identically and accept all dicts. No `list?` **builtin** exists because lists are dicts (Principle 1: Dicts Are Fundamental) — "list-ness" is a convention, not a type distinction — `list?` is available as a standard library function (see [Standard Library](11-stdlib.md) §Type Predicates).
 
 **Error cases:** None.
 

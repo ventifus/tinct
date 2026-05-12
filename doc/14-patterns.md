@@ -111,6 +111,75 @@ The same principle applies when merging an included file into scope via sequenti
 
 ---
 
+## Pattern Matching
+
+The `[match]` special form provides pattern matching with exhaustiveness checking and automatic binding of matched values.
+
+### Syntax
+
+```tinct
+[match scrutinee
+    pattern₁ => expr₁
+    pattern₂ => expr₂
+    ...
+    patternₙ => exprₙ
+]
+```
+
+### Patterns
+
+| Pattern | Syntax | Behavior |
+|---------|--------|----------|
+| Wildcard | `_` | Matches anything; does not bind |
+| Variable | `x` | Matches anything and binds the value to `x` |
+| Literal | `42`, `"text"`, `true` | Matches exact value |
+| Constructor | `[Ok value]` | Matches nominal variant and binds payload to `value` |
+| Constructor (no payload) | `[None]` | Matches nominal variant with no payload |
+
+### Exhaustiveness Checking
+
+Exhaustiveness checking runs **only** for `Type::Union` scrutinees. When the type checker infers that the scrutinee has a union type (e.g., `Result = Ok(T) | Err(E)`), it verifies that all constructors in the union are covered by the match arms.
+
+For non-union scrutinees (e.g., `Int`, `String`, `Record`), exhaustiveness is not checked. If no pattern matches at runtime, a `MatchError` is raised.
+
+### Example: Result Unwrapping
+
+```tinct
+[match [try-operation input]
+    [Ok value] => value
+    [Err msg] => [error [str "Operation failed: " msg]]
+]
+```
+
+### Example: Option Handling
+
+```tinct
+[match [find-user id]
+    [Some user] => user.name
+    [None] => "Unknown user"
+]
+```
+
+### Dynamic Errors
+
+If the scrutinee matches none of the provided patterns, a `MatchError` is raised at runtime:
+
+```
+error: no match arm satisfied
+  at match expression line 42
+```
+
+### Implementation Notes
+
+- **AST node:** `Expr::Match { scrutinee, arms }`
+- **Type inference:** `infer_match` in `src/typecheck.rs` infers the return type as the union of all arm expression types, narrowed by the scrutinee type
+- **Evaluation:** `eval_match` in `src/eval.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches
+- **Pattern compilation:** Constructor patterns are compiled to `Pattern::Constructor` AST nodes; the evaluator uses `value_matches_pattern` to test each arm
+
+See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.
+
+---
+
 ## Comparison with Other Languages
 
 See the comparison table below for how Tinct relates to JSONnet, Dhall, Nix, CUE, and jq.
