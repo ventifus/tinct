@@ -107,7 +107,23 @@ pub(crate) fn infer_dict(
             continue;
         }
         if let Some(name) = key_name {
-            match infer_expr(&entry.node.value, &dict_env, state, type_map) {
+            // Set current_function for polymorphic recursion detection.
+            // Only set it for functions WITHOUT return annotations — functions with
+            // annotations can recurse safely because the return type is pinned.
+            let should_check_recursion = if let Expr::Fn { return_ann, .. } = &entry.node.value.node
+            {
+                return_ann.is_none()
+            } else {
+                false
+            };
+            if should_check_recursion {
+                state.current_function = Some(name.clone());
+            }
+            let infer_result = infer_expr(&entry.node.value, &dict_env, state, type_map);
+            if should_check_recursion {
+                state.current_function = None;
+            }
+            match infer_result {
                 Ok(value_ty) => {
                     // Get the bound TypeVar from Pass 1 via direct HashMap lookup,
                     // avoiding TypeEnv parent-chain traversal.

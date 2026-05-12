@@ -1353,6 +1353,9 @@ pub struct InferState {
     ///
     /// Enabled by setting this to `Some(SchemeMap::new())` before running inference.
     pub scheme_map: Option<SchemeMap>,
+    /// Name of the function currently being inferred (for polymorphic recursion detection).
+    /// Set by infer_fn when entering a function body, cleared when exiting.
+    pub current_function: Option<String>,
 }
 
 impl InferState {
@@ -1421,6 +1424,7 @@ impl InferState {
             instance_env: InstanceEnv::new(),
             failed_bindings: HashMap::new(),
             scheme_map: None,
+            current_function: None,
         }
     }
 

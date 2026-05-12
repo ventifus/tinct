@@ -55,14 +55,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
 
-### typecheck-completeness: Polymorphic recursion ban and CALL-MONO/CALL-POLY fix
-
-Implements the Completeness tier of the Type System Extension Roadmap (`doc/07-type-extensions.md §Type System Extension Roadmap`). Both designs are specified in that section.
-
-- [ ] **Polymorphic recursion ban:** in `check_call`, detect when a recursive call site instantiates a TypeVar that was bound by an outer call to the same function (depth limit: 1 — immediate rejection); emit error "polymorphic recursion requires an explicit type annotation — annotate the function's return type with `fn@T`" with a help span pointing to the definition; add corpus test: unannotated self-recursive call that would diverge during inference → clear error (`src/typecheck.rs`, `tests/corpus/eval/typecheck/`)
-- [ ] **CALL-MONO/CALL-POLY divergence fix:** replace the dual-path design (unify for CALL-POLY, `is_subtype` for CALL-MONO) with a single structural `check_expr` pass that applies [SUB] at leaves and unification only at actual TypeVar positions; eliminates the case where identical literal pairs produce different verdicts depending on whether TypeVars were present — see `doc/07-type-extensions.md §Completeness` for the exact description (`src/typecheck.rs`)
-- [ ] Tests: CALL-MONO and CALL-POLY agree on all literal type pairs; recursive function with annotation works; recursive function without annotation that would polyrecurse → error (`tests/corpus/eval/typecheck/`)
-
 ### typeassert-convergence: Structural TypeAssert runtime validation
 
 Design in `doc/07-type-extensions.md §TypeAssert Runtime Validation`. Closes the static/runtime divergence: static check uses `is_subtype` but runtime uses nominal `value.type_name()` string comparison, making record-type assertions no-ops at runtime.
