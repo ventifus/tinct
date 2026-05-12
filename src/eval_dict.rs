@@ -91,13 +91,6 @@ pub(crate) fn eval_dict(
                 entry.node.value.span,
             )),
             _ => Rc::new(Thunk::new_unevaluated(
-                // TODO(ast-rc): `entry.node.value` is `Spanned<Expr>` (owned), so
-                // `Rc::new(...clone())` deep-clones the AST subtree on every
-                // eval_dict invocation.  Eliminating this requires migrating
-                // `Entry::value` to `Rc<Spanned<Expr>>` in ast.rs and updating
-                // the parser, formatter, typecheck, lsp/analysis, and all eval
-                // call sites (~36 occurrences across 6 files).  Deferred to a
-                // dedicated AST-RC migration sprint.
                 Rc::clone(&entry.node.value),
                 Rc::clone(&dict_env),
                 Rc::clone(ctx),

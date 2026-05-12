@@ -5740,3 +5740,19 @@ See `doc/whatif/completed/hkt-monads.md` §Interaction with BAS. **Spec chapters
 - [x] Tests: `App(Result, Int) <: App(Result, Int|Str)` (covariance), join via UNION-ELIM, reverse direction NOT accepted, mismatched constructors rejected (`tests/corpus/eval/typecheck/`)
 
 **Depends on:** `hkt-foundation-a`
+
+## Code Housekeeping
+
+### stale-todo-cleanup: Remove stale sprint-label TODO comments
+
+These TODO comments reference completed sprints but were never cleaned up. Several reference sprints whose approach was later revised (arena FlatEnv, perf-ast-rc migration). Each item is small — verify, then remove or update.
+
+- [x] `src/eval_dict.rs:94`: Remove stale `// TODO(ast-rc)` comment block — `perf-ast-rc` sprint is done and the code already uses `Rc::clone(&entry.node.value)`, meaning the migration happened; the comment gives the false impression work is still pending; delete the comment entirely
+- [x] `src/type_unify.rs:681`: Remove stale "when gradual-typing-split is complete, this needs refinement" comment — `gradual-typing-split` sprint is done (DONE.md); verify that the current `Unknown ~ τ as always satisfiable` rule is the correct post-split semantics; if it needs refinement, add a concrete task; otherwise just delete the comment
+- [x] `src/arena.rs:239`: Delete the dead `migrate_for_next_section` function — it is `#[allow(dead_code)]`, contains `unimplemented!()`, and references "arena-eval sprint" which is done (DONE.md); Phase 3 selective migration was never needed since the Rc model was retained throughout
+- [x] `src/resolve.rs:133`: Remove stale `// TODO(arena-phase2)` comment about FlatEnv slot pre-sizing — `arena-phase2` is done (DONE.md) but the FlatEnv/de Bruijn approach was not adopted; replace with a one-line note explaining the current approach (linked environments) is correct
+- [x] `src/eval.rs:602`: Remove stale `// TODO(arena-phase2)` comment about O(1) VarRef slot lookup — same reason as resolve.rs; the linked-environment model is the current design; the `let _ = resolved;` suppressor can remain or be removed depending on whether the field is still useful
+- [x] `src/typecheck.rs:9121` and `src/type_env.rs:1358`: Update stale `// TODO(result-nominal)` comments to say "see `builtin-type-audit` sprint item `try` return type" — result-nominal is done (DONE.md); the remaining work (`try` returning Unknown) is already tracked at TODO.md `builtin-type-audit` line 44
+- [x] `src/parser.rs:3931`: Remove stale `// TODO: Pin patterns ($name) require tracking...` comment — `Pattern::Pin` is fully implemented: parser produces it at line 4082 via the `escaped` field, eval handles it at `eval.rs:1939`, typecheck at `typecheck.rs:1225`, formatter at `formatter.rs:1101`, coverage at `coverage.rs:286`; the comment predates a now-complete implementation
+- [x] `doc/12-tooling.md:140`: Fix stale link `doc/whatif/tinct-hosted-formatter.md` → `doc/whatif/completed/tinct-hosted-formatter.md` — done
+- [x] `doc/12-tooling.md:142`: Remove broken ref to `doc/whatif/plans/macros-cluster.md` — done; design lives in `doc/whatif/completed/tinct-hosted-formatter.md`

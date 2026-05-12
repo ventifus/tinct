@@ -603,11 +603,6 @@ pub(crate) fn eval_recursive(
         Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
         Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
         Expr::VarRef { name, resolved, .. } => {
-            // TODO(arena-phase2): Use resolved (level, slot) for O(1) lookup when FlatEnv is available.
-            // The current linked-environment model with stdlib/document scopes doesn't align with
-            // the resolver's static level system (which only sees dict/function scopes during the AST walk).
-            // Full slot-based lookup requires Phase 2's FlatEnv with proper de Bruijn indexing that accounts
-            // for all runtime environment frames.
             let _ = resolved; // Suppress unused warning; cache is populated for future use.
 
             let found = env.borrow().get(name);

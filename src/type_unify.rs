@@ -864,8 +864,7 @@ pub fn constrain(
     }
 
     // Unknown consistency: Unknown relates via consistency, not subtyping.
-    // For now, treat Unknown ~ τ as always satisfiable (gradual typing).
-    // TODO: when gradual-typing-split is complete, this needs refinement.
+    // Treat Unknown ~ τ as always satisfiable (gradual typing).
     if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
         return Ok(());
     }
