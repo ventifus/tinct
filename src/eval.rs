@@ -93,25 +93,6 @@ pub struct EvalConfig {
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
     pub require_integrity: bool,
-    /// Filesystem allowlist for `$include`. When non-empty, only canonical paths
-    /// that are descendants of at least one entry in this list are permitted.
-    /// When empty (the default), all paths are unrestricted.
-    ///
-    /// In LSP mode `no_fs=true` is set, so this field is never consulted — the
-    /// `no_fs` check fires first and blocks all includes unconditionally.
-    pub allowed_paths: Vec<std::path::PathBuf>,
-    /// Absolute path corresponding to `base_dir`, used for computing canonical
-    /// include paths in the allowlist check. `None` when not set (allowlist
-    /// unused or context created without a known absolute base path).
-    pub base_dir_path: Option<std::path::PathBuf>,
-    /// Network host allowlist for connect/http2-session/http3-session builtins.
-    /// When non-empty, only "host:port" pairs in this list are permitted.
-    /// When empty (the default), all hosts are unrestricted (only NetCap controls access).
-    ///
-    /// This is an application-level filter that runs before the NetCap capability
-    /// check and before socket creation. Format: "host:port" strings (e.g., "api.example.com:443").
-    /// Empty list = all hosts allowed (backward compatible, current behavior).
-    pub allowed_hosts: Vec<String>,
 }
 
 /// Mutable evaluation state (include guard, caching).
@@ -206,7 +187,7 @@ impl EvalContext {
         stdlib_env: Rc<RefCell<Environment>>,
         no_fs: bool,
     ) -> Rc<Self> {
-        Self::new_with_options(base_dir, stdlib_env, no_fs, false)
+        Self::new_with_options(base_dir, stdlib_env, no_fs, false, None)
     }
 
     pub fn new_with_options(
@@ -214,49 +195,6 @@ impl EvalContext {
         stdlib_env: Rc<RefCell<Environment>>,
         no_fs: bool,
         require_integrity: bool,
-    ) -> Rc<Self> {
-        Self::new_with_all_options(
-            base_dir,
-            stdlib_env,
-            no_fs,
-            require_integrity,
-            Vec::new(),
-            Vec::new(),
-            None,
-        )
-    }
-
-    pub fn new_with_all_options(
-        base_dir: cap_std::fs::Dir,
-        stdlib_env: Rc<RefCell<Environment>>,
-        no_fs: bool,
-        require_integrity: bool,
-        allowed_paths: Vec<std::path::PathBuf>,
-        allowed_hosts: Vec<String>,
-        env_allowed: Option<HashSet<String>>,
-    ) -> Rc<Self> {
-        Self::new_with_full_options(
-            base_dir,
-            None,
-            stdlib_env,
-            no_fs,
-            require_integrity,
-            allowed_paths,
-            allowed_hosts,
-            env_allowed,
-        )
-    }
-
-    /// Like `new_with_all_options` but also accepts an explicit `base_dir_path` for
-    /// accurate allowlist path comparisons when `allowed_paths` is non-empty.
-    pub fn new_with_full_options(
-        base_dir: cap_std::fs::Dir,
-        base_dir_path: Option<std::path::PathBuf>,
-        stdlib_env: Rc<RefCell<Environment>>,
-        no_fs: bool,
-        require_integrity: bool,
-        allowed_paths: Vec<std::path::PathBuf>,
-        allowed_hosts: Vec<String>,
         env_allowed: Option<HashSet<String>>,
     ) -> Rc<Self> {
         Rc::new(Self {
@@ -265,9 +203,6 @@ impl EvalContext {
                 stdlib_env,
                 no_fs,
                 require_integrity,
-                allowed_paths,
-                base_dir_path,
-                allowed_hosts,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -290,33 +225,20 @@ impl EvalContext {
     /// EvalState; shares the underlying stdlib_env and state Rc allocations
     /// (e.g., during $include).
     ///
-    /// Inherits `no_fs`, `require_integrity`, and `allowed_paths` from the parent
-    /// config so that sandbox restrictions are preserved across directory changes.
+    /// Inherits `no_fs` and `require_integrity` from the parent config so that
+    /// sandbox restrictions are preserved across directory changes.
     ///
     /// **Phase 2 Arena Migration (Registry):** SHARES the parent's arenas (Rc::clone).
     /// This fixes the ThunkId index-out-of-bounds bug: values from the parent context
     /// (including stdlib) carry ThunkIds that index into the parent's arena. The child
     /// context must use the SAME arena to resolve those ThunkIds.
     pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Rc<Self> {
-        self.with_base_dir_and_path(base_dir, None)
-    }
-
-    /// Like `with_base_dir` but also sets the absolute base directory path for
-    /// allowlist comparisons.
-    pub fn with_base_dir_and_path(
-        &self,
-        base_dir: cap_std::fs::Dir,
-        base_dir_path: Option<std::path::PathBuf>,
-    ) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env: Rc::clone(&self.config.stdlib_env),
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
-                allowed_paths: self.config.allowed_paths.clone(),
-                base_dir_path,
-                allowed_hosts: self.config.allowed_hosts.clone(),
             }),
             state: Rc::clone(&self.state),
             thunk_arena: Rc::clone(&self.thunk_arena),
@@ -325,6 +247,17 @@ impl EvalContext {
             env_allowed: self.env_allowed.clone(),
             blame_map: RefCell::new(self.blame_map.borrow().clone()),
         })
+    }
+
+    /// Like `with_base_dir` but accepts (and ignores) a `base_dir_path` parameter for
+    /// backward compatibility. The base_dir_path was previously used for allowlist comparisons
+    /// but is no longer needed after removal of --allow-path.
+    pub fn with_base_dir_and_path(
+        &self,
+        base_dir: cap_std::fs::Dir,
+        _base_dir_path: Option<std::path::PathBuf>,
+    ) -> Rc<Self> {
+        self.with_base_dir(base_dir)
     }
 
     /// Allocate a thunk in the arena and return its ID.

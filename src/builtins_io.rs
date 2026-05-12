@@ -731,9 +731,6 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
             };
 
-            // Check application-level host allowlist first (--allow-host)
-            check_allowed_hosts(&ctx.config.allowed_hosts, &host, port, call_span)?;
-
             // Check NetCap allowlist before connecting
             // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
             let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
@@ -947,9 +944,6 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
             };
 
-            // Check application-level host allowlist first (--allow-host)
-            check_allowed_hosts(&ctx.config.allowed_hosts, &host, port, call_span)?;
-
             // Check NetCap allowlist before connecting
             let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
 
@@ -1085,41 +1079,6 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
         }
     }
-}
-
-/// Check if a connection to host:port is allowed by the --allow-host application-level allowlist.
-///
-/// This is a simple allowlist check that runs BEFORE the NetCap capability check and
-/// before socket creation. When `allowed_hosts` is non-empty, only exact "host:port"
-/// matches are permitted. When empty (default), all hosts are allowed (backward compatible).
-///
-/// Returns Ok(()) if allowed, Err(...) if denied.
-fn check_allowed_hosts(
-    allowed_hosts: &[String],
-    host: &str,
-    port: u16,
-    span: Span,
-) -> EvalResult<()> {
-    // Empty list = unrestricted (current behavior, backward compatible)
-    if allowed_hosts.is_empty() {
-        return Ok(());
-    }
-
-    // Check for exact "host:port" match in the allowlist
-    let target = format!("{}:{}", host, port);
-    if allowed_hosts.contains(&target) {
-        return Ok(());
-    }
-
-    // Not in allowlist — deny
-    Err(EvalError::user_error(
-        format!(
-            "connect: connection to {} blocked by --allow-host policy",
-            target
-        ),
-        span,
-    )
-    .into())
 }
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
@@ -4286,9 +4245,6 @@ pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
         }
     };
 
-    // Check application-level host allowlist first (--allow-host)
-    check_allowed_hosts(&ctx.config.allowed_hosts, &host_str, port, call_span)?;
-
     // Validate against NetCap allowlist (DNS-rebinding mitigation)
     let resolved_ip = check_net_cap_allowlist(&entries, &host_str, Some(port), call_span)?;
 
@@ -4560,12 +4516,6 @@ pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     // Parse the base_url to extract host and port for cap validation.
     // We need a host for the allowlist check. Parse scheme://host[:port].
     let (host, port) = parse_origin_host_port(&base_url, call_span)?;
-
-    // Check application-level host allowlist first (--allow-host)
-    // parse_origin_host_port always returns Some(port) because it infers defaults
-    if let Some(p) = port {
-        check_allowed_hosts(&ctx.config.allowed_hosts, &host, p, call_span)?;
-    }
 
     check_net_cap_allowlist(&entries, &host, port, call_span)?;
 

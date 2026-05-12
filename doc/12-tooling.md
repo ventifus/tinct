@@ -468,12 +468,11 @@ Tinct provides multiple unprivileged sandboxing layers to restrict what evaluati
 **Implemented features:**
 - `--no-fs`: Application-level filesystem blocking (disables `$include` entirely)
 - `--timeout <duration>`: SIGALRM-based wall-clock limit (e.g., `--timeout 5s`)
-- `--allow-path <dir>`: Allowlist-based filesystem access with cap-std RESOLVE_BENEATH enforcement
 - `--require-integrity`: Require BLAKE3 hashes on all `$include` calls
-- **Landlock** (Linux 5.13+): Kernel-enforced filesystem ACLs as defense-in-depth
+- **Landlock** (Linux 5.13+): Kernel-enforced filesystem ACLs as defense-in-depth (auto-triggered from `--cap-fs`)
 - **seccomp-bpf** (Linux): Network/process syscall blocking
 - **rlimit caps**: `--max-memory`, `--max-cpu`, `--max-fds` resource limits
-- **Object capability flags**: `--no-pwd`, `--no-libdir`, `--cap-fs NAME=PATH`, `--cap-file NAME=PATH:MODE` (injects as `%NAME`)
+- **Object capability flags**: `--no-pwd`, `--no-libdir`, `--cap-fs NAME=PATH`, `--cap-net NAME=ENTRY`, `--cap-file NAME=PATH:MODE` (injects as `%NAME`)
 
 ### Object Capability Model (io-phase1)
 
@@ -549,34 +548,23 @@ Capabilities are first-class values. A program that receives a `DirCap` via `$da
 
 The following sections describe the sandboxing layers in detail.
 
-### Filesystem Sandbox (Application-Level + Landlock)
+### Filesystem Sandbox (cap-std + Landlock)
 
-Two layers of defense for `$include` and any future file I/O:
+Filesystem access is controlled via the object capability model: `$include` requires a DirCap as its first argument. DirCaps are created via `--cap-fs NAME=PATH` flags or injected automatically as `%pwd` and `%libdir`. Each DirCap is backed by cap-std's RESOLVE_BENEATH enforcement, which confines all file access to the cap's root directory at the OS level.
 
-**Application-level allowlist:** `$include` checks resolved paths against an allowlist before reading. All paths are canonicalized first (resolving symlinks and `../` traversal), then checked using path-ancestor matching: `canonical.ancestors().any(|a| allowed_paths.contains(a))`. This is path-element-based, not substring-based — `/tmp/allowed` does not match `/tmp/allowed2`. This is the primary control — works on all platforms, produces clear error messages.
+**cap-std RESOLVE_BENEATH:** Primary enforcement. Every DirCap wraps a `cap_std::fs::Dir` that confines all file operations (open, canonicalize, etc.) to its root directory. Absolute paths are rejected. Symlinks and `../` traversal are resolved, but the final path must remain within the root. This is path-based confinement at the syscall level — works on all platforms.
 
-**Landlock (Linux 5.13+):** Kernel-enforced filesystem ACLs as defense-in-depth. If a bug bypasses the application-level check, Landlock catches it at the kernel level. Detected at runtime; gracefully degrades on older kernels or non-Linux platforms (logs a warning, falls back to application-level check as the sole barrier).
+**Landlock (Linux 5.13+):** Auto-triggered when `--cap-fs` entries are present (unless `--no-landlock` is set). Landlock is a kernel-level LSM that enforces read-only access on the `--cap-fs` paths plus the directories containing the main input files. Defense-in-depth: if a bug in cap-std or DirCap handling allows an unauthorized path to reach `open()`, Landlock catches it at the kernel level. Gracefully degrades on older kernels (silently skipped).
 
-**Allowlist model:**
-- `--allow-path <dir>` adds a directory tree to the allowlist. Repeatable. Global flag.
-- Default: `--allow-path .` (current working directory subtree). Project files accessible, nothing else.
-- `--allow-path /` disables filesystem sandboxing entirely.
-- `--no-fs` sets the allowlist to empty — `$include` is fully disabled. Use for adversarial inputs where no filesystem access should be possible.
-- Absolute paths in `$include` are allowed if they resolve within any allowed path.
-- Symlinks: canonicalize to real path, then check. Symlinks pointing outside all allowed paths fail.
-- `--allow-path` values are themselves canonicalized at CLI parse time (once), not on every include check.
+**Sandboxing model:**
+- Every file access requires a DirCap. No ambient `$include "path.llt"` — must be `[include %pwd "path.llt"]` or `[include %libdir "io.llt"]`.
+- `%pwd` and `%libdir` are injected automatically (suppress with `--no-pwd` / `--no-libdir`).
+- `--cap-fs data=/var/data` injects `%data` as a DirCap for `/var/data`. Repeatable.
+- `--no-fs` disables all filesystem access — `$include` returns an error immediately, bypassing cap checks.
 - Stdlib is embedded via `include_str!` at compile time — no filesystem access, unaffected by sandboxing.
-- REPL: default allow-path is cwd. LSP: workspace root (or document directory if no workspace).
+- REPL: `%pwd` defaults to cwd. LSP: `%pwd` defaults to workspace root (or document directory if no workspace).
 
-**Check ordering in `$include`:** canonicalize path → allowlist check → cache lookup → cycle detection → read file → **hash check (if hash provided)** → cache store → parse. Cache lookup and cycle detection are cheap in-memory operations; the read and hash are deferred until after both pass. On a cache hit, the stored hash map (recorded on first read) is checked against the caller's expected algorithm and digest; if they match, the cached result is returned without re-reading. The cache is session-scoped (in-memory only; not persisted to disk).
-
-**Error message format:** `"include: path '/etc/passwd' is outside allowed paths (allowed: ['/home/user/project'])"` — shows resolved path and the allowlist so the user knows exactly what happened and how to fix it.
-
-```bash
-tinct --allow-path . eval main.llt                           # default (explicit)
-tinct --allow-path ./lib --allow-path /shared eval main.llt  # explicit allowlist
-tinct --allow-path / eval main.llt                           # unrestricted
-```
+**Check ordering in `$include`:** cap-std RESOLVE_BENEATH → cache lookup → cycle detection → read file → **hash check (if hash provided)** → cache store → parse. Cache lookup and cycle detection are cheap in-memory operations; the read and hash are deferred until after both pass. On a cache hit, the stored hash map (recorded on first read) is checked against the caller's expected algorithm and digest; if they match, the cached result is returned without re-reading. The cache is session-scoped (in-memory only; not persisted to disk).
 
 ### Import Integrity Hashes
 
@@ -643,10 +631,10 @@ include: hash mismatch for 'config/settings.llt'
 **Require-integrity mode:** `--require-integrity` makes any `[include ...]` without a hash a hard error. Use for environments where all dependencies must be content-addressed:
 
 ```bash
-tinct run --require-integrity --allow-path ./vendor main.llt
+tinct run --require-integrity --cap-fs vendor=./vendor main.llt
 ```
 
-Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redundant. `--require-integrity` is meaningful alongside `--allow-path`, where `$include` is permitted but must always carry a hash.
+Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redundant. `--require-integrity` is meaningful when DirCaps are available (`%pwd`, `%libdir`, `--cap-fs`), requiring all `$include` calls to carry a hash.
 
 **Use cases:** Pinning a shared config file in CI so an unreviewed change fails loudly. Verifying third-party tinct libraries. High-security evaluation environments where all includes must be content-addressed.
 
@@ -654,11 +642,11 @@ Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redun
 
 ### Network Sandbox (seccomp-bpf)
 
-Network syscalls are controlled by the `--cap-net` flag.
+Network syscalls are controlled by the `--cap-net` flag and the NetCap allowlist.
 
 - Default: network blocked. seccomp-bpf blocks `socket`, `connect`, `bind`, `listen`, `accept` syscalls. Even if a vulnerability allows code injection, the process cannot make network connections.
 - Network syscalls are allowed automatically when any `--cap-net NAME=ENTRY` flag is present — the presence of a network capability implies network authority. There is no separate `--allow-network` flag.
-- `--allow-host <host:port>` for fine-grained control at the application level (since seccomp cannot filter by host). When any `--allow-host` flag is present, only the specified host:port combinations are permitted for `connect`, `http2-session`, `http3-session`, and `quic-session` builtins. Empty list (default) allows all hosts (NetCap controls access). The check runs before the NetCap capability check and before socket creation.
+- `--cap-net` entries define the NetCap allowlist (host:port, glob patterns, CIDR ranges). The NetCap check runs before socket creation. Only connections to allowed hosts/ports succeed.
 - Seccomp filter installed in `run_eval()` after Landlock, before evaluation starts (process-level, not per-eval).
 - Linux-only; on other platforms, network features are controlled at the application level. Logs a warning on non-Linux.
 
@@ -689,16 +677,15 @@ Tinct is a pure configuration language — it should never spawn child processes
 
 Sandbox setup in `run_eval()` follows this sequence:
 
-1. Parse CLI (clap) — get `--allow-path`, `--max-memory`, etc.
+1. Parse CLI (clap) — get `--cap-fs`, `--max-memory`, etc.
 2. Set up timeout (SIGALRM)
 3. Set up rlimit (resource caps: RLIMIT_AS, RLIMIT_CPU, RLIMIT_NOFILE)
 4. Read stdin (JSON auto-detection)
 5. Load stdlib (`create_stdlib_env()` — uses `include_str!`, no filesystem access)
-6. Canonicalize `--allow-path` entries
-7. Set up Landlock (filesystem ACLs from `--allow-path`)
-8. Set up seccomp-bpf (network block, process block)
-9. Inject capabilities (`%pwd`, `%stdin`, `%libdir`, `--cap-fs`, `--cap-net`)
-10. Dispatch evaluation
+6. Set up Landlock (filesystem ACLs from `--cap-fs` paths, auto-triggered)
+7. Set up seccomp-bpf (network block, process block)
+8. Inject capabilities (`%pwd`, `%stdin`, `%libdir`, `--cap-fs`, `--cap-net`)
+9. Dispatch evaluation
 
 Landlock and seccomp are applied after stdlib loading (stdlib uses `include_str!` at compile time, so no filesystem access is needed). `prctl(PR_SET_NO_NEW_PRIVS)` is called before seccomp installation.
 
@@ -720,10 +707,10 @@ The filesystem allowlist lives in `EvalConfig` (immutable per evaluation session
 
 ```rust
 struct EvalConfig {
-    base_dir: PathBuf,
+    base_dir: cap_std::fs::Dir,    // DirCap for relative path resolution
     stdlib_env: Rc<RefCell<Environment>>,
-    allowed_paths: Vec<PathBuf>,    // canonicalized at CLI parse time
-    // future: allowed_hosts: Vec<String>,
+    no_fs: bool,
+    require_integrity: bool,
 }
 ```
 

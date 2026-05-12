@@ -434,9 +434,9 @@ Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an enforce
 
 **`include dir-cap path`:** Modified — now takes a `DirCap` as its first argument. Evaluates the file at `path` within `dir-cap` using RESOLVE_BENEATH, then merges the resulting bindings into the caller's environment. Caches by `(st_dev, st_ino)` pair rather than canonical path string, so the same physical file accessed via different caps gets a single cache entry. Cycle detection uses the same key.
 
-**`dir-cap path`:** Create `Value::DirCap` wrapping `cap_std::fs::Dir`. Strict. Allowlist-checked against `--allow-path`; fails if the path is not allowlisted.
+**`dir-cap path`:** (removed in cap-remove-ambient sprint) DirCaps now flow exclusively from CLI (`--cap-fs`), `%pwd`, and `%libdir`. Every cap must narrow an existing cap; no ambient authority creation.
 
-**`net-cap entries`:** Create `Value::NetCap` from a Seq or single String of allowlist entries (exact hostnames, host:port, IPv4/IPv6 CIDR). Strict. Requires `--allow-network`; fails if network access is not permitted.
+**`net-cap entries`:** (removed in cap-remove-ambient sprint) NetCaps now flow exclusively from CLI (`--cap-net`). Every cap must narrow an existing cap; no ambient authority creation.
 
 **`open dir-cap path mode`:** Open file at path relative to `DirCap`. On Linux 5.6+: `openat2(RESOLVE_BENEATH)`. On older kernels/macOS: cap-std userspace emulation. Mode: `"r"`, `"w"`, `"a"`. Returns `Value::Handle`.
 

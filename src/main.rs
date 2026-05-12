@@ -60,22 +60,8 @@ enum Commands {
         #[arg(long)]
         timeout: Option<String>,
 
-        /// Restrict $include to files under the given directory (may be repeated).
-        /// When any --allow-path flag is present, $include may only access paths
-        /// that are descendants of at least one allowed root. Paths are canonicalized
-        /// at startup. Use `.` to allow the current working directory.
-        #[arg(long, value_name = "PATH")]
-        allow_path: Vec<PathBuf>,
-
-        /// Restrict network connections to specific host:port pairs (may be repeated).
-        /// When any --allow-host flag is present, connect/http2-session/http3-session
-        /// may only access the listed host:port combinations. Empty list (default) allows
-        /// all hosts (NetCap controls access). Format: "host:port" (e.g., "api.example.com:443").
-        #[arg(long, value_name = "HOST:PORT")]
-        allow_host: Vec<String>,
-
-        /// Disable Landlock filesystem ACL enforcement even when --allow-path is set.
-        /// By default, when --allow-path is specified on Linux, Landlock is applied as
+        /// Disable Landlock filesystem ACL enforcement.
+        /// By default, when --cap-fs is specified on Linux, Landlock is applied as
         /// defense-in-depth. This flag skips that step (e.g., for older kernels or
         /// environments where Landlock is not available).
         #[arg(long)]
@@ -295,8 +281,6 @@ fn main() {
             require_integrity,
             strict,
             timeout,
-            allow_path,
-            allow_host,
             no_landlock,
             max_memory,
             max_cpu,
@@ -321,8 +305,6 @@ fn main() {
             require_integrity,
             strict,
             timeout.as_deref(),
-            allow_path,
-            allow_host,
             no_landlock,
             max_memory,
             max_cpu,
@@ -629,15 +611,13 @@ fn setup_seccomp(allow_network: bool) -> Result<(), String> {
 
 /// Apply Landlock filesystem ACL enforcement (Linux 5.13+ only, defense-in-depth).
 ///
-/// When `--allow-path` entries are specified, the Landlock LSM is configured to
-/// restrict the process to read-only access on the given paths. If the current
-/// kernel does not support Landlock (older than 5.13, or the feature is disabled),
-/// this function returns `Ok(())` without error — the application-level allowlist
-/// (`EvalConfig.allowed_paths`) and cap-std remain the primary enforcement.
+/// Auto-triggered when `--cap-fs` entries are present (unless `--no-landlock` is set).
+/// The Landlock LSM restricts the process to read-only access on the `--cap-fs` paths.
+/// If the kernel doesn't support Landlock (< 5.13, or disabled), this returns `Ok(()`.
+/// Cap-std RESOLVE_BENEATH remains the primary enforcement; Landlock is defense-in-depth.
 ///
-/// Landlock is applied as defense-in-depth: if a bug in the application-level check
-/// allows an unauthorized path to reach `open()`, Landlock catches it at the kernel
-/// level.
+/// Landlock catches bugs: if a bug in cap-std or DirCap handling allows an unauthorized
+/// path to reach `open()`, Landlock blocks it at the kernel level.
 ///
 /// Note: Landlock does not eliminate TOCTOU races on its own (it checks paths at
 /// `open()` time). The cap-std `RESOLVE_BENEATH` sandbox is the TOCTOU mitigation.
@@ -648,34 +628,53 @@ fn setup_seccomp(allow_network: bool) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 /// Set up Landlock filesystem sandbox.
 ///
-/// `allowed_paths` — directories accessible for `$include` (and `--allow-path`).
+/// `allowed_paths` — directories from `--cap-fs` entries (Landlock roots).
 /// `extra_readable` — additional directories that must be readable for the process to
 ///   function (e.g., the directories containing the main input files). These are NOT
-///   added to the LLT-level allowlist; they only let the OS read the primary files.
+///   part of the --cap-fs allowlist; they only let the OS read the primary files.
 fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Result<(), String> {
-    use landlock::{AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI};
+    use landlock::{Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI};
 
     // V3 corresponds to Linux 5.19+. The crate gracefully degrades to a lower ABI
     // version if the running kernel doesn't support V3 (best-effort restriction).
     let abi = ABI::V3;
 
-    // Build the initial ruleset with read-only filesystem access.
+    // Build the initial ruleset handling both read and write filesystem access.
+    // Cap-fs paths get read+write; extra_readable paths get read-only.
     let mut ruleset_created = Ruleset::default()
-        .handle_access(AccessFs::from_read(abi))
+        .handle_access(AccessFs::from_all(abi))
         .map_err(|e| format!("landlock: failed to configure ruleset: {e}"))?
         .create()
         .map_err(|e| format!("landlock: failed to create ruleset: {e}"))?;
 
-    // Add one PathBeneath rule for each allowed path (from --allow-path).
-    // PathBeneath grants read access to the path and everything underneath it.
-    for path in allowed_paths.iter().chain(extra_readable.iter()) {
-        // Skip paths that don't exist (e.g., non-existent extra_readable dirs).
+    // Grant read+write access to --cap-fs paths (full capability).
+    for path in allowed_paths {
         if !path.exists() {
             continue;
         }
         let fd = PathFd::new(path).map_err(|e| {
             format!(
                 "landlock: cannot open allowed path \"{}\": {e}",
+                path.display()
+            )
+        })?;
+        let rule = PathBeneath::new(fd, AccessFs::from_all(abi));
+        ruleset_created = ruleset_created.add_rule(rule).map_err(|e| {
+            format!(
+                "landlock: failed to add rule for \"{}\": {e}",
+                path.display()
+            )
+        })?;
+    }
+
+    // Grant read-only access to extra_readable paths (input files, libdir).
+    for path in extra_readable {
+        if !path.exists() {
+            continue;
+        }
+        let fd = PathFd::new(path).map_err(|e| {
+            format!(
+                "landlock: cannot open readable path \"{}\": {e}",
                 path.display()
             )
         })?;
@@ -839,8 +838,6 @@ fn run_eval(
     require_integrity: bool,
     strict: bool,
     timeout: Option<&str>,
-    allow_path: Vec<PathBuf>,
-    allow_host: Vec<String>,
     no_landlock: bool,
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
@@ -947,34 +944,28 @@ fn run_eval(
     // Create stdlib environment
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
 
-    // Canonicalize --allow-path entries at startup so comparisons are stable.
-    // Non-existent paths are rejected immediately with a clear error message.
-    let canonical_allowed_paths: Vec<PathBuf> = allow_path
-        .iter()
-        .map(|p| {
-            p.canonicalize().map_err(|e| {
-                format!(
-                    "--allow-path: cannot canonicalize \"{}\": {}",
-                    p.display(),
-                    e
-                )
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
     // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
-    // Must be called after path canonicalization so the allowed paths are stable.
-    // Only activated when --allow-path is given and --no-landlock is not set.
+    // Auto-triggered when --cap-fs entries are present (unless --no-landlock is set).
+    // Derives Landlock roots from the --cap-fs directory paths.
     //
     // Also grant read access to the directories containing the main input files so
     // they can be read before evaluation starts. These extra-readable dirs are NOT
-    // added to the LLT-level allowlist (canonical_allowed_paths) — the allowlist only
-    // restricts $include resolution, not the primary files.
+    // part of the --cap-fs allowlist; they're just for reading the primary input files.
     #[cfg(target_os = "linux")]
-    if !no_landlock && !canonical_allowed_paths.is_empty() {
+    if !no_landlock && !cap_fs.is_empty() {
+        // Extract directory paths from --cap-fs NAME=PATH entries
+        let cap_fs_paths: Vec<PathBuf> = cap_fs
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .split_once('=')
+                    .map(|(_, path_str)| PathBuf::from(path_str.trim()))
+            })
+            .collect();
+
         // Collect the canonical parent directories of each input file.
         // Inline expressions (PipelineStage::Expr) don't need extra_readable paths.
-        let extra_readable: Vec<PathBuf> = pipeline_stages
+        let mut extra_readable: Vec<PathBuf> = pipeline_stages
             .iter()
             .filter_map(|stage| match stage {
                 PipelineStage::File(p) if p != "-" => Some(p.as_str()),
@@ -989,7 +980,17 @@ fn run_eval(
                 dir.canonicalize().ok()
             })
             .collect();
-        setup_landlock(&canonical_allowed_paths, &extra_readable)?;
+
+        // Include the stdlib directory in Landlock-readable paths so that
+        // `[include %libdir ...]` works when Landlock is active.
+        if !no_libdir {
+            if let Some(libdir) = find_libdir_path() {
+                if let Ok(canon) = libdir.canonicalize() {
+                    extra_readable.push(canon);
+                }
+            }
+        }
+        setup_landlock(&cap_fs_paths, &extra_readable)?;
     }
     // On non-Linux platforms, --no-landlock is accepted for CLI compatibility
     // but has no effect (Landlock is a Linux-only API).
@@ -1217,7 +1218,8 @@ fn run_eval(
         };
 
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.borrow_mut().insert("%clock".to_string(), Rc::new(cap_thunk));
+        env.borrow_mut()
+            .insert("%clock".to_string(), Rc::new(cap_thunk));
     }
 
     // Inject --cap-file NAME=PATH:MODE entries into the root environment as `%NAME`.
@@ -1476,14 +1478,11 @@ fn run_eval(
         let eval_ctx = if let Some(ref base) = base_eval_ctx {
             base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()))
         } else {
-            let ctx = EvalContext::new_with_full_options(
+            let ctx = EvalContext::new_with_options(
                 base_dir,
-                Some(file_base_dir_path.clone()),
                 Rc::clone(&env),
                 no_fs,
                 require_integrity,
-                canonical_allowed_paths.clone(),
-                allow_host.clone(),
                 env_allowed.clone(),
             );
             // Convert stdin JSON using this context so ThunkIds go into the shared arena.

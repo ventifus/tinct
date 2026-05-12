@@ -965,7 +965,7 @@ All 36 `ErrorKind` variants map to stable error codes and human-readable message
 | **IncludeFileTooLarge** | E054 | `"include: file \"{path}\" is {size} bytes, exceeds {limit} byte limit"` | `include` call expression |
 | **IncludeHashMismatch** | E055 | `"include: integrity check failed for \"{path}\": expected {expected}, got {actual}"` | `include` call expression |
 | **IncludeHashRequired** | E056 | `"include: integrity hash required for \"{path}\" (--require-integrity)"` | `include` call expression |
-| **IncludePathNotAllowed** | E057 | `"include: path \"{path}\" is not permitted by the --allow-path allowlist"` | `include` call expression |
+| **IncludePathNotAllowed** | E057 | (deprecated, no longer emitted after --allow-path removal) | `include` call expression |
 | **ParseConversion** | E060 | `"{builtin}: cannot parse {input:?} as {target}"` | Builtin call expression |
 | **JsonParse** | E061 | `"from-json: invalid JSON: {detail}"` | `from-json` call expression |
 | **JsonRange** | E062 | `"JSON number outside representable range"` | `from-json` call expression |

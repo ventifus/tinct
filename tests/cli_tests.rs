@@ -1314,93 +1314,16 @@ fn no_fs_flag_blocks_include() {
 }
 
 // ---------------------------------------------------------------------------
-// --allow-path flag (filesystem allowlist)
+// DirCap filesystem confinement (removed --allow-path tests)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn allow_path_permits_include_from_allowed_dir() {
-    // With --allow-path <dir>, $include from that directory succeeds.
-    let dir = TempDir::new("allow_path_permit");
-    let included_path = dir.path().join("lib.llt");
-    fs::write(&included_path, "[value: 42]").expect("failed to write lib.llt");
-    let main_path = dir.path().join("allow_path_permit.llt");
-    fs::write(&main_path, "[include %pwd \"lib.llt\"]").expect("failed to write main llt");
-
-    let dir_str = dir.path().to_str().unwrap();
-    let output = Command::new(tinct_bin())
-        .args([
-            "run",
-            "-o",
-            "json",
-            "--allow-path",
-            dir_str,
-            main_path.to_str().unwrap(),
-        ])
-        .output()
-        .expect("failed to run tinct");
-
-    assert!(
-        output.status.success(),
-        "expected success with --allow-path pointing to the include directory; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
-    assert_eq!(json, serde_json::json!({"value": 42}));
-}
-
-#[test]
-fn allow_path_blocks_include_outside_allowed_dir() {
-    // With --allow-path pointing to a different directory, $include from the
-    // main file's directory is blocked (E057).
-    //
-    // Two separate temp dirs are used:
-    //   - `allowed_dir`: the directory passed to --allow-path (not where the
-    //     include target lives)
-    //   - `main_dir`: where both the main LLT file and the included file live
-    //     (outside the allowed dir)
-    //
-    // Since `allowed_dir` is not a prefix of `main_dir`, $include is blocked.
-    let allowed_dir = TempDir::new("allow_path_allowed");
-    let main_dir = TempDir::new("allow_path_block");
-
-    // Write the included file into main_dir (outside allowed_dir).
-    let included_path = main_dir.path().join("secret.llt");
-    fs::write(&included_path, "[secret: true]").expect("failed to write secret.llt");
-
-    // Write the main file into main_dir.
-    let main_path = main_dir.path().join("allow_path_block.llt");
-    fs::write(&main_path, "[include %pwd \"secret.llt\"]").expect("failed to write main llt");
-
-    // Canonicalize allowed_dir so the comparison is stable even under symlinks.
-    let allowed_canonical =
-        fs::canonicalize(allowed_dir.path()).expect("failed to canonicalize allowed_dir");
-
-    let output = Command::new(tinct_bin())
-        .args([
-            "run",
-            "--allow-path",
-            allowed_canonical.to_str().unwrap(),
-            main_path.to_str().unwrap(),
-        ])
-        .output()
-        .expect("failed to run tinct");
-
-    assert!(
-        !output.status.success(),
-        "expected non-zero exit when $include is outside --allow-path"
-    );
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "expected exit code 1 (error) for allowlist violation"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not permitted by the --allow-path allowlist") || stderr.contains("E057"),
-        "expected allowlist error message, got: {stderr}"
-    );
-}
+// NOTE: The --allow-path and --allow-host flags were removed in cap-simplify sprint.
+// Filesystem access is controlled via the object capability model:
+//   - %pwd (injected automatically, suppress with --no-pwd)
+//   - %libdir (injected automatically, suppress with --no-libdir)
+//   - --cap-fs NAME=PATH (injects %NAME as a DirCap)
+// Each DirCap is backed by cap-std RESOLVE_BENEATH enforcement.
+// Landlock is auto-triggered from --cap-fs entries (unless --no-landlock is set).
 
 // ---------------------------------------------------------------------------
 // --timeout flag (wall-clock timeout)
@@ -1673,14 +1596,14 @@ fn eval_deep_materialize_seq() {
 #[test]
 fn no_landlock_flag_accepted() {
     // --no-landlock must be a recognized flag (clap should not reject it).
-    // Even without --allow-path, passing --no-landlock should not error.
+    // Even without --cap-fs, passing --no-landlock should not error.
     let (path, _dir) = write_temp_llt("no_landlock_flag", "[x: 1]");
     let output = Command::new(tinct_bin())
         .args(["run", "-o", "json", "--no-landlock", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
-    // Must succeed — the flag is a no-op when no --allow-path is given.
+    // Must succeed — the flag is a no-op when no --cap-fs is given.
     assert!(
         output.status.success(),
         "expected success with --no-landlock flag alone; stderr: {}",
@@ -1692,12 +1615,12 @@ fn no_landlock_flag_accepted() {
 }
 
 #[test]
-fn no_landlock_with_allow_path_accepted() {
-    // --no-landlock combined with --allow-path must be accepted. The flag
-    // disables Landlock kernel enforcement while still using the application-
-    // level allowlist. This is the graceful degradation path for kernels < 5.13
-    // or environments where Landlock is unavailable.
-    let dir = TempDir::new("no_landlock_allow_path");
+fn no_landlock_with_cap_fs_accepted() {
+    // --no-landlock combined with --cap-fs must be accepted. The flag
+    // disables Landlock kernel enforcement while still using cap-std RESOLVE_BENEATH.
+    // This is the graceful degradation path for kernels < 5.13 or environments
+    // where Landlock is unavailable.
+    let dir = TempDir::new("no_landlock_cap_fs");
     let included = dir.path().join("data.llt");
     fs::write(&included, "[value: 99]").unwrap();
     let main = dir.path().join("main.llt");
@@ -1710,8 +1633,8 @@ fn no_landlock_with_allow_path_accepted() {
             "-o",
             "json",
             "--no-landlock",
-            "--allow-path",
-            dir_str,
+            "--cap-fs",
+            &format!("data={}", dir_str),
             main.to_str().unwrap(),
         ])
         .output()
@@ -1719,7 +1642,7 @@ fn no_landlock_with_allow_path_accepted() {
 
     assert!(
         output.status.success(),
-        "--no-landlock with --allow-path should succeed; stderr: {}",
+        "--no-landlock with --cap-fs should succeed; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1729,11 +1652,11 @@ fn no_landlock_with_allow_path_accepted() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn landlock_with_allow_path_permits_include() {
-    // On Linux, --allow-path activates Landlock by default. $include from the
-    // allowed directory must succeed. This test confirms Landlock does not
+fn landlock_with_cap_fs_permits_include() {
+    // On Linux, --cap-fs activates Landlock by default. $include from the
+    // cap directory must succeed. This test confirms Landlock does not
     // accidentally block access to explicitly allowed paths.
-    let dir = TempDir::new("landlock_allow_path_permit");
+    let dir = TempDir::new("landlock_cap_fs_permit");
     let included = dir.path().join("lib.llt");
     fs::write(&included, "[result: 42]").unwrap();
     let main = dir.path().join("main.llt");
@@ -1745,8 +1668,8 @@ fn landlock_with_allow_path_permits_include() {
             "run",
             "-o",
             "json",
-            "--allow-path",
-            dir_str,
+            "--cap-fs",
+            &format!("data={}", dir_str),
             main.to_str().unwrap(),
         ])
         .output()
@@ -3346,12 +3269,7 @@ fn cap_clock_real() {
     let llt_content = r#"[call $format-timestamp [call $now %clock]]"#;
     let (path, _dir) = write_temp_llt("cap_clock_real", llt_content);
     let output = Command::new(tinct_bin())
-        .args([
-            "run",
-            "-o",
-            "json",
-            path.to_str().unwrap(),
-        ])
+        .args(["run", "-o", "json", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -3653,37 +3571,5 @@ fn describe_json_mode_with_doc_string() {
     }
 }
 
-#[test]
-fn allow_host_blocks_unlisted_connection() {
-    // With --allow-host, connections to unlisted host:port pairs are blocked.
-    // This test verifies the error message without actually connecting to the network.
-    let llt_content = r#"
-[connect %nc Tcp "example.com" 443]
-"#;
-    let (path, _dir) = write_temp_llt("allow_host_block", llt_content);
-    let output = Command::new(tinct_bin())
-        .args([
-            "run",
-            "-o",
-            "json",
-            "--cap-net",
-            "nc=any", // NetCap allows all
-            "--allow-host",
-            "allowed.example.com:443", // But --allow-host only permits this host
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .expect("failed to run tinct");
-
-    // Should fail with --allow-host policy error
-    assert!(
-        !output.status.success(),
-        "expected failure when connecting to unlisted host"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked by --allow-host policy"),
-        "expected --allow-host policy error, got: {}",
-        stderr
-    );
-}
+// NOTE: --allow-host flag was removed in cap-simplify sprint.
+// Network access is controlled via NetCap allowlist entries in --cap-net.

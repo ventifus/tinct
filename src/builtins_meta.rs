@@ -1001,41 +1001,8 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::include_hash_required(file_path_str.clone(), call_span).into());
     }
 
-    // Allowlist check: must run BEFORE opening the file so that the allowlist error
-    // is reported even when Landlock would otherwise deny access first.
-    // Computes the absolute canonical path of the included file by joining the known
-    // base_dir_path (stored in EvalConfig) with the include path, then canonicalizing.
-    // Falls back to cap-std's Dir::canonicalize when base_dir_path is absent.
-    if !ctx.config.allowed_paths.is_empty() {
-        let canonical: std::path::PathBuf = if let Some(ref bdp) = ctx.config.base_dir_path {
-            // Preferred path: use the stored absolute base path for reliable comparison.
-            // Canonicalization MUST succeed: if it fails (e.g., path contains ..), return an
-            // error rather than falling back to the raw un-normalized path which could bypass
-            // the allowlist check and silently permit ../ traversal.
-            let joined = bdp.join(&file_path_str);
-            std::fs::canonicalize(&joined).map_err(|e| {
-                EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
-            })?
-        } else {
-            // Fallback: use cap-std Dir::canonicalize (may return relative path on some
-            // platforms; allowlist comparison may not work correctly in this case).
-            dir_cap.canonicalize(&file_path_str).map_err(|e| {
-                EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
-            })?
-        };
-        let permitted = ctx
-            .config
-            .allowed_paths
-            .iter()
-            .any(|allowed| canonical.starts_with(allowed));
-        if !permitted {
-            return Err(
-                EvalError::include_path_not_allowed(file_path_str.clone(), call_span).into(),
-            );
-        }
-    }
-
     // Open the file using cap-std. Absolute paths are rejected by cap-std (RESOLVE_BENEATH).
+    // The DirCap + cap-std RESOLVE_BENEATH already confines include paths to the cap's root.
     let base_dir = &dir_cap;
     let fd = base_dir.open(&file_path_str).map_err(|e| {
         EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
