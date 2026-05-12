@@ -134,13 +134,11 @@ See `doc/whatif/completed/hkt-monads.md` §Kind Checking, §Typeclass Resolution
 - [x] Assign error code `E091` for kind mismatch errors in `src/error.rs`; add to `doc/10-errors.md` all three tables (variant catalog, codes table, categories table) — `hkt-doc-lsp` will verify these entries exist, not re-add them
 - [ ] Tests: kind mismatch errors with `[E091]` prefix, `App(Result, Int)` inferred from `[Ok 42]`, rank-1 violation rejected (but multiple flat Operator vars in one method type like `traverse` are NOT rejected), Operator-kinded class constraint resolution (`tests/corpus/eval/typecheck/`)
 
-**Depends on:** `hkt-foundation-b`
-
 ### hkt-do-macro: Implement [do] macro — explicit form first, inferred form second
 
 See `doc/whatif/completed/hkt-monads.md` §`[do]` Inference. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`.
 
-Note: The explicit `[do monad steps...]` desugaring has no HKT dependency and can proceed after `hkt-foundation-b` (it needs the ClassEnv for monad dict dispatch setup, but not the full kind inference pass).
+Note: The explicit `[do monad steps...]` desugaring needs the ClassEnv for monad dict dispatch setup but not the full kind inference pass — explicit form can proceed independently; inferred form requires `hkt-kind-inference`.
 
 - [ ] Implement explicit `[do monad steps...]` desugaring in `stdlib/macros.llt` (or `stdlib/prelude.llt` if `stdlib-defmacro` has already landed and merged macros.llt away): classify each step as binding (`[x: expr]`) or non-binding by inspecting the AST dict shape; bindings → `[monad.bind expr [fn [x] ...]]`; non-bindings → `[monad.bind expr [fn [_] ...]]`; `[do monad]` with no steps → `[monad.pure []]`; `[do]` with zero args → error
 - [ ] Add `expected_return: Option<Type>` field to `InferState` (`src/types.rs`) — set by `infer_fn` before descending into the function body when the function has an explicit return type annotation; used by the `[do]` inferred form resolution; using `InferState` (not a parameter) avoids a cascading `infer_expr` signature change
@@ -148,7 +146,7 @@ Note: The explicit `[do monad steps...]` desugaring has no HKT dependency and ca
 - [ ] Emit "cannot infer monad for `[do]` — add an explicit monad argument or annotate the enclosing function's return type"
 - [ ] Tests: `[do result ...]` three-step success, `[Err "fail"]` propagation (short-circuit), explicit `[do]` with any `bind:`-carrying dict (backward compat), inferred `[do]` from `@Result` annotation, inferred from first binding type, missing-monad error, `[do monad]` with no steps → `[monad.pure []]` (`tests/corpus/eval/`)
 
-**Depends on:** `hkt-foundation-b` (explicit form); `hkt-kind-inference` (inferred form)
+**Depends on:** `hkt-kind-inference` (inferred form only)
 
 ### hkt-mappable-appendable: Rewrite Mappable and Appendable from hardcoded to class-based
 
@@ -166,7 +164,7 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 - [ ] Verify and confirm the prelude union-annotation follow-ups (tracked in `builtin-type-audit` sprint batch B) still type-check correctly now that Mappable is a real class: `when`/`unless` → `fn@[a Null]` (note: `[]` empty-dict return is typed as `Record`, not `Null` — verify correct annotation choice), `cond`, `and`/`or`, `get-or`, `find-first`/`find-first-or`; annotate `zip` once Mappable is confirmed working for both Seq×Seq and Dict×Dict cases
 - [ ] Tests: Mappable on user type (success), `map` on non-Mappable `Int` (error), `AppendableSeq [Seq b]` for different element types, `AppendableStr` string concat, Equatable/Comparable/Showable constraints on user types (`tests/corpus/eval/typecheck/`)
 
-**Depends on:** `hkt-kind-inference`, `constraint-annotations`
+**Depends on:** `hkt-kind-inference`
 
 ### hkt-stdlib: Functor/Applicative/Monad/Foldable/Traversable hierarchy, Maybe, generic functions
 
@@ -198,7 +196,7 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 - [ ] Apply stdlib prelude annotation migrations: `min`/`max`/`sorted`/`sort-by` → `fn@[return: a constraint: [a: Comparable]] [xs@Seq@a] ...` (include param annotations); `fold`/`reduce` → add `doc:` strings (`stdlib/prelude.llt`)
 - [ ] Tests: LSP hover for `Type::App` display, kind mismatch errors with `[E091]` prefix (`tests/lsp_corpus_tests.rs`, `tests/corpus/eval/errors/`)
 
-**Depends on:** `hkt-stdlib`, `hkt-bas`, `constraint-annotations`
+**Depends on:** `hkt-stdlib`
 
 ---
 
@@ -285,17 +283,22 @@ Accepted 2026-05-11. See `doc/whatif/builtin-privacy.md`. **Spec chapters:** `do
 
 Genuine deferred items from the `http-sessions` and `connector-tls` sprints. Each is a deliberate "implement later" stub.
 
-- [ ] **SPKI X.509 field extraction** (`src/builtins_io.rs:3268`): Replace the current "hash raw DER bytes" workaround with correct SPKI field extraction — parse the certificate DER with `x509-parser` or `rustls-pki-types` to locate the SubjectPublicKeyInfo field, then hash only that field; the current implementation does not match real SPKI pins computed by browsers and tools like `openssl` — this is a correctness bug for TLS pinning users
-- [ ] **QUIC unreliable datagram support** (`src/builtins_io.rs:4451-4504`): Implement `quic-open-datagram` builtin — add `Value::QuicDatagramHandle(Rc<quinn::Connection>)` variant; add `send-datagram`/`recv-datagram` overloads dispatching on it via `block_on(conn.send_datagram(...))`/`block_on(conn.read_datagram())`; currently the function returns a user error directing to `quic-open-stream`
-- [ ] **HTTP/3 connection driver for concurrent requests** (`src/builtins_io.rs:4695`): The h3 `Connection` driver is currently discarded (`let (_driver, send_request) = ...`), making the session sequential-only. Fix: (1) add `async_rt::spawn<F>(fut: F) -> JoinHandle<F::Output>` that calls `TOKIO_RT.with(|rt| rt.spawn(fut))` — tokio `current_thread` runs spawned tasks during `block_on`; (2) spawn the h3 driver there and store the `JoinHandle` in a new `Http3SessionState { send_request, _driver: JoinHandle<_> }` to keep it alive; (3) change `Value::Http3Session` to wrap `Rc<RefCell<Http3SessionState>>` — no R&D needed, but requires extending the Value type
+- [ ] Delete stale SPKI comment at `src/builtins_io.rs:3335` — two lines saying "simplified implementation that hashes the whole cert"; `compute_spki_hash` already correctly extracts `subject_pki.raw` (`src/builtins_io.rs`)
+- [ ] Add `Value::QuicDatagramHandle(Rc<quinn::Connection>)` variant to the `Value` enum and its `type_name`/`Display`/`PartialEq` impls (`src/value.rs`)
+- [ ] Register `Type::QuicDatagramHandle` in `TypeEnv::with_builtins` and add type signature for `quic-open-datagram` (`src/type_env.rs`)
+- [ ] Implement `quic-open-datagram`: replace the current "not yet implemented" error body with `block_on(session.open_uni())` to get a send stream; return `Value::QuicDatagramHandle(Rc::clone(&conn))` (`src/builtins_io.rs:4457`)
+- [ ] Add `send-datagram` overload for `Value::QuicDatagramHandle`: dispatch to `block_on(conn.send_datagram(bytes))` (`src/builtins_io.rs`)
+- [ ] Add `recv-datagram` overload for `Value::QuicDatagramHandle`: dispatch to `block_on(conn.read_datagram())`, return `Bytes` (`src/builtins_io.rs`)
+- [ ] Add `async_rt::spawn<F: Future>(fut: F) -> JoinHandle<F::Output>` helper using `TOKIO_RT.with(|rt| rt.spawn(fut))` — tokio `current_thread` runtime drives spawned tasks during `block_on` calls (`src/async_rt.rs`)
+- [ ] Define `Http3SessionState { send_request: h3::client::SendRequest<...>, _driver: JoinHandle<()> }` struct in `src/builtins_io.rs`; spawn the h3 `Connection` driver via `async_rt::spawn` and store its `JoinHandle` in the struct to keep it alive
+- [ ] Change `Value::Http3Session` to wrap `Rc<RefCell<Http3SessionState>>` instead of the bare `send_request`; update all match arms that destructure it (`src/value.rs`, `src/builtins_io.rs`)
+- [ ] Tests: `quic-open-datagram` + `send-datagram` + `recv-datagram` round-trip corpus test; `http3-session` concurrent request (two sequential requests on one session succeed); QUIC datagram type error on wrong handle type (`tests/corpus/eval/`)
 
 ---
 
 ## LSP
 
 ### lsp-gaps: Prelude go-to-definition and remaining LSP quality items
-
-**Note:** `lsp-gaps` requires design work before implementation — see Research item below.
 
 - [ ] **Prelude go-to-definition** (`src/lsp/analysis.rs:802`): Parse the embedded prelude source (`include_str!("../../stdlib/prelude.llt")`) once at LSP startup into a `Spanned<File>` AST and cache it in `DocumentStore`; extend `definition_at()` in `src/lsp/analysis.rs` to search the cached prelude AST using the existing `find_key_definition()` recursion after local/include lookup fails; resolve the prelude URI via `find_libdir_path().join("prelude.llt")` + `file_path_to_uri()` for the `Location` response; `llt_span_to_lsp_range` works unchanged since it takes source text separately from spans (`src/lsp/analysis.rs`, `src/lsp/document.rs`)
 - [ ] **`textDocument/documentSymbol`:** walk the top-level dict entries of the current document and return them as `SymbolKind::Variable` symbols with their definition spans; add `document_symbols_at` in `src/lsp/analysis.rs`; register `DocumentSymbolRequest::METHOD` in `src/lsp/server.rs`; declare capability in `ServerCapabilities`; enables IDE outline views and breadcrumbs (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
@@ -321,19 +324,6 @@ Two correctness/quality gaps in the evaluator noted in source comments.
 ---
 
 ## CLI
-
-### clock-cap-default: Make %clock available by default, simplify flags
-
-`%clock` (real system clock) is injected by default — no opt-in flag needed, parallel to `%stdin`.
-See `src/main.rs` clock cap injection blocks (~line 1192).
-
-- [ ] Replace `cap_clock: Vec<String>` with `no_cap_clock: bool` in `Args` struct (`src/main.rs:136`)
-- [ ] Replace `cap_clock_fixed: Vec<String>` (pair-taking) with `cap_clock_fixed: Option<String>` (single RFC3339 arg) (`src/main.rs:142`)
-- [ ] Update `run_eval_pipeline` signature to match (`src/main.rs:854`)
-- [ ] Rewrite injection block: default = real clock as `%clock`; if `--cap-clock-fixed RFC3339` override with fixed; if `--no-cap-clock` skip entirely (`src/main.rs:1192`)
-- [ ] Remove `--cap-clock` from the "flags that take a value, skip it" list; add `--no-cap-clock` as boolean (`src/main.rs:805`)
-- [ ] Update `--cap-clock-fixed` help text to drop `NAME` parameter
-- [ ] Update 3 CLI tests: `%my-clock` / `%test-clock` → `%clock`; add `--no-cap-clock` test
 
 ### cap-simplify: Remove --allow-path/--allow-host; auto-trigger Landlock from --cap-fs
 

@@ -3341,17 +3341,15 @@ fn describe_human_readable() {
 
 #[test]
 fn cap_clock_real() {
-    // Verify --cap-clock injects a real ClockCap that can be used with $now
+    // Verify %clock is injected by default as a real ClockCap that can be used with $now
     // format-timestamp converts Timestamp → String so json.llt can serialize it
-    let llt_content = r#"[call $format-timestamp [call $now %my-clock]]"#;
+    let llt_content = r#"[call $format-timestamp [call $now %clock]]"#;
     let (path, _dir) = write_temp_llt("cap_clock_real", llt_content);
     let output = Command::new(tinct_bin())
         .args([
             "run",
             "-o",
             "json",
-            "--cap-clock",
-            "my-clock",
             path.to_str().unwrap(),
         ])
         .output()
@@ -3379,9 +3377,9 @@ fn cap_clock_real() {
 
 #[test]
 fn cap_clock_fixed() {
-    // Verify --cap-clock-fixed injects a fixed ClockCap returning the specified timestamp
+    // Verify --cap-clock-fixed overrides %clock with a fixed timestamp
     // format-timestamp converts Timestamp → String so json.llt can serialize it
-    let llt_content = r#"[call $format-timestamp [call $now %test-clock]]"#;
+    let llt_content = r#"[call $format-timestamp [call $now %clock]]"#;
     let (path, _dir) = write_temp_llt("cap_clock_fixed", llt_content);
     let output = Command::new(tinct_bin())
         .args([
@@ -3390,7 +3388,6 @@ fn cap_clock_fixed() {
             "json",
             "--cap-clock-fixed",
             "2024-01-01T00:00:00Z",
-            "test-clock",
             path.to_str().unwrap(),
         ])
         .output()
@@ -3417,6 +3414,32 @@ fn cap_clock_fixed() {
 }
 
 #[test]
+fn no_cap_clock() {
+    // Verify --no-cap-clock disables %clock injection
+    // Try to access %clock — should fail with undefined variable error
+    let llt_content = r#"%clock"#;
+    let (path, _dir) = write_temp_llt("no_cap_clock", llt_content);
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--no-cap-clock",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    // Should fail because %clock is not injected
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("undefined variable") && stderr.contains("clock"),
+        "expected undefined variable error for %clock, got: {stderr}"
+    );
+}
+
+#[test]
 fn cap_clock_fixed_invalid_timestamp() {
     // Verify --cap-clock-fixed with invalid RFC 3339 timestamp errors clearly
     let llt_content = r#"[x: 1]"#;
@@ -3428,7 +3451,6 @@ fn cap_clock_fixed_invalid_timestamp() {
             "json",
             "--cap-clock-fixed",
             "not-a-timestamp",
-            "test-clock",
             path.to_str().unwrap(),
         ])
         .output()

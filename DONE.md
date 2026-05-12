@@ -5786,3 +5786,18 @@ Three concrete issues surfaced during the `just docgen` refactor.
 - [x] **`write` return value documented as null but returns `{}`:** `builtins_io.rs:1465` returns `Value::Dict(IndexMap::new())` but the doc comment says "returns null"; either fix the return to `ok_val(Value::Null, call_span)` or update the doc comment to say "empty dict `{}`"; the distinction matters for callers using the return value in boolean context (`src/builtins_io.rs:1401`, `src/builtins_io.rs:1465`)
 - [x] **Document the `[= w w]` force-side-effect idiom:** tinct has no `!` or `seq` for forcing side effects; the canonical pattern is `[w: [side-effect]] [if [= w w] result result]` — forces `w` via equality check, always returns `result`; add this to `doc/08-evaluation.md §Laziness Design` as an explicit idiom note, including why `_` cannot be used (implicit lambda desugaring treats `_` as a lambda parameter, not a discard) (`doc/08-evaluation.md`)
 - [x] **Type checker doesn't propagate scope from intermediate dict expressions:** in a document with multiple sequential expressions (e.g., `[dict1] [dict2] [expr3]`), the type checker fails to carry dict2's bindings into expr3's scope — `expr3` sees T002 "undefined variable" for names defined in dict2, even though the runtime pipeline materialises dict2 and adds its entries to scope; LSP go-to-definition correctly resolves these (confirming they exist), but hover/diagnostics show false errors; fix `typecheck_document` to propagate intermediate dict type environments into subsequent expression scopes the same way `eval_document` propagates runtime bindings (`src/typecheck.rs`)
+
+## CLI
+
+### clock-cap-default: Make %clock available by default, simplify flags
+
+`%clock` (real system clock) is injected by default — no opt-in flag needed, parallel to `%stdin`.
+See `src/main.rs` clock cap injection blocks (~line 1192).
+
+- [x] Replace `cap_clock: Vec<String>` with `no_cap_clock: bool` in `Args` struct (`src/main.rs:136`)
+- [x] Replace `cap_clock_fixed: Vec<String>` (pair-taking) with `cap_clock_fixed: Option<String>` (single RFC3339 arg) (`src/main.rs:142`)
+- [x] Update `run_eval_pipeline` signature to match (`src/main.rs:854`)
+- [x] Rewrite injection block: default = real clock as `%clock`; if `--cap-clock-fixed RFC3339` override with fixed; if `--no-cap-clock` skip entirely (`src/main.rs:1192`)
+- [x] Remove `--cap-clock` from the "flags that take a value, skip it" list; add `--no-cap-clock` as boolean (`src/main.rs:805`)
+- [x] Update `--cap-clock-fixed` help text to drop `NAME` parameter
+- [x] Update 3 CLI tests: `%my-clock` / `%test-clock` → `%clock`; add `--no-cap-clock` test

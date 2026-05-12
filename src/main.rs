@@ -129,17 +129,17 @@ enum Commands {
         #[arg(long, value_name = "NAME=ENTRY")]
         cap_net: Vec<String>,
 
-        /// Inject a named ClockCap (real system clock) into the root environment.
-        /// Format: NAME — binds %NAME to a ClockCap reading the system clock.
-        /// Example: --cap-clock my-clock injects %my-clock as a real ClockCap.
-        #[arg(long, value_name = "NAME")]
-        cap_clock: Vec<String>,
+        /// Disable the default %clock capability (blocks all time access).
+        /// By default, %clock is injected automatically as a real system clock.
+        /// Use this flag for sandboxed/reproducible execution contexts.
+        #[arg(long)]
+        no_cap_clock: bool,
 
-        /// Inject a named ClockCap (fixed timestamp) into the root environment.
-        /// Format: "RFC3339" NAME — binds %NAME to a ClockCap returning the fixed timestamp.
-        /// Example: --cap-clock-fixed "2024-01-01T00:00:00Z" test-clock injects %test-clock.
-        #[arg(long, value_name = "RFC3339 NAME", num_args = 2)]
-        cap_clock_fixed: Vec<String>,
+        /// Override the default %clock with a fixed timestamp (for testing).
+        /// Format: "RFC3339" — binds %clock to a ClockCap returning the fixed timestamp.
+        /// Example: --cap-clock-fixed "2024-01-01T00:00:00Z" injects a fixed %clock.
+        #[arg(long, value_name = "RFC3339")]
+        cap_clock_fixed: Option<String>,
 
         /// Inject a named file Handle into the root environment (may be repeated).
         /// Format: NAME=PATH:MODE — pre-opens PATH and binds %NAME to a Handle.
@@ -307,7 +307,7 @@ fn main() {
             no_libdir,
             cap_fs,
             cap_net,
-            cap_clock,
+            no_cap_clock,
             cap_clock_fixed,
             cap_file,
             expr,
@@ -333,7 +333,7 @@ fn main() {
             no_libdir,
             cap_fs,
             cap_net,
-            cap_clock,
+            no_cap_clock,
             cap_clock_fixed,
             cap_file,
             expr,
@@ -851,8 +851,8 @@ fn run_eval(
     no_libdir: bool,
     cap_fs: Vec<String>,
     cap_net: Vec<String>,
-    cap_clock: Vec<String>,
-    cap_clock_fixed: Vec<String>,
+    no_cap_clock: bool,
+    cap_clock_fixed: Option<String>,
     cap_file: Vec<String>,
     expr: Vec<String>,
     input: Option<String>,
@@ -1189,42 +1189,13 @@ fn run_eval(
         }
     }
 
-    // Inject --cap-clock NAME entries into the root environment as `%NAME`.
-    {
+    // Inject %clock into the root environment (unless --no-cap-clock is set).
+    // Default: real system clock.
+    // --cap-clock-fixed "RFC3339": override with fixed timestamp.
+    if !no_cap_clock {
         use tinct::{ClockCapInner, Value};
-        for name in &cap_clock {
-            let name = name.trim();
-            if name.is_empty() {
-                return Err("--cap-clock: NAME must not be empty".to_string());
-            }
-            let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Real));
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            // Inject as `%NAME` (auto-prefix %).
-            let scoped_name = if name.starts_with('%') {
-                name.to_string()
-            } else {
-                format!("%{name}")
-            };
-            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
-        }
-    }
 
-    // Inject --cap-clock-fixed "RFC3339" NAME entries into the root environment as `%NAME`.
-    {
-        use tinct::{ClockCapInner, Value};
-        // cap_clock_fixed is a Vec<String> where pairs of consecutive entries are (timestamp, name)
-        if cap_clock_fixed.len() % 2 != 0 {
-            return Err(
-                "--cap-clock-fixed requires pairs of RFC3339 and NAME arguments".to_string(),
-            );
-        }
-        for chunk in cap_clock_fixed.chunks(2) {
-            let timestamp_str = &chunk[0];
-            let name = &chunk[1];
-            let name = name.trim();
-            if name.is_empty() {
-                return Err("--cap-clock-fixed: NAME must not be empty".to_string());
-            }
+        let cap_value = if let Some(timestamp_str) = &cap_clock_fixed {
             // Parse the RFC 3339 timestamp using jiff
             let timestamp = jiff::Timestamp::from_str(timestamp_str).map_err(|e| {
                 format!(
@@ -1239,16 +1210,14 @@ fn run_eval(
                     timestamp_str
                 )
             })?;
-            let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            // Inject as `%NAME` (auto-prefix %).
-            let scoped_name = if name.starts_with('%') {
-                name.to_string()
-            } else {
-                format!("%{name}")
-            };
-            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
-        }
+            Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)))
+        } else {
+            // Default: real system clock
+            Value::ClockCap(Rc::new(ClockCapInner::Real))
+        };
+
+        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+        env.borrow_mut().insert("%clock".to_string(), Rc::new(cap_thunk));
     }
 
     // Inject --cap-file NAME=PATH:MODE entries into the root environment as `%NAME`.
