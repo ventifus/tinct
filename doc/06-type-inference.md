@@ -406,7 +406,7 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
                                                  [S-FN]
 ```
 
-**Note on [S-ANY-TOP] and [S-ANY-BOT]:** Having Any as both the top and bottom of the type lattice violates antisymmetry (τ <: σ ∧ σ <: τ ⇒ τ = σ) and makes the subtype relation unsound as a partial order. This is intentional for tinct's gradual type system — Any marks the boundary between typed and untyped code (see Limitation #2).
+**Note on Unknown and Top:** `Unknown` relates to other types via consistency (~), not subtyping (<:) — see `is_consistent()`. `Top` is the true universal supertype with `τ <: Top` for all `τ`. The pre-B2 `Any` type that served as both top and bottom (violating antisymmetry) has been eliminated by the gradual-typing-split sprint — see `doc/whatif/completed/gradual-typing.md`.
 
 ## Instantiation
 
@@ -693,7 +693,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).
 
-**Principal types.** Tinct infers principal types for fully-annotated polymorphic functions where no type variable unifies with `Any`. For partially-typed code, the inferred type depends on the checking context — subsumption introduces multiple valid types for the same expression (e.g., `42` can check against `IntLiteral(42)`, `Int`, `Number`, or `Any`). Full Damas-Milner principality is not achieved because: (a) unannotated parameters receive `Any` rather than fresh type variables, (b) singleton literal types introduce subtyping which bidirectional checking mediates but which prevents a unique most-general type, and (c) [U-SUBSUME] in CALL-POLY means the type variable binding may be more or less precise depending on argument order (both bindings are sound, but they differ).
+**Principal types.** Tinct infers principal types for fully-annotated polymorphic functions where no type variable unifies with `Unknown`. For partially-typed code, the inferred type depends on the checking context — subsumption introduces multiple valid types for the same expression (e.g., `42` can check against `IntLiteral(42)`, `Int`, `Number`, or `Top`). Full Damas-Milner principality is not achieved because: (a) unannotated parameters receive `Unknown` rather than fresh type variables, (b) singleton literal types introduce subtyping which bidirectional checking mediates but which prevents a unique most-general type, and (c) [U-SUBSUME] in CALL-POLY means the type variable binding may be more or less precise depending on argument order (both bindings are sound, but they differ).
 
 **References:** Kiselyov, O. (2013). "How OCaml type checker works — or what polymorphism and garbage collection have in common." Damas, L. & Milner, R. (1982). "Principal type-schemes for functional programs." Mycroft, A. (1984). "Polymorphic type schemes and recursive definitions." Wright, A. (1995). "Simple imperative polymorphism."
 
