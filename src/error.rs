@@ -1464,7 +1464,7 @@ impl EvalError {
 /// like "multi-step-validator" is preserved correctly.
 ///
 /// Phase 2 frame format: `"[name ...]"`. We extract `name` from the label and check its suffix.
-const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check"];
+const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check", "-merge"];
 
 /// Extract the function name from a Phase 2 frame label of the form `"[name ...]"`.
 /// Returns the name portion, or the full label if it doesn't match the bracket format.
@@ -1482,7 +1482,7 @@ fn frame_name(label: &str) -> &str {
 /// Returns `false` for:
 /// - Synthetic origin spans (Span::origin() = offset 0, line 1, col 1; displays as "1:1-1:1")
 ///   from stdlib/builtin calls
-/// - Stdlib internal helper functions (suffixes: -impl, -step, -check)
+/// - Stdlib internal helper functions (suffixes: -impl, -step, -check, -merge)
 fn should_display_frame(frame: &StackFrame) -> bool {
     if frame.span == Span::origin() {
         return false;
@@ -3266,7 +3266,7 @@ mod tests {
 
     #[test]
     fn test_should_display_frame_hidden_suffix() {
-        // A frame whose label ends with a hidden suffix (-impl, -step, -check)
+        // A frame whose label ends with a hidden suffix (-impl, -step, -check, -merge)
         // must not be displayed.
         let real_span = test_span(5, 1, 5, 10);
         let impl_frame = StackFrame {
@@ -3292,6 +3292,14 @@ mod tests {
         assert!(
             !should_display_frame(&check_frame),
             "frame with -check suffix must return false"
+        );
+        let merge_frame = StackFrame {
+            label: "[sort-merge ...]".to_string(),
+            span: real_span,
+        };
+        assert!(
+            !should_display_frame(&merge_frame),
+            "frame with -merge suffix must return false"
         );
         // A user-facing frame with the same real span must be displayed.
         let user_frame = StackFrame {
