@@ -3723,6 +3723,63 @@ mod tests {
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
+    // ===== App/Operator subtyping tests (hkt-bas sprint) =====
+
+    #[test]
+    fn test_subtype_app_covariant() {
+        // App(Result, Int) <: App(Result, Int|Str) — covariance in type argument
+        let result = Type::Operator("Result".into());
+        let app_int = Type::App(Box::new(result.clone()), Box::new(Type::Int));
+        let app_union = Type::App(
+            Box::new(result),
+            Box::new(Type::normalize_union(vec![Type::Int, Type::Str])),
+        );
+        assert!(Type::is_subtype(&app_int, &app_union));
+    }
+
+    #[test]
+    fn test_subtype_app_mismatched_constructors() {
+        // App(Result, Int) is NOT a subtype of App(Maybe, Int) — different constructors
+        let result = Type::Operator("Result".into());
+        let maybe = Type::Operator("Maybe".into());
+        let app_result = Type::App(Box::new(result), Box::new(Type::Int));
+        let app_maybe = Type::App(Box::new(maybe), Box::new(Type::Int));
+        assert!(!Type::is_subtype(&app_result, &app_maybe));
+    }
+
+    #[test]
+    fn test_subtype_app_union_elim_derives_join() {
+        // Union(App(Result, Int), App(Result, Str)) <: App(Result, Union(Int, Str))
+        // This should be derivable via UNION-ELIM:
+        //   - App(Result, Int) <: App(Result, Int|Str) by covariance (Int <: Int|Str)
+        //   - App(Result, Str) <: App(Result, Int|Str) by covariance (Str <: Int|Str)
+        //   - UNION-ELIM: both members are subtypes → union is a subtype
+        let result = Type::Operator("Result".into());
+        let app_int = Type::App(Box::new(result.clone()), Box::new(Type::Int));
+        let app_str = Type::App(Box::new(result.clone()), Box::new(Type::Str));
+        let union_of_apps = Type::normalize_union(vec![app_int, app_str]);
+        let app_union = Type::App(
+            Box::new(result),
+            Box::new(Type::normalize_union(vec![Type::Int, Type::Str])),
+        );
+        assert!(Type::is_subtype(&union_of_apps, &app_union));
+    }
+
+    #[test]
+    fn test_subtype_app_reverse_distribution_unsound() {
+        // App(Result, Union(Int, Str)) is NOT a subtype of Union(App(Result, Int), App(Result, Str))
+        // This reverse direction is unsound for diagonal functors
+        let result = Type::Operator("Result".into());
+        let app_union = Type::App(
+            Box::new(result.clone()),
+            Box::new(Type::normalize_union(vec![Type::Int, Type::Str])),
+        );
+        let app_int = Type::App(Box::new(result.clone()), Box::new(Type::Int));
+        let app_str = Type::App(Box::new(result), Box::new(Type::Str));
+        let union_of_apps = Type::normalize_union(vec![app_int, app_str]);
+        assert!(!Type::is_subtype(&app_union, &union_of_apps));
+    }
+
     #[test]
     fn test_unify_seq_mismatch() {
         let span = test_span(1, 1, 1, 5);
