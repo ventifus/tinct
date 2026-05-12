@@ -207,38 +207,6 @@ impl FlatEnv {
 ///
 /// **When migration will be required (Phase 3):**
 /// - Arena stores `Vec<Thunk>` (direct ownership, no Rc wrapper)
-/// - Arena lifetime is one document section (dropped at `---`)
-/// - This function traces from the `%` result value and rebuilds as `Rc`-backed storage
-/// - Two translation tables preserve identity: `HashMap<ThunkId, Rc<Thunk>>` for thunks,
-///   `HashMap<EnvId, Rc<RefCell<Environment>>>` for environments
-///
-/// **Algorithm (Phase 3):**
-/// ```text
-/// migrate(value, arena, thunk_table, env_table) → Rc<Thunk>:
-///   for each ThunkId in value:
-///     if thunk_table[id] exists: return thunk_table[id]  (preserves sharing)
-///     thunk = arena[id]
-///     rc = Rc::new(Thunk::placeholder())       (allocate before recursing)
-///     thunk_table[id] = rc                     (insert before recursing — breaks cycles)
-///     rc.fill(match thunk.state:
-///       Materialized(v)            → Materialized(migrate_value(v, ...))
-///       Unevaluated(expr, env)     → Unevaluated(expr, migrate_env(env, ...))
-///       PendingBuiltin(f, args, …) → PendingBuiltin(f, migrate_args(args, ...), ...)
-///       PendingCall(f_θ, args, …)  → PendingCall(migrate(f_θ, ...), migrate_args(...), ...)
-///       Failed(e)                  → Failed(e)
-///       InProgress                 → unreachable at --- boundary
-///     )
-///   return rc
-/// ```
-///
-/// See `doc/08-evaluation.md` §Allocation Strategy for full specification.
-#[allow(dead_code)]
-pub fn migrate_for_next_section(_result_thunk: &Rc<Thunk>) -> Rc<Thunk> {
-    // Phase 2: No-op. Arena is Rc-backed and persists across boundaries.
-    // Phase 3: Implement selective migration algorithm (trace from result, rebuild as Rc-backed).
-    unimplemented!("migrate_for_next_section: Phase 3 work (arena-eval sprint)")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

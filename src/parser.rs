@@ -3934,9 +3934,6 @@ fn pop_last_value_from_frame(
 /// - Bare uppercase identifier → TypeTag (Int, Str, Dict, etc.)
 /// - Int/Float/Bool/Str literal → Literal pattern
 ///
-/// TODO: Pin patterns (`$name`) require tracking whether the VarRef came from
-/// Token::EscapedRef or Token::Identifier, which is lost after expr parsing.
-/// Either parse patterns directly from tokens or add escaped flag to VarRef.
 /// Extract all variable names bound by a pattern
 fn pattern_variables(pattern: &Pattern) -> std::collections::HashSet<String> {
     let mut vars = std::collections::HashSet::new();

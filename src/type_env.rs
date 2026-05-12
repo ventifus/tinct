@@ -1497,8 +1497,7 @@ impl TypeEnv {
         //    DictKey("ok")/DictKey("err") in the sig but Variant("Ok")/Variant("Err") in arms.
         // 3. Top avoids triggering exhaustiveness checking (Type::Union guard in infer_match).
         //
-        // TODO(result-nominal): replace Top with a proper `Ok[T] | Err[String]` union type
-        // once Type::Variant is added to the type system (see doc/07-type-extensions.md).
+        // See builtin-type-audit sprint: try return type (TODO.md)
         env.insert(
             "try".to_string(),
             Type::Function {

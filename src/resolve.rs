@@ -130,11 +130,7 @@ impl Resolver {
             }
             Expr::Dict(entries) => {
                 // Collect static keys (non-computed entry keys)
-                // TODO(arena-phase2): Preserve static_keys.len() for FlatEnv slot vector pre-sizing.
-                // This is a performance optimization to avoid reallocation when building the FlatEnv
-                // at eval time. Phase 2 will need the count to Vec::with_capacity() the slot vector.
-                // Options: (1) add `static_key_count: Cell<Option<usize>>` to Expr::Dict, or
-                // (2) build a side table mapping Dict span → key count during resolution.
+                // Linked environments (Rc chain) — the adopted design.
                 let static_keys: Vec<String> = entries
                     .iter()
                     .filter_map(|entry| {

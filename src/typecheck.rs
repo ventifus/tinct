@@ -9375,7 +9375,7 @@ mod tests {
         // {ok:T}|{err:Str} would cause T004 false positives when user code matches on
         // constructor patterns [Ok v] / [Err msg]. Top avoids triggering coverage
         // checking (infer_match only runs exhaustiveness when scrutinee is Type::Union).
-        // TODO(result-nominal): replace with Ok[T]|Err[String] when Type::Variant is added.
+        // See builtin-type-audit sprint: try return type (TODO.md)
         let env = TypeEnv::with_builtins();
         let scheme = env.get("try").expect("try builtin not found in env");
         match &scheme.body {
