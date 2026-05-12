@@ -1670,6 +1670,22 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        env.insert(
+            "record?".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Unknown)],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "map?".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Unknown)],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
 
         // I/O
         env.insert(
@@ -2485,9 +2501,9 @@ impl TypeEnv {
         );
 
         // get?: registered directly. It is a Rust builtin (builtin_get_optional) that returns
-        // the value at the key or Null (empty dict) if missing. The base type Unknown → Unknown → Unknown
-        // is a conservative fallback; the type checker special-cases get? for Map and Record args
-        // to produce precise Union(V|Null) return types.
+        // the value at the key or Null (empty dict) if missing. Conservative type is
+        // Unknown → Unknown → Union(Unknown, Null). The type checker special-cases get? for
+        // Map and Record args to produce precise Union(V|Null) return types.
         env.insert_scheme(
             "get?".to_string(),
             TypeScheme {
@@ -2495,7 +2511,12 @@ impl TypeEnv {
                 constraints: vec![],
                 body: Type::Function {
                     params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-                    ret: Box::new(Type::Unknown),
+                    ret: Box::new(Type::normalize_union(vec![
+                        Type::Unknown,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    ])),
                     variadic: false,
                 },
                 label_vars: vec![],

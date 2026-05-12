@@ -3,5 +3,3 @@
  r3: [record? 42]]
 === out
 Dict({"r1": Bool(true), "r2": Bool(true), "r3": Bool(false)})
-=== warn
-undefined variable: record?

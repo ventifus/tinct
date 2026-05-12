@@ -1,3 +1,21 @@
 # Date-time helpers (pure tinct, depends on builtins)
+[
+# Internal helper dict — provides pad-left utility
+pad-left: [include %libdir "strings.llt"].pad-left
+]
+
+# Public API dict
 [days-between@[doc: "Calculate days between two timestamps"]: [fn [a b] [duration->seconds [timestamp-diff b a]]]
- timestamp-in-range?@[doc: "Check if a timestamp is within a range"]: [fn [t start end] [and [timestamp<? start t] [timestamp<? t end]]]]
+ timestamp-in-range?@[doc: "Check if a timestamp is within a range"]: [fn [t start end] [and [timestamp<? start t] [timestamp<? t end]]]
+ format-date@[doc: "Format a timestamp as YYYY-MM-DD HH:MM:SS"]: [fn@String [t@Timestamp]
+   [str [timestamp-year t]
+        "-"
+        [pad-left [str [timestamp-month t]] 2 "0"]
+        "-"
+        [pad-left [str [timestamp-day t]] 2 "0"]
+        " "
+        [pad-left [str [timestamp-hour t]] 2 "0"]
+        ":"
+        [pad-left [str [timestamp-minute t]] 2 "0"]
+        ":"
+        [pad-left [str [timestamp-second t]] 2 "0"]]]]

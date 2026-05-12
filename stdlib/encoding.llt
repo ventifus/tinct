@@ -247,41 +247,6 @@ mask-apply-impl: [fn@String [data@String mask@String i@Int data-len@Int mask-len
 
 mask-apply-step: [fn@String [data@String mask@String i@Int data-len@Int mask-len@Int acc@String data-code@Int mask-code@Int]
     [mask-apply-impl data mask [builtin-add i 1] data-len mask-len
-        [str acc [chr [xor data-code mask-code]]]]]
-
-# XOR two integers.
-# Type: (Int -> Int -> Int)
-# For now, implemented via bit-by-bit reconstruction (inefficient but pure-tinct).
-# Future: could be a Rust builtin for performance.
-xor: [fn@Int [a@Int b@Int]
-    [xor-impl a b 0 0]]
-
-xor-impl: [fn@Int [a@Int b@Int acc@Int bit@Int]
-    [builtin-if [builtin-lt bit 8]
-        [xor-step a b acc bit
-            [mod [quot a [pow2 bit]] 2]
-            [mod [quot b [pow2 bit]] 2]]
-        acc]]
-
-xor-step: [fn@Int [a@Int b@Int acc@Int bit@Int a-bit@Int b-bit@Int]
-    [xor-impl a b
-        [builtin-add acc [builtin-mul [xor-bit a-bit b-bit] [pow2 bit]]]
-        [builtin-add bit 1]]]
-
-# XOR two bits (0 or 1).
-# Type: (Int -> Int -> Int)
-xor-bit: [fn@Int [a@Int b@Int]
-    [builtin-if [builtin-eq a b] 0 1]]
-
-# Power of 2 (for bit operations).
-# Type: (Int -> Int)
-# Example: [pow2 0] => 1, [pow2 3] => 8
-pow2: [fn@Int [n@Int]
-    [pow2-impl n 1]]
-
-pow2-impl: [fn@Int [n@Int acc@Int]
-    [builtin-if [builtin-lt 0 n]
-        [pow2-impl [builtin-sub n 1] [builtin-mul acc 2]]
-        acc]]
+        [str acc [chr [bxor data-code mask-code]]]]]
 
 ]

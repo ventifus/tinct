@@ -35,4 +35,26 @@ write-file-atomic@[doc: "Atomically write a string to a file (write-to-temp + re
 # handle: WriteHandle, line: String
 write-line@[doc: "Write a line to a WriteHandle, appending a newline and flushing"]: [fn [handle@WriteHandle line@String]
   [flush [write-handle handle [str line "\n"]]]]
+
+# Append content to a file (creates if doesn't exist).
+# cap: DirCap, path: String, content: String
+append-file@[doc: "Append content to a file (creates if doesn't exist)"]: [fn@Any [cap@DirCap path@String content@String]
+  [write-handle [open cap path "a"] content]]
+
+# Open a file for writing (creates or truncates, returns handle).
+# cap: DirCap, path: String
+# Returns: WriteHandle
+open-write@[doc: "Open a file for writing (creates or truncates, returns handle)"]: [fn@WriteHandle [cap@DirCap path@String]
+  [open cap path "w"]]
+
+# Open a file for appending (creates if doesn't exist, returns handle).
+# cap: DirCap, path: String
+# Returns: WriteHandle
+open-append@[doc: "Open a file for appending (creates if doesn't exist, returns handle)"]: [fn@WriteHandle [cap@DirCap path@String]
+  [open cap path "a"]]
+
+# Write a sequence of lines to a WriteHandle.
+# handle: WriteHandle, lines: Seq
+write-lines@[doc: "Write a sequence of lines to a WriteHandle"]: [fn@WriteHandle [handle@WriteHandle lines@Seq]
+  [reduce [fn [h line] [write-line h line]] handle lines]]
 ]
