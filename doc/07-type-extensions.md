@@ -2,7 +2,70 @@
 
 For the user-facing annotation syntax, see [Type Annotations](05-type-annotations.md). For the formal inference algorithm, see [Type Inference](06-type-inference.md).
 
-**Migration status:** The Remy-style row polymorphism design (Parts 1-10 below) has been **archived** and superseded by Boolean-Algebraic Subtyping (BAS). `RowTail`, `RowVar`, `row_map`, and `row_vars` have been removed from the codebase. Under BAS, all records are closed; openness is expressed via width subtyping. See §Boolean-Algebraic Subtyping for the live specification.
+**Current design:** Tinct uses Boolean-Algebraic Subtyping (BAS) for record types and union types. See §Boolean-Algebraic Subtyping below for the live specification. The original Rémy-style row polymorphism design has been archived — see Appendix at the end of this document.
+
+## Boolean-Algebraic Subtyping (BAS)
+
+Tinct's type system migrates from Rémy-style row polymorphism to Boolean-Algebraic Subtyping (BAS), following Chau & Parreaux (POPL 2026). BAS encodes all of union, intersection, negation, and record extension in one distributive Boolean lattice — eliminating row variables and their associated soundness gaps.
+
+### The BAS Type Algebra
+
+The type grammar is a Boolean algebra over atomic types:
+
+| Formal | tinct annotation | Notes |
+|--------|-----------------|-------|
+| `A \| B` | `@[A B]` | union — existing positional entries in `@[...]` |
+| `A & B` | `@[[all A B]]` | intersection — `[all ...]` prefix in annotation |
+| `~A` | `@[[without A]]` | negation — `[without A]` prefix in annotation |
+| `⊤` | `@Top` | true supertype |
+| `⊥` | `@Never` | true bottom |
+| `{f: τ}` | `@[f: τ]` | single-field record — existing annotation |
+
+Multi-field annotations are intersections: `@[x: T  y: U]` = `{x: T} ∧ {y: U}`. Width subtyping is a theorem of conjunction elimination (`A & B <: A`), not a special rule.
+
+### Key Rules
+
+**S-RcdTop** (Parreaux & Chau 2022, §2.2.2): `{x: τ} ∨ {y: π} ≡ ⊤` when `x ≠ y`. Unions of records with disjoint field names collapse to the top type. **Consequence:** structural `{ok: T} | {err: String}` is not a discriminated union — it equals ⊤. Use nominal class-tagged unions for ADTs.
+
+**S-ClsBot** (Parreaux & Chau 2022, §2.2.2): `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags. Nominal unions (`Ok[T] | Err[String]`) remain discriminated.
+
+**C-Var1/2**: Constraints of the form `τ₁ ≤ τ₂ ∨ α` rewrite losslessly to `τ₁ & ~τ₂ ≤ α` using Boolean algebra. This eliminates backtracking and yields principal types.
+
+**Row elimination**: Row variables (`RowTail::RowVar`) are removed. Record extension is derived from conjunction: `{name: Str} & {age: Int}` subsumes `{name: Str}` by `A & B <: A`.
+
+### Nominal Result Type
+
+Under BAS, the Result type must use **nominal variants** to be discriminated:
+
+```tinct
+[Result: [type [Ok a] [Err String]]]
+```
+
+`Ok[T] | Err[String]` is discriminated by S-ClsBot (`#Ok & #Err ≤ Never`). Pattern matching uses nominal patterns `[Ok v]` / `[Err msg]`. The `try` builtin returns `Ok(value)` on success and `Err(message)` on caught error. Structural `{ok: v}` / `{err: msg}` dicts remain valid as plain dicts but are not a discriminated union under BAS.
+
+### Record/Map Split and `Dict`
+
+`Dict` is the BAS union of `Record` and `Map[K V]` — two different type constructors, not field-disjoint records, so S-RcdTop does not collapse this union:
+
+```
+Dict = Record ∨ Map[K V]
+```
+
+`Record` uses BAS row intersection for multi-field records. `Map[K V]` is a parameterized type constructor for homogeneous maps. `get` on `Map[K V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
+
+Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/completed/parameterized-dict.md`.
+
+See `doc/whatif/completed/boolean-algebraic-subtyping.md` for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.
+
+## Type System Extension Roadmap
+
+The type system addresses three complementary areas.
+
+**Precision.** `TypeEnv::with_builtins()` pre-registers precise type signatures for all Rust-native builtins. Non-overloaded builtins carry exact types (`$+ : Fn(Number, Number → Number)`, `$length : Fn(Unknown → Int)`); sequence constructors carry typed returns (`$range → Seq(Int)`, `$repeat: (T) → Seq(T)`); dual-dispatch builtins are typed via `Mappable` — see §Dual-Dispatch Builtins. `Type::Error` propagates silently through inference — `unify(Error, τ) = S` unchanged, `is_subtype(Error, _) = false` — preventing cascading errors from a single failing subexpression. LSP hover shows "error" for error-typed bindings.
+
+**Completeness.** `Type::Function` carries `params: Vec<(Option<String>, Type)>`; named args are matched by name, not position. Polymorphic recursion is rejected at depth 1 with a clear error: "polymorphic recursion requires an explicit type annotation". CALL-MONO and CALL-POLY share a single structural `check_expr` pass applying [SUB] at leaves and unification only at TypeVar positions, eliminating verdict divergence for identical literal type pairs. `Unknown`'s consistency semantics follow the AGT model — see `doc/whatif/completed/gradual-typing.md`.
+
+**Expressiveness.** Union types via the BAS lattice, type classes with constrained polymorphism, and the AGT gradual typing model are all part of the type system — see `doc/whatif/completed/`. TypeAssert uses structural validation via `resolved_type` embedded in the AST — see §TypeAssert Runtime Validation.
 
 ## TypeAssert Runtime Validation
 
@@ -283,9 +346,15 @@ Builtins that currently return materialized values wrap them in `Thunk::new_mate
 
 **Performance trade-off:** Inherently materializing builtins (~60% of the 28 current builtins: arithmetic, string ops, comparisons) pay two extra heap allocations per call (Thunk + Rc wrapper) to wrap their `Value` result. For lazy-capable builtins (`$if`, `$merge`, `$map`, `$update`), this eliminates the eager materialization boundary. Net benefit when lazy operations dominate. If profiling shows the overhead is significant, a dual-signature approach (`EagerBuiltinFn` vs `LazyBuiltinFn`) could be considered.
 
-## Row-Variable Unification — Kinded Rémy Model (Archived, Superseded by BAS)
+---
 
-> **Note:** This section documents the Rémy-style row polymorphism design that was implemented and subsequently replaced by Boolean-Algebraic Subtyping (BAS). The `RowTail` enum, `row_map` in `Substitution`, and `row_vars` in `TypeScheme` have all been removed. Under BAS, all records are closed — openness is expressed via width subtyping in `is_subtype()`. This section is preserved for historical reference; see the BAS section below for the live specification.
+# Appendix: Archived Rémy Row Polymorphism Design
+
+> **Note:** The following sections describe the original Rémy row polymorphism design that has been superseded by BAS (Boolean-Algebraic Subtyping). Preserved for historical reference.
+
+The Rémy-style row polymorphism design (Parts 1–10) was implemented and subsequently replaced by Boolean-Algebraic Subtyping (BAS). The `RowTail` enum, `row_map` in `Substitution`, and `row_vars` in `TypeScheme` have all been removed from the codebase. Under BAS, all records are closed — openness is expressed via width subtyping in `is_subtype()`. See §Boolean-Algebraic Subtyping above for the live specification.
+
+## Row-Variable Unification — Kinded Rémy Model (ARCHIVED)
 
 The original design replaced closed-strict/open-lenient record unification with kinded row-variable unification following Rémy (1994). Row variables were first-class participants in type inference with a separate **Row kind**, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
 
@@ -733,66 +802,3 @@ The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and ch
 ### Part 10: Formal References (ARCHIVED)
 
 See [doc/17-references.md §Row polymorphism](17-references.md) for full citations of Rémy (1994), Wand (1987), Gaster & Jones (1996), Harper & Pierce (1991), and Bernstein (2024).
-
-## Type System Extension Roadmap
-
-The type system addresses three complementary areas.
-
-**Precision.** `TypeEnv::with_builtins()` pre-registers precise type signatures for all Rust-native builtins. Non-overloaded builtins carry exact types (`$+ : Fn(Number, Number → Number)`, `$length : Fn(Unknown → Int)`); sequence constructors carry typed returns (`$range → Seq(Int)`, `$repeat: (T) → Seq(T)`); dual-dispatch builtins are typed via `Mappable` — see §Dual-Dispatch Builtins. `Type::Error` propagates silently through inference — `unify(Error, τ) = S` unchanged, `is_subtype(Error, _) = false` — preventing cascading errors from a single failing subexpression. LSP hover shows "error" for error-typed bindings.
-
-**Completeness.** `Type::Function` carries `params: Vec<(Option<String>, Type)>`; named args are matched by name, not position. Polymorphic recursion is rejected at depth 1 with a clear error: "polymorphic recursion requires an explicit type annotation". CALL-MONO and CALL-POLY share a single structural `check_expr` pass applying [SUB] at leaves and unification only at TypeVar positions, eliminating verdict divergence for identical literal type pairs. `Unknown`'s consistency semantics follow the AGT model — see `doc/whatif/completed/gradual-typing.md`.
-
-**Expressiveness.** Union types via the BAS lattice, type classes with constrained polymorphism, and the AGT gradual typing model are all part of the type system — see `doc/whatif/completed/`. TypeAssert uses structural validation via `resolved_type` embedded in the AST — see §TypeAssert Runtime Validation.
-
-## Boolean-Algebraic Subtyping (BAS)
-
-Tinct's type system migrates from Rémy-style row polymorphism to Boolean-Algebraic Subtyping (BAS), following Chau & Parreaux (POPL 2026). BAS encodes all of union, intersection, negation, and record extension in one distributive Boolean lattice — eliminating row variables and their associated soundness gaps.
-
-### The BAS Type Algebra
-
-The type grammar is a Boolean algebra over atomic types:
-
-| Formal | tinct annotation | Notes |
-|--------|-----------------|-------|
-| `A \| B` | `@[A B]` | union — existing positional entries in `@[...]` |
-| `A & B` | `@[[all A B]]` | intersection — `[all ...]` prefix in annotation |
-| `~A` | `@[[without A]]` | negation — `[without A]` prefix in annotation |
-| `⊤` | `@Top` | true supertype |
-| `⊥` | `@Never` | true bottom |
-| `{f: τ}` | `@[f: τ]` | single-field record — existing annotation |
-
-Multi-field annotations are intersections: `@[x: T  y: U]` = `{x: T} ∧ {y: U}`. Width subtyping is a theorem of conjunction elimination (`A & B <: A`), not a special rule.
-
-### Key Rules
-
-**S-RcdTop** (Parreaux & Chau 2022, §2.2.2): `{x: τ} ∨ {y: π} ≡ ⊤` when `x ≠ y`. Unions of records with disjoint field names collapse to the top type. **Consequence:** structural `{ok: T} | {err: String}` is not a discriminated union — it equals ⊤. Use nominal class-tagged unions for ADTs.
-
-**S-ClsBot** (Parreaux & Chau 2022, §2.2.2): `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags. Nominal unions (`Ok[T] | Err[String]`) remain discriminated.
-
-**C-Var1/2**: Constraints of the form `τ₁ ≤ τ₂ ∨ α` rewrite losslessly to `τ₁ & ~τ₂ ≤ α` using Boolean algebra. This eliminates backtracking and yields principal types.
-
-**Row elimination**: Row variables (`RowTail::RowVar`) are removed. Record extension is derived from conjunction: `{name: Str} & {age: Int}` subsumes `{name: Str}` by `A & B <: A`.
-
-### Nominal Result Type
-
-Under BAS, the Result type must use **nominal variants** to be discriminated:
-
-```tinct
-[Result: [type [Ok a] [Err String]]]
-```
-
-`Ok[T] | Err[String]` is discriminated by S-ClsBot (`#Ok & #Err ≤ Never`). Pattern matching uses nominal patterns `[Ok v]` / `[Err msg]`. The `try` builtin returns `Ok(value)` on success and `Err(message)` on caught error. Structural `{ok: v}` / `{err: msg}` dicts remain valid as plain dicts but are not a discriminated union under BAS.
-
-### Record/Map Split and `Dict`
-
-`Dict` is the BAS union of `Record` and `Map[K V]` — two different type constructors, not field-disjoint records, so S-RcdTop does not collapse this union:
-
-```
-Dict = Record ∨ Map[K V]
-```
-
-`Record` uses BAS row intersection for multi-field records. `Map[K V]` is a parameterized type constructor for homogeneous maps. `get` on `Map[K V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
-
-Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/completed/parameterized-dict.md`.
-
-See `doc/whatif/completed/boolean-algebraic-subtyping.md` for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.

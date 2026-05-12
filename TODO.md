@@ -55,18 +55,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
 
-### doc-type-system-cleanup: Fix stale doc/06 and doc/05 references after BAS migration
-
-Post-BAS migration cleanup pass. `doc/06-type-inference.md` and related docs still reference removed constructs (RowTail, RowVar, old TypeScheme struct). These are documentation accuracy issues, not code bugs.
-
-- [ ] [Major] `doc/06-type-inference.md:475-476` still shows `RowTail::RowVar(String, u32)` in §Let-Generalization — remove this reference; under BAS all records are closed with no row tail (`doc/06-type-inference.md`)
-- [ ] [Major] `doc/06-type-inference.md:449-465` TypeScheme struct example shows stale `pub vars: Vec<String>` — update to current `pub type_vars: Vec<String>` and remove `row_vars` field (`doc/06-type-inference.md`)
-- [ ] [Major] `doc/06-type-inference.md:354-366` §Instantiation still claims "Tinct conflates type and row variables into a single namespace" — update to reflect the current separated type_map/row_map design and note that row vars were removed under BAS (`doc/06-type-inference.md`)
-- [ ] [Minor] `doc/06-type-inference.md:395-400` S-REC rule still mentions "RowVar tail" and openness via row variables — update to: "under BAS all records are closed (no RowVar tail); width subtyping means a record with MORE fields is a subtype of one with FEWER fields" (`doc/06-type-inference.md`)
-- [ ] [Minor] `doc/05-type-annotations.md:343-346` row polymorphism examples show `[name: String ...r]` (named row variable) — under BAS row vars are removed; update examples to note this syntax is no longer valid and openness is via width subtyping (`doc/05-type-annotations.md`)
-- [ ] [Minor] `doc/07-type-extensions.md` presents archived Rémy row design (Parts 1–10, ~500 lines) before the live BAS system (§Boolean-Algebraic Subtyping at line ~747) — restructure: move BAS section to top, retitle Parts 1–10 as "Appendix: Archived Rémy Row Polymorphism" (`doc/07-type-extensions.md`)
-- [ ] [Minor] `doc/16-architecture.md:505,551` still references removed MAX_EVAL_DEPTH — remove row "Eval depth | MAX_EVAL_DEPTH = 256" from security table; update line 551 to remove MAX_EVAL_DEPTH from the depth limit list; add note that eval depth was removed in sequential-strict sprint and is now bounded only by available Rust call stack (`doc/16-architecture.md`)
-
 ### prelude-annotation-sweep: Comprehensive annotation pass over all public prelude functions
 
 Audit every public-facing function in `stdlib/prelude.llt` (excluding internal helpers: names ending in `-impl`, `-step`, `-check`, `-merge`, and `sort-merge`) and apply precise annotations using the `fn@[return: ... constraint: ... doc: ...]` form where the existing annotation is imprecise or missing.

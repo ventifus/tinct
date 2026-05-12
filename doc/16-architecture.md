@@ -502,7 +502,6 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 |----------|-------|------------------|-----------|
 | **Parse depth** | `MAX_PARSE_DEPTH = 256` | `src/parser.rs:42` | Prevents stack exhaustion from deeply nested syntax (iterative parser with explicit depth counter) |
 | **Lexer depth** | `MAX_LEX_DEPTH = 256` | `src/lexer.rs:106` | Prevents stack overflow from deeply nested bracket expressions |
-| **Eval depth** | `MAX_EVAL_DEPTH = 256` | `src/eval.rs:37` | Prevents infinite recursion and stack overflow during evaluation |
 | **Type inference** | `MAX_SUBST_SIZE = 50,000` | `src/types.rs:386` | Prevents O(N²) type inference DoS from deeply chained dot-accesses |
 | **Type unification** | `MAX_APPLY_DEPTH = 256` | `src/types.rs:382` | Caps substitution application depth to prevent exponential blowup |
 | **File size** | `MAX_FILE_SIZE = 10 MB` | `src/builtins.rs:47` | Caps `$include` file reads and LSP document size |
@@ -513,6 +512,8 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 | **LSP method names** | `MAX_METHOD_NAME_LEN = 256` | `src/lsp/server.rs:33` | Prevents pathological LSP method name allocation |
 | **File I/O** | `--no-fs` flag, LSP default | `src/main.rs:39`, `src/lsp/document.rs:109` | Disables `$include` and `$from-json` file reads; LSP enables by default (CWE-22 mitigation) |
 | **Eval timeout** | `--timeout` flag (Unix only) | `src/main.rs:43` | Wall-clock timeout with SIGALRM; exits with code 2 on expiry |
+
+**Note:** `MAX_EVAL_DEPTH` was removed in the sequential-strict sprint. Evaluation depth is now bounded only by available Rust call stack. Input nesting is still bounded by `MAX_PARSE_DEPTH` (256).
 
 **What is NOT restricted:**
 
@@ -548,7 +549,7 @@ The following security features are implemented:
 ### Attack Surface Analysis
 
 **DoS via crafted inputs** (mitigated):
-- Deep nesting: MAX_PARSE_DEPTH, MAX_EVAL_DEPTH, MAX_LEX_DEPTH enforce limits before stack overflow
+- Deep nesting: MAX_PARSE_DEPTH, MAX_LEX_DEPTH enforce limits before stack overflow
 - Infinite sequences: MAX_COLLECT_SIZE bounds materialization; lazy evaluation makes unbounded data safe
 - Type inference explosion: MAX_SUBST_SIZE caps substitution growth from pathological type annotations
 - String amplification: MAX_STRING_SIZE caps output from `$replace`, `$join`, `$upper`, `$lower`
