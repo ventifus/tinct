@@ -896,7 +896,7 @@ Tinct's evaluation model is lazy by default — values remain unevaluated until 
 
 3. **Guarded default fallback:** When a guard fails and a `default:` value is provided, the default is evaluated and materialized immediately. This prevents deferred errors from propagating when the guard explicitly signals a fallback path should be taken.
 
-4. **Sequential expression scope chain (SEQ-SCOPE):** Named bindings from intermediate expressions in a multi-expression document are shallowly materialized when they become part of the scope chain. This is inherent — the scope chain construction requires knowing the dict's keys to create named bindings. See [Documents & Pipelines](09-documents.md) §Scope Chain Semantics for the formal specification.
+4. **Sequential expression scope chain (SEQ-SCOPE):** Named bindings from intermediate expressions in a multi-expression document have their keys extracted eagerly (for scope chain construction), but values remain lazy thunks. Only the dict structure (keys) must be known to create the scope chain — values are forced on demand when accessed. See [Documents & Pipelines](09-documents.md) §Scope Chain Semantics for the formal specification.
 
 This table documents the laziness behavior of every operation and the rationale for each decision.
 
@@ -994,7 +994,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
 | **Document Pipeline** | | |
 | `%` (document pipeline) | Bound as `Unevaluated` thunk across `---` boundary | `---` is not a materialization point — laziness is preserved across documents |
-| Document scope chain (`eval_document`) | Named bindings (string-keyed dict entries) materialized eagerly (strict let\*); last expression returned lazy | Named bindings are forced to WHNF before insertion into the child scope — dead-but-erroring bindings fail eagerly. Unlike letrec dict entries, which remain lazy. (`eval_pipeline.rs:108-155`) |
+| Document scope chain (`eval_document`) | Named binding keys extracted eagerly; values remain lazy thunks | Scope chain construction requires knowing dict keys, but values are inserted as lazy thunks and forced only on access. Dead bindings remain unevaluated. (`eval.rs:682-692`) |
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |

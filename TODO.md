@@ -228,16 +228,6 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** 
 - [x] Add note to `doc/02-syntax.md §String Literals` that `"..."` permits embedded literal newlines; document `"""..."""` and `i"""..."""` as the idiomatic indentation-stripping form; document `unindent` as the underlying function (`doc/02-syntax.md`)
 - [x] Tests: `unindent` directly on a raw indented string, `"""..."""` value matches `[unindent "..."]`, `i"""..."""` with `$var` interpolation, single `"` inside triple-quoted content, empty lines preserved, `[trim [unindent ...]]` trailing-newline suppression (`tests/corpus/eval/`)
 
-### seq-lazy-bindings: Sequential let-binding values should be lazy thunks
-
-`Expr::Sequential` in `[fn ...]` bodies (and wherever else `eval.rs` processes intermediate dict expressions) forces each named binding's value to WHNF before inserting it into the child scope (`eval.rs:687-690`). Only the **key** needs to be known for scope-chain construction — the value should remain a lazy thunk, consistent with every other binding in the language. The current "strict let\*" behavior means a dead binding `[x: [error "boom"]] 42` fails instead of evaluating to `42`, contradicting LLT's laziness model. `doc/08-evaluation.md:899` incorrectly states this is "inherent" to scope chain construction. **Spec chapters:** `doc/08-evaluation.md §Strictness Exceptions §4 SEQ-SCOPE`, `doc/08-evaluation.md §Laziness Design` table row 997.
-
-- [ ] In `src/eval.rs` `Expr::Sequential` arm (lines 683-693): replace the `materialize` + `Thunk::new_materialized` block with a direct insert of `val_thunk`; the dict structure (keys) is already known from the `materialize` at line 652-653 — no additional forcing of values is needed (`src/eval.rs`)
-- [ ] Update `doc/08-evaluation.md §Strictness Exceptions` item 4 (SEQ-SCOPE): remove "shallowly materialized" and "strict let\*" language; replace with "named binding values are inserted as lazy thunks — only keys must be known for scope chain construction" (`doc/08-evaluation.md`)
-- [ ] Update `doc/08-evaluation.md` laziness table row for "Document scope chain (`eval_document`)" / sequential bindings: correct "materialized eagerly (strict let\*)" to "keys extracted eagerly; values remain lazy thunks" (`doc/08-evaluation.md`)
-- [ ] Scan corpus tests for any test that expects a dead sequential binding to fail eagerly (pattern: `[x: [error ...]] result` expecting error rather than `result`); update those tests to expect lazy behavior (`tests/corpus/eval/`)
-- [ ] Add corpus test: `[fn [] [x: [error "dead"]] 42]` evaluates to `42` (dead binding never forced); `[fn [] [x: [error "live"]] x]` fails with "live" (live binding forced at use site) (`tests/corpus/eval/`)
-
 ### multi-body-positions: Extend sequential multi-body to match arms and macro bodies
 
 `Expr::Sequential` (multi-body let-binding) already works in `[fn ...]` bodies with no evaluator or type-checker changes needed. Extend the same rule to other body positions: wherever the parser has a natural delimiter after which it reads expressions until `]`, allow multiple expressions and wrap them in `Expr::Sequential`. No new keywords. **Spec chapters:** `doc/02-syntax.md §2.3.2 Special Forms`, `doc/04-functions.md`.
