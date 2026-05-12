@@ -44,6 +44,23 @@ Audit and fix incorrect `Type::Unknown` uses in `TypeEnv::with_builtins()` (`src
 - [ ] **Prelude follow-ups (batch B)** — gate on `constraint-annotations` sprint landing first (fixes `fn@[...]` positional-union path); note: these same functions are verified in `hkt-mappable-appendable` after Mappable lands — apply the edits here, verification happens there: `when`/`unless` → `fn@[a Null] [pred body@a]`, `cond` → `fn@[a Null] [branches]`, `and` → `fn@[a Bool] [p b@a]`, `or` → `fn@a [a@a b@a]`, `get-or` → `fn@a [xs key default@a]`, `find-first` → `fn@[a Null] [pred xs@Seq@a]`, `find-first-or` → `fn@a [pred xs@Seq@a default@a]`; note: verify `when`/`unless` → the `[]` return is typed `Record` (empty dict) not `Null` — the annotation `fn@[a Null]` assumes the empty-dict return is `Null`; if `[]` is typed as `Record` rather than `Null`, adjust the annotation accordingly (`stdlib/prelude.llt`)
 - [ ] Fix `result` monad dict description in `doc/11-stdlib.md` line ~554: currently lists `map:`, `or:`, `ok?:` fields that don't exist; actual prelude has only `bind: and-then  pure: result-ok` (`doc/11-stdlib.md`)
 - [ ] Fix `assert` short-form table entry in `doc/11-stdlib.md` line ~582: still shows `[fn [cond msg] ...]`, should show `fn@Unknown [cond msg@String]` to match the Prelude Type Signatures table (`doc/11-stdlib.md`)
+- [ ] [Major] `doc/11-stdlib.md:302` stale Rust builtin count: doc shows "189 Rust-native builtins" but `standard_builtins()` + aliases total ~216; update count to reflect actual value from `src/builtins.rs` (`doc/11-stdlib.md`)
+- [ ] [Major] `stdlib/prelude.llt:31-46` phantom aliases: the comment block lists 28 stable `builtin-*` aliases but `create_root_env()` only registers 12; remove the 16 phantom entries (`builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`) from the comment (`stdlib/prelude.llt`)
+- [ ] [Minor] `stdlib/prelude.llt:440` `trunc` uses `gte-impl` in the public dict instead of `>=`: change `[builtin-if [gte-impl x 0] ...]` to `[builtin-if [>= x 0] ...]` — `>=` is defined at line 399 and available in the public dict scope (`stdlib/prelude.llt`)
+- [ ] [Major] `src/lib.rs:237` depth-exceeded during display serialization emits E099 (Internal) instead of E040 (DepthExceeded): change `EvalError::internal("depth exceeded...")` to `EvalError::depth_exceeded(...)` so depth errors in `value_to_display_string` have the correct error code and category (`src/lib.rs`)
+- [ ] [Minor] `Substitution::apply()` allocates a `HashSet` for compound concrete types even when there are no inference variables; add an early `has_inference_vars()` guard so concrete types short-circuit without allocation (`src/type_unify.rs`)
+
+### doc-type-system-cleanup: Fix stale doc/06 and doc/05 references after BAS migration
+
+Post-BAS migration cleanup pass. `doc/06-type-inference.md` and related docs still reference removed constructs (RowTail, RowVar, old TypeScheme struct). These are documentation accuracy issues, not code bugs.
+
+- [ ] [Major] `doc/06-type-inference.md:475-476` still shows `RowTail::RowVar(String, u32)` in §Let-Generalization — remove this reference; under BAS all records are closed with no row tail (`doc/06-type-inference.md`)
+- [ ] [Major] `doc/06-type-inference.md:449-465` TypeScheme struct example shows stale `pub vars: Vec<String>` — update to current `pub type_vars: Vec<String>` and remove `row_vars` field (`doc/06-type-inference.md`)
+- [ ] [Major] `doc/06-type-inference.md:354-366` §Instantiation still claims "Tinct conflates type and row variables into a single namespace" — update to reflect the current separated type_map/row_map design and note that row vars were removed under BAS (`doc/06-type-inference.md`)
+- [ ] [Minor] `doc/06-type-inference.md:395-400` S-REC rule still mentions "RowVar tail" and openness via row variables — update to: "under BAS all records are closed (no RowVar tail); width subtyping means a record with MORE fields is a subtype of one with FEWER fields" (`doc/06-type-inference.md`)
+- [ ] [Minor] `doc/05-type-annotations.md:343-346` row polymorphism examples show `[name: String ...r]` (named row variable) — under BAS row vars are removed; update examples to note this syntax is no longer valid and openness is via width subtyping (`doc/05-type-annotations.md`)
+- [ ] [Minor] `doc/07-type-extensions.md` presents archived Rémy row design (Parts 1–10, ~500 lines) before the live BAS system (§Boolean-Algebraic Subtyping at line ~747) — restructure: move BAS section to top, retitle Parts 1–10 as "Appendix: Archived Rémy Row Polymorphism" (`doc/07-type-extensions.md`)
+- [ ] [Minor] `doc/16-architecture.md:505,551` still references removed MAX_EVAL_DEPTH — remove row "Eval depth | MAX_EVAL_DEPTH = 256" from security table; update line 551 to remove MAX_EVAL_DEPTH from the depth limit list; add note that eval depth was removed in sequential-strict sprint and is now bounded only by available Rust call stack (`doc/16-architecture.md`)
 
 ### prelude-annotation-sweep: Comprehensive annotation pass over all public prelude functions
 
@@ -355,6 +372,15 @@ Accepted 2026-05-11. See `doc/whatif/builtin-privacy.md`. **Spec chapters:** `do
 
 ## Code Housekeeping
 
+### test-coverage-gaps: Fill critical corpus and unit test coverage gaps
+
+Gaps identified in Cycle #246 analysis. None require design work — these are concrete missing tests.
+
+- [ ] [Major] Type assertion corpus coverage is thin (currently ~4 files in `tests/corpus/eval/typecheck/`) — add ~6 more cases covering: TypeVar constraint propagation through nested dicts, constraint enforcement at multiple call sites for the same generic function, BAS subtyping in TypeAssert position (`@[[all A B]]`, `@[[without A]]`), intersection type narrowing in match arms, and `Type::Error` sentinel cascade prevention (`tests/corpus/eval/typecheck/`)
+- [ ] [Major] Laziness proof corpus tests are missing key coverage: add `tests/corpus/eval/lazy/` tests for `$map` on dicts (confirm values remain as PendingCall thunks, not forced), `$filter` selective materialization (predicate forced, non-selected elements not forced), `and`/`or` short-circuit (second arg thunk untouched when result determined by first), lazy `$concat` on seqs (O(1) chain, no element evaluation) (`tests/corpus/eval/lazy/`)
+- [ ] [Major] Resource limit corpus tests missing: add end-to-end corpus tests that trigger `MAX_COLLECT_SIZE` (collect into a >1M item dict) and `MAX_STRING_SIZE` (build a >64MB string via `str-repeat`) and verify correct `[E040]`/`[E081]`-coded errors (`tests/corpus/eval/errors/`)
+- [ ] [Minor] `split_test_file()` in `tests/test_helpers.rs` has zero unit tests despite being the core test infrastructure parser — add unit tests covering: `=== out` + `=== warn` + `=== error` sections, multiple sections in one file, missing `=== out` section, `#?`/`#!` comment lines, empty file, file with only comments (`tests/test_helpers.rs`)
+
 ### stale-todo-cleanup: Remove stale sprint-label TODO comments
 
 These TODO comments reference completed sprints but were never cleaned up. Several reference sprints whose approach was later revised (arena FlatEnv, perf-ast-rc migration). Each item is small — verify, then remove or update.
@@ -397,6 +423,7 @@ Genuine deferred items from the `http-sessions` and `connector-tls` sprints. Eac
 - [ ] **`textDocument/inlayHints`:** return inferred types inline next to unannotated bindings in the visible range; add `inlay_hints_in_range(doc, range) -> Vec<InlayHint>` in `src/lsp/analysis.rs` — for each top-level dict entry whose value is not annotated, look up its inferred `TypeScheme` from the type map and emit a hint with the display string (e.g., `: Int`, `: Fn@Bool [a a]`) positioned after the binding name; register `InlayHintRequest::METHOD` in `src/lsp/server.rs`; declare `inlay_hint_provider` in `ServerCapabilities`; this is the highest-information-density feature for a type-inferred language (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
 - [ ] **`textDocument/signatureHelp`:** when the cursor is inside a function call `[f ...]`, look up `f`'s `TypeScheme`, extract parameter names and types, and return a `SignatureInformation` showing the full `Fn@Return [param1@Type ...]` signature with the active parameter highlighted based on cursor position; register `SignatureHelpRequest::METHOD` in `src/lsp/server.rs`; declare `signature_help_provider` in `ServerCapabilities` (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
 - [ ] **`workspace/symbol`:** search all top-level bindings across all open and recently-loaded documents matching a query string; return as `WorkspaceSymbol` entries with their file URIs and definition ranges; register `WorkspaceSymbolRequest::METHOD` in `src/lsp/server.rs`; declare `workspace_symbol_provider` in `ServerCapabilities` (`src/lsp/server.rs`, `src/lsp/document.rs`)
+- [ ] [Major] Verify LSP `document.rs` `update_document` calls `desugar_file()` BEFORE `typecheck_file()` — all other entry points follow `expand_macros → desugar → resolve → typecheck → eval`; if LSP reorders or skips desugar, the type checker sees `VarRef("_")` instead of desugared `Fn` nodes producing spurious "undefined variable _" errors; confirm and add a PIPELINE INVARIANT comment (`src/lsp/document.rs`)
 
 ---
 

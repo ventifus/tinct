@@ -834,10 +834,17 @@ impl Type {
     /// Check S-RcdTop: does the union contain two closed single-field Records with disjoint keys?
     /// Returns Some(()) if the union simplifies to Top, None otherwise.
     fn check_s_rcd_top(members: &[Type]) -> Option<()> {
-        // Collect all single-field records from the union (all records are closed under BAS)
-        let single_field_closed: Vec<&str> = members
+        // S-RcdTop (Chau & Parreaux, POPL 2026): {x: tau} | {y: pi} = Top
+        // Requires ALL members to be single-field records with pairwise disjoint field names.
+        // A union like Union([Float, {x: Int}, {y: Str}]) must NOT trigger this rule
+        // because Float is not a single-field record.
+        if members.len() < 2 {
+            return None;
+        }
+        // Guard: every member must be a single-field record
+        let single_field_keys: Vec<&str> = members
             .iter()
-            .filter_map(|m| {
+            .map(|m| {
                 if let Type::Record(row) = m {
                     if row.fields.len() == 1 {
                         return row.fields.keys().next().map(|k| k.as_str());
@@ -845,15 +852,12 @@ impl Type {
                 }
                 None
             })
-            .collect();
+            .collect::<Option<Vec<_>>>()?;
 
         // Need at least two with different field names
-        if single_field_closed.len() < 2 {
-            return None;
-        }
-        for i in 0..single_field_closed.len() {
-            for j in (i + 1)..single_field_closed.len() {
-                if single_field_closed[i] != single_field_closed[j] {
+        for i in 0..single_field_keys.len() {
+            for j in (i + 1)..single_field_keys.len() {
+                if single_field_keys[i] != single_field_keys[j] {
                     return Some(());
                 }
             }
@@ -862,11 +866,18 @@ impl Type {
     }
 
     /// Check S-ClsBot: does the intersection contain two closed single-field Records with
-    /// different field names?  Such a value cannot exist → Never.
+    /// different field names?  Such a value cannot exist -> Never.
+    /// S-ClsBot (Chau & Parreaux, POPL 2026): {x: tau} & {y: pi} = Never when x != y.
+    /// Requires ALL members to be single-field records. An intersection like
+    /// Intersection([Int, {x: T}, {y: U}]) must NOT trigger this rule.
     fn check_s_cls_bot(members: &[Type]) -> bool {
-        let single_field_closed: Vec<&str> = members
+        if members.len() < 2 {
+            return false;
+        }
+        // Guard: every member must be a single-field record
+        let single_field_keys: Option<Vec<&str>> = members
             .iter()
-            .filter_map(|m| {
+            .map(|m| {
                 if let Type::Record(row) = m {
                     if row.fields.len() == 1 {
                         return row.fields.keys().next().map(|k| k.as_str());
@@ -875,14 +886,14 @@ impl Type {
                 None
             })
             .collect();
+        let Some(keys) = single_field_keys else {
+            return false;
+        };
 
         // If there are two entries with different names, the intersection is uninhabited
-        if single_field_closed.len() < 2 {
-            return false;
-        }
-        for i in 0..single_field_closed.len() {
-            for j in (i + 1)..single_field_closed.len() {
-                if single_field_closed[i] != single_field_closed[j] {
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                if keys[i] != keys[j] {
                     return true;
                 }
             }
