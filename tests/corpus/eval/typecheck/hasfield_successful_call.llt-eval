@@ -1,0 +1,7 @@
+# Successful call site where dict has the required field
+# The polymorphic get_field function should accept any dict with a "port" field
+[get_port: [fn [config] [get "port" config]]
+ server: [port: 8080  host: "localhost"]
+ result: [get_port server]]
+=== out
+Dict({"get_port": Function(config), "server": Dict({"port": Int(8080), "host": String("localhost")}), "result": Int(8080)})

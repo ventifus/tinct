@@ -57,31 +57,69 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
 
 ---
 
+## Type Quality
+
+Two-tier Unknown diagnostic policy: explicitly annotated `@Unknown` is silenced in default mode and warned in `--strict`; inferred `Unknown` is warned in default mode and errors in `--strict`. The same warning channel also surfaces over-broad annotations where inference determines the type is narrower than declared. Both sprints are independent of HKT and can land at any time.
+
+### type-warning-channel: Add three-tier diagnostic system to the type checker
+
+The type checker currently returns only `Vec<TypeError>` — all diagnostics are fatal. This sprint adds a three-tier notification system: `Info` (hint/suggestion), `Warn` (concern), `Err` (fatal). `--strict` bumps every diagnostic up one level: Info→Warn, Warn→Err. This maps directly onto LSP severity levels and gives a principled model for all future type quality diagnostics.
+
+- [ ] Add `TypeDiagnostic` type to `src/error.rs` with a `Level` enum `{ Info, Warn, Err }`; include `message: String`, `span: Span`, `code: &'static str`, `level: Level`; `--strict` bump is applied at emission time by a `bump(level) -> Level` function that shifts Info→Warn, Warn→Err, Err→Err (`src/error.rs`)
+- [ ] Update `typecheck_file` to return `(Rc<TypeEnv>, Vec<TypeError>, Vec<TypeDiagnostic>)` — existing `TypeError` vec for hard errors, new `TypeDiagnostic` vec for the three-tier system; update `typecheck_file_with_types` to match (`src/typecheck.rs`)
+- [ ] Update all call sites in `src/lib.rs`, `src/main.rs`, `src/lsp/document.rs` to destructure the new return and route diagnostics by level (`src/lib.rs`, `src/main.rs`, `src/lsp/document.rs`)
+- [ ] CLI output: `Info` → dimmed hint text; `Warn` → yellow warning; `Err` (from strict bump) → red error, fatal; exit 0 when only Info/Warn present, non-zero on Err (`src/main.rs`)
+- [ ] LSP output: `Info` → `DiagnosticSeverity::Hint` or `Information`; `Warn` → `DiagnosticSeverity::Warning`; `Err` → `DiagnosticSeverity::Error` (`src/lsp/document.rs`)
+- [ ] Tests: file with Info/Warn diagnostics compiles and exits 0; `--strict` escalates Warn to Err; LSP emits correct severity per level (`tests/corpus/eval/`, `tests/lsp_corpus_tests.rs`)
+
+### unknown-diagnostics: Unknown and over-broad annotation diagnostics
+
+Post-processing pass after `typecheck_file` completes: walk each binding's final `TypeScheme` in the type map, classify each diagnostic, and emit `TypeDiagnostic` at the appropriate level (Info/Warn/Err). Also detects over-broad annotations where inference produces a more specific type than declared.
+
+**Diagnostic classification (before `--strict` bump):**
+- Explicit `@Unknown` annotation / `[@Unknown expr]` TypeAssert → **Info** (you chose it; `--strict` bumps to Warn)
+- Over-broad annotation (`fn@Number` when inference gives `Int`, etc.) → **Info** (a suggestion; `--strict` bumps to Warn)
+- Inferred Unknown (type resolved to Unknown without the user asking for it) → **Warn** (you didn't choose this; `--strict` bumps to Err)
+
+`--strict` applies the level bump from `type-warning-channel` uniformly — no special-casing per diagnostic.
+
+- [ ] Add post-processing function `scan_type_quality(type_map, ast, diagnostics: &mut Vec<TypeDiagnostic>)` in `src/typecheck.rs`: called after `typecheck_file` completes, receives the type map and original AST; emits diagnostics at base level (Info/Warn), `--strict` bump applied at CLI/LSP layer (`src/typecheck.rs`)
+- [ ] Unknown detection: for each binding's `TypeScheme`, walk all type positions (return type, param types, dict entry types, intermediate types); check if `Unknown` appears; for each occurrence, inspect the original AST annotation — if `@Unknown` was explicitly written, mark as "explicit"; otherwise mark as "inferred" (`src/typecheck.rs`)
+- [ ] TypeAssert detection: for `[@Unknown expr]` TypeAssert nodes in the AST, treat the same as an explicit `@Unknown` annotation — silent (non-strict) / warn (strict) (`src/typecheck.rs`)
+- [ ] Emit Unknown diagnostics: inferred Unknown → `TypeDiagnostic { level: Warn }` (bumped to Err by `--strict`); explicit Unknown → `TypeDiagnostic { level: Info }` (bumped to Warn by `--strict`) (`src/typecheck.rs`)
+- [ ] Over-broad annotation detection: for each binding with a declared return type annotation and an inferred type, check `is_subtype(inferred, declared) && !is_subtype(declared, inferred)`; when true, emit `TypeDiagnostic { level: Info }` suggesting the inferred type as the tighter annotation (bumped to Warn by `--strict`) (`src/typecheck.rs`, `src/type_unify.rs`)
+- [ ] Over-broad detection covers: `fn@Number` when body infers `Int`; `param@Dict` when inference constrains to a specific record; `@Top` / `@Any` when a precise type is inferred; union annotations `@[Int String]` when inference produces only one branch (`src/typecheck.rs`)
+- [ ] Wire `scan_type_quality` into `typecheck_file`; pass the `Vec<TypeDiagnostic>` through the return; `--strict` bump is applied at emission time in the CLI/LSP layer, not in the scanner itself — the scanner always emits at the base level (`src/typecheck.rs`, `src/main.rs`)
+- [ ] Tests: corpus tests with `=== warn` sections for: inferred Unknown warns; explicit `@Unknown` silent in default; explicit `@Unknown` warns in `--strict`; inferred Unknown errors in `--strict`; `[@Unknown expr]` same as explicit; `fn@Number` with `Int` body warns "consider @Int"; `param@Dict` with specific record warns; `--strict` escalation (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** `type-warning-channel`
+
+---
+
 ## Higher-Kinded Types
 
 Accepted 2026-05-11. See `doc/whatif/completed/hkt-monads.md` for the full design.
 Adds `Kind::Operator` (`* → *`), `Kind::Label`, `Type::App`/`Type::Operator`, the Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable typeclass hierarchy, Maybe ADT, `HasField` qualified-type constraint for precise `get`/`get-in` typing, generic functions (sequence, traverse, forM, when, liftM2), and inferred `[do]`.
 
-### hkt-field-access: HasField constraint, typed get/get-in
+### label-annotation-syntax: Fix label-kinded TypeVar annotation and remove explicit HasField from user code
 
-See `doc/whatif/completed/hkt-monads.md` §Field Access Typing. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules §Field Access Typing`.
+Three design corrections discovered after `hkt-field-access` was implemented:
+(1) `key@"l"` (string literal) is the wrong syntax — Label-kinded TypeVars have two correct forms depending on whether the name is needed elsewhere in the signature;
+(2) `constraint: [HasField l d a]` is both malformed and wrong — HasField is never user-written, it is generated by the type checker from the label annotation;
+(3) For `get`/`get-or`, the label TypeVar name is never referenced by the user — `key@Label` (anonymous, parallel to `f@Operator`) is sufficient; `key@[label: l]` (named) is only needed when the same label must appear in multiple type positions.
 
-- [ ] Migrate `Constraint` from `{ class: String, var: String }` struct to `pub enum Constraint { Class { class: String, var: String }, HasField { label: Label, dict_var: String, field_var: String } }` (`src/types.rs`); `label: Label` uses the `Label` ADT from `hkt-foundation-b` (`pub enum Label { Concrete(String), Var(String) }`); update ALL Constraint creation sites to `Constraint::Class { class, var }` — search: `grep -n 'Constraint {' src/` (expected in `src/typecheck_annot.rs`, `src/type_unify.rs`, `src/typecheck.rs`, `src/type_env.rs`); update all match sites on `Constraint`
-- [ ] Add `resolve_has_field(label, dict_type, field_var, state)` in `src/type_unify.rs` implementing `[HAS-FIELD-REC]`, `[HAS-FIELD-UNION]`, `[HAS-FIELD-INTER]`, `[HAS-FIELD-TOP]` (for S-RcdTop-collapsed unions), `[HAS-FIELD-UNKNOWN]`, `[HAS-FIELD-NEVER]`; uninhabitable-intersection warning; field-set merge accumulation; **BAS ordering**: in `check_get` (`src/typecheck.rs` line 2125), resolve `HasField` constraints on the inferred `dict_ty` BEFORE calling `Type::normalize_union` or `Type::simplify_type` on the dict type — the union must be processed in its un-normalized form so `[HAS-FIELD-UNION]` can fire before S-RcdTop collapses disjoint-field unions to ⊤
-- [ ] Extend `check_get` in `src/typecheck.rs` (line 2125): add TypeVar arm — only when `kind_env[key_var] = Kind::Label` (key is a label TypeVar) emit `Constraint::HasField { label: Label::Var(name), ... }`; for unannotated TypeVar keys (not label-kinded), fall back to `Unknown` (existing behavior); add Union arm (`[HAS-FIELD-UNION]`), Intersection, Top/Unknown arms; deferred constraints in `state.constraints` as `Constraint::HasField`, merged by field-set union (not structural record unification)
-- [ ] Add `check_get_in` in `src/typecheck.rs` — called as special-form handler receiving raw AST node; unfolds syntactic `Seq` literal paths where all elements are `StringLiteral` via `[GET-IN-CONS]`; falls back to `Unknown` for variable-length or non-literal paths
-- [ ] Register `get`'s label-polymorphic scheme in `src/type_env.rs`: `∀ (l:Label) d a. HasField l d a => StringLiteral(l) → d → a`; register `get-in` as special form dispatched to `check_get_in`
-- [ ] Update `stdlib/prelude.llt` `get`/`get-or`/`get-in` annotations (requires `constraint-annotations` sprint to have landed):
-  ```tinct
-  get:    [fn@[return: a  constraint: [HasField l d a]] [key@"l"  dict@d] ...]
-  get-or: [fn@[return: a  constraint: [HasField l d a]] [key@"l"  dict@d  default@a] ...]
-  get-in: [fn@[doc: "Chained field access — return type inferred from literal path"] [path  dict] ...]
-  ```
-- [ ] Tests: `[get "name" {name: String}]` → `String`; TypeVar dict → field constraint generated; `[get "name" (A|B)]` → `A.name|B.name`; `[get k dict]` with `k:Str` → `Unknown`; `[get-in ["a" "b"] nested]` → field type; variable path → `Unknown`; label-polymorphic fn inferred type; conflicting intersection warns (`tests/corpus/eval/typecheck/`, `=== out`/`=== error`)
+**Two annotation forms for Label-kinded TypeVars:**
+- `key@Label` — anonymous; type checker generates a fresh label TypeVar internally; HasField constraint generated automatically; the label name is never visible to the user. Use when the label TypeVar is not referenced elsewhere in the type.
+- `key@[label: l]` — named; binds label TypeVar `l` in the type scheme; use when the same label must appear in multiple positions (e.g. two parameters that must access the same field, or a return annotation that references the label).
 
-**Depends on:** `hkt-foundation-b`, `constraint-annotations`
-
-Note: `hkt-field-access` also requires `constraint-annotations` because the prelude annotation task uses `fn@[constraint: [HasField l d a]]` syntax. This is captured in the `Depends on:` line above.
+- [ ] Add `@Label` simple annotation form to `resolve_type_name` in `src/typecheck_annot.rs`: when annotation is `Simple("Label")`, create a fresh anonymous Label-kinded TypeVar (system-generated name), register `kind_env[fresh] = Kind::Label`; parallel to `@Operator` which creates an anonymous Operator-kinded TypeVar (`src/typecheck_annot.rs`)
+- [ ] Add `[label: name]` property dict form to the annotation resolver: when a `PropertyDict` annotation has exactly one entry with key `label` and a bare-name value, create a named Label-kinded TypeVar, register it in `kind_env` and `ann_mapping`; use when the label TypeVar must be referenced elsewhere in the type scheme (`src/typecheck_annot.rs`)
+- [ ] Remove the `key@"l"` string-literal mechanism for Label TypeVars from `src/typecheck_annot.rs` — it was introduced in `hkt-field-access` and has no users outside that sprint; restore whatever pre-hkt-field-access behavior existed for string literals in annotation position (i.e. remove the code that was added, do nothing special) (`src/typecheck_annot.rs`)
+- [ ] Update `stdlib/prelude.llt` `get`/`get-or` annotations: use the anonymous form since the label TypeVar is never referenced by name; remove `constraint: [HasField l d a]` entirely; correct annotations: `get: [fn@[return: a] [key@Label  dict@d] ...]` and `get-or: [fn@[return: a] [key@Label  dict@d  default@a] ...]` (`stdlib/prelude.llt`)
+- [ ] Update `src/type_env.rs` scheme registration for `get`/`get-or` to match the anonymous label form; the Rust-side scheme stores the HasField constraint as a generated constraint, not user-written
+- [ ] Update `doc/whatif/completed/hkt-monads.md §Field Access Typing` and `doc/06-type-inference.md §HasField`: document both `@Label` (anonymous) and `@[label: l]` (named) forms with examples; replace `key@"l"` throughout; clarify HasField is never user-written
+- [ ] Remove the stale note at the bottom of `hkt-field-access` sprint about `constraint-annotations` dependency for HasField syntax — both the dependency and the HasField annotation syntax were incorrect
+- [ ] Tests: `key@Label` generates HasField constraint and returns precise field type; `key@[label: l]` where same `l` is used in two parameters works; `get`/`get-or` return precise types at call sites with string literal keys (`tests/corpus/eval/typecheck/`, `tests/lsp_corpus_tests.rs`)
 
 ### hkt-bas: BAS extension for App type atoms and functorial subtyping
 
@@ -341,6 +379,19 @@ Two correctness/quality gaps in the evaluator noted in source comments.
 ---
 
 ## CLI
+
+### clock-cap-default: Make %clock available by default, simplify flags
+
+`%clock` (real system clock) is injected by default — no opt-in flag needed, parallel to `%stdin`.
+See `src/main.rs` clock cap injection blocks (~line 1192).
+
+- [ ] Replace `cap_clock: Vec<String>` with `no_cap_clock: bool` in `Args` struct (`src/main.rs:136`)
+- [ ] Replace `cap_clock_fixed: Vec<String>` (pair-taking) with `cap_clock_fixed: Option<String>` (single RFC3339 arg) (`src/main.rs:142`)
+- [ ] Update `run_eval_pipeline` signature to match (`src/main.rs:854`)
+- [ ] Rewrite injection block: default = real clock as `%clock`; if `--cap-clock-fixed RFC3339` override with fixed; if `--no-cap-clock` skip entirely (`src/main.rs:1192`)
+- [ ] Remove `--cap-clock` from the "flags that take a value, skip it" list; add `--no-cap-clock` as boolean (`src/main.rs:805`)
+- [ ] Update `--cap-clock-fixed` help text to drop `NAME` parameter
+- [ ] Update 3 CLI tests: `%my-clock` / `%test-clock` → `%clock`; add `--no-cap-clock` test
 
 ### cli-gaps: --libdir-path override and other deferred CLI features
 

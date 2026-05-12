@@ -1,0 +1,8 @@
+# HasField constraint with union type distribution
+# [HAS-FIELD-UNION] rule: accessing a field on a union distributes over members
+[config_a: [name: "Alice"  role: "admin"]
+ config_b: [name: "Bob"  level: 5]
+ configs: [0: config_a  1: config_b]
+ names: [map [fn [c] [get "name" c]] configs]]
+=== out
+Dict({"config_a": Dict({"name": String("Alice"), "role": String("admin")}), "config_b": Dict({"name": String("Bob"), "level": Int(5)}), "configs": Dict({0: Dict({"name": String("Alice"), "role": String("admin")}), 1: Dict({"name": String("Bob"), "level": Int(5)})}), "names": Dict({0: String("Alice"), 1: String("Bob")})})

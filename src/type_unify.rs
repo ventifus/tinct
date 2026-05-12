@@ -66,10 +66,39 @@ pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint
 
     // Superclass check: is there a constraint C in context such that
     // C has target.class as a superclass (transitively)?
-    for constraint in context {
-        if constraint.var == target.var {
-            if is_superclass_of(class_env, &constraint.class, &target.class) {
-                return true;
+    // Only applicable to Class constraints
+    if let Constraint::Class {
+        class: target_class,
+        var: target_var,
+    } = target
+    {
+        for constraint in context {
+            if let Constraint::Class { class, var } = constraint {
+                if var == target_var {
+                    if is_superclass_of(class_env, class, target_class) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // HasField entailment: HasField with same label and dict_var entails HasField
+    // (field_var can differ as it's an existential output)
+    if let Constraint::HasField {
+        label: target_label,
+        dict_var: target_dict,
+        ..
+    } = target
+    {
+        for constraint in context {
+            if let Constraint::HasField {
+                label, dict_var, ..
+            } = constraint
+            {
+                if label == target_label && dict_var == target_dict {
+                    return true;
+                }
             }
         }
     }
@@ -134,33 +163,38 @@ fn check_constraints_on_var(
 ) -> Result<(), TypeError> {
     // Find all constraints on this variable
     for constraint in &state.constraints.clone() {
-        if constraint.var == var_name {
-            // First, check the fixed instance sets (B4 constrained type variables)
-            if satisfies_constraint(concrete_ty, &constraint.class) {
+        match constraint {
+            Constraint::Class { class, var } if var == var_name => {
+                // First, check the fixed instance sets (B4 constrained type variables)
+                if satisfies_constraint(concrete_ty, class) {
+                    continue;
+                }
+
+                // If not in fixed instance set, try instance resolution
+                // This enables user-defined instances (future work: dictionary construction)
+                // Clone instance_env to avoid borrowing state both immutably (for the
+                // field access) and mutably (as the unify parameter) at the same time.
+                let inst_env = state.instance_env.clone();
+                if inst_env
+                    .resolve_instance(class, concrete_ty, state)
+                    .is_some()
+                {
+                    // Instance found - constraint satisfied
+                    continue;
+                }
+
+                // No instance found - constraint violated
+                return Err(TypeError::new(
+                    format!("type {} does not satisfy constraint {}", concrete_ty, class),
+                    span,
+                ));
+            }
+            Constraint::HasField { .. } => {
+                // HasField constraints are resolved separately in resolve_has_field
+                // They don't participate in check_constraints_on_var
                 continue;
             }
-
-            // If not in fixed instance set, try instance resolution
-            // This enables user-defined instances (future work: dictionary construction)
-            // Clone instance_env to avoid borrowing state both immutably (for the
-            // field access) and mutably (as the unify parameter) at the same time.
-            let inst_env = state.instance_env.clone();
-            if inst_env
-                .resolve_instance(&constraint.class, concrete_ty, state)
-                .is_some()
-            {
-                // Instance found - constraint satisfied
-                continue;
-            }
-
-            // No instance found - constraint violated
-            return Err(TypeError::new(
-                format!(
-                    "type {} does not satisfy constraint {}",
-                    concrete_ty, constraint.class
-                ),
-                span,
-            ));
+            _ => continue,
         }
     }
     Ok(())
@@ -172,14 +206,18 @@ fn check_constraints_on_var(
 /// With promotion, `_t0` binds to `Int`, and both `IntLiteral(1)` and `IntLiteral(2)` unify
 /// with `Int` via the literal-to-parent promotion rules.
 fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferState) -> Type {
-    // Only promote if the variable has constraints
-    let has_constraints = state.constraints.iter().any(|c| c.var == var_name);
-    if !has_constraints {
+    // Label-kinded TypeVars must not be promoted regardless of constraint presence
+    // (preserves StringLiteral identity for field access)
+    if state.kind_env.get(var_name) == Some(&Kind::Label) {
         return ty;
     }
 
-    // Label-kinded TypeVars must not be promoted (preserves StringLiteral identity)
-    if state.kind_env.get(var_name) == Some(&Kind::Label) {
+    // Only promote if the variable has Class constraints
+    let has_class_constraints = state.constraints.iter().any(|c| match c {
+        Constraint::Class { var, .. } => var == var_name,
+        _ => false,
+    });
+    if !has_class_constraints {
         return ty;
     }
 
@@ -187,6 +225,107 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
         Type::IntLiteral(_) => Type::Int,
         Type::StringLiteral(_) => Type::Str,
         _ => ty,
+    }
+}
+
+/// Resolve a HasField constraint against a dict type.
+/// Returns the field type if the constraint can be satisfied, or an error.
+///
+/// Implements the [HAS-FIELD-*] rules from hkt-monads.md §Field Access Typing:
+/// - [HAS-FIELD-REC]: Record with matching field → return field type
+/// - [HAS-FIELD-UNION]: Union members → collect field types, return Union
+/// - [HAS-FIELD-INTER]: Intersection → all members must have field, return Intersection of field types
+/// - [HAS-FIELD-TOP]/[HAS-FIELD-UNKNOWN]: return Unknown
+/// - [HAS-FIELD-NEVER]: return Never
+const MAX_RESOLVE_HAS_FIELD_DEPTH: usize = 256;
+
+pub fn resolve_has_field(
+    label: &Label,
+    dict_type: &Type,
+    state: &mut InferState,
+    span: Span,
+    depth: usize,
+) -> Result<Type, TypeError> {
+    // Check recursion depth to prevent infinite loops on cyclic types
+    if depth > MAX_RESOLVE_HAS_FIELD_DEPTH {
+        return Ok(Type::Unknown);
+    }
+
+    // Resolve label to concrete string
+    let label_str = match label {
+        Label::Concrete(s) => s.clone(),
+        Label::Var(var_name) => {
+            // Look up the label var in substitution
+            match state.subst.type_map.get(var_name) {
+                Some(Type::StringLiteral(s)) => s.clone(),
+                _ => {
+                    return Err(TypeError::new(
+                        format!("label variable {} not bound to a string literal", var_name),
+                        span,
+                    ))
+                }
+            }
+        }
+    };
+
+    // Apply substitution to dict_type to dereference any already-bound TypeVars
+    let dict_type = state.subst.apply(dict_type);
+
+    match &dict_type {
+        // [HAS-FIELD-REC]: Record with matching field → return field type
+        Type::Record(row) => {
+            if let Some(field_ty) = row.fields.get(&label_str) {
+                Ok(field_ty.clone())
+            } else {
+                Err(TypeError::new(
+                    format!("record has no field '{}'", label_str),
+                    span,
+                ))
+            }
+        }
+
+        // [HAS-FIELD-UNION]: Union members → collect field types, return Union
+        Type::Union(members) => {
+            let mut field_types = Vec::new();
+            for member in members {
+                let field_ty = resolve_has_field(label, member, state, span, depth + 1)?;
+                field_types.push(field_ty);
+            }
+            Ok(Type::normalize_union(field_types))
+        }
+
+        // [HAS-FIELD-INTER]: Intersection → all members must have field, return Intersection of field types
+        Type::Intersection(members) => {
+            let mut field_types = Vec::new();
+            for member in members {
+                let field_ty = resolve_has_field(label, member, state, span, depth + 1)?;
+                field_types.push(field_ty);
+            }
+            Ok(Type::normalize_intersection(field_types))
+        }
+
+        // [HAS-FIELD-TOP]: Top → Unknown
+        Type::Top => Ok(Type::Unknown),
+
+        // [HAS-FIELD-UNKNOWN]: Unknown → Unknown
+        Type::Unknown => Ok(Type::Unknown),
+
+        // [HAS-FIELD-NEVER]: Never → Never (vacuous)
+        Type::Never => Ok(Type::Never),
+
+        // TypeVar: defer constraint (handled by caller)
+        Type::TypeVar(_, _) => Err(TypeError::new(
+            format!(
+                "cannot resolve HasField constraint on unbound type variable (expected caller to defer)"
+            ),
+            span,
+        )),
+
+        // All other types don't support field access
+        _ => Err(TypeError::new(
+            format!("type {} does not support field access", dict_type),
+            span,
+        )),
     }
 }
 

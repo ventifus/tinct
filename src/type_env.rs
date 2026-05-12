@@ -181,8 +181,42 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
 
         // Copy constraints with renamed variables
         for constraint in &scheme.constraints {
-            if let Some(fresh_var) = var_renaming.get(&constraint.var) {
-                state.add_constraint(constraint.class.clone(), fresh_var.clone());
+            match constraint {
+                Constraint::Class { class, var } => {
+                    if let Some(fresh_var) = var_renaming.get(var) {
+                        state.add_constraint(class.clone(), fresh_var.clone());
+                    }
+                }
+                Constraint::HasField {
+                    label,
+                    dict_var,
+                    field_var,
+                } => {
+                    // Rename both dict_var and field_var
+                    if let (Some(fresh_dict_var), Some(fresh_field_var)) =
+                        (var_renaming.get(dict_var), var_renaming.get(field_var))
+                    {
+                        // Rename label variable if it's a Label::Var
+                        let fresh_label = match label {
+                            Label::Concrete(s) => Label::Concrete(s.clone()),
+                            Label::Var(var_name) => {
+                                if let Some(fresh_name) = var_renaming.get(var_name) {
+                                    Label::Var(fresh_name.clone())
+                                } else {
+                                    // Label::Var not in var_renaming must be a free variable
+                                    // from an outer scope or registered in kind_env with Kind::Label
+                                    Label::Var(var_name.clone())
+                                }
+                            }
+                        };
+
+                        state.constraints.push(Constraint::HasField {
+                            label: fresh_label,
+                            dict_var: fresh_dict_var.clone(),
+                            field_var: fresh_field_var.clone(),
+                        });
+                    }
+                }
             }
         }
 
@@ -215,8 +249,42 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
 
     // Copy constraints with renamed variables
     for constraint in &scheme.constraints {
-        if let Some(fresh_var) = var_renaming.get(&constraint.var) {
-            state.add_constraint(constraint.class.clone(), fresh_var.clone());
+        match constraint {
+            Constraint::Class { class, var } => {
+                if let Some(fresh_var) = var_renaming.get(var) {
+                    state.add_constraint(class.clone(), fresh_var.clone());
+                }
+            }
+            Constraint::HasField {
+                label,
+                dict_var,
+                field_var,
+            } => {
+                // Rename both dict_var and field_var
+                if let (Some(fresh_dict_var), Some(fresh_field_var)) =
+                    (var_renaming.get(dict_var), var_renaming.get(field_var))
+                {
+                    // Rename label variable if it's a Label::Var
+                    let fresh_label = match label {
+                        Label::Concrete(s) => Label::Concrete(s.clone()),
+                        Label::Var(var_name) => {
+                            if let Some(fresh_name) = var_renaming.get(var_name) {
+                                Label::Var(fresh_name.clone())
+                            } else {
+                                // Label::Var not in var_renaming must be a free variable
+                                // from an outer scope or registered in kind_env with Kind::Label
+                                Label::Var(var_name.clone())
+                            }
+                        }
+                    };
+
+                    state.constraints.push(Constraint::HasField {
+                        label: fresh_label,
+                        dict_var: fresh_dict_var.clone(),
+                        field_var: fresh_field_var.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -312,7 +380,22 @@ pub fn generalize_with_doc(
         let mut generalizable_constraints: Vec<Constraint> = state
             .constraints
             .iter()
-            .filter(|c| generalizable_vars.contains(&c.var))
+            .filter(|c| match c {
+                Constraint::Class { var, .. } => generalizable_vars.contains(var),
+                Constraint::HasField {
+                    label,
+                    dict_var,
+                    field_var,
+                } => {
+                    let label_ok = match label {
+                        Label::Concrete(_) => true,
+                        Label::Var(var_name) => generalizable_vars.contains(var_name),
+                    };
+                    label_ok
+                        && generalizable_vars.contains(dict_var)
+                        && generalizable_vars.contains(field_var)
+                }
+            })
             .cloned()
             .collect();
 

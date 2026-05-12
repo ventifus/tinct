@@ -8,8 +8,8 @@ use std::rc::Rc;
 use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Pattern, Span, Spanned};
 use crate::coverage;
 use crate::types::{
-    generalize, instantiate_at_level, instantiate_scheme, unify, InferState, Row, Substitution,
-    Type, TypeAlias, TypeEnv, TypeError, TypeScheme,
+    generalize, instantiate_at_level, instantiate_scheme, resolve_has_field, unify, Constraint,
+    InferState, Kind, Label, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError, TypeScheme,
 };
 
 // Split modules — annotation resolution and dict inference
@@ -1377,7 +1377,7 @@ fn infer_expr(
                 }
             }
 
-            // Special case: `get` and `get?` are type-level special forms that narrow
+            // Special case: `get`, `get?`, and `get-in` are type-level special forms that narrow
             // their return type based on the dict argument's type (Map[K V] → V or V|Null).
             if let Expr::VarRef { name, .. } = &func.node {
                 if (name == "get" || name == "get?") && named_args.is_empty() {
@@ -1391,6 +1391,9 @@ fn infer_expr(
                         state,
                         type_map,
                     );
+                }
+                if name == "get-in" && named_args.is_empty() {
+                    return check_get_in(args, named_args, env, expr.span, state, type_map);
                 }
             }
 
@@ -2233,14 +2236,117 @@ fn check_get(
                             }
                         }
                     }
+                    Type::TypeVar(key_var_name, _) => {
+                        // Label TypeVar key → resolve via resolve_has_field
+                        if state.kind_env.get(key_var_name) == Some(&Kind::Label) {
+                            // Try to resolve the field type. If the label TypeVar is already
+                            // bound to a StringLiteral, this will succeed. Otherwise, it fails
+                            // and we fall back to Unknown.
+                            match resolve_has_field(
+                                &Label::Var(key_var_name.clone()),
+                                &dict_ty,
+                                state,
+                                span,
+                                0,
+                            ) {
+                                Ok(field_ty) => make_nullable(field_ty),
+                                Err(_) => Type::Unknown,
+                            }
+                        } else {
+                            // Non-label TypeVar key against a Record: we can't narrow statically.
+                            Type::Unknown
+                        }
+                    }
                     _ => {
                         // Non-literal key against a Record: we can't narrow statically.
                         Type::Unknown
                     }
                 }
             }
+            Type::TypeVar(dict_var_name, _) => {
+                // TypeVar dict: check if key is a label TypeVar or concrete StringLiteral
+                match &key_ty {
+                    Type::StringLiteral(field_name) => {
+                        // Concrete string key → emit HasField constraint
+                        let field_var = state.fresh_type_var();
+                        let field_var_name = match &field_var {
+                            Type::TypeVar(name, _) => name.clone(),
+                            _ => unreachable!("fresh_type_var returns TypeVar"),
+                        };
+
+                        state.constraints.push(Constraint::HasField {
+                            label: Label::Concrete(field_name.clone()),
+                            dict_var: dict_var_name.clone(),
+                            field_var: field_var_name,
+                        });
+
+                        make_nullable(field_var)
+                    }
+                    Type::TypeVar(key_var_name, _) => {
+                        // Check if key is a label TypeVar
+                        if state.kind_env.get(key_var_name) == Some(&Kind::Label) {
+                            // Label TypeVar key → emit HasField constraint
+                            let field_var = state.fresh_type_var();
+                            let field_var_name = match &field_var {
+                                Type::TypeVar(name, _) => name.clone(),
+                                _ => unreachable!("fresh_type_var returns TypeVar"),
+                            };
+
+                            state.constraints.push(Constraint::HasField {
+                                label: Label::Var(key_var_name.clone()),
+                                dict_var: dict_var_name.clone(),
+                                field_var: field_var_name,
+                            });
+
+                            make_nullable(field_var)
+                        } else {
+                            // Non-label TypeVar key: fall back to Unknown
+                            Type::Unknown
+                        }
+                    }
+                    _ => {
+                        // Non-literal, non-label-TypeVar key: fall back to Unknown
+                        Type::Unknown
+                    }
+                }
+            }
+            Type::Union(_) | Type::Intersection(_) | Type::Top => {
+                // For Union/Intersection/Top, resolve via resolve_has_field
+                match &key_ty {
+                    Type::StringLiteral(field_name) => {
+                        match resolve_has_field(
+                            &Label::Concrete(field_name.clone()),
+                            &dict_ty,
+                            state,
+                            span,
+                            0,
+                        ) {
+                            Ok(field_ty) => make_nullable(field_ty),
+                            Err(_) => Type::Unknown,
+                        }
+                    }
+                    Type::TypeVar(key_var_name, _) => {
+                        // Label TypeVar key → resolve via resolve_has_field
+                        if state.kind_env.get(key_var_name) == Some(&Kind::Label) {
+                            match resolve_has_field(
+                                &Label::Var(key_var_name.clone()),
+                                &dict_ty,
+                                state,
+                                span,
+                                0,
+                            ) {
+                                Ok(field_ty) => make_nullable(field_ty),
+                                Err(_) => Type::Unknown,
+                            }
+                        } else {
+                            Type::Unknown
+                        }
+                    }
+                    _ => Type::Unknown,
+                }
+            }
             _ => {
-                // Unknown, TypeVar, or other: fall back to Unknown.
+                // Unknown, or other: fall back to Unknown.
                 Type::Unknown
             }
         };
@@ -2259,6 +2365,109 @@ fn check_get(
         ),
         span,
     )])
+}
+
+/// Type check `get-in` — chained field access.
+/// [GET-IN-NIL]: empty path returns dict unchanged
+/// [GET-IN-CONS]: unfold via repeated check_get
+fn check_get_in(
+    args: &[Rc<Spanned<Expr>>],
+    named_args: &[Spanned<NamedArg>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Validate arity: exactly 2 positional args, no named args
+    if !named_args.is_empty() || args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: get-in expects exactly 2 arguments, got {} ({} named)",
+                args.len(),
+                named_args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer the dict type
+    let dict_ty = infer_expr(&args[1], env, state, type_map)?;
+    let dict_ty = state.subst.apply(&dict_ty);
+
+    // Check if path is a literal dict with auto-indexed string entries
+    let path_expr = &args[0].node;
+    match path_expr {
+        Expr::Dict(entries) => {
+            // Check all entries are auto-indexed StringLiterals
+            let mut keys = Vec::new();
+            for (idx, entry) in entries.iter().enumerate() {
+                // Check if auto-indexed (key is None or matches index)
+                let is_auto_indexed = match &entry.node.key {
+                    None => true,
+                    Some(key_expr) => match &key_expr.node {
+                        Expr::Int(n) if *n == idx as i64 => true,
+                        _ => false,
+                    },
+                };
+
+                if !is_auto_indexed {
+                    // Non-auto-indexed entry: fall back to Unknown
+                    return Ok(Type::Unknown);
+                }
+
+                // Check if value is a string literal
+                match &entry.node.value.node {
+                    Expr::Str(s) => keys.push(s.clone()),
+                    _ => {
+                        // Non-literal path element: fall back to Unknown
+                        return Ok(Type::Unknown);
+                    }
+                }
+            }
+
+            // Empty path: return dict type unchanged ([GET-IN-NIL])
+            if keys.is_empty() {
+                return Ok(dict_ty);
+            }
+
+            // Unfold via repeated field access ([GET-IN-CONS])
+            let mut current_ty = dict_ty;
+            for key in keys {
+                // Apply substitution before pattern matching to dereference bound TypeVars
+                current_ty = state.subst.apply(&current_ty);
+
+                match &current_ty {
+                    Type::Record(row) => {
+                        if let Some(field_ty) = row.fields.get(&key) {
+                            current_ty = field_ty.clone();
+                        } else {
+                            // Field not found: fall back to Unknown
+                            return Ok(Type::Unknown);
+                        }
+                    }
+                    Type::Union(_) | Type::Intersection(_) | Type::Top => {
+                        // Resolve via resolve_has_field
+                        match resolve_has_field(&Label::Concrete(key), &current_ty, state, span, 0)
+                        {
+                            Ok(field_ty) => current_ty = field_ty,
+                            Err(_) => return Ok(Type::Unknown),
+                        }
+                    }
+                    Type::Unknown => return Ok(Type::Unknown),
+                    _ => {
+                        // Not a record or union: fall back to Unknown
+                        return Ok(Type::Unknown);
+                    }
+                }
+            }
+
+            Ok(current_ty)
+        }
+        _ => {
+            // Path is not a literal sequence: fall back to Unknown
+            Ok(Type::Unknown)
+        }
+    }
 }
 
 fn check_dot_access(
@@ -10178,6 +10387,106 @@ mod tests {
                 );
             }
             other => panic!("split should be a Function type, got {other}"),
+        }
+    }
+
+    // HasField constraint tests (hkt-field-access sprint)
+
+    #[test]
+    fn test_get_concrete_string_key_on_record() {
+        // [get "name" {name: "alice"}] → type is String
+        let env = doc_env_with_builtins(
+            "[user: [name: \"alice\"]]\n\
+             [result: [get \"name\" user]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
+            Some(other) => panic!("expected Str from get on record [name: Str], got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_get_union_distribution() {
+        // [get "port" (A | B)] → type is A.port | B.port
+        // Create two record types with different field types
+        let mut base_env = TypeEnv::with_builtins();
+        let mut fields_a = HashMap::new();
+        fields_a.insert("port".to_string(), Type::Int);
+        let mut fields_b = HashMap::new();
+        fields_b.insert("port".to_string(), Type::Str);
+        let union_ty = Type::normalize_union(vec![
+            Type::Record(Row { fields: fields_a }),
+            Type::Record(Row { fields: fields_b }),
+        ]);
+        base_env.insert("config".to_string(), union_ty);
+        let env = Rc::new(base_env);
+        let mut state = InferState::new();
+        let mut file = crate::parse("[result: [get \"port\" config]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let result_env =
+            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
+                .unwrap();
+        match result_env.get("result").map(|s| &s.body) {
+            Some(Type::Union(members)) => {
+                assert!(
+                    members.contains(&Type::Int) || members.contains(&Type::Number),
+                    "Union should contain Int or Number, got {:?}",
+                    members
+                );
+                assert!(
+                    members.contains(&Type::Str),
+                    "Union should contain Str, got {:?}",
+                    members
+                );
+            }
+            Some(other) => {
+                panic!("expected Union(Int|Str) from get on union, got {other}")
+            }
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_get_in_literal_path() {
+        // [get-in ["a" "b"] {a: {b: 42}}] → type is Int
+        let env = doc_env_with_builtins(
+            "[config: [a: [b: 42]]]\n\
+             [result: [get-in [\"a\" \"b\"] config]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Int) | Some(Type::IntLiteral(_)) => {}
+            Some(other) => panic!("expected Int from get-in on nested record, got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_get_in_empty_path_returns_dict_unchanged() {
+        // [get-in [] dict] → type is dict's type
+        let env = doc_env_with_builtins(
+            "[user: [name: \"alice\"]]\n\
+             [result: [get-in [] user]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Record(_)) => {}
+            Some(other) => panic!("expected Record from get-in with empty path, got {other}"),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_get_in_variable_path_falls_back_to_unknown() {
+        // [get-in path dict] where path is not a literal sequence → Unknown
+        let env = doc_env_with_builtins(
+            "[user: [name: \"alice\"]]\n\
+             [path: [\"name\"]]\n\
+             [result: [get-in path user]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Unknown) => {}
+            Some(other) => panic!("expected Unknown from get-in with variable path, got {other}"),
+            None => panic!("field 'result' not found"),
         }
     }
 }

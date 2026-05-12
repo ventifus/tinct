@@ -226,6 +226,7 @@ pub(crate) fn resolve_fn_metadata(
         "Showable",
         "Mappable",
         "Appendable",
+        "HasField",
     ];
 
     let mut return_type: Option<Type> = None;
