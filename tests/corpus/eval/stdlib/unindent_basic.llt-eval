@@ -1,0 +1,7 @@
+# unindent: basic indentation stripping with trailing whitespace anchor
+[unindent "
+  line one
+  line two
+  "]
+=== out
+String("line one\nline two")

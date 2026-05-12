@@ -1,0 +1,8 @@
+# unindent: empty lines preserved
+[unindent "
+  line one
+
+  line two
+  "]
+=== out
+String("line one\n\nline two")

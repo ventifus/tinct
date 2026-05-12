@@ -1,0 +1,6 @@
+# unindent: single content line
+[unindent "
+  single line
+  "]
+=== out
+String("single line")

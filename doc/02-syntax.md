@@ -282,48 +282,41 @@ i"Hello $name, you are $age years old"
 
 #### 2.3.6 Multi-Line Strings
 
-`"""..."""` is a parse-stage macro that desugars to `[unindent "..."]`. The `unindent` stdlib function strips leading indentation using the last line as the baseline.
+**Multi-line content in regular strings.** Regular `"..."` strings permit literal embedded newlines — the lexer passes all characters through, including `\n`. A string may span multiple source lines (see §2.3.4 for details). Raw source indentation is preserved verbatim.
+
+**Indentation stripping.** The `unindent` stdlib function strips leading indentation from a multi-line string using the last line (typically whitespace-only) as the indentation baseline:
 
 ```tinct
-query: """
+query: [unindent "
   SELECT *
   FROM users
   WHERE active = true
-  """
-# Result: "SELECT *\nFROM users\nWHERE active = true\n"
+  "]
+# Result: "SELECT *\nFROM users\nWHERE active = true"
 ```
 
-The closing `"""` on its own line serves as the indentation anchor — its leading whitespace determines how much indentation is stripped from each content line. Content aligns naturally with the surrounding code.
+Algorithm: split into lines; measure the last line's length (the indentation anchor); strip that many characters from each content line; drop the first (empty, after the opening newline) and last (anchor) lines; rejoin with `\n`.
 
-`i"""..."""` desugars to `[unindent i"..."]`, combining interpolation with indentation stripping:
+The closing quote on its own line serves as the indentation anchor — its leading whitespace determines how much indentation is stripped from each content line. Content aligns naturally with the surrounding code.
 
-```tinct
-server-block: i"""
-  server {
-    listen $port;
-    server_name $host;
-  }
-  """
-```
-
-Since `"""` is a macro over `unindent`, users can call `unindent` directly on any string — including strings read from files or built dynamically:
+**`unindent` on any string.** Since `unindent` is a regular stdlib function, it works on strings read from files or built dynamically:
 
 ```tinct
 [unindent [slurp "template.txt"]]
 [trim [unindent raw-block]]
 ```
 
-One or two `"` characters inside `"""` content require no escaping — only `"""` itself needs the first quote escaped (`\"\"\"`).
-
-**Trailing newline.** The content before the closing `"""` includes a trailing newline. To suppress it, compose with `trim`:
+**Trailing newline.** The content before the closing quote includes a trailing newline. To suppress it, compose with `trim`:
 
 ```tinct
-label: [trim """
+label: [trim [unindent "
   Click here
-  """]
+  "]]
 ```
 
-#### 2.3.6 Identifiers (Variable References)
+**Future: `"""..."""` macro.** A planned parse-stage macro `"""..."""` will desugar to `[unindent "..."]` for convenience, and `i"""..."""` will desugar to `[unindent i"..."]` to combine interpolation with indentation stripping. This requires lexer support for triple-quoted string tokens, which is not yet implemented.
+
+#### 2.3.7 Identifiers (Variable References)
 
 Identifiers are the fallback — any token that doesn't match a prior rule. They are variable references, not string literals. Strings require quotes.
 

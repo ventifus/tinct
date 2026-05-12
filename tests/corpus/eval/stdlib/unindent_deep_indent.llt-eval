@@ -1,0 +1,8 @@
+# unindent: deep indentation (4 spaces)
+[unindent "
+    SELECT *
+    FROM users
+    WHERE active = true
+    "]
+=== out
+String("SELECT *\nFROM users\nWHERE active = true")
