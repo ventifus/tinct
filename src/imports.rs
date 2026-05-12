@@ -292,6 +292,7 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
         | Expr::VarRef { .. }
         | Expr::Rest(_)
         | Expr::Annotated { .. }
+        | Expr::TypeApp { .. }
         | Expr::Error(_) => {}
     }
 }

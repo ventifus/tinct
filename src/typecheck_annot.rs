@@ -893,6 +893,10 @@ pub(crate) fn resolve_type_name(
         "Never" => Ok(Type::Never),
         "Top" => Ok(Type::Top),
         "Unknown" => Ok(Type::Unknown),
+        "Operator" => Err(TypeError::new(
+            "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
+            span,
+        )),
         "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
         "Null" => Ok(Type::Record(Row {
             fields: HashMap::new(),

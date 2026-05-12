@@ -40,6 +40,14 @@ pub enum Kind {
     /// k1 -> k2 — kind of type constructors (Seq: * -> *, Mappable: (* -> *) -> Constraint)
     #[allow(dead_code)] // Scaffolding for higher-kinded types
     Arrow(Box<Kind>, Box<Kind>),
+    /// Operator — kind of type constructors (* → *), represents `Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Type))`
+    /// Used for type constructor variables like `m` in `Monad m`
+    #[allow(dead_code)] // Used in hkt-kind-inference sprint
+    Operator,
+    /// Label — kind of type-level string labels used for record field names
+    /// Used for label TypeVars in `HasField` constraints (e.g., `key@"k"`)
+    #[allow(dead_code)] // Used in hkt-mappable-appendable sprint
+    Label,
     /// Kind variable — unification variable for kind inference
     #[allow(dead_code)] // Scaffolding for kind inference
     Var(u32),
@@ -50,6 +58,8 @@ impl fmt::Display for Kind {
         match self {
             Kind::Type => write!(f, "*"),
             Kind::Arrow(k1, k2) => write!(f, "({} -> {})", k1, k2),
+            Kind::Operator => write!(f, "* → *"),
+            Kind::Label => write!(f, "Label"),
             Kind::Var(id) => write!(f, "?k{}", id),
         }
     }
@@ -167,6 +177,13 @@ pub enum Type {
     /// The empty intersection. Intersections that simplify to Never (e.g., Int & Str,
     /// #Ok & #Err via S-ClsBot) become Never. In annotation syntax: @Never.
     Never,
+    /// Type constructor application — `App(f, a)` represents type constructor `f` applied to type `a`.
+    /// Example: `App(Operator("m"), Int)` for a monad of integers.
+    /// When resolved to a builtin (e.g., `f` = `Seq`), normalized to the builtin form `Seq(a)`.
+    App(Box<Type>, Box<Type>),
+    /// Type constructor variable — represents a type constructor like `m` in `Monad m`.
+    /// Kind: `Operator` (i.e., `* → *`). Used in typeclass constraints and generic functions.
+    Operator(String),
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -222,6 +239,8 @@ impl PartialEq for Type {
             (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
             (Type::Negation(t1), Type::Negation(t2)) => t1 == t2,
             (Type::Never, Type::Never) => true,
+            (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && a1 == a2,
+            (Type::Operator(name1), Type::Operator(name2)) => name1 == name2,
             _ => false,
         }
     }
@@ -360,6 +379,11 @@ impl Type {
                     )
                     && Type::is_subtype(sub_r, sup_r)
             }
+            // App and Operator: structural equality for now (full BAS rules in hkt-bas).
+            // App(f1, a1) <: App(f2, a2) requires f1 = f2 and a1 <: a2 (covariant).
+            (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && Type::is_subtype(a1, a2),
+            // Operator variables are treated like TypeVars for subtyping purposes.
+            (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
             _ => false,
         }
     }
@@ -960,6 +984,8 @@ impl Type {
             Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Intersection(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Negation(inner) => inner.has_inference_vars(),
+            Type::App(f, a) => f.has_inference_vars() || a.has_inference_vars(),
+            Type::Operator(_) => true, // Operator variables ARE inference variables
             Type::Proxy => false,
             _ => false,
         }
@@ -1008,6 +1034,13 @@ impl Type {
             }
             Type::Negation(inner) => {
                 inner.collect_all_vars(type_vars, row_vars);
+            }
+            Type::App(f, a) => {
+                f.collect_all_vars(type_vars, row_vars);
+                a.collect_all_vars(type_vars, row_vars);
+            }
+            Type::Operator(name) => {
+                type_vars.insert(name.clone());
             }
             _ => {}
         }
@@ -1074,6 +1107,17 @@ impl Type {
             Type::Negation(inner) => {
                 inner.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars)
             }
+            Type::App(f, a) => {
+                let mut found = false;
+                found |= f.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found |= a.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found
+            }
+            Type::Operator(name) => {
+                let found = name == occurs_name;
+                type_vars.insert(name.clone());
+                found
+            }
             _ => false,
         }
     }
@@ -1120,6 +1164,13 @@ impl Type {
             Type::Negation(inner) => {
                 inner.collect_all_vars_vec(type_vars, row_vars);
             }
+            Type::App(f, a) => {
+                f.collect_all_vars_vec(type_vars, row_vars);
+                a.collect_all_vars_vec(type_vars, row_vars);
+            }
+            Type::Operator(name) => {
+                type_vars.push(name.clone());
+            }
             _ => {}
         }
     }
@@ -1161,6 +1212,8 @@ fn type_order(ty: &Type) -> u8 {
         Type::Intersection(_) => 30, // Should not appear after flattening, but included for completeness
         Type::Negation(_) => 31,
         Type::Never => 32,
+        Type::App(_, _) => 33,
+        Type::Operator(_) => 34,
     }
 }
 
@@ -1171,12 +1224,14 @@ fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
         (Type::IntLiteral(n1), Type::IntLiteral(n2)) => n1.cmp(n2),
         (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1.cmp(s2),
         (Type::TypeVar(name1, _), Type::TypeVar(name2, _)) => name1.cmp(name2),
-        // For complex types (Record, Function, Seq, Map), use Display representation
+        (Type::Operator(name1), Type::Operator(name2)) => name1.cmp(name2),
+        // For complex types (Record, Function, Seq, Map, App), use Display representation
         // This is not ideal but ensures stability
         (Type::Record(_), Type::Record(_))
         | (Type::Function { .. }, Type::Function { .. })
         | (Type::Seq(_), Type::Seq(_))
-        | (Type::Map(_, _), Type::Map(_, _)) => a.to_string().cmp(&b.to_string()),
+        | (Type::Map(_, _), Type::Map(_, _))
+        | (Type::App(_, _), Type::App(_, _)) => a.to_string().cmp(&b.to_string()),
         _ => Ordering::Equal,
     }
 }
@@ -1493,6 +1548,8 @@ impl KindState {
         match kind {
             Kind::Type => Kind::Type,
             Kind::Arrow(k1, k2) => Kind::Arrow(Box::new(self.apply(k1)), Box::new(self.apply(k2))),
+            Kind::Operator => Kind::Operator,
+            Kind::Label => Kind::Label,
             Kind::Var(id) => {
                 if let Some(k) = self.substitution.get(id) {
                     self.apply(k) // Chase transitive bindings
@@ -1537,6 +1594,8 @@ impl KindState {
                 self.collect_kind_vars(k1, vars);
                 self.collect_kind_vars(k2, vars);
             }
+            Kind::Operator => {}
+            Kind::Label => {}
             Kind::Var(id) => {
                 if vars.insert(*id) {
                     // Only recurse if we haven't seen this variable before
@@ -1563,6 +1622,8 @@ fn occurs_in_kind(v: u32, k: &Kind, state: &KindState) -> bool {
     match state.apply(k) {
         Kind::Type => false,
         Kind::Arrow(k1, k2) => occurs_in_kind(v, &k1, state) || occurs_in_kind(v, &k2, state),
+        Kind::Operator => false,
+        Kind::Label => false,
         Kind::Var(id) => id == v,
     }
 }

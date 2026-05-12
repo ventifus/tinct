@@ -348,6 +348,10 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
                 desugar_entry(&mut method_spanned.node, depth);
             }
         }
+        Expr::TypeApp { func, arg } => {
+            desugar(func, depth);
+            desugar(arg, depth);
+        }
     }
 }
 

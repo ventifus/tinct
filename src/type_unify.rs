@@ -363,6 +363,25 @@ impl Substitution {
                 self.apply_type(inner, depth + 1, visited_types)
                     .into_owned(),
             ))),
+            Type::App(f, a) => Cow::Owned(Type::App(
+                Box::new(self.apply_type(f, depth + 1, visited_types).into_owned()),
+                Box::new(self.apply_type(a, depth + 1, visited_types).into_owned()),
+            )),
+            Type::Operator(name) => {
+                // Look up Operator variable in substitution map
+                if visited_types.contains(name) {
+                    return Cow::Borrowed(ty);
+                }
+                match self.type_map.get(name) {
+                    Some(bound) => {
+                        visited_types.insert(name.clone());
+                        let result = self.apply_type(bound, 0, visited_types).into_owned();
+                        visited_types.remove(name);
+                        Cow::Owned(result)
+                    }
+                    None => Cow::Owned(Type::Operator(name.clone())),
+                }
+            }
             // Primitive types (Int, Float, Bool, Str, etc.) have no type variables;
             // return a borrow to avoid cloning the whole type tree when substitution
             // does not apply. Cow::Borrowed eliminates the clone on the hot path.
@@ -554,6 +573,20 @@ fn lower_levels_check_occurs(
             found
         }
         Type::Negation(inner) => lower_levels_check_occurs(inner, occurs_name, cap_level, state),
+        Type::App(f, a) => {
+            let mut found = false;
+            found |= lower_levels_check_occurs(f, occurs_name, cap_level, state);
+            found |= lower_levels_check_occurs(a, occurs_name, cap_level, state);
+            found
+        }
+        Type::Operator(name) => {
+            let found = name == occurs_name;
+            let current_level = state.levels.get(name).copied().unwrap_or(0);
+            state
+                .levels
+                .insert(name.clone(), current_level.min(cap_level));
+            found
+        }
         _ => false,
     }
 }
@@ -1144,6 +1177,48 @@ pub fn unify(
         (Type::NetCap, Type::NetCap) => Ok(()),
         (Type::Handle, Type::Handle) => Ok(()),
         (Type::DatagramHandle, Type::DatagramHandle) => Ok(()),
+
+        // UNIFY-OPERATOR: bind type constructor variable m to a type T.
+        // Occurs check prevents infinite kinds (m ∉ ftv(T)).
+        // Kind check premise is deferred to hkt-kind-inference.
+        (Type::Operator(m), _) => {
+            // Check if m appears in the other type (occurs check for kind soundness)
+            let mut type_vars = HashSet::new();
+            let mut row_vars = HashSet::new();
+            b.collect_all_vars(&mut type_vars, &mut row_vars);
+            if type_vars.contains(m) || matches!(&b, Type::Operator(n) if n == m) {
+                return Err(TypeError::new(
+                    format!("infinite type: operator variable {} occurs in {}", m, b),
+                    span,
+                ));
+            }
+            subst.type_map.insert(m.clone(), b.clone());
+            Ok(())
+        }
+        // UNIFY-OPERATOR-SYM: symmetric case
+        (_, Type::Operator(m)) => {
+            let mut type_vars = HashSet::new();
+            let mut row_vars = HashSet::new();
+            a.collect_all_vars(&mut type_vars, &mut row_vars);
+            if type_vars.contains(m) || matches!(&a, Type::Operator(n) if n == m) {
+                return Err(TypeError::new(
+                    format!("infinite type: operator variable {} occurs in {}", m, a),
+                    span,
+                ));
+            }
+            subst.type_map.insert(m.clone(), a.clone());
+            Ok(())
+        }
+
+        // UNIFY-APP: decompose App(f₁, a₁) vs App(f₂, a₂).
+        // Unify constructors first, then apply resulting substitution and unify arguments.
+        (Type::App(f1, a1), Type::App(f2, a2)) => {
+            // Unify constructors
+            unify(f1, f2, subst, state, span)?;
+            // Substitution from constructor unification is already in subst and will be
+            // applied by the recursive unify() call (via apply_with_visited at the top).
+            unify(a1, a2, subst, state, span)
+        }
 
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),

@@ -231,6 +231,7 @@ impl<'a> Formatter<'a> {
             | Expr::Match { .. }
             | Expr::ClassDecl { .. }
             | Expr::InstanceDecl { .. }
+            | Expr::TypeApp { .. }
             | Expr::Error(_) => false,
             _ => true,
         });
@@ -512,6 +513,14 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(n);
                 }
             }
+            Expr::TypeApp { func, arg } => {
+                // Format as @[func arg]
+                self.output.push_str("@[");
+                self.format_expr(func, false);
+                self.output.push(' ');
+                self.format_expr(arg, false);
+                self.output.push(']');
+            }
             Expr::Error(span) => {
                 // Emit original source text verbatim for error nodes
                 let text = &self.source[span.start.offset..span.end.offset];
@@ -783,6 +792,10 @@ impl<'a> Formatter<'a> {
                 width + 1 // closing ]
             }
             Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
+            Expr::TypeApp { func, arg } => {
+                // @[func arg]
+                2 + self.measure_expr_width(func) + 1 + self.measure_expr_width(arg) + 1
+            }
             Expr::Error(span) => {
                 // Measure the width of the original source text
                 span.end.offset - span.start.offset
@@ -1251,6 +1264,7 @@ impl<'a> Formatter<'a> {
             | Expr::Match { .. }
             | Expr::ClassDecl { .. }
             | Expr::InstanceDecl { .. } => Some('['),
+            Expr::TypeApp { .. } => Some('@'), // starts with @[
             Expr::Annotated { name, .. } => name.chars().next(),
             Expr::Rest(_) => Some('.'),
             Expr::Error(_) => None,

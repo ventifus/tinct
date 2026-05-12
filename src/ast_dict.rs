@@ -801,6 +801,24 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::TypeApp { func, arg } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    string_val("type-app"),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("func".into()),
+                expr_to_thunk_id(&func.node, func.span, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("arg".into()),
+                expr_to_thunk_id(&arg.node, arg.span, opts, ctx)?,
+            );
+        }
+
         Expr::Error(error_span) => {
             dict.insert(
                 Key::String("type".into()),
@@ -1625,6 +1643,15 @@ pub fn dict_to_ast(
             Expr::DefMacro {
                 name,
                 transformer: Box::new(dict_to_ast(&transformer_val, ctx)?),
+            }
+        }
+
+        "type-app" => {
+            let func_val = get_dict_field(dict, "func", &["type"], ctx)?;
+            let arg_val = get_dict_field(dict, "arg", &["type"], ctx)?;
+            Expr::TypeApp {
+                func: Box::new(dict_to_ast(&func_val, ctx)?),
+                arg: Box::new(dict_to_ast(&arg_val, ctx)?),
             }
         }
 

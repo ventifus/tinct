@@ -108,6 +108,7 @@ fn reset_expr(expr: &Spanned<Expr>) {
         | Expr::Str(_)
         | Expr::VarRef { .. }
         | Expr::Rest(_)
+        | Expr::TypeApp { .. }
         | Expr::Error(_) => {}
 
         // Access expressions: recurse into target
@@ -1828,6 +1829,11 @@ fn infer_expr(
             "rest marker (...) is only valid inside type expressions",
             expr.span,
         )]),
+
+        Expr::TypeApp { .. } => {
+            // Stub: TypeApp is type-level only, quality implementation in hkt-doc-lsp
+            Ok(Type::Unknown)
+        }
 
         Expr::Error(span) => Err(vec![TypeError::new(
             &format!(

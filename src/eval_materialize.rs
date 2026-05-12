@@ -1749,6 +1749,11 @@ pub(crate) fn eval_step(
             expr.span,
         )
         .into())),
+        Expr::TypeApp { .. } => Action::Continue(Err(EvalError::internal(
+            "TypeApp is a type annotation node and cannot be evaluated".to_string(),
+            expr.span,
+        )
+        .into())),
         Expr::Error(span) => Action::Continue(Err(EvalError::internal(
             format!(
                 "syntax error at {}:{} (cannot evaluate error node)",

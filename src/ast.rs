@@ -251,6 +251,15 @@ pub enum Expr {
         methods: Vec<Spanned<Entry>>,
     },
 
+    /// Type constructor application in annotation positions, e.g. `@[m a]`
+    /// This is a type-level annotation node and should never be evaluated at runtime.
+    /// The type checker disambiguates `[f a]` as TypeApp when `f` is Operator-kinded.
+    /// Parsed from `@[...]` where the content is not a record type (no colons).
+    TypeApp {
+        func: Box<Spanned<Expr>>,
+        arg: Box<Spanned<Expr>>,
+    },
+
     /// Parse error — a section of source that couldn't be parsed.
     /// Emitted by bracket-level error recovery (parser-rewrite.md §Phase 4).
     /// The span covers the entire unparseable region.
@@ -530,6 +539,7 @@ impl fmt::Display for Expr {
                 }
                 write!(f, "]")
             }
+            Expr::TypeApp { func, arg } => write!(f, "@[{} {}]", func.node, arg.node),
             Expr::Error(span) => write!(f, "<error at {span}>"),
         }
     }
