@@ -345,12 +345,11 @@ impl Type {
             // Negation: A <: ~B iff A and B are disjoint (for now, conservative: only reflexive negation)
             // Full BAS subtyping requires RDNF normalization — this is a placeholder
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_subtype(t2, t1), // contravariant
-            // Conservative Negation subtyping: any type is considered a subtype of a Negation type.
-            // Full BAS requires T <: ~A iff T ∩ A = Never (disjointness via RDNF), which is not yet
-            // implemented. For now, ~A is treated as an open constraint enforced at runtime
-            // (value_matches_type returns true for Negation conservatively).
-            // This allows `[@[[without T]] expr]` TypeAssert to pass without false static type errors.
-            (_, Type::Negation(_)) => true,
+            // Negation subtyping: T <: ~A iff T and A are disjoint (no values in common).
+            // Full BAS uses RDNF normalization to compute T ∩ A = Never, but we use a
+            // conservative syntactic disjointness check that catches obvious cases like
+            // Int <: ~String (true) and Int <: ~Int (false).
+            (sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a),
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
@@ -406,6 +405,96 @@ impl Type {
             (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && Type::is_subtype(a1, a2),
             // Operator variables are treated like TypeVars for subtyping purposes.
             (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
+            _ => false,
+        }
+    }
+
+    /// Check if two types are disjoint (have no values in common).
+    ///
+    /// Used for Negation subtyping: `A <: ~B` iff `types_are_disjoint(A, B)`.
+    ///
+    /// Returns true if the types provably have no overlap, false if they might overlap
+    /// or we can't prove disjointness (conservative). This is NOT complete — it only
+    /// catches obvious disjointness like `Int` vs `String`.
+    pub fn types_are_disjoint(t1: &Type, t2: &Type) -> bool {
+        // Never is disjoint from everything (it has no inhabitants)
+        if matches!(t1, Type::Never) || matches!(t2, Type::Never) {
+            return true;
+        }
+
+        // Unknown, Top, and Error are conservatively assumed to overlap with everything
+        if matches!(t1, Type::Unknown | Type::Top | Type::Error)
+            || matches!(t2, Type::Unknown | Type::Top | Type::Error)
+        {
+            return false;
+        }
+
+        // Different concrete primitives are disjoint
+        match (t1, t2) {
+            // Same type → not disjoint
+            (a, b) if a == b => false,
+
+            // Int and Float are disjoint (Number is their supertype, not intersection)
+            (Type::Int, Type::Float) | (Type::Float, Type::Int) => true,
+            (Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => true,
+
+            // Different primitives are disjoint
+            (Type::Int | Type::IntLiteral(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Bool) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Bytes) => true,
+            (Type::Float, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Float, Type::Bool) => true,
+            (Type::Float, Type::Bytes) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Bool) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Bytes) => true,
+            (Type::Bool, Type::Bytes) => true,
+
+            // Symmetric cases
+            (Type::Str | Type::StringLiteral(_), Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Bool, Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Bytes, Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Float) => true,
+            (Type::Bool, Type::Float) => true,
+            (Type::Bytes, Type::Float) => true,
+            (Type::Bool, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Bytes, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Bytes, Type::Bool) => true,
+
+            // Record vs any primitive is disjoint
+            (Type::Record(_), Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Record(_), Type::Float) => true,
+            (Type::Record(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Record(_), Type::Bool) => true,
+            (Type::Record(_), Type::Bytes) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Record(_)) => true,
+            (Type::Float, Type::Record(_)) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Record(_)) => true,
+            (Type::Bool, Type::Record(_)) => true,
+            (Type::Bytes, Type::Record(_)) => true,
+
+            // Seq vs primitives
+            (Type::Seq(_), Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Seq(_), Type::Float) => true,
+            (Type::Seq(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Seq(_), Type::Bool) => true,
+            (Type::Seq(_), Type::Bytes) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Seq(_)) => true,
+            (Type::Float, Type::Seq(_)) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Seq(_)) => true,
+            (Type::Bool, Type::Seq(_)) => true,
+            (Type::Bytes, Type::Seq(_)) => true,
+
+            // Union: disjoint if ALL members are disjoint from the other type
+            (Type::Union(members), t) | (t, Type::Union(members)) => {
+                members.iter().all(|m| Type::types_are_disjoint(m, t))
+            }
+
+            // Intersection: disjoint if ANY member is disjoint from the other type
+            (Type::Intersection(members), t) | (t, Type::Intersection(members)) => {
+                members.iter().any(|m| Type::types_are_disjoint(m, t))
+            }
+
+            // Conservative: assume all other combinations might overlap
             _ => false,
         }
     }
@@ -7288,5 +7377,69 @@ mod tests {
             }
             other => panic!("expected Function, got {other}"),
         }
+    }
+
+    #[test]
+    fn test_types_are_disjoint_primitives() {
+        // Different primitives are disjoint
+        assert!(Type::types_are_disjoint(&Type::Int, &Type::Str));
+        assert!(Type::types_are_disjoint(&Type::Int, &Type::Bool));
+        assert!(Type::types_are_disjoint(&Type::Str, &Type::Bool));
+        assert!(Type::types_are_disjoint(&Type::Float, &Type::Str));
+        assert!(Type::types_are_disjoint(&Type::Int, &Type::Float));
+
+        // Same type is not disjoint
+        assert!(!Type::types_are_disjoint(&Type::Int, &Type::Int));
+        assert!(!Type::types_are_disjoint(&Type::Str, &Type::Str));
+    }
+
+    #[test]
+    fn test_types_are_disjoint_never() {
+        // Never is disjoint from everything
+        assert!(Type::types_are_disjoint(&Type::Never, &Type::Int));
+        assert!(Type::types_are_disjoint(&Type::Int, &Type::Never));
+        assert!(Type::types_are_disjoint(&Type::Never, &Type::Never));
+    }
+
+    #[test]
+    fn test_types_are_disjoint_unknown_top() {
+        // Unknown and Top are conservatively assumed to overlap with everything
+        assert!(!Type::types_are_disjoint(&Type::Unknown, &Type::Int));
+        assert!(!Type::types_are_disjoint(&Type::Int, &Type::Unknown));
+        assert!(!Type::types_are_disjoint(&Type::Top, &Type::Int));
+        assert!(!Type::types_are_disjoint(&Type::Int, &Type::Top));
+    }
+
+    #[test]
+    fn test_types_are_disjoint_union() {
+        // Union(String, Int) is disjoint from Bool (all members disjoint)
+        let union = Type::normalize_union(vec![Type::Str, Type::Int]);
+        assert!(Type::types_are_disjoint(&union, &Type::Bool));
+
+        // Union(String, Int) is not disjoint from Int (Int member overlaps)
+        assert!(!Type::types_are_disjoint(&union, &Type::Int));
+    }
+
+    #[test]
+    fn test_negation_subtyping_disjoint() {
+        // Int <: ~String (Int and String are disjoint)
+        let not_string = Type::Negation(Box::new(Type::Str));
+        assert!(Type::is_subtype(&Type::Int, &not_string));
+
+        // Int <: ~Int should fail (Int and Int overlap)
+        let not_int = Type::Negation(Box::new(Type::Int));
+        assert!(!Type::is_subtype(&Type::Int, &not_int));
+    }
+
+    #[test]
+    fn test_negation_subtyping_union() {
+        // Union(String, Int) <: ~Bool (all members disjoint from Bool)
+        let union = Type::normalize_union(vec![Type::Str, Type::Int]);
+        let not_bool = Type::Negation(Box::new(Type::Bool));
+        assert!(Type::is_subtype(&union, &not_bool));
+
+        // Union(String, Int) <: ~Int should fail (Int member overlaps)
+        let not_int = Type::Negation(Box::new(Type::Int));
+        assert!(!Type::is_subtype(&union, &not_int));
     }
 }
