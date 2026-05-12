@@ -107,11 +107,13 @@ impl DocumentState {
             // Seed the type environment with prelude types and resolved includes via the
             // shared imports module to suppress false "undefined variable" errors.
             let seeded_env = crate::imports::build_type_env(&file.node, base_dir);
-            let (errs, map, docs, smap) = typecheck_file_with_types_and_env(&file.node, seeded_env);
+            let (errs, map, docs, smap, _diagnostics) =
+                typecheck_file_with_types_and_env(&file.node, seeded_env);
             type_errors = errs;
             type_map = map;
             doc_map = docs;
             scheme_map = smap;
+            // TODO: Convert diagnostics to LSP diagnostics (type-warning-channel infrastructure only)
 
             // Build the LSP eval environment, mirroring what main.rs does at startup.
             // The type checker gets runtime percent-vars via build_type_env(); we inject

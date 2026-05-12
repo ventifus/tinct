@@ -45,8 +45,9 @@ pub use crate::types::SchemeMap;
 /// producing spurious `"undefined variable _"` type errors. All pipeline entry points
 /// already call `desugar_file` first; see `eval_source_with_config` in `lib.rs` for
 /// the canonical call sequence.
-pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
+pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDiagnostic>) {
     let mut errors = Vec::new();
+    let diagnostics = Vec::new(); // Will be populated in future sprints
     let mut env = crate::imports::build_prelude_env();
     let mut state = InferState::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
@@ -78,11 +79,7 @@ pub fn typecheck_file(file: &File) -> Result<(), Vec<TypeError>> {
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
+    (errors, diagnostics)
 }
 
 /// Reset all elaboration state in the AST (TypeAssert.resolved_type fields).
@@ -251,7 +248,15 @@ fn reset_expr(expr: &Spanned<Expr>) {
 ///
 /// **`desugar::desugar_file` must be called on the [`File`] before passing it here.**
 /// See [`typecheck_file`] for details.
-pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap, DocMap, SchemeMap) {
+pub fn typecheck_file_with_types(
+    file: &File,
+) -> (
+    Vec<TypeError>,
+    TypeMap,
+    DocMap,
+    SchemeMap,
+    Vec<crate::error::TypeDiagnostic>,
+) {
     typecheck_file_with_types_and_env(file, crate::imports::build_prelude_env())
 }
 
@@ -263,11 +268,18 @@ pub fn typecheck_file_with_types(file: &File) -> (Vec<TypeError>, TypeMap, DocMa
 pub fn typecheck_file_with_types_and_env(
     file: &File,
     initial_env: Rc<TypeEnv>,
-) -> (Vec<TypeError>, TypeMap, DocMap, SchemeMap) {
+) -> (
+    Vec<TypeError>,
+    TypeMap,
+    DocMap,
+    SchemeMap,
+    Vec<crate::error::TypeDiagnostic>,
+) {
     // Reset elaboration state to allow re-typechecking cached ASTs
     reset_elaboration(file);
 
     let mut errors = Vec::new();
+    let diagnostics = Vec::new(); // Will be populated in future sprints
     let mut env = initial_env;
     let mut state = InferState::new();
     // Enable scheme collection for LSP hover (constraints display).
@@ -309,7 +321,7 @@ pub fn typecheck_file_with_types_and_env(
     // Extract scheme_map from state (was populated during VarRef inference).
     let scheme_map = state.scheme_map.take().unwrap_or_default();
 
-    (errors, type_map, doc_map, scheme_map)
+    (errors, type_map, doc_map, scheme_map, diagnostics)
 }
 
 /// Extract documentation strings from parameter and function annotations.
@@ -3388,7 +3400,12 @@ mod tests {
     fn check(input: &str) -> Result<(), Vec<TypeError>> {
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
-        typecheck_file(&file.node)
+        let (errors, _diagnostics) = typecheck_file(&file.node);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     fn check_err(input: &str) -> Vec<TypeError> {
@@ -8290,7 +8307,8 @@ mod tests {
         crate::desugar::desugar_file(&mut file.node);
 
         // First typecheck: should succeed
-        let (errors1, type_map1, _doc_map1, _scheme_map1) = typecheck_file_with_types(&file.node);
+        let (errors1, type_map1, _doc_map1, _scheme_map1, _diagnostics1) =
+            typecheck_file_with_types(&file.node);
         assert!(
             errors1.is_empty() || errors1.iter().all(|e| !e.message.contains("panic")),
             "First typecheck should not panic"
@@ -8301,7 +8319,8 @@ mod tests {
         );
 
         // Second typecheck on the same AST: should not panic due to reset_elaboration
-        let (errors2, type_map2, _doc_map2, _scheme_map2) = typecheck_file_with_types(&file.node);
+        let (errors2, type_map2, _doc_map2, _scheme_map2, _diagnostics2) =
+            typecheck_file_with_types(&file.node);
         assert!(
             errors2.is_empty() || errors2.iter().all(|e| !e.message.contains("panic")),
             "Second typecheck should not panic"
@@ -8312,7 +8331,8 @@ mod tests {
         );
 
         // Third typecheck to be extra sure
-        let (errors3, _type_map3, _doc_map3, _scheme_map3) = typecheck_file_with_types(&file.node);
+        let (errors3, _type_map3, _doc_map3, _scheme_map3, _diagnostics3) =
+            typecheck_file_with_types(&file.node);
         assert!(
             errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
             "Third typecheck should not panic"
@@ -8331,7 +8351,8 @@ mod tests {
         let input = "$undefined";
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
-        let (errors, type_map, _doc_map, _scheme_map) = typecheck_file_with_types(&file.node);
+        let (errors, type_map, _doc_map, _scheme_map, _diagnostics) =
+            typecheck_file_with_types(&file.node);
 
         // Must have an error (undefined variable)
         assert!(!errors.is_empty(), "expected type error for $undefined");
@@ -8551,11 +8572,11 @@ mod tests {
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
 
-        let result = typecheck_file(&file.node);
+        let (errors, _diagnostics) = typecheck_file(&file.node);
         assert!(
-            result.is_ok(),
+            errors.is_empty(),
             "% pipeline binding should work, got error: {:?}",
-            result.unwrap_err()
+            errors
         );
     }
 
@@ -8596,11 +8617,51 @@ mod tests {
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
 
-        let result = typecheck_file(&file.node);
+        let (errors, _diagnostics) = typecheck_file(&file.node);
         assert!(
-            result.is_ok(),
+            errors.is_empty(),
             "named section binding should work, got error: {:?}",
-            result.unwrap_err()
+            errors
+        );
+    }
+
+    // -- Diagnostic system tests --
+
+    #[test]
+    fn test_typecheck_returns_diagnostics() {
+        // Verify that typecheck_file returns a diagnostics vector (currently empty)
+        let input = "[x: 42]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let (errors, diagnostics) = typecheck_file(&file.node);
+        assert!(
+            errors.is_empty(),
+            "simple dict should typecheck without errors"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics emitted yet (infrastructure only)"
+        );
+    }
+
+    #[test]
+    fn test_typecheck_with_types_returns_diagnostics() {
+        // Verify that typecheck_file_with_types_and_env returns diagnostics in the tuple
+        let input = "[x: 42]";
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+
+        let env = Rc::new(TypeEnv::new());
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, env);
+        assert!(
+            errors.is_empty(),
+            "simple dict should typecheck without errors"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics emitted yet (infrastructure only)"
         );
     }
 
@@ -9719,7 +9780,8 @@ mod tests {
         // Test existing functionality: extract doc from parameter annotations
         let input = "[f: [fn [x@[doc: \"The input value\"]] x]]";
         let file = crate::parse(input).unwrap();
-        let (_errors, _type_map, doc_map, _scheme_map) = typecheck_file_with_types(&file.node);
+        let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
+            typecheck_file_with_types(&file.node);
 
         assert_eq!(doc_map.get("x"), Some(&"The input value".to_string()));
     }
@@ -9729,7 +9791,8 @@ mod tests {
         // Test Task 1: extract doc from dict entry key annotation
         let input = "[myFunc@[doc: \"My function\"]: [fn [] 42]]";
         let file = crate::parse(input).unwrap();
-        let (_errors, _type_map, doc_map, _scheme_map) = typecheck_file_with_types(&file.node);
+        let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
+            typecheck_file_with_types(&file.node);
 
         assert_eq!(doc_map.get("myFunc"), Some(&"My function".to_string()));
     }
@@ -9739,7 +9802,8 @@ mod tests {
         // Test Task 2: extract doc from function return annotation
         let input = "[count@[]: [fn@[type: Int  doc: \"Returns the count\"] [] 42]]";
         let file = crate::parse(input).unwrap();
-        let (_errors, _type_map, doc_map, _scheme_map) = typecheck_file_with_types(&file.node);
+        let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
+            typecheck_file_with_types(&file.node);
 
         assert_eq!(doc_map.get("count"), Some(&"Returns the count".to_string()));
     }
@@ -9751,7 +9815,8 @@ mod tests {
 [helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
         "#;
         let file = crate::parse(input).unwrap();
-        let (_errors, _type_map, doc_map, _scheme_map) = typecheck_file_with_types(&file.node);
+        let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
+            typecheck_file_with_types(&file.node);
 
         // When both key annotation and return annotation have doc:, the return annotation
         // wins because it is extracted later during recursion (overwrite semantics).

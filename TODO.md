@@ -71,17 +71,6 @@ Research done — see `doc/whatif/inference-completeness.md`. Implements Tarjan 
 
 Two-tier Unknown diagnostic policy: explicitly annotated `@Unknown` is silenced in default mode and warned in `--strict`; inferred `Unknown` is warned in default mode and errors in `--strict`. The same warning channel also surfaces over-broad annotations where inference determines the type is narrower than declared. Both sprints are independent of HKT and can land at any time.
 
-### type-warning-channel: Add three-tier diagnostic system to the type checker
-
-The type checker currently returns only `Vec<TypeError>` — all diagnostics are fatal. This sprint adds a three-tier notification system: `Info` (hint/suggestion), `Warn` (concern), `Err` (fatal). `--strict` bumps every diagnostic up one level: Info→Warn, Warn→Err. This maps directly onto LSP severity levels and gives a principled model for all future type quality diagnostics.
-
-- [ ] Add `TypeDiagnostic` type to `src/error.rs` with a `Level` enum `{ Info, Warn, Err }`; include `message: String`, `span: Span`, `code: &'static str`, `level: Level`; `--strict` bump is applied at emission time by a `bump(level) -> Level` function that shifts Info→Warn, Warn→Err, Err→Err (`src/error.rs`)
-- [ ] Update `typecheck_file` to return `(Rc<TypeEnv>, Vec<TypeError>, Vec<TypeDiagnostic>)` — existing `TypeError` vec for hard errors, new `TypeDiagnostic` vec for the three-tier system; update `typecheck_file_with_types` to match (`src/typecheck.rs`)
-- [ ] Update all call sites in `src/lib.rs`, `src/main.rs`, `src/lsp/document.rs` to destructure the new return and route diagnostics by level (`src/lib.rs`, `src/main.rs`, `src/lsp/document.rs`)
-- [ ] CLI output: `Info` → dimmed hint text; `Warn` → yellow warning; `Err` (from strict bump) → red error, fatal; exit 0 when only Info/Warn present, non-zero on Err (`src/main.rs`)
-- [ ] LSP output: `Info` → `DiagnosticSeverity::Hint` or `Information`; `Warn` → `DiagnosticSeverity::Warning`; `Err` → `DiagnosticSeverity::Error` (`src/lsp/document.rs`)
-- [ ] Tests: file with Info/Warn diagnostics compiles and exits 0; `--strict` escalates Warn to Err; LSP emits correct severity per level (`tests/corpus/eval/`, `tests/lsp_corpus_tests.rs`)
-
 ### unknown-diagnostics: Unknown and over-broad annotation diagnostics
 
 Post-processing pass after `typecheck_file` completes: walk each binding's final `TypeScheme` in the type map, classify each diagnostic, and emit `TypeDiagnostic` at the appropriate level (Info/Warn/Err). Also detects over-broad annotations where inference produces a more specific type than declared.
