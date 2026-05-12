@@ -55,27 +55,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
 
-### prelude-annotation-sweep: Comprehensive annotation pass over all public prelude functions
-
-Audit every public-facing function in `stdlib/prelude.llt` (excluding internal helpers: names ending in `-impl`, `-step`, `-check`, `-merge`, and `sort-merge`) and apply precise annotations using the `fn@[return: ... constraint: ... doc: ...]` form where the existing annotation is imprecise or missing.
-
-**What to look for:** `fn@Unknown` or bare `fn` where:
-- The return type is determinable from the body or parameters (e.g., a TypeVar tied to an input)
-- A constraint is inferrable from operators used in the body (e.g., body calls `<` → `Comparable a`)
-- A `doc:` string would materially help LSP users understand the function
-
-**What not to change:** `fn@Type` where the shorthand is already precise; `fn@Unknown` where the return genuinely cannot be typed without HKT or multi-parameter type classes (e.g., `zip` — deferred to `hkt-mappable-appendable`).
-
-- [ ] Scan all public functions in `stdlib/prelude.llt` for `fn@Unknown` and bare `fn` (no annotation); use `grep -n 'fn@Unknown\|: \[fn ' stdlib/prelude.llt` as starting point; for each, determine the correct annotation from the function body (`stdlib/prelude.llt`)
-- [ ] Apply TypeVar-return annotations for accumulator-pattern functions: `reduce`/`fold` → `fn@a [f@Fn init@a xs]`; `group-by` (if present) → appropriate TypeVar (`stdlib/prelude.llt`)
-- [ ] Apply constraint annotations for comparison/sorting functions not already covered by `hkt-doc-lsp`: any function using `<`, `>`, `<=`, `>=` on a polymorphic arg gets `constraint: [a: Comparable]`; functions using `=` get `constraint: [a: Equatable]` (`stdlib/prelude.llt`) — **gate on `constraint-annotations` sprint**
-- [ ] Apply union-return TypeVar annotations: functions returning either their input type or a sentinel (e.g., `Null`/empty) get `fn@[a Null]` or `fn@[a Record]` where `a` matches a parameter TypeVar — covers any remaining functions missed by batch B (`stdlib/prelude.llt`)
-- [ ] Add `doc:` strings to all public functions currently lacking one — focus on: string utilities (`pad-left`, `pad-right`, `words`, `lines`), math utilities (`clamp`, `abs`, `sign`), structural utilities (`flatten`, `zip-with`, `group-by`), and any function whose name alone is not self-documenting (`stdlib/prelude.llt`)
-- [ ] For functions whose precise type requires HKT (e.g., `zip` dual-dispatch, higher-order combinators) — add `doc:` string describing the type but leave `fn@Unknown` until `hkt-mappable-appendable` lands; add a comment `# annotation deferred to hkt-mappable-appendable` (`stdlib/prelude.llt`)
-- [ ] Run full corpus test suite after all annotation changes to confirm no regressions (`just test` or equivalent); fix any annotation that causes a type error by reverting to `fn@Unknown` and filing a note
-
-**Depends on:** `constraint-annotations`
-
 ### typecheck-precision: Type::Error sentinel and pure-sequence builtin types
 
 Implements the Precision tier of the Type System Extension Roadmap (`doc/07-type-extensions.md §Type System Extension Roadmap`). Design is complete in that section — this sprint is implementation only.

@@ -5616,3 +5616,24 @@ Post-BAS migration cleanup pass. `doc/06-type-inference.md` and related docs sti
 - [x] [Minor] `doc/05-type-annotations.md:343-346` row polymorphism examples show `[name: String ...r]` (named row variable) — under BAS row vars are removed; update examples to note this syntax is no longer valid and openness is via width subtyping (`doc/05-type-annotations.md`)
 - [x] [Minor] `doc/07-type-extensions.md` presents archived Rémy row design (Parts 1–10, ~500 lines) before the live BAS system (§Boolean-Algebraic Subtyping at line ~747) — restructure: move BAS section to top, retitle Parts 1–10 as "Appendix: Archived Rémy Row Polymorphism" (`doc/07-type-extensions.md`)
 - [x] [Minor] `doc/16-architecture.md:505,551` still references removed MAX_EVAL_DEPTH — remove row "Eval depth | MAX_EVAL_DEPTH = 256" from security table; update line 551 to remove MAX_EVAL_DEPTH from the depth limit list; add note that eval depth was removed in sequential-strict sprint and is now bounded only by available Rust call stack (`doc/16-architecture.md`)
+
+### prelude-annotation-sweep: Comprehensive annotation pass over all public prelude functions
+
+Audit every public-facing function in `stdlib/prelude.llt` (excluding internal helpers: names ending in `-impl`, `-step`, `-check`, `-merge`, and `sort-merge`) and apply precise annotations using the `fn@[return: ... constraint: ... doc: ...]` form where the existing annotation is imprecise or missing.
+
+**What to look for:** `fn@Unknown` or bare `fn` where:
+- The return type is determinable from the body or parameters (e.g., a TypeVar tied to an input)
+- A constraint is inferrable from operators used in the body (e.g., body calls `<` → `Comparable a`)
+- A `doc:` string would materially help LSP users understand the function
+
+**What not to change:** `fn@Type` where the shorthand is already precise; `fn@Unknown` where the return genuinely cannot be typed without HKT or multi-parameter type classes (e.g., `zip` — deferred to `hkt-mappable-appendable`).
+
+- [x] Scan all public functions in `stdlib/prelude.llt` for `fn@Unknown` and bare `fn` (no annotation); use `grep -n 'fn@Unknown\|: \[fn ' stdlib/prelude.llt` as starting point; for each, determine the correct annotation from the function body (`stdlib/prelude.llt`)
+- [x] Apply TypeVar-return annotations for accumulator-pattern functions: `reduce`/`fold` → `fn@a [f@Fn init@a xs]`; `group-by` (if present) → appropriate TypeVar (`stdlib/prelude.llt`)
+- [x] Apply constraint annotations for comparison/sorting functions not already covered by `hkt-doc-lsp`: any function using `<`, `>`, `<=`, `>=` on a polymorphic arg gets `constraint: [a: Comparable]`; functions using `=` get `constraint: [a: Equatable]` (`stdlib/prelude.llt`) — **gate on `constraint-annotations` sprint**
+- [x] Apply union-return TypeVar annotations: functions returning either their input type or a sentinel (e.g., `Null`/empty) get `fn@[a Null]` or `fn@[a Record]` where `a` matches a parameter TypeVar — covers any remaining functions missed by batch B (`stdlib/prelude.llt`)
+- [x] Add `doc:` strings to all public functions currently lacking one — focus on: string utilities (`pad-left`, `pad-right`, `words`, `lines`), math utilities (`clamp`, `abs`, `sign`), structural utilities (`flatten`, `zip-with`, `group-by`), and any function whose name alone is not self-documenting (`stdlib/prelude.llt`)
+- [x] For functions whose precise type requires HKT (e.g., `zip` dual-dispatch, higher-order combinators) — add `doc:` string describing the type but leave `fn@Unknown` until `hkt-mappable-appendable` lands; add a comment `# annotation deferred to hkt-mappable-appendable` (`stdlib/prelude.llt`)
+- [x] Run full corpus test suite after all annotation changes to confirm no regressions (`just test` or equivalent); fix any annotation that causes a type error by reverting to `fn@Unknown` and filing a note
+
+**Depends on:** `constraint-annotations`
