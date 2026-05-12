@@ -164,7 +164,7 @@ pub enum Type {
     Timestamp,
     /// Signed duration (nanoseconds) — created by `duration-*` constructors.
     Duration,
-    /// Clock capability — authority to read current time. Injected via CLI --cap-clock.
+    /// Clock capability — authority to read current time. Injected by default as %clock (disable with --no-cap-clock).
     ClockCap,
     /// Timezone — parsed IANA TZ rules from zoneinfo file. Created by `load-tz`.
     Timezone,
