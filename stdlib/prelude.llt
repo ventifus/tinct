@@ -391,15 +391,15 @@ all?@[doc: "True if all elements satisfy predicate"]: [fn@Bool [pred@Fn xs@Dict]
 
 # Greater than. Derived by swapping arguments of builtin-lt.
 # Type: (Comparable -> Comparable -> Bool)
->@[doc: "Greater than"]: [fn@Bool [a b] [builtin-lt b a]]
+>@[doc: "Greater than"]: [fn@[return: Bool constraint: [a: Comparable]] [x@a y@a] [builtin-lt y x]]
 
 # Less than or equal. Derived as negation of >.
 # Type: (Comparable -> Comparable -> Bool)
-<=@[doc: "Less than or equal"]: [fn@Bool [a b] [not [builtin-lt b a]]]
+<=@[doc: "Less than or equal"]: [fn@[return: Bool constraint: [a: Comparable]] [x@a y@a] [not [builtin-lt y x]]]
 
 # Greater than or equal. Derived as negation of <.
 # Type: (Comparable -> Comparable -> Bool)
->=@[doc: "Greater than or equal"]: [fn@Bool [a b] [not [builtin-lt a b]]]
+>=@[doc: "Greater than or equal"]: [fn@[return: Bool constraint: [a: Comparable]] [x@a y@a] [not [builtin-lt x y]]]
 
 # ============================================================================
 # Arithmetic (derived from builtin-add, builtin-sub, builtin-mul, builtin-div)
@@ -725,7 +725,9 @@ map-entries@[doc: "Apply function to each key-value entry"]: [fn@Dict [f@Fn xs@D
 # Both are left folds: f receives (accumulator, element) and the result becomes
 # the new accumulator. Starting accumulator is init.
 # Example: [fold [fn [acc x] [+ acc x]] 0 [1 2 3 4]] => 10
-fold@[doc: "Left fold (alias for reduce)"]: [fn@Unknown [f@Fn init xs] [builtin-reduce f init xs]]
+# NOTE: f@Fn is under-constrained. Ideally f@Fn@a [a Any] to enforce accumulator
+# signature, but parameterized function types are not yet expressible.
+fold@[doc: "Left fold (alias for reduce)"]: [fn@a [f@Fn init@a xs] [builtin-reduce f init xs]]
 
 # Take a slice by position (start inclusive, end exclusive). Preserves original keys.
 # Type: (Dict a -> Int -> Int -> Dict a)
@@ -747,6 +749,7 @@ slice@[doc: "Take slice by position (preserves keys)"]: [fn@Dict [xs@Dict start@
 # Pair entries from two collections by position. Returns a list of pairs.
 # If both xs and ys are Seq: lazy Seq of pairs.
 # Otherwise: collect Seqs to Dicts, then use eager zip-dict-impl.
+# annotation deferred to hkt-mappable-appendable
 zip@[doc: "Pair entries from two collections by position"]: [fn@Unknown [xs ys]
     [builtin-if [and [seq? xs] [seq? ys]]
         [zip-seq-impl xs ys]
@@ -925,7 +928,10 @@ product@[doc: "Product of all elements"]: [fn@Number [xs] [builtin-reduce [fn [a
 
 # Return the minimum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic min).
-min@[doc: "Minimum element"]: [fn@Unknown [xs]
+# NOTE: TypeVar 'a' is not bound via parameter annotation (xs@Seq@a would require
+# chained annotations, which are not supported). The constraint is aspirational,
+# relying on the type system to infer 'a' from context.
+min@[doc: "Minimum element"]: [fn@[return: a constraint: [a: Comparable]] [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] a b]]
         [builtin-first xs]
@@ -933,7 +939,10 @@ min@[doc: "Minimum element"]: [fn@Unknown [xs]
 
 # Return the maximum element of a collection.
 # Errors on empty collection (no sensible default for polymorphic max).
-max@[doc: "Maximum element"]: [fn@Unknown [xs]
+# NOTE: TypeVar 'a' is not bound via parameter annotation (xs@Seq@a would require
+# chained annotations, which are not supported). The constraint is aspirational,
+# relying on the type system to infer 'a' from context.
+max@[doc: "Maximum element"]: [fn@[return: a constraint: [a: Comparable]] [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] b a]]
         [builtin-first xs]
@@ -1118,8 +1127,8 @@ assert@[doc: "Assert condition with error message"]: [fn@Unknown [cond msg@Strin
 # builtins. This is an accepted trade-off of the overridable-ops design.
 
 # Comparison operators
-<@[doc: "Less than"]: [fn@Bool [a b] [builtin-lt a b]]
-=@[doc: "Equality"]: [fn@Bool [a b] [builtin-eq a b]]
+<@[doc: "Less than"]: [fn@[return: Bool constraint: [a: Comparable]] [x@a y@a] [builtin-lt x y]]
+=@[doc: "Equality"]: [fn@[return: Bool constraint: [a: Equatable]] [x@a y@a] [builtin-eq x y]]
 
 # Arithmetic operators
 +@[doc: "Addition"]: [fn@Number [a@Number b@Number] [builtin-add a b]]
