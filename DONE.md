@@ -5637,3 +5637,13 @@ Audit every public-facing function in `stdlib/prelude.llt` (excluding internal h
 - [x] Run full corpus test suite after all annotation changes to confirm no regressions (`just test` or equivalent); fix any annotation that causes a type error by reverting to `fn@Unknown` and filing a note
 
 **Depends on:** `constraint-annotations`
+
+### typecheck-precision: Type::Error sentinel and pure-sequence builtin types
+
+Implements the Precision tier of the Type System Extension Roadmap (`doc/07-type-extensions.md §Type System Extension Roadmap`). Design is complete in that section — this sprint is implementation only.
+
+- [x] Add `Type::Error` sentinel variant to `src/types.rs`; update all exhaustive `Type` match sites with arms that propagate `Error` silently (`src/types.rs`, `src/type_unify.rs`, `src/typecheck.rs`); semantics: `unify(Error, τ) = S` unchanged (no new binding, no error propagation), `is_subtype(Error, _) = false`
+- [x] In `infer_expr` and `check_expr`, when a subexpression produces `TypeError`, bind the expression's type to `Type::Error` in the type map rather than propagating the error to all dependents; subsequent errors on `Type::Error`-typed subexpressions are suppressed (`src/typecheck.rs`)
+- [x] Register precise return types for pure-sequence builtins in `TypeEnv::with_builtins()`: `$range → Seq(Int)`, `$seq: (T, Int) → Seq(T)`, `$repeat: (T) → Seq(T)`, `$cycle: (Seq(T)) → Seq(T)`, `$take: (Int, Seq(T)) → Seq(T)`, `$drop: (Int, Seq(T)) → Seq(T)` — dual-dispatch `$map` and `$filter` remain `Unknown` until `hkt-mappable-appendable` (`src/type_env.rs`)
+- [x] Update LSP hover: display "error" for `Type::Error`-typed bindings rather than nothing; suppress hover for expressions whose type is `Error` due to cascading from an upstream error (`src/lsp/analysis.rs`)
+- [x] Tests: a single type error does not produce N cascading errors on dependent expressions; `$range 0 10` types as `Seq(Int)` in LSP hover; `$repeat "a"` types as `Seq(Str)`; LSP shows "error" for error-typed binding (`tests/corpus/eval/typecheck/`, `tests/lsp_corpus_tests.rs`)
