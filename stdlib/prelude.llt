@@ -490,6 +490,20 @@ clamp@[doc: "Clamp value between bounds (inclusive)"]: [fn@Number [lo@Number hi@
 words@[doc: "Split string on spaces into words"]: [fn@Seq [s@String]
     [builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]]
 
+# Strip common leading indentation from a multi-line string.
+# Algorithm: split into lines; the last line (whitespace-only) determines indent depth;
+# strip that many characters from each content line; drop first (empty) and last (anchor) lines.
+# Type: (String -> String)
+# Example: [unindent "\n  line one\n  line two\n  "] => "line one\nline two"
+# Inherently materializing: must process all lines to determine indentation and strip.
+unindent@[doc: "Strip common leading indentation from a multi-line string"]: [fn@String [s@String]
+    [ls: [split "\n" s]
+     last-line: [builtin-last ls]
+     indent: [str-length last-line]
+     strip-line: [fn [l] [builtin-if [builtin-lt [str-length l] indent] "" [str-slice l indent [str-length l]]]]
+     inner: [slice ls 1 [builtin-sub [length ls] 1]]]
+    [builtin-join "\n" [builtin-map strip-line inner]]]
+
 # ============================================================================
 # Control Flow
 # ============================================================================
