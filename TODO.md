@@ -107,6 +107,9 @@ For findings where the code is the source of truth and the feature doc is wrong.
 - [ ] `doc/feature/templating.md` — replace all occurrences of `tinct eval` with `tinct run` (the actual CLI command) (`doc/feature/templating.md`)
 - [ ] `doc/feature/templating.md` §Standard Formatters — update pipeline examples to use `[include libdir "out/yaml.llt"]` instead of a direct path argument like `stdlib/out/yaml.llt` (`doc/feature/templating.md`)
 - [ ] `doc/feature/numeric-types.md` §Phase 1 — add `to-bytes` to the description of `stdlib/numeric.llt` as a numeric utility function (currently undocumented in the feature doc) (`doc/feature/numeric-types.md`)
+- [ ] `doc/feature/typeclasses.md` §Phase 2 — add a cross-reference to `doc/feature/hkt-monads.md` noting that the concrete typeclass hierarchy (Functor/Applicative/Monad/Foldable/Traversable) was specified as part of HKT and that Phase 2 descriptions here are superseded by that design (`doc/feature/typeclasses.md`)
+- [ ] `doc/feature/nominal-variants.md` §Overview — add a note that nominal variants are not merely an alternative to structural ADTs under BAS but are required: S-RcdTop collapses disjoint-key structural unions to `Top`, making nominal variants the only viable discriminated union mechanism under the BAS type system (`doc/feature/nominal-variants.md`)
+- [ ] `doc/feature/algebraic-data-types.md`, `doc/feature/union-types.md`, `doc/feature/parameterized-dict.md` — add cross-references to `doc/feature/boolean-algebraic-subtyping.md` clarifying that the `@Record`/`@Dict` typing and open-record semantics described in those docs were superseded by BAS (closed records, no RowVar tails, `@Dict` = closed empty record not `Record ∨ Map` union) (`doc/feature/algebraic-data-types.md`, `doc/feature/union-types.md`, `doc/feature/parameterized-dict.md`)
 
 ### fdv-main-doc-updates: Correct stale content in main doc/*.md files
 
@@ -160,7 +163,6 @@ For findings where the feature doc says something should work but the code doesn
 - [ ] `stdlib/datetime.llt` — add `format-date` using the 3-arg `pad-left` signature (requires `[include libdir "strings.llt"]`): `[pad-left [str [timestamp-month t]] 2 "0"]` per `doc/feature/lib-datetime.md` (`stdlib/datetime.llt`)
 - [ ] `src/type_env.rs` — add `record?` and `map?` to `TypeEnv::with_builtins()` with type signatures `Unknown → Bool` (conservative fallback until narrowing is implemented); both builtins are registered in `standard_builtins()` but invisible to the type checker (`src/type_env.rs`)
 - [ ] `src/type_env.rs` — implement precise `get?` type inference: when the dict arg is `Map[K V]`, return `Union([V, Record(Row{})])` (V | Null); when the dict arg is a `Record` with a known field, return `Union([field_type, Record(Row{})])`. The current registration is `(Unknown, Unknown) → Unknown` and the claimed type-checker special-casing is not implemented (`src/type_env.rs`, `src/typecheck.rs`)
-- [ ] `src/typecheck_annot.rs` — add annotation resolution for `[all ...]` and `[without ...]` prefix-bracket forms in `resolve_annotation` / `resolve_type_expr`, producing `Type::Intersection` and `Type::Negation` respectively; the type variants exist in `src/types.rs` and are used at runtime but are not reachable via user-written `@[[all A B]]` / `@[[without A]]` annotations (`src/typecheck_annot.rs`)
 - [ ] `doc/feature/null-semantics.md` — track the `null` keyword sprint (desugaring `null` → `[]`) or explicitly mark it as rejected; until a decision is made, update the feature doc to note the keyword is unscheduled; add a TODO item or decision note (`doc/feature/null-semantics.md`, `TODO.md`)
 
 ---
@@ -493,14 +495,6 @@ Two correctness/quality gaps in the evaluator noted in source comments.
 - [ ] Fix stale test comment at `src/typecheck.rs:8200` that says "`@[...]` composite annotation is not yet implemented in the parser" — `Annotation::PropertyDict` is fully implemented and used throughout the prelude; update the comment (`src/typecheck.rs`)
 - [ ] Make TypeAssert materialization iterative: replace the `eval_recursive` call at `src/eval_materialize.rs:1655` (`TODO(cek-eval)`) with a `TypeAssertCheck` continuation — push the check onto the continuation stack and use `Action::Eval` for the inner expression instead of recursing (`src/eval_materialize.rs`)
 - [ ] **`mat_span` threading through DotAccessForceData** (`src/eval_materialize.rs:1344`, `src/eval_materialize.rs:1379`): When `.field` access in an access chain triggers materialization, the `mat_span` used is the access expression span rather than the outer materialization context's span — this loses the outermost call-site span in error messages for chained access like `a.b.c`; fix by threading `outer_mat_span: Option<Span>` through `DotAccessForceData` and using it in `Action::Materialize`; corresponding test is at `src/eval.rs:5559` (currently asserts the wrong span as a known limitation — update when fixed)
-
----
-
-## CLI
-
-### cli-gaps: --libdir-path override and other deferred CLI features
-
-- [ ] **`--libdir-path PATH` flag** (`src/main.rs:1106`): Add CLI flag to override the standard library directory — the comment at line 1106 was deferred from `io-phase2` (which is done); useful for custom installations or alternative stdlib testing; wire through `main.rs` arg parsing, override the auto-detected `%libdir` in the root env; add `--help` text and a test
 
 ---
 
