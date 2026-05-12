@@ -1580,7 +1580,9 @@ impl TypeEnv {
                 // Returns Str when set; Null (empty dict) when unset, --no-env active, or not in allowlist
                 ret: Box::new(Type::normalize_union(vec![
                     Type::Str,
-                    Type::Record(Row { fields: HashMap::new() }),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
                 ])),
                 variadic: false,
             },
@@ -2000,8 +2002,8 @@ impl TypeEnv {
         env.insert(
             "builtin-seq".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                params: vec![(None, Type::Top), (None, Type::Top)],
+                ret: Box::new(Type::Seq(Box::new(Type::Top))),
                 variadic: false,
             },
         );
@@ -2052,16 +2054,16 @@ impl TypeEnv {
         env.insert(
             "builtin-repeat".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                params: vec![(None, Type::Top)],
+                ret: Box::new(Type::Seq(Box::new(Type::Top))),
                 variadic: false,
             },
         );
         env.insert(
             "builtin-cycle".to_string(),
             Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                params: vec![(None, Type::Seq(Box::new(Type::Top)))],
+                ret: Box::new(Type::Seq(Box::new(Type::Top))),
                 variadic: false,
             },
         );
@@ -2072,14 +2074,14 @@ impl TypeEnv {
                     (
                         None,
                         Type::Function {
-                            params: vec![(None, Type::Unknown)],
-                            ret: Box::new(Type::Unknown),
+                            params: vec![(None, Type::Top)],
+                            ret: Box::new(Type::Top),
                             variadic: false,
                         },
                     ),
-                    (None, Type::Unknown),
+                    (None, Type::Top),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                ret: Box::new(Type::Seq(Box::new(Type::Top))),
                 variadic: false,
             },
         );
@@ -2090,14 +2092,14 @@ impl TypeEnv {
                     (
                         None,
                         Type::Function {
-                            params: vec![(None, Type::Unknown)],
-                            ret: Box::new(Type::Unknown),
+                            params: vec![(None, Type::Top)],
+                            ret: Box::new(Type::Top),
                             variadic: false,
                         },
                     ),
-                    (None, Type::Unknown),
+                    (None, Type::Top),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                ret: Box::new(Type::Seq(Box::new(Type::Top))),
                 variadic: false,
             },
         );
@@ -2144,22 +2146,16 @@ impl TypeEnv {
         env.insert(
             "take".to_string(),
             Type::Function {
-                params: vec![
-                    (None, Type::Int),
-                    (None, Type::Seq(Box::new(Type::Unknown))),
-                ],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                params: vec![(None, Type::Int), (None, Type::Seq(Box::new(Type::Top)))],
+                ret: Box::new(Type::Seq(Box::new(Type::Top))),
                 variadic: false,
             },
         );
         env.insert(
             "drop".to_string(),
             Type::Function {
-                params: vec![
-                    (None, Type::Int),
-                    (None, Type::Seq(Box::new(Type::Unknown))),
-                ],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
+                params: vec![(None, Type::Int), (None, Type::Seq(Box::new(Type::Top)))],
+                ret: Box::new(Type::Seq(Box::new(Type::Top))),
                 variadic: false,
             },
         );
