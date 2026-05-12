@@ -55,15 +55,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
 
-### typeassert-convergence: Structural TypeAssert runtime validation
-
-Design in `doc/07-type-extensions.md §TypeAssert Runtime Validation`. Closes the static/runtime divergence: static check uses `is_subtype` but runtime uses nominal `value.type_name()` string comparison, making record-type assertions no-ops at runtime.
-
-- [ ] Extend `Expr::TypeAssert` in `src/ast.rs`: add `resolved_type: RefCell<Option<Type>>` field initialized to `None` by the parser; type checker populates it via `resolve_type_assert()` with the fully-substituted concrete type (type aliases resolved at check time — evaluator never resolves aliases) (`src/ast.rs`, `src/typecheck.rs`)
-- [ ] Evaluator: when `resolved_type` is `Some(ty)`, use `ty` for validation instead of `value.type_name()` string comparison; for primitive types (Int, Str, Bool, Float, Null, Seq), validate immediately; for `Record(fields, Closed)`, check key set + cardinality immediately, then create `Guarded` thunks for each field's type constraint (field type checked lazily at first access, preserving lazy semantics — Findler & Felleisen 2002); when `resolved_type` is `None` (`--no-typecheck` mode), degrade to current nominal behavior (`src/eval.rs`)
-- [ ] Add `Cont::TypeAssertCheck(Type, Span)` continuation: fired when a Guarded thunk for a record TypeAssert field is first materialized; validates `value_matches_type(actual, field_ty)`, produces `TypeAssertFailed` on mismatch with the TypeAssert span as primary location (`src/eval.rs`)
-- [ ] Tests: `[@[name: String] {name: "alice"}]` passes; `[@[name: String] {name: 42}]` → `TypeAssertFailed` at first access of `name`; `[@Int "hello"]` → immediate failure; `[@Unknown expr]` → always passes; `--no-typecheck` → nominal fallback; nested record assert validates inner structure (`tests/corpus/eval/typeassert/`)
-
 ### stdlib-stack-frames: Stack frame filtering for stdlib error locations
 
 Limitation documented in `doc/11-stdlib.md §Known Limitations`. Stdlib functions that call `$error` internally show `prelude.llt` as the primary error location rather than the user's call site.
