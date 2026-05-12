@@ -687,7 +687,7 @@ mod tests {
         let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
         assert!(state.ast.is_ok());
         assert!(!state.type_errors.is_empty()); // undefined variable caught by type checker
-        // LSP skips eval — eval_errors always empty.
+                                                // LSP skips eval — eval_errors always empty.
         assert!(state.eval_errors.is_empty());
     }
 

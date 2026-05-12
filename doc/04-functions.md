@@ -61,10 +61,20 @@ Examples:
 [
     double: [fn@Number [x@Number] [* x 2]]
     add: [fn@Number [x@Number y@Number] [+ x y]]
+    
+    # Full metadata dict form with constraint and doc
+    min: [fn@[return: a  constraint: [a: Comparable]  doc: "Return smallest element"]
+          [xs@Seq@a] ...]
 ]
 ```
 
 **Why:** Consistent with dict-first design. Every binding is a key-value pair, no exceptions. Fewer special forms to implement.
+
+**Function annotation forms:** `fn` supports two annotation forms:
+- **Shorthand:** `fn@Type` — equivalent to `fn@[return: Type]`
+- **Full metadata dict:** `fn@[return: ... constraint: ... doc: ...]` — all keys optional
+
+See [Type Annotations](05-type-annotations.md) §fn@[...] Function Metadata Dict for constraint syntax and examples.
 
 ### Formal Grammar
 

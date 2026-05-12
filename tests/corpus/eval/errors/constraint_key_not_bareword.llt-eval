@@ -1,0 +1,6 @@
+# Error 1: constraint: key is not a bare word (numeric key)
+[fn@[constraint: [42: Comparable] return: Int] [] 42]
+=== out
+Function()
+=== warn
+constraint key must be a bare word

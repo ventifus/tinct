@@ -1,0 +1,6 @@
+# Error: fn@[...] annotation mixes named keys and positional entries
+[fn@[return: Int  42] [] 42]
+=== out
+Function()
+=== warn
+must use either named keys

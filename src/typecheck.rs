@@ -3094,37 +3094,94 @@ fn infer_fn(
 
     let ret_type = match return_ann {
         Some(ann) => {
-            let declared = resolve_annotation(
-                &ann.node,
-                env,
-                ann.span,
-                state,
-                &mut ann_mapping_opt,
-                &mut row_ann_mapping_opt,
-            )
-            .map_err(|e| vec![e])?;
+            // Check if this is a metadata dict annotation: @[return: Type doc: "..." constraint: ...]
+            let actual_ann = match &ann.node {
+                Annotation::PropertyDict(entries) => {
+                    // Check if this has metadata keys (return:, constraint:, doc:).
+                    // These are the only valid named keys for fn@[...] metadata dicts.
+                    // Unknown named keys (e.g. fn@[foo: "bar"]) are caught by resolve_fn_metadata
+                    // when combined with a known key; pure all-unknown-key dicts are interpreted
+                    // as record return types by resolve_annotation.
+                    let has_metadata_key = entries.iter().any(|e| {
+                        e.node.key.as_ref().is_some_and(|k| {
+                            matches!(&k.node, Expr::Str(s) if s == "return" || s == "constraint" || s == "doc")
+                        })
+                    });
+
+                    // Mixed named+positional check: if any known metadata key is present but
+                    // some entries are positional, emit the mixed-key error.
+                    let all_keyed = entries.iter().all(|e| e.node.key.is_some());
+
+                    if has_metadata_key && !all_keyed {
+                        // Mixed named + positional in metadata dict context
+                        return Err(vec![TypeError::new(
+                            "fn annotation must use either named keys (return:, constraint:, doc:) or positional entries (union return type), not both",
+                            ann.span,
+                        )]);
+                    }
+
+                    if has_metadata_key {
+                        // This is a metadata dict - use resolve_fn_metadata to process all keys
+                        // including constraint: entries which must be registered in state.constraints
+                        let (ret_ty, _doc_string) = typecheck_annot::resolve_fn_metadata(
+                            entries,
+                            env,
+                            ann.span,
+                            state,
+                            &mut ann_mapping_opt,
+                            &mut row_ann_mapping_opt,
+                        )
+                        .map_err(|e| vec![e])?;
+                        // Note: doc_string is extracted again in typecheck_dict.rs Pass 4 for storage
+                        ret_ty
+                    } else {
+                        // Regular PropertyDict annotation - resolve normally
+                        resolve_annotation(
+                            &ann.node,
+                            env,
+                            ann.span,
+                            state,
+                            &mut ann_mapping_opt,
+                            &mut row_ann_mapping_opt,
+                        )
+                        .map_err(|e| vec![e])?
+                    }
+                }
+                _ => {
+                    // Simple annotation - resolve normally
+                    resolve_annotation(
+                        &ann.node,
+                        env,
+                        ann.span,
+                        state,
+                        &mut ann_mapping_opt,
+                        &mut row_ann_mapping_opt,
+                    )
+                    .map_err(|e| vec![e])?
+                }
+            };
 
             // When declared return type contains type variables, switch to unification mode
             // (doc/06 §[CHECK-FN], Damas & Milner 1982, Pierce & Turner 2000 §3.2).
             // TypeVars in is_subtype only match via reflexive equality, so
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
-            if declared.has_inference_vars() {
+            if actual_ann.has_inference_vars() {
                 let body_ty = infer_expr(body, &fn_env, state, type_map)?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
-                let result = unify(&body_ty, &declared, &mut subst, state, body.span);
+                let result = unify(&body_ty, &actual_ann, &mut subst, state, body.span);
                 state.subst = subst;
                 result.map_err(|e| vec![e])?;
                 // Apply substitution to resolve any TypeVars bound during unification.
                 // Without this, the returned Type::Function would have has_inference_vars() == true,
                 // causing check_call to enter the CALL-POLY path unnecessarily (see check_call's
                 // has_inference_vars guard). This prevents call sites from entering CALL-POLY.
-                state.subst.apply(&declared)
+                state.subst.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
-                check_expr(body, &declared, &fn_env, state, type_map)?;
-                declared
+                check_expr(body, &actual_ann, &fn_env, state, type_map)?;
+                actual_ann
             }
         }
         None => infer_expr(body, &fn_env, state, type_map)?,
@@ -4000,6 +4057,7 @@ mod tests {
                 type_vars: vec!["a".to_string()],
                 constraints: vec![],
                 body: Type::Int,
+                doc: None,
             },
         );
         let parent_env = Rc::new(parent_env);

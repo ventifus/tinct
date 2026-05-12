@@ -59,11 +59,14 @@ pub fn hover_at(
 /// quantifier is an implementation detail (the caller already sees fresh type vars
 /// like `a`, `b` from the `pretty_type_str` renaming pass).
 ///
+/// If the scheme has a doc field, it is appended after the type signature.
+///
 /// Examples:
 ///   - `Equatable a => Fn@Bool [a a]` (constrained polymorphic)
 ///   - `Fn@Bool [a a]` (polymorphic, no constraints)
+///   - `Fn@a [a]\n\nReturns the argument unchanged` (with doc)
 fn format_scheme_for_hover(scheme: &TypeScheme) -> String {
-    if scheme.constraints.is_empty() {
+    let type_sig = if scheme.constraints.is_empty() {
         scheme.body.to_string()
     } else {
         let constraints = scheme
@@ -73,6 +76,12 @@ fn format_scheme_for_hover(scheme: &TypeScheme) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!("{constraints} => {}", scheme.body)
+    };
+
+    if let Some(ref doc) = scheme.doc {
+        format!("{}\n\n{}", type_sig, doc)
+    } else {
+        type_sig
     }
 }
 
@@ -1553,6 +1562,33 @@ mod tests {
         assert!(
             text.contains("Bool"),
             "hover should show Bool return type for $builtin-eq, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_hover_function_with_doc_in_scheme() {
+        // Test that when hovering on a function reference, the doc from the TypeScheme
+        // is displayed in the hover text.
+        let env = test_env();
+        let source = r#"[
+  identity@[doc: "Returns the argument unchanged"]: [fn [x@a] $x]
+  test: [call $identity 42]
+]"#;
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Find offset of "$identity" in the call expression
+        let identity_offset = source.find("$identity").expect("should find $identity");
+        let hover = hover_at(&doc, &test_uri(), identity_offset, &test_include_graph());
+        assert!(hover.is_some(), "should have hover on $identity");
+        let text = hover.unwrap();
+        assert!(
+            text.contains("Variable: $identity"),
+            "should show variable label, got: {text}"
+        );
+        // The function is polymorphic (has type var 'a'), so scheme should be in scheme_map
+        // and doc should be displayed
+        assert!(
+            text.contains("Returns the argument unchanged"),
+            "should show doc string from TypeScheme, got: {text}"
         );
     }
 }

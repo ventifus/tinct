@@ -6,9 +6,7 @@ For the user-facing annotation syntax, see [Type Annotations](05-type-annotation
 
 ## TypeAssert Runtime Validation
 
-The type checker and evaluator must agree on TypeAssert semantics. Currently they diverge: the static check is structural (`is_subtype(actual, expected)` in `resolve_type_assert`), while the runtime check is nominal (string comparison of `value.type_name()`). Record-type assertions like `[@[name: String age: Int] $expr]` pass type checking but are no-ops at runtime — the evaluator only sees "Dict" and cannot validate the record structure.
-
-**Design: full structural convergence.** Both static and runtime TypeAssert checks are structural. The evaluator validates values against the full resolved `Type`, not just a type name string. Record fields are checked lazily via proxy contracts (Findler & Felleisen 2002), preserving tinct's lazy evaluation guarantees.
+Both static and runtime TypeAssert checks are structural. The evaluator validates values against the full resolved `Type`, not a type name string. Record fields are checked lazily via proxy contracts (Findler & Felleisen 2002), preserving tinct's lazy evaluation guarantees.
 
 **Elaboration.** The type checker resolves TypeAssert annotations and embeds the resolved type directly in the AST (Dunfield & Krishnaswami 2021, §elaboration). This follows the standard bidirectional typing approach: the checking judgment produces an elaborated term where type information is explicit.
 
@@ -211,14 +209,7 @@ name@[type: String  repr: "u8"]: "hello"   # ERROR: repr: requires numeric type
 
 ## Dual-Dispatch Builtins
 
-**Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. The type checker assigns these builtins type `Unknown` because:
-
-1. Tinct has no union types — the precise input type `Dict | Seq` cannot be expressed
-2. Separate functions (`$map-dict`, `$map-seq`) would be verbose and break the polymorphic API
-3. Overloaded function types would require type system extensions (type classes or similar)
-4. `Unknown` is already used for other inherently dynamic operations (e.g., `$from-json`)
-
-Type assertions (`[@Type $expr]`) provide a runtime narrowing mechanism when concrete types are needed. With union types, `$try` can return a precise `[ok: τ] | [err: Str]` result, enabling static reasoning over the dual-dispatch return type.
+**Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. `$try` returns a precise `Ok[T] | Err[String]` nominal result type under BAS.
 
 ### Detailed Dispatch Table
 
@@ -233,17 +224,7 @@ Several builtins dispatch on their input type (Dict vs Seq), producing different
 | `$reduce` | Single value (accumulated over entries) | Single value (accumulated over elements) |
 | `$join` | String (concatenates values) | String (concatenates elements) |
 
-**Type system strategy: `Unknown` for all dual-dispatch builtins.** The type checker assigns type `Unknown` to these operations because:
-
-1. **No union types.** The precise input type would be `Dict | Seq`, which cannot be expressed without union types. There is no way to accurately represent "accepts either Dict or Seq."
-
-2. **Separate functions would be verbose.** Naming conventions like `$map-dict` and `$map-seq` would work but break the clean, polymorphic API.
-
-3. **Overloaded function types require type system extensions.** True ad-hoc polymorphism (overloading) requires type classes or similar mechanisms — see §Expressiveness in §Type System Extension Roadmap.
-
-4. **`Unknown` is handled uniformly.** Builtins that cannot be precisely typed (e.g., `$from-json`) use `Unknown`, and type assertions (`[@Type $expr]`) provide a runtime narrowing mechanism.
-
-If the type system gains union types or type classes, dual-dispatch builtins can be typed more precisely — see §Expressiveness.
+**Type system strategy: `Mappable` for ad-hoc polymorphic builtins.** `$map : Mappable f => (a → b) → f a → f b` and `$filter : Mappable f => (a → Bool) → f a → f a` are typed via the `Mappable` typeclass, enabling precise types for both Dict and Seq inputs without separate per-type functions. Builtins that are inherently dynamic (e.g., `$from-json`) use `Unknown`; type assertions (`[@Type $expr]`) provide runtime narrowing.
 
 **`Failed` thunk state:**
 
@@ -755,36 +736,13 @@ See [doc/17-references.md §Row polymorphism](17-references.md) for full citatio
 
 ## Type System Extension Roadmap
 
-The type system evolves across three areas. Each is independently useful and produces a complete type system.
+The type system addresses three complementary areas.
 
-**Precision.** Register builtin type signatures, add Seq type inference, add error recovery for LSP.
+**Precision.** `TypeEnv::with_builtins()` pre-registers precise type signatures for all Rust-native builtins. Non-overloaded builtins carry exact types (`$+ : Fn(Number, Number → Number)`, `$length : Fn(Unknown → Int)`); sequence constructors carry typed returns (`$range → Seq(Int)`, `$repeat: (T) → Seq(T)`); dual-dispatch builtins are typed via `Mappable` — see §Dual-Dispatch Builtins. `Type::Error` propagates silently through inference — `unify(Error, τ) = S` unchanged, `is_subtype(Error, _) = false` — preventing cascading errors from a single failing subexpression. LSP hover shows "error" for error-typed bindings.
 
-- `TypeEnv::with_builtins()` constructor pre-registering type signatures for all Rust-native builtins. Dual-dispatch builtins (`$map`, `$filter`, etc.) are typed as `Unknown` (matching §Dual-Dispatch Builtins above). Non-overloaded builtins get precise types (e.g., `$+ : Fn(Number, Number → Number)`, `$length : Fn(Unknown → Int)`).
-- Seq type inference for sequence-only builtins (`$seq`, `$range`, `$repeat`, `$cycle`, `$iterate`, `$unfold`, `$take`). Annotate return types in `check_call` so LSP hover shows `Seq(Int)` instead of `Unknown`. Dual-dispatch builtins (`$map`, `$filter` on Dict|Seq) remain typed as `Unknown` — precise typing requires type classes or union types (see §Expressiveness).
-- `Type::Error` sentinel — a type that propagates silently through inference without generating additional errors. When a subexpression fails type checking, `Type::Error` prevents cascading errors (currently, a single type error can produce 5–10 follow-on errors from dependent expressions). Semantics: `unify(Error, τ) → S` unchanged (no binding, no error), `is_subtype(Error, _) = false`. `Type::Error` is recorded in the type map so LSP hover can show "error" rather than nothing. This is the standard approach used by GHC, Elm, and Rust.
+**Completeness.** `Type::Function` carries `params: Vec<(Option<String>, Type)>`; named args are matched by name, not position. Polymorphic recursion is rejected at depth 1 with a clear error: "polymorphic recursion requires an explicit type annotation". CALL-MONO and CALL-POLY share a single structural `check_expr` pass applying [SUB] at leaves and unification only at TypeVar positions, eliminating verdict divergence for identical literal type pairs. `Unknown`'s consistency semantics follow the AGT model — see `doc/whatif/completed/gradual-typing.md`.
 
-The Precision area does not change any inference rules or subtyping relationships. It extends the type environment and improves error reporting.
-
-**Completeness.** Extend type inference to cover named arguments, detect polymorphic recursion, and fix the function variance inconsistency.
-
-- Named arg unification — **implemented**. `Type::Function` carries `params: Vec<(Option<String>, Type)>`. Named args are matched **by name lookup** (`params.iter().find_map(|(pname, pty)| if pname.as_ref() == Some(arg_name) { Some(pty) })`), not positionally by index. Checking fires in CALL-MONO, `check_call` CALL-POLY, and `check_call_with_scheme` Function arm. Partial gaps remain: same-dict letrec forward references fall through to the TypeVar arm and skip named-arg validation; the positional-zip arity model does not account for named-arg slot reservation.
-- Polymorphic recursion detection — forbid with a clear error message ("polymorphic recursion requires explicit type annotation"), rather than silently diverging during inference. Detection is immediate (depth 1): if a recursive call site instantiates a type variable that was bound by an outer call to the same function, report the error. No partial polymorphic recursion is allowed. This item assumes let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) is implemented — without let-polymorphism, every recursive call is monomorphic by definition and the detection is vacuous.
-- CALL-MONO/CALL-POLY divergence fix — the current dual-path design (unify for CALL-POLY, is_subtype for CALL-MONO) gives different verdicts for the same literal type pair depending on whether type variables are present (see [Type Inference](06-type-inference.md) §CALL-MONO/CALL-POLY literal type divergence). The structural recursive `check_expr` from the bidirectional typing design ([Type Inference](06-type-inference.md) §Bidirectional Typing) resolves this by applying [SUB] at leaves and unification only at actual type variable positions. Note: this is unrelated to function subtyping variance rules (contravariant parameters, covariant return), which are already correctly implemented in `src/types.rs:177-196`.
-- Formalize `Unknown` semantics (documentation only) — document the consistency relation that `Unknown` actually implements, distinguishing it from true subtyping. Define what the Gradual Guarantee means for tinct. Identify blame boundaries (TypeAssert, builtin return types, function annotations). See `doc/whatif/completed/gradual-typing.md` for the full analysis.
-
-Other Completeness items (polymorphic recursion detection, CALL-MONO/CALL-POLY divergence fix, `Unknown` formalization) may proceed in parallel with Precision.
-
-**Relationship to other work.** The §Row-Variable Unification and let-generalization ([Type Inference](06-type-inference.md) §Let-Generalization) are separate infrastructure areas, not part of this roadmap. Completeness's polymorphic recursion detection assumes let-generalization is implemented. Row variable binding is complete as of row-unification-e.
-
-**Expressiveness.** Three independent features, each addressed by a specific condition. These are design extensions analyzed in `doc/whatif/completed/` files.
-
-| Feature | Condition | Analysis |
-|---------|-----------|----------|
-| Gradual typing formalization | `Unknown`-as-top-and-bottom causes a soundness bug that affects users | `doc/whatif/completed/gradual-typing.md` |
-| Type classes | User-defined types need to participate in builtin protocols (Eq, Ord, Num) — see `doc/whatif/completed/typeclasses.md` for the accepted design | `doc/whatif/completed/typeclasses.md` |
-| Union types | `Unknown` typing for dual-dispatch builtins causes false positives in practice | `doc/whatif/completed/union-types.md` |
-
-Expressiveness features are independent of each other — any can be adopted without the others. The `doc/whatif/completed/` files analyze what each adoption would require, what it would gain and lose, and recommend an implementation approach.
+**Expressiveness.** Union types via the BAS lattice, type classes with constrained polymorphism, and the AGT gradual typing model are all part of the type system — see `doc/whatif/completed/`. TypeAssert uses structural validation via `resolved_type` embedded in the AST — see §TypeAssert Runtime Validation.
 
 ## Boolean-Algebraic Subtyping (BAS)
 

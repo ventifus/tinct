@@ -132,7 +132,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Strings** (materializing — must evaluate arguments):
 - `str` (exact concat), `words` (split by space, filter empties), `join` (with separator)
 - `split`, `replace`
-- `upper`, `lower`, `trim`
+- `upper`, `lower`, `trim`, `unindent`
 
 **Composition** (structural — builds function pipelines, no values materialized):
 - `->` (threading)
@@ -184,7 +184,7 @@ first-ten: [collect [take 10 squares]]
 
 ## Rust-Native vs Tinct-Implemented Boundary
 
-**Principle:** Only implement in Rust what cannot be expressed in Tinct itself. For operators that must remain Rust (arithmetic, comparison, control flow, sequence manipulation), register both the primary name and a stable alias. The primary name is wrapped in a Tinct prelude function; the stable alias is the fallback that wrappers call, and that domain-specific stdlib modules (e.g. `stdlib/sql.llt`) call when they need to shadow the primary name.
+**Principle:** Only implement in Rust what cannot be expressed in Tinct itself. For operators that must remain Rust (arithmetic, comparison, control flow, sequence manipulation), register both the primary name and a stable alias. The primary name is wrapped in a Tinct prelude function; the stable alias (`builtin-*`) is visible only to `prelude.llt` during its evaluation — it is not exposed to user code or non-prelude stdlib modules.
 
 **Rust-native builtins:**
 
@@ -241,16 +241,21 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
 
-1. Create root environment with Rust-native builtins (primary names + stable aliases)
-2. Parse and evaluate `prelude.llt` with root environment as parent — adds wrappers and derived functions
-3. User code's environment inherits from the stdlib environment
+1. Create root environment with Rust-native builtins (primary names only — no `builtin-*` aliases)
+2. Create prelude evaluation environment: root + `builtin-*` aliases injected into a private layer
+3. Parse and evaluate `prelude.llt` in the prelude evaluation environment — produces wrappers and derived functions
+4. Promote the prelude's exported bindings into the prelude output environment (no `builtin-*` aliases)
+5. User code inherits from the prelude output environment
 
 ```
-Rust primitives (builtin-lt, builtin-eq, builtin-add, builtin-if, builtin-filter, proxy, ...)
-  └── Tinct prelude (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
-        └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
-              └── User predicates and programs
+Rust primitives (primary names: <, =, +, if, filter, map, proxy, ...)
+  └── Prelude evaluation layer (+ builtin-lt, builtin-eq, builtin-add, ... — private to prelude.llt)
+        └── Prelude output (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
+              └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
+                    └── User predicates and programs
 ```
+
+The `builtin-*` aliases are invisible to user code and non-prelude stdlib modules. Any reference to `builtin-lt` from user code produces `undefined variable: builtin-lt`. The type checker emits a warning (`T009`) if any source file other than `prelude.llt` references a name matching `^builtin-`.
 
 **Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
 
@@ -786,10 +791,6 @@ Build DNS wire-format query messages ready to send over UDP. Only query construc
 | `build-dns-query` | `(Int -> String -> Int -> String)` | Build a full DNS query message. Args: 16-bit `id`, `domain`, `qtype`. Sets RD=1 (recursion desired), QCLASS=IN. |
 
 QTYPE constants: `A` (1), `NS` (2), `CNAME` (5), `PTR` (12), `MX` (15), `TXT` (16), `AAAA` (28), `SRV` (33). Other constants: `DNS-FLAGS-QUERY` (256, standard recursive query flags), `DNS-CLASS-IN` (1).
-
-## Known Limitations
-
-**Stdlib error message spans:** Error messages from stdlib functions that call `$error` internally (such as `$flatten`, `$take-while`, `$drop-while`) point to the stdlib implementation source location, not the user's call site. This is inherent to stdlib-authored error messages — the `$error` builtin correctly reports the span of the `[call $error ...]` expression, which happens to be inside `stdlib/prelude.llt`. User call sites will appear in the error's stack trace, but not as the primary error location. This will be addressed when file-path-based stack frame filtering is implemented to suppress stdlib internal frames and promote user frames.
 
 ## Two Map Variants
 

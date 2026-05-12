@@ -1,0 +1,6 @@
+# Error 5: Constraint value is neither class name nor list (number)
+[fn@[constraint: [a: 42] return: Int] [] 42]
+=== out
+Function()
+=== warn
+constraint value must be a class name or list of class names

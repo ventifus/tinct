@@ -255,16 +255,18 @@ pub fn find_test_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Check if error message contains an error code pattern like [E001], [E099], etc.
+/// Check if error message contains an error code pattern like [E001], [E099], [T000], etc.
 ///
-/// IMPORTANT: This function matches exactly 3 digits ([E\d\d\d]).
-/// All LLT error codes use the 3-digit format (E001-E999).
+/// IMPORTANT: This function matches exactly 3 digits ([E\d\d\d] or [T\d\d\d]).
+/// LLT error codes use the 3-digit format:
+/// - E001-E999 for eval/runtime errors
+/// - T000-T999 for type checker errors
 /// If the error code format changes, update this function.
 fn has_error_code_prefix(error_msg: &str) -> bool {
-    // Look for pattern [EXXX] where XXX are exactly three digits
+    // Look for pattern [EXXX] or [TXXX] where XXX are exactly three digits
     error_msg.chars().collect::<Vec<_>>().windows(6).any(|w| {
         w[0] == '['
-            && w[1] == 'E'
+            && (w[1] == 'E' || w[1] == 'T')
             && w[2].is_ascii_digit()
             && w[3].is_ascii_digit()
             && w[4].is_ascii_digit()

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use super::{infer_expr, resolve_type_expr, TypeMap};
 use crate::ast::{Entry, Expr, Span, Spanned};
 use crate::types::{
-    generalize, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
+    generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
 };
 
@@ -285,11 +285,49 @@ pub(crate) fn infer_dict(
     }
     state.subst.check_size(span).map_err(|e| vec![e])?;
 
-    // Pass 4: Generalize - create TypeSchemes for each entry
+    // Pass 4: Generalize - create TypeSchemes for each entry with doc strings
     let mut schemes = HashMap::with_capacity(field_types.len());
-    for (name, ty) in &field_types {
-        let scheme = generalize(enclosing_level, ty, state);
-        schemes.insert(name.clone(), scheme);
+    for ((key_name, _is_alias), entry) in key_entries.iter().zip(entries.iter()) {
+        if let Some(name) = key_name {
+            if let Some(ty) = field_types.get(name) {
+                // Extract doc string from key annotation (e.g., name@[doc: "..."])
+                let key_doc = if let Some(ref key_expr) = entry.node.key {
+                    match &key_expr.node {
+                        Expr::Annotated { annotation, .. } => {
+                            annotation.node.get_property("doc").and_then(|doc_value| {
+                                if let Expr::Str(doc_string) = &doc_value.node {
+                                    Some(doc_string.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                // Extract doc string from value annotation (e.g., [fn@[doc: "..."] ...])
+                let value_doc = match &entry.node.value.node {
+                    Expr::Fn { return_ann, .. } => return_ann.as_ref().and_then(|ann| {
+                        ann.node.get_property("doc").and_then(|doc_value| {
+                            if let Expr::Str(doc_string) = &doc_value.node {
+                                Some(doc_string.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    }),
+                    _ => None,
+                };
+
+                // Value doc takes precedence over key doc
+                let doc = value_doc.or(key_doc);
+                let scheme = generalize_with_doc(enclosing_level, ty, state, doc);
+                schemes.insert(name.clone(), scheme);
+            }
+        }
     }
 
     // Restore enclosing level

@@ -1,0 +1,6 @@
+# Error 6: constraint: value is not a dict
+[fn@[constraint: Comparable return: Int] [] 42]
+=== out
+Function()
+=== warn
+constraint: value must be a dict

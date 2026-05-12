@@ -240,6 +240,20 @@ pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<C
 /// Defense-in-depth: applies the current substitution first, per Damas & Milner (1982).
 /// Generalization must operate over the image of the substitution, not the raw type.
 pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
+    generalize_with_doc(level, ty, state, None)
+}
+
+/// Generalize a type into a TypeScheme with optional documentation.
+///
+/// This is the core generalization function used by the type inference engine.
+/// The `doc` parameter allows threading documentation strings from source annotations
+/// into the TypeScheme for LSP hover display.
+pub fn generalize_with_doc(
+    level: u32,
+    ty: &Type,
+    state: &InferState,
+    doc: Option<String>,
+) -> TypeScheme {
     // Apply substitution first -- defense-in-depth per Damas & Milner (1982).
     // Generalization must operate over the image of the substitution.
     // Without this, a bound TypeVar would be generalized incorrectly.
@@ -247,7 +261,12 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
 
     // Early exit for monomorphic types (common case: all-concrete config dicts)
     if !ty.has_inference_vars() {
-        return TypeScheme::mono(ty.clone());
+        return TypeScheme {
+            type_vars: Vec::new(),
+            constraints: Vec::new(),
+            body: ty.clone(),
+            doc,
+        };
     }
 
     let mut all_type_vars = Vec::new();
@@ -268,7 +287,12 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
         .collect();
 
     if generalizable_type_vars.is_empty() {
-        TypeScheme::mono(ty.clone())
+        TypeScheme {
+            type_vars: Vec::new(),
+            constraints: Vec::new(),
+            body: ty.clone(),
+            doc,
+        }
     } else {
         // Filter constraints: keep only those on generalized variables
         let generalizable_vars: HashSet<String> = generalizable_type_vars.iter().cloned().collect();
@@ -289,6 +313,7 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
             type_vars: generalizable_type_vars,
             constraints: generalizable_constraints,
             body: ty.clone(),
+            doc,
         }
     }
 }
@@ -920,6 +945,7 @@ impl TypeEnv {
                         ret: Box::new(Type::TypeVar("a".to_string(), 0)),
                         variadic: false,
                     },
+                    doc: None,
                 },
             );
         }
@@ -938,6 +964,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Float),
                     variadic: false,
                 },
+                doc: None,
             },
         );
 
@@ -955,6 +982,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
+                doc: None,
             },
         );
 
@@ -972,6 +1000,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
+                doc: None,
             },
         );
 
@@ -1075,6 +1104,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Str),
                     variadic: true,
                 },
+                doc: None,
             },
         );
         env.insert(
@@ -2180,6 +2210,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
+                doc: None,
             },
         );
 
@@ -2335,6 +2366,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
+                doc: None,
             },
         );
 
@@ -2352,6 +2384,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
+                doc: None,
             },
         );
 
