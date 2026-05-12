@@ -131,7 +131,7 @@ See `doc/whatif/completed/hkt-monads.md` §Kind Checking, §Typeclass Resolution
 - [ ] Extend `ClassEnv` lookup for Operator-kinded class params: unify instance head against `App(m, _)` using UNIFY-APP (`src/type_env.rs`); the `resolve_instance` freshening fix (freshen free type vars via `instantiate_at_level`, capture not discard `temp_subst`) is **implemented in `hkt-mappable-appendable`** where it is first needed for `AppendableSeq [Seq b]`; this sprint's task is to wire up the Operator-kinded lookup path, not to implement the freshening
 - [ ] Add `App` type inference: when binding infers `App(Operator("m"), a)`, apply UNIFY-OPERATOR against known instance heads; update `InferState.subst` (`src/typecheck.rs`)
 - [ ] Normalize at instance resolution: `App(Seq_ctor, T) → Type::Seq(T)`; `App(App(Map_ctor, K), V) → Type::Map(K, V)`; `App(Result_ctor, T)` stays as `App` (`src/typecheck_annot.rs`)
-- [ ] Assign error code `E091` for kind mismatch errors in `src/error.rs`; add to `doc/10-errors.md` all three tables (variant catalog, codes table, categories table) — `hkt-doc-lsp` will verify these entries exist, not re-add them
+- [x] Assign error code `E091` for kind mismatch errors in `src/error.rs`; add to `doc/10-errors.md` all three tables (variant catalog, codes table, categories table) — `hkt-doc-lsp` will verify these entries exist, not re-add them
 - [ ] Tests: kind mismatch errors with `[E091]` prefix, `App(Result, Int)` inferred from `[Ok 42]`, rank-1 violation rejected (but multiple flat Operator vars in one method type like `traverse` are NOT rejected), Operator-kinded class constraint resolution (`tests/corpus/eval/typecheck/`)
 
 **Depends on:** `hkt-foundation-b`
@@ -380,6 +380,24 @@ See `src/main.rs` clock cap injection blocks (~line 1192).
 - [ ] Remove `--cap-clock` from the "flags that take a value, skip it" list; add `--no-cap-clock` as boolean (`src/main.rs:805`)
 - [ ] Update `--cap-clock-fixed` help text to drop `NAME` parameter
 - [ ] Update 3 CLI tests: `%my-clock` / `%test-clock` → `%clock`; add `--no-cap-clock` test
+
+### cap-simplify: Remove --allow-path/--allow-host; auto-trigger Landlock from --cap-fs
+
+`include` requires a DirCap (cap-std RESOLVE_BENEATH already confines it); `--allow-path` is a
+redundant application-level re-check. `--allow-host` duplicates `--cap-net` allowlist enforcement.
+Landlock should activate automatically whenever `--cap-fs` entries are present.
+See `src/main.rs`, `src/eval.rs`, `src/builtins_meta.rs`, `src/builtins_io.rs`.
+
+- [ ] Remove `--allow-path` CLI flag and its canonicalization block (`src/main.rs:68,952`)
+- [ ] Remove `--allow-host` CLI flag (`src/main.rs:75`)
+- [ ] Remove `allowed_paths` and `allowed_hosts` fields from `EvalConfig` (`src/eval.rs:102,114`)
+- [ ] Remove `allowed_paths`/`allowed_hosts` parameters from `EvalContext::new_with_all_options` and `new_with_full_options` (`src/eval.rs:229,252`)
+- [ ] Remove `allowed_paths` allowlist check from `builtin_include` (`src/builtins_meta.rs:1009`)
+- [ ] Remove `check_allowed_hosts` function and its call sites in `builtin_connect`, `builtin_http2_session`, `builtin_http3_session` (`src/builtins_io.rs:1097,735,951,4290,4567`)
+- [ ] Auto-trigger Landlock when `--cap-fs` entries are present (currently only triggered by `--allow-path`); derive Landlock roots from the cap-fs directory paths (`src/main.rs:974`)
+- [ ] Remove `--allow-path` from "flags that take a value, skip it" list; remove `--allow-host` from same (`src/main.rs:798`)
+- [ ] Update CLI tests: remove `--allow-path` and `--allow-host` test cases; add Landlock auto-trigger test (Linux only)
+- [ ] Update `doc/12-tooling.md` Object Capability Model section to remove `--allow-path`/`--allow-host` references
 
 ### cli-gaps: --libdir-path override and other deferred CLI features
 
