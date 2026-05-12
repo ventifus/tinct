@@ -3573,3 +3573,80 @@ fn describe_json_mode_with_doc_string() {
 
 // NOTE: --allow-host flag was removed in cap-simplify sprint.
 // Network access is controlled via NetCap allowlist entries in --cap-net.
+
+// ---------------------------------------------------------------------------
+// --libdir-path flag (override stdlib directory)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn libdir_path_override_flag_accepted() {
+    // Test that --libdir-path flag is recognized and accepted.
+    // Use the auto-detected stdlib path (if it exists) to ensure the flag doesn't break anything.
+    let test_src = "[x: 1]";
+    let (test_path, _test_dir) = write_temp_llt("libdir_override_flag", test_src);
+
+    // Try to get the stdlib path from the binary location
+    let stdlib_path = tinct::find_libdir_path().unwrap_or_else(|| std::path::PathBuf::from("stdlib"));
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            &format!("--libdir-path={}", stdlib_path.display()),
+            test_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The command should succeed (--libdir-path is a recognized flag)
+    assert!(
+        output.status.success(),
+        "stderr: {}\nstdout: {}",
+        stderr,
+        stdout
+    );
+
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect(&format!("expected valid JSON. stdout: '{}', stderr: '{}'", stdout, stderr));
+    assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+fn libdir_path_affects_formatter_resolution() {
+    // Test that --libdir-path affects where -o/-i formatters are loaded from.
+    // When we specify a non-existent path and try to use -o json, it should
+    // error saying the formatter was not found at the custom path.
+    let test_src = "[x: 1]";
+    let (test_path, _test_dir) = write_temp_llt("libdir_formatter_resolution", test_src);
+
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--libdir-path=/tmp/nonexistent-tinct-stdlib",
+            test_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The command should fail with an error mentioning the custom libdir path
+    assert!(
+        !output.status.success(),
+        "Expected failure when formatter not found at custom path. stderr: {}",
+        stderr
+    );
+
+    assert!(
+        stderr.contains("/tmp/nonexistent-tinct-stdlib/out/json.llt") ||
+        stderr.contains("formatter not found"),
+        "Expected error message about formatter at custom path. stderr: {}",
+        stderr
+    );
+}

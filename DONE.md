@@ -5819,3 +5819,7 @@ See `src/main.rs`, `src/eval.rs`, `src/builtins_meta.rs`, `src/builtins_io.rs`.
 - [x] Remove `--allow-path` from "flags that take a value, skip it" list; remove `--allow-host` from same (`src/main.rs:798`)
 - [x] Update CLI tests: remove `--allow-path` and `--allow-host` test cases; add Landlock auto-trigger test (Linux only)
 - [x] Update `doc/12-tooling.md` Object Capability Model section to remove `--allow-path`/`--allow-host` references
+
+### cli-gaps: --libdir-path override and other deferred CLI features
+
+- [x] **`--libdir-path PATH` flag** (`src/main.rs:1106`): Add CLI flag to override the standard library directory — the comment at line 1106 was deferred from `io-phase2` (which is done); useful for custom installations or alternative stdlib testing; wire through `main.rs` arg parsing, override the auto-detected `%libdir` in the root env; add `--help` text and a test

@@ -102,6 +102,12 @@ enum Commands {
         #[arg(long)]
         no_libdir: bool,
 
+        /// Override the standard library directory path.
+        /// By default, the stdlib directory is auto-detected relative to the binary location.
+        /// Use this flag to specify a custom stdlib directory (e.g., for testing or non-standard layouts).
+        #[arg(long, value_name = "PATH")]
+        libdir_path: Option<String>,
+
         /// Inject a named DirCap into the root environment (may be repeated).
         /// Format: NAME=PATH — binds %NAME to a DirCap for PATH.
         /// Example: --cap-fs data=/var/data injects %data as a DirCap for /var/data.
@@ -289,6 +295,7 @@ fn main() {
             allow_env,
             no_pwd,
             no_libdir,
+            libdir_path,
             cap_fs,
             cap_net,
             no_cap_clock,
@@ -313,6 +320,7 @@ fn main() {
             allow_env,
             no_pwd,
             no_libdir,
+            libdir_path,
             cap_fs,
             cap_net,
             no_cap_clock,
@@ -704,6 +712,16 @@ fn find_libdir_path() -> Option<std::path::PathBuf> {
     tinct::find_libdir_path()
 }
 
+/// Resolve the stdlib directory path, with optional CLI override.
+///
+/// If `override_path` is Some, use it; otherwise fall back to auto-detection.
+fn resolve_libdir_path(override_path: Option<&str>) -> Option<std::path::PathBuf> {
+    match override_path {
+        Some(path) => Some(std::path::PathBuf::from(path)),
+        None => find_libdir_path(),
+    }
+}
+
 /// Parse a CLI NetCap entry (from --cap-net NAME=ENTRY).
 ///
 /// Special value: `any` creates an unrestricted NetCap that allows all hosts/ports.
@@ -846,6 +864,7 @@ fn run_eval(
     allow_env: Vec<String>,
     no_pwd: bool,
     no_libdir: bool,
+    libdir_path: Option<String>,
     cap_fs: Vec<String>,
     cap_net: Vec<String>,
     no_cap_clock: bool,
@@ -860,7 +879,7 @@ fn run_eval(
 
     // Prepend -i input formatter if specified
     if let Some(ref input_format) = input {
-        let libdir_path = find_libdir_path()
+        let libdir_path = resolve_libdir_path(libdir_path.as_deref())
             .ok_or_else(|| format!("--input: stdlib directory not found (libdir)"))?;
         let input_path = libdir_path.join("in").join(format!("{}.llt", input_format));
         if !input_path.exists() {
@@ -882,7 +901,7 @@ fn run_eval(
 
     // Append -o output formatter if specified
     if let Some(ref output_format) = output {
-        let libdir_path = find_libdir_path()
+        let libdir_path = resolve_libdir_path(libdir_path.as_deref())
             .ok_or_else(|| format!("--output: stdlib directory not found (libdir)"))?;
         let output_path = libdir_path
             .join("out")
@@ -984,7 +1003,7 @@ fn run_eval(
         // Include the stdlib directory in Landlock-readable paths so that
         // `[include %libdir ...]` works when Landlock is active.
         if !no_libdir {
-            if let Some(libdir) = find_libdir_path() {
+            if let Some(libdir) = resolve_libdir_path(libdir_path.as_deref()) {
                 if let Ok(canon) = libdir.canonicalize() {
                     extra_readable.push(canon);
                 }
@@ -1085,11 +1104,11 @@ fn run_eval(
     // Inject `%libdir` DirCap for the stdlib directory (unless --no-libdir is set).
     // --no-libdir enforcement: when the flag is set, `%libdir` is NOT injected, so
     // any reference to `%libdir` in the program will fail with "undefined variable".
-    // Phase 1: resolve %libdir from the binary's location or a well-known relative path.
+    // Phase 1: resolve %libdir from the binary's location, --libdir-path override, or a well-known relative path.
     // If resolution fails, %libdir is not injected (stdlib is embedded at compile time anyway).
     // The resolved path is also saved for the JSON output path (format_with_json_llt).
     let resolved_libdir_path: Option<std::path::PathBuf> =
-        if !no_libdir { find_libdir_path() } else { None };
+        if !no_libdir { resolve_libdir_path(libdir_path.as_deref()) } else { None };
     if !no_libdir {
         use tinct::Value;
         if let Some(ref path) = resolved_libdir_path {
