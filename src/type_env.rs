@@ -186,6 +186,11 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
             }
         }
 
+        // Re-register label vars in kind_env with Kind::Label
+        if scheme.label_vars.contains(&scheme.type_vars[0]) {
+            state.kind_env.insert(fresh_name.clone(), Kind::Label);
+        }
+
         return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
     }
 
@@ -200,7 +205,12 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         var_renaming.insert(var.clone(), fresh_name.clone());
         renaming
             .type_map
-            .insert(var.clone(), Type::TypeVar(fresh_name, level));
+            .insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
+
+        // Re-register label vars in kind_env with Kind::Label
+        if scheme.label_vars.contains(var) {
+            state.kind_env.insert(fresh_name, Kind::Label);
+        }
     }
 
     // Copy constraints with renamed variables
@@ -265,6 +275,7 @@ pub fn generalize_with_doc(
             type_vars: Vec::new(),
             constraints: Vec::new(),
             body: ty.clone(),
+            label_vars: Vec::new(),
             doc,
         };
     }
@@ -291,6 +302,7 @@ pub fn generalize_with_doc(
             type_vars: Vec::new(),
             constraints: Vec::new(),
             body: ty.clone(),
+            label_vars: Vec::new(),
             doc,
         }
     } else {
@@ -309,10 +321,18 @@ pub fn generalize_with_doc(
         // remove `Equatable a` (it's entailed via Comparable's superclass).
         simplify_constraints(&state.class_env, &mut generalizable_constraints);
 
+        // Collect label vars: TypeVars that are label-kinded (Kind::Label in kind_env)
+        let label_vars: Vec<String> = generalizable_type_vars
+            .iter()
+            .filter(|var| state.kind_env.get(var.as_str()) == Some(&Kind::Label))
+            .cloned()
+            .collect();
+
         TypeScheme {
             type_vars: generalizable_type_vars,
             constraints: generalizable_constraints,
             body: ty.clone(),
+            label_vars,
             doc,
         }
     }
@@ -648,10 +668,11 @@ pub struct ClassDecl {
     #[allow(dead_code)]
     // Written during registration, read during constraint solving (future work)
     pub params: Vec<(String, Kind)>,
-    /// Superclass constraints (e.g., ["Ord"])
+    /// Superclass constraints as (class_name, param_name) tuples.
+    /// Example: ("Functor", "f") means this class extends Functor with parameter f.
     #[allow(dead_code)]
     // Written during registration, read during constraint solving (future work)
-    pub superclasses: Vec<String>,
+    pub superclasses: Vec<(String, String)>,
     /// Method signatures: method_name -> type scheme
     #[allow(dead_code)]
     // Written during registration, read during method type checking (future work)
@@ -947,6 +968,7 @@ impl TypeEnv {
                         ret: Box::new(Type::TypeVar("a".to_string(), 0)),
                         variadic: false,
                     },
+                    label_vars: vec![],
                     doc: None,
                 },
             );
@@ -966,6 +988,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Float),
                     variadic: false,
                 },
+                label_vars: vec![],
                 doc: None,
             },
         );
@@ -984,6 +1007,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
+                label_vars: vec![],
                 doc: None,
             },
         );
@@ -1002,6 +1026,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Bool),
                     variadic: false,
                 },
+                label_vars: vec![],
                 doc: None,
             },
         );
@@ -1107,6 +1132,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Str),
                     variadic: true,
                 },
+                label_vars: vec![],
                 doc: None,
             },
         );
@@ -2214,6 +2240,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
+                label_vars: vec![],
                 doc: None,
             },
         );
@@ -2370,6 +2397,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
+                label_vars: vec![],
                 doc: None,
             },
         );
@@ -2388,6 +2416,7 @@ impl TypeEnv {
                     ret: Box::new(Type::Unknown),
                     variadic: false,
                 },
+                label_vars: vec![],
                 doc: None,
             },
         );

@@ -5692,3 +5692,20 @@ See `doc/whatif/completed/hkt-monads.md` §Kind System, §Type Constructor Appli
 - [x] Update ALL exhaustive `Type` match sites — note this includes `src/typecheck_annot.rs` (add `App|Operator` arms in `resolve_type_expr` and `resolve_type_name`); initial stub arms are sufficient in this sprint (quality improvement in `hkt-doc-lsp`)
 - [x] Add `src/lsp/analysis.rs` initial stub match arms for `Type::App`/`Type::Operator` in hover (display as type string) and `Expr::TypeApp` in expression matches (quality improvement in `hkt-doc-lsp`)
 - [x] Tests: `Type::App` display `[Result Int]`, UNIFY-APP/UNIFY-OPERATOR/UNIFY-OPERATOR-SYM unit tests, TypeApp eval handler error, `@Operator` annotation error, disambiguation test for `@[Int Null]` = union not TypeApp (`src/type_unify.rs`, `tests/corpus/eval/typecheck/`)
+
+### hkt-foundation-b: Class/label infrastructure — kind_env, Label ADT, ClassDecl
+
+See `doc/whatif/completed/hkt-monads.md` §Kind System §Kind::Label, §What Would Change. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.
+
+- [x] Add `pub enum Label { Concrete(String), Var(String) }` to `src/types.rs` (or `src/type_unify.rs`) — used exclusively in `HasField` constraint's label position
+- [x] Add `kind_env: HashMap<String, Kind>` to `InferState` (`src/types.rs`); populate `Kind::Operator` during class method signature processing; populate `Kind::Label` when `key@"k"` annotation is resolved
+- [x] Extend `class` declaration parsing: change `Expr::ClassDecl.superclasses` from `Vec<String>` → `Vec<(String, String)>`; update ALL match sites: `src/expand.rs`, `src/ast_dict.rs` (both), `src/formatter.rs` (**must** emit `extends [SuperClass param]` — currently drops them), `src/typecheck.rs`, `src/eval.rs`, `src/parser.rs`
+- [x] Update `ClassDecl` construction in `src/typecheck.rs`: assign `Kind::Operator` when class parameter is annotated `@Operator` or constrained by an Operator-kinded class
+- [x] In `src/typecheck_annot.rs` `resolve_type_expr`: parse `[f a]` (no colons) as `Expr::TypeApp(f, a)` when `f` is Operator-kinded in `kind_env` or a user parameterized alias; builtins keep `@Seq@T` path
+- [x] In `src/typecheck_annot.rs` `resolve_type_name`: when annotation value is a string literal (e.g. `key@"k"`), create fresh TypeVar, register `kind_env[fresh] = Kind::Label`, bind the annotation name to it
+- [x] Extend `promote_literal_for_constrained_var` (`src/type_unify.rs`): the fix is a **single change to the function body** (line ~170) — after the "no constraints" early return, insert `if state.kind_env.get(var_name) == Some(&Kind::Label) { return ty; }` BEFORE the `match ty` literal-widening arms; this single change covers all 6 call sites automatically
+- [x] Add `label_vars: Vec<String>` to `TypeScheme` (`src/types.rs`) — add AFTER `constraint-annotations` has already added `doc: Option<String>` (do not remove the `doc` field); update `instantiate_scheme` to register freshly-instantiated label vars in `state.kind_env` with `Kind::Label`
+- [x] Enforce `KIND-LABEL-ERROR` in kind pre-pass (`src/typecheck.rs`): reject `Seq(TypeVar(l))`, `App(_, TypeVar(l))` etc. when `kind_env(l) = Kind::Label`; emit `TypeError` "label variable cannot appear as a type"
+- [x] Tests: `key@"k"` creates label TypeVar, `promote_literal` skips for `Kind::Label`, kind error for `Seq(label_var)`, label_vars survive generalization and re-register at call sites (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** `hkt-foundation-a`

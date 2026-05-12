@@ -4046,6 +4046,7 @@ mod tests {
                 type_vars: vec!["a".to_string()],
                 constraints: vec![],
                 body: Type::Int,
+                label_vars: vec![],
                 doc: None,
             },
         );

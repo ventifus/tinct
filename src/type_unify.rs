@@ -96,13 +96,17 @@ fn is_superclass_of(class_env: &ClassEnv, subclass: &str, superclass: &str) -> b
         return false;
     };
 
-    // Check direct superclasses
-    if subclass_decl.superclasses.contains(&superclass.to_string()) {
+    // Check direct superclasses (now tuples of (class_name, param_name))
+    if subclass_decl
+        .superclasses
+        .iter()
+        .any(|(class_name, _param)| class_name == superclass)
+    {
         return true;
     }
 
     // Check transitive superclasses (recursively)
-    for direct_super in &subclass_decl.superclasses {
+    for (direct_super, _param) in &subclass_decl.superclasses {
         if is_superclass_of(class_env, direct_super, superclass) {
             return true;
         }
@@ -173,6 +177,12 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
     if !has_constraints {
         return ty;
     }
+
+    // Label-kinded TypeVars must not be promoted (preserves StringLiteral identity)
+    if state.kind_env.get(var_name) == Some(&Kind::Label) {
+        return ty;
+    }
+
     match ty {
         Type::IntLiteral(_) => Type::Int,
         Type::StringLiteral(_) => Type::Str,

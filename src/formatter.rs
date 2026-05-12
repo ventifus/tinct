@@ -463,7 +463,7 @@ impl<'a> Formatter<'a> {
             Expr::ClassDecl {
                 name,
                 params,
-                superclasses: _,
+                superclasses,
                 methods,
             } => {
                 self.output.push('[');
@@ -475,6 +475,14 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(param);
                 }
                 self.output.push(']');
+                // Emit extends clauses
+                for (super_class, super_param) in superclasses {
+                    self.output.push_str(" extends [");
+                    self.output.push_str(super_class);
+                    self.output.push(' ');
+                    self.output.push_str(super_param);
+                    self.output.push(']');
+                }
                 for method in methods {
                     self.output.push(' ');
                     if let Some(key) = &method.node.key {
@@ -757,6 +765,7 @@ impl<'a> Formatter<'a> {
             Expr::ClassDecl {
                 name,
                 params,
+                superclasses,
                 methods,
                 ..
             } => {
@@ -765,6 +774,11 @@ impl<'a> Formatter<'a> {
                     width += 1 + param.len();
                 }
                 width += 1; // closing ]
+                            // Account for extends clauses
+                for (super_class, super_param) in superclasses {
+                    width += 1 + 7 + 2 + super_class.len() + 1 + super_param.len() + 1;
+                    // " extends [<super_class> <super_param>]"
+                }
                 for method in methods {
                     width += 1;
                     if let Some(key) = &method.node.key {
