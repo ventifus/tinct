@@ -535,8 +535,8 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 The following kernel-level security features are implemented in `src/main.rs` and documented in [Tooling](12-tooling.md):
 
 - **rlimit resource caps** (`src/main.rs:447`): `RLIMIT_AS` (virtual memory, default 512 MB), `RLIMIT_CPU` (CPU time via `--max-cpu`), `RLIMIT_NOFILE` (file descriptors, default 64). Applied early in startup before evaluation begins. Unix-only; flags accepted on other platforms for CLI compatibility but have no effect.
-- **Landlock filesystem ACLs** (`src/main.rs:639`, Linux 5.13+): When `--allow-path` is specified, confines `$include` to allowed directory trees. Graceful degradation on older kernels. Defense-in-depth: catches unauthorized paths at the kernel level even if application-level checks have bugs. Disabled with `--no-landlock`.
-- **seccomp-bpf syscall filtering** (`src/main.rs:541`, Linux only): Blocks network syscalls (`socket`, `connect`, `bind`, `listen`, `accept`) and process creation (`fork`, `clone`, `execve`) unless `--allow-network` is set. Graceful degradation: if seccomp cannot be applied, a warning is printed and evaluation continues.
+- **Landlock filesystem ACLs** (`src/main.rs:639`, Linux 5.13+): Auto-triggered when `--cap-fs` entries are present. Confines filesystem access to `--cap-fs` directory trees at the kernel level. Graceful degradation on older kernels. Defense-in-depth: catches unauthorized paths at the kernel level even if cap-std or DirCap handling has bugs. Disabled with `--no-landlock`.
+- **seccomp-bpf syscall filtering** (`src/main.rs:541`, Linux only): Blocks network syscalls (`socket`, `connect`, `bind`, `listen`, `accept`) and process creation (`fork`, `clone`, `execve`) unless `--cap-net` is set. Graceful degradation: if seccomp cannot be applied, a warning is printed and evaluation continues.
 
 ### Security Hardening
 

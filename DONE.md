@@ -5801,3 +5801,21 @@ See `src/main.rs` clock cap injection blocks (~line 1192).
 - [x] Remove `--cap-clock` from the "flags that take a value, skip it" list; add `--no-cap-clock` as boolean (`src/main.rs:805`)
 - [x] Update `--cap-clock-fixed` help text to drop `NAME` parameter
 - [x] Update 3 CLI tests: `%my-clock` / `%test-clock` → `%clock`; add `--no-cap-clock` test
+
+### cap-simplify: Remove --allow-path/--allow-host; auto-trigger Landlock from --cap-fs
+
+`include` requires a DirCap (cap-std RESOLVE_BENEATH already confines it); `--allow-path` is a
+redundant application-level re-check. `--allow-host` duplicates `--cap-net` allowlist enforcement.
+Landlock should activate automatically whenever `--cap-fs` entries are present.
+See `src/main.rs`, `src/eval.rs`, `src/builtins_meta.rs`, `src/builtins_io.rs`.
+
+- [x] Remove `--allow-path` CLI flag and its canonicalization block (`src/main.rs:68,952`)
+- [x] Remove `--allow-host` CLI flag (`src/main.rs:75`)
+- [x] Remove `allowed_paths` and `allowed_hosts` fields from `EvalConfig` (`src/eval.rs:102,114`)
+- [x] Remove `allowed_paths`/`allowed_hosts` parameters from `EvalContext::new_with_all_options` and `new_with_full_options` (`src/eval.rs:229,252`)
+- [x] Remove `allowed_paths` allowlist check from `builtin_include` (`src/builtins_meta.rs:1009`)
+- [x] Remove `check_allowed_hosts` function and its call sites in `builtin_connect`, `builtin_http2_session`, `builtin_http3_session` (`src/builtins_io.rs:1097,735,951,4290,4567`)
+- [x] Auto-trigger Landlock when `--cap-fs` entries are present (currently only triggered by `--allow-path`); derive Landlock roots from the cap-fs directory paths (`src/main.rs:974`)
+- [x] Remove `--allow-path` from "flags that take a value, skip it" list; remove `--allow-host` from same (`src/main.rs:798`)
+- [x] Update CLI tests: remove `--allow-path` and `--allow-host` test cases; add Landlock auto-trigger test (Linux only)
+- [x] Update `doc/12-tooling.md` Object Capability Model section to remove `--allow-path`/`--allow-host` references

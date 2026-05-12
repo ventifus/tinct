@@ -449,8 +449,6 @@ impl DocumentStore {
         // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
-        // allowed_paths is left empty (default: unrestricted) because the no_fs guard
-        // fires first and blocks all $include calls before the allowlist is ever consulted.
         //
         // Fallback chain for base_dir: try "." first, then temp_dir, then "/" as last resort.
         // This handles systemd socket activation, chroots, and containers where CWD or
