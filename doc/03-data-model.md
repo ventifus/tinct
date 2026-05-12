@@ -577,19 +577,19 @@ Five properties that hold for all access chains.
 
 #### Part 5: Type System Correspondence
 
-Access chain type checking generates row constraints via Remy-style row-variable unification (see §Row-Variable Unification in [Type System Extensions](07-type-extensions.md) Part 5). The target type is inferred first, then field access generates constraints of the form `unify(typeof(x), Record([field: α], ρ))`, binding `α` and `ρ` via row unification — enabling the type checker to infer field requirements from usage without annotations.
+Under Boolean Algebraic Subtyping (BAS), all records are closed. Dot access on a closed record returns the declared field type if the field exists, or produces a type error if the field is missing. There is no "open record" fallback to `Any` — records are precise. See `doc/05-type-annotations.md` §Row polymorphism syntax (removed under BAS) for the archived Remy-style row-variable unification mechanism.
 
 The type checker mirrors the access algebra with type-level projections:
 
 | Runtime rule | Type rule | Type-level behavior |
 |-------------|-----------|-------------------|
-| ACCESS-DOT | `check_dot_access` | `Record(fields) → fields[f]`; open record → `Any`; closed + missing → error |
-| ACCESS-DOT (Int) | `check_dot_access_int` | Integer dot access `.N`; looks up `Key::Int(N)`; open record → `Any` |
+| ACCESS-DOT | `check_dot_access` (DotKey::Str arm) | `Record(fields) → fields[f]`; closed + missing → error |
+| ACCESS-DOT (Int) | `check_dot_access` (DotKey::Int arm) | Integer dot access `.N`; looks up `Key::Int(N)` |
 | `get` builtin | `check_bracket_access` (historical) | Now handled as a regular builtin call; key access via `[get key data]` |
 
 **Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error (`typecheck.rs:313` falls through to `not_a_record`). Under BAS, all records are closed — openness is expressed via width subtyping rather than row variables. The `RowTail` and `RowVar` mechanisms described in the archived Remy section of [Type System Extensions](07-type-extensions.md) have been removed.
 
-**Open records and Any:** When a dot access targets an open record (`Record(fields, Open)` or `Record(fields, RowVar(_))`) and the field is not in `fields`, the type checker returns `Any` rather than an error. This reflects Tinct's gradual typing design: open records may contain fields not visible to the type checker. Rather than reject valid programs, the type checker admits the access but types the result as `Any`, deferring validation to runtime. This is sound because `Any` serves as both top and bottom type (S-ANY-TOP, S-ANY-BOT in §Type Inference Algorithm) — values of any type flow through `Any` positions. For closed records, a missing field is a static error.
+**Closed records:** Under BAS, all records are closed. Dot access on a closed record returns the declared field type if present, or produces a type error if missing. There is no runtime fallback — the type checker enforces exact field presence.
 
 **`get` builtin precision:** When the key passed to `[get key data]` is a literal (`Expr::Str` or `Expr::Int`), the type checker performs exact field lookup. When the key is a variable with type `Str`, `Int`, or `Any`, the result type is `Any` — since the key value is not known until runtime, the type checker cannot determine which field will be accessed. The `get` builtin is now checked as a regular call rather than via the historical `check_bracket_access` function (removed in access-pipeline-phase2).
 

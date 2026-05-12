@@ -4,7 +4,7 @@
 
 **Zero-configuration** code formatter for Tinct files.
 
-The current formatter (`src/formatter.rs`) is an AST-based formatter that walks the `Spanned<File>` AST from `ParseOutput`, using comment maps for placement. It applies the line-breaking, comment, and spacing rules described below. See `doc/whatif/completed/parser-rewrite.md` §AST-Based Formatter for the design.
+The current formatter (`src/formatter.rs`) is an AST-based formatter that walks the `Spanned<File>` AST from `ParseOutput`, using comment maps for placement. It applies the line-breaking, comment, and spacing rules described below. See `doc/feature/parser-rewrite.md` §AST-Based Formatter for the design.
 
 ### Line-Breaking: Width + Element Count
 
@@ -65,7 +65,9 @@ The formatter defines one canonical Tinct style with no layout configuration opt
 
 ### Compact Formatter Modes
 
-Three compact modes produce space-efficient output for embedding tinct expressions in shell scripts, piping through `-e` strings, or minimizing file size:
+Three compact modes produce space-efficient output for embedding tinct expressions in shell scripts, piping through `-e` strings, or minimizing file size.
+
+**Note:** The `--tinct-fmt` flag opts into the tinct-hosted formatter (`stdlib/formatter/pretty.llt` or `compact.llt`). Without this flag, compact modes use the Rust formatter (`src/formatter.rs`).
 
 | Flag | Behavior |
 |------|----------|
@@ -137,7 +139,7 @@ Comments are stripped in `--oneline` and `--minimize` modes (comments cannot sur
 
 ### Tinct-Hosted Formatter
 
-The compact and pretty formatters are implemented in `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt`. A full tinct-hosted formatter (`stdlib/formatter/format.llt`) that receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source is not yet implemented. The Rust formatter (`src/formatter.rs`) is retained for LSP use (where loading a tinct program would be too slow).
+The full formatter is implemented in `stdlib/formatter/pretty.llt`, which receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source. The compact formatter is implemented in `stdlib/formatter/compact.llt`. The Rust formatter (`src/formatter.rs`) is retained for LSP use (where loading a tinct program would be too slow).
 
 See `doc/whatif/completed/tinct-hosted-formatter.md` for the full design.
 

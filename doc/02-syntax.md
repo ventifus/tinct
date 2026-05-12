@@ -30,6 +30,7 @@ Only constructs that affect **binding structure** or **dict construction** need 
 | `call` | Triggers function application (exact arity required) |
 | `fn` | Introduces parameter bindings, creates a new scope |
 | `type` | Compile-time type declaration, not a runtime value |
+| `match` | Pattern matching with exhaustiveness checking and arm bindings |
 | `quote` | Captures AST as data without evaluating (code-as-data) |
 | `unquote` | Splices evaluated values into quoted templates (inside `quote` only) |
 | `unquote-splice` | Splices sequence elements into quoted list positions (inside `quote` only) |
@@ -487,22 +488,22 @@ Fn@[Fn@c [b]]           # nested: function returning a function type
 
 ### 3.1 File, Document, and Expression
 
-A tinct file contains one or more documents separated by `---`. Each document contains one or more expressions. This is the top-level grammar:
+A tinct file contains one or more documents separated by `---`. Each document contains one or more expressions. The `---` separator may carry optional section header components (`%name`, `@Type`, `expects:`, `caps:`). This is the top-level grammar:
 
 ```ebnf
-file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
+file          = { SOI ~ document ~ (section_header ~ document)* ~ EOI }
 document      = { expression* }
-expression    = { !doc_separator ~ value }
-doc_separator = @{ "---" ~ !bare_word_char }
+expression    = { !section_header ~ value }
+section_header = "---" ~ !bare_word_char ~ header_components? ~ NEWLINE
 ```
 
-**File:** The outermost unit. Contains documents separated by `---`.
+**File:** The outermost unit. Contains documents separated by `---` section headers.
 
 **Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — the only connection is `%`, which carries the previous document's output as a lazy value. For the first document, `%` is `[]`. For evaluation semantics of `%` binding, `$include` cycle detection, and document pipeline caching, see [Documents](09-documents.md).
 
-**Expression:** A single value (bracket expression, atom, access expression, etc.). The `!doc_separator` negative lookahead prevents `---` from being consumed as a bare word.
+**Expression:** A single value (bracket expression, atom, access expression, etc.). The `!section_header` negative lookahead prevents `---` from being consumed as a bare word.
 
-**`doc_separator`:** Three hyphens `---` not followed by a `bare_word_char`. This prevents `----` or `---foo` from matching as a separator. The parser treats this as atomic so that whitespace is not skipped between the hyphens and the lookahead.
+**Section header:** The `---` line, optionally carrying section name (`%name`), output type (`@Type`), input contract (`expects: Type`), and/or capability requirements (`caps: [...]`). All components are optional; a bare `---` is valid. See §5 Document Separator Grammar for full syntax and `doc/09-documents.md` for semantics.
 
 An empty file (or one containing only whitespace/comments) is valid and produces a file with one document containing zero expressions. An empty document produces an empty Dict `[]`.
 
@@ -949,14 +950,52 @@ See doc/15-ast.md §Static Constraints for detailed constraint specifications.
 
 ## 5. Document Separator Grammar
 
-The `---` separator is recognized at the file level only. It must appear on its own (not as part of a bare word like `----` or `---foo`):
+The `---` separator is recognized at the file level only and may carry an optional section header with multiple components. The full syntax is:
+
+```
+--- %name@Type expects: Type caps: [%cap: @CapType]
+```
+
+All components are optional. A bare `---` is valid. The components may appear in any order.
+
+**Section header components:**
+
+| Component | Syntax | Purpose |
+|-----------|--------|---------|
+| Section name | `%name` | Binds the document's output as `%name` for subsequent documents |
+| Output type annotation | `@Type` | Declares the type of this document's output |
+| Input contract | `expects: Type` | Declares the expected type of `%` (the previous document's output) |
+| Capability requirements | `caps: [%cap: @Type ...]` | Declares required capability bindings |
+
+**Examples:**
+
+```tinct
+---                                    # bare separator
+--- %config                            # named section
+--- %validated@Config                  # named + output type
+--- expects: InputSchema               # input contract
+--- %result@Result expects: @Input caps: [%nc: @NetCap]   # all components
+```
+
+See `doc/09-documents.md` for detailed semantics of section headers, pipeline flow, and capability injection.
+
+**Grammar rules:**
 
 ```ebnf
-file          = { SOI ~ document ~ (doc_separator ~ document)* ~ EOI }
+file          = { SOI ~ document ~ (section_header ~ document)* ~ EOI }
 document      = { expression* }
-expression    = { !doc_separator ~ value }
-doc_separator = @{ "---" ~ !bare_word_char }
+expression    = { !section_header ~ value }
+section_header = "---" ~ !bare_word_char ~ header_components? ~ NEWLINE
+header_components = header_component+
+header_component  = section_name | output_annotation | expects_pragma | caps_pragma
+section_name      = "%" ~ ident_char+
+output_annotation = "@" ~ annotation_value
+expects_pragma    = "expects:" ~ "@"? ~ annotation_value
+caps_pragma       = "caps:" ~ "[" ~ cap_entry* ~ "]"
+cap_entry         = "%" ~ ident_char+ ~ ":" ~ "@" ~ ident_char+
 ```
+
+The `---` must not be followed by a `bare_word_char` (this prevents `----` or `---foo` from matching as a separator).
 
 ---
 
@@ -976,10 +1015,17 @@ COMMENT    = "#" ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI)
 
 // === File and Document Structure ===
 
-file          = SOI ~ document ~ (doc_separator ~ document)* ~ EOI
+file          = SOI ~ document ~ (section_header ~ document)* ~ EOI
 document      = expression*
-expression    = !doc_separator ~ value
-doc_separator = "---" ~ !ident_char_body
+expression    = !section_header ~ value
+section_header = "---" ~ !ident_char_body ~ header_components? ~ NEWLINE
+header_components = header_component+
+header_component  = section_name | output_annotation | expects_pragma | caps_pragma
+section_name      = "%" ~ ident_char+
+output_annotation = "@" ~ annotation_value
+expects_pragma    = "expects:" ~ "@"? ~ annotation_value
+caps_pragma       = "caps:" ~ "[" ~ cap_entry* ~ "]"
+cap_entry         = "%" ~ ident_char+ ~ ":" ~ "@" ~ ident_char+
 
 // === Bracket Expressions ===
 

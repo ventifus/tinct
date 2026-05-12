@@ -16,16 +16,14 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Bool                       boolean
     | Fn(τ₁...τₙ → τᵣ)          function (n params, return type)
     | Seq(τ)                     lazy sequence
-    | Record(f₁:τ₁...fₙ:τₙ, ρ)  record with row rest ρ
+    | Record(f₁:τ₁...fₙ:τₙ)      closed record (no row-rest parameter)
     | Proxy                      opaque proxy (field access dispatches to handler)
     | α                          type variable
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
-
-ρ ::= Closed                     no additional fields
 ```
 
-*Note:* Under BAS (Boolean-Algebraic Subtyping), row variables (`RowVar`) and `RowTail` have been removed. All records are closed; openness is expressed via width subtyping. The `RowVar(r)` alternative that previously appeared here is archived — see [Type System Extensions](07-type-extensions.md) §Boolean-Algebraic Subtyping.
+*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. The `ρ` (row-rest) parameter has been removed — records no longer carry a row tail. Width subtyping handles record openness via intersection and negation. The archived Rémy-style row polymorphism notation (`Record(f₁:τ₁...fₙ:τₙ, ρ)` with `ρ ::= Closed | RowVar(r)`) is documented in [Type System Extensions](07-type-extensions.md) Appendix.
 
 **Additional types** (not expressible in annotations, used internally by inference):
 
@@ -442,8 +440,10 @@ Implementation: `TypeEnv.bindings` changes from `HashMap<String, Type>` to `Hash
 ```rust
 #[derive(Debug, Clone)]
 pub struct TypeScheme {
-    pub type_vars: Vec<String>,  // quantified type variable names
-    pub doc: Option<String>,     // documentation from annotations (added in constraint-annotations sprint)
+    pub type_vars: Vec<String>,         // quantified type variable names
+    pub constraints: Vec<Constraint>,   // constraints on quantified vars
+    pub label_vars: Vec<String>,        // quantified label variables (Kind::Label)
+    pub doc: Option<String>,            // documentation from annotations (added in constraint-annotations sprint)
     pub body: Type,
 }
 
@@ -451,6 +451,8 @@ impl TypeScheme {
     pub fn mono(ty: Type) -> Self {
         Self {
             type_vars: vec![],
+            constraints: vec![],
+            label_vars: vec![],
             doc: None,
             body: ty,
         }
@@ -458,7 +460,9 @@ impl TypeScheme {
 }
 ```
 
-`PartialEq` for `TypeScheme` compares structurally (type_vars + doc + body). `Display` shows `∀a b. Fn(a → b)` for polymorphic schemes, or the bare type for monomorphic ones. Located in `types.rs`.
+**TypeScheme grammar:** `σ ::= ∀(α₁...αₙ). [C₁ a₁, ...] τ` where α₁...αₙ are type variables, C₁ a₁, ... are constraints, and τ is the body type. The row variable portion (`ρ₁...ρₘ`) from the original Remy-style grammar has been removed under BAS.
+
+`PartialEq` for `TypeScheme` compares structurally (type_vars + constraints + label_vars + doc + body). `Display` shows `∀a b. [Eq a] Fn(a → b)` for constrained schemes, or the bare type for monomorphic ones. Located in `types.rs`.
 
 **Levels.** Every type variable α carries an integer level ℓ(α). The type checker maintains a current level counter ℓ_current, incremented at each dict boundary (every `infer_dict` call):
 
@@ -825,7 +829,7 @@ Kind ::= *         -- concrete types (Int, Str, Record, ...)
 
 `Operator` is notation for `* → *`. A TypeVar of kind `Operator` ranges over type constructors; a TypeVar of kind `Label` ranges over string field names.
 
-The kind of each TypeVar is tracked in `InferState.kind_env: HashMap<String, Kind>`. TypeVars of kind `Operator` arise from `@Operator` annotations on class parameters; TypeVars of kind `Label` arise from string-literal annotations (`key@"k"`).
+The kind of each TypeVar is tracked in `InferState.kind_env: HashMap<String, Kind>`. TypeVars of kind `Operator` arise from `@Operator` annotations on class parameters; TypeVars of kind `Label` arise from Label annotations (`key@Label` for anonymous or `key@[label: l]` for named, per the `label-annotation-syntax` sprint).
 
 ### Type Constructor Application
 
@@ -892,17 +896,21 @@ The stdlib defines the following typeclass hierarchy:
 | `Monad` | `Operator` | Applicative | `bind : m a → (a → m b) → m b` |
 | `Foldable` | `Operator` | — | `fold : (b → a → b) → b → t a → b`, `to-seq : t a → Seq a` |
 | `Traversable` | `Operator` | Functor, Foldable | `traverse : (a → f b) → t a → f (t b)` |
-| `Mappable` | `Operator` | — | `map : (a → b) → f a → f b` (weaker than Functor) |
+| `Mappable` | `Operator` | — | `map : (a → b) → f a → f b` (weaker than Functor)† |
 | `Appendable` | `*` | — | `append : a → a → a`, `empty : a` |
 | `Equatable` | `*` | — | `= : a → a → Bool`, `not= : a → a → Bool` |
 | `Comparable` | `*` | Equatable | `< : a → a → Bool`, etc. |
 | `Showable` | `*` | — | `show : a → Str` |
 
+**†Implementation note:** `Mappable` is currently registered as a placeholder `Kind::Type` class and will be promoted to `Kind::Operator` in the `hkt-mappable-appendable` sprint.
+
 Instances cover `Result`, `Seq`, `Maybe`, `Record` as appropriate.
 
 ### Generic Functions
 
-With the typeclass hierarchy, these generic functions are available:
+**Implementation status:** The functions `sequence` and `traverse` shown below are specified but not yet in `stdlib/prelude.llt` — they require the `hkt-stdlib` sprint.
+
+With the typeclass hierarchy, these generic functions will be available:
 
 ```tinct
 # collect effects from any Traversable container
@@ -917,6 +925,8 @@ traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
 ```
 
 ### `[do]` Inference
+
+**Implementation status:** The inferred `[do]` form (without explicit monad argument) is not yet implemented — it requires the `hkt-do-macro` sprint. The explicit `[do monad steps...]` form is fully implemented and available.
 
 The `[do]` macro infers the monad from context when no explicit monad argument is given:
 
@@ -964,7 +974,7 @@ HasField l ⊤ Unknown                            for BAS-collapsed disjoint-fie
 HasField l Unknown Unknown                      gradual typing fallback
 ```
 
-**Label TypeVars** are introduced by string-literal annotations (`key@"l"`) and tracked in `kind_env` with `Kind::Label`. They are generalized into `TypeScheme.label_vars` and re-registered at call sites.
+**Label TypeVars** are introduced by Label annotations (`key@Label` for anonymous or `key@[label: l]` for named) and tracked in `kind_env` with `Kind::Label`. They are generalized into `TypeScheme.label_vars` and re-registered at call sites.
 
 **Union distribution** is the key BAS contribution — `get "port" (A | B)` returns `A.port | B.port`, not `Unknown`.
 

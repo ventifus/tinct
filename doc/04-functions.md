@@ -79,7 +79,7 @@ See [Type Annotations](05-type-annotations.md) §fn@[...] Function Metadata Dict
 ### Formal Grammar
 
 ```ebnf
-fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value }
+fn_form = { keyword_fn ~ fn_annotation? ~ param_list ~ value+ }
 
 fn_annotation = ${ "@" ~ annotation_value }
 
@@ -87,12 +87,14 @@ param_list = { "[" ~ (variadic_param | param)* ~ "]" }
 
 param = ${ param_name ~ param_annotation? }
 
-param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* ~ "?"? }
+param_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHA NUMERIC | "_" | "-")* ~ "?"? }
 
 param_annotation = ${ "@" ~ annotation_value }
 
 variadic_param = @{ "..." ~ param_name }
 ```
+
+**Note:** The `value+` notation indicates that multiple body expressions are allowed. When multiple expressions are provided, they are wrapped in `Expr::Sequential` by the parser — intermediate expressions extend the function's environment, and the final expression is the return value. See `doc/08-evaluation.md` §Laziness Design for `Sequential` semantics.
 
 Examples:
 ```tinct

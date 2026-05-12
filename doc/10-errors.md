@@ -345,7 +345,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **E8 — DECORATE idempotence:** Applying DECORATE twice with the same arguments produces the same result as applying it once: `DECORATE(DECORATE(ε, s, o, t), s, o, t) = DECORATE(ε, s, o, t)`. This follows from the deduplication guards in rules (1)–(3).
 
-**Typing:** `try` has type `Any → Any` — more precisely it expects `Fn(→ τ)` and returns `[ok: τ] | [err: Str]`, but neither the constraint on the argument nor the union result type can be expressed without union types — see [Type System Extensions](07-type-extensions.md) §Expressiveness. `error` has type `Str → Any` — the argument is materialized and coerced to String; the return type is `Any` because the function never returns a value (it always raises an error), and tinct has no bottom type.
+**Typing:** `try` has type `Any → Any` — more precisely it expects `Fn(→ τ)` and returns `Ok(τ) | Err(Str)` (nominal variants), but neither the constraint on the argument nor the union result type can be expressed without union types — see [Type System Extensions](07-type-extensions.md) §Expressiveness. `error` has type `Str → Never` — the argument is materialized and coerced to String; `error` never returns a value (it always raises an error). `Never` is the bottom type.
 
 **Runtime vs. static errors:** Runtime errors (`EvalError`, cached in `Failed` thunks) are distinct from the type inference engine's `Type::Error` marker. `Type::Error` represents the type of expressions that are statically known to produce errors (e.g., undefined variables caught during type checking); `EvalError` is the runtime value produced during evaluation.
 

@@ -886,6 +886,29 @@ For dual-dispatch builtins, the Dict and Seq paths must agree on which non-colle
 
 ## Laziness Design
 
+### Sequential Expressions in Function Bodies
+
+When a function body contains multiple expressions, the parser wraps them in `Expr::Sequential`. This construct enables intermediate bindings within a function while maintaining lazy evaluation semantics:
+
+```tinct
+[fn [x]
+    [y: [* x 2]]        # intermediate binding
+    [z: [+ y 1]]        # another intermediate binding
+    [result: [str y " and " z]]  # final result
+]
+```
+
+**Semantics:**
+
+- **Environment extension:** Each intermediate expression (if it's a dict) adds its bindings to the environment for subsequent expressions
+- **Lazy intermediate bindings:** Intermediate dict values remain as unevaluated thunks — they are only materialized when accessed
+- **Result is final expression:** The value of the last expression in the sequence is the function's return value
+- **CEK machine routing:** The CEK machine routes `Sequential` to `eval_recursive` via the `eval_materialize.rs` fallback (continuations like `SeqRest` manage the sequence)
+
+This is identical to how document-level expression sequences work (see [Documents](09-documents.md) §Scope Chain Semantics), but scoped within a single function body rather than across documents.
+
+**Grammar:** The `fn_form` rule in `doc/02-syntax.md` §Complete Grammar uses `value+` to permit multiple body expressions. The parser automatically wraps `value+` in `Expr::Sequential` when more than one expression is present.
+
 ### Strictness Exceptions
 
 Tinct's evaluation model is lazy by default — values remain unevaluated until accessed. Four intentional exceptions deviate from this default by triggering materialization at construction time rather than access time:
