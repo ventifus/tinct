@@ -20,25 +20,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Feature Doc Verification
-
-Three-way review of `doc/feature/*.md` against `doc/*.md` and source code. Each item names the file to change and what to change. Source-of-truth decisions follow the batch agents (feature doc wins unless code clearly implements something else).
-
-### fdv-code-gaps: Implement missing functionality
-
-For findings where the feature doc says something should work but the code doesn't have it yet — genuine gaps, not just doc issues.
-
-- [ ] [**S-RcdTop/ADT design tension**] `doc/feature/union-types.md` and `doc/feature/algebraic-data-types.md` present structural discriminated unions like `{ok: T} | {err: S}` as working ADTs, but under BAS S-RcdTop (`src/types.rs:882`) collapses disjoint-field record unions to `Type::Top`. This is not a doc fix — it is a genuine type-system design tension. Nominal variants (`Value::Variant`, `Pattern::Constructor`) are the current workaround, but `Type::NominalVariant` does not yet exist. Track as: (1) update both feature docs with a prominent §Design Tension section explaining S-RcdTop collapse and the nominal-variant workaround; (2) add `Type::NominalVariant { tag: String, payload: Option<Box<Type>> }` to `src/types.rs` with `is_subtype` rules per `doc/feature/nominal-variants.md`; (3) wire `Pattern::Constructor` arms in `infer_match` to use `Type::NominalVariant` (`src/types.rs`, `src/typecheck.rs`, `doc/feature/union-types.md`, `doc/feature/algebraic-data-types.md`)
-- [ ] `stdlib/numeric.llt` — add `UInt64@[doc: "Unsigned 64-bit integer (>= 0)"]: [type Int@[is: [>= _ 0]]]` and `Int64@[doc: "64-bit signed integer (alias for Int)"]: [type Int]`, matching the feature doc's eight named width types (`stdlib/numeric.llt`)
-- [ ] `stdlib/encoding.llt` — replace the pure-tinct `xor`/`xor-impl`/`xor-step`/`xor-bit`/`pow2`/`pow2-impl` helpers with the `bxor` Rust builtin; update `mask-apply-step` to call `[bxor data-code mask-code]` directly (the pure-tinct implementation is limited to 8-bit values) (`stdlib/encoding.llt`)
-- [ ] `stdlib/io.llt` — add `append-file`, `open-write`, `open-append`, and `write-lines` per `doc/feature/io.md` §The Stdlib Layer and §Streaming File I/O (`stdlib/io.llt`)
-- [ ] `stdlib/datetime.llt` — add `format-date` using the 3-arg `pad-left` signature (requires `[include libdir "strings.llt"]`): `[pad-left [str [timestamp-month t]] 2 "0"]` per `doc/feature/lib-datetime.md` (`stdlib/datetime.llt`)
-- [ ] `src/type_env.rs` — add `record?` and `map?` to `TypeEnv::with_builtins()` with type signatures `Unknown → Bool` (conservative fallback until narrowing is implemented); both builtins are registered in `standard_builtins()` but invisible to the type checker (`src/type_env.rs`)
-- [ ] `src/type_env.rs` — implement precise `get?` type inference: when the dict arg is `Map[K V]`, return `Union([V, Record(Row{})])` (V | Null); when the dict arg is a `Record` with a known field, return `Union([field_type, Record(Row{})])`. The current registration is `(Unknown, Unknown) → Unknown` and the claimed type-checker special-casing is not implemented (`src/type_env.rs`, `src/typecheck.rs`)
-- [ ] `doc/feature/null-semantics.md` — track the `null` keyword sprint (desugaring `null` → `[]`) or explicitly mark it as rejected; until a decision is made, update the feature doc to note the keyword is unscheduled; add a TODO item or decision note (`doc/feature/null-semantics.md`, `TODO.md`)
-
----
-
 ## Type System Cleanup
 
 ### builtin-type-audit: Fix Unknown→Any/Never in builtin type registrations
