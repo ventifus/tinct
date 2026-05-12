@@ -183,7 +183,7 @@ double: [fn@String [x@Number] [* x 2]]    # Error: body returns Number, not Stri
 - Lowercase: type variables (`a`, `b`, `k`, `v`)
 - `String` / `Str`: `String` is the user-facing type name used in annotations; `Str` is the internal `Type::Str` variant name in the implementation. Both refer to the same type. Use `String` in annotations and prose; `Str` appears in type inference output and error messages.
 - `Any`: escape hatch for dynamic data
-- `Null`: empty record `[]` — represents void/unit return type. `@Null` resolves to `Type::Record(Row::Empty)`. Use `fn@Null` for functions that return no meaningful value.
+- `Null`: empty record `[]` — represents void/unit return type. `@Null` resolves to `Type::Record` with no fields (the closed empty-record type). Use `fn@Null` for functions that return no meaningful value.
 - `Seq`: lazy sequence type. `[@Seq expr]` in TypeAssert position checks that `expr` is a Seq (element type is `Any`); the `@ElemType` suffix (e.g. `[@Seq@String expr]`) is a **parse error** in TypeAssert brackets — only bare `@Seq` is supported there. To constrain the element type, use the standalone expression form `Seq@String` (an `Annotated` bare word; note: `xs@Seq@String` in parameter annotation position is also a parse error — the parser captures only one `@TypeName` per parameter), which resolves to `Type::Seq(Type::Str)`.
 - `[@Type expr]`: type assertion / runtime cast from `Any`
 - `[Fn@Return [ParamTypes]]`: function type (mirrors `fn@Return [params]`)

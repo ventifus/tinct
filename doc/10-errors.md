@@ -34,16 +34,16 @@ Once a thunk fails, the error is cached permanently. Subsequent accesses return 
 
 ## `try` — Catching Errors in Stdlib
 
-`try` takes a zero-argument function and returns a tagged dict:
+`try` takes a zero-argument function and returns a nominal variant:
 
 ```tinct
 # Explicit catching via stdlib
-safe: [try [fn [] [/ 10 2]]]       # → [ok: 5]
-safe: [try [fn [] [/ 1 0]]]        # → [err: "/: division by zero"]
+safe: [try [fn [] [/ 10 2]]]       # → [Ok 5]
+safe: [try [fn [] [/ 1 0]]]        # → [Err "/: division by zero"]
 safe: [try-or [fn [] [/ 1 0]] 0]   # → 0
 ```
 
-**`try` return shape:** `try` returns a tagged dict — `[ok: value]` on success or `[err: message]` on failure. This is an ordinary dict, not a special type. Pattern match on the key to distinguish outcomes. The `message` is the error's message string — spans and stack traces are not included in the caught value.
+**`try` return shape:** `try` returns a nominal variant — `[Ok value]` on success or `[Err message]` on failure. Use `match` to distinguish outcomes. The `message` is the error's message string — spans and stack traces are not included in the caught value.
 
 **What `try` catches:** Errors from evaluating the function's body. Errors from materializing the function itself (e.g., if the function argument is a broken thunk) are *not* caught — they propagate to `try`'s caller.
 
@@ -276,7 +276,7 @@ materialize(θ_func, _, d) ⇒ Function([], body, env)
 θ_body = Thunk::new_unevaluated(body, env, body.span)
 materialize(θ_body, _, d) ⇒ Ok(v)
 ──────────────────────────
-try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
+try(θ_func, d, s) ⇒ ok_val(Variant("Ok", θ(v)))
 ```
 
 **[TRY-ERR]** — Error caught:
@@ -287,7 +287,7 @@ materialize(θ_func, _, d) ⇒ Function([], body, env)
 materialize(θ_body, _, d) ⇒ Err(ε)
 ε.kind.is_catchable()
 ──────────────────────────
-try(θ_func, d, s) ⇒ ok_val(Dict({err ↦ θ(ε.kind.to_string())}))
+try(θ_func, d, s) ⇒ ok_val(Variant("Err", θ(ε.kind.to_string())))
 ```
 
 **[TRY-UNCATCHABLE]** — Uncatchable error re-raised:

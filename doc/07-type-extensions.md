@@ -55,6 +55,8 @@ Dict = Record ∨ Map[K V]
 
 `Record` uses BAS row intersection for multi-field records. `Map[K V]` is a parameterized type constructor for homogeneous maps. `get` on `Map[K V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
 
+**Implementation note:** `@Dict` currently resolves as `Record(Row{})` (width-subtyping fallback). The full `Dict = Record ∨ Map` union semantics are a target state for when BAS constraint resolution is fully implemented.
+
 Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/completed/parameterized-dict.md`.
 
 See `doc/feature/boolean-algebraic-subtyping.md` (canonical post-implementation document) and `doc/whatif/completed/boolean-algebraic-subtyping.md` (archived design) for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.
