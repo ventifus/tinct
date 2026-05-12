@@ -1234,7 +1234,7 @@ impl TypeEnv {
         env.insert(
             "replace".to_string(),
             Type::Function {
-                params: vec![(None, Type::Str), (None, Type::Str)],
+                params: vec![(None, Type::Str), (None, Type::Str), (None, Type::Str)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
