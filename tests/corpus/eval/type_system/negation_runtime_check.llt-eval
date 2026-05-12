@@ -1,0 +1,4 @@
+# Negation type at runtime: ~Bool should accept Int
+[@[[without Bool]] 42]
+=== out
+Int(42)

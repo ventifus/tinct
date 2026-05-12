@@ -1,0 +1,4 @@
+# Type assertion with negation: Int <: ~Bool (disjoint types)
+[@[[without Bool]] 42]
+=== out
+[@[[without Bool]] 42]

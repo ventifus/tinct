@@ -64,8 +64,14 @@ fn test_valid_corpus() {
 #[test]
 fn test_invalid_corpus() {
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/invalid");
+    // type_errors/ files are expected to fail typecheck (not parse);
+    // they are handled by test_typecheck_error_corpus instead.
+    let type_errors_dir = corpus_dir.join("type_errors");
 
-    let test_files = find_test_files(&corpus_dir);
+    let test_files: Vec<_> = find_test_files(&corpus_dir)
+        .into_iter()
+        .filter(|p| !p.starts_with(&type_errors_dir))
+        .collect();
     assert!(
         !test_files.is_empty(),
         "No test files found in {}",

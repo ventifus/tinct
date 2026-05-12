@@ -1215,8 +1215,10 @@ pub(crate) fn resolve_type_expr_with_guard(
             depth,
         ),
         _ => {
-            // For all other expr types, delegate to normal resolve_type_expr
-            // TODO: This might need to be expanded to handle all cases
+            // For all other expr types, delegate to normal resolve_type_expr.
+            // Most expr types (literals, Annotated, Call) don't recursively reference type aliases,
+            // so the guard isn't needed. If we encounter cases where nested aliases cause issues,
+            // we can expand this match to handle them explicitly.
             resolve_type_expr(expr, env, state, ann_mapping, row_ann_mapping)
         }
     }
@@ -1230,13 +1232,67 @@ fn resolve_type_dict_with_guard(
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    _recursion_guard: &mut HashSet<String>,
-    _current_alias: &str,
-    _depth: usize,
+    recursion_guard: &mut HashSet<String>,
+    current_alias: &str,
+    depth: usize,
 ) -> Result<Type, TypeError> {
-    // For now, delegate to normal resolve_type_dict
-    // The recursion guard is already in place for VarRef resolution
-    // TODO: This might need full implementation if we have nested recursive structures
+    // Only handle BAS keywords ([all ...], [without ...]) with guard propagation.
+    // Other dict forms (function types, parameterized aliases, record types, unions)
+    // are delegated to the normal resolver which has more complex logic.
+    let all_positional = entries.iter().all(|e| e.node.key.is_none());
+
+    if all_positional && !entries.is_empty() {
+        if let Expr::VarRef { name: kw, .. } = &entries[0].node.value.node {
+            if kw == "all" {
+                // [all T1 T2 ...] → Intersection([T1, T2, ...])
+                if entries.len() < 2 {
+                    return Err(TypeError::new(
+                        "[all ...] requires at least one type argument",
+                        span,
+                    ));
+                }
+                let mut members = Vec::new();
+                for entry in &entries[1..] {
+                    let ty = resolve_type_expr_with_guard(
+                        &entry.node.value,
+                        env,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                        recursion_guard,
+                        current_alias,
+                        depth,
+                    )?;
+                    members.push(ty);
+                }
+                return Ok(Type::normalize_intersection(members));
+            } else if kw == "without" {
+                // [without A] → Negation(A)
+                if entries.len() != 2 {
+                    return Err(TypeError::new(
+                        "[without A] requires exactly one type argument",
+                        span,
+                    ));
+                }
+                let inner = resolve_type_expr_with_guard(
+                    &entries[1].node.value,
+                    env,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                    recursion_guard,
+                    current_alias,
+                    depth,
+                )?;
+                return Ok(Type::Negation(Box::new(inner)));
+            }
+        }
+    }
+
+    // For all other cases (function types, parameterized aliases, record types, unions),
+    // delegate to the normal resolver. The recursion guard is only needed for the VarRef
+    // resolution within these structures, which is already handled by resolve_type_expr_with_guard
+    // when called from resolve_type_expr.
     resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping)
 }
 

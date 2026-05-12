@@ -1,0 +1,4 @@
+# Type assertion with negation: Int <: ~Int (not disjoint, should fail)
+[@[[without Int]] 42]
+=== out
+cannot unify

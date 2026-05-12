@@ -55,17 +55,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
 
-### typecheck-gaps: Small typecheck correctness fixes
-
-Deferred typecheck correctness items found in source comments.
-
-- [ ] Union narrowing in `collect_pattern_bindings` (`src/typecheck.rs:1233`): when the match scrutinee is `Type::Union`, intersect field types across all Record members instead of falling through to `Unknown`; a field present in every member with consistent type should bind to that type in the pattern body (`src/typecheck.rs`)
-- [ ] Propagate recursion depth guard in `resolve_type_expr_with_guard` (`src/typecheck_annot.rs:1219`) through the `_` fallback arm — currently delegates to the non-guard version, meaning structural recursion through non-VarRef positions (e.g. dict-body type aliases) is not guarded; propagate the guard into all sub-expressions (`src/typecheck_annot.rs`)
-- [ ] Same fix for `resolve_type_dict_with_guard` (`src/typecheck_annot.rs:1239`): pass the recursion guard through field type resolution for recursive structural type aliases (`src/typecheck_annot.rs`)
-- [ ] Add `Type::types_are_disjoint(t1: &Type, t2: &Type) -> bool` to `src/types.rs`: `(Never, _)` → true; `(Any|Unknown, _)` → false (conservative); different concrete primitive pairs (`Int`/`String`, `Int`/`Bool`, `Int`/`Float`, `String`/`Bool`, etc.) → true; `Record` vs any primitive → true; `(Union(ms), t)` → `ms.iter().all(|m| disjoint(m, t))`; `(Intersection(ms), t)` → `ms.iter().any(|m| disjoint(m, t))`; anything else → false (conservative) (`src/types.rs`)
-- [ ] Replace the `(_, Type::Negation(a)) => true` placeholder at `src/types.rs:353` with `(sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a)` — `T <: ~A` holds iff T and A are disjoint; the existing `(Negation(t1), Negation(t2)) => is_subtype(t2, t1)` contravariant arm at line 347 is correct and unchanged (`src/types.rs`)
-- [ ] Tests: `Int <: ~String` (disjoint primitives → holds); `Int <: ~Int` (same type → fails); `String | Int <: ~Bool` (both members disjoint from Bool → holds); `[@[[without Bool]] 42]` TypeAssert passes; `[@[[without Int]] 42]` TypeAssert fails at runtime; union match binding uses field type from Record members; recursive dict type alias does not stack-overflow (`tests/corpus/eval/typecheck/`)
-
 ### scc-inference: SCC-based binding group analysis for letrec polymorphism
 
 Research done — see `doc/whatif/inference-completeness.md`. Implements Tarjan SCC decomposition within DICT-GEN to enable independent generalization of non-mutually-recursive bindings (fixes letrec monomorphism and nested dict let-polymorphism). See doc/whatif/inference-completeness.md §SCC Binding Group Analysis.
@@ -264,7 +253,11 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** 
 
 ### dir-cap-permissions: Fine-grained read/write/list permissions on DirCap and cap-file
 
-See `doc/whatif/dir-cap-permissions.md` (Accepted 2026-05-11). Extends `--cap-fs` (and `--cap-file`) with an optional `:MODE` suffix using letter bundles and an extended `:[Cap1 Cap2 ...]` list syntax; adds a `DirPerms` bitfield to `Value::DirCap`; enforces permissions in DirCap-consuming builtins; exposes a row-polymorphic `DirCap[Writable ...]` type. No mode on either flag = full access (all capabilities). **Spec chapters:** `doc/whatif/dir-cap-permissions.md`.
+See `doc/whatif/dir-cap-permissions.md` (Accepted 2026-05-11). Extends `--cap-fs` (and `--cap-file`) with an optional `:MODE` suffix using letter bundles and an extended `:[Cap1 Cap2 ...]` list syntax; adds a `DirPerms` bitfield to `Value::DirCap`; enforces permissions in DirCap-consuming builtins. No mode on either flag = full access (all capabilities). **Spec chapters:** `doc/whatif/dir-cap-permissions.md`.
+
+**Type system encoding under BAS:** The whatif describes `DirCap[Writable ...]` with a row tail — that was Rémy-style row polymorphism, which BAS removed. The correct BAS encoding is **intersection types**: `DirCap[Writable ...]` → `@[[all DirCap Writable]]` = `Type::Intersection([DirCap, Writable])`. The "at least these flags" semantics fall out from BAS intersection elimination: `A & B & C <: A & B` (if you have all three, you have any two), so `@[[all DirCap Readable Writable]] <: @[[all DirCap Writable]]` — a fully-capable DirCap satisfies any subset-capability constraint.
+
+Capability flags (`Readable`, `Writable`, `Listable`, `Statable`, `Appendable`, `Deletable`, `Renameable`) are registered as nominal unit types in `TypeEnv`. Annotation `@DirCap[Writable]` in `caps:` dicts desugars to `@[[all DirCap Writable]]`.
 
 **Mode grammar (same for `--cap-fs` and `--cap-file`):**
 - No `:mode` suffix → full access (all applicable capabilities)
@@ -278,8 +271,8 @@ See `doc/whatif/dir-cap-permissions.md` (Accepted 2026-05-11). Extends `--cap-fs
 - [ ] Implement `open` write and append paths in `builtin_open`: the `Writable` and `Appendable` flag branches currently return "not yet implemented" (`src/builtins_io.rs:197,371`); implement using `dir.open_with(path, OpenOptions::new().write(true).create(true).truncate(true))` for Writable and `.append(true)` for Appendable; wrap result in `Value::WriteHandle` with appropriate caps (`src/builtins_io.rs`)
 - [ ] Enforce permissions in `builtin_open`: `readable` for `"r"`, `writable` for `"w"`, `appendable` for `"a"`; capability error `"DirCap: open requires <Readable|Writable|Appendable> permission"` on violation (`src/builtins_io.rs`)
 - [ ] Enforce `listable` in `builtin_list_dir`; enforce `writable` in `builtin_write`/`builtin_write_atomic`; stubs for future `builtin_delete_file` (needs `deletable`) and `builtin_rename_file` (needs `renameable`) (`src/builtins_io.rs`)
-- [ ] Register `%pwd` and `--cap-fs` DirCaps in the type environment with appropriate `DirCap[...]` row types; update builtin type signatures: `list-dir` → `DirCap[Listable ...]`, `open "r"` → `DirCap[Readable ...]`, `open "w"` → `DirCap[Writable ...]` (`src/type_env.rs`)
-- [ ] Add `narrow` overload for DirCap: `[narrow cap@DirCap[Flags ...] FlagName...]` produces a new DirCap with the intersection of source permissions and requested flags; runtime error if requested flag is not held; `[narrow cap Subtree "path"]` restricts the directory root to a subdirectory (`src/builtins_io.rs` or new `src/builtins_cap.rs`)
+- [ ] Register capability flag nominal unit types in `TypeEnv`: `Readable`, `Writable`, `Listable`, `Statable`, `Appendable`, `Deletable`, `Renameable` — each as a singleton `Type::NominalTag` (no payload); register `%pwd` and `--cap-fs` DirCaps using BAS intersection types; update builtin type signatures using `Type::Intersection([DirCap, Flag])`: `list-dir` → `Intersection([DirCap, Listable])`, `open "r"` → `Intersection([DirCap, Readable])`, `open "w"` → `Intersection([DirCap, Writable])`; the subtyping `Intersection([DirCap, Readable, Writable]) <: Intersection([DirCap, Writable])` holds automatically under BAS intersection elimination (`src/type_env.rs`, `src/types.rs`)
+- [ ] Add `narrow` overload for DirCap: `[narrow cap@[[all DirCap Flag1 ...]] FlagName...]` produces a new DirCap with the intersection of source permissions and requested flags; the return type is `Intersection([DirCap, requested-flags])` — a BAS intersection narrower than the input; runtime error if a requested flag is not held in the source `DirPerms`; `[narrow cap Subtree "path"]` restricts the directory root to a subdirectory and returns the same intersection type with an updated root path (`src/builtins_io.rs` or new `src/builtins_cap.rs`)
 - [ ] Tests: `--cap-fs root=.:r` → `list-dir` succeeds, `open "w"` fails; `--cap-fs data='./d:[Readable Statable]'` → read succeeds, `list-dir` fails; `--cap-file cfg=Cargo.toml` (no mode) → read-write handle; extended syntax `--cap-file cfg='Cargo.toml:[Readable]'` → read-only handle; `narrow` reduces permissions; `narrow` to non-held flag errors (`tests/corpus/eval/`, `tests/corpus/cli/`)
 
 ---

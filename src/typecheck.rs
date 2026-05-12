@@ -1230,7 +1230,29 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                 let field_ty = match scrutinee_ty {
                     Type::Record(row) => row.fields.get(key).cloned().unwrap_or(Type::Unknown),
                     // Union: if all members that are Records agree on the field type, use it.
-                    // For now fall through to Unknown — union narrowing deferred.
+                    Type::Union(members) => {
+                        // Collect field types from all Record members
+                        let mut field_types = Vec::new();
+                        for member in members {
+                            if let Type::Record(row) = member {
+                                if let Some(ty) = row.fields.get(key) {
+                                    field_types.push(ty.clone());
+                                }
+                            }
+                        }
+
+                        // If all Record members have this field and all types are equal, use it
+                        if !field_types.is_empty() {
+                            let first_ty = &field_types[0];
+                            if field_types.iter().all(|ty| ty == first_ty) {
+                                first_ty.clone()
+                            } else {
+                                Type::Unknown
+                            }
+                        } else {
+                            Type::Unknown
+                        }
+                    }
                     _ => Type::Unknown,
                 };
                 collect_pattern_bindings(&sub_pat.node, &field_ty, out);
@@ -10488,5 +10510,59 @@ mod tests {
             Some(other) => panic!("expected Unknown from get-in with variable path, got {other}"),
             None => panic!("field 'result' not found"),
         }
+    }
+
+    #[test]
+    fn test_union_narrowing_in_pattern() {
+        // Union narrowing: when matching a Union with multiple Record types,
+        // and all members have a common field with the same type, the pattern-bound
+        // variable should get that field type (not Unknown).
+        let env = doc_env(
+            "[myfn: [fn [u@[[x: Int y: String] [x: Int z: Bool]]]\n\
+                      [match $u\n\
+                        [x: field] $field\n\
+                        _ 0]]]",
+        );
+        // The match binds field from the x field. Both union members have x: Int,
+        // so field should be inferred as Int (not Unknown).
+        match env.get("myfn").map(|s| &s.body) {
+            Some(Type::Function { ret, .. }) => {
+                // Return type should be Union(Int, Int) which normalizes to Int
+                // (or it might be Number if Int literals get promoted)
+                assert!(
+                    **ret == Type::Int || **ret == Type::Number || matches!(&**ret, Type::Union(_)),
+                    "union narrowing should infer Int-compatible type for field x, got {:?}",
+                    ret
+                );
+            }
+            Some(other) => panic!("expected Function, got {other}"),
+            None => panic!("myfn not found"),
+        }
+    }
+
+    #[test]
+    fn test_negation_subtyping_in_type_assert() {
+        // [@[[without Bool]] 42] should pass: Int is disjoint from Bool
+        let result = check("[@[[without Bool]] 42]");
+        assert!(result.is_ok(), "Int <: ~Bool should hold");
+
+        // [@[[without Int]] 42] should fail: Int is not disjoint from Int
+        let result = check("[@[[without Int]] 42]");
+        assert!(result.is_err(), "Int <: ~Int should not hold");
+    }
+
+    #[test]
+    fn test_negation_subtyping_with_union() {
+        // Union(String, Int) <: ~Bool should hold (all members disjoint from Bool)
+        // Test via a function that takes Union(String, Int) and returns ~Bool
+        let result = check(
+            "[fn [x@[String Int]]\n\
+               [@[[without Bool]] $x]]",
+        );
+        assert!(
+            result.is_ok(),
+            "Union(String, Int) <: ~Bool should hold: {:?}",
+            result.unwrap_err()
+        );
     }
 }

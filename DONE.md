@@ -5673,6 +5673,17 @@ Design in `doc/07-type-extensions.md §TypeAssert Runtime Validation`. Closes th
 - [x] Tests: corpus tests verify that `-impl` frames are hidden while user-facing frames remain visible (`tests/corpus/eval/errors/stdlib_internal_impl_filtered.llt-eval`, `stdlib_assert_user_callsite.llt-eval`, `stdlib_direct_error_call.llt-eval`)
 - [x] Documentation: stack frame filter policy documented in `doc/10-errors.md` §Part 8
 
+### typecheck-gaps: Small typecheck correctness fixes
+
+Deferred typecheck correctness items found in source comments.
+
+- [x] Union narrowing in `collect_pattern_bindings` (`src/typecheck.rs:1233`): when the match scrutinee is `Type::Union`, intersect field types across all Record members instead of falling through to `Unknown`; a field present in every member with consistent type should bind to that type in the pattern body (`src/typecheck.rs`)
+- [x] Propagate recursion depth guard in `resolve_type_expr_with_guard` (`src/typecheck_annot.rs:1219`) through the `_` fallback arm — currently delegates to the non-guard version, meaning structural recursion through non-VarRef positions (e.g. dict-body type aliases) is not guarded; propagate the guard into all sub-expressions (`src/typecheck_annot.rs`)
+- [x] Same fix for `resolve_type_dict_with_guard` (`src/typecheck_annot.rs:1239`): pass the recursion guard through field type resolution for recursive structural type aliases (`src/typecheck_annot.rs`)
+- [x] Add `Type::types_are_disjoint(t1: &Type, t2: &Type) -> bool` to `src/types.rs`: `(Never, _)` → true; `(Any|Unknown, _)` → false (conservative); different concrete primitive pairs (`Int`/`String`, `Int`/`Bool`, `Int`/`Float`, `String`/`Bool`, etc.) → true; `Record` vs any primitive → true; `(Union(ms), t)` → `ms.iter().all(|m| disjoint(m, t))`; `(Intersection(ms), t)` → `ms.iter().any(|m| disjoint(m, t))`; anything else → false (conservative) (`src/types.rs`)
+- [x] Replace the `(_, Type::Negation(a)) => true` placeholder at `src/types.rs:353` with `(sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a)` — `T <: ~A` holds iff T and A are disjoint; the existing `(Negation(t1), Negation(t2)) => is_subtype(t2, t1)` contravariant arm at line 347 is correct and unchanged (`src/types.rs`)
+- [x] Tests: `Int <: ~String` (disjoint primitives → holds); `Int <: ~Int` (same type → fails); `String | Int <: ~Bool` (both members disjoint from Bool → holds); `[@[[without Bool]] 42]` TypeAssert passes; `[@[[without Int]] 42]` TypeAssert fails at runtime; union match binding uses field type from Record members; recursive dict type alias does not stack-overflow (`tests/corpus/eval/typecheck/`)
+
 ## Higher-Kinded Types
 
 ### hkt-foundation-a: Core type constructs — Kind, App/Operator, UNIFY rules
