@@ -5684,6 +5684,17 @@ Deferred typecheck correctness items found in source comments.
 - [x] Replace the `(_, Type::Negation(a)) => true` placeholder at `src/types.rs:353` with `(sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a)` — `T <: ~A` holds iff T and A are disjoint; the existing `(Negation(t1), Negation(t2)) => is_subtype(t2, t1)` contravariant arm at line 347 is correct and unchanged (`src/types.rs`)
 - [x] Tests: `Int <: ~String` (disjoint primitives → holds); `Int <: ~Int` (same type → fails); `String | Int <: ~Bool` (both members disjoint from Bool → holds); `[@[[without Bool]] 42]` TypeAssert passes; `[@[[without Int]] 42]` TypeAssert fails at runtime; union match binding uses field type from Record members; recursive dict type alias does not stack-overflow (`tests/corpus/eval/typecheck/`)
 
+### type-warning-channel: Add three-tier diagnostic system to the type checker
+
+The type checker currently returns only `Vec<TypeError>` — all diagnostics are fatal. This sprint adds a three-tier notification system: `Info` (hint/suggestion), `Warn` (concern), `Err` (fatal). `--strict` bumps every diagnostic up one level: Info→Warn, Warn→Err. This maps directly onto LSP severity levels and gives a principled model for all future type quality diagnostics.
+
+- [x] Add `TypeDiagnostic` type to `src/error.rs` with a `Level` enum `{ Info, Warn, Err }`; include `message: String`, `span: Span`, `code: &'static str`, `level: Level`; `--strict` bump is applied at emission time by a `bump(level) -> Level` function that shifts Info→Warn, Warn→Err, Err→Err (`src/error.rs`)
+- [x] Update `typecheck_file` to return `(Rc<TypeEnv>, Vec<TypeError>, Vec<TypeDiagnostic>)` — existing `TypeError` vec for hard errors, new `TypeDiagnostic` vec for the three-tier system; update `typecheck_file_with_types` to match (`src/typecheck.rs`)
+- [x] Update all call sites in `src/lib.rs`, `src/main.rs`, `src/lsp/document.rs` to destructure the new return and route diagnostics by level (`src/lib.rs`, `src/main.rs`, `src/lsp/document.rs`)
+- [x] CLI output: `Info` → dimmed hint text; `Warn` → yellow warning; `Err` (from strict bump) → red error, fatal; exit 0 when only Info/Warn present, non-zero on Err (`src/main.rs`)
+- [x] LSP output: `Info` → `DiagnosticSeverity::Hint` or `Information`; `Warn` → `DiagnosticSeverity::Warning`; `Err` → `DiagnosticSeverity::Error` (`src/lsp/document.rs`)
+- [x] Tests: file with Info/Warn diagnostics compiles and exits 0; `--strict` escalates Warn to Err; LSP emits correct severity per level (`tests/corpus/eval/`, `tests/lsp_corpus_tests.rs`)
+
 ## Higher-Kinded Types
 
 ### hkt-foundation-a: Core type constructs — Kind, App/Operator, UNIFY rules

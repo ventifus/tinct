@@ -191,7 +191,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // Populates VarRef resolved caches with (level, slot) coordinates.
     resolve::resolve_file(&file.node);
     // Type errors are advisory; evaluation proceeds regardless.
-    let _ = typecheck::typecheck_file(&file.node);
+    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
     // Create evaluation context (current directory, configurable sandbox)
     let base_dir_path = std::env::current_dir()
@@ -273,7 +273,7 @@ pub fn eval_source_with_cap_net(
 
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
-    let _ = typecheck::typecheck_file(&file.node);
+    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
     let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
 
     let base_dir_path = std::env::current_dir()
@@ -362,7 +362,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     resolve::resolve_file(&file.node);
     // Type check the file with prelude-seeded environment
     let env = imports::build_prelude_env();
-    let (type_errors, _type_map, _doc_map, _scheme_map) =
+    let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
         typecheck::typecheck_file_with_types_and_env(&file.node, env);
     if type_errors.is_empty() {
         Ok(())
@@ -886,7 +886,7 @@ pub fn format_with_json_llt(
     let mut ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
     desugar::desugar_file(&mut ast.node);
     resolve::resolve_file(&ast.node);
-    let _ = typecheck::typecheck_file(&ast.node);
+    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&ast.node);
 
     // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
     // from the result_thunk are resolvable when the json functions access dict entries.
@@ -1626,7 +1626,7 @@ mod tests {
         // Parse the source manually to get a real AST with spans.
         let mut file = parse(source).expect("parse should succeed");
         desugar::desugar_file(&mut file.node);
-        let _ = typecheck::typecheck_file(&file.node);
+        let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 

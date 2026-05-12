@@ -641,7 +641,9 @@ fn setup_seccomp(allow_network: bool) -> Result<(), String> {
 ///   function (e.g., the directories containing the main input files). These are NOT
 ///   part of the --cap-fs allowlist; they only let the OS read the primary files.
 fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Result<(), String> {
-    use landlock::{Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI};
+    use landlock::{
+        Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+    };
 
     // V3 corresponds to Linux 5.19+. The crate gracefully degrades to a lower ABI
     // version if the running kernel doesn't support V3 (best-effort restriction).
@@ -1107,8 +1109,11 @@ fn run_eval(
     // Phase 1: resolve %libdir from the binary's location, --libdir-path override, or a well-known relative path.
     // If resolution fails, %libdir is not injected (stdlib is embedded at compile time anyway).
     // The resolved path is also saved for the JSON output path (format_with_json_llt).
-    let resolved_libdir_path: Option<std::path::PathBuf> =
-        if !no_libdir { resolve_libdir_path(libdir_path.as_deref()) } else { None };
+    let resolved_libdir_path: Option<std::path::PathBuf> = if !no_libdir {
+        resolve_libdir_path(libdir_path.as_deref())
+    } else {
+        None
+    };
     if !no_libdir {
         use tinct::Value;
         if let Some(ref path) = resolved_libdir_path {
@@ -1463,7 +1468,7 @@ fn run_eval(
                 tinct::build_prelude_env()
             }
         };
-        let (type_errors, _type_map, _doc_map, _scheme_map) =
+        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
             tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, type_env);
         if !type_errors.is_empty() {
             let file_name = match stage {
@@ -1484,6 +1489,7 @@ fn run_eval(
                 );
             }
         }
+        // TODO: Process diagnostics here (type-warning-channel infrastructure only, no emission yet)
 
         // Open base_dir as a cap-std Dir
         let base_dir =
@@ -1724,7 +1730,7 @@ fn run_fmt(
         tinct::resolve::resolve_file(&ast.node);
 
         let env = tinct::build_prelude_env();
-        let (type_errors, _type_map, _doc_map, _scheme_map) =
+        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
             tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
 
         if !type_errors.is_empty() {
@@ -1734,6 +1740,7 @@ fn run_fmt(
                 .collect();
             return Err(error_msgs.join("\n"));
         }
+        // TODO: Process diagnostics here (type-warning-channel infrastructure only, no emission yet)
     }
 
     // Format the source. The formatter re-parses internally; we cannot reuse the
@@ -1934,7 +1941,7 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
 
     tinct::desugar::desugar_file(&mut ast.node);
     tinct::resolve::resolve_file(&ast.node);
-    let _ = tinct::typecheck::typecheck_file(&ast.node);
+    let (_type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
 
     // Determine base directory from the Markdown file's location.
     let base_dir_path = if markdown_path == "-" {
@@ -2068,7 +2075,7 @@ fn run_literate_weave(
 
         tinct::desugar::desugar_file(&mut ast.node);
         tinct::resolve::resolve_file(&ast.node);
-        let _ = tinct::typecheck::typecheck_file(&ast.node);
+        let (_type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
 
         // Derive per-block context from the base context (shares the ThunkArena).
         let base_dir =
@@ -2294,7 +2301,7 @@ fn evaluate_marker_expression(
     let mut ast = expand_result.file;
     tinct::desugar::desugar_file(&mut ast.node);
     tinct::resolve::resolve_file(&ast.node);
-    let _ = tinct::typecheck::typecheck_file(&ast.node);
+    let (_type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
 
     // Create a per-expression eval context
     let base_dir = cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
@@ -2354,7 +2361,7 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
 
     // Type check to get DocMap (for doc strings)
     let env = tinct::build_prelude_env();
-    let (_type_errors, _type_map, doc_map, _scheme_map) =
+    let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
         tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
 
     // Collect contract information from each document section.

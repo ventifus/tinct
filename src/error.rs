@@ -1679,6 +1679,45 @@ impl fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
+// ────────────────────────────────────────────────────────────────────────────
+// Type diagnostic system (three-tier: Info, Warn, Err)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Diagnostic severity level for type checking notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticLevel {
+    /// Hint or suggestion (dimmed in CLI, Hint in LSP)
+    Info,
+    /// Concern (yellow in CLI, Warning in LSP)
+    Warn,
+    /// Fatal error (red in CLI, Error in LSP; causes non-zero exit)
+    Err,
+}
+
+impl DiagnosticLevel {
+    /// Bump severity one level: Info→Warn, Warn→Err, Err→Err.
+    /// Used when `--strict` mode is enabled.
+    pub fn bump(self) -> DiagnosticLevel {
+        match self {
+            DiagnosticLevel::Info => DiagnosticLevel::Warn,
+            DiagnosticLevel::Warn => DiagnosticLevel::Err,
+            DiagnosticLevel::Err => DiagnosticLevel::Err,
+        }
+    }
+}
+
+/// A type checking diagnostic (info/warn/err) with span and error code.
+///
+/// Unlike `TypeError` (which is always fatal), `TypeDiagnostic` can have
+/// Info/Warn level for non-fatal notifications (e.g., inferred `Unknown` types).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDiagnostic {
+    pub message: String,
+    pub span: crate::ast::Span,
+    pub code: &'static str,
+    pub level: DiagnosticLevel,
+}
+
 /// Render a source snippet with caret annotations for the given span.
 ///
 /// Returns `None` for synthetic spans (`Span::origin()` at 0:0-0:0), which have no source line.
@@ -4338,5 +4377,41 @@ mod tests {
 
         // Should still have the inner label
         assert_eq!(err.blame, Some(inner_label));
+    }
+
+    // ── Type diagnostic system tests ────────────────────────────────────────
+
+    #[test]
+    fn test_diagnostic_level_bump() {
+        assert_eq!(DiagnosticLevel::Info.bump(), DiagnosticLevel::Warn);
+        assert_eq!(DiagnosticLevel::Warn.bump(), DiagnosticLevel::Err);
+        assert_eq!(DiagnosticLevel::Err.bump(), DiagnosticLevel::Err);
+    }
+
+    #[test]
+    fn test_type_diagnostic_construction() {
+        use crate::test_util::test_span;
+
+        let span = test_span(5, 10, 5, 20);
+        let diag = TypeDiagnostic {
+            message: "inferred Unknown type".to_string(),
+            span,
+            code: "T999",
+            level: DiagnosticLevel::Warn,
+        };
+
+        assert_eq!(diag.message, "inferred Unknown type");
+        assert_eq!(diag.span, span);
+        assert_eq!(diag.code, "T999");
+        assert_eq!(diag.level, DiagnosticLevel::Warn);
+    }
+
+    #[test]
+    fn test_diagnostic_level_equality() {
+        assert_eq!(DiagnosticLevel::Info, DiagnosticLevel::Info);
+        assert_eq!(DiagnosticLevel::Warn, DiagnosticLevel::Warn);
+        assert_eq!(DiagnosticLevel::Err, DiagnosticLevel::Err);
+        assert_ne!(DiagnosticLevel::Info, DiagnosticLevel::Warn);
+        assert_ne!(DiagnosticLevel::Warn, DiagnosticLevel::Err);
     }
 }

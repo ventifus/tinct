@@ -78,7 +78,7 @@ fn typecheck_and_merge_stdlib_module(
     resolve::resolve_file(&file.node);
 
     // Type-check with the parent environment (builtins + prelude)
-    let (type_errors, type_map, _doc_map, _scheme_map) =
+    let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
         typecheck_file_with_types_and_env(&file.node, Rc::clone(parent_env));
 
     // Silently ignore type errors
@@ -397,7 +397,7 @@ fn resolve_includes(
         resolve::resolve_file(&file.node);
 
         // Type-check with the current accumulated environment
-        let (_type_errors, type_map, _doc_map, _scheme_map) =
+        let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types_and_env(&file.node, Rc::clone(&env));
 
         // Extract bindings from this file
