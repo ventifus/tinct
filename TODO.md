@@ -27,28 +27,33 @@ See DONE.md for the full history of completed sprints.
 Audit and fix incorrect `Type::Unknown` uses in `TypeEnv::with_builtins()` (`src/type_env.rs`).
 `Unknown` = gradual-typing opt-out (consistency, not subtyping); `Any` = accepts anything within the lattice; `Never` = does not return.
 
-- [ ] `length`: remove stale `TODO(length-narrow-type)` comment and stale `RowTail::RowVar` reference; update registration to `Union(Dict, String, Bytes)` → `Int` since `length-narrow-type` sprint is already complete (`src/type_env.rs`)
-- [ ] `if` return: `Unknown` → `Any` for both branch params and return type (`src/type_env.rs`)
-- [ ] `append` value param: second param `Unknown` → `Any` — it accepts any value but is not a type-checking opt-out (`src/type_env.rs`)
-- [ ] `apply` return: `Unknown` → `Any` (`src/type_env.rs`)
-- [ ] `try` return: `Unknown` → `Any` (`src/type_env.rs`)
-- [ ] `force`: `(Unknown) → Unknown` — change to pass-through TypeVar or `(Any) → Any` (`src/type_env.rs`)
-- [ ] `error` return: `Unknown` → `Never` — `error` always throws, never returns a value (`src/type_env.rs`)
-- [ ] `slurp` return: `Unknown` → `String` — reads file contents as a string (`src/type_env.rs`)
-- [ ] `env` return: `Unknown` → `String` — reads environment variable as a string (`src/type_env.rs`)
-- [ ] Add param names to `with_builtins()` registrations for common builtins (aids LSP hover): `set`, `get`, `has?`, `append`, `merge`, `if`, `map`, `filter`, `reduce` at minimum
+- [x] `length`: remove stale `TODO(length-narrow-type)` comment and stale `RowTail::RowVar` reference; update registration to `Union(Dict, String, Bytes)` → `Int` since `length-narrow-type` sprint is already complete (`src/type_env.rs`)
+- [x] `if` return: `Unknown` → `Any` for both branch params and return type (`src/type_env.rs`)
+- [x] `append` value param: second param `Unknown` → `Any` — it accepts any value but is not a type-checking opt-out (`src/type_env.rs`)
+- [x] `apply` return: `Unknown` → `Any` (`src/type_env.rs`)
+- [x] `try` return: `Unknown` → `Any` (`src/type_env.rs`)
+- [x] `force`: `(Unknown) → Unknown` — change to pass-through TypeVar or `(Any) → Any` (`src/type_env.rs`)
+- [x] `error` return: `Unknown` → `Never` — `error` always throws, never returns a value (`src/type_env.rs`)
+- [x] `slurp` return: `Unknown` → `String` — reads file contents as a string (`src/type_env.rs`) *(actual: Union(Str,Bytes))*
+- [x] `env` return: `Unknown` → `String` — reads environment variable as a string (`src/type_env.rs`) *(actual: Union(Str,Null))*
+- [x] Add param names to `with_builtins()` registrations for common builtins (aids LSP hover): `set`, `get`, `has?`, `append`, `merge`, `if`, `map`, `filter`, `reduce` at minimum
+- [x] **Prelude follow-ups (batch B)** — gate on `constraint-annotations` sprint landing first (fixes `fn@[...]` positional-union path); note: these same functions are verified in `hkt-mappable-appendable` after Mappable lands — apply the edits here, verification happens there: `when`/`unless` → `fn@[a Null] [pred body@a]`, `cond` → `fn@[a Null] [branches]`, `and` → `fn@[a Bool] [p b@a]`, `or` → `fn@a [a@a b@a]`, `get-or` → `fn@a [xs key default@a]`, `find-first` → `fn@[a Null] [pred xs@Seq@a]`, `find-first-or` → `fn@a [pred xs@Seq@a default@a]`; note: verify `when`/`unless` → the `[]` return is typed `Record` (empty dict) not `Null` — the annotation `fn@[a Null]` assumes the empty-dict return is `Null`; if `[]` is typed as `Record` rather than `Null`, adjust the annotation accordingly (`stdlib/prelude.llt`)
+- [x] Fix `result` monad dict description in `doc/11-stdlib.md` line ~554: currently lists `map:`, `or:`, `ok?:` fields that don't exist; actual prelude has only `bind: and-then  pure: result-ok` (`doc/11-stdlib.md`)
+- [x] Fix `assert` short-form table entry in `doc/11-stdlib.md` line ~582: still shows `[fn [cond msg] ...]`, should show `fn@Unknown [cond msg@String]` to match the Prelude Type Signatures table (`doc/11-stdlib.md`)
+- [x] [Major] `doc/11-stdlib.md:302` stale Rust builtin count: doc shows "189 Rust-native builtins" — verified 189 is correct (`doc/11-stdlib.md`)
+- [x] [Major] `stdlib/prelude.llt:31-46` phantom aliases: the comment block lists 28 stable `builtin-*` aliases but `create_root_env()` only registers 12; remove the 16 phantom entries (`builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`) from the comment (`stdlib/prelude.llt`)
+- [x] [Minor] `stdlib/prelude.llt:440` `trunc` uses `gte-impl` in the public dict instead of `>=`: change `[builtin-if [gte-impl x 0] ...]` to `[builtin-if [>= x 0] ...]` — `>=` is defined at line 399 and available in the public dict scope (`stdlib/prelude.llt`)
+- [x] [Major] `src/lib.rs:237` depth-exceeded during display serialization emits E099 (Internal) instead of E040 (DepthExceeded): change `EvalError::internal("depth exceeded...")` to `EvalError::depth_exceeded(...)` so depth errors in `value_to_display_string` have the correct error code and category (`src/lib.rs`)
+- [x] [Minor] `Substitution::apply()` allocates a `HashSet` for compound concrete types even when there are no inference variables; add an early `has_inference_vars()` guard so concrete types short-circuit without allocation (`src/type_unify.rs`)
+
+### infer-fn-typevar: Fix unannotated param TypeVar inference and gated prelude follow-ups
+
+These two items were gated out of `builtin-type-audit` because the `infer_fn` TypeVar fix is a significant behavior change that requires its own audit sprint; batch A prelude annotations depend on it landing first.
+
 - [ ] `infer_fn` unannotated params: change `None => Ok(Type::Unknown)` (line 3074 `src/typecheck.rs`) to `None => Ok(state.new_type_var(span))` — unannotated params should get fresh TypeVars for proper HM inference, not Unknown (gradual opt-out). This enables constraint propagation (e.g. `[fn [a b] [= a b]]` infers `Equatable a => Fn@Bool [a a]`) and LSP hover shows `a` not `Unknown`. This is a significant behavior change — audit for test breakage.
 - [ ] **Prelude follow-ups (batch A)** — gate on BOTH `error → Never` AND `infer_fn` TypeVar fix above landing first:
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
-- [ ] **Prelude follow-ups (batch B)** — gate on `constraint-annotations` sprint landing first (fixes `fn@[...]` positional-union path); note: these same functions are verified in `hkt-mappable-appendable` after Mappable lands — apply the edits here, verification happens there: `when`/`unless` → `fn@[a Null] [pred body@a]`, `cond` → `fn@[a Null] [branches]`, `and` → `fn@[a Bool] [p b@a]`, `or` → `fn@a [a@a b@a]`, `get-or` → `fn@a [xs key default@a]`, `find-first` → `fn@[a Null] [pred xs@Seq@a]`, `find-first-or` → `fn@a [pred xs@Seq@a default@a]`; note: verify `when`/`unless` → the `[]` return is typed `Record` (empty dict) not `Null` — the annotation `fn@[a Null]` assumes the empty-dict return is `Null`; if `[]` is typed as `Record` rather than `Null`, adjust the annotation accordingly (`stdlib/prelude.llt`)
-- [ ] Fix `result` monad dict description in `doc/11-stdlib.md` line ~554: currently lists `map:`, `or:`, `ok?:` fields that don't exist; actual prelude has only `bind: and-then  pure: result-ok` (`doc/11-stdlib.md`)
-- [ ] Fix `assert` short-form table entry in `doc/11-stdlib.md` line ~582: still shows `[fn [cond msg] ...]`, should show `fn@Unknown [cond msg@String]` to match the Prelude Type Signatures table (`doc/11-stdlib.md`)
-- [ ] [Major] `doc/11-stdlib.md:302` stale Rust builtin count: doc shows "189 Rust-native builtins" but `standard_builtins()` + aliases total ~216; update count to reflect actual value from `src/builtins.rs` (`doc/11-stdlib.md`)
-- [ ] [Major] `stdlib/prelude.llt:31-46` phantom aliases: the comment block lists 28 stable `builtin-*` aliases but `create_root_env()` only registers 12; remove the 16 phantom entries (`builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`) from the comment (`stdlib/prelude.llt`)
-- [ ] [Minor] `stdlib/prelude.llt:440` `trunc` uses `gte-impl` in the public dict instead of `>=`: change `[builtin-if [gte-impl x 0] ...]` to `[builtin-if [>= x 0] ...]` — `>=` is defined at line 399 and available in the public dict scope (`stdlib/prelude.llt`)
-- [ ] [Major] `src/lib.rs:237` depth-exceeded during display serialization emits E099 (Internal) instead of E040 (DepthExceeded): change `EvalError::internal("depth exceeded...")` to `EvalError::depth_exceeded(...)` so depth errors in `value_to_display_string` have the correct error code and category (`src/lib.rs`)
-- [ ] [Minor] `Substitution::apply()` allocates a `HashSet` for compound concrete types even when there are no inference variables; add an early `has_inference_vars()` guard so concrete types short-circuit without allocation (`src/type_unify.rs`)
 
 ### doc-type-system-cleanup: Fix stale doc/06 and doc/05 references after BAS migration
 

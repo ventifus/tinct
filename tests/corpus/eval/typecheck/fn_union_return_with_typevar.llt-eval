@@ -1,0 +1,8 @@
+# fn@[a Null] union return type annotation with type variable.
+# The annotation [a Null] is two positional entries: type variable `a` and Null.
+# This must route to the union return type path (not the metadata dict path).
+# Regression test: previously failed with "property dict annotation must be a dict expression"
+# because the parser rejected lowercase-headed implied calls in annotation position.
+[f: [fn@[a Null] [] []]]
+=== out
+Dict({"f": Function()})

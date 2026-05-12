@@ -263,6 +263,11 @@ impl Substitution {
             }
             _ => {}
         }
+        // Second fast-path: structured types with no inference variables are concrete.
+        // Covers e.g. Function{params: [Int], ret: Str} — no TypeVars, nothing to substitute.
+        if !ty.has_inference_vars() {
+            return ty.clone();
+        }
         let mut visited_types = HashSet::new();
         self.apply_type(ty, 0, &mut visited_types).into_owned()
     }
