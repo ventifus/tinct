@@ -234,8 +234,9 @@ pub enum Expr {
         name: String,
         /// Type parameters (e.g., ["a"])
         params: Vec<String>,
-        /// Superclass constraints (e.g., ["Ord"] for a class that requires Ord)
-        superclasses: Vec<String>,
+        /// Superclass constraints as (class_name, param_name) tuples.
+        /// Example: ("Functor", "f") from `extends [Functor f]`
+        superclasses: Vec<(String, String)>,
         /// Method signatures as dict entries (method_name: Type)
         methods: Vec<Spanned<Entry>>,
     },

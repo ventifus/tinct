@@ -1005,7 +1005,7 @@ enum StackFrame {
     ClassDecl {
         name: Option<String>,
         params: Vec<String>,
-        superclasses: Vec<String>,
+        superclasses: Vec<(String, String)>,
         methods: Vec<Entry>,
         /// Pending key for method entries
         pending_key: Option<Spanned<Expr>>,

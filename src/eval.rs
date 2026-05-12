@@ -156,7 +156,8 @@ pub struct EvalState {
 #[derive(Debug, Clone)]
 pub struct RuntimeClassDecl {
     pub params: Vec<String>,
-    pub superclasses: Vec<String>,
+    /// Superclass constraints as (class_name, param_name) tuples
+    pub superclasses: Vec<(String, String)>,
     /// Default method implementations: method_name -> thunk
     /// These are wrapped as thunks to preserve laziness.
     pub method_defaults: IndexMap<String, Rc<Thunk>>,

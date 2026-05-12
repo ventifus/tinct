@@ -187,7 +187,9 @@ pub(crate) fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
         )?;
-        Ok(Type::Seq(Box::new(elem)))
+        let ty = Type::Seq(Box::new(elem));
+        crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+        Ok(ty)
     } else {
         resolve_annotation(
             &annotation.node,
@@ -445,11 +447,13 @@ fn resolve_fn_type(
                 // (it's only stored on TypeScheme during function binding inference)
                 let (ret, _doc) =
                     resolve_fn_metadata(entries, env, span, state, ann_mapping, row_ann_mapping)?;
-                Ok(Type::Function {
+                let ty = Type::Function {
                     params: vec![],
                     ret: Box::new(ret),
                     variadic: false,
-                })
+                };
+                crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+                Ok(ty)
             } else if all_positional {
                 // Union return type path: fn@[Int Null]
                 // Resolve as a union type via resolve_annotation_as_type
@@ -461,11 +465,13 @@ fn resolve_fn_type(
                     ann_mapping,
                     row_ann_mapping,
                 )?;
-                Ok(Type::Function {
+                let ty = Type::Function {
                     params: vec![],
                     ret: Box::new(ret),
                     variadic: false,
-                })
+                };
+                crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+                Ok(ty)
             } else {
                 // Mixed or unknown pattern
                 Err(TypeError::new(
@@ -478,11 +484,13 @@ fn resolve_fn_type(
             // Simple(name) path: fn@Int, fn@a, etc.
             let ret =
                 resolve_annotation_as_type(ann, env, span, state, ann_mapping, row_ann_mapping)?;
-            Ok(Type::Function {
+            let ty = Type::Function {
                 params: vec![],
                 ret: Box::new(ret),
                 variadic: false,
-            })
+            };
+            crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+            Ok(ty)
         }
     }
 }
@@ -1681,7 +1689,9 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
-    Ok(Type::Record(Row { fields }))
+    let ty = Type::Record(Row { fields });
+    crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+    Ok(ty)
 }
 
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries

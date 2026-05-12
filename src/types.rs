@@ -84,6 +84,28 @@ impl fmt::Display for KindError {
     }
 }
 
+/// Label for record field names in HasField constraints.
+/// Used in `HasField { label: Label, dict_var: String, field_var: String }`.
+/// Provides compile-time structural enforcement that the label position is always
+/// a string literal or a label TypeVar name, never an arbitrary Type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Scaffolding for HasField constraint (hkt-mappable-appendable sprint)
+pub enum Label {
+    /// Concrete label — a known field name like "host" or "port"
+    Concrete(String),
+    /// Label variable — a TypeVar name referencing a Kind::Label variable in kind_env
+    Var(String),
+}
+
+impl fmt::Display for Label {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Label::Concrete(s) => write!(f, "\"{}\"", s),
+            Label::Var(name) => write!(f, "{}", name),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Type {
     Int,
@@ -1236,6 +1258,61 @@ fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
     }
 }
 
+/// Check that a type is well-kinded with respect to the kind environment.
+///
+/// This implements the [KIND-LABEL-ERROR] kinding judgment from doc/whatif/completed/hkt-monads.md:
+/// Label-kinded TypeVars (Kind::Label) cannot appear in positions expecting Kind::Type (e.g., as
+/// the element type of Seq, as function parameters/return types, or as record field types).
+///
+/// Returns an error if any TypeVar in the type has Kind::Label in `kind_env`.
+pub fn check_kind_wellformed(
+    ty: &Type,
+    kind_env: &HashMap<String, Kind>,
+    span: Span,
+) -> Result<(), TypeError> {
+    match ty {
+        Type::TypeVar(name, _) => {
+            if let Some(Kind::Label) = kind_env.get(name.as_str()) {
+                return Err(TypeError::new(
+                    format!("label variable {} has kind Label, expected kind *", name),
+                    span,
+                ));
+            }
+            Ok(())
+        }
+        Type::Seq(elem) => check_kind_wellformed(elem, kind_env, span),
+        Type::Map(key, val) => {
+            check_kind_wellformed(key, kind_env, span)?;
+            check_kind_wellformed(val, kind_env, span)
+        }
+        Type::Function { params, ret, .. } => {
+            for (_name, param_ty) in params {
+                check_kind_wellformed(param_ty, kind_env, span)?;
+            }
+            check_kind_wellformed(ret, kind_env, span)
+        }
+        Type::Record(row) => {
+            for field_ty in row.fields.values() {
+                check_kind_wellformed(field_ty, kind_env, span)?;
+            }
+            Ok(())
+        }
+        Type::Union(members) | Type::Intersection(members) => {
+            for member in members {
+                check_kind_wellformed(member, kind_env, span)?;
+            }
+            Ok(())
+        }
+        Type::Negation(inner) => check_kind_wellformed(inner, kind_env, span),
+        Type::App(func, arg) => {
+            check_kind_wellformed(func, kind_env, span)?;
+            check_kind_wellformed(arg, kind_env, span)
+        }
+        // All other types (Int, Str, Bool, literals, capabilities, etc.) are always well-kinded
+        _ => Ok(()),
+    }
+}
+
 /// Constraint on a type variable (type class membership)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Constraint {
@@ -1312,6 +1389,10 @@ pub struct TypeScheme {
     pub type_vars: Vec<String>,
     pub constraints: Vec<Constraint>,
     pub body: Type,
+    /// Label type variables — generalized label-kinded TypeVars from `key@"k"` annotations.
+    /// Must be re-registered in `state.kind_env` with `Kind::Label` during instantiation
+    /// to prevent promotion suppression from failing after generalization.
+    pub label_vars: Vec<String>,
     /// Optional documentation string (from `fn@[doc: "..."]` annotations).
     /// Not part of the type; used by LSP hover display.
     pub doc: Option<String>,
@@ -1324,6 +1405,7 @@ impl TypeScheme {
             type_vars: vec![],
             constraints: vec![],
             body: ty,
+            label_vars: vec![],
             doc: None,
         }
     }
@@ -1392,6 +1474,11 @@ pub struct InferState {
     /// replace equality-based substitution for all type variables.
     #[allow(dead_code)] // Scaffolding for algebraic subtyping migration
     pub bounds: HashMap<String, TypeVarBounds>,
+    /// Kind environment: maps TypeVar names to their kinds.
+    /// Populated during class method processing (Kind::Operator) and when `key@"k"` annotations
+    /// are resolved (Kind::Label). Used to prevent promotion of label-kinded TypeVars and to
+    /// enforce kind checking (e.g., reject `Seq(TypeVar(l, Label))`).
+    pub kind_env: HashMap<String, Kind>,
     /// Type class environment: registry of class declarations.
     /// Dict-scoped: class declarations are visible in the dict and children.
     pub class_env: ClassEnv,
@@ -1432,7 +1519,7 @@ impl InferState {
         class_env.insert(ClassDecl {
             name: "Numeric".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
-            superclasses: vec!["Equatable".to_string()],
+            superclasses: vec![("Equatable".to_string(), "a".to_string())],
             methods: HashMap::new(),
         });
 
@@ -1440,7 +1527,7 @@ impl InferState {
         class_env.insert(ClassDecl {
             name: "Comparable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
-            superclasses: vec!["Equatable".to_string()],
+            superclasses: vec![("Equatable".to_string(), "a".to_string())],
             methods: HashMap::new(),
         });
 
@@ -1475,6 +1562,7 @@ impl InferState {
             subst: Substitution::new(),
             constraints: Vec::new(),
             bounds: HashMap::new(),
+            kind_env: HashMap::new(),
             class_env,
             instance_env: InstanceEnv::new(),
             failed_bindings: HashMap::new(),
@@ -3764,6 +3852,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
                 variadic: false,
             },
+            label_vars: vec![],
             doc: None,
         };
         assert_eq!(format!("{scheme}"), "∀a b. Fn@a [a b]");
@@ -3775,6 +3864,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         assert_eq!(format!("{scheme}"), "∀a. a");
@@ -3786,12 +3876,14 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         let s2 = TypeScheme {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         assert_eq!(s1, s2);
@@ -3803,12 +3895,14 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::Int,
+            label_vars: vec![],
             doc: None,
         };
         let s2 = TypeScheme {
             type_vars: vec!["b".into()],
             constraints: vec![],
             body: Type::Int,
+            label_vars: vec![],
             doc: None,
         };
         assert_ne!(s1, s2);
@@ -3828,6 +3922,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         assert_ne!(s1, s2);
@@ -3904,6 +3999,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         env.insert_scheme("f".into(), scheme.clone());
@@ -3922,6 +4018,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         child.insert_scheme("x".into(), child_scheme.clone());
@@ -3952,6 +4049,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("b".into(), 0)),
                 variadic: false,
             },
+            label_vars: vec![],
             doc: None,
         };
         let mut state = InferState::new();
@@ -3993,6 +4091,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         let mut state = InferState::new();
@@ -4011,6 +4110,7 @@ mod tests {
             type_vars: vec!["a".into()],
             constraints: vec![],
             body: Type::TypeVar("a".into(), 0),
+            label_vars: vec![],
             doc: None,
         };
         let mut state = InferState::new();
@@ -4337,6 +4437,7 @@ mod tests {
             type_vars: vec![],
             constraints: vec![],
             body: closed_record(fields.clone()),
+            label_vars: vec![],
             doc: None,
         };
 
@@ -4369,6 +4470,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("b".into(), 1)),
                 variadic: false,
             },
+            label_vars: vec![],
             doc: None,
         };
 
@@ -6224,6 +6326,7 @@ mod tests {
                 ret: Box::new(Type::TypeVar("a".into(), 0)),
                 variadic: false,
             },
+            label_vars: vec![],
             doc: None,
         };
 
@@ -6670,7 +6773,10 @@ mod tests {
         let state = InferState::new();
         let numeric = state.class_env.get("Numeric").unwrap();
 
-        assert_eq!(numeric.superclasses, vec!["Equatable".to_string()]);
+        assert_eq!(
+            numeric.superclasses,
+            vec![("Equatable".to_string(), "a".to_string())]
+        );
     }
 
     #[test]
@@ -6679,7 +6785,10 @@ mod tests {
         let state = InferState::new();
         let comparable = state.class_env.get("Comparable").unwrap();
 
-        assert_eq!(comparable.superclasses, vec!["Equatable".to_string()]);
+        assert_eq!(
+            comparable.superclasses,
+            vec![("Equatable".to_string(), "a".to_string())]
+        );
     }
 
     #[test]
