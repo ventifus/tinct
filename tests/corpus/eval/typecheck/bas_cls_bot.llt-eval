@@ -5,7 +5,7 @@
 # The [Err _] arm correctly matches an uninhabited scrutinee type.
 [result: [try [fn [] 42]]
  value: [match result
-   [Ok v]  v
-   [Err _] 0]]
+   [Ok v]:  v
+   [Err _]: 0]]
 === out
 Dict({"result": Variant(Ok, Int(42)), "value": Int(42)})

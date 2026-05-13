@@ -1,6 +1,6 @@
 [match [@[Int String] 42]
-    Int     "int"
-    String  "str"
-    _       "catch-all"]
+    Int:     "int"
+    String:  "str"
+    _:       "catch-all"]
 === out
 inaccessible match arm

@@ -9812,7 +9812,7 @@ mod tests {
     #[test]
     fn test_exhaustive_match_int_string_complete() {
         // Complete coverage: Int and String arms cover the union
-        let result = check("[match [@[Int String] 42] Int \"int\" String \"str\"]");
+        let result = check("[match [@[Int String] 42] Int: \"int\" String: \"str\"]");
         assert!(
             result.is_ok(),
             "Int+String should be exhaustive: {:?}",
@@ -9823,14 +9823,14 @@ mod tests {
     #[test]
     fn test_exhaustive_match_wildcard_covers_all() {
         // Wildcard covers all variants
-        let result = check("[match [@[Int String] 42] _ \"any\"]");
+        let result = check("[match [@[Int String] 42] _: \"any\"]");
         assert!(result.is_ok(), "wildcard should cover all: {:?}", result);
     }
 
     #[test]
     fn test_non_exhaustive_match_missing_variant() {
         // Missing String variant
-        let result = check("[match [@[Int String] 42] Int \"int\"]");
+        let result = check("[match [@[Int String] 42] Int: \"int\"]");
         assert!(
             result.is_err(),
             "should fail typecheck for missing variant, but got Ok"
@@ -9847,7 +9847,7 @@ mod tests {
     fn test_redundant_arm_detected() {
         // Third arm (Int) is redundant — already covered
         let result =
-            check("[match [@[Int String] 42] Int \"int\" String \"str\" Int \"int-again\"]");
+            check("[match [@[Int String] 42] Int: \"int\" String: \"str\" Int: \"int-again\"]");
         assert!(
             result.is_err(),
             "should fail typecheck for redundant arm, but got Ok"
@@ -9863,7 +9863,7 @@ mod tests {
     #[test]
     fn test_inaccessible_arm_after_complete_coverage() {
         // Wildcard after complete Int+String coverage — inaccessible via ⊥
-        let result = check("[match [@[Int String] 42] Int \"int\" String \"str\" _ \"catch\"]");
+        let result = check("[match [@[Int String] 42] Int: \"int\" String: \"str\" _: \"catch\"]");
         assert!(
             result.is_err(),
             "should fail typecheck for inaccessible arm, but got Ok"
@@ -9884,8 +9884,8 @@ mod tests {
         // aren't yet added to the type environment in the basic match checker.
         let result = check(
             "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
-                 [ok: _]    \"ok\"\n\
-                 [err: _]   \"err\"]",
+                 [ok: _]:    \"ok\"\n\
+                 [err: _]:   \"err\"]",
         );
         assert!(
             result.is_ok(),
@@ -9899,7 +9899,7 @@ mod tests {
         // Missing [err: _] variant
         let result = check(
             "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
-                 [ok: _] \"ok\"]",
+                 [ok: _]: \"ok\"]",
         );
         assert!(
             result.is_err(),
@@ -9918,9 +9918,9 @@ mod tests {
         // String literal variants: "ok" | "err" | "pending"
         let result = check(
             "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
-                 \"ok\"      \"is-ok\"\n\
-                 \"err\"     \"is-err\"\n\
-                 \"pending\" \"is-pending\"]",
+                 \"ok\":      \"is-ok\"\n\
+                 \"err\":     \"is-err\"\n\
+                 \"pending\": \"is-pending\"]",
         );
         assert!(
             result.is_ok(),
@@ -9934,8 +9934,8 @@ mod tests {
         // Missing "pending" variant
         let result = check(
             "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
-                 \"ok\"  \"is-ok\"\n\
-                 \"err\" \"is-err\"]",
+                 \"ok\":  \"is-ok\"\n\
+                 \"err\": \"is-err\"]",
         );
         assert!(
             result.is_err(),
@@ -9954,7 +9954,7 @@ mod tests {
         // Non-union scrutinee — match is not checked for exhaustiveness.
         // This match has only Int arm with no wildcard, but since 42 doesn't
         // have a union type, no exhaustiveness error is raised.
-        let result = check("[match 42 Int \"int\"]");
+        let result = check("[match 42 Int: \"int\"]");
         assert!(
             result.is_ok(),
             "non-union scrutinee should not trigger exhaustiveness: {:?}",
@@ -10098,7 +10098,7 @@ mod tests {
     fn test_match_arm_variable_pattern_binds_scrutinee_type() {
         // Pattern::Variable(name) binds the whole scrutinee type.
         // [match 42 n n] — n is bound to IntLiteral(42), arm body returns it.
-        let result = check("[x: [match 42 n n]]");
+        let result = check("[x: [match 42 n: n]]");
         assert!(
             result.is_ok(),
             "variable pattern binding should type-check: {:?}",
@@ -10111,7 +10111,7 @@ mod tests {
         // Pattern::Dict with Variable sub-patterns injects field bindings.
         // [match [ok: 42] [ok: v] v _ 0] — v is in scope in the arm body.
         // Without env extension, v would be "undefined variable".
-        let result = check("[x: [match [ok: 42] [ok: v] v _ 0]]");
+        let result = check("[x: [match [ok: 42] [ok: v]: v _: 0]]");
         assert!(
             result.is_ok(),
             "dict pattern-bound variable should be in scope in arm body: {:?}",
@@ -10124,7 +10124,7 @@ mod tests {
         // For a concrete scrutinee Record, dict pattern fields get the field's type.
         // [match [ok: 42] [ok: v] v _ 0] — scrutinee is Record({ok: IntLiteral(42)}).
         // v should receive IntLiteral(42), so [+ v 1] type-checks as IntLiteral arithmetic.
-        let result = check("[x: [match [ok: 42] [ok: v] [+ v 1] _ 0]]");
+        let result = check("[x: [match [ok: 42] [ok: v]: [+ v 1] _: 0]]");
         assert!(
             result.is_ok(),
             "dict pattern variable with concrete field type should allow arithmetic: {:?}",
@@ -10135,7 +10135,7 @@ mod tests {
     #[test]
     fn test_match_arm_wildcard_no_bindings() {
         // Pattern::Wildcard introduces no bindings — no undefined variable errors.
-        let result = check("[x: [match 42 _ 99]]");
+        let result = check("[x: [match 42 _: 99]]");
         assert!(
             result.is_ok(),
             "wildcard pattern with no bindings should type-check: {:?}",
@@ -10146,7 +10146,7 @@ mod tests {
     #[test]
     fn test_match_arm_nested_dict_pattern_bindings() {
         // Nested patterns: [a: v1  b: v2] binds both v1 and v2.
-        let result = check("[x: [match [a: 1  b: 2] [a: v1  b: v2] [+ v1 v2] _ 0]]");
+        let result = check("[x: [match [a: 1  b: 2] [a: v1  b: v2]: [+ v1 v2] _: 0]]");
         assert!(
             result.is_ok(),
             "nested dict pattern variables should both be in scope: {:?}",
@@ -10644,7 +10644,7 @@ mod tests {
     fn test_i_case3_match_arm_sees_narrowed_scrutinee() {
         // Match with TypeTag patterns — verify that match type-checks without errors.
         // The I-Case3 narrowing means the second arm sees remaining_scrutinee ∩ ~first-tag.
-        let source = "[x: \"ok\"]\n[result: [match x\n    \"ok\" 1\n    \"err\" 2\n    _ 0]]";
+        let source = "[x: \"ok\"]\n[result: [match x\n    \"ok\": 1\n    \"err\": 2\n    _: 0]]";
         let result = check(source);
         assert!(
             result.is_ok(),
@@ -10656,7 +10656,7 @@ mod tests {
     fn test_i_case3_wildcard_remaining_is_never() {
         // After a wildcard arm, remaining_scrutinee becomes Never (catch-all consumed).
         // Any subsequent arm would be unreachable — but we just verify no panic.
-        let source = "[x: 42]\n[result: [match x\n    _ 1\n    1 2]]";
+        let source = "[x: 42]\n[result: [match x\n    _: 1\n    1: 2]]";
         // The second arm after wildcard should be flagged as unreachable (if coverage checking fires)
         // or just succeed. Either way, no panic.
         let _ = check(source);
@@ -10931,8 +10931,8 @@ mod tests {
         let env = doc_env(
             "[myfn: [fn [u@[[x: Int y: String] [x: Int z: Bool]]]\n\
                       [match $u\n\
-                        [x: field] $field\n\
-                        _ 0]]]",
+                        [x: field]: $field\n\
+                        _: 0]]]",
         );
         // The match binds field from the x field. Both union members have x: Int,
         // so field should be inferred as Int (not Unknown).

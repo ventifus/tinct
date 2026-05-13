@@ -3,7 +3,7 @@
 
 [result: [try [fn [] [+ 10 5]]]
 [match result
-  [Ok v] v
-  [Err _] 0]]
+  [Ok v]: v
+  [Err _]: 0]]
 ---
 15

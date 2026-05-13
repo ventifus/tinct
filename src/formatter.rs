@@ -479,6 +479,7 @@ impl<'a> Formatter<'a> {
                 for arm in arms {
                     self.output.push(' ');
                     self.format_pattern(&arm.pattern);
+                    self.output.push(':');
                     // Handle multi-body (Sequential) in arm bodies
                     if let Expr::Sequential(body_exprs) = &arm.body.node {
                         for body_expr in body_exprs {
@@ -811,8 +812,8 @@ impl<'a> Formatter<'a> {
             Expr::Match { scrutinee, arms } => {
                 let mut width = 1 + 5 + 1 + self.measure_expr_width(scrutinee); // [match <scrutinee>
                 for arm in arms {
-                    width += 1 + self.measure_pattern_width(&arm.pattern.node);
-                    // Handle multi-body (Sequential) in arm bodies
+                    width += 1 + self.measure_pattern_width(&arm.pattern.node) + 1; // <space><pattern>:
+                                                                                    // Handle multi-body (Sequential) in arm bodies
                     if let Expr::Sequential(body_exprs) = &arm.body.node {
                         for body_expr in body_exprs {
                             width += 1 + self.measure_expr_width(body_expr);

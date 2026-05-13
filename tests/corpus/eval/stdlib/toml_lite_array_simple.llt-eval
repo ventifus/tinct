@@ -4,7 +4,7 @@
 ---
 
 [match [call %.parse-toml-lite "[[item]]\nid = 1"]
-  [Ok parsed] [get "id" [get 0 [get "item" parsed]]]
-  [Err msg] [error msg]]
+  [Ok parsed]: [get "id" [get 0 [get "item" parsed]]]
+  [Err msg]: [error msg]]
 === out
 Int(1)

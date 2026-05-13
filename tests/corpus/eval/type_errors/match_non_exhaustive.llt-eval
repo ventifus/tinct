@@ -1,4 +1,4 @@
 [match [@[Int String] 42]
-    Int "int"]
+    Int: "int"]
 === out
 non-exhaustive match

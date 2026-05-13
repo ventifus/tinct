@@ -136,8 +136,8 @@ cond-check: [fn@Any [pairs@Dict i@Int condition result]
 
 has?-impl: [fn@Bool [try-result]
     [match try-result
-        [Ok _] true
-        [Err _] false]]
+        [Ok _]: true
+        [Err _]: false]]
 
 remove-impl: [fn@Dict [xs@Dict ks exclude i@Int acc@Dict]
     [builtin-if [gte-impl i [length ks]]
@@ -282,8 +282,8 @@ transpose-impl: [fn@Dict [rows@Dict col-keys]
 
 try-or-impl: [fn [try-result default]
     [match try-result
-        [Ok v] v
-        [Err _] default]]
+        [Ok v]: v
+        [Err _]: default]]
 
 ]
 
@@ -795,8 +795,8 @@ find-deep-try@[doc: "Find-deep try (internal helper)"]: [fn@Any [subtree@Dict ta
 
 find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [result parent@Dict target ks i@Int]
     [match result
-        [Ok v] v
-        [Err _] [find-deep-impl parent target ks [builtin-add i 1]]]]
+        [Ok v]: v
+        [Err _]: [find-deep-impl parent target ks [builtin-add i 1]]]]
 
 find-deep@[doc: "Recursively search for key in nested dicts"]: [fn@Any [xs@Dict target]
     [find-deep-impl xs target [keys xs] 0]]
@@ -1077,8 +1077,8 @@ Err: Err
 # Example: [and-then [Err "bad"] [fn [x] [Ok [* x 2]]]] => [Err "bad"]
 and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass through"]: [fn@Unknown [result f]
     [match result
-        [Ok v] [f v]
-        [Err msg] [Err msg]]]
+        [Ok v]: [f v]
+        [Err msg]: [Err msg]]]
 
 # Map over Ok value, pass Err through.
 # Type: ((a -> b) -> Result a -> Result b)
@@ -1086,8 +1086,8 @@ and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass throug
 # Example: [result-map [fn [x] [* x 2]] [Err "bad"]] => [Err "bad"]
 result-map@[doc: "Map over Ok value, pass Err through"]: [fn@Unknown [f result]
     [match result
-        [Ok v] [Ok [f v]]
-        [Err msg] [Err msg]]]
+        [Ok v]: [Ok [f v]]
+        [Err msg]: [Err msg]]]
 
 # Return Ok value or the default on Err.
 # Type: (a -> Result a -> a)
@@ -1095,8 +1095,8 @@ result-map@[doc: "Map over Ok value, pass Err through"]: [fn@Unknown [f result]
 # Example: [result-or 99 [Err "bad"]] => 99
 result-or@[doc: "Return Ok value or the default on Err"]: [fn@Unknown [default result]
     [match result
-        [Ok v] v
-        [Err _] default]]
+        [Ok v]: v
+        [Err _]: default]]
 
 # Wrap a value in Ok.
 # Type: (a -> Result a)

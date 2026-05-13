@@ -187,46 +187,6 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 ---
 
-## Syntax
-
-### multi-body-positions: Fix match arm syntax to keyed form + multi-body support
-
-**Settled design:** Match arms use `pattern: body` keyed syntax — pattern is the KEY, body is the VALUE. Confirmed in `doc/whatif/completed/pattern-matching.md` (`n@Int: [+ n 1]`) and `doc/whatif/completed/error-patterns.md`. The current parser uses a wrong space-separated pattern-detection approach from an incorrectly implemented sprint.
-
-Grammar: `match_form = { keyword_match ~ value ~ (pattern ~ ":" ~ value)+ }`. **Spec chapters:** `doc/02-syntax.md §3.3.4`, `doc/14-patterns.md`.
-
-**Evaluator, desugar.rs, resolve.rs, typecheck.rs:** No changes needed — all operate on the `MatchArm` AST struct, which is syntax-agnostic.
-
-**Parser sub-tasks** (audit finding: three distinct colon paths must each add a `StackFrame::Match` arm):
-**Design decision — bracket patterns as keys: Option A decided (skeptic + CS, 2026-05-12).** Option B is not viable: `push_expr_to_parent` immediately converts expressions to `Pattern` via `expr_to_pattern_with_guard`; by the time `:` fires the expression is already a Pattern with no Expr to pop. Option A defers pattern conversion: add `pending_pattern_expr: Option<Spanned<Expr>>` as a staging slot; store raw Expr there on arrival; convert to Pattern only when the colon confirms it. `scrutinee.is_some()` distinguishes scrutinee from first pattern — no `has_scrutinee` flag needed. Nested brackets work automatically via the existing stack machinery.
-
-- [ ] Add `pending_pattern_expr: Option<Spanned<Expr>>` field to `StackFrame::Match` (`src/parser.rs:999`): staging slot for a bracket expression that may be a pattern, awaiting colon confirmation before `expr_to_pattern_with_guard` is called
-- [ ] Modify `push_expr_to_parent` Match arm (`src/parser.rs:4500–4508`): when `scrutinee.is_some() && pending_pattern.is_none() && pending_pattern_expr.is_none()`, store incoming expr in `pending_pattern_expr` instead of immediately calling `expr_to_pattern_with_guard`; the colon now triggers conversion, not arrival (`src/parser.rs`)
-- [ ] Add `StackFrame::Match` arm to `Token::Colon` handler (`src/parser.rs:2557`): when colon fires with `pending_pattern_expr.is_some()`, call `expr_to_pattern_with_guard`, store result as `pending_pattern`; error if `pending_pattern_expr.is_none()` ("`:` without a pattern in match form") (`src/parser.rs`)
-- [ ] Add `StackFrame::Match` arm to identifier-with-colon-ahead detection (`src/parser.rs:2871–2941`): store bare identifier in `pending_pattern_expr` (parallel to `StackFrame::Dict` arm that sets `pending_key`) (`src/parser.rs`)
-- [ ] Add `StackFrame::Match` arm to annotated-expr-with-colon detection (`src/parser.rs:2813–2823`): store annotated expression in `pending_pattern_expr` to support `n@Int:` arm syntax (`src/parser.rs`)
-- [ ] Add orphan check to `StackFrame::Match` CloseBracket handler (`src/parser.rs:2386`): if `pending_pattern_expr.is_some()` at close time, error "match pattern must be followed by `:` and a body" (`src/parser.rs`)
-- [x] **Bracket-pattern-as-key design decision** — resolved: Option A with `pending_pattern_expr` staging slot (`src/parser.rs`)
-- [ ] Multi-body match arms: allow the VALUE side of a `pattern:` entry to be `Expr::Sequential` — the parser wraps multiple body expressions in Sequential when the value is a dict-like block; no new parser arms needed (`src/parser.rs`)
-- [ ] Multi-body match arms: allow the VALUE side of a `pattern:` entry to be `Expr::Sequential` — the parser wraps multiple body expressions in Sequential when the value is a dict-like block; no new parser arms needed (`src/parser.rs`)
-
-**Formatter:**
-- [ ] Update `src/formatter.rs` match arm formatting: output `pattern: body` (not `pattern body`); align `:` across all arms in a match form; when body is `Expr::Sequential`, format its expressions indented on separate lines (`src/formatter.rs`)
-
-**Corpus tests (~36 files, all use old space-separated syntax):**
-- [ ] Rewrite all `tests/corpus/eval/match_*.llt-eval` files to keyed `pattern: body` syntax (10 files: `match_variable_binding`, `match_type_int`, `match_type_str`, `match_type_number`, `match_wildcard`, `match_literal_int`, `match_literal_str`, `match_literal_bool`, `match_dict_type`, `match_nested`) (`tests/corpus/eval/`)
-- [ ] Rewrite all `tests/corpus/eval/pattern_matching/*.llt-eval` files to keyed syntax (~20 files: guard tests, dict destructure tests, seq tests, open/closed matching tests) (`tests/corpus/eval/pattern_matching/`)
-- [ ] Rewrite `tests/corpus/eval/match/pin_pattern.llt-eval` and BAS typecheck match tests (`bas_i_case3_three_arms`, `bas_cls_bot`, `rdnf_match_union_simplification`, `match_arm_scope`) to keyed syntax (`tests/corpus/eval/`)
-- [ ] Rewrite `tests/corpus/eval/stdlib/` match-containing tests to keyed syntax (`ok_ctor_no_circular`, `try_result_match_ok`, `try_result_match_err`, `toml_lite_array_*`) (`tests/corpus/eval/stdlib/`)
-- [ ] Fix `tests/cli_tests.rs:2152` inline `[match]` expression to keyed syntax (`tests/cli_tests.rs`)
-
-- [x] Extend `[defmacro ...]` body parsing in `src/parser.rs` — already implemented at `src/parser.rs:2360–2369`
-- [x] Update `doc/02-syntax.md §3.3.4` grammar rule and examples to keyed `pattern: body` syntax — done 2026-05-12
-- [x] Update `doc/14-patterns.md` to keyed `pattern: body` syntax — done 2026-05-12
-- [x] Update all doc/*.md and doc/feature/*.md match examples to keyed syntax — done 2026-05-12
-
----
-
 ## Standard Library Boundary
 
 ### stdlib-boundary: stdlib Rust surface area reduction

@@ -995,14 +995,14 @@ enum StackFrame {
         body: Vec<Spanned<Expr>>,
         span_start: Position,
     },
-    /// Match expression: `[match scrutinee pat1 body1 pat2 body2 ...]`
+    /// Match expression: `[match scrutinee pattern: body ...]`
     Match {
         scrutinee: Option<Spanned<Expr>>,
         arms: Vec<MatchArm>,
-        /// Pending pattern (with optional guard) for the current arm
+        /// Pending pattern expression (before colon) — may be bracket or identifier
+        pending_pattern_expr: Option<Spanned<Expr>>,
+        /// Pending pattern (with optional guard) after conversion from pending_pattern_expr
         pending_pattern: Option<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>)>,
-        /// Pending arm body expression (exactly one per arm)
-        pending_arm_body: Option<Spanned<Expr>>,
         span_start: Position,
     },
     /// Class declaration: `[class [ClassName param...] method: Type ...]`
@@ -1786,14 +1786,14 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Match form: [match scrutinee pat1 body1 pat2 body2 ...]
+                        // Match form: [match scrutinee pattern: body ...]
                         // (Not a match form if the keyword is followed by colon: [match: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::Match {
                             scrutinee: None,
                             arms: Vec::new(),
+                            pending_pattern_expr: None,
                             pending_pattern: None,
-                            pending_arm_body: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -2385,9 +2385,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                     StackFrame::Match {
                         scrutinee,
-                        mut arms,
+                        arms,
+                        pending_pattern_expr,
                         pending_pattern,
-                        pending_arm_body,
                         span_start,
                     } => {
                         if scrutinee.is_none() {
@@ -2396,25 +2396,23 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         }
+                        if pending_pattern_expr.is_some() {
+                            close_bracket_recover!(ParseError {
+                                message: "match pattern must be followed by `:` and a body"
+                                    .to_string(),
+                                span: Some(span),
+                            });
+                        }
                         if pending_pattern.is_some() {
-                            // Finalize the last arm if we have a pending pattern and body
-                            if pending_arm_body.is_none() {
-                                close_bracket_recover!(ParseError {
-                                    message: "match form has unpaired pattern (missing body)"
-                                        .to_string(),
-                                    span: Some(span),
-                                });
-                            }
-                            let (pattern, guard) = pending_pattern.unwrap();
-                            arms.push(MatchArm {
-                                pattern,
-                                guard,
-                                body: Box::new(pending_arm_body.unwrap()),
+                            close_bracket_recover!(ParseError {
+                                message: "match pattern must be followed by a body expression"
+                                    .to_string(),
+                                span: Some(span),
                             });
                         }
                         if arms.is_empty() {
                             close_bracket_recover!(ParseError {
-                                message: "match form requires at least one pattern-body pair"
+                                message: "match form requires at least one pattern: body pair"
                                     .to_string(),
                                 span: Some(span),
                             });
@@ -2611,9 +2609,33 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             None // Pending key is set; next expression will be the value
                         }
                     }
+                    Some(StackFrame::Match {
+                        ref mut pending_pattern_expr,
+                        ref mut pending_pattern,
+                        ..
+                    }) => {
+                        if pending_pattern_expr.is_none() {
+                            Some(ParseError {
+                                message: "`:` without a pattern (expected pattern: body in match)"
+                                    .to_string(),
+                                span: Some(span),
+                            })
+                        } else {
+                            // Convert the pending pattern expression to a Pattern
+                            let expr = pending_pattern_expr.take().unwrap();
+                            match expr_to_pattern_with_guard(expr) {
+                                Ok((pattern, guard)) => {
+                                    *pending_pattern = Some((pattern, guard));
+                                    None // Next expression will be the body
+                                }
+                                Err(e) => Some(e),
+                            }
+                        }
+                    }
                     _ => Some(ParseError {
-                        message: "`:` can only appear in dict, call, class, or instance forms"
-                            .to_string(),
+                        message:
+                            "`:` can only appear in dict, call, class, instance, or match forms"
+                                .to_string(),
                         span: Some(span),
                     }),
                 };
@@ -2811,20 +2833,31 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             let expr =
                                 Spanned::new(Expr::Annotated { name, annotation }, full_span);
                             // If the annotated expression is immediately followed by ':', treat
-                            // it as a dict key candidate (e.g. [x@Number: 42]).
+                            // it as a dict key candidate (e.g. [x@Number: 42]) or match pattern
+                            // candidate (e.g. [n@Int: body]).
                             // After parse_annotation, `i` points to the token right after the
                             // annotation type, so check token_vec[i] directly (not +1).
                             let next_is_colon =
                                 i < token_vec.len() && matches!(&token_vec[i].node, Token::Colon);
                             if next_is_colon {
-                                if let Some(StackFrame::Dict {
-                                    ref mut pending_key,
-                                    ..
-                                }) = stack.last_mut()
-                                {
-                                    *pending_key = Some(expr);
-                                    last_significant_span = Some(full_span);
-                                    continue;
+                                match stack.last_mut() {
+                                    Some(StackFrame::Dict {
+                                        ref mut pending_key,
+                                        ..
+                                    }) => {
+                                        *pending_key = Some(expr);
+                                        last_significant_span = Some(full_span);
+                                        continue;
+                                    }
+                                    Some(StackFrame::Match {
+                                        ref mut pending_pattern_expr,
+                                        ..
+                                    }) => {
+                                        *pending_pattern_expr = Some(expr);
+                                        last_significant_span = Some(full_span);
+                                        continue;
+                                    }
+                                    _ => {}
                                 }
                             }
                             if let Err(push_err) =
@@ -2910,6 +2943,17 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             // Method name in instance: Expr::Str
                             let key_expr = Spanned::new(Expr::Str(s.clone()), span);
                             *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::Match {
+                            ref mut pending_pattern_expr,
+                            ..
+                        }) => {
+                            // Pattern identifier in match: store as VarRef in pending_pattern_expr
+                            let pattern_expr = Spanned::new(Expr::var_ref(s.clone()), span);
+                            *pending_pattern_expr = Some(pattern_expr);
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
@@ -3971,13 +4015,13 @@ fn pop_last_value_from_frame(
         Some(StackFrame::Match {
             ref mut scrutinee,
             ref mut arms,
+            ref mut pending_pattern_expr,
             ref mut pending_pattern,
-            ref mut pending_arm_body,
             ..
         }) => {
-            if let Some(body) = pending_arm_body.take() {
-                // Pop the pending body expression
-                Ok(body)
+            if pending_pattern_expr.is_some() {
+                // Pop the pending pattern expression (before colon)
+                Ok(pending_pattern_expr.take().unwrap())
             } else if pending_pattern.is_some() {
                 // Last push was a pattern (already converted) — can't retroactively transform
                 Err(ParseError {
@@ -4487,46 +4531,38 @@ fn push_expr_to_parent(
             Some(StackFrame::Match {
                 ref mut scrutinee,
                 ref mut arms,
+                ref mut pending_pattern_expr,
                 ref mut pending_pattern,
-                ref mut pending_arm_body,
                 ..
             }) => {
-                // Match expects: [match scrutinee pat1 body1 pat2 body2 ...]
-                // First expression is the scrutinee, then alternating pattern and single body
+                // Match expects: [match scrutinee pattern: body ...]
+                // First expression is the scrutinee
+                // Then bracket expressions or identifiers followed by `:` are patterns
+                // Expressions after `:` are bodies
                 if scrutinee.is_none() {
                     // This is the scrutinee
                     *scrutinee = Some(expr);
                     Ok(())
-                } else if pending_pattern.is_none() {
-                    // No pending pattern — this must be a pattern
-                    match expr_to_pattern_with_guard(expr) {
-                        Ok((pattern, guard)) => {
-                            *pending_pattern = Some((pattern, guard));
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }
-                } else if pending_arm_body.is_none() {
-                    // We have a pending pattern but no body yet — this must be the body
-                    *pending_arm_body = Some(expr);
+                } else if pending_pattern.is_none() && pending_pattern_expr.is_none() {
+                    // No pending pattern or pattern expression — store bracket expressions
+                    // in pending_pattern_expr (they will be converted on colon)
+                    *pending_pattern_expr = Some(expr);
                     Ok(())
-                } else {
-                    // We have both pattern and body — finalize the arm and start a new pattern
+                } else if pending_pattern.is_some() {
+                    // We have a pending pattern (converted) — this must be the body
                     let (pattern, guard) = pending_pattern.take().unwrap();
-                    let body = pending_arm_body.take().unwrap();
                     arms.push(MatchArm {
                         pattern,
                         guard,
-                        body: Box::new(body),
+                        body: Box::new(expr),
                     });
-                    // This expression should be the next pattern
-                    match expr_to_pattern_with_guard(expr) {
-                        Ok((new_pattern, new_guard)) => {
-                            *pending_pattern = Some((new_pattern, new_guard));
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }
+                    Ok(())
+                } else {
+                    // pending_pattern_expr is set but not converted yet — error
+                    Err(ParseError {
+                        message: "match pattern must be followed by `:` and a body".to_string(),
+                        span: Some(expr.span),
+                    })
                 }
             }
             Some(StackFrame::ClassDecl {
@@ -5338,7 +5374,7 @@ mod tests {
     #[test]
     fn test_colon_outside_dict_call() {
         // [fn :] — "fn" not followed by colon directly → Fn form.
-        // Then ":" in Fn frame → "`:` can only appear in dict, call, class, or instance forms" (recovered).
+        // Then ":" in Fn frame → "`:` can only appear in dict, call, class, instance, or match forms" (recovered).
         let output = parse2("[fn :]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
@@ -5349,7 +5385,7 @@ mod tests {
                 || output.errors[0].message.contains("`:` without a key")
                 || output.errors[0]
                     .message
-                    .contains("`:` can only appear in dict, call, class, or instance forms"),
+                    .contains("`:` can only appear in dict, call, class, instance, or match forms"),
             "expected key-related error for [fn :], got: {}",
             output.errors[0].message
         );
@@ -5362,7 +5398,7 @@ mod tests {
         assert!(
             output2.errors[0]
                 .message
-                .contains("`:` can only appear in dict, call, class, or instance forms"),
+                .contains("`:` can only appear in dict, call, class, instance, or match forms"),
             "expected error about colon in wrong context for [type x :], got: {}",
             output2.errors[0].message
         );

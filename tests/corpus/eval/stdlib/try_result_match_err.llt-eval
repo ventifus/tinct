@@ -3,7 +3,7 @@
 
 [result: [try [fn [] [/ 1 0]]]
 [match result
-  [Ok v] v
-  [Err _] -1]]
+  [Ok v]: v
+  [Err _]: -1]]
 ---
 -1

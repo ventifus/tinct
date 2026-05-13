@@ -4,9 +4,9 @@
 # normalize_intersection handles the negation accumulation correctly.
 [describe: [fn [x]
   [match x
-    Int  "integer"
-    Str  "string"
-    _    "other"]]
+    Int:  "integer"
+    Str:  "string"
+    _:    "other"]]
  r1: [describe 42]
  r2: [describe "hello"]
  r3: [describe true]]

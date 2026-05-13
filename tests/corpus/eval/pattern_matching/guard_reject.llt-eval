@@ -1,5 +1,5 @@
 [match -5
-    n@[is: [> n 0]]   "positive"
-    _                  "other"]
+    n@[is: [> n 0]]:   "positive"
+    _:                  "other"]
 === out
 String("other")

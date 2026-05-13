@@ -1,6 +1,6 @@
 # Match multiple fields
 [match [x: 10  y: 20]
-    [x: a  y: b]  [+ a b]
-    _              0]
+    [x: a  y: b]:  [+ a b]
+    _:              0]
 === out
 Int(30)

@@ -1,7 +1,7 @@
 [match 1
-    0    "zero"
-    1    "one"
-    2    "two"
-    _    "many"]
+    0:    "zero"
+    1:    "one"
+    2:    "two"
+    _:    "many"]
 === out
 String("one")
