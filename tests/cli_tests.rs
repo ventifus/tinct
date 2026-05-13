@@ -2597,11 +2597,11 @@ fn literate_weave_replaces_existing_markers() {
     let md_with_old_result = concat!(
         "# Config\n\n",
         "```tinct\n[x: 10]\n```\n",
-        "<!-- tinct-result: {\"x\":999} -->\n",  // Old result that should be replaced
+        "<!-- tinct-result: {\"x\":999} -->\n", // Old result that should be replaced
         "\n",
         "Some prose.\n\n",
         "```tinct\n[y: 20]\n```\n",
-        "<!-- tinct-result: {\"y\":888} -->\n",  // Old result that should be replaced
+        "<!-- tinct-result: {\"y\":888} -->\n", // Old result that should be replaced
         "\n",
     );
     let (path, _dir) = write_temp_md("literate_weave_replace", md_with_old_result);
@@ -2650,12 +2650,12 @@ fn literate_weave_mixed_marker_presence() {
     // Test a file with some blocks having markers and some not
     let md = concat!(
         "```tinct\n[x: 10]\n```\n",
-        "<!-- tinct-result: {\"x\":999} -->\n",  // Has old marker
+        "<!-- tinct-result: {\"x\":999} -->\n", // Has old marker
         "\n",
-        "```tinct\n[y: 20]\n```\n",  // No marker
+        "```tinct\n[y: 20]\n```\n", // No marker
         "\n",
         "```tinct\n[z: 30]\n```\n",
-        "<!-- tinct-result: {\"z\":888} -->\n",  // Has old marker
+        "<!-- tinct-result: {\"z\":888} -->\n", // Has old marker
         "\n",
     );
     let (path, _dir) = write_temp_md("literate_weave_mixed", md);

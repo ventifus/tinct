@@ -563,10 +563,6 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::Duration(nanos) => Ok(visitor.visit_duration(*nanos)),
         value::Value::ClockCap(_) => visitor.visit_clock_cap(),
         value::Value::Timezone(_) => visitor.visit_timezone(),
-        value::Value::HttpConn { .. } => Err(Box::new(error::EvalError::value_not_serializable(
-            "HttpConn".to_string(),
-            ast::Span::origin(),
-        ))),
         value::Value::QuicSession(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "QuicSession".to_string(),
             ast::Span::origin(),
@@ -581,6 +577,12 @@ pub fn visit_value<V: ValueVisitor>(
             "Http3Session".to_string(),
             ast::Span::origin(),
         ))),
+        value::Value::QuicDatagramHandle(_) => {
+            Err(Box::new(error::EvalError::value_not_serializable(
+                "QuicDatagramHandle".to_string(),
+                ast::Span::origin(),
+            )))
+        }
         value::Value::DatagramHandle { .. } => {
             Err(Box::new(error::EvalError::value_not_serializable(
                 "DatagramHandle".to_string(),

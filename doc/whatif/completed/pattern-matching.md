@@ -94,8 +94,7 @@ This matters for three reasons:
 
 3. **Nickel evolved pattern matching across 3 releases:** v1.5 introduced
    record + enum patterns (11 PRs). v1.7 added wildcards, constants, guards,
-   arrays, and or-patterns. Each release was a working system. This phased
-   approach is directly applicable to tinct.
+   arrays, and or-patterns.
 
 4. **Dhall's `merge` is specialized but provides compile-time
    exhaustiveness.** It only works for union elimination — not general
@@ -224,19 +223,19 @@ reference to something already named, in both expression and pattern context:
 
 ```tinct
 [match result
-    $expected  "matched!"   # pin: result must equal current value of `expected`
-    other      "no match"]  # bind: `other` is bound to result's value
+    $expected:  "matched!"   # pin: result must equal current value of `expected`
+    other:      "no match"]  # bind: `other` is bound to result's value
 
 [match event
-    $start-event  [handle-start]
-    $end-event    [handle-end]
-    other         [handle-other other]]
+    $start-event:  [handle-start]
+    $end-event:    [handle-end]
+    other:         [handle-other other]]
 ```
 
 Bare `name` in a pattern = new binding. `$name` in a pattern = match against
 the existing value. `$name` requires `name` to be in scope at the match site —
 an undefined `$name` is a compile-time or runtime error, same as `$name` in
-an expression. Ships with Phase 2 at no extra syntactic cost.
+an expression.
 
 ### Open vs Closed Dict Matching
 
@@ -367,165 +366,6 @@ knows `n` is an `Int` and can reject `n.field` as a type error; after `n@[is: [>
 it cannot. Users who need both should compose: `n@[type: Int  is: [> _ 0]]:` gives
 type narrowing AND the value guard.
 
-## Phased Adoption
-
-### Phase 1: Type Predicates (No Grammar Change)
-
-Add type predicate builtins alongside existing `seq?`:
-
-```
-int?   float?   num?   str?   bool?   null?   dict?   fn?
-```
-
-Each returns `Bool`. Typed as `Any → Bool`. These are useful with `cond`
-and `if` for simple type dispatch without pattern matching:
-
-```tinct
-[cond [
-    [[dict? x]  [map-dict f x]]
-    [[seq? x]   [map-seq f x]]
-    [true       [error "expected Dict or Seq"]]
-]]
-```
-
-This delivers immediate value: type dispatch in tinct without grammar
-changes. It also establishes the runtime type-checking primitives that
-`match` will use internally.
-
-### Phase 2: Basic `[match]` — Type and Literal Patterns
-
-Add the `match` keyword to the grammar. Support:
-
-- **Type patterns:** `Int`, `Str`, `Dict`, `Seq`, `Bool`, `Float`, `Null`, `Fn`
-- **Literal patterns:** `42`, `true`, `"hello"`, `"quoted string"`
-- **Wildcard:** `_`
-- **Variable binding:** `x` (binds the scrutinee to `x`)
-
-```tinct
-[match x
-    Int:  [+ x 1]
-    Str:  i"got: $x"
-    _:    x]
-
-[match code
-    200:  "ok"
-    404:  "not-found"
-    500:  "server-error"
-    _:    "unknown"]
-```
-
-No destructuring yet — patterns are flat. This is the minimal useful
-`match` that replaces `type-of` + `=` chains.
-
-**Implementation:**
-- Parser: `match` keyword in denylist; dedicated match-arm parsing mode
-- `Expr::Match` AST node with `MatchArm` and `Pattern` types
-- Evaluator: `eval_match()` — evaluate scrutinee, test arms sequentially, bind pattern variables
-- Type checker: `infer_match()` — infer scrutinee type, narrow per arm, unify result types
-
-### Phase 3: Dict and Seq Destructuring
-
-Add structural patterns:
-
-- **Dict patterns:** `[key1: v1  key2: v2]` — match keys, bind values
-- **Open dict patterns:** `[key: v ...]` — match at least these keys
-- **Seq patterns:** `[seq head tail]` — destructure cons cell
-- **Nested patterns:** patterns inside patterns
-
-```tinct
-# Destructure try result
-[match [try risky]
-    [ok: v]    v
-    [err: msg] [error msg]]
-
-# Nested destructure
-[match event
-    [type: "click"  target: [id: id]]  [handle-click id]
-    [type: "hover"  target: [id: id]]  [handle-hover id]
-    _                                   "ignored"]
-
-# Seq head/tail
-[match xs
-    [seq h t]  [process h t]
-    _          "empty"]
-```
-
-This is the phase that enables self-hosting: tinct-level dispatch wrappers
-can destructure dicts and seqs, delegating to Rust-native type-specific
-implementations.
-
-**Dict pattern semantics:** A dict pattern `[k1: v1  k2: v2]` matches a
-materialized dict if keys `k1` and `k2` exist. By default, extra keys are
-allowed (open matching) — this is consistent with row polymorphism's open
-records. Closed matching `[k1: v1  k2: v2 |]` (or similar syntax) rejects
-extra keys.
-
-**Lazy dict matching:** Only the keys named in the pattern are accessed.
-Other keys remain as unevaluated thunks. The bound variables (`v1`, `v2`)
-are thunks — they are not forced until the body references them.
-
-### Phase 4: Guards and Or-Patterns
-
-Add:
-
-- **Guards:** `n@[is: pred]:` — `is:` annotation key with a `Fn@Bool [Any]` predicate; arm fires when predicate returns `true`
-- **Or-patterns:** `pat1 | pat2:` — `Pipe` node as key; match if either sub-pattern matches (both must bind the same set of variables)
-
-```tinct
-[match x
-    n@[is: [> _ 0]]:   "positive"
-    n@[is: [< _ 0]]:   "negative"
-    _:                  "zero"]
-
-[match result
-    [ok: v] | [success: v]:   v       # or-pattern: accept either key
-    [err: msg]:               [error msg]]
-```
-
-### Phase 5: Exhaustiveness Checking
-
-Exhaustiveness is checked **in the type checker** when `infer_match()`
-determines that the scrutinee's type is a `Type::Union`. The type checker
-has access to both declared types (via TypeAssert) and inferred types
-(from prior unification or narrowing).
-
-```tinct
-# Inferred type — exhaustiveness checked automatically
-result: [try risky]    # inferred: [ok: a] | [err: Str]
-[match result
-    [ok: v]:    v
-    [err: msg]: [error msg]]    # ✓ all variants covered
-
-# Explicit TypeAssert — same behavior
-[match [@Result res]
-    [ok: v]:    v]              # ✗ type error: [err: Str] not covered
-```
-
-The type checker's `infer_match()` extracts the variant set from the
-scrutinee's union type and performs Maranget-style coverage analysis on
-the arm patterns:
-
-- Type-tag arms (`n@Int:`) cover the `Int` variant
-- Dict pattern arms (`[ok: v]:`) cover the `[ok: a]` structural variant
-- Wildcard `_:` covers all remaining variants
-- Or-pattern arms (`p1 | p2:`) cover both sub-patterns
-- `is:` predicate arms are **opaque** — they do not contribute to coverage
-  (the guard is a runtime condition, not a type constraint)
-
-Without a union-typed scrutinee, no coverage analysis is performed —
-the match is dynamically correct but statically unverified. A runtime
-`MatchError` fires if no arm matches. This is honest: coverage can only
-be statically verified when the scrutinee type is known to be a union.
-
-- **Unreachable arms:** an arm after a wildcard `_:` is flagged as a type warning.
-- **`is:` arms and coverage:** `n@[type: Int  is: [> _ 0]]:` covers the `Int`
-  variant for coverage purposes (the type constraint `@Int` is structural; the
-  `is:` predicate is an additional runtime filter that does not affect which
-  variants are covered). This treatment of guards as opaque for coverage
-  purposes follows Karachalias et al. (2015): guards are irrefutable with
-  respect to type-level exhaustiveness — they may cause runtime match failure
-  but cannot be statically proven to cover or exclude a type variant.
-
 ### Interaction with `access-pipeline` (`|` operator)
 
 `access-pipeline` (see `doc/whatif/access-pipeline.md`) lands **before** pattern matching.
@@ -540,9 +380,9 @@ form becomes a single-argument function that `|` flatMaps over a Seq:
 
 ```tinct
 $events | [each] | [match _
-    [type: "click"  target: t]  [handle-click t]
-    [type: "hover"  target: t]  [handle-hover t]
-    _                            "ignored"]
+    [type: "click"  target: t]:  [handle-click t]
+    [type: "hover"  target: t]:  [handle-hover t]
+    _:                           "ignored"]
 | [collect]
 ```
 
@@ -579,8 +419,8 @@ This enables matching on lists (integer-keyed dicts) by position:
 
 ```tinct
 [match pair
-    [0: a  1: b]  [use a b]
-    _              [error "expected pair"]]
+    [0: a  1: b]:  [use a b]
+    _:             [error "expected pair"]]
 ```
 
 **Implementation note:** wait for `access-pipeline` to land first (it adds
@@ -610,22 +450,19 @@ levels of granularity that are all equivalent:
 ```tinct
 # Fully spelled out — all three levels of nesting explicit
 [match config
-    [cluster: [primary: [tls: [cert: cert  key: key]]]]
-    [connect-tls cert key]
-    _ [error "no tls"]]
+    [cluster: [primary: [tls: [cert: cert  key: key]]]]:  [connect-tls cert key]
+    _:                                                     [error "no tls"]]
 
 # Path-key to the subtree node — DRY when the subtree has multiple fields
 [match config
-    [cluster.primary.tls: [cert: cert  key: key]]
-    [connect-tls cert key]
-    _ [error "no tls"]]
+    [cluster.primary.tls: [cert: cert  key: key]]:  [connect-tls cert key]
+    _:                                               [error "no tls"]]
 
 # Mixed: path-to-node + path-to-leaf in the same pattern arm
 [match config
     [cluster.primary.tls: [cert: cert  key: key]
-     cluster.primary.host: h]
-    [connect-tls cert key h]
-    _ [error "no tls"]]
+     cluster.primary.host: h]:                      [connect-tls cert key h]
+    _:                                               [error "no tls"]]
 ```
 
 **Shared-prefix merging:** When two path-keys share a prefix, they merge
@@ -666,27 +503,6 @@ expressions, not pattern expressions. `[key: v]` in a pattern is parsed in
 pattern mode — the lexer never confuses it with `$a[key]`. No changes to
 pattern parsing are needed when bracket access is removed.
 
-### Prerequisites
-
-- **Phase 1:** None — type predicates are standalone builtins
-- **Phase 2:** `match` added to keyword denylist. `Expr::Match` parser special form with dedicated match-arm parsing mode (context-sensitive key identity handled directly in the parser). Type predicates (Phase 1) complete.
-- **Phase 3:** Phase 2 complete. Let binding (A1) for multi-expression arm bodies. Seq type stable (`Value::Seq` in evaluator). Integer-key dict patterns and path-key integer segments: wait for `access-pipeline` (adds integer dot access to the evaluator). Path-key pattern desugaring (string paths): can land with Phase 3 — pure parser-level transformation.
-- **Phase 4:** Phase 3 complete.
-- **Phase 5:** Union types (B1) + ADTs (C1) + Pattern matching Phase 3 for exhaustiveness analysis.
-
-### Trigger
-
-Phase 1 (type predicates): adopt immediately — these are independently
-useful, trivial to implement, and have no grammar impact.
-
-Phase 2 (basic match): adopt after Phase 1. Dual-dispatch builtins
-already need tinct-level wrappers, and `type-of` + `=` chains are
-already a common pattern.
-
-Phase 3 (destructuring): adopt after Phase 2. Self-hosting
-dual-dispatch builtins and `try` result handling both require
-destructuring — it is the critical enabler.
-
 ## References
 
 **Pattern matching compilation:**
@@ -695,7 +511,7 @@ destructuring — it is the critical enabler.
   pattern matching in lazy functional languages.
 - Maranget, L. (2008). "Compiling pattern matching to good decision
   trees." In *ML '08*, pp. 35–46. ACM. — Optimal decision trees for
-  pattern compilation. Directly applicable to Phase 2+ compilation.
+  pattern compilation.
 - Karachalias, G., Schrijvers, T., Vytiniotis, D. & Peyton Jones, S.
   (2015). "GADTs meet their match: pattern-matching warnings that
   account for GADTs, guards, and laziness." In *ICFP '15*, pp. 424–436.

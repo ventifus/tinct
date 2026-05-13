@@ -1,0 +1,182 @@
+# docgen.llt — Generate per-module Markdown docs for all stdlib modules.
+#
+# Walks every .llt file under stdlib/, extracts exported bindings that carry
+# an @[doc: "..."] annotation, and writes one .md file per module into %docdir.
+# Emits an index to stdout (redirected to doc/11b-reference.md by the justfile).
+#
+# Usage (from project root via justfile):
+#   just docgen
+
+--- caps: [%root: @DirCap  %docdir: @DirCap]
+
+[
+  strings: [include %libdir "strings.llt"]
+  path:    [include %libdir "path.llt"]
+]
+
+[
+
+# ── File Discovery ────────────────────────────────────────────────────────────
+
+# Collect all .llt paths under a directory prefix (relative to %root).
+# Returns a positional dict of path strings like "stdlib/strings.llt".
+scan-dir: [fn@Dict [prefix@String acc@Dict]
+  [entries: [collect [list-dir %root prefix]]]
+  [reduce
+    [fn [files@Dict entry@Dict]
+      [full: [str prefix "/" entry.name]]
+      [if [= entry.type "dir"]
+        [scan-dir full files]
+        [if [ends-with? entry.name ".llt"]
+          [append files full]
+          files]]]
+    acc
+    entries]]
+
+llt-files: [sorted [scan-dir "stdlib" []]]
+
+# ── Bracket Matching ──────────────────────────────────────────────────────────
+
+# Find the index of the ']' that closes the '[' at position 0 of s.
+# Call with depth=1, i=1 (already stepped past the opening '[').
+# Returns -1 if unmatched or s is exhausted.
+# fn@Int annotation omitted: the type checker can't unify Int against the union
+# (-1 | recursive-result) that self-recursion in letrec produces. The typecheck-completeness
+# sprint (bidirectional checking) will fix this class of inference gap.
+find-close: [fn [s@String depth@Int i@Int]
+  [c: [str-slice s i [trunc [+ i 1]]]]
+  [if [>= i [length s]]
+    -1
+    [if [= c "["]
+      [find-close s [trunc [+ depth 1]] [trunc [+ i 1]]]
+      [if [= c "]"]
+        [if [= depth 1] i [find-close s [trunc [- depth 1]] [trunc [+ i 1]]]]
+        [find-close s depth [trunc [+ i 1]]]]]]]
+
+# ── String Helpers ────────────────────────────────────────────────────────────
+
+# Text before the first occurrence of needle (returns full s if absent).
+before-first: [fn@String [needle@String s@String]
+  [get 0 [split needle s]]]
+
+# Text after the first occurrence of needle (returns "" if absent).
+# Uses str-slice to avoid Seq/Dict mismatch with split results.
+after-first: [fn@String [needle@String s@String]
+  [before: [before-first needle s]]
+  [start:  [trunc [+ [length before] [length needle]]]]
+  [if [= before s]
+    ""
+    [str-slice s start [length s]]]]
+
+# ── Type Signature Extraction ─────────────────────────────────────────────────
+
+# Extract the return-type token from text immediately following "fn@".
+#   "String [...]"     → "String"
+#   "[Ok Err] [...]"   → "[Ok Err]"
+# Bracketed forms use balanced bracket matching; bare words take up to " [".
+extract-return: [fn@String [s@String]
+  [t:     [trim s]]
+  [close: [find-close t 1 1]]
+  [if [starts-with? t "["]
+    [if [= close -1] t [str-slice t 0 [trunc [+ close 1]]]]
+    [before-first " [" t]]]
+
+# Extract the raw parameter list content from text after "fn@".
+# "String [x@Int y@String] body" → "x@Int y@String"
+extract-params: [fn@String [s@String]
+  [ret:       [extract-return s]]
+  [after-ret: [trim [str-slice s [length ret] [length s]]]]
+  [close:     [find-close after-ret 1 1]]
+  [if [starts-with? after-ret "["]
+    [if [= close -1] "" [str-slice after-ret 1 close]]
+    ""]]
+
+# Build a compact type-signature display string from a source line.
+# Lines without "fn@" are labelled "(value)".
+sig-from-line: [fn@String [line@String]
+  [after-fn: [after-first "fn@" line]]
+  [ret:      [extract-return after-fn]]
+  [params:   [extract-params after-fn]]
+  [if [not [str-contains? line "fn@"]]
+    "(value)"
+    [if [= params ""]
+      [str "fn@" ret]
+      [str "fn@" ret " [" params "]"]]]]
+
+# ── Doc Entry Parsing ─────────────────────────────────────────────────────────
+
+# Parse a single source line for a @[doc: "..."] annotation.
+# Returns [name: String  sig: String  doc: String] on match, or [] on no match.
+parse-doc-line: [fn@Dict [line@String]
+  [raw-key:   [trim [before-first "@[doc:" line]]]
+  [key-name:  [if [starts-with? raw-key "["] [str-slice raw-key 1 [length raw-key]] raw-key]]
+  [after-doc: [after-first "doc: \"" line]]
+  [doc-text:  [before-first "\"" after-doc]]
+  [sig-text:  [sig-from-line line]]
+  [if [not [str-contains? line "@[doc:"]]
+    []
+    [name: key-name  doc: doc-text  sig: sig-text]]]
+
+# Extract all annotated bindings from a file's text.
+# collect materialises the lazy filtered Seq into a Dict so length/empty? work.
+extract-docs: [fn@Dict [text@String]
+  [collect [filter
+    [fn@Bool [e@Dict] [has? e "name"]]
+    [map parse-doc-line [split "\n" text]]]]]
+
+# ── Markdown Rendering ────────────────────────────────────────────────────────
+
+# Strip the "stdlib/" prefix and ".llt" suffix to get the module name.
+mod-name: [fn@String [full-path@String]
+  [before-first ".llt" [after-first "stdlib/" full-path]]]
+
+# Convert a module name to a flat filename-safe string (replace "/" with "-").
+# Uses split/join to avoid the type checker arity mismatch on replace (builtin-type-audit gap).
+mod-filename: [fn@String [name@String]
+  [join "-" [split "/" name]]]
+
+# Render one doc entry as a Markdown subsection.
+render-entry: [fn@String [e@Dict]
+  [str
+    "\n### `" e.name "`\n\n"
+    e.doc "\n\n"
+    "```tinct\n"
+    e.sig "\n"
+    "```\n"]]
+
+# ── Per-Module File Writing ───────────────────────────────────────────────────
+
+# Write content to %docdir/<filename>.md and return name.
+# Filename uses mod-filename to flatten slashes (e.g. "formatter/compact" → "formatter-compact.md").
+# Sequential binding forces the write via equality check:
+# [= w w] materializes w (triggering the write), always returns true.
+# [if true name name] always returns name. Lazy-evaluation idiom for "force side effect then return".
+# Note: _ is avoided because tinct's implicit lambda desugaring treats _ specially.
+write-module-file: [fn@String [name@String content@String]
+  [w: [write %docdir [str [mod-filename name] ".md"] content]]
+  [if [= w w] name name]]
+
+# Write documentation for one stdlib file to %docdir and return the module name,
+# or "" if the file has no annotated bindings.
+write-module: [fn@String [full-path@String]
+  [text: [slurp [open %root full-path "r"]]]
+  [docs: [extract-docs text]]
+  [name: [mod-name full-path]]
+  [if [empty? docs]
+    ""
+    [write-module-file name
+      [str "# " name "\n"
+           [join "" [map render-entry docs]]
+           "\n"]]]]
+
+]
+
+[emit [str
+  "# tinct stdlib Reference\n\n"
+  "Auto-generated from `@[doc: \"...\"]` annotations in `stdlib/`.\n\n"
+  "## Modules\n\n"
+  [join ""
+    [map
+      [fn [name] [if [= name ""] "" [str "- [" name "](lib/" [mod-filename name] ".md)\n"]]]
+      [map write-module llt-files]]]
+  "\n"]]

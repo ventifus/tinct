@@ -1830,10 +1830,7 @@ fn infer_expr(
                 params: params
                     .iter()
                     .map(|p| {
-                        let kind = existing_param_kinds
-                            .get(p)
-                            .cloned()
-                            .unwrap_or(Kind::Type);
+                        let kind = existing_param_kinds.get(p).cloned().unwrap_or(Kind::Type);
                         (p.clone(), kind)
                     })
                     .collect(),

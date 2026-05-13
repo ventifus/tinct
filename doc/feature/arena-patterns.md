@@ -19,8 +19,9 @@ Arena allocation provides:
 5. **Copy handles** — `ThunkId(u32)` is `Copy`, eliminating `Rc::clone`
    overhead in environment slots, thunk states, and value constructors.
 
-**Implementation status**: Phase 2 complete (completed 2026-05-05). Phase 3
-(direct arena ownership of thunks) deferred — see §Implementation below.
+## Supersession Notes
+
+- **Phase 3 target state**: The §Design section describes full `ThunkId`-in-Value migration (`BuiltinFn = fn(BuiltinArgs, &mut ThunkArena) -> EvalResult<ThunkId>`, `Value::Dict(IndexMap<Key, ThunkId>)`). The §Implementation section describes both the Phase 2 intermediate form (`Vec<Rc<Thunk>>`) and the Phase 3 target.
 
 ## Design
 
@@ -226,15 +227,9 @@ migration, breaking the sharing invariant.
 
 ## Implementation
 
-**Status**: The current implementation is Phase 2, not the full Phase 3 design
-described above in §Design. The arena stores `Rc<Thunk>` entries, not direct
-thunk ownership. Phase 3 (migrating from `Vec<Rc<Thunk>>` to `Vec<Thunk>` with
-`ThunkId(u32)` handles) is deferred.
-
-Phase 2 provides the arena infrastructure and migration framework without
-changing the thunk reference type. This allows incremental adoption: the arena
-is in place, but thunks remain `Rc<Thunk>` until Phase 3 completes the
-transition to index-based handles.
+Phase 2 provides the arena infrastructure and migration framework. The arena
+stores `Rc<Thunk>` entries; thunks remain `Rc<Thunk>` until Phase 3 completes
+the transition to index-based handles.
 
 ### Phase 2 Implementation (current)
 
@@ -243,10 +238,10 @@ provides allocation/deallocation infrastructure. Migration between sections uses
 the same translation table pattern described in §Design, but translates
 `Rc<Thunk>` pointers rather than `ThunkId` indices.
 
-### Phase 3 Implementation (deferred)
+### Phase 3 Implementation
 
 The §Design section above describes the Phase 3 target: `ThunkId(u32)` handles,
-`Vec<Thunk>` arena storage, zero `Rc` overhead. When Phase 3 is implemented:
+`Vec<Thunk>` arena storage, zero `Rc` overhead. Phase 3 changes:
 
 - Every `Rc<Thunk>` becomes `ThunkId(u32)`
 - Sharing is via copying the `u32`
@@ -258,14 +253,13 @@ The §Design section above describes the Phase 3 target: `ThunkId(u32)` handles,
 All pattern matches on `Value` variants and every builtin function signature
 will change.
 
-### Deferred: If Deletion Is Ever Needed
+### Individual Thunk Deletion
 
-If a future feature requires individual thunk deletion (e.g., garbage
-collection within long-running REPL sessions), migrate from `Vec<Thunk>` to
-`thunderdome::Arena<Thunk>`. thunderdome's generation counters detect stale
-handles, and the API is compatible. This is a localized change to
-`ThunkArena`'s internals — `ThunkId` would become `thunderdome::Index`, and
-the rest of the codebase would not change.
+When individual thunk deletion is needed (e.g., garbage collection within
+long-running REPL sessions), `ThunkArena` uses `thunderdome::Arena<Thunk>`.
+thunderdome's generation counters detect stale handles, and the API is
+compatible with the `ThunkId` abstraction — `ThunkId` becomes
+`thunderdome::Index`, and the rest of the codebase does not change.
 
 ## References
 

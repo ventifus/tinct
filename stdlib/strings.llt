@@ -43,6 +43,24 @@ str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
 [
 
 # ============================================================================
+# Case Conversion
+# ============================================================================
+
+# Convert a string to uppercase by mapping str-to-upper-char over each character.
+# Type: (String -> String)
+# Example: [upper "hello"] => "HELLO"
+# Example: [upper "café"] => "CAFÉ"
+upper@[doc: "Convert a string to uppercase"]: [fn@String [s@String]
+    [str-map-chars [fn [c] [str-to-upper-char c]] s]]
+
+# Convert a string to lowercase by mapping str-to-lower-char over each character.
+# Type: (String -> String)
+# Example: [lower "HELLO"] => "hello"
+# Example: [lower "CAFÉ"] => "café"
+lower@[doc: "Convert a string to lowercase"]: [fn@String [s@String]
+    [str-map-chars [fn [c] [str-to-lower-char c]] s]]
+
+# ============================================================================
 # String Padding
 # ============================================================================
 

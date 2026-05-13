@@ -314,15 +314,21 @@ between: [fn@[return: Fn@Bool [a]
 #        Return a predicate testing whether a value lies in [lo, hi)
 ```
 
-**Label TypeVar annotations.** A string literal as an annotation value introduces a label TypeVar of kind `Label`. The string names the TypeVar (not the field):
+**Label TypeVar annotations.** Two forms introduce a label TypeVar of kind `Label`:
+
+- `key@Label` — anonymous label TypeVar; the type checker generates a fresh name internally. Use when the label name is not referenced elsewhere in the type.
+- `key@[label: l]` — named label TypeVar `l`; use when the same label must appear in multiple type positions (e.g., two parameters that must access the same field).
 
 ```tinct
-# key@"l" — parameter `key` bound to a fresh label TypeVar named `l`
-[fn [key@"l"  dict] [get key dict]]
-# inferred: ∀ (l : Label) d a. HasField l d a => StringLiteral(l) → d → a
+# Anonymous form — get/get-or use this
+[fn@[return: a] [key@Label  dict@d] [get key dict]]
+# inferred: ∀ (l : Label) d a. HasField l d a => Label(l) → d → a
+
+# Named form — when the same label appears twice
+[fn@[return: a] [key@[label: l]  default@a  dict@d] ...]
 ```
 
-See [Type Inference](06-type-inference.md) §Higher-Kinded Types and Type Classes §HasField for the `HasField` constraint that label TypeVars enable.
+`HasField` constraints are never written explicitly — the type checker generates them from the label annotation on `key`. See [Type Inference](06-type-inference.md) §Higher-Kinded Types and Type Classes §HasField.
 
 ### Type Expressions
 

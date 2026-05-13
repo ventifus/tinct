@@ -1267,7 +1267,7 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        for name in ["upper", "lower", "trim", "trim-start", "trim-end"] {
+        for name in ["trim", "trim-start", "trim-end"] {
             env.insert(
                 name.to_string(),
                 Type::Function {
@@ -1278,12 +1278,45 @@ impl TypeEnv {
             );
         }
 
+        // str-to-upper-char / str-to-lower-char: String → String (single-char primitives)
+        for name in ["str-to-upper-char", "str-to-lower-char"] {
+            env.insert(
+                name.to_string(),
+                Type::Function {
+                    params: vec![(None, Type::Str)],
+                    ret: Box::new(Type::Str),
+                    variadic: false,
+                },
+            );
+        }
+
+        // str-map-chars: (String → String) → String → String
+        // Typed with Unknown for the function param since we lack a Fn type in the type env.
+        env.insert(
+            "str-map-chars".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Unknown), (None, Type::Str)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+
         // str-index-of: String → String → Int
         env.insert(
             "str-index-of".to_string(),
             Type::Function {
                 params: vec![(None, Type::Str), (None, Type::Str)],
                 ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
+
+        // regex-match?: String → String → Bool
+        env.insert(
+            "regex-match?".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str), (None, Type::Str)],
+                ret: Box::new(Type::Bool),
                 variadic: false,
             },
         );

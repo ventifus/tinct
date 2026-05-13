@@ -18,6 +18,12 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Inference Completeness](inference-completeness.md) | SCC-based binding group analysis (Tarjan) within DICT-GEN; independent generalization of non-mutually-recursive entries; polymorphic access through visible nested dicts; variadic params as `Seq(T)`; typeclass-based heterogeneous variadics (FormatResult pattern) |
 | [Advanced Typeclass Extensions](advanced-typeclasses.md) | 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
 
+## Reflection and Metaprogramming
+
+| Proposal | Summary |
+|----------|---------|
+| [Runtime Reflection — Annotations as Value Metadata](runtime-reflection.md) | `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime; `describe` inspects any value; `render` round-trips value → tinct source; `module-docs` replaces manual string parsing in docgen; enables REPL `:describe`, LSP doc hover, and metaprogramming |
+
 ## Internal Integrity
 
 | Proposal | Summary |

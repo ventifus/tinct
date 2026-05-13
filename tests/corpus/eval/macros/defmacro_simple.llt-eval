@@ -1,5 +1,5 @@
 # Simple identity macro
-[defmacro id [fn [args] [get 0 args]]]
+[defmacro id [args] [get 0 args]]
 [id 42]
 === out
 Int(42)

@@ -1,4 +1,5 @@
-# upper : convert string to uppercase
-[upper "hello"]
+# str-to-upper-char : convert a character to uppercase (single-char primitive)
+# upper/lower are now stdlib functions in strings.llt using str-map-chars
+[str-to-upper-char "h"]
 === out
-String("HELLO")
+String("H")

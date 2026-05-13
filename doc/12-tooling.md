@@ -505,7 +505,7 @@ tinct run --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
 
 Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program can call `[open %data "config.json" "r"]` but cannot open files outside `/var/data` via `%data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
 
-**`--cap-net NAME=ENTRY`** — Inject a network capability as `%NAME` in the root environment. `ENTRY` is currently a stub; in future it will accept a connector dict or protocol specifier.
+**`--cap-net NAME=ENTRY`** — Inject a network capability as `%NAME` in the root environment. `ENTRY` accepts a connector dict or protocol specifier.
 
 **`--cap-file NAME=PATH:MODE`** — Pre-open a single file and inject it as `%NAME` (a Handle) in the root environment. This is a pinpoint capability: the script can only access that one file, not the directory it lives in. Repeatable; each flag adds one Handle.
 
@@ -584,13 +584,13 @@ The hash is a quoted string with the format `"algo:hexdigest"`. The algorithm na
 
 **Default algorithm: BLAKE3.** BLAKE3 (O'Connor et al. 2020) is the default and preferred algorithm. Against quantum adversaries, Grover's algorithm halves the bit-security of any hash function. BLAKE3 outputs 256 bits, giving 128 bits of quantum security — well above the threshold considered infeasible even with near-term quantum hardware. BLAKE3 is also significantly faster than SHA-2 or SHA-3, though for typical config files (< 1 MB) this is imperceptible.
 
-**Currently supported algorithm:** Only BLAKE3 is supported. The hash prefix determines the algorithm:
+**Supported algorithm:** BLAKE3. The hash prefix determines the algorithm:
 
 | Prefix | Algorithm | Hex length | Quantum security |
 |--------|-----------|-----------|-----------------|
 | `blake3:` | BLAKE3 | 64 chars (256 bits) | 128 bits |
 
-Additional algorithms (SHA3-256, SHA3-512, SHA-256) may be added in the future for interoperability. `tinct hash` outputs BLAKE3.
+`tinct hash` outputs BLAKE3. The verifier accepts `sha256:`, `sha3-256:`, and `sha3-512:` prefixes for interoperability with hashes produced by other tools.
 
 The hex digest must be exactly the correct length for the algorithm. Shorter or longer strings are rejected with a clear error before any file access.
 

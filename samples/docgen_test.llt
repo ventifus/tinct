@@ -1,0 +1,99 @@
+# Diagnostic: test parse-doc-line on lines that should and shouldn't appear
+
+[
+  strings: [include %libdir "strings.llt"]
+]
+
+[
+
+before-first: [fn@String [needle@String s@String]
+  [get 0 [split needle s]]]
+
+after-first: [fn@String [needle@String s@String]
+  [before: [before-first needle s]]
+  [start:  [trunc [+ [length before] [length needle]]]]
+  [if [= before s]
+    ""
+    [str-slice s start [length s]]]]
+
+find-close: [fn [s@String depth@Int i@Int]
+  [c: [str-slice s i [trunc [+ i 1]]]]
+  [if [>= i [length s]]
+    -1
+    [if [= c "["]
+      [find-close s [trunc [+ depth 1]] [trunc [+ i 1]]]
+      [if [= c "]"]
+        [if [= depth 1] i [find-close s [trunc [- depth 1]] [trunc [+ i 1]]]]
+        [find-close s depth [trunc [+ i 1]]]]]]]
+
+extract-return: [fn@String [s@String]
+  [t:     [trim s]]
+  [close: [find-close t 1 1]]
+  [if [starts-with? t "["]
+    [if [= close -1] t [str-slice t 0 [trunc [+ close 1]]]]
+    [before-first " [" t]]]
+
+extract-params: [fn@String [s@String]
+  [ret:       [extract-return s]]
+  [after-ret: [trim [str-slice s [length ret] [length s]]]]
+  [close:     [find-close after-ret 1 1]]
+  [if [starts-with? after-ret "["]
+    [if [= close -1] "" [str-slice after-ret 1 close]]
+    ""]]
+
+sig-from-line: [fn@String [line@String]
+  [after-fn: [after-first "fn@" line]]
+  [ret:      [extract-return after-fn]]
+  [params:   [extract-params after-fn]]
+  [if [not [str-contains? line "fn@"]]
+    "(value)"
+    [if [= params ""]
+      [str "fn@" ret]
+      [str "fn@" ret " [" params "]"]]]]
+
+parse-doc-line: [fn@Dict [line@String]
+  [key-name:  [trim [before-first "@[doc:" line]]]
+  [after-doc: [after-first "doc: \"" line]]
+  [doc-text:  [before-first "\"" after-doc]]
+  [sig-text:  [sig-from-line line]]
+  [if [not [str-contains? line "@[doc:"]]
+    []
+    [name: key-name  doc: doc-text  sig: sig-text]]]
+
+# Test lines — one that appears, one that should but doesn't
+line-abs:   "abs@[doc: \"Absolute value\"]: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]"
+line-sign:  "sign@[doc: \"Sign of number (-1, 0, or 1)\"]: [fn@Int [x@Number]"
+line-uint8: "UInt8@[doc: \"Unsigned 8-bit integer (0-255)\"]:  [type Int@[is: [between 0 255]]]"
+line-pi:    "pi@[doc: \"Pi: ratio of a circle's circumference to its diameter\"]: 3.141592653589793"
+
+entry-abs:   [parse-doc-line line-abs]
+entry-sign:  [parse-doc-line line-sign]
+entry-uint8: [parse-doc-line line-uint8]
+entry-pi:    [parse-doc-line line-pi]
+
+]
+
+[emit [str
+  "=== abs (should appear) ===\n"
+  "has-name: " [str [has? entry-abs "name"]] "\n"
+  "name: "     [get-or entry-abs "name" "(missing)"] "\n"
+  "doc:  "     [get-or entry-abs "doc"  "(missing)"] "\n"
+  "sig:  "     [get-or entry-abs "sig"  "(missing)"] "\n"
+  "\n"
+  "=== sign (missing from reference) ===\n"
+  "has-name: " [str [has? entry-sign "name"]] "\n"
+  "name: "     [get-or entry-sign "name" "(missing)"] "\n"
+  "doc:  "     [get-or entry-sign "doc"  "(missing)"] "\n"
+  "sig:  "     [get-or entry-sign "sig"  "(missing)"] "\n"
+  "\n"
+  "=== UInt8 (missing from reference) ===\n"
+  "has-name: " [str [has? entry-uint8 "name"]] "\n"
+  "name: "     [get-or entry-uint8 "name" "(missing)"] "\n"
+  "doc:  "     [get-or entry-uint8 "doc"  "(missing)"] "\n"
+  "sig:  "     [get-or entry-uint8 "sig"  "(missing)"] "\n"
+  "\n"
+  "=== pi (missing from reference) ===\n"
+  "has-name: " [str [has? entry-pi "name"]] "\n"
+  "name: "     [get-or entry-pi "name" "(missing)"] "\n"
+  "doc:  "     [get-or entry-pi "doc"  "(missing)"] "\n"
+  "sig:  "     [get-or entry-pi "sig"  "(missing)"] "\n"]]

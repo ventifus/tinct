@@ -244,7 +244,7 @@ Runtime structural validation with constraint checking. See [Structural Contract
 - `min-length`, `max-length`: String or collection length constraints (Int)
 - `pattern`: Regex pattern for strings (String)
 - `required`: Whether field is required (Bool; default: false)
-- `default`: Default value if field is missing (Any; not yet enforced)
+- `default`: Default value if field is missing (Any)
 - `items`: Schema for sequence/dict elements (Dict)
 - `fields`: Schema for dict fields (Dict mapping field names to field schemas)
 - `enum`: List of allowed values (Seq)
@@ -440,7 +440,7 @@ The first argument is any Connector — a capability value that authorizes conne
 | `NamedPipe` | `DirCap` (Windows) | `path` | `Binary Readable Writable Stream` |
 | `Icmp` | `NetCap` or custom | `host` | `Binary Readable Datagram` |
 
-**Implementation status:** `Tcp` is fully implemented. `UnixStream` is implemented on Linux only (uses `/proc/self/fd` for path resolution). `Udp`, `UnixDatagram`, `NamedPipe`, and `Icmp` are stubs — they return runtime errors pending datagram infrastructure and platform-specific socket support.
+**Platform support:** `Tcp` is supported on all platforms. `UnixStream` is supported on Linux (uses `/proc/self/fd` for path resolution). `Udp`, `UnixDatagram`, `NamedPipe`, and `Icmp` require datagram infrastructure and platform-specific socket support; they raise a runtime error if invoked without the requisite transport infrastructure.
 
 **Error cases:** Type mismatch if arguments don't match the transport's requirements; connection refused or timeout at the OS level; Connector rejects the connection (allowlist violation for `NetCap`, path escape for `DirCap`); unsupported transport variant.
 

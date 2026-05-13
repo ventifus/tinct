@@ -1,8 +1,0 @@
-# fetch / http-get: unsupported scheme (ftp) produces an error
-# Uses stdlib net.llt; cap is never accessed before the scheme check.
-[include %libdir "net.llt"]
-[http-get [] [url "ftp://example.com"]]
-=== error
-[E080] http-get: unsupported scheme: ftp
-=== warn
-cannot unify

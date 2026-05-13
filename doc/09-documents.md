@@ -950,7 +950,7 @@ If no tinct code blocks are found in the Markdown file, `eval` exits with an err
 <!-- tinct-result: {"port": 8080} -->
 ```
 
-The result at each block is the intermediate pipeline value at that point — the output of that block after receiving `%` from all preceding blocks. Full result substitution (replacing inline markers in prose) is not yet implemented.
+The result at each block is the intermediate pipeline value at that point — the output of that block after receiving `%` from all preceding blocks. Full result substitution replaces the inline markers in prose with serialized values.
 
 If the Markdown file contains no tinct blocks, `weave` outputs the file unchanged.
 

@@ -136,7 +136,10 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 **Strings** (materializing — must evaluate arguments):
 - `str` (exact concat), `words` (split by space, filter empties), `join` (with separator)
 - `split`, `replace`
-- `upper`, `lower`, `trim`, `unindent`
+- `upper`, `lower`, `trim`, `unindent` (`upper`/`lower` are stdlib functions in `strings.llt` built on `str-map-chars` + `str-to-upper-char`/`str-to-lower-char`)
+- `str-to-upper-char`, `str-to-lower-char` — single-character case-conversion primitives (Rust builtins)
+- `str-map-chars` — map a function over each Unicode character, concatenate results (Rust builtin)
+- `regex-match?` — test if a regex matches anywhere in a string (Rust builtin, uses `regex` crate)
 
 **Composition** (structural — builds function pipelines, no values materialized):
 - `->` (threading)
@@ -199,7 +202,7 @@ first-ten: [collect [take 10 squares]]
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is materialized. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
 | Dict primitives | — | `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. |
-| Strings | — | `str`, `split`, `replace`, `upper`, `lower`, `trim`, `join` | Strings are opaque; all content operations require Rust. `join` uses an O(n) string builder (dual-dispatch Dict/Seq); no stable alias needed. |
+| Strings | — | `str`, `split`, `replace`, `trim`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?`, `join` | Strings are opaque; all content operations require Rust. `upper`/`lower` are stdlib functions in `strings.llt`. `join` uses an O(n) string builder (dual-dispatch Dict/Seq). |
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
 | Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-materializes; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |

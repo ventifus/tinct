@@ -2227,7 +2227,10 @@ mod tests {
         // Should return some signature help when inside a call with a known typed function.
         // (May be None if type inference doesn't resolve $f at the call site — acceptable.)
         if let Some(h) = help {
-            assert!(!h.signatures.is_empty(), "should have at least one signature");
+            assert!(
+                !h.signatures.is_empty(),
+                "should have at least one signature"
+            );
             let sig = &h.signatures[0];
             assert!(
                 sig.label.contains("Fn@"),
@@ -2294,8 +2297,12 @@ mod tests {
     #[test]
     fn test_workspace_symbols_prefix_filter() {
         let env = test_env();
-        let doc =
-            DocumentState::new("[foo: 1  bar: 2  baz: 3]".to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(
+            "[foo: 1  bar: 2  baz: 3]".to_string(),
+            &env,
+            &test_ctx(),
+            None,
+        );
         let uri = test_uri();
         let syms = workspace_symbols_for(&doc, &uri, "ba");
         assert_eq!(
@@ -2309,7 +2316,12 @@ mod tests {
     #[test]
     fn test_workspace_symbols_case_insensitive() {
         let env = test_env();
-        let doc = DocumentState::new("[Foo: 1  FOO: 2  foo: 3]".to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(
+            "[Foo: 1  FOO: 2  foo: 3]".to_string(),
+            &env,
+            &test_ctx(),
+            None,
+        );
         let uri = test_uri();
         let syms = workspace_symbols_for(&doc, &uri, "foo");
         assert_eq!(
@@ -2347,7 +2359,10 @@ mod tests {
         assert_eq!(syms.len(), 1);
         // Location should be a OneOf::Left(Location)
         if let lsp_types::OneOf::Left(ref loc) = syms[0].location {
-            assert_eq!(loc.uri, uri, "symbol location URI should match document URI");
+            assert_eq!(
+                loc.uri, uri,
+                "symbol location URI should match document URI"
+            );
         } else {
             panic!("expected OneOf::Left(Location), got workspace-only location");
         }
@@ -3044,11 +3059,7 @@ fn extract_names_from_expr(
 ///
 /// The active argument index is computed by counting how many positional args
 /// start before the cursor position.
-fn find_enclosing_call(
-    expr: &Expr,
-    span: Span,
-    offset: usize,
-) -> Option<((usize, usize), usize)> {
+fn find_enclosing_call(expr: &Expr, span: Span, offset: usize) -> Option<((usize, usize), usize)> {
     if !span_contains(span, offset) {
         return None;
     }
@@ -3075,20 +3086,20 @@ fn find_enclosing_call(
             }
             // No deeper call — this Call is the innermost one.
             // Count args that start before cursor position.
-            let active = args
-                .iter()
-                .filter(|a| a.span.start.offset < offset)
-                .count();
+            let active = args.iter().filter(|a| a.span.start.offset < offset).count();
             let func_key = (func.span.start.offset, func.span.end.offset);
             Some((func_key, active))
         }
 
         Expr::Dict(entries) => entries.iter().find_map(|entry| {
-            entry.node.key.as_ref().and_then(|k| {
-                find_enclosing_call(&k.node, k.span, offset)
-            }).or_else(|| {
-                find_enclosing_call(&entry.node.value.node, entry.node.value.span, offset)
-            })
+            entry
+                .node
+                .key
+                .as_ref()
+                .and_then(|k| find_enclosing_call(&k.node, k.span, offset))
+                .or_else(|| {
+                    find_enclosing_call(&entry.node.value.node, entry.node.value.span, offset)
+                })
         }),
 
         Expr::Fn { body, .. } => find_enclosing_call(&body.node, body.span, offset),
@@ -3129,11 +3140,7 @@ fn find_enclosing_call(
                     .as_ref()
                     .and_then(|k| find_enclosing_call(&k.node, k.span, offset))
                     .or_else(|| {
-                        find_enclosing_call(
-                            &method.node.value.node,
-                            method.node.value.span,
-                            offset,
-                        )
+                        find_enclosing_call(&method.node.value.node, method.node.value.span, offset)
                     })
             })
         }
@@ -3155,10 +3162,7 @@ fn find_enclosing_call(
 /// - The document has a parse error.
 /// - The cursor is not inside a Call expression.
 /// - The function has no TypeScheme entry (unresolved or not a function type).
-pub fn signature_help_at(
-    doc: &DocumentState,
-    offset: usize,
-) -> Option<lsp_types::SignatureHelp> {
+pub fn signature_help_at(doc: &DocumentState, offset: usize) -> Option<lsp_types::SignatureHelp> {
     use crate::types::Type;
     use lsp_types::{
         Documentation, ParameterInformation, ParameterLabel, SignatureHelp, SignatureInformation,
@@ -3292,9 +3296,7 @@ pub fn workspace_symbols_for(
                     };
 
                     // Case-insensitive prefix match.
-                    if !query_lower.is_empty()
-                        && !name.to_lowercase().starts_with(query_lower)
-                    {
+                    if !query_lower.is_empty() && !name.to_lowercase().starts_with(query_lower) {
                         continue;
                     }
 

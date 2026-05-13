@@ -1,0 +1,4 @@
+--- caps: [%fs: @DirCap]
+
+# Test read-only permissions
+[list-dir %fs "."]
