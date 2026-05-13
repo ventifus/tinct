@@ -89,6 +89,12 @@
         [set acc [get 0 kv] [if [= [length kv] 1] "" [get 1 kv]]]]]
         [] pairs]]]]
 
+  # Create an SPKI pin dict for certificate pinning.
+  # algorithm: HashAlgorithm variant (e.g. [Sha256]), fingerprint: Bytes
+  # Returns: {algorithm: variant, fingerprint: bytes}
+  spki-pin: [fn [algorithm fingerprint]
+    [set [set [] "algorithm" algorithm] "fingerprint" fingerprint]]
+
   # Return "scheme://host:port" (origin).
   # Port is omitted if null.
   uri-origin: [fn@String [u]

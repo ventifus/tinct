@@ -16,11 +16,11 @@
 //! - `connect`: Open a TCP/UDP connection within a NetCap (supports Transport variants)
 //! - `tls-connect`: Layer TLS on a connection (Connector or Handle form)
 //! - `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle
-//! - `spki-pin`: Create an SPKI pin for certificate pinning
+//! - `spki-pin` is now implemented in `stdlib/net.llt` (pure dict construction)
 //!
 //! **Handle capability builtins:**
-//! - `cap-data`: Extract capability data from a Handle/WriteHandle
-//! - `has-cap?`: Check if a capability is present on a Handle/WriteHandle
+//! - `cap-data`: Extract capability data from a Handle/WriteHandle (returns Null on miss)
+//! - `has-cap?`: Check if a capability is present on a Handle/WriteHandle (implemented in stdlib/io.llt)
 //! - `write-handle`: Write to a WriteHandle (returns handle for chaining)
 //! - `flush`: Flush a WriteHandle buffer
 //! - `close`: Close a WriteHandle
@@ -249,8 +249,8 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         // Default caps for read-only handle (legacy mode)
         let mut caps = HashMap::new();
-        caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
-        caps.insert("Text".to_string(), Value::Dict(IndexMap::new())); // Null
+        caps.insert("Readable".to_string(), Value::Bool(true));
+        caps.insert("Text".to_string(), Value::Bool(true));
 
         return ok_val(
             Value::Handle {
@@ -287,7 +287,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         .into());
                     }
                     has_readable = true;
-                    caps.insert("Readable".to_string(), Value::Dict(IndexMap::new()));
+                    caps.insert("Readable".to_string(), Value::Bool(true));
                 }
                 "Writable" => {
                     if has_readable {
@@ -298,7 +298,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         .into());
                     }
                     has_writable = true;
-                    caps.insert("Writable".to_string(), Value::Dict(IndexMap::new()));
+                    caps.insert("Writable".to_string(), Value::Bool(true));
                 }
                 "Binary" => {
                     if has_text {
@@ -309,7 +309,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         .into());
                     }
                     has_binary = true;
-                    caps.insert("Binary".to_string(), Value::Dict(IndexMap::new()));
+                    caps.insert("Binary".to_string(), Value::Bool(true));
                 }
                 "Text" => {
                     if has_binary {
@@ -320,11 +320,11 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         .into());
                     }
                     has_text = true;
-                    caps.insert("Text".to_string(), Value::Dict(IndexMap::new()));
+                    caps.insert("Text".to_string(), Value::Bool(true));
                 }
                 "Seekable" => {
                     has_seekable = true;
-                    caps.insert("Seekable".to_string(), Value::Dict(IndexMap::new()));
+                    caps.insert("Seekable".to_string(), Value::Bool(true));
                 }
                 other => {
                     return Err(EvalError::user_error(
@@ -368,7 +368,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Default to Text encoding if neither Binary nor Text specified
     if !has_binary && !has_text {
-        caps.insert("Text".to_string(), Value::Dict(IndexMap::new()));
+        caps.insert("Text".to_string(), Value::Bool(true));
     }
 
     // Open the file based on flags
@@ -812,10 +812,10 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             // Caps for TCP connection: Binary Readable Writable Stream
             let mut caps = HashMap::new();
-            caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
-            caps.insert("Writable".to_string(), Value::Dict(IndexMap::new())); // Null
-            caps.insert("Binary".to_string(), Value::Dict(IndexMap::new())); // Null
-            caps.insert("Stream".to_string(), Value::Dict(IndexMap::new())); // Null
+            caps.insert("Readable".to_string(), Value::Bool(true));
+            caps.insert("Writable".to_string(), Value::Bool(true));
+            caps.insert("Binary".to_string(), Value::Bool(true));
+            caps.insert("Stream".to_string(), Value::Bool(true));
 
             ok_val(
                 Value::Handle {
@@ -893,10 +893,10 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 // Caps for Unix stream: Binary Readable Writable Stream
                 let mut caps = HashMap::new();
-                caps.insert("Readable".to_string(), Value::Dict(IndexMap::new())); // Null
-                caps.insert("Writable".to_string(), Value::Dict(IndexMap::new())); // Null
-                caps.insert("Binary".to_string(), Value::Dict(IndexMap::new())); // Null
-                caps.insert("Stream".to_string(), Value::Dict(IndexMap::new())); // Null
+                caps.insert("Readable".to_string(), Value::Bool(true));
+                caps.insert("Writable".to_string(), Value::Bool(true));
+                caps.insert("Binary".to_string(), Value::Bool(true));
+                caps.insert("Stream".to_string(), Value::Bool(true));
 
                 ok_val(
                     Value::Handle {
@@ -1493,7 +1493,7 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 
 /// `cap-data`: Extract capability data from a Handle or WriteHandle.
 /// Takes a Handle/WriteHandle and a capability name (String).
-/// Returns the Value associated with that capability, or errors if the cap is absent.
+/// Returns the Value associated with that capability, or Null (empty dict) if the cap is absent.
 pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1528,65 +1528,13 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let cap_name = require_string("cap-data", cap_name_val, args[1].span)?;
 
-    // Lookup capability
+    // Lookup capability — return empty dict (Null) on miss so callers can use null?
     match caps.get(&cap_name) {
         Some(cap_value) => ok_val(cap_value.clone(), call_span),
-        None => Err(EvalError::user_error(
-            format!(
-                "cap-data: capability '{}' not found on handle (available: {})",
-                cap_name,
-                caps.keys()
-                    .map(|k| format!("'{}'", k))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            call_span,
-        )
-        .into()),
+        None => ok_val(Value::Dict(IndexMap::new()), call_span),
     }
 }
 
-/// `has-cap?`: Check if a capability is present on a Handle or WriteHandle.
-/// Takes a Handle/WriteHandle and a capability name (String).
-/// Returns Bool: true if the cap is present, false otherwise.
-pub(crate) fn builtin_has_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Expect 2 args: Handle/WriteHandle, String cap_name
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("has-cap?", named, call_span)?;
-
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let cap_name_val = materialize(&args[1], Some(&call_span), &ctx)?;
-
-    // Extract caps from Handle or WriteHandle
-    let caps = match handle_val {
-        Value::Handle { caps, .. } => caps,
-        Value::WriteHandle { caps, .. } => caps,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "has-cap?".to_string(),
-                "Handle or WriteHandle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    let cap_name = require_string("has-cap?", cap_name_val, args[1].span)?;
-
-    // Check presence
-    let has_cap = caps.contains_key(&cap_name);
-    ok_val(Value::Bool(has_cap), call_span)
-}
 
 /// `write-handle`: Write to a WriteHandle or a bidirectional Handle (e.g. TCP socket).
 /// Takes a WriteHandle (or Handle with write_inner) and content (String for Text, Bytes for Binary).
@@ -3428,10 +3376,10 @@ pub(crate) fn builtin_tls_layer(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Build capabilities: Binary Readable Writable Stream Tls
     let mut new_caps = HashMap::new();
-    new_caps.insert("Readable".to_string(), Value::Dict(IndexMap::new()));
-    new_caps.insert("Writable".to_string(), Value::Dict(IndexMap::new()));
-    new_caps.insert("Binary".to_string(), Value::Dict(IndexMap::new()));
-    new_caps.insert("Stream".to_string(), Value::Dict(IndexMap::new()));
+    new_caps.insert("Readable".to_string(), Value::Bool(true));
+    new_caps.insert("Writable".to_string(), Value::Bool(true));
+    new_caps.insert("Binary".to_string(), Value::Bool(true));
+    new_caps.insert("Stream".to_string(), Value::Bool(true));
     new_caps.insert("Tls".to_string(), tls_info);
 
     ok_val(
@@ -3580,105 +3528,6 @@ pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     }
 }
 
-/// `spki-pin`: Create an SPKI pin dict.
-/// Takes HashAlgorithm variant and Bytes fingerprint.
-/// Returns dict: {algorithm: Variant, fingerprint: Bytes}.
-pub(crate) fn builtin_spki_pin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("spki-pin", named, call_span)?;
-
-    let algorithm_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let fingerprint_val = materialize(&args[1], Some(&call_span), &ctx)?;
-
-    // Validate algorithm is a Variant
-    let algorithm_tag = match algorithm_val {
-        Value::Variant { tag, payload } => {
-            if payload.is_some() {
-                return Err(EvalError::user_error(
-                    "spki-pin: algorithm variant must not have a payload".to_string(),
-                    args[0].span,
-                )
-                .into());
-            }
-            tag
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "spki-pin".to_string(),
-                "HashAlgorithm variant",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    // Validate fingerprint is Bytes
-    let fingerprint_bytes = match fingerprint_val {
-        Value::Bytes { source, start, end } => source[start..end].to_vec(),
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "spki-pin".to_string(),
-                "Bytes",
-                other.type_name(),
-                args[1].span,
-            )
-            .into())
-        }
-    };
-
-    // Validate algorithm name
-    let valid_algorithms = [
-        "Sha256", "Sha384", "Sha512", "Sha3-256", "Sha3-384", "Sha3-512", "Blake3",
-    ];
-    if !valid_algorithms.contains(&algorithm_tag.as_str()) {
-        return Err(EvalError::user_error(
-            format!(
-                "spki-pin: invalid hash algorithm '{}' (expected one of: {})",
-                algorithm_tag,
-                valid_algorithms.join(", ")
-            ),
-            args[0].span,
-        )
-        .into());
-    }
-
-    // Build result dict
-    use crate::value::Key;
-    let mut dict = IndexMap::new();
-    dict.insert(
-        Key::String("algorithm".to_string()),
-        ctx.alloc_thunk(ok_val(
-            Value::Variant {
-                tag: algorithm_tag,
-                payload: None,
-            },
-            call_span,
-        )?),
-    );
-    dict.insert(
-        Key::String("fingerprint".to_string()),
-        ctx.alloc_thunk(ok_val(
-            Value::Bytes {
-                source: Rc::from(fingerprint_bytes.as_slice()),
-                start: 0,
-                end: fingerprint_bytes.len(),
-            },
-            call_span,
-        )?),
-    );
-
-    ok_val(Value::Dict(dict), call_span)
-}
 
 #[cfg(test)]
 mod tests {
@@ -4052,10 +3901,10 @@ pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
     )));
 
     let mut caps = HashMap::new();
-    caps.insert("Readable".to_string(), Value::Dict(IndexMap::new()));
-    caps.insert("Writable".to_string(), Value::Dict(IndexMap::new()));
-    caps.insert("Binary".to_string(), Value::Dict(IndexMap::new()));
-    caps.insert("Stream".to_string(), Value::Dict(IndexMap::new()));
+    caps.insert("Readable".to_string(), Value::Bool(true));
+    caps.insert("Writable".to_string(), Value::Bool(true));
+    caps.insert("Binary".to_string(), Value::Bool(true));
+    caps.insert("Stream".to_string(), Value::Bool(true));
 
     ok_val(
         Value::Handle {

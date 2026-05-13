@@ -345,12 +345,12 @@ pub(crate) use crate::builtins_dict::{
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
     builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit, builtin_env,
-    builtin_flush, builtin_has_cap, builtin_http2_session, builtin_http3_session,
+    builtin_flush, builtin_http2_session, builtin_http3_session,
     builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link, builtin_list_dir,
     builtin_make_dir, builtin_narrow, builtin_open, builtin_position, builtin_quic_open_datagram,
     builtin_quic_open_stream, builtin_quic_session, builtin_read_link, builtin_recv_datagram,
     builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
-    builtin_seek_end, builtin_send_datagram, builtin_slurp, builtin_spki_pin, builtin_stat,
+    builtin_seek_end, builtin_send_datagram, builtin_slurp, builtin_stat,
     builtin_tls_layer, builtin_tls_peer_cert, builtin_write, builtin_write_atomic,
     builtin_write_handle,
 };
@@ -1148,11 +1148,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
         builtin!("tls-peer-cert", builtin_tls_peer_cert, [Strictness::Seq]),
-        builtin!(
-            "spki-pin",
-            builtin_spki_pin,
-            [Strictness::Seq, Strictness::Seq]
-        ),
         builtin!("lines", builtin_lines, [Strictness::Seq]),
         builtin!(
             "write",
@@ -1167,11 +1162,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "cap-data",
             builtin_cap_data,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "has-cap?",
-            builtin_has_cap,
             [Strictness::Seq, Strictness::Seq]
         ),
         builtin!(
@@ -6194,7 +6184,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 186,
+            count, 184,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6270,7 +6260,8 @@ mod tests {
         assert!(names.contains(&"write"), "missing write");
         assert!(names.contains(&"write-atomic"), "missing write-atomic");
         assert!(names.contains(&"cap-data"), "missing cap-data");
-        assert!(names.contains(&"has-cap?"), "missing has-cap?");
+        // has-cap? is now implemented in stdlib/io.llt as [not [null? [cap-data h cap]]]
+        assert!(!names.contains(&"has-cap?"), "has-cap? should be in stdlib not builtins");
         assert!(names.contains(&"write-handle"), "missing write-handle");
         assert!(names.contains(&"flush"), "missing flush");
         assert!(names.contains(&"close"), "missing close");
@@ -6374,7 +6365,8 @@ mod tests {
         // TLS builtins
         assert!(names.contains(&"tls-layer"), "missing tls-layer");
         assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
-        assert!(names.contains(&"spki-pin"), "missing spki-pin");
+        // spki-pin is now implemented in stdlib/net.llt (pure dict construction, no Rust needed)
+        assert!(!names.contains(&"spki-pin"), "spki-pin should be in stdlib not builtins");
         // URI parsing builtins
         assert!(names.contains(&"uri"), "missing uri");
         assert!(names.contains(&"url"), "missing url");
@@ -6401,8 +6393,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            183,
-            "expected 183 builtins, got {} (num?, record?, map? are now LLT-implemented)",
+            184,
+            "expected 184 builtins, got {} (num?, record?, map?, has-cap?, spki-pin are now LLT-implemented)",
             names.len()
         );
     }
