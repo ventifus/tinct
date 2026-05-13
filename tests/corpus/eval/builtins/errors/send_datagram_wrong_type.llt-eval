@@ -3,7 +3,7 @@
 [send-datagram 42 "hello"]
 
 === error
-[E010] send-datagram: expected DatagramHandle, got Int
+[E010] send-datagram: expected DatagramHandle or QuicDatagramHandle, got Int
 
 === warn
 cannot unify DatagramHandle with 42 at 2:16-2:18

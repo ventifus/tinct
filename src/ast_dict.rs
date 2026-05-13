@@ -1260,7 +1260,8 @@ fn annotation_to_thunk_id(
 
                     entry_dict.insert(Key::String("key".into()), key_id);
 
-                    // Value is also typically a string literal in annotations
+                    // Annotation entry values are strings/ints for simple cases,
+                    // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
                     let value_id = match &e.node.value.node {
                         Expr::Str(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                             string_val(s),
@@ -1270,10 +1271,11 @@ fn annotation_to_thunk_id(
                             Value::Int(*n),
                             e.node.value.span,
                         ))),
-                        _ => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            string_val(&format!("<expr at {}>", e.node.value.span)),
-                            e.node.value.span,
-                        ))),
+                        _ => ctx.alloc_thunk(ast_to_dict_expr(
+                            &e.node.value,
+                            &AstToDictOpts::default(),
+                            ctx,
+                        )?),
                     };
 
                     entry_dict.insert(Key::String("value".into()), value_id);

@@ -3086,8 +3086,6 @@ fn validate_spki_pins(
         };
 
         // Compute hash of certificate using the specified algorithm
-        // Note: This is a simplified implementation that hashes the whole cert
-        // A proper implementation would extract and hash only the SPKI field
         let computed_hash = compute_spki_hash(leaf_cert.as_ref(), &algorithm_tag, span)?;
 
         if computed_hash == expected_fingerprint {
@@ -3682,121 +3680,6 @@ pub(crate) fn builtin_spki_pin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(Value::Dict(dict), call_span)
 }
 
-/// `http-get`: Make an HTTP GET request.
-/// Overloaded form: http-get conn@HttpConn path@String [headers@Dict]
-/// Returns a Dict with status, headers, and body.
-pub(crate) fn builtin_http_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    if args.len() < 2 || args.len() > 3 {
-        return Err(EvalError::user_error(
-            format!(
-                "http-get: expected 2 or 3 arguments (conn path [headers]), got {}",
-                args.len()
-            ),
-            call_span,
-        )
-        .into());
-    }
-    reject_named("http-get", named, call_span)?;
-
-    let conn_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
-
-    // Extract HttpConn
-    let (client, base_url) = match conn_val {
-        Value::HttpConn { client, base_url } => (client, base_url),
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "http-get".to_string(),
-                "HttpConn",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    // Extract path
-    let path = require_string("http-get", path_val, args[1].span)?;
-
-    // Build URL
-    let url = if let Some(base) = base_url {
-        // Append path to base URL
-        if path.starts_with('/') {
-            format!("{}{}", base.trim_end_matches('/'), path)
-        } else {
-            format!("{}/{}", base.trim_end_matches('/'), path)
-        }
-    } else {
-        path
-    };
-
-    // Make the request
-    let response = client.get(&url).send().map_err(|e| {
-        EvalError::user_error(format!("http-get: request failed: {}", e), call_span)
-    })?;
-
-    // Extract status
-    let status = response.status().as_u16() as i64;
-
-    // Extract headers as a dict
-    let mut headers_dict = IndexMap::new();
-    for (name, value) in response.headers().iter() {
-        let key = crate::value::Key::String(name.as_str().to_string());
-        let value_str = value.to_str().unwrap_or("<invalid UTF-8>").to_string();
-        headers_dict.insert(
-            key,
-            ctx.alloc_thunk(ok_val(string_val(&value_str), call_span)?),
-        );
-    }
-
-    // Extract body as bytes
-    let body_bytes = response.bytes().map_err(|e| {
-        EvalError::user_error(
-            format!("http-get: failed to read response body: {}", e),
-            call_span,
-        )
-    })?;
-
-    // Build result dict
-    use crate::value::Key;
-    let mut result = IndexMap::new();
-    result.insert(
-        Key::String("status".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Int(status), call_span)?),
-    );
-    result.insert(
-        Key::String("headers".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Dict(headers_dict), call_span)?),
-    );
-    result.insert(
-        Key::String("body".to_string()),
-        ctx.alloc_thunk(ok_val(
-            Value::Bytes {
-                source: Rc::from(body_bytes.as_ref()),
-                start: 0,
-                end: body_bytes.len(),
-            },
-            call_span,
-        )?),
-    );
-
-    ok_val(Value::Dict(result), call_span)
-}
-
-/// `socks5-connect`: Create a SOCKS5 proxy tunnel.
-/// Stub implementation — returns error "not yet implemented".
-pub(crate) fn builtin_socks5_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error("socks5-connect: not yet implemented".to_string(), call_span).into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3852,13 +3735,6 @@ mod tests {
             "NetCapEntry::Any should allow evil.example.com:22"
         );
     }
-}
-
-/// `proxy-connect`: Create an HTTP CONNECT proxy tunnel.
-/// Stub implementation — returns error "not yet implemented".
-pub(crate) fn builtin_proxy_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Err(EvalError::user_error("proxy-connect: not yet implemented".to_string(), call_span).into())
 }
 
 // ── HTTP-sessions: QUIC and HTTP/3 ──────────────────────────────────────────────
@@ -4226,10 +4102,9 @@ pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<
         .into());
     }
 
-    // Materialize the session to validate the type, even though we stub the rest
     let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    match session_val {
-        Value::QuicSession(_) => {}
+    let conn = match session_val {
+        Value::QuicSession(c) => c,
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 "quic-open-datagram".to_string(),
@@ -4239,20 +4114,13 @@ pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<
             )
             .into())
         }
-    }
+    };
 
-    // TODO(http-sessions-datagram): Implement QUIC datagram send/recv.
-    // QUIC unreliable datagrams (RFC 9221) require a new Value variant because
-    // DatagramHandle wraps std::net::UdpSocket (sync), while quinn datagrams are async.
-    // Required additions: Value::QuicDatagramHandle(Rc<quinn::Connection>),
-    // with send-datagram/recv-datagram overloads dispatching on it.
-    Err(EvalError::user_error(
-        "quic-open-datagram: QUIC unreliable datagrams not yet implemented — \
-         use quic-open-stream for reliable streaming or http3-session for HTTP/3 requests"
-            .to_string(),
-        call_span,
-    )
-    .into())
+    // Wrap the connection in a QuicDatagramHandle
+    // Note: send-datagram and recv-datagram builtins must handle QuicDatagramHandle
+    // separately from DatagramHandle, using async block_on(conn.send_datagram(...))
+    // and block_on(conn.read_datagram(...)) respectively.
+    ok_val(Value::QuicDatagramHandle(conn), call_span)
 }
 
 /// `http2-session`: Establish an HTTP/2 session using reqwest.
@@ -4435,22 +4303,41 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     let quic_conn = (*conn).clone();
     let h3_conn = h3_quinn::Connection::new(quic_conn);
 
-    // Drive the HTTP/3 handshake: returns (SendRequest, h3::client::Connection).
-    // We discard the Connection driver — it must be polled to process frames.
-    // TODO(http-sessions-driver): The h3 Connection driver needs to be driven
-    // concurrently with requests. For a blocking runtime we need a background task.
-    // For now the SendRequest can issue requests but the driver won't run unless
-    // block_on is called, which is sufficient for sequential request/response patterns.
-    let (_driver, send_request) = crate::async_rt::block_on(h3::client::builder().build(h3_conn))
-        .map_err(|e| {
-        EvalError::user_error(
-            format!("http3-session: HTTP/3 handshake failed: {}", e),
-            call_span,
-        )
-    })?;
+    // Drive the HTTP/3 handshake: returns (h3::client::Connection driver, SendRequest).
+    // The driver must be polled concurrently with request streams to process incoming
+    // QUIC frames (SETTINGS, GOAWAY, server push, etc.).
+    let (mut driver, send_request) =
+        crate::async_rt::block_on(h3::client::builder().build(h3_conn)).map_err(|e| {
+            EvalError::user_error(
+                format!("http3-session: HTTP/3 handshake failed: {}", e),
+                call_span,
+            )
+        })?;
 
+    // Spawn the driver as a local task so it is polled on every subsequent
+    // `async_rt::block_on` call (cooperative multitasking on the current-thread runtime).
+    // The JoinHandle is stored in Http3SessionState; dropping it aborts the driver task
+    // when the session is dropped (Rc refcount reaches zero).
+    //
+    // h3 0.0.8: `h3::client::Connection::poll_close(cx)` processes incoming QUIC frames
+    // (SETTINGS, GOAWAY, server push, connection error) and returns `Poll::Ready` when
+    // the connection closes. The h3 docs say: "It needs to be polled continuously via
+    // poll_close()." We wrap it in `std::future::poll_fn` to make it a proper `Future`.
+    let driver_handle = crate::async_rt::spawn_local(async move {
+        std::future::poll_fn(|cx| {
+            // poll_close returns Poll<ConnectionError> — ignore the error value;
+            // the request side will surface errors on the next send_request call.
+            driver.poll_close(cx).map(|_| ())
+        })
+        .await
+    });
+
+    use crate::value::Http3SessionState;
     ok_val(
-        Value::Http3Session(Rc::new(RefCell::new(send_request))),
+        Value::Http3Session(Rc::new(RefCell::new(Http3SessionState {
+            send_request,
+            _driver: driver_handle,
+        }))),
         call_span,
     )
 }
@@ -4527,8 +4414,8 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     };
 
     match session_val {
-        Value::Http3Session(send_request_rc) => http_request_h3(
-            send_request_rc,
+        Value::Http3Session(session_rc) => http_request_h3(
+            session_rc,
             method_str,
             path_str,
             req_headers,
@@ -4667,7 +4554,7 @@ fn http_request_h2(
 /// Builds the `http::Request`, sends it, collects the response headers and body,
 /// and returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
 fn http_request_h3(
-    send_request_rc: Rc<RefCell<h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>>>,
+    session_rc: Rc<RefCell<crate::value::Http3SessionState>>,
     method_str: String,
     path_str: String,
     req_headers: Vec<(String, String)>,
@@ -4696,9 +4583,11 @@ fn http_request_h3(
     };
 
     // Send request headers; get back a RequestStream.
-    // borrow_mut() is safe — we hold the only reference during this blocking call.
+    // borrow_mut() accesses send_request inside Http3SessionState.
+    // Safe — single-threaded; no other borrow_mut during block_on.
     let mut stream =
-        match crate::async_rt::block_on(send_request_rc.borrow_mut().send_request(request)) {
+        match crate::async_rt::block_on(session_rc.borrow_mut().send_request.send_request(request))
+        {
             Ok(s) => s,
             Err(e) => {
                 return http_request_err_val(
@@ -5178,21 +5067,7 @@ pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let data_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DatagramHandle socket
-    let socket = match handle_val {
-        Value::DatagramHandle { socket, .. } => socket,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "send-datagram".to_string(),
-                "DatagramHandle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    // Extract bytes to send (String or Bytes)
+    // Extract bytes to send (String or Bytes) — common to all handle variants.
     let data_bytes: Vec<u8> = match data_val {
         Value::String { source, start, end } => source[start..end].as_bytes().to_vec(),
         Value::Bytes { source, start, end } => source[start..end].to_vec(),
@@ -5207,17 +5082,45 @@ pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
         }
     };
 
-    // Send the datagram — dispatch on socket variant (same send() API for both)
-    use crate::value::DatagramSocket;
-    match &socket {
-        DatagramSocket::Udp(s) => s.borrow().send(&data_bytes),
-        #[cfg(unix)]
-        DatagramSocket::UnixDgram(s) => s.borrow().send(&data_bytes),
-    }
-    .map_err(|e| EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span))?;
+    match handle_val {
+        // QUIC unreliable datagram (RFC 9221) — async send via block_on.
+        // `conn.send_datagram` returns immediately; the underlying QUIC stack
+        // handles retransmission of the UDP packet if necessary (implementation-defined).
+        // Returns `SendDatagramError::UnsupportedByPeer` if the remote did not advertise
+        // datagram support in its transport parameters.
+        Value::QuicDatagramHandle(conn) => {
+            let payload = bytes::Bytes::from(data_bytes);
+            crate::async_rt::block_on(conn.send_datagram_wait(payload)).map_err(|e| {
+                EvalError::user_error(
+                    format!("send-datagram: QUIC datagram send failed: {}", e),
+                    call_span,
+                )
+            })?;
+            ok_val(Value::Dict(IndexMap::new()), call_span)
+        }
 
-    // Return null (empty dict)
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        // UDP / Unix datagram socket — synchronous send()
+        Value::DatagramHandle { socket, .. } => {
+            use crate::value::DatagramSocket;
+            match &socket {
+                DatagramSocket::Udp(s) => s.borrow().send(&data_bytes),
+                #[cfg(unix)]
+                DatagramSocket::UnixDgram(s) => s.borrow().send(&data_bytes),
+            }
+            .map_err(|e| {
+                EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span)
+            })?;
+            ok_val(Value::Dict(IndexMap::new()), call_span)
+        }
+
+        other => Err(EvalError::type_mismatch_ctx(
+            "send-datagram".to_string(),
+            "DatagramHandle or QuicDatagramHandle",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
 }
 
 /// `recv-datagram`: Receive a message from a DatagramHandle.
@@ -5235,45 +5138,61 @@ pub(crate) fn builtin_recv_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 
     let val = crate::builtins::expect_one_arg("recv-datagram", args, named, &ctx, call_span)?;
 
-    // Extract DatagramHandle socket
-    let socket = match val {
-        Value::DatagramHandle { socket, .. } => socket,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "recv-datagram".to_string(),
-                "DatagramHandle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    // Receive datagram into a 65507-byte buffer (maximum UDP/Unix datagram payload)
-    use crate::value::DatagramSocket;
-    let mut buf = vec![0u8; 65507];
-    let n = match &socket {
-        DatagramSocket::Udp(s) => s.borrow().recv(&mut buf),
-        #[cfg(unix)]
-        DatagramSocket::UnixDgram(s) => s.borrow().recv(&mut buf),
-    }
-    .map_err(|e| EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span))?;
-    buf.truncate(n);
-
-    // Build result dict: {data: Bytes}
     use crate::value::Key;
-    let data_len = buf.len();
-    let data_bytes = Value::Bytes {
-        source: Rc::from(buf.as_slice()),
-        start: 0,
-        end: data_len,
+
+    // Helper: build the `{data: Bytes}` result dict from a received byte buffer.
+    let make_data_dict = |buf: Vec<u8>, ctx: &crate::eval::EvalContext| -> EvalResult<Rc<Thunk>> {
+        let data_len = buf.len();
+        let data_bytes = Value::Bytes {
+            source: Rc::from(buf.as_slice()),
+            start: 0,
+            end: data_len,
+        };
+        let mut dict = IndexMap::new();
+        dict.insert(
+            Key::String("data".to_string()),
+            ctx.alloc_thunk(ok_val(data_bytes, call_span)?),
+        );
+        ok_val(Value::Dict(dict), call_span)
     };
 
-    let mut dict = IndexMap::new();
-    dict.insert(
-        Key::String("data".to_string()),
-        ctx.alloc_thunk(ok_val(data_bytes, call_span)?),
-    );
+    match val {
+        // QUIC unreliable datagram (RFC 9221) — async recv via block_on.
+        // `conn.read_datagram()` returns the next datagram payload as a `bytes::Bytes`.
+        // Blocks until a datagram arrives or the connection closes.
+        Value::QuicDatagramHandle(conn) => {
+            let payload = crate::async_rt::block_on(conn.read_datagram()).map_err(|e| {
+                EvalError::user_error(
+                    format!("recv-datagram: QUIC datagram recv failed: {}", e),
+                    call_span,
+                )
+            })?;
+            make_data_dict(payload.to_vec(), &ctx)
+        }
 
-    ok_val(Value::Dict(dict), call_span)
+        // UDP / Unix datagram socket — synchronous recv() into a fixed-size buffer.
+        // 65507 bytes is the maximum IPv4 UDP payload (65535 - 20 IP header - 8 UDP header).
+        Value::DatagramHandle { socket, .. } => {
+            use crate::value::DatagramSocket;
+            let mut buf = vec![0u8; 65507];
+            let n = match &socket {
+                DatagramSocket::Udp(s) => s.borrow().recv(&mut buf),
+                #[cfg(unix)]
+                DatagramSocket::UnixDgram(s) => s.borrow().recv(&mut buf),
+            }
+            .map_err(|e| {
+                EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span)
+            })?;
+            buf.truncate(n);
+            make_data_dict(buf, &ctx)
+        }
+
+        other => Err(EvalError::type_mismatch_ctx(
+            "recv-datagram".to_string(),
+            "DatagramHandle or QuicDatagramHandle",
+            other.type_name(),
+            args[0].span,
+        )
+        .into()),
+    }
 }
