@@ -26,16 +26,18 @@
 #    in the dict's letrec environment; these are re-exported as dict entries
 #    to make them available to code that includes the prelude.
 #
-# These functions depend on the following Rust-native builtins being available
-# in the parent environment:
+# Phase 2 (bootstrap env switch): Rust primitives are no longer injected via
+# the parent env. Instead, this file uses [include %rust "group"] sequential
+# expressions (see "Bootstrap: Pull in Rust primitive groups" section below)
+# to make them available in scope before the private and public dicts.
 #
-#   Stable builtin-* aliases (used internally by prelude; cannot be shadowed):
-#     See standard_builtins() in src/builtins.rs for the authoritative list.
-#     Aliases used here include: builtin-lt  builtin-eq  builtin-add  builtin-sub
+#   Stable builtin-* aliases (used internally; from [include %rust "core"] and
+#     [include %rust "collection"]):
+#     builtin-lt  builtin-eq  builtin-add  builtin-sub  builtin-mul  builtin-div
 #     builtin-if  builtin-get  builtin-map  builtin-reduce  builtin-seq
-#     builtin-head  builtin-tail  builtin-mul  builtin-div  builtin-filter
-#     builtin-take  builtin-drop  builtin-collect  builtin-concat  builtin-join
-#     builtin-rest  builtin-cons  builtin-sort
+#     builtin-head  builtin-tail  builtin-filter  builtin-take  builtin-drop
+#     builtin-collect  builtin-concat  builtin-join  builtin-rest  builtin-cons
+#     builtin-sort  (and other builtin-NAME forms from the collection module)
 #
 #   Primary-name shadowable wrappers (defined in public dict at end of file):
 #     <  =  +  -  *  /  if  filter  map  reduce  take  drop
@@ -44,14 +46,6 @@
 #   These delegate to the builtin-* aliases above, allowing domain modules
 #   to shadow the primary names via include while the prelude continues
 #   to work correctly.
-#
-#   Non-shadowed Rust builtins (commonly used, partial list — see src/builtins.rs):
-#     Dict:        keys  length  merge  append  builtin-get
-#     Stringing:      str  split
-#     Numeric:     floor
-#     Runtime:     error  try  type-of
-#     Sequences:   each  each-key  each-kv
-#     Predicates:  int?  float?  str?  bool?  null?  dict?  fn?  seq?
 #
 # Design patterns:
 #   Shadowable wrappers — functions like <, =, +, if, filter, map etc.
@@ -66,6 +60,27 @@
 #     for large collections; the LLT wrappers are for composability and shadowing.
 #
 # ============================================================================
+
+# ============================================================================
+# Bootstrap: Pull in Rust primitive groups via [include %rust "..."]
+# ============================================================================
+#
+# These sequential expressions inject Rust primitive groups into scope before
+# the private and public dicts are evaluated. After the Phase 2 bootstrap env
+# switch, the parent env contains ONLY `include` and `%rust` — all arithmetic,
+# comparison, string, and collection primitives must be imported explicitly here.
+#
+# Each [include %rust "group"] returns a Dict of builtins, which eval_document
+# materialises and injects into the scope chain for subsequent expressions.
+
+[include %rust "core"]
+[include %rust "collection"]
+[include %rust "string"]
+[include %rust "bytes"]
+[include %rust "math"]
+[include %rust "meta"]
+[include %rust "json"]
+[include %rust "io"]
 
 # ============================================================================
 # FIRST DICT: Private helpers (not exported)

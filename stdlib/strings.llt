@@ -23,6 +23,12 @@
 # are NOT exported to callers (only the second dict's entries are returned).
 # ============================================================================
 
+# Phase 2 (bootstrap env): import the Rust primitives used by this module.
+# - core: builtin-if, builtin-lt, builtin-add, builtin-sub used in private helpers
+# - string: str-map-chars, str-to-upper-char, str-to-lower-char, str-slice, str-length
+[include %rust "core"]
+[include %rust "string"]
+
 # ============================================================================
 # Private helpers (not exported)
 # ============================================================================

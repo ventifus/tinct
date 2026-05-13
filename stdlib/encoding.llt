@@ -21,6 +21,14 @@
 # All functions in this dict can reference each other (letrec semantics).
 # ============================================================================
 
+# Phase 2 (bootstrap env): import the Rust primitives used by this module.
+# - core: builtin-if, builtin-lt, builtin-eq, builtin-add, builtin-sub, builtin-mul
+# - string: str-slice, char-code, chr, str, length
+# - math: bxor (XOR masking)
+[include %rust "core"]
+[include %rust "string"]
+[include %rust "math"]
+
 [
 
 # ============================================================================

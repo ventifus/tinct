@@ -1462,19 +1462,20 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
 
     match name {
         "core" => {
-            // Arithmetic
+            // Arithmetic (public names)
             insert(&env, "+");
             insert(&env, "-");
             insert(&env, "*");
             insert(&env, "/");
-            // Comparison
+            // Comparison (public names)
             insert(&env, "=");
             insert(&env, "<");
-            // Control
+            // Control (public names)
             insert(&env, "if");
             insert(&env, "error");
             insert(&env, "try");
             insert(&env, "force");
+            insert(&env, "until");
             // Evaluation control
             insert(&env, "eval");
             insert(&env, "apply");
@@ -1492,6 +1493,27 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "seq?");
             // Type introspection
             insert(&env, "type-of");
+            // Internal builtin-* aliases (stable names for prelude to use even when
+            // public names are shadowed by user code via include).
+            // These names match the builtin-* prefix used in inject_prelude_aliases().
+            // Aliases share the function pointer and strictness with the public name;
+            // only the env key differs.
+            let alias_from_public = |env: &Rc<RefCell<Environment>>,
+                                     alias_name: &'static str,
+                                     public_name: &str| {
+                if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
+                    let thunk =
+                        Rc::new(Thunk::new_materialized(Value::Builtin(*def), Span::origin()));
+                    env.borrow_mut().insert(alias_name.to_string(), thunk);
+                }
+            };
+            alias_from_public(&env, "builtin-lt", "<");
+            alias_from_public(&env, "builtin-eq", "=");
+            alias_from_public(&env, "builtin-add", "+");
+            alias_from_public(&env, "builtin-sub", "-");
+            alias_from_public(&env, "builtin-mul", "*");
+            alias_from_public(&env, "builtin-div", "/");
+            alias_from_public(&env, "builtin-if", "if");
         }
         "string" => {
             insert(&env, "str");
@@ -1537,6 +1559,29 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "take");
             insert(&env, "drop");
             insert(&env, "reduce");
+            // builtin-* aliases for collection operations (stable names used
+            // by prelude and stdlib modules even when public names are shadowed).
+            // Reuse alias_from_public helper — same pattern as core's builtin-* aliases.
+            // (alias_from_public is defined in the "core" match arm above; Rust closures
+            // are only in scope within their defining match arm, so we inline the logic here.)
+            {
+                let alias_coll = |env: &Rc<RefCell<Environment>>,
+                                  alias_name: &'static str,
+                                  public_name: &str| {
+                    if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
+                        let thunk = Rc::new(Thunk::new_materialized(
+                            Value::Builtin(*def),
+                            Span::origin(),
+                        ));
+                        env.borrow_mut().insert(alias_name.to_string(), thunk);
+                    }
+                };
+                alias_coll(&env, "builtin-map", "map");
+                alias_coll(&env, "builtin-filter", "filter");
+                alias_coll(&env, "builtin-reduce", "reduce");
+                alias_coll(&env, "builtin-take", "take");
+                alias_coll(&env, "builtin-drop", "drop");
+            }
             insert(&env, "builtin-join");
             insert(&env, "builtin-concat");
             insert(&env, "builtin-first");
@@ -1677,6 +1722,45 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
     Ok(env)
 }
 
+/// Create the bootstrap environment used when evaluating the prelude.
+///
+/// Contains ONLY:
+/// - `include` — the special form for loading modules and files
+/// - `%rust` — the opaque `Value::RustRegistry` sentinel that grants access to Rust
+///             primitive groups via `[include %rust "group-name"]`
+///
+/// No other builtins are present. The prelude must explicitly include the Rust
+/// primitive groups it needs (e.g., `[include %rust "core"]`) to get access to
+/// arithmetic, comparison, and control-flow primitives.
+///
+/// This env is NOT the parent of the user env. It is used exclusively during prelude
+/// evaluation. After the prelude is loaded, the prelude output env becomes the
+/// parent of user code's environment.
+pub fn create_bootstrap_env() -> Rc<RefCell<Environment>> {
+    let env = Rc::new(RefCell::new(Environment::new()));
+
+    // Register `include` (the only special form available in the bootstrap env).
+    let include_def = standard_builtins()
+        .into_iter()
+        .find(|b| b.name == "include")
+        .expect("include builtin must be registered in standard_builtins");
+    let include_thunk = Rc::new(Thunk::new_materialized(
+        Value::Builtin(include_def),
+        Span::origin(),
+    ));
+    env.borrow_mut().insert("include".to_string(), include_thunk);
+
+    // Register `%rust` — the opaque registry sentinel.
+    // Prelude uses `[include %rust "module"]` to get Rust primitive groups.
+    let rust_thunk = Rc::new(Thunk::new_materialized(
+        Value::RustRegistry,
+        Span::origin(),
+    ));
+    env.borrow_mut().insert("%rust".to_string(), rust_thunk);
+
+    env
+}
+
 /// Create the root environment with all builtins registered as `Value::Builtin`.
 pub fn create_root_env() -> Rc<RefCell<Environment>> {
     let env = Rc::new(RefCell::new(Environment::new()));
@@ -1710,10 +1794,12 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
 
 /// Inject internal `builtin-*` aliases into an environment.
 ///
-/// These aliases provide stable names for Rust-native builtin implementations
-/// that prelude wrappers can call even when the user-facing name (e.g., `+`, `map`)
-/// is shadowed. They are internal implementation details and should ONLY be visible
-/// to prelude.llt during its evaluation — user code should use the public wrappers.
+/// Called by `create_stdlib_env_inner` AFTER prelude loading to inject `builtin-*`
+/// stable aliases into the stdlib env. These cannot be re-exported from inside
+/// prelude's letrec dict (that would cause circular dependencies), so they are
+/// injected at the Rust level here.
+///
+/// Also used by unit tests that need closures with `builtin-*` names in scope.
 pub fn inject_prelude_aliases(env: &mut Environment) {
     let aliases: Vec<crate::value::BuiltinDef> = vec![
         builtin!("builtin-lt", builtin_lt, [Strictness::Seq, Strictness::Seq]),
@@ -1832,9 +1918,17 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 }
 
 fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
-    let root_env = create_root_env();
+    // Phase 2: Bootstrap env switch.
+    // The bootstrap env contains ONLY `include` and `%rust`. Prelude uses
+    // `[include %rust "core"]`, `[include %rust "collection"]`, etc. to pull in
+    // the Rust primitives it needs. After the prelude loads, its exported bindings
+    // become the standard library environment that user code inherits.
+    let bootstrap_env = create_bootstrap_env();
 
-    // Create a bootstrap EvalContext
+    // Create a bootstrap EvalContext backed by the bootstrap env.
+    // The bootstrap_ctx uses bootstrap_env as its stdlib_env, which means:
+    //   - `include` resolves to the builtin_include function
+    //   - `%rust` resolves to Value::RustRegistry for [include %rust "..."] calls
     let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| {
             Box::new(crate::error::EvalError::internal(
@@ -1843,19 +1937,63 @@ fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::erro
             ))
         })?;
     let bootstrap_ctx =
-        crate::eval::EvalContext::new(bootstrap_base_dir, Rc::clone(&root_env), false);
+        crate::eval::EvalContext::new(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
 
-    // Create stdlib env as a child of root_env
-    let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&root_env))));
-
-    // Temporarily inject builtin-* aliases for prelude evaluation.
-    inject_prelude_aliases(&mut stdlib_env.borrow_mut());
+    // Create stdlib env as a child of bootstrap_env.
+    // This means: user code (child of stdlib_env) can walk up to bootstrap_env
+    // and see `%rust` — but the prelude acts as the primary scope boundary.
+    // Full isolation (hiding %rust from user scope) is future work.
+    let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+        &bootstrap_env,
+    ))));
 
     // Load prelude — provides all public stdlib functions.
-    // Prelude functions will be evaluated in stdlib_env and will capture
-    // environments that can see builtin-* names.
+    // Prelude uses [include %rust "core"] etc. to access Rust primitives directly,
+    // without relying on all builtins being in the parent env.
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
+
+    // Inject ALL standard builtins into stdlib_env AFTER prelude loading.
+    //
+    // Rationale: user code (child of stdlib_env) expects all builtins to be in scope
+    // (e.g., `str`, `error`, `keys`, `builtin-lt`, `emit`). Since stdlib_env's parent
+    // is bootstrap_env (which has only `include` + `%rust`), we must inject the
+    // builtins here directly rather than relying on the parent chain.
+    //
+    // This preserves backwards compatibility: user code that references raw builtins
+    // directly (e.g., `builtin-add`, `str`, `emit`) still works.
+    //
+    // Note: this does NOT override prelude's dict entries (those were inserted first
+    // and take lexical priority), but it DOES make all builtins accessible via parent
+    // chain lookup when not shadowed by prelude.
+    {
+        let mut env_borrow = stdlib_env.borrow_mut();
+        for def in standard_builtins() {
+            // Only insert if not already present (prelude entries take priority).
+            if env_borrow.get(def.name).is_none() {
+                let thunk = Rc::new(Thunk::new_materialized(
+                    Value::Builtin(def),
+                    Span::origin(),
+                ));
+                env_borrow.insert(def.name.to_string(), thunk);
+            }
+        }
+        // Transport nominal variant constants (Tcp, Udp, etc.)
+        for tag in ["Tcp", "Udp", "UnixStream", "UnixDatagram", "NamedPipe", "Icmp"] {
+            if env_borrow.get(tag).is_none() {
+                let thunk = Rc::new(Thunk::new_materialized(
+                    Value::Variant {
+                        tag: tag.to_string(),
+                        payload: None,
+                    },
+                    Span::origin(),
+                ));
+                env_borrow.insert(tag.to_string(), thunk);
+            }
+        }
+        // builtin-* aliases (inject after standard builtins)
+        inject_prelude_aliases(&mut env_borrow);
+    }
 
     // Load macros — exports tmpl-transformer and helpers used by expand_macros.
     // Loaded after prelude so macro helpers can reference prelude functions.

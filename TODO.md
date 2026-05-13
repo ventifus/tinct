@@ -210,46 +210,6 @@ Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irredu
 
 ---
 
-## Internal Integrity
-
-### primitive-privacy: Rust virtual modules + bootstrap env isolation
-
-See `doc/whatif/builtin-privacy.md` (redesigned 2026-05-13). **Spec chapters:** `doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary`.
-
-**Goal:** No Rust builtin is available to user code by default — not even `+`, `error`, or `=`. The bootstrap env contains only `include` and the injected caps. `%rust` virtual modules give stdlib files scoped access to Rust primitive groups. User code gets only what prelude exports.
-
-**Already done:**
-- [x] Migrate `stdlib/macros.llt`, `stdlib/path.llt`, `stdlib/toml-lite.llt` — no `builtin-*` calls remain
-- [x] `create_root_env()` / `inject_prelude_aliases()` split in `src/builtins.rs`
-- [x] T009 type-checker warning for `builtin-*` references outside `prelude.llt`
-- [x] Remove vestigial `http-get` Rust builtin (HttpConn/reqwest form) — done 2026-05-13
-
-**Phase 1 — `%rust` virtual module infrastructure:**
-- [x] Add `Value::RustRegistry` variant to `src/value.rs`: opaque Rust value (no payload; PartialEq trivially false, Display `"<rust-registry>"`); this is the type of `%rust` — user code cannot construct or name it (`src/value.rs`)
-- [x] Implement `rust_module(name: &str) -> Rc<RefCell<Environment>>` in `src/builtins.rs`: dispatches on module name (`"core"`, `"string"`, `"collection"`, `"io"`, `"net"`, `"math"`, `"datetime"`, `"bytes"`, `"json"`, `"meta"`) to return an env containing exactly the named primitive group; returns error for unknown names (`src/builtins.rs`)
-- [x] Extend the include resolver in `src/imports.rs`: when cap is `Value::RustRegistry`, call `rust_module(path)` instead of doing filesystem I/O; no DirCap check, no BLAKE3 hash, no cycle detection — virtual modules are pure in-memory lookups (`src/imports.rs`)
-- [ ] Remove `builtin-*` aliases entirely from `src/builtins.rs` — `inject_prelude_aliases()` and all its registrations are no longer needed; prelude uses `%rust` modules instead (`src/builtins.rs`)
-
-**Phase 2 — bootstrap env and env chain:**
-- [ ] Replace `create_root_env()` with `create_bootstrap_env()` in `src/builtins.rs`: contains ONLY `include` (the special form binding) and `%rust` (a `Value::RustRegistry` sentinel); no other builtins (`src/builtins.rs`)
-- [ ] Update `build_prelude_env` in `src/imports.rs`: evaluate `prelude.llt` in `create_bootstrap_env()` (prelude uses `[include %rust "core"]` etc. to access primitives); the prelude output env becomes the parent of the user env — user env does NOT inherit any primitive env directly; libdir-loaded stdlib files (io.llt, net.llt, etc.) are evaluated in the user env (which has prelude exports), and they use their own `[include %rust "..."]` at the top of each file to access their primitive group (`src/imports.rs`, `src/builtins.rs`)
-- [ ] **[THE SWITCH]** Gate: after both phases above land, flip `build_prelude_env` to use `create_bootstrap_env()` instead of the current `create_root_env()`; run the full test suite — any primitive not imported via `[include %rust "..."]` in prelude or stdlib will surface as `undefined variable` (`src/imports.rs`)
-
-**Phase 3 — rewrite stdlib files to use `[include %rust "..."]`:**
-- [ ] Rewrite `stdlib/prelude.llt` to open with `[include %rust "core"]`, `[include %rust "string"]`, `[include %rust "collection"]`, `[include %rust "json"]`, `[include %rust "meta"]`; remove all bare references to Rust primitives not in these groups; remove all `builtin-*` references (`stdlib/prelude.llt`)
-- [ ] Rewrite `stdlib/io.llt` to open with `[include %rust "io"]`; all other primitives it uses (str, error, etc.) come from prelude which is already in scope (`stdlib/io.llt`)
-- [ ] Rewrite `stdlib/net.llt` to open with `[include %rust "net"]` (`stdlib/net.llt`)
-- [ ] Rewrite `stdlib/math.llt` to open with `[include %rust "math"]` (`stdlib/math.llt`)
-- [ ] Rewrite `stdlib/datetime.llt` to open with `[include %rust "datetime"]` (`stdlib/datetime.llt`)
-- [ ] Rewrite `stdlib/encoding.llt` to open with `[include %rust "bytes"]` (`stdlib/encoding.llt`)
-- [ ] Rewrite `stdlib/strings.llt` — verify it uses only prelude-exported names; no `%rust` needed if it builds purely on prelude (`stdlib/strings.llt`)
-
-**Phase 4 — cleanup and tests:**
-- [ ] Remove T009 type-checker warning (no longer needed — `builtin-*` names don't exist) (`src/typecheck.rs`)
-- [ ] Tests: tinct file with no includes produces `undefined variable` for `+`, `error`, `map`; `prelude.llt` itself works; `[include %libdir "io.llt"]` works; user code cannot call `[include %rust "io"]` (undefined variable: `%rust`) (`tests/corpus/eval/`)
-
----
-
 ## Miscellaneous
 
 ### misc-gaps: Miscellaneous small gaps across the codebase
