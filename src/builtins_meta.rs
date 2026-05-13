@@ -14,7 +14,7 @@
 //! - `type-of`: Return the runtime type name
 //! - `tag-of`: Extract tag from a Variant
 //! - `variant`: Create a unit variant
-//! - `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`: Type predicates
+//! - `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`: Type predicates (plus `num?`, `record?`, `map?` in LLT stdlib)
 //!
 //! **AST and evaluation:**
 //! - `eval-ast`: Reconstruct and evaluate AST from dict representation
@@ -600,20 +600,7 @@ pub(crate) fn builtin_float_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     ok_val(Value::Bool(matches!(val, Value::Float(_))), call_span)
 }
 
-/// `num?`: Return true if the argument is an Int or Float.
-pub(crate) fn builtin_num_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("num?", args, named, &ctx, call_span)?;
-    ok_val(
-        Value::Bool(matches!(val, Value::Int(_) | Value::Float(_))),
-        call_span,
-    )
-}
+// num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
 
 /// `str?`: Return true if the argument is a String.
 pub(crate) fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -686,37 +673,7 @@ pub(crate) fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     )
 }
 
-/// `record?`: Return true if the argument is a Dict (Record at runtime).
-/// Note: All runtime dicts are Records in the current model; type-level distinction only.
-pub(crate) fn builtin_record_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("record?", args, named, &ctx, call_span)?;
-    ok_val(
-        Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
-        call_span,
-    )
-}
-
-/// `map?`: Return true if the argument is a Dict (Map at runtime).
-/// Note: All runtime dicts are Records in the current model; type-level distinction only.
-pub(crate) fn builtin_map_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("map?", args, named, &ctx, call_span)?;
-    ok_val(
-        Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
-        call_span,
-    )
-}
+// record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
 
 /// `fn?`: Return true if the argument is callable (Function or Builtin).
 pub(crate) fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -758,10 +715,10 @@ fn type_name(val: &Value) -> String {
         Value::Duration(_) => "Duration",
         Value::ClockCap(_) => "ClockCap",
         Value::Timezone(_) => "Timezone",
-        Value::HttpConn { .. } => "HttpConn",
         Value::QuicSession(_) => "QuicSession",
         Value::Http2Session { .. } => "Http2Session",
         Value::Http3Session(_) => "Http3Session",
+        Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
         Value::DatagramHandle { .. } => "DatagramHandle",
     }
     .to_string()

@@ -266,14 +266,6 @@ Capability flags (`Readable`, `Writable`, `Listable`, `Statable`, `Appendable`, 
 
 ## Standard Library Boundary
 
-### stdlib-tinct-migration: Move redundant Rust builtins to native tinct
-
-Findings from the builtin boundary audit (2026-05-13). These Rust builtins are unnecessary — they can be expressed entirely using existing primitives with no new Rust code.
-
-- [ ] Replace `record?` Rust builtin with a tinct alias in `stdlib/prelude.llt`: `record?: dict?` — at runtime `record?` and `dict?` are identical; the distinction is type-level only, already handled by the type checker (`stdlib/prelude.llt`, `src/builtins_meta.rs`)
-- [ ] Replace `map?` Rust builtin with a tinct alias in `stdlib/prelude.llt`: `map?: dict?` — same reasoning as `record?`; remove both from `standard_builtins()` and `TypeEnv::with_builtins()` after the tinct aliases are verified (`stdlib/prelude.llt`, `src/builtins_meta.rs`, `src/type_env.rs`)
-- [ ] Replace `num?` Rust builtin with a tinct definition in `stdlib/prelude.llt`: `num?: [fn [x] [or [int? x] [float? x]]]` using existing `int?`, `float?`, `or`; remove from `standard_builtins()` (`stdlib/prelude.llt`, `src/builtins_meta.rs`)
-
 ### stdlib-io-tinct-migration: Move I/O builtins that don't need to be in Rust
 
 Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irreducible syscall/opaque-type primitives). These specific ones do not.

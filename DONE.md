@@ -351,6 +351,16 @@ Foundation for the CEK machine migration. Converted `materialize()` from recursi
 - [x] Design the stdlib loading mechanism (`include_str!` prelude, Rust builtins → Tinct stdlib → user code environment chain)
 - [x] Update task list to reflect the split: Rust-native builtins vs Tinct stdlib (builtins-core = Rust builtins, stdlib = Tinct already in prelude.llt)
 
+## Standard Library Boundary
+
+### stdlib-tinct-migration: Move redundant Rust builtins to native tinct
+
+Findings from the builtin boundary audit (2026-05-13). These Rust builtins are unnecessary — they can be expressed entirely using existing primitives with no new Rust code.
+
+- [x] Replace `record?` Rust builtin with a tinct alias in `stdlib/prelude.llt`: `record?: dict?` — at runtime `record?` and `dict?` are identical; the distinction is type-level only, already handled by the type checker (`stdlib/prelude.llt`, `src/builtins_meta.rs`)
+- [x] Replace `map?` Rust builtin with a tinct alias in `stdlib/prelude.llt`: `map?: dict?` — same reasoning as `record?`; remove both from `standard_builtins()` and `TypeEnv::with_builtins()` after the tinct aliases are verified (`stdlib/prelude.llt`, `src/builtins_meta.rs`, `src/type_env.rs`)
+- [x] Replace `num?` Rust builtin with a tinct definition in `stdlib/prelude.llt`: `num?: [fn [x] [or [int? x] [float? x]]]` using existing `int?`, `float?`, `or`; remove from `standard_builtins()` (`stdlib/prelude.llt`, `src/builtins_meta.rs`)
+
 ## Stdlib Validation & Expansion
 
 The Tinct stdlib is implemented in `stdlib/prelude.llt` (already working; 79 corpus test files cover stdlib functions). This milestone validates and expands it. Rust-native builtins (strings, numeric conversion) were registered in builtins-core. Tinct-implemented functions (`and`, `or`, `map`, `filter`, etc.) are already in the prelude.

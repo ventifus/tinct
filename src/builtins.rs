@@ -13,7 +13,7 @@
 //! **Numeric:** `floor`, `round`
 //! **Parsing:** `to-int`, `to-float`
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
-//! **Type introspection:** `type-of`, `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`
+//! **Type introspection:** `type-of`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` (plus `num?`, `record?`, `map?` in LLT stdlib)
 //! **Schema validation:** `validate` (runtime structural validation with constraint checking)
 //! **I/O:** `from-json`, `include`
 //! **Sequences:** `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
@@ -365,9 +365,8 @@ pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_big_int, builtin_bool_check, builtin_bytes_check, builtin_decimal,
     builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast, builtin_float_check,
     builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include,
-    builtin_int_check, builtin_llt_repr, builtin_map_check, builtin_null_check, builtin_num_check,
-    builtin_record_check, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of,
-    builtin_until, builtin_validate, builtin_variant,
+    builtin_int_check, builtin_llt_repr, builtin_null_check, builtin_str_check, builtin_tag_of,
+    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, upper, lower, trim, str-length, str-contains?,
@@ -1104,14 +1103,13 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("variant", builtin_variant, [Strictness::Seq]),
         builtin!("int?", builtin_int_check, [Strictness::Seq]),
         builtin!("float?", builtin_float_check, [Strictness::Seq]),
-        builtin!("num?", builtin_num_check, [Strictness::Seq]),
+        // num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
         builtin!("str?", builtin_str_check, [Strictness::Seq]),
         builtin!("bool?", builtin_bool_check, [Strictness::Seq]),
         builtin!("bytes?", builtin_bytes_check, [Strictness::Seq]),
         builtin!("null?", builtin_null_check, [Strictness::Seq]),
         builtin!("dict?", builtin_dict_check, [Strictness::Seq]),
-        builtin!("record?", builtin_record_check, [Strictness::Seq]),
-        builtin!("map?", builtin_map_check, [Strictness::Seq]),
+        // record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
         builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
         builtin!("seq?", builtin_seq_check, [Strictness::Seq]),
         // Schema validation
@@ -6189,7 +6187,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 186,
+            count, 183,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6237,7 +6235,7 @@ mod tests {
         assert!(names.contains(&"llt-repr"), "missing llt-repr");
         assert!(names.contains(&"int?"), "missing int?");
         assert!(names.contains(&"float?"), "missing float?");
-        assert!(names.contains(&"num?"), "missing num?");
+        // num?, record?, map? are now LLT-implemented in stdlib/prelude.llt (not builtins)
         assert!(names.contains(&"str?"), "missing str?");
         assert!(names.contains(&"bool?"), "missing bool?");
         assert!(names.contains(&"null?"), "missing null?");
@@ -6396,8 +6394,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            186,
-            "expected 186 builtins, got {}",
+            183,
+            "expected 183 builtins, got {} (num?, record?, map? are now LLT-implemented)",
             names.len()
         );
     }

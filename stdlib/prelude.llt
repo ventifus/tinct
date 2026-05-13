@@ -51,7 +51,7 @@
 #     Numeric:     floor
 #     Runtime:     error  try  type-of
 #     Sequences:   each  each-key  each-kv
-#     Predicates:  int?  float?  num?  str?  bool?  null?  dict?  fn?  seq?
+#     Predicates:  int?  float?  str?  bool?  null?  dict?  fn?  seq?
 #
 # Design patterns:
 #   Shadowable wrappers — functions like <, =, +, if, filter, map etc.
@@ -1025,10 +1025,34 @@ compose@[doc: "Compose two functions"]: [fn@Fn [f@Fn g@Fn] [fn [x] [f [g x]]]]
 # Type Predicates
 # ============================================================================
 
-# int?, float?, num?, str?, bool?, null?, dict?, fn?, seq? are Rust-native builtins.
+# int?, float?, str?, bool?, null?, dict?, fn?, seq? are Rust-native builtins.
 # They are NOT defined here — the native builtins take effect directly.
 # See src/builtins.rs for implementations. Each materializes its argument and
 # checks the Value variant. fn? returns true for both Function and Builtin.
+
+# num?: true if the argument is numeric (Int or Float).
+# Implemented in LLT as the disjunction of int? and float?.
+# Type: (Any -> Bool)
+# Example: [num? 42] => true
+# Example: [num? 3.14] => true
+# Example: [num? "x"] => false
+num?@[doc: "Check if value is numeric (Int or Float)"]: [fn@Bool [x] [or [int? x] [float? x]]]
+
+# record?: true if the argument is a Dict (Record at type level, Dict at runtime).
+# At runtime, all dicts are Records — the distinction is type-checker-only.
+# Delegates to dict? since all runtime Records are Dicts.
+# Type: (Any -> Bool)
+# Example: [record? [a: 1]] => true
+# Example: [record? 42] => false
+record?@[doc: "Check if value is a record (Dict at runtime)"]: dict?
+
+# map?: true if the argument is a Dict (Map at type level, Dict at runtime).
+# At runtime, all dicts are Maps — the distinction is type-checker-only.
+# Delegates to dict? since all runtime Maps are Dicts.
+# Type: (Any -> Bool)
+# Example: [map? [a: 1]] => true
+# Example: [map? 42] => false
+map?@[doc: "Check if value is a map (Dict at runtime)"]: dict?
 
 # Check if a value is a "list-shaped dict" — i.e., a dict whose keys are all integers.
 # Returns true for [] (empty dict — vacuously true).
