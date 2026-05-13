@@ -116,13 +116,13 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 - [x] Fix `resolve_instance` in `src/type_env.rs`: freshen all free type vars in `inst.instance_type` via `instantiate_at_level` before unification — current code does NOT do this, causing `b` in `AppendableSeq [Seq b]` to leak across call sites; capture `temp_subst` bindings after successful unification (currently discarded after `is_ok()` check); apply `temp_subst` to the instance's method implementations so the concrete element type `T` threads through `append`/`empty`; this fix is general — it enables any parameterized instance head, not only Operator-kinded (`src/type_env.rs`)
 
 **Phase 2 — Mappable migration (Operator-kinded; needs kind_env wiring from hkt-kind-inference):**
-- [ ] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt`; `f@Operator` on the class param now works after hkt-kind-inference (`stdlib/prelude.llt`)
-- [ ] Remove hardcoded `Mappable` placeholder `ClassDecl` from `InferState::new()` in `src/types.rs` — the class is now declared in prelude and registered via normal class-loading; also remove `Mappable` from the `satisfies_constraint` hardcoded match in `src/typecheck.rs` only after end-to-end verification that `map` on a user-defined `Mappable` type works (`src/types.rs`, `src/typecheck.rs`)
+- [x] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt`; `f@Operator` on the class param now works after hkt-kind-inference (`stdlib/prelude.llt`)
+- [x] Remove hardcoded `Mappable` placeholder `ClassDecl` from `InferState::new()` in `src/types.rs` — the class is now declared in prelude and registered via normal class-loading; also remove `Mappable` from the `satisfies_constraint` hardcoded match in `src/typecheck.rs` only after end-to-end verification that `map` on a user-defined `Mappable` type works (`src/types.rs`, `src/typecheck.rs`)
 - [ ] Update `$map`/`$filter` type signatures in `src/type_env.rs` to use `Mappable f` constraint instead of hardcoded dual-dispatch (`src/type_env.rs`)
 
 **Phase 3 — Appendable migration (Kind::Type; simpler, no Operator dependency):**
-- [ ] Write `Appendable` class (kind-`*`) + `AppendableStr`/`AppendableRecord` instances + parameterized `AppendableSeq [Seq b]` instance (relies on resolve_instance freshening) in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
-- [ ] Remove `Appendable` from `satisfies_constraint` hardcoded match; update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/typecheck.rs`, `src/type_env.rs`)
+- [x] Write `Appendable` class (kind-`*`) + `AppendableStr`/`AppendableRecord` instances + parameterized `AppendableSeq [Seq b]` instance (relies on resolve_instance freshening) in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
+- [x] Remove `Appendable` from `satisfies_constraint` hardcoded match; update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/typecheck.rs`, `src/type_env.rs`)
 
 **Phase 4 — Simple constraint migrations (Kind::Type; no HKT dependency beyond foundation):**
 - [ ] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float`; remove from `satisfies_constraint` in `src/typecheck.rs` and `src/type_unify.rs` (`stdlib/prelude.llt`, `src/typecheck.rs`)
@@ -298,64 +298,50 @@ Five new Rust primitives identified by the boundary audit as the highest-leverag
 
 ## Internal Integrity
 
-### primitive-privacy: Hide all Rust primitives from user code behind prelude.llt
+### primitive-privacy: Rust virtual modules + bootstrap env isolation
 
-**Goal:** User code sees only names exported by `prelude.llt`. Raw Rust primitives (the entire `standard_builtins()` registry) are invisible to user code. No backwards-compatibility concern — tinct has no stable public API yet.
+See `doc/whatif/builtin-privacy.md` (redesigned 2026-05-13). **Spec chapters:** `doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary`.
 
-**Design (from `doc/whatif/builtin-privacy.md` Approach A, extended to full primitive set):**
-
-```
-prelude_eval_env = create_root_env() + inject_prelude_aliases()
-  (prelude.llt evaluates here, can see all Rust builtins + builtin-* aliases)
-  ↓
-prelude_output_env = result of evaluating prelude.llt
-  (only names prelude.llt defines — no Rust builtins leak through)
-  ↓
-user env
-  (only sees prelude exports)
-```
-
-`prelude.llt` is responsible for explicitly exporting every name it wants users to have access to. For Rust builtins with no tinct wrapper (e.g., `emit`, `error`, `type-of`, `from-json`), prelude.llt adds a pass-through: `emit: builtin-emit` or defines a proper wrapper. The builtin-audit sprint (below) identifies what's missing.
+**Goal:** No Rust builtin is available to user code by default — not even `+`, `error`, or `=`. The bootstrap env contains only `include` and the injected caps. `%rust` virtual modules give stdlib files scoped access to Rust primitive groups. User code gets only what prelude exports.
 
 **Already done:**
-- [x] Migrate `stdlib/macros.llt`, `stdlib/path.llt`, `stdlib/toml-lite.llt` to prelude wrappers — no `builtin-*` calls remain
-- [x] Split `create_root_env()` / `inject_prelude_aliases()` in `src/builtins.rs`
-- [x] Type-checker warning `T009` for `builtin-*` references outside `prelude.llt`
+- [x] Migrate `stdlib/macros.llt`, `stdlib/path.llt`, `stdlib/toml-lite.llt` — no `builtin-*` calls remain
+- [x] `create_root_env()` / `inject_prelude_aliases()` split in `src/builtins.rs`
+- [x] T009 type-checker warning for `builtin-*` references outside `prelude.llt`
+- [x] Remove vestigial `http-get` Rust builtin (HttpConn/reqwest form) — done 2026-05-13
 
-**Remaining (env isolation — gate on `stdlib-primitive-audit`):**
-- [ ] **[THE SWITCH]** Update prelude loading in `src/imports.rs` (`build_prelude_env`): build `prelude_eval_env` = `create_root_env()` + `inject_prelude_aliases()`; evaluate `prelude.llt` in `prelude_eval_env`; the output of prelude evaluation becomes the parent of the user env — user env does NOT inherit `create_root_env()` directly; after this change, any builtin not re-exported by prelude or stdlib becomes an `undefined variable` error in user code (`src/imports.rs`, `src/builtins.rs`)
-- [ ] Add all user-facing Rust primitives that lack prelude wrappers as explicit pass-throughs or wrappers in `stdlib/prelude.llt` (see `stdlib-primitive-audit` sprint for the complete list) — gate on audit results (`stdlib/prelude.llt`)
+**Phase 1 — `%rust` virtual module infrastructure:**
+- [ ] Add `Value::RustRegistry` variant to `src/value.rs`: opaque Rust value (no payload; PartialEq trivially false, Display `"<rust-registry>"`); this is the type of `%rust` — user code cannot construct or name it (`src/value.rs`)
+- [ ] Implement `rust_module(name: &str) -> Rc<RefCell<Environment>>` in `src/builtins.rs`: dispatches on module name (`"core"`, `"string"`, `"collection"`, `"io"`, `"net"`, `"math"`, `"datetime"`, `"bytes"`, `"json"`, `"meta"`) to return an env containing exactly the named primitive group; returns error for unknown names (`src/builtins.rs`)
+- [ ] Extend the include resolver in `src/imports.rs`: when cap is `Value::RustRegistry`, call `rust_module(path)` instead of doing filesystem I/O; no DirCap check, no BLAKE3 hash, no cycle detection — virtual modules are pure in-memory lookups (`src/imports.rs`)
+- [ ] Remove `builtin-*` aliases entirely from `src/builtins.rs` — `inject_prelude_aliases()` and all its registrations are no longer needed; prelude uses `%rust` modules instead (`src/builtins.rs`)
 
-**Depends on:** `stdlib-primitive-audit`
-- [x] Remove vestigial Rust `http-get` builtin (the `Value::HttpConn`/reqwest form) — done 2026-05-13: deleted `builtin_http_get` (107 lines), removed `Value::HttpConn` variant, removed from `standard_builtins()` and `TypeEnv`, removed from `builtins_meta.rs` and `lib.rs` JSON serialization (`src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`, `src/value.rs`)
-- [ ] Tests: user code referencing a raw builtin name → `undefined variable` error (pick 3–5 builtins not re-exported by prelude as test cases); `prelude.llt` itself still works; corpus tests still pass (`tests/corpus/eval/`)
+**Phase 2 — bootstrap env and env chain:**
+- [ ] Replace `create_root_env()` with `create_bootstrap_env()` in `src/builtins.rs`: contains ONLY `include` (the special form binding) and `%rust` (a `Value::RustRegistry` sentinel); no other builtins (`src/builtins.rs`)
+- [ ] Update `build_prelude_env` in `src/imports.rs`: evaluate `prelude.llt` in `create_bootstrap_env()` (prelude uses `[include %rust "core"]` etc. to access primitives); the prelude output env becomes the parent of the user env — user env does NOT inherit any primitive env directly; libdir-loaded stdlib files (io.llt, net.llt, etc.) are evaluated in the user env (which has prelude exports), and they use their own `[include %rust "..."]` at the top of each file to access their primitive group (`src/imports.rs`, `src/builtins.rs`)
+- [ ] **[THE SWITCH]** Gate: after both phases above land, flip `build_prelude_env` to use `create_bootstrap_env()` instead of the current `create_root_env()`; run the full test suite — any primitive not imported via `[include %rust "..."]` in prelude or stdlib will surface as `undefined variable` (`src/imports.rs`)
 
-### stdlib-primitive-audit: Add all missing raw-primitive re-exports to prelude.llt
+**Phase 3 — rewrite stdlib files to use `[include %rust "..."]`:**
+- [ ] Rewrite `stdlib/prelude.llt` to open with `[include %rust "core"]`, `[include %rust "string"]`, `[include %rust "collection"]`, `[include %rust "json"]`, `[include %rust "meta"]`; remove all bare references to Rust primitives not in these groups; remove all `builtin-*` references (`stdlib/prelude.llt`)
+- [ ] Rewrite `stdlib/io.llt` to open with `[include %rust "io"]`; all other primitives it uses (str, error, etc.) come from prelude which is already in scope (`stdlib/io.llt`)
+- [ ] Rewrite `stdlib/net.llt` to open with `[include %rust "net"]` (`stdlib/net.llt`)
+- [ ] Rewrite `stdlib/math.llt` to open with `[include %rust "math"]` (`stdlib/math.llt`)
+- [ ] Rewrite `stdlib/datetime.llt` to open with `[include %rust "datetime"]` (`stdlib/datetime.llt`)
+- [ ] Rewrite `stdlib/encoding.llt` to open with `[include %rust "bytes"]` (`stdlib/encoding.llt`)
+- [ ] Rewrite `stdlib/strings.llt` — verify it uses only prelude-exported names; no `%rust` needed if it builds purely on prelude (`stdlib/strings.llt`)
 
-**Audit complete (2026-05-13).** Of ~180 registered builtins, ~130 have no prelude.llt wrapper.
+**Phase 4 — cleanup and tests:**
+- [ ] Remove T009 type-checker warning (no longer needed — `builtin-*` names don't exist) (`src/typecheck.rs`)
+- [ ] Tests: tinct file with no includes produces `undefined variable` for `+`, `error`, `map`; `prelude.llt` itself works; `[include %libdir "io.llt"]` works; user code cannot call `[include %rust "io"]` (undefined variable: `%rust`) (`tests/corpus/eval/`)
 
-**Key architectural point:** `prelude.llt` is the single choke point. When a user does `[include %libdir "net.llt"]`, net.llt is evaluated in the user env — which after the switch only has prelude exports. So if `connect` and `tls-layer` aren't in prelude, net.llt gets `undefined variable: connect`. Every primitive that any stdlib file needs must be re-exported by prelude first. The stdlib modules (io.llt, net.llt, datetime.llt) build higher-level tinct APIs on top of what prelude exposes — they do not independently wrap Rust primitives.
+### stdlib-primitive-audit: Verify all stdlib modules use `%rust` groups cleanly
 
-**All missing re-exports go in `stdlib/prelude.llt`**, grouped by domain for readability. Each is a simple pass-through (`name: name`) unless a wrapper adds value.
+Post-rewrite verification sprint — runs after `primitive-privacy` Phase 3 lands.
 
-- [ ] General string ops: re-export `str`, `split`, `replace`, `trim`, `upper`, `lower`, `starts-with?`, `ends-with?`, `str-chars`, `str-length`, `str-slice`, `str-contains?` (`stdlib/prelude.llt`)
-- [ ] Collection ops: re-export `keys`, `length`, `merge`, `append`, `each`, `each-key`, `each-kv` (`stdlib/prelude.llt`)
-- [ ] Numeric/type: re-export `floor`, `round`, `to-int`, `to-float`, `float`, `type-of` (`stdlib/prelude.llt`)
-- [ ] Type predicates: re-export `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?`, `record?`, `map?` — audit found these are NOT in prelude's public dict despite being used throughout (`stdlib/prelude.llt`)
-- [ ] Error/control: verify `error`, `try`, `eval`, `apply`, `force`, `until` are explicitly in the public dict (they're used in prelude but may not be re-exported as public names) (`stdlib/prelude.llt`)
-- [ ] Data: re-export `from-json`, `validate`, `emit`, `env` (`stdlib/prelude.llt`)
-- [ ] Bytes/encoding: re-export `bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?`, `str-bytes`, `bytes-str`, `char-code`, `chr` — needed by encoding.llt which is loaded at startup (`stdlib/prelude.llt`)
-- [ ] Math primitives: re-export `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?`, `band`, `bor`, `bxor`, `shl`, `shr` — needed by math.llt which is loaded at startup (`stdlib/prelude.llt`)
-- [ ] I/O primitives: re-export `open`, `slurp`, `lines`, `write`, `write-atomic`, `write-handle`, `flush`, `close`, `seek`, `seek-end`, `position`, `list-dir`, `stat`, `make-dir`, `remove`, `rename`, `link`, `read-link`, `narrow`, `revocable`, `revoke-cap`, `cap-data`, `has-cap?` — needed by io.llt (`stdlib/prelude.llt`)
-- [ ] Network primitives: re-export `connect`, `tls-layer`, `tls-peer-cert`, `spki-pin`, `send-datagram`, `recv-datagram`, `http-request`, `http2-session`, `http3-session`, `quic-session`, `quic-open-stream`, `quic-open-datagram`, `icmp-ping`, `uri`, `url`, `urn` — needed by net.llt (`stdlib/prelude.llt`)
-- [ ] Date-time primitives: re-export all timestamp/duration/timezone ops (`parse-timestamp`, `format-timestamp`, `timestamp->unix`, `unix->timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp<?`/`>`/`=?`, `timestamp-year`…`timestamp-second`, `timestamp-parts`, `duration-nanos`…`duration->nanos`, `load-tz`, `timestamp-in-tz`, `local->timestamp`, `local-tz-name`) — needed by datetime.llt (`stdlib/prelude.llt`)
-
-**Intentionally NOT re-exported (internal or meta-language):**
-- `eval-ast`, `gensym` — macro infrastructure internal to `src/expand.rs`
-- `llt-repr`, `tag-of`, `variant` — debugging/introspection; document as internal
-- `decimal`, `big-int` — no dedicated stdlib module yet; leave raw until numeric.llt exists
-- `proxy` — advanced metaprogramming; leave raw
-- `include` — special form consumed by parser, not a callable function
+- [ ] Verify `stdlib/prelude.llt` imports exactly: `rust::core`, `rust::string`, `rust::collection`, `rust::json`, `rust::meta`; no bare Rust primitive references outside these groups; no `builtin-*` names remain (`stdlib/prelude.llt`)
+- [ ] Verify `stdlib/io.llt`, `stdlib/net.llt`, `stdlib/math.llt`, `stdlib/datetime.llt`, `stdlib/encoding.llt` each open with exactly one `[include %rust "..."]` and build entirely on prelude exports + their imported group (`stdlib/*.llt`)
+- [ ] Verify that intentionally unexported primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) are not accessible from user code — write corpus tests confirming `undefined variable` (`tests/corpus/eval/`)
+- [ ] Update `doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary` to document the `%rust` virtual module system and which modules each stdlib file imports (`doc/11-stdlib.md`)
 
 ---
 

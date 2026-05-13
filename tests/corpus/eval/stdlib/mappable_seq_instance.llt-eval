@@ -1,0 +1,8 @@
+# MappableSeq instance: fmap applies a function over a Seq.
+# The instance method dict is callable directly.
+[
+  inst: [instance [Mappable Seq] fmap: [fn [f xs] [builtin-map f xs]]]
+  result: [collect [inst.fmap [fn [x] [+ x 10]] [builtin-range 0 3]]]
+]
+=== out
+Dict({"inst": Dict({"fmap": Function(f, xs)}), "result": Dict({0: Int(10), 1: Int(11), 2: Int(12)})})

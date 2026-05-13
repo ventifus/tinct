@@ -1,0 +1,5 @@
+# Mappable class declaration evaluates to an empty dict (marker value).
+# The class registers "Mappable" in the runtime class registry.
+[class [Mappable f]]
+=== out
+Dict({})
