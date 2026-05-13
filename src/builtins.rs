@@ -369,8 +369,8 @@ pub(crate) use crate::builtins_meta::{
     builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
-// String builtins: str, split, replace, upper, lower, trim, str-length, str-contains?,
-// str-slice, str-chars, starts-with?, ends-with?.
+// String builtins: str, split, replace, upper, lower, trim, trim-start, trim-end,
+// str-length, str-contains?, str-index-of, str-slice, str-chars, starts-with?, ends-with?.
 // Implementations live in builtins_string.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 #[cfg(test)]
@@ -378,8 +378,8 @@ pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 pub(crate) use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_ends_with, builtin_lower,
     builtin_replace, builtin_split, builtin_starts_with, builtin_str, builtin_str_bytes,
-    builtin_str_chars, builtin_str_contains, builtin_str_length, builtin_str_slice, builtin_trim,
-    builtin_upper,
+    builtin_str_chars, builtin_str_contains, builtin_str_index_of, builtin_str_length,
+    builtin_str_slice, builtin_trim, builtin_trim_end, builtin_trim_start, builtin_upper,
 };
 
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
@@ -1036,6 +1036,13 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("chr", builtin_chr, [Strictness::Seq]),
         builtin!("str-bytes", builtin_str_bytes, [Strictness::Seq]),
         builtin!("bytes-str", builtin_bytes_str, [Strictness::Seq]),
+        builtin!(
+            "str-index-of",
+            builtin_str_index_of,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("trim-start", builtin_trim_start, [Strictness::Seq]),
+        builtin!("trim-end", builtin_trim_end, [Strictness::Seq]),
         // Bytes
         builtin!("bytes", builtin_bytes, []),
         builtin!(
@@ -6187,7 +6194,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 183,
+            count, 186,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }

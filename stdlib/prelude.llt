@@ -285,24 +285,6 @@ try-or-impl: [fn [try-result default]
         [Ok v] v
         [Err _] default]]
 
-# ============================================================================
-# Stringing search helpers (only depend on builtins + siblings)
-# ============================================================================
-
-str-find-impl: [fn@Int [haystack@Stringing needle@Stringing i@Int needle-len@Int haystack-len@Int]
-    [builtin-if [builtin-lt i haystack-len]
-        [str-find-check haystack needle i needle-len haystack-len]
-        [builtin-sub 0 1]]]
-
-str-find-check: [fn@Int [haystack@Stringing needle@Stringing i@Int needle-len@Int haystack-len@Int]
-    [builtin-if [builtin-eq needle-len 0]
-        0
-        [builtin-if [builtin-lt [builtin-add i needle-len] [builtin-add haystack-len 1]]
-            [builtin-if [builtin-eq [str-slice haystack i [builtin-add i needle-len]] needle]
-                i
-                [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]
-            [str-find-impl haystack needle [builtin-add i 1] needle-len haystack-len]]]]
-
 ]
 
 # ============================================================================
@@ -1253,15 +1235,14 @@ str-repeat@[doc: "Repeat string n times"]: [fn@String [s@String n@Int]
   [builtin-reduce [fn [acc _] [str acc s]] "" [builtin-range 0 n]]]
 
 # Find the first occurrence of needle in haystack.
-# Returns the character index of the first match, or -1 if not found.
+# Returns the byte index of the first match, or -1 if not found.
+# For ASCII strings, byte index equals character index.
 # str-find: String -> String -> Int
 # assert: [str-find "hello world" "world"] => 6
 # assert: [str-find "hello world" "x"] => -1
 # assert: [str-find "abc" ""] => 0
-str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1"]: [fn@Int [haystack@Stringing needle@Stringing]
-  [builtin-if [str-contains? haystack needle]
-    [str-find-impl haystack needle 0 [length needle] [length haystack]]
-    [builtin-sub 0 1]]]
+str-find@[doc: "Find first occurrence of needle in haystack; returns byte index or -1"]: [fn@Int [haystack@String needle@String]
+  [str-index-of haystack needle]]
 
 # ============================================================================
 # Numeric Range Predicates
