@@ -532,6 +532,54 @@ pub(crate) fn resolve_annotation(
             resolve_type_name(name, env, span, state, ann_mapping, &row_ref)
         }
         Annotation::PropertyDict(entries) => {
+            // Check for @[label: name] named Label-kinded TypeVar form.
+            // When the dict has exactly one entry with key "label" and a bare-name value,
+            // create a named Label-kinded TypeVar and register it in kind_env and ann_mapping.
+            if entries.len() == 1 {
+                if let Some(key_expr) = &entries[0].node.key {
+                    if let Expr::Str(key_name) = &key_expr.node {
+                        if key_name == "label" {
+                            // Extract the label TypeVar name from the value
+                            if let Expr::VarRef { name, .. } = &entries[0].node.value.node {
+                                // Check if this is a lowercase name (TypeVar convention)
+                                if name.starts_with(|c: char| c.is_lowercase()) {
+                                    // Create or get the TypeVar for this label name
+                                    let type_var = if let Some(ref mut mapping) = ann_mapping {
+                                        if let Some(existing_var) = mapping.get(name) {
+                                            existing_var.clone()
+                                        } else {
+                                            let fresh = format!("_t{}", state.name_counter);
+                                            state.name_counter += 1;
+                                            state.levels.insert(fresh.clone(), state.level);
+                                            state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
+                                            mapping.insert(name.clone(), fresh.clone());
+                                            fresh
+                                        }
+                                    } else {
+                                        return Err(TypeError::new(
+                                            "label annotation requires an annotation mapping context",
+                                            span,
+                                        ));
+                                    };
+                                    let level = *state.levels.get(&type_var).unwrap_or(&state.level);
+                                    return Ok(Type::TypeVar(type_var, level));
+                                } else {
+                                    return Err(TypeError::new(
+                                        "label: value must be a lowercase type variable name",
+                                        entries[0].node.value.span,
+                                    ));
+                                }
+                            } else {
+                                return Err(TypeError::new(
+                                    "label: value must be a bare name (type variable)",
+                                    entries[0].node.value.span,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Collect positional entries (key=None) for union type construction.
             // Guard: if entries look like a type dict (e.g. [Fn@Return [Params]]
             // function type pattern, or a record type with all keyed entries), delegate
@@ -906,6 +954,16 @@ pub(crate) fn resolve_type_name(
             "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
             span,
         )),
+        "Label" => {
+            // Anonymous Label-kinded TypeVar (parallel to `@Operator` error above).
+            // Create a fresh system-generated name like `_label_0`.
+            // This is for when the label TypeVar is not referenced elsewhere (e.g., `get`/`get-or`).
+            let fresh = format!("_label_{}", state.name_counter);
+            state.name_counter += 1;
+            state.levels.insert(fresh.clone(), state.level);
+            state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
+            Ok(Type::TypeVar(fresh, state.level))
+        }
         "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
         "Null" => Ok(Type::Record(Row {
             fields: HashMap::new(),
