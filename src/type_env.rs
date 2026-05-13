@@ -685,6 +685,7 @@ impl fmt::Display for Type {
             Type::QuicSession => write!(f, "QuicSession"),
             Type::Http2Session => write!(f, "Http2Session"),
             Type::Http3Session => write!(f, "Http3Session"),
+            Type::QuicDatagramHandle => write!(f, "QuicDatagramHandle"),
             Type::DatagramHandle => write!(f, "DatagramHandle"),
             Type::Union(members) => {
                 for (i, member) in members.iter().enumerate() {
@@ -886,7 +887,15 @@ impl InstanceEnv {
 
     /// Resolve an instance for the given class and target type.
     /// Attempts to unify each registered instance's head type with the target type.
-    /// Returns the matching instance declaration if found, or None if no match.
+    /// Returns a freshened instance declaration if found, with method types substituted
+    /// by the unification, or None if no match.
+    ///
+    /// This performs the following steps for each candidate instance:
+    /// 1. Freshen all type variables in the instance type using `instantiate_at_level`
+    ///    (prevents type variable leakage across instance resolutions)
+    /// 2. Attempt unification of the freshened instance type with the target type
+    /// 3. If successful, apply the resulting substitution to the instance's method types
+    ///    and return the freshened instance
     ///
     /// This is a simple unification-based resolution: it tries each instance in order
     /// and returns the first that unifies with the target type. More sophisticated
@@ -897,7 +906,7 @@ impl InstanceEnv {
         class_name: &str,
         target_type: &Type,
         state: &mut InferState,
-    ) -> Option<&InstanceDecl> {
+    ) -> Option<InstanceDecl> {
         // Collect all instances for this class
         let mut candidates = Vec::new();
 
@@ -921,12 +930,16 @@ impl InstanceEnv {
 
         // Try to unify with each candidate
         for inst in candidates {
-            // Create a fresh substitution for this unification attempt
+            // 1. Freshen the instance type to prevent variable leakage
+            //    (e.g., `b` in `AppendableSeq [Seq b]` must be fresh for each resolution attempt)
+            let freshened_instance_type = instantiate_at_level(&inst.instance_type, state);
+
+            // 2. Create a fresh substitution for this unification attempt
             let mut temp_subst = state.subst.clone();
 
-            // Attempt unification
+            // 3. Attempt unification
             if unify(
-                &inst.instance_type,
+                &freshened_instance_type,
                 target_type,
                 &mut temp_subst,
                 state,
@@ -934,7 +947,22 @@ impl InstanceEnv {
             )
             .is_ok()
             {
-                return Some(inst);
+                // 4. Apply the substitution to method types
+                //    This threads concrete types from the unification into the methods
+                let freshened_method_types: HashMap<String, Type> = inst
+                    .method_types
+                    .iter()
+                    .map(|(name, ty)| {
+                        let freshened_ty = instantiate_at_level(ty, state);
+                        (name.clone(), temp_subst.apply(&freshened_ty))
+                    })
+                    .collect();
+
+                return Some(InstanceDecl {
+                    class_name: inst.class_name.clone(),
+                    instance_type: freshened_instance_type,
+                    method_types: freshened_method_types,
+                });
             }
         }
 
@@ -1851,30 +1879,6 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        env.insert(
-            "http-get".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Unknown), (None, Type::Str)], // HttpConn, path String
-                ret: Box::new(Type::Unknown), // Returns Dict {status, headers, body}
-                variadic: false,
-            },
-        );
-        env.insert(
-            "socks5-connect".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Handle), (None, Type::Str), (None, Type::Int)], // Handle, host, port
-                ret: Box::new(Type::Handle),
-                variadic: false,
-            },
-        );
-        env.insert(
-            "proxy-connect".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Handle), (None, Type::Str), (None, Type::Int)], // Handle, host, port
-                ret: Box::new(Type::Handle),
-                variadic: false,
-            },
-        );
         // HTTP-sessions stubs — return Unknown until full implementation lands
         env.insert(
             "quic-session".to_string(),
@@ -1901,7 +1905,7 @@ impl TypeEnv {
             "quic-open-datagram".to_string(),
             Type::Function {
                 params: vec![(None, Type::QuicSession)],
-                ret: Box::new(Type::Unknown), // Returns a datagram channel
+                ret: Box::new(Type::QuicDatagramHandle),
                 variadic: false,
             },
         );
@@ -2471,6 +2475,13 @@ impl TypeEnv {
             TypeAlias {
                 params: vec![],
                 body: Type::Http3Session,
+            },
+        );
+        env.insert_type_alias(
+            "QuicDatagramHandle".to_string(),
+            TypeAlias {
+                params: vec![],
+                body: Type::QuicDatagramHandle,
             },
         );
         env.insert_type_alias(
@@ -3239,5 +3250,84 @@ mod help_suggestion_tests {
         assert!(note.contains("= note: expected `Bool`"));
         assert!(note.contains("found `Float`"));
         assert!(note.contains("= help: convert with [not [call $= 0.0 <expr>]]"));
+    }
+
+    #[test]
+    fn test_resolve_instance_freshens_type_vars() {
+        use crate::types::{InferState, InstanceDecl};
+        use std::collections::HashMap;
+
+        // Test that resolve_instance freshens type variables in the instance type
+        // and applies the unification substitution to method types.
+
+        let mut state = InferState::new();
+
+        // Create an instance: Appendable [Seq b]
+        // Method: append: [Fn@[Seq b] [[Seq b] [Seq b]]]
+        let instance = InstanceDecl {
+            class_name: "Appendable".to_string(),
+            instance_type: Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))),
+            method_types: {
+                let mut methods = HashMap::new();
+                methods.insert(
+                    "append".to_string(),
+                    Type::Function {
+                        params: vec![
+                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                        ],
+                        ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                        variadic: false,
+                    },
+                );
+                methods
+            },
+        };
+
+        // Register the instance
+        state.instance_env.insert(instance.clone()).unwrap();
+
+        // Resolve against Seq[Int]
+        let target = Type::Seq(Box::new(Type::Int));
+        // Clone to avoid borrowing state both mutably and immutably
+        let inst_env = state.instance_env.clone();
+        let resolved = inst_env.resolve_instance("Appendable", &target, &mut state);
+
+        assert!(resolved.is_some(), "should resolve Appendable for Seq[Int]");
+        let resolved = resolved.unwrap();
+
+        // The method types should have Int substituted for b
+        let append_ty = resolved.method_types.get("append");
+        assert!(append_ty.is_some(), "append method should exist");
+
+        // Check that the method signature has Seq[Int], not Seq[b]
+        if let Type::Function { params, ret, .. } = append_ty.unwrap() {
+            assert_eq!(params.len(), 2);
+            // Both params should be Seq[Int] or Seq[_tN] (freshened)
+            match &params[0].1 {
+                Type::Seq(elem) => {
+                    // Should be Int or a fresh type var that got unified with Int
+                    assert!(
+                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                        "first param should be Seq[Int] or Seq[fresh], got {:?}",
+                        elem
+                    );
+                }
+                other => panic!("expected Seq type for first param, got {:?}", other),
+            }
+
+            match ret.as_ref() {
+                Type::Seq(elem) => {
+                    assert!(
+                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                        "return should be Seq[Int] or Seq[fresh], got {:?}",
+                        elem
+                    );
+                }
+                other => panic!("expected Seq type for return, got {:?}", other),
+            }
+        } else {
+            panic!("append should have Function type, got {:?}", append_ty);
+        }
     }
 }

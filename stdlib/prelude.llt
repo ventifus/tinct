@@ -47,7 +47,7 @@
 #
 #   Non-shadowed Rust builtins (commonly used, partial list — see src/builtins.rs):
 #     Dict:        keys  length  merge  append  builtin-get
-#     String:      str  split
+#     Stringing:      str  split
 #     Numeric:     floor
 #     Runtime:     error  try  type-of
 #     Sequences:   each  each-key  each-kv
@@ -286,15 +286,15 @@ try-or-impl: [fn [try-result default]
         [Err _] default]]
 
 # ============================================================================
-# String search helpers (only depend on builtins + siblings)
+# Stringing search helpers (only depend on builtins + siblings)
 # ============================================================================
 
-str-find-impl: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
+str-find-impl: [fn@Int [haystack@Stringing needle@Stringing i@Int needle-len@Int haystack-len@Int]
     [builtin-if [builtin-lt i haystack-len]
         [str-find-check haystack needle i needle-len haystack-len]
         [builtin-sub 0 1]]]
 
-str-find-check: [fn@Int [haystack@String needle@String i@Int needle-len@Int haystack-len@Int]
+str-find-check: [fn@Int [haystack@Stringing needle@Stringing i@Int needle-len@Int haystack-len@Int]
     [builtin-if [builtin-eq needle-len 0]
         0
         [builtin-if [builtin-lt [builtin-add i needle-len] [builtin-add haystack-len 1]]
@@ -476,27 +476,27 @@ clamp@[doc: "Clamp value between bounds (inclusive)"]: [fn@Number [lo@Number hi@
             x]]]
 
 # ============================================================================
-# String (derived from str, split, builtin-filter, builtin-eq)
+# Stringing (derived from str, split, builtin-filter, builtin-eq)
 # ============================================================================
 
 # join: delegates to builtin-join (see wrappers section at bottom of this dict).
 # O(n) performance, dual-dispatch on Dict/Seq. Example: [join ", " ["a" "b"]] => "a, b"
 
 # Split a string on spaces, filtering empty strings. Returns a Seq of words.
-# Type: (String -> Seq String)
+# Type: (Stringing -> Seq Stringing)
 # Example: [collect [words "hello world"]] => ["hello" "world"]
 # Example: [collect [words "  spaces  "]] => ["spaces"]
 # Inherently materializing: splits string content, derived from split.
-words@[doc: "Split string on spaces into words"]: [fn@Seq [s@String]
+words@[doc: "Split string on spaces into words"]: [fn@Seq [s@Stringing]
     [builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]]
 
-# Strip common leading indentation from a multi-line string.
+# Stringip common leading indentation from a multi-line string.
 # Algorithm: split into lines; the last line (whitespace-only) determines indent depth;
 # strip that many characters from each content line; drop first (empty) and last (anchor) lines.
-# Type: (String -> String)
+# Type: (Stringing -> Stringing)
 # Example: [unindent "\n  line one\n  line two\n  "] => "line one\nline two"
 # Inherently materializing: must process all lines to determine indentation and strip.
-unindent@[doc: "Strip common leading indentation from a multi-line string"]: [fn@String [s@String]
+unindent@[doc: "Stringip common leading indentation from a multi-line string"]: [fn@Stringing [s@Stringing]
     [ls: [split "\n" s]
      last-line: [builtin-last ls]
      indent: [str-length last-line]
@@ -973,7 +973,7 @@ count@[doc: "Count elements satisfying predicate"]: [fn@Int [pred@Fn xs]
 # Check if a collection contains val (using structural equality), a string contains a substring,
 # or a Bytes value contains a given byte (val must be an Int 0-255).
 # Handles Dict input (uses any?), Seq input (uses filter then seq? to check non-empty),
-# String input (uses str-contains? for substring search),
+# Stringing input (uses str-contains? for substring search),
 # and Bytes input (uses bytes-find to search for a single-byte needle).
 contains?@[doc: "Check if collection contains element"]: [fn@Bool [xs val]
     [builtin-if [builtin-eq [type-of xs] "String"]
@@ -1051,10 +1051,10 @@ try-or@[doc: "Call function; return default on error"]: [fn [f@Fn default]
 # Result Type and Combinators
 # ============================================================================
 
-# Result type declaration: [Ok a] | [Err String]
+# Result type declaration: [Ok a] | [Err Stringing]
 # Evaluating this type alias registers Ok and Err as callable constructor
 # functions in this dict's letrec environment.
-Result: [type [Ok a] [Err String]]
+Result: [type [Ok a] [Err Stringing]]
 
 # Re-export Ok constructor as a dict entry so it's available to code that
 # includes the prelude. The RHS references the Ok constructor registered
@@ -1118,7 +1118,7 @@ result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  p
 
 # Assert a condition; if false, raise an error with the given message.
 # Inherently materializing: must materialize condition to check.
-assert@[doc: "Assert condition with error message"]: [fn@Unknown [cond msg@String] [builtin-if cond true [error msg]]]
+assert@[doc: "Assert condition with error message"]: [fn@Unknown [cond msg@Stringing] [builtin-if cond true [error msg]]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
@@ -1167,20 +1167,20 @@ drop@[doc: "Drop first n elements"]: [fn [n@Int xs] [builtin-drop n xs]]
 collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [xs] [builtin-reduce [fn [acc kv] [merge acc [make-entry kv.key kv.value]]] [] xs]]
 
 # Repeat a string n times.
-# str-repeat: Str -> Int -> Str
+# str-repeat: String -> Int -> String
 # assert: [str-repeat "x" 3] => "xxx"
 # assert: [str-repeat "ab" 2] => "abab"
 # assert: [str-repeat "x" 0] => ""
-str-repeat@[doc: "Repeat string n times"]: [fn@Str [s@Str n@Int]
+str-repeat@[doc: "Repeat string n times"]: [fn@String [s@String n@Int]
   [builtin-reduce [fn [acc _] [str acc s]] "" [builtin-range 0 n]]]
 
 # Find the first occurrence of needle in haystack.
 # Returns the character index of the first match, or -1 if not found.
-# str-find: Str -> Str -> Int
+# str-find: String -> String -> Int
 # assert: [str-find "hello world" "world"] => 6
 # assert: [str-find "hello world" "x"] => -1
 # assert: [str-find "abc" ""] => 0
-str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1"]: [fn@Int [haystack@String needle@String]
+str-find@[doc: "Find first occurrence of needle in haystack; returns index or -1"]: [fn@Int [haystack@Stringing needle@Stringing]
   [builtin-if [str-contains? haystack needle]
     [str-find-impl haystack needle 0 [length needle] [length haystack]]
     [builtin-sub 0 1]]]
@@ -1252,16 +1252,16 @@ unfold@[doc: "Unfold a Seq from seed using f"]: [fn [f@Fn seed] [builtin-unfold 
 
 # Join collection elements as strings with a separator.
 # Example: [join ", " ["a" "b" "c"]] => "a, b, c"
-join@[doc: "Join elements as strings with separator"]: [fn [sep@String xs] [builtin-join sep xs]]
+join@[doc: "Join elements as strings with separator"]: [fn [sep@Stringing xs] [builtin-join sep xs]]
 
 # Concatenate two collections (Dict or Seq).
 # Example: [concat [1 2] [3 4]] => [1 2 3 4]
 concat@[doc: "Concatenate two collections"]: [fn [xs ys] [builtin-concat xs ys]]
 
-# Get the first element of a Dict, String, or Bytes.
+# Get the first element of a Dict, Stringing, or Bytes.
 first@[doc: "First element of a collection"]: [fn [xs] [builtin-first xs]]
 
-# Get the last element of a Dict, String, or Bytes.
+# Get the last element of a Dict, Stringing, or Bytes.
 last@[doc: "Last element of a collection"]: [fn [xs] [builtin-last xs]]
 
 # Get all elements after the first (reindexed from 0).
