@@ -59,8 +59,6 @@ Post-processing pass after `typecheck_file` completes: walk each binding's final
 - [x] Wire `scan_type_quality` into `typecheck_file`; pass the `Vec<TypeDiagnostic>` through the return; `--strict` bump is applied at emission time in the CLI/LSP layer, not in the scanner itself — the scanner always emits at the base level (`src/typecheck.rs`, `src/main.rs`)
 - [x] Tests: corpus tests with `=== warn` sections for: inferred Unknown warns; explicit `@Unknown` silent in default; explicit `@Unknown` warns in `--strict`; inferred Unknown errors in `--strict`; `[@Unknown expr]` same as explicit; `fn@Number` with `Int` body warns "consider @Int"; `param@Dict` with specific record warns; `--strict` escalation (`tests/corpus/eval/typecheck/`)
 
-**Depends on:** `type-warning-channel`
-
 ---
 
 ## Higher-Kinded Types
@@ -106,7 +104,6 @@ The inferred `[do steps...]` form (monad argument omitted, inferred from return 
 - [ ] In `src/typecheck.rs` `infer_expr` for `[do]`: when monad is `VarRef("%do-infer")`, resolve monad via: (1) `state.expected_return` unified against `App(m, _)` for a registered Monad class; (2) first binding RHS type `App(m, a)` for a known Monad; (3) emit "cannot infer monad — add explicit monad arg or annotate return type" on failure; substitute resolved monad name into the desugared `[monad.bind ...]` chain before evaluation (`src/typecheck.rs`)
 - [ ] Tests: inferred `[do]` from `fn@Result` return annotation, inferred from first binding type, unresolvable monad error, `[do]` inside HKT-generic function (`tests/corpus/eval/`)
 
-**Depends on:** `hkt-kind-inference`
 
 ### hkt-mappable-appendable: Rewrite Mappable and Appendable from hardcoded to class-based
 
@@ -133,7 +130,6 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 - [ ] Verify prelude annotations from `builtin-type-audit` batch B still type-check after Mappable becomes a real class: `when`/`unless`, `cond`, `and`/`or`, `get-or`, `find-first`/`find-first-or`, `zip` (for both Seq×Seq and Dict×Dict); flag any annotation changes needed (`stdlib/prelude.llt`)
 - [ ] Tests: `map` on user-defined Mappable type (success), `map` on non-Mappable `Int` (E010 constraint error), `AppendableSeq [Seq Int]` and `[Seq Str]` (different element types), `AppendableStr`, Equatable/Comparable/Showable constraints on user types, `satisfies_constraint` no longer special-cases any of these (`tests/corpus/eval/typecheck/`)
 
-**Depends on:** `hkt-kind-inference`
 
 ### hkt-stdlib: Functor/Applicative/Monad/Foldable/Traversable hierarchy, Maybe, generic functions
 
@@ -193,8 +189,6 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irreducible syscall/opaque-type primitives). These specific ones do not. Also adds missing Rust primitives that unlock tinct migrations, and verifies all stdlib modules use `%rust` groups cleanly after `primitive-privacy` Phase 3 lands.
 
-**Depends on:** `stdlib-tinct-migration`
-
 - [x] Move `spki-pin` to tinct in `stdlib/net.llt`: pure dict construction, no syscalls, no Rust crates — verified in `stdlib/net.llt:94` (commit 2ea7563)
 - [x] Add `raw-create : DirCap → Str → WriteHandle` Rust primitive: opens a file for writing (create/truncate) returning a `WriteHandle` — implemented in `src/builtins_io.rs:1804` (2026-05-11)
 - [x] Once `raw-create` lands, rewrite `copy` in tinct: `[fn [cap src dst] [close [write-handle [raw-create cap dst] [slurp [open cap src Readable Text]]]]]` — implemented in `stdlib/io.llt:71`, removed Rust builtin (2026-05-11)
@@ -231,9 +225,9 @@ See `doc/whatif/builtin-privacy.md` (redesigned 2026-05-13). **Spec chapters:** 
 - [x] Remove vestigial `http-get` Rust builtin (HttpConn/reqwest form) — done 2026-05-13
 
 **Phase 1 — `%rust` virtual module infrastructure:**
-- [ ] Add `Value::RustRegistry` variant to `src/value.rs`: opaque Rust value (no payload; PartialEq trivially false, Display `"<rust-registry>"`); this is the type of `%rust` — user code cannot construct or name it (`src/value.rs`)
-- [ ] Implement `rust_module(name: &str) -> Rc<RefCell<Environment>>` in `src/builtins.rs`: dispatches on module name (`"core"`, `"string"`, `"collection"`, `"io"`, `"net"`, `"math"`, `"datetime"`, `"bytes"`, `"json"`, `"meta"`) to return an env containing exactly the named primitive group; returns error for unknown names (`src/builtins.rs`)
-- [ ] Extend the include resolver in `src/imports.rs`: when cap is `Value::RustRegistry`, call `rust_module(path)` instead of doing filesystem I/O; no DirCap check, no BLAKE3 hash, no cycle detection — virtual modules are pure in-memory lookups (`src/imports.rs`)
+- [x] Add `Value::RustRegistry` variant to `src/value.rs`: opaque Rust value (no payload; PartialEq trivially false, Display `"<rust-registry>"`); this is the type of `%rust` — user code cannot construct or name it (`src/value.rs`)
+- [x] Implement `rust_module(name: &str) -> Rc<RefCell<Environment>>` in `src/builtins.rs`: dispatches on module name (`"core"`, `"string"`, `"collection"`, `"io"`, `"net"`, `"math"`, `"datetime"`, `"bytes"`, `"json"`, `"meta"`) to return an env containing exactly the named primitive group; returns error for unknown names (`src/builtins.rs`)
+- [x] Extend the include resolver in `src/imports.rs`: when cap is `Value::RustRegistry`, call `rust_module(path)` instead of doing filesystem I/O; no DirCap check, no BLAKE3 hash, no cycle detection — virtual modules are pure in-memory lookups (`src/imports.rs`)
 - [ ] Remove `builtin-*` aliases entirely from `src/builtins.rs` — `inject_prelude_aliases()` and all its registrations are no longer needed; prelude uses `%rust` modules instead (`src/builtins.rs`)
 
 **Phase 2 — bootstrap env and env chain:**

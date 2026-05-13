@@ -720,6 +720,7 @@ fn type_name(val: &Value) -> String {
         Value::Http3Session(_) => "Http3Session",
         Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
         Value::DatagramHandle { .. } => "DatagramHandle",
+        Value::RustRegistry => "RustRegistry",
     }
     .to_string()
 }
@@ -915,8 +916,36 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     reject_named("include", named, call_span)?;
 
-    // Determine the DirCap from the first argument.
+    // Check for %rust virtual module cap (special case).
     let first_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    if matches!(first_val, Value::RustRegistry) {
+        // %rust virtual module: [include %rust "module-name"]
+        // No hash argument allowed, no filesystem access, no cycle detection.
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let module_name_val = materialize(&args[1], Some(&call_span), &ctx)?;
+        let module_name = require_string("include", module_name_val, args[1].span)?;
+
+        // Resolve the module to an environment.
+        let module_env = crate::builtins::rust_module(&module_name).map_err(|e| {
+            EvalError::new(format!("Rust module error: {}", e), call_span)
+        })?;
+
+        // Convert the environment to a Dict value.
+        // The environment already contains materialized Rc<Thunk> values, so we just
+        // need to allocate them in the arena and build the dict.
+        let mut dict = indexmap::IndexMap::new();
+        for (name, thunk) in module_env.borrow().bindings.iter() {
+            dict.insert(
+                crate::value::Key::String(name.clone()),
+                ctx.alloc_thunk(Rc::clone(thunk)),
+            );
+        }
+        return ok_val(Value::Dict(dict), call_span);
+    }
+
+    // Determine the DirCap from the first argument.
     let (dir_cap, path_arg_idx, hash_arg_idx) = match &first_val {
         Value::DirCap { dir, .. } => (Rc::clone(dir), 1, 2),
         Value::RevocableDirCap {
