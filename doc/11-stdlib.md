@@ -240,6 +240,23 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `trunc` | `[fn [x] [builtin-if [>= x 0] [floor x] [ceil x]]]` | Conditional floor/ceil |
 | `words` | `[builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]` | Uses stable `builtin-filter`, `builtin-eq` |
 
+**Recent migrations from Rust to tinct (stdlib-boundary sprint, 2026-05-11):**
+
+The following functions were Rust builtins and have been rewritten as tinct implementations. They are now in `stdlib/strings.llt` or `stdlib/io.llt` / `stdlib/net.llt` and are built on the primitives that did require Rust:
+
+| Function | Now lives in | Built on |
+|----------|-------------|----------|
+| `str-contains?` | `stdlib/strings.llt` | `str-index-of` (Rust, O(n) substr search) |
+| `starts-with?` | `stdlib/strings.llt` | `str-index-of` |
+| `ends-with?` | `stdlib/strings.llt` | `str-index-of`, `str-length` |
+| `upper` | `stdlib/strings.llt` | `str-map-chars` + `str-to-upper-char` |
+| `lower` | `stdlib/strings.llt` | `str-map-chars` + `str-to-lower-char` |
+| `copy` | `stdlib/io.llt` | `open`, `slurp`, `raw-create`, `write-handle`, `close` |
+| `spki-pin` | `stdlib/net.llt` | pure dict construction, no I/O |
+| `has-cap?` | `stdlib/io.llt` | `cap-data` (returns null on miss) + `null?` |
+
+Type predicates `num?`, `record?`, and `map?` remain Rust builtins — they inspect the `Value` enum variant and cannot be expressed in tinct without a primitive type-test.
+
 **Why shadowable wrappers matter:**
 
 Any `include`d stdlib module can shadow the primary-name operators in lexical scope. `stdlib/sql.llt` uses this to provide SQL-aware versions of `filter`, `map`, `<`, `=`, `and`, `if`, etc. that propagate SQL expression trees when applied to proxy rows. Each shadow calls the stable `builtin-X` alias for non-SQL fallback. User code written after `[include "stdlib/sql.llt"]` gets transparent SQL dispatch without any API changes. See `doc/whatif/lib-sql.md`.
