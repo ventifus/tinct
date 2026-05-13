@@ -285,12 +285,14 @@ pub fn typecheck_file_with_types_and_env(
 /// Type-check a parsed [`File`] with a custom initial type environment and source path.
 ///
 /// Like [`typecheck_file_with_types_and_env`], but accepts an optional source path
-/// for diagnostics that need to know the source file (e.g., T009 builtin-* usage check
-/// that should be suppressed for prelude.llt).
+/// for diagnostics that need to know the source file.
 pub fn typecheck_file_with_types_and_env_and_source(
     file: &File,
     initial_env: Rc<TypeEnv>,
-    source_path: Option<String>,
+    // source_path was previously used for T009 builtin-* alias diagnostics.
+    // T009 was removed as part of the primitive-privacy sprint (Phase 4).
+    // The parameter is kept for API compatibility; callers may still pass Some(path).
+    _source_path: Option<String>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -305,7 +307,6 @@ pub fn typecheck_file_with_types_and_env_and_source(
     let mut diagnostics = Vec::new();
     let mut env = initial_env;
     let mut state = InferState::new();
-    state.source_path = source_path;
     // Enable scheme collection for LSP hover (constraints display).
     state.scheme_map = Some(SchemeMap::new());
     let mut type_map = TypeMap::new();
@@ -347,9 +348,6 @@ pub fn typecheck_file_with_types_and_env_and_source(
 
     // Scan for type quality issues (Unknown types, over-broad annotations)
     scan_type_quality(&type_map, file, &mut diagnostics);
-
-    // Scan for direct use of internal builtin-* aliases
-    scan_builtin_alias_usage(file, &state, &mut diagnostics);
 
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -3498,137 +3496,6 @@ pub fn scan_type_quality(
     }
 }
 
-/// Scan for direct use of internal builtin-* aliases outside prelude.llt.
-///
-/// Emits a T009 warning when non-prelude code references names matching `^builtin-`.
-/// These aliases are implementation details that should only be used by prelude.llt;
-/// user code should use the public wrapper functions instead.
-pub fn scan_builtin_alias_usage(
-    ast: &File,
-    state: &InferState,
-    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
-) {
-    use crate::error::{DiagnosticLevel, TypeDiagnostic};
-
-    // Skip the scan if we're type-checking prelude.llt itself
-    if let Some(ref path) = state.source_path {
-        if path.ends_with("prelude.llt") {
-            return;
-        }
-    }
-
-    // Helper to recursively scan expressions for VarRef nodes with builtin-* names
-    fn scan_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<TypeDiagnostic>) {
-        match &expr.node {
-            Expr::VarRef { name, .. } => {
-                if name.starts_with("builtin-") {
-                    diagnostics.push(TypeDiagnostic {
-                        level: DiagnosticLevel::Warn,
-                        code: "T009",
-                        message: format!(
-                            "direct use of internal builtin alias `{name}` — use the public wrapper instead"
-                        ),
-                        span: expr.span,
-                    });
-                }
-            }
-            Expr::Dict(entries) => {
-                for entry in entries {
-                    if let Some(ref key) = entry.node.key {
-                        scan_expr(key, diagnostics);
-                    }
-                    scan_expr(&entry.node.value, diagnostics);
-                }
-            }
-            Expr::Sequential(exprs) => {
-                for e in exprs {
-                    scan_expr(e, diagnostics);
-                }
-            }
-            Expr::DotAccess { expr: target, .. } => {
-                scan_expr(target, diagnostics);
-            }
-            Expr::Call {
-                func,
-                args,
-                named_args,
-                ..
-            } => {
-                scan_expr(func, diagnostics);
-                for arg in args {
-                    scan_expr(arg, diagnostics);
-                }
-                for named in named_args {
-                    scan_expr(&named.node.value, diagnostics);
-                }
-            }
-            Expr::Fn { body, .. } => {
-                scan_expr(body, diagnostics);
-            }
-            Expr::Match { scrutinee, arms } => {
-                scan_expr(scrutinee, diagnostics);
-                for arm in arms {
-                    if let Some(ref guard) = arm.guard {
-                        scan_expr(guard, diagnostics);
-                    }
-                    scan_expr(&arm.body, diagnostics);
-                }
-            }
-            Expr::Annotated { .. } => {
-                // Annotated is for type annotations on bare names in value position, no nested expr
-            }
-            Expr::TypeAssert {
-                expr: target_expr, ..
-            } => {
-                scan_expr(target_expr, diagnostics);
-            }
-            Expr::TypeAlias { body, .. } => {
-                // Type alias bodies are type expressions, not value expressions
-                // But they can contain VarRef nodes for type names
-                scan_expr(body, diagnostics);
-            }
-            Expr::ClassDecl { methods, .. } => {
-                for method in methods {
-                    scan_expr(&method.node.value, diagnostics);
-                }
-            }
-            Expr::InstanceDecl { methods, .. } => {
-                for method in methods {
-                    scan_expr(&method.node.value, diagnostics);
-                }
-            }
-            Expr::Quote(inner) => {
-                scan_expr(inner, diagnostics);
-            }
-            Expr::Unquote(inner) => {
-                scan_expr(inner, diagnostics);
-            }
-            Expr::UnquoteSplice(inner) => {
-                scan_expr(inner, diagnostics);
-            }
-            Expr::DefMacro { body, .. } => {
-                scan_expr(body, diagnostics);
-            }
-            Expr::TypeApp { func, arg } => {
-                scan_expr(func, diagnostics);
-                scan_expr(arg, diagnostics);
-            }
-            // Literals and other leaf nodes — no nested expressions
-            Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Rest(_) => {}
-            // Should be desugared before type checking
-            Expr::Pipe { .. } => {}
-            // Parse errors
-            Expr::Error(_) => {}
-        }
-    }
-
-    // Walk all documents and expressions
-    for doc in &ast.documents {
-        for expr in &doc.node.expressions {
-            scan_expr(expr, diagnostics);
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -12,6 +12,9 @@
 # All functions in this dict can reference each other (letrec semantics).
 # ============================================================================
 
+# Phase 2 (bootstrap env): import the Rust math primitives explicitly.
+[include %rust "math"]
+
 [
 
 # ============================================================================

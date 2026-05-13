@@ -1,4 +1,6 @@
 # Date-time helpers (pure tinct, depends on builtins)
+# Phase 2 (bootstrap env): import the Rust datetime primitives explicitly.
+[include %rust "datetime"]
 [
 # Internal helper dict — provides pad-left utility
 pad-left: [include %libdir "strings.llt"].pad-left
