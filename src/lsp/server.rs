@@ -164,20 +164,20 @@ fn handle_request(
             let location = if let Some(doc) = store.get(&uri) {
                 // Document is open in editor: use cached state
                 lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                    definition_at(doc, &uri, offset, &store.include_graph).map(
+                    definition_at(doc, &uri, offset, &store.include_graph, store.prelude_ast()).map(
                         |(target_uri, span)| {
                             // Determine source text for converting span to range:
                             // - Document-local: use doc.text
                             // - Included file: read from include_graph
+                            // - Prelude: read from embedded source
                             let source_text: String = if target_uri == uri {
                                 doc.text.clone()
-                            } else {
+                            } else if let Some(node) = store.include_graph.get(&target_uri) {
                                 // Included file: read from include_graph
-                                store
-                                    .include_graph
-                                    .get(&target_uri)
-                                    .map(|node| node.state.text.clone())
-                                    .unwrap_or_default()
+                                node.state.text.clone()
+                            } else {
+                                // Prelude: read from embedded source
+                                include_str!("../../stdlib/prelude.llt").to_string()
                             };
                             Location {
                                 uri: target_uri,
@@ -191,26 +191,45 @@ fn handle_request(
                 use crate::lsp::document::load_doc_from_uri;
                 load_doc_from_uri(&uri).and_then(|doc| {
                     lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                        definition_at(&doc, &uri, offset, &store.include_graph).map(
-                            |(target_uri, span)| {
-                                // For unopened documents, read target text from disk if needed
-                                let source_text: String = if target_uri == uri {
-                                    doc.text.clone()
-                                } else {
-                                    // Cross-file definition: try include_graph first, then load from disk
-                                    store
-                                        .include_graph
-                                        .get(&target_uri)
-                                        .map(|node| node.state.text.clone())
-                                        .or_else(|| load_doc_from_uri(&target_uri).map(|d| d.text))
-                                        .unwrap_or_default()
-                                };
-                                Location {
-                                    uri: target_uri,
-                                    range: llt_span_to_lsp_range(&span, &source_text),
-                                }
-                            },
+                        definition_at(
+                            &doc,
+                            &uri,
+                            offset,
+                            &store.include_graph,
+                            store.prelude_ast(),
                         )
+                        .map(|(target_uri, span)| {
+                            // For unopened documents, read target text from disk if needed
+                            let source_text: String = if target_uri == uri {
+                                doc.text.clone()
+                            } else if let Some(node) = store.include_graph.get(&target_uri) {
+                                // Cross-file definition: read from include_graph
+                                node.state.text.clone()
+                            } else if let Some(prelude_uri) =
+                                crate::find_libdir_path().and_then(|p| {
+                                    crate::lsp::convert::file_path_to_uri(&p.join("prelude.llt"))
+                                })
+                            {
+                                if target_uri == prelude_uri {
+                                    // Prelude: read from embedded source
+                                    include_str!("../../stdlib/prelude.llt").to_string()
+                                } else {
+                                    // Other file: load from disk
+                                    load_doc_from_uri(&target_uri)
+                                        .map(|d| d.text)
+                                        .unwrap_or_default()
+                                }
+                            } else {
+                                // Fallback: load from disk
+                                load_doc_from_uri(&target_uri)
+                                    .map(|d| d.text)
+                                    .unwrap_or_default()
+                            };
+                            Location {
+                                uri: target_uri,
+                                range: llt_span_to_lsp_range(&span, &source_text),
+                            }
+                        })
                     })
                 })
             }

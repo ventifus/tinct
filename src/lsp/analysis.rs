@@ -2,7 +2,7 @@
 
 use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Uri};
 
-use crate::ast::{Expr, Span};
+use crate::ast::{Expr, File, Span, Spanned};
 use crate::error::render_span_snippet;
 use crate::lsp::convert::llt_span_to_lsp_range;
 use crate::lsp::document::DocumentState;
@@ -758,16 +758,15 @@ fn find_key_definition(expr: &Expr, _span: Span, name: &str) -> Option<Span> {
 /// Returns `None` if:
 /// - The document has a parse error.
 /// - No variable reference is found at the offset.
-/// - The variable reference has no definition in the document or includes.
+/// - The variable reference has no definition in the document, includes, or prelude.
 ///
-/// Note: Prelude go-to-definition is not currently supported after the migration
-/// to the shared imports module. This could be re-added by extending imports.rs
-/// to provide a prelude span map.
+/// Searches in order: document-local definitions, direct includes, prelude.
 pub fn definition_at(
     doc: &DocumentState,
     doc_url: &Uri,
     offset: usize,
     include_graph: &crate::lsp::document::IncludeGraph,
+    prelude_ast: Option<&Spanned<File>>,
 ) -> Option<(Uri, Span)> {
     let file = match &doc.ast {
         Ok(f) => f,
@@ -813,8 +812,24 @@ pub fn definition_at(
         }
     }
 
-    // TODO: Add prelude go-to-definition by extending imports.rs to provide
-    // a prelude span map if needed.
+    // Search prelude AST (if available)
+    if let Some(prelude_file) = prelude_ast {
+        if let Some(span) = prelude_file.node.documents.iter().find_map(|document| {
+            document
+                .node
+                .expressions
+                .iter()
+                .find_map(|expr| find_key_definition(&expr.node, expr.span, &name))
+        }) {
+            // Resolve the prelude URI via find_libdir_path().join("prelude.llt")
+            if let Some(libdir_path) = crate::find_libdir_path() {
+                let prelude_path = libdir_path.join("prelude.llt");
+                if let Some(prelude_uri) = crate::lsp::convert::file_path_to_uri(&prelude_path) {
+                    return Some((prelude_uri, span));
+                }
+            }
+        }
+    }
 
     None
 }
@@ -1302,7 +1317,7 @@ mod tests {
         // Offset 12 is on '$x' in the second entry.
         // "[x: 42  y: $x]"
         //  0123456789012345
-        let def_result = definition_at(&doc, &uri, 12, &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 12, &test_include_graph(), None);
         assert!(def_result.is_some(), "should find definition of $x");
         let (_url, span) = def_result.unwrap();
         // Key "x" is at offset 1, one character long.
@@ -1318,7 +1333,7 @@ mod tests {
         // Offset 5 is on '$b' in the first entry.
         // "[a: $b  b: $a]"
         //  01234567890123
-        let def_result = definition_at(&doc, &uri, 5, &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 5, &test_include_graph(), None);
         assert!(def_result.is_some(), "should find definition of $b");
         let (_url, span) = def_result.unwrap();
         // Key "b" is at offset 8, one character long.
@@ -1334,7 +1349,7 @@ mod tests {
         // Offset 15 is on '$x' in the second entry.
         // "[x@Int: 1  y: $x]"
         //  01234567890123456
-        let def_result = definition_at(&doc, &uri, 15, &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 15, &test_include_graph(), None);
         assert!(def_result.is_some(), "should find definition of $x");
         let (_url, span) = def_result.unwrap();
         // Key "x@Int" starts at offset 1, ends at offset 6 (the annotated key).
@@ -1348,7 +1363,7 @@ mod tests {
         let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
         let uri = test_uri();
         // Offset 1 is on '$undefined', which has no definition in the document.
-        let def_result = definition_at(&doc, &uri, 1, &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 1, &test_include_graph(), None);
         assert!(
             def_result.is_none(),
             "should return None for undefined variable"
@@ -1368,7 +1383,7 @@ mod tests {
         // Offset 30 is on '$inner' in the second entry.
         // "[outer: [inner: 42]  use: $inner]"
         //  0123456789012345678901234567890123
-        let def_result = definition_at(&doc, &uri, 30, &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 30, &test_include_graph(), None);
         assert!(def_result.is_some(), "should find definition of $inner");
         let (_url, span) = def_result.unwrap();
         // Key "inner" is at offset 9, 5 characters long.
@@ -1381,7 +1396,7 @@ mod tests {
         let env = test_env();
         let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
         let uri = test_uri();
-        let def_result = definition_at(&doc, &uri, 1, &test_include_graph());
+        let def_result = definition_at(&doc, &uri, 1, &test_include_graph(), None);
         assert!(def_result.is_none(), "should return None when parse fails");
     }
 
@@ -1591,6 +1606,47 @@ mod tests {
         assert!(
             text.contains("Returns the argument unchanged"),
             "should show doc string from TypeScheme, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_definition_at_prelude_name() {
+        // Verify that go-to-definition works for prelude functions when prelude_ast is provided.
+        let env = test_env();
+        let ctx = test_ctx();
+        // Use a prelude function like "map" (defined in the prelude)
+        let source = "[call $map [fn [x] x] [1 2 3]]";
+        let doc = DocumentState::new(source.to_string(), &env, &ctx, None);
+        let uri = test_uri();
+
+        // Parse the prelude AST
+        let prelude_source = include_str!("../../stdlib/prelude.llt");
+        let prelude_ast = crate::parser::parse(prelude_source).ok();
+
+        // Offset 6 is on '$map'
+        // "[call $map [fn [x] x] [1 2 3]]"
+        //  0123456789...
+        let def_result = definition_at(&doc, &uri, 6, &test_include_graph(), prelude_ast.as_ref());
+
+        // Should find the definition in the prelude
+        assert!(
+            def_result.is_some(),
+            "should find definition of $map in prelude"
+        );
+
+        let (target_uri, _span) = def_result.unwrap();
+
+        // The target URI should be the prelude file (not the test document)
+        assert_ne!(
+            target_uri, uri,
+            "definition should point to prelude, not the test document"
+        );
+
+        // The URI should be a file:// URI pointing to stdlib/prelude.llt
+        assert!(
+            target_uri.as_str().contains("prelude.llt"),
+            "target URI should reference prelude.llt, got: {}",
+            target_uri.as_str()
         );
     }
 }

@@ -69,6 +69,11 @@ impl DocumentState {
         let mut scheme_map = SchemeMap::new();
 
         if let Ok(file) = ast {
+            // PIPELINE INVARIANT: expand_macros → desugar → resolve → typecheck
+            // This order is enforced across all entry points (main.rs, lib.rs, repl.rs).
+            // Macros expand first, then $_ placeholders are desugared to lambdas, then
+            // variable resolution runs, then the type checker sees the fully elaborated AST.
+
             // Expand macros before desugar: rewrites [defmacro ...] and macro calls.
             // This matches the pipeline used by all other entry points (main.rs, lib.rs).
             let mut file = match crate::expand::expand_macros(file, eval_ctx.config.no_fs) {
@@ -440,6 +445,9 @@ pub struct DocumentStore {
     base_eval_ctx: Rc<crate::eval::EvalContext>,
     /// Include dependency graph for cross-file resolution.
     pub include_graph: IncludeGraph,
+    /// Parsed prelude AST (for go-to-definition in stdlib functions).
+    /// Created once on construction by parsing the embedded prelude source.
+    prelude_ast: Option<Spanned<File>>,
 }
 
 impl DocumentStore {
@@ -474,11 +482,20 @@ impl DocumentStore {
         // respectively. Bare capless includes are rejected by builtin_include (see builtins_meta.rs).
         let base_eval_ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
 
+        // Parse the embedded prelude source once for go-to-definition support.
+        // If parsing fails, store None — prelude go-to-definition will be unavailable
+        // but other LSP features (hover on user code, local definitions, etc.) still work.
+        let prelude_ast = {
+            let prelude_source = include_str!("../../stdlib/prelude.llt");
+            crate::parser::parse(prelude_source).ok()
+        };
+
         Self {
             docs: HashMap::new(),
             stdlib_env,
             base_eval_ctx,
             include_graph: HashMap::new(),
+            prelude_ast,
         }
     }
 
@@ -590,6 +607,11 @@ impl DocumentStore {
     /// Get a document's state, if it exists.
     pub fn get(&self, uri: &Uri) -> Option<&DocumentState> {
         self.docs.get(uri)
+    }
+
+    /// Get the parsed prelude AST, if available.
+    pub fn prelude_ast(&self) -> Option<&Spanned<File>> {
+        self.prelude_ast.as_ref()
     }
 }
 

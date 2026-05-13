@@ -294,7 +294,7 @@ fn test_lsp_unopened_document_goto_definition() {
     // "[x: 42  y: $x]"
     //  0123456789012345
     let include_graph = std::collections::HashMap::new();
-    let def_result = definition_at(&doc, &uri, 12, &include_graph);
+    let def_result = definition_at(&doc, &uri, 12, &include_graph, None);
 
     assert!(
         def_result.is_some(),
