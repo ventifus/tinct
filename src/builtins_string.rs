@@ -996,6 +996,78 @@ pub(crate) fn builtin_str_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
+/// `str-index-of`: Find the byte index of the first occurrence of needle in haystack.
+///
+/// Takes 2 args: `haystack` (String), `needle` (String).
+/// Returns the byte index of the first occurrence as an Int, or -1 if not found.
+/// Note: returns a *byte* index (not a character index). For ASCII strings, byte
+/// index equals character index. The stdlib `str-find` delegates to this builtin.
+/// This primitive uses Rust's O(n) `str::find` (two-way algorithm), replacing the
+/// O(n²) recursive `str-find-impl` that was previously in prelude.
+/// Inherently materializing: must inspect string content to search for substring.
+pub(crate) fn builtin_str_index_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("str-index-of", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let haystack_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let needle_val = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    let haystack = require_string("str-index-of", haystack_val, args[0].span)?;
+    let needle = require_string("str-index-of", needle_val, args[1].span)?;
+
+    let index: i64 = match haystack.find(needle.as_str()) {
+        Some(byte_idx) => i64::try_from(byte_idx).map_err(|_| {
+            EvalError::resource_limit_exceeded(
+                "str-index-of: byte index exceeds i64::MAX".to_string(),
+                call_span,
+            )
+        })?,
+        None => -1,
+    };
+
+    ok_val(Value::Int(index), call_span)
+}
+
+/// `trim-start`: Remove leading whitespace from a string.
+///
+/// Takes 1 arg (String). Returns the string with leading whitespace stripped.
+/// Inherently materializing: must inspect string content to identify and remove whitespace.
+pub(crate) fn builtin_trim_start(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("trim-start", args, named, &ctx, call_span)?;
+    let s = require_string("trim-start", val, args[0].span)?;
+    ok_val(string_val(s.trim_start()), call_span)
+}
+
+/// `trim-end`: Remove trailing whitespace from a string.
+///
+/// Takes 1 arg (String). Returns the string with trailing whitespace stripped.
+/// Inherently materializing: must inspect string content to identify and remove whitespace.
+pub(crate) fn builtin_trim_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("trim-end", args, named, &ctx, call_span)?;
+    let s = require_string("trim-end", val, args[0].span)?;
+    ok_val(string_val(s.trim_end()), call_span)
+}
+
 /// `bytes-str`: Convert Bytes to a string (UTF-8 decoding).
 ///
 /// Takes 1 arg: Bytes.

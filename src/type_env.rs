@@ -1267,7 +1267,7 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        for name in ["upper", "lower", "trim"] {
+        for name in ["upper", "lower", "trim", "trim-start", "trim-end"] {
             env.insert(
                 name.to_string(),
                 Type::Function {
@@ -1277,6 +1277,16 @@ impl TypeEnv {
                 },
             );
         }
+
+        // str-index-of: String → String → Int
+        env.insert(
+            "str-index-of".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str), (None, Type::Str)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
 
         // String operations returning Bool
         for name in ["starts-with?", "ends-with?", "str-contains?"] {
