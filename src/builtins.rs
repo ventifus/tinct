@@ -7720,14 +7720,12 @@ mod tests {
             env_ref.get("identity").is_some(),
             "missing prelude function identity"
         );
-        // Should have macros exports (tmpl-transformer and do-transformer)
+        // Should have macros exports (tmpl, do, begin)
+        assert!(env_ref.get("tmpl").is_some(), "missing macros export tmpl");
+        assert!(env_ref.get("do").is_some(), "missing macros export do");
         assert!(
-            env_ref.get("tmpl-transformer").is_some(),
-            "missing macros export tmpl-transformer"
-        );
-        assert!(
-            env_ref.get("do-transformer").is_some(),
-            "missing macros export do-transformer"
+            env_ref.get("begin").is_some(),
+            "missing macros export begin"
         );
         // strings/math/encoding are NOT loaded at startup — require explicit include.
         assert!(
