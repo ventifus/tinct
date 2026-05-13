@@ -1,0 +1,6 @@
+[test: [fn [x]
+    [doubled: [* x 2]]
+    [result: [+ doubled 10]]
+    result]]
+
+[emit [test 5]]

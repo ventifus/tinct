@@ -743,9 +743,10 @@ mod tests {
     fn test_session_stdlib_string_builtins() {
         let mut session = ReplSession::new().unwrap();
 
+        // str-to-upper-char is a Rust builtin; upper/lower are now in stdlib/strings.llt.
         assert_eq!(
-            session.eval_input("[upper \"hello\"]").unwrap(),
-            "String(\"HELLO\")"
+            session.eval_input("[str-to-upper-char \"h\"]").unwrap(),
+            "String(\"H\")"
         );
     }
 

@@ -1,6 +1,10 @@
-//! String builtins: `str`, `split`, `replace`, `upper`, `lower`, `trim`, `str-length`,
+//! String builtins: `str`, `split`, `replace`, `trim`, `str-length`,
 //! `str-slice`, `str-chars`, `str-index-of`, `char-code`, `chr`, `str-bytes`, `bytes-str`,
-//! `trim-start`, `trim-end`.
+//! `trim-start`, `trim-end`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`,
+//! `regex-match?`.
+//!
+//! Note: `upper` and `lower` are no longer Rust builtins. They live in `stdlib/strings.llt`
+//! and are implemented using `str-map-chars` + `str-to-upper-char` / `str-to-lower-char`.
 //!
 //! These builtins operate on String values. They are all inherently materializing
 //! because they must inspect string content to compute their results.
@@ -21,6 +25,7 @@ use crate::builtins::{
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
+use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Key, Thunk, ThunkId, Value};
 
 /// Maximum number of parts produced by `$split` (1,000,000 elements).
@@ -305,86 +310,6 @@ pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         string_val(&input.replace(&pattern, &replacement)),
         call_span,
     )
-}
-
-/// `upper`: Convert a string to uppercase. Takes 1 arg (String).
-/// Inherently materializing: must inspect string content to convert case.
-pub(crate) fn builtin_upper(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = expect_one_arg("upper", args, named, &ctx, call_span)?;
-    let s = require_string("upper", val, args[0].span)?;
-    // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
-    if s.len() > MAX_STRING_SIZE {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "upper: input exceeds {} MB limit ({} bytes)",
-                MAX_STRING_SIZE / (1024 * 1024),
-                s.len()
-            ),
-            call_span,
-        )
-        .into());
-    }
-    let result = s.to_uppercase();
-    // Post-conversion guard for Unicode expansion (e.g., ß → SS).
-    if result.len() > MAX_STRING_SIZE {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "upper: output would exceed {} MB limit ({} bytes)",
-                MAX_STRING_SIZE / (1024 * 1024),
-                result.len()
-            ),
-            call_span,
-        )
-        .into());
-    }
-
-    ok_val(string_val(&result), call_span)
-}
-
-/// `lower`: Convert a string to lowercase. Takes 1 arg (String).
-/// Inherently materializing: must inspect string content to convert case.
-pub(crate) fn builtin_lower(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = expect_one_arg("lower", args, named, &ctx, call_span)?;
-    let s = require_string("lower", val, args[0].span)?;
-    // Fast-path: if input already exceeds the limit, output cannot be smaller (Unicode expansion only grows).
-    if s.len() > MAX_STRING_SIZE {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "lower: input exceeds {} MB limit ({} bytes)",
-                MAX_STRING_SIZE / (1024 * 1024),
-                s.len()
-            ),
-            call_span,
-        )
-        .into());
-    }
-    let result = s.to_lowercase();
-    // Post-conversion guard for Unicode expansion (e.g., İ → i\u{307}).
-    if result.len() > MAX_STRING_SIZE {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "lower: output would exceed {} MB limit ({} bytes)",
-                MAX_STRING_SIZE / (1024 * 1024),
-                result.len()
-            ),
-            call_span,
-        )
-        .into());
-    }
-
-    ok_val(string_val(&result), call_span)
 }
 
 /// `trim`: Remove leading and trailing whitespace from a string.
@@ -827,6 +752,182 @@ pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             "Bytes",
             val.type_name(),
             args[0].span,
+        )
+        .into()),
+    }
+}
+
+/// `str-to-upper-char`: Convert a single character (as a Str) to uppercase.
+///
+/// Takes 1 arg: `c` (String, expected to be a single Unicode character).
+/// Returns a String containing the uppercase version of the character.
+/// For multi-char or empty strings, applies to_uppercase() to the whole input.
+/// This is the primitive used by the stdlib `upper` function via `str-map-chars`.
+/// Inherently materializing: must inspect string content to convert case.
+pub(crate) fn builtin_str_to_upper_char(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("str-to-upper-char", args, named, &ctx, call_span)?;
+    let s = require_string("str-to-upper-char", val, args[0].span)?;
+    ok_val(string_val(&s.to_uppercase()), call_span)
+}
+
+/// `str-to-lower-char`: Convert a single character (as a Str) to lowercase.
+///
+/// Takes 1 arg: `c` (String, expected to be a single Unicode character).
+/// Returns a String containing the lowercase version of the character.
+/// For multi-char or empty strings, applies to_lowercase() to the whole input.
+/// This is the primitive used by the stdlib `lower` function via `str-map-chars`.
+/// Inherently materializing: must inspect string content to convert case.
+pub(crate) fn builtin_str_to_lower_char(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = expect_one_arg("str-to-lower-char", args, named, &ctx, call_span)?;
+    let s = require_string("str-to-lower-char", val, args[0].span)?;
+    ok_val(string_val(&s.to_lowercase()), call_span)
+}
+
+/// `str-map-chars`: Map a tinct function over every Unicode character in a string.
+///
+/// Takes 2 args: `f` (Function: Str → Str), `s` (String).
+/// Applies `f` to each Unicode character (as a single-char string) in `s`,
+/// then concatenates all results into a new string.
+/// The output of `f` need not be a single character — it can be any string.
+/// Inherently materializing: must iterate characters and force each function call.
+pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("str-map-chars", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    // Materialize the function (arg 0) and the input string (arg 1).
+    let func_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let input_val = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    let s = require_string("str-map-chars", input_val, args[1].span)?;
+
+    // For an empty string, return empty string immediately.
+    if s.is_empty() {
+        return ok_val(string_val(""), call_span);
+    }
+
+    // Collect character strings (as owned Strings for now; we'll concatenate at the end).
+    let chars: Vec<String> = s.chars().map(|c| c.to_string()).collect();
+
+    // Build the result by calling f on each character.
+    let mut result = String::with_capacity(s.len());
+
+    for ch_str in &chars {
+        // Wrap each char as a materialized thunk.
+        let char_thunk = Rc::new(Thunk::new_materialized(string_val(ch_str), call_span));
+
+        // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin.
+        let call_result_thunk = match &func_val {
+            Value::Function {
+                params,
+                body,
+                env: closure_env,
+                ..
+            } => {
+                let pos_args = vec![Rc::clone(&char_thunk)];
+                invoke_function(&CallContext {
+                    params,
+                    body,
+                    closure_env,
+                    positional: &pos_args,
+                    named: None,
+                    default_env: closure_env,
+                    call_span,
+                    origin: Some(Rc::from("str-map-chars")),
+                    ctx: &ctx,
+                })?
+            }
+            Value::Builtin(def) => {
+                let builtin_args = BuiltinArgs {
+                    args: &[Rc::clone(&char_thunk)],
+                    named: None,
+                    call_span,
+                    ctx: Rc::clone(&ctx),
+                };
+                (def.func)(builtin_args)?
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "str-map-chars".to_string(),
+                    "Function",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into());
+            }
+        };
+
+        // Materialize the result and require it to be a String.
+        let mapped_val = materialize(&call_result_thunk, Some(&call_span), &ctx)?;
+        let mapped_str = require_string("str-map-chars", mapped_val, call_span)?;
+
+        // Guard against excessive output size.
+        if result.len() + mapped_str.len() > MAX_STRING_SIZE {
+            return Err(EvalError::resource_limit_exceeded(
+                format!(
+                    "str-map-chars: output would exceed {} MB limit",
+                    MAX_STRING_SIZE / (1024 * 1024)
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        result.push_str(&mapped_str);
+    }
+
+    ok_val(string_val(&result), call_span)
+}
+
+/// `regex-match?`: Test if a regex pattern matches anywhere in a haystack string.
+///
+/// Takes 2 args: `pattern` (String), `haystack` (String).
+/// Returns `true` if the regex matches anywhere in `haystack`, `false` otherwise.
+/// Returns an error if `pattern` is not a valid regex.
+/// Uses the `regex` crate (RE2-compatible, no backtracking).
+/// Inherently materializing: must inspect string content to apply the regex.
+pub(crate) fn builtin_regex_match(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    reject_named("regex-match?", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let pattern_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let haystack_val = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    let pattern = require_string("regex-match?", pattern_val, args[0].span)?;
+    let haystack = require_string("regex-match?", haystack_val, args[1].span)?;
+
+    match regex::Regex::new(&pattern) {
+        Ok(re) => ok_val(Value::Bool(re.is_match(&haystack)), call_span),
+        Err(e) => Err(EvalError::new(
+            format!("regex-match?: invalid regex pattern {:?}: {}", pattern, e),
+            call_span,
         )
         .into()),
     }

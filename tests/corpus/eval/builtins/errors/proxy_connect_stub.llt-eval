@@ -1,9 +1,0 @@
-# Test that proxy-connect exists and returns "not yet implemented"
-# Expected: error "not yet implemented"
-[proxy-connect "placeholder"]
-
-=== error
-[E080] proxy-connect: not yet implemented
-
-=== warn
-arity mismatch: expected 3 argument(s), got 1

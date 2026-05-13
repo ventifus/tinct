@@ -1,5 +1,117 @@
 # Error Handling
 
+## User Guide
+
+### Letting Errors Propagate
+
+The default: do nothing. Errors in tinct propagate automatically through the thunk graph. If a value fails to materialize, anything that depends on it also fails. Unused values never error.
+
+```tinct
+[
+  data:   [slurp %fs "config.json"]     # fails if file missing
+  parsed: [from-json data]              # fails if data failed
+  host:   [get "host" parsed]           # fails if parsed failed
+  port:   [get "port" parsed]           # independent — doesn't depend on host
+]
+```
+
+If `data` fails, accessing `host` or `parsed` fails with the original error (decorated with where you accessed it). Accessing `port` fails too. But a field that never gets accessed never errors. This is the right default for most code.
+
+### Raising Errors
+
+Use `[error "message"]` to raise an error from your own code:
+
+```tinct
+validated-port: [fn [p]
+  [if [and [>= p 1] [<= p 65535]]
+    p
+    [error [str "invalid port: " p " (must be 1-65535)"]]]]
+
+# Usage
+port: [validated-port 8080]   # → 8080
+port: [validated-port 0]      # error: "invalid port: 0 (must be 1-65535)"
+```
+
+`error` always raises — it never returns. Type: `Str → Never`.
+
+### Catching Errors with `try`
+
+`try` takes a zero-argument function and returns `[Ok value]` or `[Err message]`:
+
+```tinct
+result: [try [fn [] [from-json "[invalid"]]]
+# → [Err "from-json: invalid JSON: ..."]
+
+result: [try [fn [] [from-json "[1, 2, 3]"]]]
+# → [Ok [0 1 1 2 2 3]]
+```
+
+Dispatch on the result with `match`:
+
+```tinct
+[match [try [fn [] [parse-config]]]
+  [Ok config]:  [start-server config]
+  [Err msg]:    [error [str "startup failed: " msg]]]
+```
+
+`try` only catches the body — not failures in setting up arguments. Wrap exactly what you want to recover from.
+
+### Returning Errors from Functions
+
+For functions that may legitimately fail, return `[Ok value]` or `[Err message]` explicitly rather than raising:
+
+```tinct
+parse-port: [fn [s]
+  [try [fn []
+    [let [n: [int s]]
+      [if [and [>= n 1] [<= n 65535]]
+        [Ok n]
+        [Err [str "port out of range: " s]]]]]]]
+
+# Caller uses match to handle both cases
+[match [parse-port "8080"]
+  [Ok port]:  [start port]
+  [Err msg]:  [log-warn msg]]
+```
+
+The `Ok`/`Err` nominal variants (from [Consistent Error Handling](feature/error-patterns.md)) give callers a typed choice between success and failure without exceptions.
+
+### Combining Results
+
+The `and-then` combinator chains operations that each return `Ok`/`Err`:
+
+```tinct
+result:
+  [let [raw: [try [fn [] [slurp %fs "config.json"]]]]
+    [and-then raw [fn [text]
+      [and-then [try [fn [] [from-json text]]] [fn [data]
+        [Ok [get "host" data]]]]]]]
+```
+
+`result-ok` and `result-err` extract values from `Ok`/`Err` without `match`:
+
+```tinct
+[result-ok  [Ok 42]]          # → 42
+[result-err [Err "oops"]]     # → "oops"
+[result-ok  [Err "oops"]]     # error — not an Ok
+```
+
+### Best Practices
+
+**Let errors propagate by default.** Don't wrap everything in `try`. Propagation is zero-cost and gives the best error messages (full span and stack context).
+
+**Use `try` at boundaries** — CLI argument parsing, file loading, external API calls, user input validation. Catch at the layer that can meaningfully recover, not inside deep library code.
+
+**Use `error` for invariant violations** — conditions that represent programmer errors or corrupted state. Don't use `error` as a control-flow mechanism.
+
+**Use `Ok`/`Err` for expected failure modes** — functions where "not found" or "invalid" is a normal outcome that callers should handle. Return `Ok`/`Err` instead of raising so callers can choose their response.
+
+**Don't `try` the uncatchable.** `DepthExceeded` and `ResourceLimitExceeded` propagate through `try` — they indicate resource exhaustion, not recoverable failures. There is no way to catch them in user code.
+
+**Name error messages in context.** Include the operation and the bad value: `"invalid port: 0"` not `"invalid value"`. The error code tells you the class; the message tells you the specific problem.
+
+---
+
 ## Exceptions by Default
 
 **Errors are exceptions that propagate when a thunk is materialized.** No `Result` wrapping in normal code. Thunks record source location at creation for error reporting.
@@ -977,17 +1089,3 @@ All 36 `ErrorKind` variants map to stable error codes and human-readable message
 
 The variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
 
-## Known Span Assignment Issues
-
-**Note:** Most span issues have been addressed in the `span-builtins`, `error-message-polish`, and subsequent sprints. The remaining items are tracked in TODO.md.
-
-The following span assignments have been implemented or identified:
-
-| Finding | Status | Implementation Notes |
-|---------|--------|---------------------|
-| Builtin errors use `call_span` for definition site | **Fixed** (span-builtins) | Builtins now pass `call_span` through `ok_val()`, `expect_one_arg()`, and `extract_num_pair()` for accurate materialization-site spans |
-| Access chain errors lack materialization site | Under review | Requires audit of access chain error construction sites |
-| Builtin name missing from stack frames | Under review | May require changes to builtin invocation tracing |
-| Depth limit errors lack call-site context | **Fixed** (error-message-polish) | `deep_materialize_thunk()` now passes materialization span and adds "deep-materializing" stack frame |
-| Access vs. call span attribution | Under review | Requires consistent def_span vs mat_span attribution across expression types |
-| Desugared lambda spans | **Fixed** (span-corrections-remaining) | `wrap_expr_in_lambda()` now clones the entire `Spanned<Expr>` for the body, preserving inner expression spans for type error reporting |

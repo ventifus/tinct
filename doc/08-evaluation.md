@@ -47,7 +47,7 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 
 Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, depth)` (in `eval_dict` in `src/eval.rs`) before the shared `dict_env` is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted into `dict_env` as bindings (in the dict environment binding loop in `eval_dict`).
 
-**Effectful key expressions:** Computed keys may contain effectful operations (currently only `$include`). These effects execute in the parent scope context, not the dict's letrec scope. For example, `[include "keys.llt"]` in a dict key position evaluates the included file with access to the parent environment's bindings, not the dict's own entries. This is consistent with the scoping rule but means included files used as keys cannot reference the dict's own bindings.
+**Effectful key expressions:** Computed keys may contain effectful operations (such as `$include`). These effects execute in the parent scope context, not the dict's letrec scope. For example, `[include "keys.llt"]` in a dict key position evaluates the included file with access to the parent environment's bindings, not the dict's own entries. This is consistent with the scoping rule but means included files used as keys cannot reference the dict's own bindings.
 
 **Circular dependencies** are detected at materialization-time and reported with a clear cycle trace.
 
@@ -1091,7 +1091,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 - Arena persists across `---` boundaries (append-only, no per-section deallocation)
 - **No migration needed**: ThunkIds are stable indices that never invalidate; `$include` cache stores standalone `Rc<Thunk>` (arena-independent)
 
-**Future: Full arena-based allocation for per-section lifetimes.** Further optimization would enable per-section lifetimes:
+**Full arena-based allocation for per-section lifetimes.** Further optimization enables per-section lifetimes:
 - **Arena allocator**: Replace `Rc::new(Thunk)` call sites with `arena.alloc(Thunk)`. Arena stores `Vec<Thunk>` (direct ownership, not Rc-wrapped). Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB).
 - **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
 - **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.

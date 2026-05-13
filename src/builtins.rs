@@ -9,7 +9,7 @@
 //! **Comparison:** `=`, `<` (cross-type Int/Float comparison allowed)
 //! **Control:** `if` (selective materialization -- only the chosen branch is forced)
 //! **Dict primitives:** `keys`, `length`, `merge`, `append`
-//! **Strings:** `str`, `split`, `replace`, `upper`, `lower`, `trim`
+//! **Strings:** `str`, `split`, `replace`, `trim`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?` (upper/lower are in stdlib/strings.llt)
 //! **Numeric:** `floor`, `round`
 //! **Parsing:** `to-int`, `to-float`
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
@@ -80,7 +80,7 @@ pub const MAX_COLLECT_SIZE: usize = 1_000_000;
 /// producing value trees that cause stack overflow during deep_materialize.
 pub(crate) const JSON_DEPTH_LIMIT: usize = 128;
 
-/// Maximum string output size for string output builtins (`$replace`, `$upper`, `$lower`, `$join`) (64 MB).
+/// Maximum string output size for string output builtins (`$replace`, `$str-map-chars`, `$join`) (64 MB).
 /// Prevents memory exhaustion from adversarial inputs or replacement patterns.
 pub(crate) const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
 
@@ -368,17 +368,20 @@ pub(crate) use crate::builtins_meta::{
     builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
-// String builtins: str, split, replace, upper, lower, trim, trim-start, trim-end,
-// str-length, str-index-of, str-slice, str-chars, char-code, chr, str-bytes, bytes-str.
+// String builtins: str, split, replace, trim, trim-start, trim-end,
+// str-length, str-index-of, str-slice, str-chars, char-code, chr, str-bytes, bytes-str,
+// str-to-upper-char, str-to-lower-char, str-map-chars, regex-match?.
+// Note: upper/lower are no longer Rust builtins; they live in stdlib/strings.llt and
+// are implemented using str-map-chars + str-to-upper-char / str-to-lower-char.
 // Implementations live in builtins_string.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 #[cfg(test)]
 pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 pub(crate) use crate::builtins_string::{
-    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_lower, builtin_replace,
+    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
     builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars, builtin_str_index_of,
-    builtin_str_length, builtin_str_slice, builtin_trim, builtin_trim_end, builtin_trim_start,
-    builtin_upper,
+    builtin_str_length, builtin_str_map_chars, builtin_str_slice, builtin_str_to_lower_char,
+    builtin_str_to_upper_char, builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
@@ -1006,8 +1009,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_replace,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
-        builtin!("upper", builtin_upper, [Strictness::Seq]),
-        builtin!("lower", builtin_lower, [Strictness::Seq]),
         builtin!("trim", builtin_trim, [Strictness::Seq]),
         builtin!("str-length", builtin_str_length, [Strictness::Seq]),
         builtin!(
@@ -1027,6 +1028,26 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("trim-start", builtin_trim_start, [Strictness::Seq]),
         builtin!("trim-end", builtin_trim_end, [Strictness::Seq]),
+        builtin!(
+            "str-to-upper-char",
+            builtin_str_to_upper_char,
+            [Strictness::Seq]
+        ),
+        builtin!(
+            "str-to-lower-char",
+            builtin_str_to_lower_char,
+            [Strictness::Seq]
+        ),
+        builtin!(
+            "str-map-chars",
+            builtin_str_map_chars,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "regex-match?",
+            builtin_regex_match,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         // Bytes
         builtin!("bytes", builtin_bytes, []),
         builtin!(
@@ -5148,179 +5169,6 @@ mod tests {
     }
 
     #[test]
-    fn upper_basic() {
-        let result = mat(builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("HELLO".into()));
-    }
-
-    #[test]
-    fn upper_mixed_case() {
-        let result = mat(builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("Hello World".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("HELLO WORLD".into()));
-    }
-
-    #[test]
-    fn upper_already_upper() {
-        let result = mat(builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("ABC".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("ABC".into()));
-    }
-
-    #[test]
-    fn upper_empty() {
-        let result = mat(builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("".into()));
-    }
-
-    #[test]
-    fn upper_with_numbers() {
-        let result = mat(builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("abc123".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("ABC123".into()));
-    }
-
-    #[test]
-    fn lower_basic() {
-        let result = mat(builtin_lower(BuiltinArgs {
-            args: &[thunk(string_val("HELLO".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("hello".into()));
-    }
-
-    #[test]
-    fn lower_mixed_case() {
-        let result = mat(builtin_lower(BuiltinArgs {
-            args: &[thunk(string_val("Hello World".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("hello world".into()));
-    }
-
-    #[test]
-    fn lower_already_lower() {
-        let result = mat(builtin_lower(BuiltinArgs {
-            args: &[thunk(string_val("abc".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("abc".into()));
-    }
-
-    #[test]
-    fn lower_empty() {
-        let result = mat(builtin_lower(BuiltinArgs {
-            args: &[thunk(string_val("".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("".into()));
-    }
-
-    #[test]
-    fn upper_size_limit_exceeded() {
-        // Input string larger than MAX_STRING_SIZE (64MB) should fail.
-        // Note: corpus tests for this would be impractical (require >64MB test files),
-        // so we test the limit directly in unit tests.
-        let large_string = "a".repeat(MAX_STRING_SIZE + 1);
-        let result = builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val(&large_string))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        });
-        assert!(result.is_err(), "expected Err for input > MAX_STRING_SIZE");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }),
-            "expected ResourceLimitExceeded, got {:?}",
-            err.kind
-        );
-        assert!(
-            err.message().contains("upper: input exceeds"),
-            "expected 'upper: input exceeds' message, got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn lower_size_limit_exceeded() {
-        // Input string larger than MAX_STRING_SIZE (64MB) should fail.
-        // Note: corpus tests for this would be impractical (require >64MB test files),
-        // so we test the limit directly in unit tests.
-        let large_string = "A".repeat(MAX_STRING_SIZE + 1);
-        let result = builtin_lower(BuiltinArgs {
-            args: &[thunk(string_val(&large_string))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        });
-        assert!(result.is_err(), "expected Err for input > MAX_STRING_SIZE");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }),
-            "expected ResourceLimitExceeded, got {:?}",
-            err.kind
-        );
-        assert!(
-            err.message().contains("lower: input exceeds"),
-            "expected 'lower: input exceeds' message, got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn upper_unicode() {
-        let result = mat(builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("café résumé".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("CAFÉ RÉSUMÉ".into()));
-    }
-
-    #[test]
-    fn lower_unicode() {
-        let result = mat(builtin_lower(BuiltinArgs {
-            args: &[thunk(string_val("ZÜRICH МОСКВА".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("zürich москва".into()));
-    }
-
-    #[test]
     fn trim_basic() {
         let result = mat(builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("  hello  ".into()))],
@@ -5460,54 +5308,6 @@ mod tests {
     }
 
     #[test]
-    fn upper_wrong_arity_zero() {
-        let err = builtin_upper(BuiltinArgs {
-            args: &[],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("arity mismatch"),
-            "got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn upper_wrong_arity_two() {
-        let err = builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("a".into())), thunk(string_val("b".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("arity mismatch"),
-            "got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn lower_wrong_arity() {
-        let err = builtin_lower(BuiltinArgs {
-            args: &[],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("arity mismatch"),
-            "got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
     fn trim_wrong_arity() {
         let err = builtin_trim(BuiltinArgs {
             args: &[thunk(string_val("a".into())), thunk(string_val("b".into()))],
@@ -5634,50 +5434,6 @@ mod tests {
     }
 
     #[test]
-    fn upper_wrong_type() {
-        let err = builtin_upper(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("expected String"),
-            "got: {}",
-            err.message()
-        );
-        assert!(
-            err.message().contains("expected String"),
-            "got: {}",
-            err.message()
-        );
-        assert!(err.message().contains("got Int"), "got: {}", err.message());
-    }
-
-    #[test]
-    fn lower_wrong_type() {
-        let err = builtin_lower(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("expected String"),
-            "got: {}",
-            err.message()
-        );
-        assert!(
-            err.message().contains("expected String"),
-            "got: {}",
-            err.message()
-        );
-        assert!(err.message().contains("got Bool"), "got: {}", err.message());
-    }
-
-    #[test]
     fn trim_wrong_type() {
         let err = builtin_trim(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
@@ -5698,42 +5454,6 @@ mod tests {
         );
         assert!(
             err.message().contains("got Float"),
-            "got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn upper_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(string_val("hi".into())));
-        let err = builtin_upper(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
-            named: Some(&named),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("named arguments"),
-            "got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn lower_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(string_val("hi".into())));
-        let err = builtin_lower(BuiltinArgs {
-            args: &[thunk(string_val("HELLO".into()))],
-            named: Some(&named),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        })
-        .unwrap_err();
-        assert!(
-            err.message().contains("named arguments"),
             "got: {}",
             err.message()
         );
@@ -6168,7 +5888,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 181,
+            count, 183,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6196,9 +5916,17 @@ mod tests {
         assert!(names.contains(&"str"), "missing str");
         assert!(names.contains(&"split"), "missing split");
         assert!(names.contains(&"replace"), "missing replace");
-        assert!(names.contains(&"upper"), "missing upper");
-        assert!(names.contains(&"lower"), "missing lower");
         assert!(names.contains(&"trim"), "missing trim");
+        assert!(
+            names.contains(&"str-to-upper-char"),
+            "missing str-to-upper-char"
+        );
+        assert!(
+            names.contains(&"str-to-lower-char"),
+            "missing str-to-lower-char"
+        );
+        assert!(names.contains(&"str-map-chars"), "missing str-map-chars");
+        assert!(names.contains(&"regex-match?"), "missing regex-match?");
         // Numeric
         assert!(names.contains(&"floor"), "missing floor");
         assert!(names.contains(&"round"), "missing round");
@@ -6380,8 +6108,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            181,
-            "expected 181 builtins, got {} (num?, record?, map?, has-cap?, spki-pin are now LLT-implemented)",
+            183,
+            "expected 183 builtins, got {} (upper/lower moved to stdlib/strings.llt; str-to-upper-char, str-to-lower-char, str-map-chars, regex-match? added)",
             names.len()
         );
     }

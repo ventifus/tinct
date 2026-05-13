@@ -1,0 +1,4 @@
+# str-map-chars : map a function over each Unicode character in a string
+[str-map-chars [fn [c] [str-to-upper-char c]] "hello"]
+=== out
+String("HELLO")

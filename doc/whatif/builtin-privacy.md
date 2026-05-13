@@ -1,122 +1,135 @@
-# What If: `builtin-*` Privacy for tinct
+# What If: Rust Primitive Privacy via Virtual Modules for tinct
 
-**State:** Accepted — 2026-05-11
+**State:** Accepted — 2026-05-11 (redesigned 2026-05-13)
 
-What would it take to restrict `builtin-*` stable aliases to prelude-internal use only, preventing user code and non-prelude stdlib from calling them directly?
-
-## Current State
-
-`builtin-*` names (`builtin-if`, `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop`) are registered in `create_root_env()` (`src/builtins.rs:1367–1427`) as stable aliases for the corresponding Rust builtin functions. A thirteenth name, `builtin-get`, is registered in `standard_builtins()` as the primitive dict accessor (not an alias).
-
-These aliases exist so that `prelude.llt` can always reach the raw Rust implementation even when the user shadows the public names (`<`, `=`, `+`, etc.). For example, `prelude.llt` defines `<` as a wrapper that provides better error messages — but internally its implementation calls `builtin-lt` directly, so it cannot accidentally recurse into itself if the user redefines `<`.
-
-**The problem:** because `builtin-*` names live in the root environment (the same layer that user code inherits), they are globally visible. Any `.llt` file can call `builtin-lt` directly. Discovered call sites in stdlib (2026-05-09 survey):
-
-- `stdlib/prelude.llt` — extensive use (correct and intentional)
-- `stdlib/macros.llt` — uses `builtin-if`, `builtin-lt`, `builtin-add`, `builtin-get`, `builtin-reduce`, `builtin-eq`
-- `stdlib/path.llt` — uses `builtin-if`, `builtin-eq`, `builtin-sub`, `builtin-add`, `builtin-get`
-- `stdlib/toml-lite.llt` — uses all `builtin-*` names extensively (this module is effectively a second prelude-level module)
-
-User code has also been found using them (`samples/versions.llt`, fixed 2026-05-09).
-
-### What's Missing
-
-1. No enforcement boundary between prelude-internal names and user-visible names.
-2. Non-prelude stdlib files (`macros.llt`, `path.llt`, `toml-lite.llt`) bypass the prelude's public API and call Rust implementations directly, which means they are not affected by user-provided wrappers.
-3. No type-checker warning when user code (or non-prelude stdlib) references `builtin-*` names.
-
-## Why `builtin-*` Privacy Matters for tinct
-
-The `builtin-*` names are a layering violation waiting to cause bugs. The prelude defines wrappers (`<`, `=`, `+`, etc.) that add error messages, type coercion, or dispatch logic on top of the Rust primitives. When downstream code bypasses these wrappers, it misses those improvements — and it silently breaks if the wrapper's semantics are ever tightened.
-
-Concretely: if a future sprint adds range checking to `+` (e.g., warn on integer overflow beyond 2^53), code calling `builtin-add` directly will never trigger that check. The visibility problem is also an ergonomics problem: `builtin-lt` is meaningless to a user; `<` is not.
+What would it take to make every Rust primitive invisible to user code by default, exposing only what tinct's stdlib explicitly re-exports?
 
 ## Design
 
-### Approach A: Env-layer isolation (full enforcement)
+### The Bootstrap Principle
 
-Remove the `builtin-*` aliases from `create_root_env()` and instead inject them only into the environment used when evaluating `prelude.llt`. The evaluator builds a chain:
+**No Rust builtin is available to user code by default — not even `+`, `error`, or `=`. The only thing in the bootstrap environment is `include` itself, plus the injected capability caps (`%libdir`, `%pwd`, `%stdin`, `%clock`).**
+
+This is the strongest possible form of primitive privacy: user code can call nothing at all until `prelude.llt` is auto-loaded. Prelude is responsible for making `+`, `error`, `map`, and every other name available. If prelude doesn't export it, users can't call it.
+
+The env chain is:
 
 ```
-root_env (standard_builtins only, no builtin-* aliases)
-  └── prelude_internal_env (+ builtin-* aliases injected here)
-        └── prelude_output_env (only the exported prelude dict is visible)
-              └── user env
+bootstrap_env = { include, %libdir, %pwd, %stdin, %clock }
+  ↓ (prelude auto-loaded here using [include %rust ...])
+prelude_output_env = everything prelude.llt defines
+  ↓
+user env (inherits only prelude_output_env — not bootstrap_env)
 ```
 
-The prelude is evaluated in `prelude_internal_env` so it can see `builtin-lt` etc. The resulting bindings (`<`, `=`, `not`, `if`, ...) are promoted into `prelude_output_env`, which becomes the parent of the user env. `builtin-*` names never reach `prelude_output_env` and are therefore invisible to user code and non-prelude stdlib.
+User code cannot reach `bootstrap_env` or any Rust builtin directly. The only path to a Rust primitive is through a prelude (or stdlib module) that explicitly re-exports it.
 
-**Impact on macros.llt, path.llt, toml-lite.llt:** These must be migrated before this approach can ship. Each file currently uses `builtin-*` names that would become undefined. Migration means replacing every `builtin-if` with `if`, `builtin-eq` with `=`, etc. — the idiomatic prelude wrappers they were already supposed to be using. This is safe because the prelude wrappers have matching semantics for the cases these files exercise.
+### `%rust` — Virtual Module Cap
 
-`builtin-get` is a special case: the prelude's `get` wrapper adds a KeyNotFound error on missing keys, which is stricter than `builtin-get`'s direct error. The migration for `builtin-get` call sites must confirm that the error-on-missing semantics are acceptable (they are for path.llt and toml-lite.llt, which already handle missing keys).
+`%rust` is a special cap value that resolves Rust primitive groups. It is **not** available in user code — it is injected only into the stdlib evaluation context (prelude and files loaded from `%libdir`).
 
-After migration, the `builtin-*` names are invisible outside the prelude evaluation context. Any user or stdlib file that calls them gets `undefined variable: builtin-lt`, the same error they would get for any other unknown name.
+```tinct
+# In stdlib/prelude.llt — imports groups of Rust primitives
+[include %rust "core"]       # +, -, *, /, =, <, if, error, try, eval, apply, force
+[include %rust "string"]     # str, split, replace, trim, upper, lower, str-slice, ...
+[include %rust "collection"] # keys, length, merge, append, each, seq, range, ...
+[include %rust "json"]       # from-json
+[include %rust "meta"]       # type-of, validate, until, llt-repr, tag-of, variant
 
-### Approach B: Type-checker warning (soft enforcement)
+# In stdlib/io.llt — imports only what io needs
+[include %rust "io"]         # open, slurp, write, lines, emit, env, list-dir, ...
 
-Keep the names globally visible but emit a `T-code` type-checker warning when user code (or non-prelude stdlib) references any name matching `^builtin-`. The type checker knows the source file being checked — it can suppress the warning for `stdlib/prelude.llt` and emit it for everything else.
+# In stdlib/net.llt
+[include %rust "net"]        # connect, tls-layer, http2-session, http-request, ...
 
-This requires no runtime change and no migration of `macros.llt`, `path.llt`, or `toml-lite.llt` — those files would produce warnings until they are migrated. The warning is suppressable per-file with a pragma if needed.
+# In stdlib/math.llt
+[include %rust "math"]       # pow, sqrt, sin, cos, log, band, bor, nan?, ...
 
-**Limitation:** warnings are not errors unless `--strict` is passed. User code that ignores warnings can still call `builtin-lt` indefinitely. This is a nudge, not a hard boundary.
+# In stdlib/datetime.llt
+[include %rust "datetime"]   # now, parse-timestamp, timestamp-add, load-tz, ...
+```
 
-### Approach C: Rename to `__builtin-*` (discouragement only)
+`%rust` is a `Value::RustRegistry` — an opaque Rust type that cannot be constructed by tinct code. The include resolver recognizes it specially and resolves the module name to a virtual environment containing exactly the named primitive group. No disk access occurs.
 
-Rename all aliases from `builtin-*` to `__builtin-*` (double-underscore prefix, a conventional "implementation detail" signal in many languages). The names remain globally visible but are less guessable and visually ugly enough to deter casual use.
+### Primitive Groups
 
-**Limitation:** this is purely a naming convention, not enforcement. A determined user can still call `__builtin-lt`. It also requires migrating `prelude.llt` and all three non-prelude stdlib files to the new names.
+| Module | Contents |
+|--------|---------|
+| `rust::core` | `+`, `-`, `*`, `/`, `%`, `=`, `<`, `if`, `error`, `try`, `eval`, `apply`, `force`, `from-json`-adjacent ops, type predicates (`int?`, `str?`, `dict?`, `fn?`, `seq?`, `null?`, `bool?`, `float?`, `bytes?`, `num?`, `record?`, `map?`), `type-of`, `gensym` |
+| `rust::string` | `str`, `split`, `replace`, `trim`, `upper`, `lower`, `starts-with?`, `ends-with?`, `str-chars`, `str-length`, `str-slice`, `str-contains?`, `char-code`, `chr`, `str-bytes`, `bytes-str` |
+| `rust::collection` | `keys`, `length`, `merge`, `append`, `get`, `set`, `has?`, `each`, `each-key`, `each-kv`, `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort` |
+| `rust::bytes` | `bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?` |
+| `rust::math` | `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?`, `floor`, `round`, `to-int`, `to-float`, `float`, `band`, `bor`, `bxor`, `shl`, `shr`, `decimal`, `big-int` |
+| `rust::json` | `from-json` |
+| `rust::io` | `open`, `slurp`, `write`, `write-atomic`, `write-handle`, `flush`, `close`, `seek`, `seek-end`, `position`, `lines`, `list-dir`, `stat`, `make-dir`, `remove`, `rename`, `link`, `read-link`, `emit`, `env`, `narrow`, `revocable`, `revoke-cap`, `cap-data`, `has-cap?` |
+| `rust::net` | `connect`, `tls-layer`, `tls-peer-cert`, `spki-pin`, `send-datagram`, `recv-datagram`, `http-request`, `http2-session`, `http3-session`, `quic-session`, `quic-open-stream`, `quic-open-datagram`, `icmp-ping`, `uri`, `url`, `urn` |
+| `rust::datetime` | `parse-timestamp`, `format-timestamp`, `timestamp->unix`, `unix->timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp<?`, `timestamp>?`, `timestamp=?`, `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts`, `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration->seconds`, `duration->nanos`, `load-tz`, `timestamp-in-tz`, `local->timestamp`, `local-tz-name` |
+| `rust::meta` | `validate`, `until`, `llt-repr`, `tag-of`, `variant`, `eval-ast`, `proxy` |
 
-### Recommended Approach: A + B in sequence
+### What prelude.llt Looks Like
 
-1. **First: migrate non-prelude stdlib files** — replace `builtin-*` calls in `macros.llt`, `path.llt`, and `toml-lite.llt` with their idiomatic equivalents. This is the right fix regardless of which enforcement approach is chosen.
+prelude.llt opens by importing the Rust groups it needs, then builds the tinct-level API on top:
 
-2. **Then: Approach A** — inject `builtin-*` aliases into the prelude evaluation layer only. After the stdlib migration, there are no remaining legitimate call sites outside `prelude.llt`, so the env-layer isolation becomes safe to apply.
+```tinct
+[include %rust "core"]
+[include %rust "string"]
+[include %rust "collection"]
+[include %rust "json"]
+[include %rust "meta"]
 
-3. **Approach B as a cross-check** — add the type-checker warning as a secondary guard. If a future stdlib module is added and accidentally uses `builtin-*`, the warning catches it at `--strict` time even before the runtime would error.
+# Public tinct API begins here — re-exports and wrappers
+[
+  # Arithmetic (re-exported from core, wrappers add type coercion / errors)
+  +: [fn [a b] [builtin-add a b]]
+  ...
 
-Approach A is the correct long-term design. Approach B is cheap and provides defense-in-depth.
+  # Higher-level combinators built purely in tinct
+  and-then: [fn [result f] [match result [Ok v]: [f v] [Err msg]: [Err msg]]]
+  ...
+]
+```
 
-## What Would Change
+### What stdlib/io.llt Looks Like
 
-### Evaluator / Environment Construction
+```tinct
+[include %rust "io"]
 
-**Current:** `create_root_env()` registers `builtin-*` aliases in the same environment layer as `standard_builtins()`.
+[
+  read-file:  [fn [cap path] [try [fn [] [slurp [open cap path "r"]]]]]
+  write-file: [fn [cap path content] [write cap path content]]
+  read-lines: [fn [cap path] [try [fn [] [lines [open cap path "r"]]]]]
+  # ... etc — all built on the raw primitives from rust::io
+]
+```
 
-**Proposed:** Split into `create_root_env()` (no aliases) and `create_prelude_eval_env()` (root + aliases). The prelude evaluator uses `create_prelude_eval_env()`; the user evaluator uses the output of prelude evaluation (which does not expose aliases).
+### Security Properties
 
-**Impact:** Moderate. Requires threading a distinct environment through the prelude loading path in `src/builtins.rs` and `src/imports.rs`.
+- **User code cannot access `%rust`** — `Value::RustRegistry` is an opaque Rust type; there is no tinct expression that produces one. Even if a user writes `[include %rust "io"]`, `%rust` is undefined in their env.
+- **User code cannot spoof `%rust`** — the include resolver checks that the cap is `Value::RustRegistry` at the Rust level, not by name lookup.
+- **`include` is the only bootstrap primitive** — not even `+` or `error` exists until prelude loads. A tinct file with no includes evaluates in a universe containing only caps and `include`.
+- **stdlib files loaded from `%libdir` receive `%rust` injection** — the include resolver injects `%rust` into the env when evaluating a file loaded from libdir, not from user-controlled paths.
 
-### Type Checker
+### What Would Change
 
-**Current:** No warning for `builtin-*` name references.
+**`src/value.rs`** — add `Value::RustRegistry` variant (opaque; no payload; PartialEq, Debug, Display).
 
-**Proposed:** In `typecheck.rs` name-resolution, check if the resolved name matches `^builtin-` and the source file is not `prelude.llt`; if so, emit a `T-code` warning (new code, e.g., `T009: direct use of internal builtin alias`).
+**`src/builtins.rs`** — remove `create_root_env()` from the user env chain; replace with `create_bootstrap_env()` containing only `include` and the injected caps. Add `fn rust_module(name: &str) -> Rc<RefCell<Environment>>` that dispatches on the module name to return the primitive group env.
 
-**Impact:** Minor. One pattern match in the name-resolution path.
+**`src/imports.rs`** — `build_prelude_env`: evaluate `prelude.llt` in `bootstrap_env + %rust` (libdir files get `%rust` injected); the resulting env becomes the user env parent. `build_include_env`: when cap is `Value::RustRegistry`, call `rust_module(path)` instead of doing filesystem I/O.
 
-### stdlib Migration
+**`stdlib/prelude.llt`** — opens with `[include %rust "core"]`, `[include %rust "string"]`, `[include %rust "collection"]`, `[include %rust "json"]`, `[include %rust "meta"]`; defines the tinct-level API on top.
 
-**Current:** `macros.llt`, `path.llt`, `toml-lite.llt` use `builtin-*` directly.
+**`stdlib/io.llt`, `stdlib/net.llt`, `stdlib/math.llt`, `stdlib/datetime.llt`** — each opens with `[include %rust "module-name"]` and builds its tinct-level API on top.
 
-**Proposed:** Replace every call site with the idiomatic prelude wrapper. Specific replacements:
-- `builtin-if` → `if`
-- `builtin-eq` → `=`
-- `builtin-lt` → `<`
-- `builtin-add` → `+`
-- `builtin-sub` → `-`
-- `builtin-mul` → `*`
-- `builtin-get` → `get` (confirm error-on-missing is acceptable)
-- `builtin-reduce` → `reduce` (prelude wrapper)
-- `builtin-map` → `map`
-- `builtin-filter` → `filter`
-
-**Impact:** Minor per-file. Low regression risk — prelude wrappers have identical semantics for the cases these files exercise.
+**`builtin-*` aliases** — removed entirely. They were an escape hatch for prelude to call through to Rust primitives when user code shadows the public names. With `%rust` modules, prelude always has direct access to the raw primitives via its imported groups; there is no shadowing concern.
 
 ## Prerequisites
 
-- No external prerequisites. This is a self-contained internal refactor.
-- The stdlib migration (`macros.llt`, `path.llt`, `toml-lite.llt`) must precede the env-layer isolation (Approach A), but can be done incrementally file by file.
+- `build_prelude_env` refactor (separating bootstrap from user env)
+- `Value::RustRegistry` type added to value.rs
 
 ## References
 
-- The escape-hatch alias pattern is used in Haskell's Prelude for similar reasons: `GHC.Base.map` vs user-shadowable `Prelude.map`. The key difference is that Haskell exposes module qualification as the escape hatch, while tinct uses a name prefix.
+- Racket's `#lang` system — per-file language environments; only the primitives declared by the language are available; no global namespace leakage
+- Nix's `builtins` set — a single explicit namespace for all language primitives; stdlib (`nixpkgs`) is a separate layer built on top; users access builtins only through the public API
+- Node.js module system — each module has its own scope; nothing leaks between modules unless explicitly exported; `require` is the only bootstrap primitive

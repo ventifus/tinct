@@ -204,7 +204,7 @@ enum Annotation {
 | `Unquote(expr)` | `[unquote expr]` | Unquote inside quote — evaluates expr and splices result into quoted AST |
 | `UnquoteSplice(expr)` | `[unquote-splice expr]` | Unquote-splice inside quote — evaluates expr (must be list) and splices each element into enclosing list |
 | `DefMacro { name, transformer }` | `[defmacro name fn]` | Macro definition — registers compile-time transformer function |
-| `Match { scrutinee, arms }` | `[match val pat1 body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
+| `Match { scrutinee, arms }` | `[match val pat1: body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
 | `ClassDecl { name, params, superclasses, methods }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters and method signatures |
 | `InstanceDecl { class_name, instance_type, methods }` | `[instance [Name Type] methods...]` | Type class instance with method implementations |
 

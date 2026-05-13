@@ -55,7 +55,7 @@ Dict = Record ∨ Map[K V]
 
 `Record` uses BAS row intersection for multi-field records. `Map[K V]` is a parameterized type constructor for homogeneous maps. `get` on `Map[K V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
 
-**Implementation note:** `@Dict` currently resolves as `Record(Row{})` (width-subtyping fallback). The full `Dict = Record ∨ Map` union semantics are a target state for when BAS constraint resolution is fully implemented.
+**`@Dict` resolution:** `@Dict` resolves as `Record(Row{})` (width-subtyping fallback). The `Dict = Record ∨ Map` union form is the semantic target; BAS constraint resolution handles the union at type-checking time.
 
 Dict equality is **order-insensitive structural equality** for both Record and Map: same key set with equal values at each key. This follows from the extensional (finite-map) semantics of both forms under BAS — see §Structural Equality in `doc/whatif/completed/parameterized-dict.md`.
 
@@ -342,9 +342,9 @@ type BuiltinFn = fn(args, named, depth, call_span) -> Result<Value, Box<EvalErro
 type BuiltinFn = fn(args, named, depth, call_span) -> Result<Rc<Thunk>, Box<EvalError>>;
 ```
 
-Builtins that currently return materialized values wrap them in `Thunk::new_materialized()`. Builtins like `$map` and `$if` can now return thunks directly. This removes the eager materialization boundary that currently prevents builtins from participating in lazy evaluation.
+Builtins that return materialized values wrap them in `Thunk::new_materialized()`. Builtins like `$map` and `$if` return thunks directly. This removes the eager materialization boundary that separates builtins from lazy evaluation.
 
-**Rationale:** The current signature requires all builtins to return fully materialized values, which prevents operations like `$if` from returning the chosen branch as a thunk, and prevents `$map` from returning a dict with lazy PendingCall values. Changing the return type to `Rc<Thunk>` allows builtins to participate in lazy evaluation while maintaining backward compatibility (wrap in `Thunk::new_materialized()` for eager builtins).
+**Rationale:** The `Rc<Thunk>` return type allows builtins to participate in lazy evaluation while maintaining backward compatibility (wrap in `Thunk::new_materialized()` for eager builtins). Operations like `$if` return the chosen branch as a thunk; `$map` returns a dict with lazy PendingCall values — neither requires eager materialization.
 
 **Type inference is unchanged** — return types are determined by unifying the call signature during type checking, not by inspecting returned thunk contents. This change is a runtime optimization only.
 
@@ -795,7 +795,7 @@ The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and ch
 
 **P4 — Occurs check termination.** The per-kind occurs check prevents infinite types (`α = Record({x: α})`) and infinite rows (`ρ = {x: Int, ...ρ}`). The row-variable occurs check traverses field types to prevent infinite structures through nesting (`ρ = {x: Record({y: Int, ...ρ})}`). Combined with the finite-depth property of tinct's AST, unification terminates.
 
-**P5 — Backward compatibility.** All currently well-typed programs remain well-typed. The migration changes internal representation but not the type language visible to users. Programs that previously inferred `Unknown` for row-polymorphic positions will now infer more precise types — this is strictly more informative, not breaking.
+**P5 — Backward compatibility.** All well-typed programs remain well-typed after the migration. The migration changes internal representation but not the type language visible to users. Programs that previously inferred `Unknown` for row-polymorphic positions now infer more precise types — this is strictly more informative, not breaking.
 
 **P6 — Forward compatibility with full Rémy.** Adding presence/absence flags changes field map values from `Type` to `(FieldPresence, Type)`. The partitioning algorithm gains a presence-compatibility check (Present must match Present, Absent must match Absent), and field access must skip Absent fields. The overall structure (partition shared/unique, unify shared, bind tails) is preserved. See Part 1: Row Kind for the extension point.
 

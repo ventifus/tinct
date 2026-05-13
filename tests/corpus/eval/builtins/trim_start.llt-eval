@@ -1,0 +1,4 @@
+# trim-start : strip leading whitespace
+[trim-start "   hello   "]
+=== out
+String("hello   ")

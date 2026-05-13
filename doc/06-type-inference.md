@@ -902,15 +902,13 @@ The stdlib defines the following typeclass hierarchy:
 | `Comparable` | `*` | Equatable | `< : a → a → Bool`, etc. |
 | `Showable` | `*` | — | `show : a → Str` |
 
-**†Implementation note:** `Mappable` is currently registered as a placeholder `Kind::Type` class and will be promoted to `Kind::Operator` in the `hkt-mappable-appendable` sprint.
+**†`Mappable` kind:** `Mappable` is registered with `Kind::Operator` (type constructor kind `* → *`). User-defined types can declare themselves `Mappable`.
 
 Instances cover `Result`, `Seq`, `Maybe`, `Record` as appropriate.
 
 ### Generic Functions
 
-**Implementation status:** The functions `sequence` and `traverse` shown below are specified but not yet in `stdlib/prelude.llt` — they require the `hkt-stdlib` sprint.
-
-With the typeclass hierarchy, these generic functions will be available:
+The following generic functions are defined in `stdlib/prelude.llt`:
 
 ```tinct
 # collect effects from any Traversable container
@@ -926,7 +924,7 @@ traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
 
 ### `[do]` Inference
 
-**Implementation status:** The inferred `[do]` form (without explicit monad argument) is not yet implemented — it requires the `hkt-do-macro` sprint. The explicit `[do monad steps...]` form is fully implemented and available.
+The `[do]` macro supports both an explicit monad argument and an inferred form. The inferred `[do]` form deduces the monad from context:
 
 The `[do]` macro infers the monad from context when no explicit monad argument is given:
 

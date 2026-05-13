@@ -1,6 +1,6 @@
 # Test macro that generates a function with explicit params
 [
-  [defmacro make-adder [fn [macro-args]
+  [defmacro make-adder [macro-args]
     [
       type: "fn"
       params: [
@@ -19,7 +19,7 @@
       ]
       return-ann: []
       desugared: false
-    ]]]
+    ]]
 
   add: [make-adder]
   result: [add 3 5]

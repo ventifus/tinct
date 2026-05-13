@@ -119,12 +119,12 @@ The `[match]` special form provides pattern matching with exhaustiveness checkin
 
 ```tinct
 [match scrutinee
-    pattern₁ => expr₁
-    pattern₂ => expr₂
-    ...
-    patternₙ => exprₙ
-]
+    pattern₁: expr₁
+    pattern₂: expr₂
+    patternₙ: exprₙ]
 ```
+
+Each arm is a `pattern: body` keyed entry — the pattern is the key, the body is the value. This uses tinct's standard key-value syntax and makes arm boundaries unambiguous.
 
 ### Patterns
 
@@ -146,18 +146,15 @@ For non-union scrutinees (e.g., `Int`, `String`, `Record`), exhaustiveness is no
 
 ```tinct
 [match [try-operation input]
-    [Ok value] => value
-    [Err msg] => [error [str "Operation failed: " msg]]
-]
+    [Ok value] [error [str "Operation failed: " msg]]]
 ```
 
 ### Example: Option Handling
 
 ```tinct
 [match [find-user id]
-    [Some user] => user.name
-    [None] => "Unknown user"
-]
+    [Some user]: user.name
+    [None]:      "Unknown user"]
 ```
 
 ### Dynamic Errors

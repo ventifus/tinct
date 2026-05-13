@@ -174,7 +174,7 @@ struct EvalState {
     eval_stack: Vec<(String, Span)>,
     class_registry: HashMap<String, RuntimeClassDecl>,
     instance_registry: HashMap<(String, String), Rc<Thunk>>,
-    // future: trace_log, eval_stats
+    // trace_log, eval_stats
 }
 
 struct EvalContext {
@@ -192,7 +192,7 @@ struct EvalContext {
 
 **ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<EvalContext>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is materialized, it uses the captured context for include resolution, sandboxing, etc.
 
-**BuiltinArgs:** Carries `ctx: Rc<EvalContext>`. Most builtins ignore ctx; only `$include` and future I/O builtins use it. The `depth` field was removed when the CEK machine (see §Iterative Evaluator) eliminated depth tracking from the core loop.
+**BuiltinArgs:** Carries `ctx: Rc<EvalContext>`. Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. The `depth` field was removed when the CEK machine (see §Iterative Evaluator) eliminated depth tracking from the core loop.
 
 **Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. The `set_include_context()` / `clear_include_context()` functions are removed — the fragile set/clear ceremony is replaced by straightforward parameter passing.
 
@@ -378,7 +378,7 @@ builtin!("map", builtin_map, [Id, Spine])
 builtin!("seq", builtin_seq)               // all-Id (no third arg, empty slice)
 ```
 
-`create_root_env()` and the `builtin-*` operator aliases (currently a separate `Vec<(&'static str, BuiltinFn)>`) are updated to construct `BuiltinDef` entries. Alias entries carry the alias name (e.g. `"builtin-add"`) but share the same `pos_strictness` as the canonical builtin.
+`create_root_env()` and the `builtin-*` operator aliases are updated to construct `BuiltinDef` entries. Alias entries carry the alias name (e.g. `"builtin-add"`) but share the same `pos_strictness` as the canonical builtin.
 
 **Complete migration site inventory.** Every site that stores or deconstructs `name: &'static str` + `func: BuiltinFn` as separate builtin fields must be migrated atomically to `def: BuiltinDef`:
 
@@ -557,7 +557,7 @@ The following security features are implemented:
 **Path traversal** (partially mitigated):
 - LSP mode: `no_fs=true` disables all file I/O, preventing CWE-22 attacks via malicious document content
 - CLI mode: `$include` uses `canonicalize()` to resolve symlinks and relative paths but has no root confinement; `--no-fs` flag disables file I/O entirely
-- TOCTOU race: canonicalize → metadata → read creates race window (future: cap-std fd-based reads)
+- TOCTOU race: canonicalize → metadata → read creates race window; cap-std fd-based reads eliminate this race
 
 **Panic hygiene**:
 - All user-reachable code paths return `Err(...)`, not `panic!()`

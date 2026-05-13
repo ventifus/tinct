@@ -236,7 +236,7 @@ inner_string  = @{ (escape_seq | !("\"" | "\\") ~ ANY)* }
 escape_seq    = @{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
 ```
 
-Currently supports these 5 sequences. Unicode escapes (`\uXXXX`) are not yet supported — use `$from-json` for full Unicode string parsing.
+Supports these 5 sequences. Unicode escapes (`\uXXXX`) are not supported — use `$from-json` for full Unicode string parsing.
 
 The parser handles quoted strings as atomic units — no implicit whitespace skipping between the quotes and content. Literal newlines are permitted inside `"..."` strings — the lexer passes all characters through, including `\n`. A string may span multiple source lines:
 
@@ -315,7 +315,21 @@ label: [trim [unindent "
   "]]
 ```
 
-**Future: `"""..."""` macro.** A planned parse-stage macro `"""..."""` will desugar to `[unindent "..."]` for convenience, and `i"""..."""` will desugar to `[unindent i"..."]` to combine interpolation with indentation stripping. This requires lexer support for triple-quoted string tokens, which is not yet implemented.
+**`"""..."""` macro.** `"""..."""` desugars to `[unindent "..."]`, and `i"""..."""` desugars to `[unindent i"..."]`, combining interpolation with indentation stripping:
+
+```tinct
+query: """
+  SELECT *
+  FROM users
+  WHERE active = true
+  """
+# Equivalent to: [unindent "\n  SELECT *\n  FROM users\n  WHERE active = true\n  "]
+
+email: i"""
+  Dear $name,
+  Your order is ready.
+  """
+```
 
 #### 2.3.7 Identifiers (Variable References)
 
@@ -679,7 +693,7 @@ Examples:
 #### 3.3.4 `match` — Pattern Matching
 
 ```ebnf
-match_form = { keyword_match ~ value ~ (pattern ~ value)+ }
+match_form = { keyword_match ~ value ~ (pattern ~ ":" ~ value)+ }
 ```
 
 Structural pattern matching on values. Patterns include wildcards, variable bindings, literals, type tags, pins, and dict/list destructuring.
@@ -687,13 +701,13 @@ Structural pattern matching on values. Patterns include wildcards, variable bind
 Examples:
 ```tinct
 [match x
-  0 "zero"
-  1 "one"
-  _ "other"]
+  0: "zero"
+  1: "one"
+  _: "other"]
 
 [match response
-  [ok: result] result
-  [err: msg] [error msg]]
+  [ok: result]: result
+  [err: msg]:   [error msg]]
 ```
 
 #### 3.3.5 `class` — Type Class Declaration
@@ -785,7 +799,7 @@ The parser treats `rest_entry` as atomic to prevent whitespace between `...` and
 
 Quoted strings are valid as keys, allowing keys that contain spaces, colons, or other special characters: `["my key": value]`.
 
-**Note on key types:** The `bare_token` rule in `key` allows `float_lit` and `bool_lit` to parse successfully as keys. However, the evaluator only accepts `String` and `Int` as runtime key types and will reject `Float` and `Bool` keys with a type error. The parser is intentionally permissive here for forward compatibility — if future language versions support additional key types, no grammar changes will be needed.
+**Note on key types:** The `bare_token` rule in `key` allows `float_lit` and `bool_lit` to parse successfully as keys. However, the evaluator only accepts `String` and `Int` as runtime key types and will reject `Float` and `Bool` keys with a type error. The parser is intentionally permissive here — if the language ever supports additional key types, no grammar changes will be needed.
 
 **Value boundary rule:** every entry's value is exactly one token or one bracket expression. After parsing a key's value, the next whitespace-separated token starts a new entry.
 

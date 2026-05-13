@@ -1,0 +1,49 @@
+--- Test 1: Recursive function WITH annotation works normally
+[
+    factorial@Fn@Int [Int]: [fn [n@Int]
+        [if [< $n 2]
+            1
+            [* $n [$factorial [- $n 1]]]
+        ]
+    ]
+    result: [$factorial 5]
+]
+
+---
+
+--- Test 2: Recursive function WITHOUT annotation → error
+[
+    # This should produce a type error about polymorphic recursion
+    factorial: [fn [n@Int]
+        [if [< $n 2]
+            1
+            [* $n [$factorial [- $n 1]]]
+        ]
+    ]
+]
+
+---
+
+--- Test 3: CALL-MONO and CALL-POLY agree on literal types
+[
+    # Polymorphic function: has TypeVars during instantiation (CALL-POLY path)
+    id@Fn@a [a]: [fn [x@a] $x]
+
+    # Monomorphic function: concrete type (CALL-MONO path)
+    id_int@Fn@Int [Int]: [fn [x@Int] $x]
+
+    # Both should accept IntLiteral(42) for Int parameter
+    poly_result: [$id 42]
+    mono_result: [$id_int 42]
+]
+
+---
+
+--- Test 4: Passing Int to Number param works in both paths
+[
+    # Polymorphic function with Number return
+    to_number@Fn@Number [Number]: [fn [x@Number] $x]
+
+    # Call with Int literal — should work via subsumption (Int <: Number)
+    result: [$to_number 42]
+]

@@ -1,6 +1,6 @@
 # Comprehensive macro integration test
 [
-  [defmacro add-one [fn [macro-args]
+  [defmacro add-one [macro-args]
     [
       type: "call"
       implied: true
@@ -10,11 +10,11 @@
         [type: "literal" kind: "int" value: 1]
       ]
       named-args: []
-    ]]]
+    ]]
 
   test1: [add-one 5]
 
-  [defmacro double [fn [macro-args]
+  [defmacro double [macro-args]
     [
       type: "call"
       implied: true
@@ -24,7 +24,7 @@
         [type: "literal" kind: "int" value: 2]
       ]
       named-args: []
-    ]]]
+    ]]
 
   test2: [double 7]
   test3: [double [add-one 3]]

@@ -1,0 +1,4 @@
+# regex-match? : returns true when pattern matches anywhere in haystack
+[regex-match? "hel+" "hello world"]
+=== out
+Bool(true)

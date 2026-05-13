@@ -4,7 +4,7 @@
   # Define a simple macro that transforms [my-add a b] to [+ a b]
   # Note: param named `macro-args` to avoid shadowing by the `args` key
   # in the generated AST dict (dict keys create letrec bindings).
-  [defmacro my-add [fn [macro-args]
+  [defmacro my-add [macro-args]
     [
       type: "call"
       implied: true
@@ -14,7 +14,7 @@
         [get 1 macro-args]
       ]
       named-args: []
-    ]]]
+    ]]
 
   # Use the macro within this file
   result: [my-add 1 2]
