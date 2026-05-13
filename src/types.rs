@@ -174,6 +174,8 @@ pub enum Type {
     Http2Session,
     /// HTTP/3 session — HTTP over QUIC (RFC 9114). Created by `http3-session`.
     Http3Session,
+    /// QUIC datagram handle — unreliable message delivery (RFC 9221). Created by `quic-open-datagram`.
+    QuicDatagramHandle,
     /// Datagram socket handle — message-oriented I/O (UDP or Unix datagram).
     /// Created by `connect cap Udp host port`. Consumed by `send-datagram` and `recv-datagram`.
     DatagramHandle,
@@ -256,6 +258,7 @@ impl PartialEq for Type {
             (Type::QuicSession, Type::QuicSession) => true,
             (Type::Http2Session, Type::Http2Session) => true,
             (Type::Http3Session, Type::Http3Session) => true,
+            (Type::QuicDatagramHandle, Type::QuicDatagramHandle) => true,
             (Type::DatagramHandle, Type::DatagramHandle) => true,
             (Type::Union(members1), Type::Union(members2)) => members1 == members2,
             (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
@@ -1318,13 +1321,14 @@ fn type_order(ty: &Type) -> u8 {
         Type::QuicSession => 25,
         Type::Http2Session => 26,
         Type::Http3Session => 27,
-        Type::DatagramHandle => 28,
-        Type::Union(_) => 29, // Should not appear after flattening, but included for completeness
-        Type::Intersection(_) => 30, // Should not appear after flattening, but included for completeness
-        Type::Negation(_) => 31,
-        Type::Never => 32,
-        Type::App(_, _) => 33,
-        Type::Operator(_) => 34,
+        Type::QuicDatagramHandle => 28,
+        Type::DatagramHandle => 29,
+        Type::Union(_) => 30, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 31, // Should not appear after flattening, but included for completeness
+        Type::Negation(_) => 32,
+        Type::Never => 33,
+        Type::App(_, _) => 34,
+        Type::Operator(_) => 35,
     }
 }
 
@@ -1648,9 +1652,10 @@ impl InferState {
         });
 
         // Mappable: base class (Record and Seq support map operations)
+        // Kind::Operator for higher-kinded type constructor polymorphism (hkt-kind-inference)
         class_env.insert(ClassDecl {
             name: "Mappable".to_string(),
-            params: vec![("a".to_string(), Kind::Type)],
+            params: vec![("f".to_string(), Kind::Operator)],
             superclasses: vec![],
             methods: HashMap::new(),
         });
@@ -3871,6 +3876,85 @@ mod tests {
         let app_str = Type::App(Box::new(result), Box::new(Type::Str));
         let union_of_apps = Type::normalize_union(vec![app_int, app_str]);
         assert!(!Type::is_subtype(&app_union, &union_of_apps));
+    }
+
+    // ===== HKT kind inference tests (hkt-kind-inference sprint) =====
+
+    #[test]
+    fn test_kind_env_operator_registration() {
+        // Test that Operator-kinded class params are registered in kind_env
+        let state = InferState::new();
+        // Mappable has Kind::Operator param "f"
+        let mappable = state.class_env.get("Mappable").unwrap();
+        assert_eq!(mappable.params.len(), 1);
+        assert_eq!(mappable.params[0].0, "f");
+        assert_eq!(mappable.params[0].1, Kind::Operator);
+    }
+
+    #[test]
+    fn test_app_normalization_seq() {
+        // Test that App(Operator("Seq"), Int) normalizes to Type::Seq(Int) after substitution
+        let mut subst = Substitution::new();
+        subst
+            .type_map
+            .insert("m".into(), Type::Operator("Seq".into()));
+        let app_type = Type::App(Box::new(Type::Operator("m".into())), Box::new(Type::Int));
+        let normalized = subst.apply(&app_type);
+        match normalized {
+            Type::Seq(inner) => assert_eq!(*inner, Type::Int),
+            other => panic!("Expected Type::Seq(Int), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unify_operator_with_concrete() {
+        // Test UNIFY-OPERATOR: unifying Operator("m") with Int binds m -> Int
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        let result = unify(
+            &Type::Operator("m".into()),
+            &Type::Int,
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_ok());
+        assert_eq!(subst.type_map.get("m"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn test_unify_app() {
+        // Test UNIFY-APP: App(m, Int) unifies with App(n, Int) by binding m=n
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        let app1 = Type::App(Box::new(Type::Operator("m".into())), Box::new(Type::Int));
+        let app2 = Type::App(Box::new(Type::Operator("n".into())), Box::new(Type::Int));
+        let result = unify(&app1, &app2, &mut subst, &mut state, span);
+        assert!(result.is_ok());
+        // m and n should be unified
+        let m_bound = subst.apply(&Type::Operator("m".into()));
+        let n_bound = subst.apply(&Type::Operator("n".into()));
+        assert_eq!(m_bound, n_bound);
+    }
+
+    #[test]
+    fn test_operator_occurs_check() {
+        // Test that Operator occurs check prevents infinite types
+        let span = test_span(1, 1, 1, 5);
+        let mut subst = Substitution::new();
+        let mut state = InferState::new();
+        // Try to unify m with App(m, Int) — should fail occurs check
+        let result = unify(
+            &Type::Operator("m".into()),
+            &Type::App(Box::new(Type::Operator("m".into())), Box::new(Type::Int)),
+            &mut subst,
+            &mut state,
+            span,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("infinite type"));
     }
 
     #[test]
