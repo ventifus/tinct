@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
 use crate::ast::{Annotation, Entry, Expr, Span, Spanned};
-use crate::types::{InferState, Row, Type, TypeAlias, TypeEnv, TypeError};
+use crate::types::{InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 pub(crate) fn expand_type_alias(
     inner: &Spanned<Expr>,
@@ -551,7 +551,9 @@ pub(crate) fn resolve_annotation(
                                             let fresh = format!("_t{}", state.name_counter);
                                             state.name_counter += 1;
                                             state.levels.insert(fresh.clone(), state.level);
-                                            state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
+                                            state
+                                                .kind_env
+                                                .insert(fresh.clone(), crate::types::Kind::Label);
                                             mapping.insert(name.clone(), fresh.clone());
                                             fresh
                                         }
@@ -561,7 +563,8 @@ pub(crate) fn resolve_annotation(
                                             span,
                                         ));
                                     };
-                                    let level = *state.levels.get(&type_var).unwrap_or(&state.level);
+                                    let level =
+                                        *state.levels.get(&type_var).unwrap_or(&state.level);
                                     return Ok(Type::TypeVar(type_var, level));
                                 } else {
                                     return Err(TypeError::new(
@@ -1687,6 +1690,35 @@ pub(crate) fn resolve_type_dict(
                     row_ann_mapping,
                 )?;
                 return Ok(Type::Negation(Box::new(inner)));
+            }
+        }
+    }
+
+    // Type constructor application: [f a] where f is Operator-kinded (hkt-kind-inference Task 2)
+    // Must check BEFORE union type path so `[m Int]` where m is Operator-kinded becomes
+    // `Type::App(Operator("m"), Int)`, not `Union(Operator("m"), Int)`.
+    if all_positional && entries.len() == 2 {
+        if let Expr::VarRef { name: f_name, .. } = &entries[0].node.value.node {
+            // Check if f is Operator-kinded in kind_env
+            if let Some(Kind::Operator) = state.kind_env.get(f_name) {
+                let f_type = Type::Operator(f_name.clone());
+                let a_type = resolve_type_expr(
+                    &entries[1].node.value,
+                    env,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )?;
+
+                // Rank-1 restriction (hkt-kind-inference Task 3): reject App(Operator, Operator)
+                if matches!(&a_type, Type::Operator(_)) {
+                    return Err(TypeError::new(
+                        "rank-2 type constructor application is not supported — type constructor variables must be applied to concrete types, not other constructors",
+                        span,
+                    ));
+                }
+
+                return Ok(Type::App(Box::new(f_type), Box::new(a_type)));
             }
         }
     }

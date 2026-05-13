@@ -512,10 +512,23 @@ impl Substitution {
                 self.apply_type(inner, depth + 1, visited_types)
                     .into_owned(),
             ))),
-            Type::App(f, a) => Cow::Owned(Type::App(
-                Box::new(self.apply_type(f, depth + 1, visited_types).into_owned()),
-                Box::new(self.apply_type(a, depth + 1, visited_types).into_owned()),
-            )),
+            Type::App(f, a) => {
+                let f_applied = self.apply_type(f, depth + 1, visited_types).into_owned();
+                let a_applied = self.apply_type(a, depth + 1, visited_types).into_owned();
+
+                // Normalize App(concrete_constructor, T) to builtin forms (hkt-kind-inference Task 5)
+                // When an Operator TypeVar resolves to a concrete constructor name, normalize to
+                // the corresponding builtin type variant to maintain type system invariants.
+                if let Type::Operator(ctor_name) = &f_applied {
+                    match ctor_name.as_str() {
+                        "Seq" => return Cow::Owned(Type::Seq(Box::new(a_applied))),
+                        _ => {}
+                    }
+                }
+                // App(App(Map, K), V) → Type::Map(K, V) handled separately if needed
+
+                Cow::Owned(Type::App(Box::new(f_applied), Box::new(a_applied)))
+            }
             Type::Operator(name) => {
                 // Look up Operator variable in substitution map
                 if visited_types.contains(name) {

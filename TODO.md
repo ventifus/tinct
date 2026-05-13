@@ -86,48 +86,50 @@ Three design corrections discovered after `hkt-field-access` was implemented:
 - [x] Remove the stale note at the bottom of `hkt-field-access` sprint about `constraint-annotations` dependency for HasField syntax — both the dependency and the HasField annotation syntax were incorrect
 - [x] Tests: `key@Label` generates HasField constraint and returns precise field type; `key@[label: l]` where same `l` is used in two parameters works; `get`/`get-or` return precise types at call sites with string literal keys (`tests/corpus/eval/typecheck/`, `tests/lsp_corpus_tests.rs`)
 
-### hkt-kind-inference: Kind checking pass and Operator-kinded class resolution
-
-See `doc/whatif/completed/hkt-monads.md` §Kind Checking, §Typeclass Resolution for HKT. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.
-
-- [ ] Add kind inference pre-pass in `src/typecheck.rs`: walk class method signatures, look up parameter kinds from `kind_env`; assign `Kind::Operator` to parameters annotated `@Operator` or constrained by an Operator-kinded class
-- [ ] Implement `KIND-OPERATOR` validation: `App(f, a)` during annotation resolution — `f : Operator`, `a : *` → valid; `f : *` → `TypeError` "kind mismatch: expected `* → *`, got concrete type" (`src/typecheck.rs`, `src/typecheck_annot.rs`)
-- [ ] Enforce rank-1 restriction: reject `App(Operator("f"), Operator("g"))` (both Operator-kinded) — emit `TypeError` "rank-2 type constructor application is not supported"; note that multiple flat Operator vars in a single method type (like `traverse`'s `f` and `t`) are correctly rank-1 and NOT rejected (`src/typecheck.rs`)
-- [ ] Extend `ClassEnv` lookup for Operator-kinded class params: unify instance head against `App(m, _)` using UNIFY-APP (`src/type_env.rs`); the `resolve_instance` freshening fix (freshen free type vars via `instantiate_at_level`, capture not discard `temp_subst`) is **implemented in `hkt-mappable-appendable`** where it is first needed for `AppendableSeq [Seq b]`; this sprint's task is to wire up the Operator-kinded lookup path, not to implement the freshening
-- [ ] Add `App` type inference: when binding infers `App(Operator("m"), a)`, apply UNIFY-OPERATOR against known instance heads; update `InferState.subst` (`src/typecheck.rs`)
-- [ ] Normalize at instance resolution: `App(Seq_ctor, T) → Type::Seq(T)`; `App(App(Map_ctor, K), V) → Type::Map(K, V)`; `App(Result_ctor, T)` stays as `App` (`src/typecheck_annot.rs`)
-- [x] Assign error code `E091` for kind mismatch errors in `src/error.rs`; add to `doc/10-errors.md` all three tables (variant catalog, codes table, categories table) — `hkt-doc-lsp` will verify these entries exist, not re-add them
-- [ ] Tests: kind mismatch errors with `[E091]` prefix, `App(Result, Int)` inferred from `[Ok 42]`, rank-1 violation rejected (but multiple flat Operator vars in one method type like `traverse` are NOT rejected), Operator-kinded class constraint resolution (`tests/corpus/eval/typecheck/`)
-
-### hkt-do-macro: Implement [do] macro — explicit form first, inferred form second
+### hkt-do-macro-explicit: Implement [do] macro — explicit form
 
 See `doc/whatif/completed/hkt-monads.md` §`[do]` Inference. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`.
 
-Note: The explicit `[do monad steps...]` desugaring needs the ClassEnv for monad dict dispatch setup but not the full kind inference pass — explicit form can proceed independently; inferred form requires `hkt-kind-inference`.
+The explicit `[do monad steps...]` form has **no HKT dependency** — it desugars to `monad.bind` field access on a plain dict. It can land before `hkt-kind-inference` completes. The inferred `[do steps...]` form (no explicit monad arg) requires `App` type inference from `hkt-kind-inference` and is a separate follow-on task in `hkt-do-macro-inferred`.
 
-- [ ] Implement explicit `[do monad steps...]` desugaring in `stdlib/macros.llt` (or `stdlib/prelude.llt` if `stdlib-defmacro` has already landed and merged macros.llt away): classify each step as binding (`[x: expr]`) or non-binding by inspecting the AST dict shape; bindings → `[monad.bind expr [fn [x] ...]]`; non-bindings → `[monad.bind expr [fn [_] ...]]`; `[do monad]` with no steps → `[monad.pure []]`; `[do]` with zero args → error
-- [ ] Add `expected_return: Option<Type>` field to `InferState` (`src/types.rs`) — set by `infer_fn` before descending into the function body when the function has an explicit return type annotation; used by the `[do]` inferred form resolution; using `InferState` (not a parameter) avoids a cascading `infer_expr` signature change
-- [ ] Implement inferred `[do steps...]` form: emit `[do %do-infer steps...]` sentinel (`Expr::VarRef("%do-infer")`) at macro-expand time; in `src/typecheck.rs` `infer_expr`, when the `[do]` form has `%do-infer` as its monad, resolve sentinel via: (1) `state.expected_return` unifying with `App(m, _)` for a registered Monad; (2) first binding RHS type `App(m, a)` for a known Monad; (3) if unresolved, emit error; the runtime always sees `[monad.bind ...]` with a concrete dict (inferred form substitutes the resolved monad name before eval)
-- [ ] Emit "cannot infer monad for `[do]` — add an explicit monad argument or annotate the enclosing function's return type"
-- [ ] Tests: `[do result ...]` three-step success, `[Err "fail"]` propagation (short-circuit), explicit `[do]` with any `bind:`-carrying dict (backward compat), inferred `[do]` from `@Result` annotation, inferred from first binding type, missing-monad error, `[do monad]` with no steps → `[monad.pure []]` (`tests/corpus/eval/`)
+- [ ] Implement explicit `[do monad steps...]` desugaring in `stdlib/macros.llt` via the existing `STDLIB_MACROS` registration path (no `stdlib-defmacro` needed): classify each step as binding (`[name: expr]`) or non-binding (bare expression) by inspecting the AST dict shape; bindings → `[monad.bind expr [fn [name] <rest>]]`; non-bindings → `[monad.bind expr [fn [_] <rest>]]`; last step is the return value with no wrapping; `[do monad]` with no steps → `[monad.pure []]`; `[do]` with zero args → error (`stdlib/macros.llt`, `src/expand.rs`)
+- [ ] Tests: `[do result [r: [fetch ...]]]` three-step success, `[Err "fail"]` propagation (short-circuit), `[do]` with any `bind:`-carrying dict (not just Result), `[do monad]` no-steps → `[monad.pure []]`, zero-args error (`tests/corpus/eval/`)
 
-**Depends on:** `hkt-kind-inference` (inferred form only)
+### hkt-do-macro-inferred: [do] macro — inferred monad form
+
+The inferred `[do steps...]` form (monad argument omitted, inferred from return type or first binding). Requires `hkt-kind-inference` to provide `App` type inference and `kind_env`-based Monad class lookup.
+
+- [ ] Add `expected_return: Option<Type>` field to `InferState` in `src/types.rs:1590` (alongside `kind_env: HashMap<String, Kind>`); set by `infer_fn` before descending into fn body when explicit return annotation is present; avoids cascading `infer_expr` signature changes (`src/types.rs`)
+- [ ] In `src/expand.rs`: when `[do]` has no explicit monad arg, emit `[do %do-infer steps...]` sentinel — `Expr::VarRef("%do-infer")` as the monad argument; runtime never sees this sentinel — it is resolved and substituted by the type checker before eval (`src/expand.rs`)
+- [ ] In `src/typecheck.rs` `infer_expr` for `[do]`: when monad is `VarRef("%do-infer")`, resolve monad via: (1) `state.expected_return` unified against `App(m, _)` for a registered Monad class; (2) first binding RHS type `App(m, a)` for a known Monad; (3) emit "cannot infer monad — add explicit monad arg or annotate return type" on failure; substitute resolved monad name into the desugared `[monad.bind ...]` chain before evaluation (`src/typecheck.rs`)
+- [ ] Tests: inferred `[do]` from `fn@Result` return annotation, inferred from first binding type, unresolvable monad error, `[do]` inside HKT-generic function (`tests/corpus/eval/`)
+
+**Depends on:** `hkt-kind-inference`
 
 ### hkt-mappable-appendable: Rewrite Mappable and Appendable from hardcoded to class-based
 
 See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, §Appendable. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §The Typeclass Hierarchy`.
 
-- [ ] Implement `resolve_instance` freshening fix in `src/type_env.rs`: freshen all free type vars in `inst.instance_type` via `instantiate_at_level` before unification (current code does NOT do this); capture `temp_subst` bindings after successful unification (currently discarded after `is_ok()` check); apply `temp_subst` bindings to the instance's method implementations so `b = T` threads through `append`/`empty` in `AppendableSeq [Seq b]`; this fix is general — it enables parameterized instance heads of any kind, not just Operator-kinded (note: `hkt-kind-inference` wires up the Operator-kinded lookup path; this sprint implements the freshening that makes it work)
-- [ ] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt`; update `ClassDecl` kind annotation for Mappable param to `Kind::Operator` in `InferState::new()` (`src/types.rs`)
-- [ ] Write `Appendable` class (kind-`*`) + `AppendableStr`/`AppendableSeq [Seq b]`/`AppendableRecord` instances in `stdlib/prelude.llt`; `AppendableSeq` parameterized head relies on resolve_instance freshening fix
-- [ ] Remove `Mappable` from `satisfies_constraint` hardcoded match + placeholder ClassDecl — only after verifying resolve_instance handles Operator-kinded Mappable end-to-end
-- [ ] Remove `Appendable` from `satisfies_constraint` — same gate condition
-- [ ] Update `$map`/`$filter` type sigs in `src/type_env.rs` to use `Mappable f`; update `$concat`/`$conj` to use `Appendable a`
-- [ ] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float`; remove from `satisfies_constraint` (`stdlib/prelude.llt`, `src/type_unify.rs`)
-- [ ] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float`; remove from `satisfies_constraint` (`stdlib/prelude.llt`)
-- [ ] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null`; remove from `satisfies_constraint`; `Numeric` stays hardcoded (`stdlib/prelude.llt`)
-- [ ] Verify and confirm the prelude union-annotation follow-ups (tracked in `builtin-type-audit` sprint batch B) still type-check correctly now that Mappable is a real class: `when`/`unless` → `fn@[a Null]` (note: `[]` empty-dict return is typed as `Record`, not `Null` — verify correct annotation choice), `cond`, `and`/`or`, `get-or`, `find-first`/`find-first-or`; annotate `zip` once Mappable is confirmed working for both Seq×Seq and Dict×Dict cases
-- [ ] Tests: Mappable on user type (success), `map` on non-Mappable `Int` (error), `AppendableSeq [Seq b]` for different element types, `AppendableStr` string concat, Equatable/Comparable/Showable constraints on user types (`tests/corpus/eval/typecheck/`)
+`hkt-kind-inference` delivers: (1) class param annotations parsed and wired to `kind_env` — `[Mappable: [class [f@Operator] ...]]` now works; (2) `@[f a]` in annotation position produces `Type::App(f, a)` — instance method type signatures like `[fn@[f b] [[f a]]]` are typeable. This sprint builds on those two foundations.
+
+**Phase 1 — resolve_instance freshening (enables parameterized instance heads):**
+- [ ] Fix `resolve_instance` in `src/type_env.rs`: freshen all free type vars in `inst.instance_type` via `instantiate_at_level` before unification — current code does NOT do this, causing `b` in `AppendableSeq [Seq b]` to leak across call sites; capture `temp_subst` bindings after successful unification (currently discarded after `is_ok()` check); apply `temp_subst` to the instance's method implementations so the concrete element type `T` threads through `append`/`empty`; this fix is general — it enables any parameterized instance head, not only Operator-kinded (`src/type_env.rs`)
+
+**Phase 2 — Mappable migration (Operator-kinded; needs kind_env wiring from hkt-kind-inference):**
+- [ ] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt`; `f@Operator` on the class param now works after hkt-kind-inference (`stdlib/prelude.llt`)
+- [ ] Remove hardcoded `Mappable` placeholder `ClassDecl` from `InferState::new()` in `src/types.rs` — the class is now declared in prelude and registered via normal class-loading; also remove `Mappable` from the `satisfies_constraint` hardcoded match in `src/typecheck.rs` only after end-to-end verification that `map` on a user-defined `Mappable` type works (`src/types.rs`, `src/typecheck.rs`)
+- [ ] Update `$map`/`$filter` type signatures in `src/type_env.rs` to use `Mappable f` constraint instead of hardcoded dual-dispatch (`src/type_env.rs`)
+
+**Phase 3 — Appendable migration (Kind::Type; simpler, no Operator dependency):**
+- [ ] Write `Appendable` class (kind-`*`) + `AppendableStr`/`AppendableRecord` instances + parameterized `AppendableSeq [Seq b]` instance (relies on resolve_instance freshening) in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
+- [ ] Remove `Appendable` from `satisfies_constraint` hardcoded match; update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/typecheck.rs`, `src/type_env.rs`)
+
+**Phase 4 — Simple constraint migrations (Kind::Type; no HKT dependency beyond foundation):**
+- [ ] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float`; remove from `satisfies_constraint` in `src/typecheck.rs` and `src/type_unify.rs` (`stdlib/prelude.llt`, `src/typecheck.rs`)
+- [ ] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float`; remove from `satisfies_constraint` (`stdlib/prelude.llt`, `src/typecheck.rs`)
+- [ ] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null`; remove from `satisfies_constraint`; `Numeric` stays hardcoded (MPTCs out of scope) (`stdlib/prelude.llt`, `src/typecheck.rs`)
+- [ ] Verify prelude annotations from `builtin-type-audit` batch B still type-check after Mappable becomes a real class: `when`/`unless`, `cond`, `and`/`or`, `get-or`, `find-first`/`find-first-or`, `zip` (for both Seq×Seq and Dict×Dict); flag any annotation changes needed (`stdlib/prelude.llt`)
+- [ ] Tests: `map` on user-defined Mappable type (success), `map` on non-Mappable `Int` (E010 constraint error), `AppendableSeq [Seq Int]` and `[Seq Str]` (different element types), `AppendableStr`, Equatable/Comparable/Showable constraints on user types, `satisfies_constraint` no longer special-cases any of these (`tests/corpus/eval/typecheck/`)
 
 **Depends on:** `hkt-kind-inference`
 
@@ -135,18 +137,27 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 
 See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy, §Generic Functions. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §The Typeclass Hierarchy`, `§Generic Functions`.
 
-- [ ] Write `Functor` class + `FunctorResult`/`FunctorSeq` instances (`stdlib/prelude.llt`)
-- [ ] Write `Applicative` class (extends Functor, `pure` + `lift2`) + `ApplicativeResult`/`ApplicativeSeq` instances
-- [ ] Write `Monad` class (extends Applicative, `bind`) + `MonadResult`/`MonadSeq` instances
-- [ ] Write `Foldable` class (`fold`, `to-seq`) + `FoldableSeq`/`FoldableRecord`/`FoldableResult` instances; `FoldableSeq.fold = reduce`; **`FoldableResult.to-seq: [fn [r] [match r [Ok a]: [a] [Err _]: []]]`** — wraps the single `Ok` value in a singleton Seq `[a]`, NOT returning the bare value `a` (Result holds one element, not a collection)
-- [ ] Add `Maybe` ADT (`[type [a] [Some a] | [None]]`) + `FunctorMaybe`/`ApplicativeMaybe`/`MonadMaybe`/`TraversableMaybe` instances; re-export `Some`/`None` following `Ok`/`Err` pattern
-- [ ] Write `Traversable` class (extends Functor + Foldable) + `TraversableSeq`/`TraversableResult`/`TraversableMaybe` instances; **`TraversableSeq.traverse` MUST use the primitive fold-based implementation** — NOT via generic `sequence`/`traverse` (which is circular and non-terminating): `[reduce [fn [acc x] [f.lift2 [fn [as a] [concat as [a]]] acc [f x]]] [f.pure []] xs]`
-- [ ] Write generic `sequence` (Traversable-generic) and `traverse` (Traversable-generic) in `stdlib/prelude.llt`; write `forM`, `when`, `liftM2`
-- [ ] Verify `sequence` short-circuits on first `Err`/`None` via Traversable instances; verify no evaluation of subsequent elements after failure
-- [ ] Verify superclass method inheritance: each instance dict must carry all ancestor methods — `MonadResult.lift2` must be accessible (from `ApplicativeResult`), `MonadResult.fmap` must be accessible (from `FunctorResult`); add corpus tests for `MonadResult.lift2` and `MonadResult.fmap` dispatch; verify `ApplicativeSeq.pure = [fn [x] [x]]` wraps `x` in a one-element Seq, not returns bare value
-- [ ] Tests: `sequence result [[Ok 1] [Err "fail"] [Ok 3]]` → `[Err "fail"]` (short-circuit), traverse over TraversableResult/TraversableMaybe, forM, `when false` (action not evaluated), liftM2, `[do MonadMaybe]` with None short-circuit, FoldableSeq.fold equals reduce, FoldableResult fold on Ok/Err, FoldableResult.to-seq `[Ok 42]` → `[42]` (singleton), `FoldableResult.to-seq [Err "x"]` → `[]` (empty) (`tests/corpus/eval/`)
+All work here is stdlib declarations in `stdlib/prelude.llt`. No Rust changes needed — the type-system machinery (`Type::App`, `Kind::Operator`, class/instance registration, constraint resolution) is fully in place after `hkt-kind-inference` and `hkt-mappable-appendable`.
 
-**Depends on:** `hkt-do-macro`, `hkt-mappable-appendable`
+**Class and instance declarations (all in `stdlib/prelude.llt`):**
+- [ ] Write `Functor` class (`f@Operator`, method `fmap`) + `FunctorResult`/`FunctorSeq` instances; `FunctorResult.fmap = result-map` (already in prelude) (`stdlib/prelude.llt`)
+- [ ] Write `Applicative` class (extends Functor, methods `pure` + `lift2`) + `ApplicativeResult`/`ApplicativeSeq` instances (`stdlib/prelude.llt`)
+- [ ] Write `Monad` class (extends Applicative, method `bind`) + `MonadResult`/`MonadSeq` instances; `MonadResult.bind = and-then` (already in prelude) (`stdlib/prelude.llt`)
+- [ ] Write `Foldable` class (methods `fold`, `to-seq`) + `FoldableSeq`/`FoldableRecord`/`FoldableResult` instances; `FoldableSeq.fold = reduce`; `FoldableResult.to-seq: [fn [r] [match r [Ok a]: [a] [Err _]: []]]` — wraps `Ok` payload in singleton Seq, not bare value (`stdlib/prelude.llt`)
+- [ ] Write `Traversable` class (extends Functor + Foldable, method `traverse`) + `TraversableSeq`/`TraversableResult`/`TraversableMaybe` instances; **`TraversableSeq.traverse` MUST use the primitive fold-based implementation** — NOT via generic `sequence`/`traverse` (circular): `[reduce [fn [acc x] [f.lift2 [fn [as a] [concat as [a]]] acc [f x]]] [f.pure []] xs]` (`stdlib/prelude.llt`)
+- [ ] Add `Maybe` ADT (`[type [a] [Some a] [None]]`) + `FunctorMaybe`/`ApplicativeMaybe`/`MonadMaybe`/`TraversableMaybe` instances; export `Some`/`None` following `Ok`/`Err` naming pattern (`stdlib/prelude.llt`)
+
+**Generic functions (all in `stdlib/prelude.llt`):**
+- [ ] Write generic `sequence` (collapses `t (m a)` → `m (t a)` via Traversable) and `traverse` (maps then sequences); both must NOT call each other to avoid circular dependency — `traverse` is the primitive, `sequence = [fn [t] [traverse t id]]` (`stdlib/prelude.llt`)
+- [ ] Write `forM` (flip-arg `traverse`), `liftM2` (via `lift2`), `when` (conditional monadic action) in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
+
+**Correctness verification:**
+- [ ] Verify superclass method inheritance: each instance dict must carry ancestor methods — `MonadResult` must have `.lift2` (from Applicative) and `.fmap` (from Functor) accessible via dot access; add corpus tests for cross-superclass dispatch (`tests/corpus/eval/`)
+- [ ] Verify `sequence` short-circuits: `[[Ok 1] [Err "fail"] [Ok 3]]` → `[Err "fail"]` with no evaluation of the third element; `[[Some 1] [None] [Some 3]]` → `[None]` similarly (`tests/corpus/eval/`)
+- [ ] Verify `ApplicativeSeq.pure = [fn [x] [x]]` wraps `x` in a one-element Seq (not returns bare `x`) (`tests/corpus/eval/`)
+- [ ] Tests: `sequence result [[Ok 1] [Err "fail"] [Ok 3]]` → `[Err "fail"]`, traverse Result and Maybe, `forM`, `when false` (body not evaluated), `liftM2`, `[do MonadMaybe ...]` with None short-circuit, `FoldableResult.to-seq [Ok 42]` → `[42]`, `FoldableResult.to-seq [Err "x"]` → `[]` (`tests/corpus/eval/`)
+
+**Depends on:** `hkt-do-macro-explicit`, `hkt-mappable-appendable`
 
 ### hkt-doc-lsp: doc/06 Type Classes section, LSP hover, error quality
 
@@ -154,12 +165,21 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 - [x] Move `doc/whatif/hkt-monads.md` to `doc/whatif/completed/hkt-monads.md` — already done
 - [x] Update `doc/whatif/index.md` Accepted section with acceptance date 2026-05-11 — already done
-- [ ] Write §Type Classes formal rules section in `doc/06-type-inference.md`: constraint generation, entailment, dictionary elaboration, instance resolution, superclass extraction, `UNIFY-OPERATOR`/`UNIFY-APP`/`KIND-OPERATOR`/`KIND-CLASS-PARAM` rules, parameterized instance head resolution
-- [ ] Verify LSP hover shows `[Result Int]` for `App(Result, Int)` via Display (stub arm in `hkt-foundation-a`); **improve** `Expr::TypeApp` arm in `hover_at_expr` (`src/lsp/analysis.rs`) to display the resolved `App` type from the type map (same pattern as `Expr::Annotated` hover handling — the stub may only return a raw string)
-- [ ] Kind error message quality: include annotation span, mismatched kinds, and hint — "kind mismatch at `f`: `Int` has kind `*`, expected `* → *` — annotate as `f@Operator`"
-- [ ] Verify `E091` entries exist in `doc/10-errors.md` all three tables (should have been added in `hkt-kind-inference`); add missing entries only if that sprint omitted them
-- [ ] Apply stdlib prelude annotation migrations: `min`/`max`/`sorted`/`sort-by` → `fn@[return: a constraint: [a: Comparable]] [xs@Seq@a] ...` (include param annotations); `fold`/`reduce` → add `doc:` strings (`stdlib/prelude.llt`)
-- [ ] Tests: LSP hover for `Type::App` display, kind mismatch errors with `[E091]` prefix (`tests/lsp_corpus_tests.rs`, `tests/corpus/eval/errors/`)
+
+**Typecheck stub fix (audit finding: `src/typecheck.rs:1900` stubs `Expr::TypeApp` → `Ok(Type::Unknown)`):**
+- [ ] Implement `Expr::TypeApp` in `src/typecheck.rs`: look up the resolved `App` type from the type map at the TypeApp span; if the annotation resolved to `Type::App(f, a)` during `resolve_type_expr`, the type is already in the type map — return it; emit `TypeError(E091)` if the type is not `App` (malformed TypeApp node) (`src/typecheck.rs:1900`)
+
+**Documentation:**
+- [ ] Write `§Type Classes and Higher-Kinded Types` formal rules section in `doc/06-type-inference.md`: `KIND-CLASS-PARAM` (class param annotation → `kind_env`), `KIND-OPERATOR` (App formation validation), `UNIFY-OPERATOR` / `UNIFY-APP` (already in `src/type_unify.rs`, needs spec entry), constraint generation, entailment, dictionary elaboration, parameterized instance head resolution (`doc/06-type-inference.md`)
+
+**LSP quality:**
+- [ ] Fix `Expr::TypeApp` arm in `hover_at_expr` (`src/lsp/analysis.rs`): look up the resolved type from `type_map` at the TypeApp span and display it (e.g., `[Result Int]` for `App(Result, Int)`); the current stub may return a raw annotation string rather than the resolved type — match the `Expr::Annotated` hover pattern (`src/lsp/analysis.rs`)
+- [ ] Kind error message quality in `hkt-kind-inference` error sites: verify errors include annotation span, mismatched kinds, and a hint — "kind mismatch at `f`: `Int` has kind `*`, expected `* → *` — annotate as `f@Operator`"; add or improve error messages if `hkt-kind-inference` left them bare (`src/typecheck.rs`, `src/typecheck_annot.rs`)
+
+**Verification:**
+- [ ] Verify `E091` entries exist in `doc/10-errors.md` all three tables (variant catalog, codes table, categories table); add missing entries only if `hkt-kind-inference` omitted them (`doc/10-errors.md`)
+- [ ] Apply stdlib prelude annotation migrations: `min`/`max`/`sorted`/`sort-by` → `fn@[return: a constraint: [a: Comparable]] [xs@Seq@a] ...`; `fold`/`reduce` → add `doc:` strings (`stdlib/prelude.llt`)
+- [ ] Tests: LSP hover for `Type::App` displays resolved type (not raw annotation string); kind mismatch errors carry `[E091]` prefix and helpful hint text (`tests/lsp_corpus_tests.rs`, `tests/corpus/eval/errors/`)
 
 **Depends on:** `hkt-stdlib`
 
@@ -241,6 +261,40 @@ Capability flags (`Readable`, `Writable`, `Listable`, `Statable`, `Appendable`, 
 - [ ] Tests: `--cap-fs root=.:r` → `list-dir` succeeds, `open "w"` fails; `--cap-fs data='./d:[Readable Statable]'` → read succeeds, `list-dir` fails; `--cap-file cfg=Cargo.toml` (no mode) → read-write handle; extended syntax `--cap-file cfg='Cargo.toml:[Readable]'` → read-only handle; `narrow` reduces permissions; `narrow` to non-held flag errors (`tests/corpus/eval/`, `tests/corpus/cli/`)
 
 ---
+
+## Standard Library Boundary
+
+### stdlib-tinct-migration: Move redundant Rust builtins to native tinct
+
+Findings from the builtin boundary audit (2026-05-13). These Rust builtins are unnecessary — they can be expressed entirely using existing primitives with no new Rust code.
+
+- [ ] Replace `record?` Rust builtin with a tinct alias in `stdlib/prelude.llt`: `record?: dict?` — at runtime `record?` and `dict?` are identical; the distinction is type-level only, already handled by the type checker (`stdlib/prelude.llt`, `src/builtins_meta.rs`)
+- [ ] Replace `map?` Rust builtin with a tinct alias in `stdlib/prelude.llt`: `map?: dict?` — same reasoning as `record?`; remove both from `standard_builtins()` and `TypeEnv::with_builtins()` after the tinct aliases are verified (`stdlib/prelude.llt`, `src/builtins_meta.rs`, `src/type_env.rs`)
+- [ ] Replace `num?` Rust builtin with a tinct definition in `stdlib/prelude.llt`: `num?: [fn [x] [or [int? x] [float? x]]]` using existing `int?`, `float?`, `or`; remove from `standard_builtins()` (`stdlib/prelude.llt`, `src/builtins_meta.rs`)
+
+### stdlib-io-tinct-migration: Move I/O builtins that don't need to be in Rust
+
+Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irreducible syscall/opaque-type primitives). These specific ones do not.
+
+- [ ] Move `spki-pin` to tinct in `stdlib/net.llt`: pure dict construction, no syscalls, no Rust crates; `[fn [algorithm fingerprint] [if [not [has? valid-algos algorithm]] [error [str "unknown algorithm: " algorithm]] [set [set [] "algorithm" algorithm] "fingerprint" fingerprint]]]` where `valid-algos` is a tinct dict of accepted names (`stdlib/net.llt`, `src/builtins_io.rs`)
+- [ ] Add `raw-create : DirCap → Str → WriteHandle` Rust primitive: opens a file for writing (create/truncate) returning a `WriteHandle`; this splits the current `write(DirCap, path, String)` path to allow tinct-level pipe construction (`src/builtins_io.rs`, `src/type_env.rs`)
+- [ ] Once `raw-create` lands, rewrite `copy` in tinct: `[fn [cap src dst] [close [write-handle [raw-create cap dst] [slurp [open cap src Readable Text]]]]]`; remove `copy` Rust builtin from `standard_builtins()` (`stdlib/io.llt`, `src/builtins_io.rs`)
+- [ ] Change `cap-data` to return `Null` (empty dict `[]`) when the capability name is not present instead of erroring — this makes it a proper nullable lookup compatible with `get-or` and `has?` patterns (`src/builtins_io.rs`)
+- [ ] Once `cap-data` returns null on miss, rewrite `has-cap?` in tinct as `[fn [h cap] [not [null? [cap-data h cap]]]]`; remove `has-cap?` Rust builtin (`stdlib/io.llt`, `src/builtins_io.rs`)
+- [ ] Investigate and remove the vestigial Rust `http-get` builtin (the `HttpConn` form using `Value::HttpConn`/reqwest client directly): verify it is not called by any corpus tests, `stdlib/net.llt`, or user-facing code; `net.llt`'s `http-get` already implements HTTP without it (`src/builtins_io.rs`, `src/type_env.rs`)
+
+### stdlib-new-primitives: Add missing Rust primitives to unlock tinct migrations
+
+Five new Rust primitives identified by the boundary audit as the highest-leverage additions for shrinking the Rust surface area. Each unlocks one or more stdlib functions that can move from Rust to tinct.
+
+- [ ] Add `str-index-of : Str → Str → Int` Rust builtin: native O(n) substring search returning start byte-index or -1 on miss; wraps `str::find`; replaces the O(n²) `str-find-impl` in prelude with an O(n) call; unlocks `str-contains?`, `starts-with?`, `ends-with?` as tinct wrappers around this primitive (`src/builtins_string.rs`, `src/type_env.rs`)
+- [ ] Once `str-index-of` lands, rewrite `str-contains?`, `starts-with?` (string form), `ends-with?` (string form) in `stdlib/strings.llt` as tinct wrappers; remove the three Rust builtins from `standard_builtins()` (`stdlib/strings.llt`, `src/builtins_string.rs`)
+- [ ] Add `str-map-chars : (Str → Str) → Str → Str` Rust builtin: map a tinct function over Unicode codepoints, returning a new string; unlocks `upper`, `lower`, and character-level transforms as tinct stdlib functions (`src/builtins_string.rs`, `src/type_env.rs`)
+- [ ] Once `str-map-chars` lands, rewrite `upper` and `lower` in `stdlib/strings.llt` as tinct functions using `str-map-chars` + `char-code`/`chr` arithmetic for ASCII fast path; remove Rust builtins (`stdlib/strings.llt`, `src/builtins_string.rs`)
+- [ ] Add `trim-start : Str → Str` and `trim-end : Str → Str` Rust builtins (complement to existing `trim`): strip leading/trailing whitespace from one end only; these enable richer string normalization in tinct stdlib without needing `str-map-chars` (`src/builtins_string.rs`, `src/type_env.rs`)
+- [ ] Add `regex-match? : Str → Str → Bool` Rust builtin: test if a regex pattern matches anywhere in a string using the `regex` crate; unlocks the `pattern` constraint in `validate` and other regex-dependent stdlib functions as tinct code (`src/builtins_string.rs`, `src/type_env.rs`)
+- [ ] Once `regex-match?` lands, rewrite `validate`'s `pattern` constraint check in tinct; identify which other parts of `validate` can move to tinct vs what must remain Rust (`stdlib/prelude.llt` or `src/builtins_meta.rs`)
+- [ ] Make `builtin-sort` accept an optional comparator argument: `builtin-sort : ((a → a → Bool)? → Dict → Dict)`; when provided, use comparator instead of natural type ordering; this allows `sort` and `sort-by` in prelude to both reduce to one Rust primitive (`src/builtins_seq_prim.rs`, `src/type_env.rs`)
 
 ## Internal Integrity
 
