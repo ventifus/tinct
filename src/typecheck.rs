@@ -10019,6 +10019,88 @@ mod tests {
         );
     }
 
+    // -- SCC-based binding group analysis tests --
+
+    #[test]
+    fn test_scc_singleton_generalization() {
+        // Singleton SCCs (non-recursive entries) should be generalized before
+        // dependent entries see them, allowing polymorphic use.
+        let result = check(
+            "[id: [fn [x] $x]\n\
+             result_int: [$id 42]\n\
+             result_str: [$id \"hello\"]]",
+        );
+        assert!(
+            result.is_ok(),
+            "id should be generalized and usable at both Int and Str: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_scc_mutual_recursion_monomorphic() {
+        // Mutually recursive entries form an SCC and remain monomorphic within it.
+        // even and odd both call each other, so they're in the same SCC.
+        let result = check(
+            "[even?: [fn [n@Int] [if [= $n 0] true  [odd?  [- $n 1]]]]\n\
+             odd?:  [fn [n@Int] [if [= $n 0] false [even? [- $n 1]]]]]",
+        );
+        assert!(
+            result.is_ok(),
+            "mutually recursive functions should type-check correctly: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_scc_nested_dict_generalization() {
+        // Nested dicts should also get SCC-based generalization.
+        let result = check(
+            "[outer: [inner: [id: [fn [x] $x]\n\
+                             use_int: [$id 42]\n\
+                             use_str: [$id \"hello\"]]]]",
+        );
+        assert!(
+            result.is_ok(),
+            "nested dict entries should get SCC-based generalization: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_scc_dependency_chain() {
+        // If a→b→c (dependency chain), each should be generalized before the next.
+        let result = check(
+            "[c: [fn [x] $x]\n\
+             b: [fn [y] [$c $y]]\n\
+             a: [fn [z] [$b $z]]\n\
+             result_int: [$a 42]\n\
+             result_str: [$a \"hello\"]]",
+        );
+        assert!(
+            result.is_ok(),
+            "dependency chain should allow polymorphic use of final function: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_scc_non_recursive_function_generalizes() {
+        // A non-recursive function should be generalized even if it's defined
+        // alongside other function entries.
+        let result = check(
+            "[id: [fn [x] $x]\n\
+             const: [fn [x@Int] $x]\n\
+             use_id_int: [$id 42]\n\
+             use_id_str: [$id \"hello\"]]",
+        );
+        assert!(
+            result.is_ok(),
+            "non-recursive id should be generalized despite monomorphic const: {:?}",
+            result.err()
+        );
+    }
+
     #[test]
     fn test_collect_pattern_bindings_variable() {
         // Unit test for collect_pattern_bindings: Variable pattern

@@ -1,6 +1,6 @@
 //! Dict type inference with multi-pass binding and generalization.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::{infer_expr, resolve_type_expr, TypeMap};
@@ -9,6 +9,196 @@ use crate::types::{
     generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
 };
+
+/// Strongly Connected Component - a group of mutually dependent bindings
+struct Scc {
+    /// Indices into the entries array
+    indices: Vec<usize>,
+}
+
+/// Tarjan's algorithm for computing SCCs in topological order.
+/// Returns SCCs in reverse topological order (dependencies before dependents).
+fn compute_sccs(entries: &[Spanned<Entry>], key_entries: &[(Option<String>, bool)]) -> Vec<Scc> {
+    let n = entries.len();
+
+    // Build name-to-index map for O(1) lookup
+    let mut name_to_idx: HashMap<String, usize> = HashMap::new();
+    for (i, (name, _)) in key_entries.iter().enumerate() {
+        if let Some(ref n) = name {
+            name_to_idx.insert(n.clone(), i);
+        }
+    }
+
+    // Build adjacency list: for each entry, which other entries does it reference?
+    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, entry) in entries.iter().enumerate() {
+        let deps = collect_dependencies(&entry.node.value, &name_to_idx);
+        graph[i] = deps;
+    }
+
+    // Tarjan's algorithm state
+    let mut index = 0;
+    let mut stack: Vec<usize> = Vec::new();
+    let mut indices: Vec<Option<usize>> = vec![None; n];
+    let mut lowlinks: Vec<usize> = vec![0; n];
+    let mut on_stack: Vec<bool> = vec![false; n];
+    let mut sccs: Vec<Scc> = Vec::new();
+
+    fn strongconnect(
+        v: usize,
+        index: &mut usize,
+        stack: &mut Vec<usize>,
+        indices: &mut [Option<usize>],
+        lowlinks: &mut [usize],
+        on_stack: &mut [bool],
+        sccs: &mut Vec<Scc>,
+        graph: &[Vec<usize>],
+    ) {
+        // Set the depth index for v
+        indices[v] = Some(*index);
+        lowlinks[v] = *index;
+        *index += 1;
+        stack.push(v);
+        on_stack[v] = true;
+
+        // Consider successors of v
+        for &w in &graph[v] {
+            if indices[w].is_none() {
+                // Successor w has not yet been visited; recurse on it
+                strongconnect(w, index, stack, indices, lowlinks, on_stack, sccs, graph);
+                lowlinks[v] = lowlinks[v].min(lowlinks[w]);
+            } else if on_stack[w] {
+                // Successor w is in stack and hence in the current SCC
+                lowlinks[v] = lowlinks[v].min(indices[w].unwrap());
+            }
+        }
+
+        // If v is a root node, pop the stack and create an SCC
+        if Some(lowlinks[v]) == indices[v] {
+            let mut scc_indices = Vec::new();
+            loop {
+                let w = stack.pop().unwrap();
+                on_stack[w] = false;
+                scc_indices.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            sccs.push(Scc {
+                indices: scc_indices,
+            });
+        }
+    }
+
+    // Run Tarjan's algorithm from each unvisited node
+    for v in 0..n {
+        if indices[v].is_none() {
+            strongconnect(
+                v,
+                &mut index,
+                &mut stack,
+                &mut indices,
+                &mut lowlinks,
+                &mut on_stack,
+                &mut sccs,
+                &graph,
+            );
+        }
+    }
+
+    // Tarjan's algorithm produces SCCs in reverse topological order, which is what we want
+    sccs
+}
+
+/// Collect all sibling variable references in an expression.
+/// Returns the set of indices that this expression depends on.
+fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usize>) -> Vec<usize> {
+    let mut deps = HashSet::new();
+    collect_deps_recursive(expr, name_to_idx, &mut deps);
+    deps.into_iter().collect()
+}
+
+fn collect_deps_recursive(
+    expr: &Spanned<Expr>,
+    name_to_idx: &HashMap<String, usize>,
+    deps: &mut HashSet<usize>,
+) {
+    match &expr.node {
+        Expr::VarRef { name, .. } => {
+            if let Some(&idx) = name_to_idx.get(name) {
+                deps.insert(idx);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Dict(entries) => {
+            for entry in entries {
+                if let Some(ref key) = entry.node.key {
+                    collect_deps_recursive(key, name_to_idx, deps);
+                }
+                collect_deps_recursive(&entry.node.value, name_to_idx, deps);
+            }
+        }
+        Expr::Fn { body, .. } => {
+            collect_deps_recursive(body, name_to_idx, deps);
+        }
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            collect_deps_recursive(func, name_to_idx, deps);
+            for arg in args {
+                collect_deps_recursive(arg, name_to_idx, deps);
+            }
+            for named_arg in named_args {
+                collect_deps_recursive(&named_arg.node.value, name_to_idx, deps);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_deps_recursive(scrutinee, name_to_idx, deps);
+            for arm in arms {
+                collect_deps_recursive(&arm.body, name_to_idx, deps);
+                if let Some(ref guard) = arm.guard {
+                    collect_deps_recursive(guard, name_to_idx, deps);
+                }
+            }
+        }
+        Expr::DotAccess { expr, .. } => {
+            collect_deps_recursive(expr, name_to_idx, deps);
+        }
+        Expr::Pipe { lhs, rhs } => {
+            collect_deps_recursive(lhs, name_to_idx, deps);
+            collect_deps_recursive(rhs, name_to_idx, deps);
+        }
+        Expr::Sequential(exprs) => {
+            for e in exprs {
+                collect_deps_recursive(e, name_to_idx, deps);
+            }
+        }
+        Expr::Annotated { .. } => {
+            // Annotated is a name with annotation, not an expr containing expr
+            // No dependencies to collect
+        }
+        Expr::TypeAssert { expr, .. } => {
+            collect_deps_recursive(expr, name_to_idx, deps);
+        }
+        Expr::Rest(_) => {}
+        Expr::Quote(e) => collect_deps_recursive(e, name_to_idx, deps),
+        Expr::Unquote(e) => collect_deps_recursive(e, name_to_idx, deps),
+        Expr::UnquoteSplice(e) => collect_deps_recursive(e, name_to_idx, deps),
+        Expr::DefMacro { body, .. } => {
+            collect_deps_recursive(body, name_to_idx, deps);
+        }
+        Expr::TypeAlias { .. } => {}
+        Expr::ClassDecl { .. } | Expr::InstanceDecl { .. } => {}
+        Expr::TypeApp { func, arg } => {
+            collect_deps_recursive(func, name_to_idx, deps);
+            collect_deps_recursive(arg, name_to_idx, deps);
+        }
+        Expr::Error(_) => {}
+    }
+}
 
 pub(crate) fn infer_dict(
     entries: &[Spanned<Entry>],
@@ -32,31 +222,15 @@ pub(crate) fn infer_dict(
         key_entries.push((key_name, is_alias));
     }
 
-    // Pass 1: Bind all non-alias entries to fresh TypeVar at level state.level.
-    // Also collect fresh vars into a local HashMap for direct O(1) lookup in Pass 3,
-    // bypassing the TypeEnv parent-chain traversal in TypeEnv::get().
-    let mut fresh_vars: HashMap<String, Type> = HashMap::new();
-    for (key_name, is_alias) in &key_entries {
-        if !is_alias {
-            if let Some(ref name) = key_name {
-                let fresh_var = state.fresh_type_var();
-                fresh_vars.insert(name.clone(), fresh_var.clone());
-                dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
-            }
-        }
-    }
+    // Pass 0a: Compute SCCs for binding group analysis
+    let sccs = compute_sccs(entries, &key_entries);
 
-    // Pass 2: Register type aliases
+    // Pass 2: Register type aliases (before SCC processing)
     for ((key_name, is_alias), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
             if let Some(name) = key_name {
                 if let Expr::TypeAlias { params, body } = &entry.node.value.node {
-                    // Use a fresh per-alias mapping so annotation names within one type
-                    // alias expression (e.g., `a` in `[Fn@a [a]]`) consistently map to
-                    // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
-                    // creates a distinct fresh var, breaking identity-function types.
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-                    // Pre-seed param names so they map to fresh TypeVars.
                     for p in params {
                         let fresh = format!("_t{}", state.name_counter);
                         state.name_counter += 1;
@@ -65,7 +239,7 @@ pub(crate) fn infer_dict(
                     }
                     if let Ok(alias_ty) = resolve_type_expr(
                         body,
-                        &dict_env,
+                        &Rc::new(dict_env.clone()),
                         state,
                         &mut Some(&mut alias_ann_map),
                         &mut None,
@@ -87,261 +261,204 @@ pub(crate) fn infer_dict(
         }
     }
 
-    let dict_env = Rc::new(dict_env);
+    let mut dict_env = dict_env;
 
-    // Pass 3a: Initialize local substitution with bindings from state.subst.
-    // Algorithm W threads a single substitution through inference. The two-substitution
-    // model (local subst + state.subst) is a borrow-checker workaround. We initialize the
-    // local subst with state.subst bindings so that letrec unification can see access-chain
-    // constraints generated during value inference.
+    // Initialize global substitution and field types accumulator
     let mut subst = Substitution {
         type_map: state.subst.type_map.clone(),
     };
-
-    // Pass 3: Infer values and unify with bound type vars
     let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
 
-    for ((key_name, is_alias), entry) in key_entries.iter().zip(entries.iter()) {
-        if *is_alias || matches!(&entry.node.value.node, Expr::Rest(_)) {
-            continue;
+    // Process each SCC in topological order
+    // Tarjan's algorithm produces SCCs in reverse topological order, so we process them as-is
+    for scc in sccs.into_iter() {
+        // Pass 1_i: Bind this SCC's entries to fresh TypeVars at level state.level
+        let mut fresh_vars: HashMap<String, Type> = HashMap::new();
+        for &idx in &scc.indices {
+            let (ref key_name, is_alias) = key_entries[idx];
+            if !is_alias {
+                if let Some(ref name) = key_name {
+                    let fresh_var = state.fresh_type_var();
+                    fresh_vars.insert(name.clone(), fresh_var.clone());
+                    dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
+                }
+            }
         }
-        if let Some(name) = key_name {
-            // Set current_function for polymorphic recursion detection.
-            // Only set it for functions WITHOUT return annotations — functions with
-            // annotations can recurse safely because the return type is pinned.
-            let should_check_recursion = if let Expr::Fn { return_ann, .. } = &entry.node.value.node
-            {
-                return_ann.is_none()
-            } else {
-                false
-            };
-            if should_check_recursion {
-                state.current_function = Some(name.clone());
+
+        // Wrap dict_env for use in infer_expr calls for this SCC
+        let dict_env_rc = Rc::new(dict_env.clone());
+
+        // Pass 3_i: Infer values and unify with bound type vars for this SCC
+        for &idx in &scc.indices {
+            let entry = &entries[idx];
+            let (ref key_name, is_alias) = key_entries[idx];
+
+            if is_alias || matches!(&entry.node.value.node, Expr::Rest(_)) {
+                continue;
             }
-            let infer_result = infer_expr(&entry.node.value, &dict_env, state, type_map);
-            if should_check_recursion {
-                state.current_function = None;
-            }
-            match infer_result {
-                Ok(value_ty) => {
-                    // Get the bound TypeVar from Pass 1 via direct HashMap lookup,
-                    // avoiding TypeEnv parent-chain traversal.
-                    if let Some(bound_var) = fresh_vars.get(name.as_str()) {
-                        // Unify the inferred type with the bound var
-                        if let Err(e) = unify(
-                            bound_var,
-                            &value_ty,
-                            &mut subst,
-                            state,
-                            entry.node.value.span,
-                        ) {
-                            errors.push(e);
-                            field_types.insert(name.clone(), Type::Unknown);
-                            state.failed_bindings.insert(name.clone(), entry.span);
+
+            if let Some(name) = key_name {
+                // Set current_function for polymorphic recursion detection.
+                // Only set it for functions WITHOUT return annotations — functions with
+                // annotations can recurse safely because the return type is pinned.
+                let should_check_recursion =
+                    if let Expr::Fn { return_ann, .. } = &entry.node.value.node {
+                        return_ann.is_none()
+                    } else {
+                        false
+                    };
+
+                if should_check_recursion {
+                    state.current_function = Some(name.clone());
+                }
+
+                let infer_result = infer_expr(&entry.node.value, &dict_env_rc, state, type_map);
+
+                if should_check_recursion {
+                    state.current_function = None;
+                }
+
+                match infer_result {
+                    Ok(value_ty) => {
+                        // Get the bound TypeVar from Pass 1_i
+                        if let Some(bound_var) = fresh_vars.get(name.as_str()) {
+                            // Unify the inferred type with the bound var
+                            if let Err(e) = unify(
+                                bound_var,
+                                &value_ty,
+                                &mut subst,
+                                state,
+                                entry.node.value.span,
+                            ) {
+                                errors.push(e);
+                                field_types.insert(name.clone(), Type::Unknown);
+                                state.failed_bindings.insert(name.clone(), entry.span);
+                            } else {
+                                field_types.insert(name.clone(), value_ty);
+                            }
                         } else {
                             field_types.insert(name.clone(), value_ty);
-                            // Propagate new bindings from local subst into state.subst so
-                            // subsequent sibling entries can resolve forward-reference TypeVars.
-                            // Algorithm W substitution composition: when both maps bind the same
-                            // variable, unify to reconcile constraints rather than silently drop.
-                            // Use std::mem::take to avoid borrowing both state.subst and state.
-                            let mut temp_subst = std::mem::take(&mut state.subst);
-                            for (k, v) in &subst.type_map {
-                                match temp_subst.type_map.get(k.as_str()).cloned() {
-                                    Some(existing) if existing != *v => {
-                                        // Overlapping key: unify to reconcile constraints
-                                        temp_subst.type_map.remove(k.as_str());
-                                        match unify(
-                                            &existing,
-                                            v,
-                                            &mut temp_subst,
-                                            state,
-                                            entry.node.value.span,
-                                        ) {
-                                            Ok(()) => {
-                                                let resolved = temp_subst.apply(v);
-                                                temp_subst.type_map.insert(k.clone(), resolved);
-                                            }
-                                            Err(e) => {
-                                                // Restore on failure and record the error
-                                                temp_subst.type_map.insert(k.clone(), existing);
-                                                errors.push(e);
-                                            }
-                                        }
+                        }
+                    }
+                    Err(mut errs) => {
+                        errors.append(&mut errs);
+                        field_types.insert(name.clone(), Type::Unknown);
+                        state.failed_bindings.insert(name.clone(), entry.span);
+                        // Populate type_map with Unknown for LSP hover on failed dict value expressions
+                        if let Some(ref mut map) = type_map {
+                            let key = (
+                                entry.node.value.span.start.offset,
+                                entry.node.value.span.end.offset,
+                            );
+                            map.insert(key, Type::Unknown);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Merge state.subst into local subst after each SCC
+        {
+            let state_type_entries: Vec<(String, Type)> = state
+                .subst
+                .type_map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (k, v) in state_type_entries {
+                let applied_v = subst.apply(&v);
+                match subst.type_map.get(&k).cloned() {
+                    Some(existing) => {
+                        subst.type_map.remove(&k);
+                        if let Err(e) = unify(&existing, &applied_v, &mut subst, state, span) {
+                            errors.push(e);
+                            subst.type_map.insert(k, existing);
+                            continue;
+                        }
+                        let resolved = subst.apply(&applied_v);
+                        subst.type_map.insert(k, resolved);
+                    }
+                    None => {
+                        subst.type_map.insert(k, applied_v);
+                    }
+                }
+            }
+        }
+
+        // Apply substitution to this SCC's field types
+        for &idx in &scc.indices {
+            let (ref key_name, _) = key_entries[idx];
+            if let Some(name) = key_name {
+                if let Some(ty) = field_types.get(name) {
+                    let resolved_ty = subst.apply(ty);
+                    field_types.insert(name.clone(), resolved_ty);
+                }
+            }
+        }
+
+        // Pass 4_i: Generalize this SCC's entries before processing the next SCC
+        for &idx in &scc.indices {
+            let entry = &entries[idx];
+            let (ref key_name, _) = key_entries[idx];
+
+            if let Some(name) = key_name {
+                if let Some(ty) = field_types.get(name) {
+                    // Extract doc string from key annotation (e.g., name@[doc: "..."])
+                    let key_doc = if let Some(ref key_expr) = entry.node.key {
+                        match &key_expr.node {
+                            Expr::Annotated { annotation, .. } => {
+                                annotation.node.get_property("doc").and_then(|doc_value| {
+                                    if let Expr::Str(doc_string) = &doc_value.node {
+                                        Some(doc_string.clone())
+                                    } else {
+                                        None
                                     }
-                                    None => {
-                                        temp_subst.type_map.insert(k.clone(), v.clone());
-                                    }
-                                    _ => {} // Same binding, no-op
-                                }
+                                })
                             }
-                            state.subst = temp_subst;
+                            _ => None,
                         }
                     } else {
-                        field_types.insert(name.clone(), value_ty);
-                    }
-                }
-                Err(mut errs) => {
-                    errors.append(&mut errs);
-                    field_types.insert(name.clone(), Type::Unknown);
-                    state.failed_bindings.insert(name.clone(), entry.span);
-                    // Populate type_map with Any for LSP hover on failed dict value expressions
-                    if let Some(ref mut map) = type_map {
-                        let key = (
-                            entry.node.value.span.start.offset,
-                            entry.node.value.span.end.offset,
-                        );
-                        map.insert(key, Type::Unknown);
-                    }
-                }
-            }
-        }
-    }
+                        None
+                    };
 
-    // Pass 3b: Merge bindings from state.subst added during value inference.
-    // Algorithm W substitution composition (Damas & Milner 1982): correct composition
-    // S = S_state . S_local requires unifying overlapping bindings, not discarding one.
-    // The previous or_insert pattern dropped state.subst bindings when local subst already
-    // had the same key, leaving access-chain constraints unresolved as free TypeVars.
-    {
-        let state_type_entries: Vec<(String, Type)> = state
-            .subst
-            .type_map
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        for (k, v) in state_type_entries {
-            let applied_v = subst.apply(&v);
-            match subst.type_map.get(&k).cloned() {
-                Some(existing) => {
-                    // Remove before calling unify to prevent apply() from chasing
-                    // k → existing → k in a cycle during resolution.
-                    subst.type_map.remove(&k);
-                    // Both maps bind the same variable: unify to reconcile constraints.
-                    if let Err(e) = unify(&existing, &applied_v, &mut subst, state, span) {
-                        // Push to accumulated errors rather than early-returning so previously
-                        // collected Pass 3 diagnostics are not silently dropped. Restore the
-                        // original binding so pass 3c can apply a safe fallback.
-                        errors.push(e);
-                        subst.type_map.insert(k, existing);
-                        continue;
-                    }
-                    // Re-insert the resolved binding so pass 3c can apply it.
-                    // Removal was only to break the self-reference cycle during apply();
-                    // the reconciled value must remain in subst for field_types containing
-                    // TypeVars (e.g., [a: $b  b: 42] where field_types["a"] = TypeVar _tb).
-                    let resolved = subst.apply(&applied_v);
-                    subst.type_map.insert(k, resolved);
-                }
-                None => {
-                    subst.type_map.insert(k, applied_v);
-                }
-            }
-        }
-    }
-
-    // BAS: no row_map to merge (RowVar tails removed)
-
-    // Pass 3c: Apply the merged substitution to all field types
-    let field_types: HashMap<String, Type> = if subst.is_empty() {
-        // Fast path: no substitution needed, avoid O(n) apply() calls
-        field_types
-    } else {
-        field_types
-            .into_iter()
-            .map(|(k, ty)| (k, subst.apply(&ty)))
-            .collect()
-    };
-
-    // Pass 3d: Merge local subst back into state.subst so that subsequent dict entries
-    // in the same document can see the letrec bindings from this dict.
-    // Without this, access-chain constraints in later dicts won't resolve TypeVars
-    // that were bound during this dict's letrec unification.
-    //
-    // Mirror Pass 3b logic: unify overlapping keys instead of blindly overwriting.
-    // If state.subst was modified by sibling dict inference between Pass 3a clone and now,
-    // blindly inserting from local subst would overwrite those bindings without unification.
-    {
-        let state_entries: Vec<(String, Type)> = state
-            .subst
-            .type_map
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        for (k, state_ty) in state_entries {
-            let applied_state_ty = subst.apply(&state_ty);
-            match subst.type_map.get(&k).cloned() {
-                Some(local_ty) => {
-                    // Both substs have a binding for this key.
-                    // Remove from local subst before unifying to prevent apply() cycles.
-                    subst.type_map.remove(&k);
-                    // Unify to reconcile constraints from both sources.
-                    if let Err(e) = unify(&local_ty, &applied_state_ty, &mut subst, state, span) {
-                        errors.push(e);
-                        // Restore local binding on failure as a safe fallback.
-                        subst.type_map.insert(k, local_ty);
-                        continue;
-                    }
-                    // Re-insert the unified result into local subst.
-                    let resolved = subst.apply(&applied_state_ty);
-                    subst.type_map.insert(k, resolved);
-                }
-                None => {
-                    // No conflict: local subst doesn't have this key yet.
-                    subst.type_map.insert(k, applied_state_ty);
-                }
-            }
-        }
-    }
-
-    // Now merge the reconciled local subst back into state.subst.
-    for (k, v) in &subst.type_map {
-        state.subst.type_map.insert(k.clone(), v.clone());
-    }
-    state.subst.check_size(span).map_err(|e| vec![e])?;
-
-    // Pass 4: Generalize - create TypeSchemes for each entry with doc strings
-    let mut schemes = HashMap::with_capacity(field_types.len());
-    for ((key_name, _is_alias), entry) in key_entries.iter().zip(entries.iter()) {
-        if let Some(name) = key_name {
-            if let Some(ty) = field_types.get(name) {
-                // Extract doc string from key annotation (e.g., name@[doc: "..."])
-                let key_doc = if let Some(ref key_expr) = entry.node.key {
-                    match &key_expr.node {
-                        Expr::Annotated { annotation, .. } => {
-                            annotation.node.get_property("doc").and_then(|doc_value| {
+                    // Extract doc string from value annotation (e.g., [fn@[doc: "..."] ...])
+                    let value_doc = match &entry.node.value.node {
+                        Expr::Fn { return_ann, .. } => return_ann.as_ref().and_then(|ann| {
+                            ann.node.get_property("doc").and_then(|doc_value| {
                                 if let Expr::Str(doc_string) = &doc_value.node {
                                     Some(doc_string.clone())
                                 } else {
                                     None
                                 }
                             })
-                        }
+                        }),
                         _ => None,
-                    }
-                } else {
-                    None
-                };
+                    };
 
-                // Extract doc string from value annotation (e.g., [fn@[doc: "..."] ...])
-                let value_doc = match &entry.node.value.node {
-                    Expr::Fn { return_ann, .. } => return_ann.as_ref().and_then(|ann| {
-                        ann.node.get_property("doc").and_then(|doc_value| {
-                            if let Expr::Str(doc_string) = &doc_value.node {
-                                Some(doc_string.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    }),
-                    _ => None,
-                };
+                    // Value doc takes precedence over key doc
+                    let doc = value_doc.or(key_doc);
+                    let scheme = generalize_with_doc(enclosing_level, ty, state, doc);
 
-                // Value doc takes precedence over key doc
-                let doc = value_doc.or(key_doc);
-                let scheme = generalize_with_doc(enclosing_level, ty, state, doc);
-                schemes.insert(name.clone(), scheme);
+                    // Update dict_env with the generalized scheme for subsequent SCCs
+                    dict_env.insert_scheme(name.clone(), scheme);
+                }
+            }
+        }
+    }
+
+    // Merge local subst back into state.subst
+    for (k, v) in &subst.type_map {
+        state.subst.type_map.insert(k.clone(), v.clone());
+    }
+    state.subst.check_size(span).map_err(|e| vec![e])?;
+
+    // Build final schemes map from dict_env
+    let mut schemes = HashMap::with_capacity(field_types.len());
+    for (key_name, _is_alias) in &key_entries {
+        if let Some(name) = key_name {
+            if let Some(scheme) = dict_env.get(name) {
+                schemes.insert(name.clone(), scheme.clone());
             }
         }
     }

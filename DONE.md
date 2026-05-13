@@ -5699,6 +5699,16 @@ The type checker currently returns only `Vec<TypeError>` — all diagnostics are
 - [x] LSP output: `Info` → `DiagnosticSeverity::Hint` or `Information`; `Warn` → `DiagnosticSeverity::Warning`; `Err` → `DiagnosticSeverity::Error` (`src/lsp/document.rs`)
 - [x] Tests: file with Info/Warn diagnostics compiles and exits 0; `--strict` escalates Warn to Err; LSP emits correct severity per level (`tests/corpus/eval/`, `tests/lsp_corpus_tests.rs`)
 
+### scc-inference: SCC-based binding group analysis for letrec polymorphism
+
+Research done — see `doc/whatif/inference-completeness.md`. Implements Tarjan SCC decomposition within DICT-GEN to enable independent generalization of non-mutually-recursive bindings (fixes letrec monomorphism and nested dict let-polymorphism). See doc/whatif/inference-completeness.md §SCC Binding Group Analysis.
+
+- [x] Add Tarjan SCC computation over the dependency graph of a letrec dict's entries: for each entry, collect the set of other entries it references (by name); run Tarjan to produce topologically-sorted SCCs (`src/typecheck.rs`)
+- [x] Extend DICT-GEN Pass 4 generalization: instead of generalizing all entries together at the end, generalize each SCC independently in topological order — entries in a single-node SCC (no recursive reference to itself) are generalized immediately; entries in a multi-node SCC are generalized together after the whole SCC is typed (`src/typecheck.rs`)
+- [x] Reject polymorphic recursion explicitly: when a recursive call's inferred type is `App(T, a)` and `T` is not the same variable as the enclosing binding's TypeVar, emit `TypeError` "polymorphic recursion is not supported — add a type annotation" (`src/typecheck.rs`)
+- [x] Extend nested dict let-polymorphism: inner dict entries (not just top-level) that pass SCC analysis are eligible for DICT-GEN generalization at their respective levels (Kiselyov 2013 levels model); inner entries currently stay at the outer level and remain monomorphic (`src/typecheck.rs`)
+- [x] Tests: `[let [id: [fn [x] x]] [id 1] [id "a"]]` — two uses of `id` at different types succeed; simple mutual recursion (`even?`/`odd?`) types correctly; non-recursive inner binding generalizes; polymorphic recursion rejected with clear error (`tests/corpus/eval/typecheck/`)
+
 ## Higher-Kinded Types
 
 ### hkt-foundation-a: Core type constructs — Kind, App/Operator, UNIFY rules

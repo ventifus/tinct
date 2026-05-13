@@ -55,16 +55,6 @@ These two items were gated out of `builtin-type-audit` because the `infer_fn` Ty
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
 
-### scc-inference: SCC-based binding group analysis for letrec polymorphism
-
-Research done — see `doc/whatif/inference-completeness.md`. Implements Tarjan SCC decomposition within DICT-GEN to enable independent generalization of non-mutually-recursive bindings (fixes letrec monomorphism and nested dict let-polymorphism). See doc/whatif/inference-completeness.md §SCC Binding Group Analysis.
-
-- [ ] Add Tarjan SCC computation over the dependency graph of a letrec dict's entries: for each entry, collect the set of other entries it references (by name); run Tarjan to produce topologically-sorted SCCs (`src/typecheck.rs`)
-- [ ] Extend DICT-GEN Pass 4 generalization: instead of generalizing all entries together at the end, generalize each SCC independently in topological order — entries in a single-node SCC (no recursive reference to itself) are generalized immediately; entries in a multi-node SCC are generalized together after the whole SCC is typed (`src/typecheck.rs`)
-- [ ] Reject polymorphic recursion explicitly: when a recursive call's inferred type is `App(T, a)` and `T` is not the same variable as the enclosing binding's TypeVar, emit `TypeError` "polymorphic recursion is not supported — add a type annotation" (`src/typecheck.rs`)
-- [ ] Extend nested dict let-polymorphism: inner dict entries (not just top-level) that pass SCC analysis are eligible for DICT-GEN generalization at their respective levels (Kiselyov 2013 levels model); inner entries currently stay at the outer level and remain monomorphic (`src/typecheck.rs`)
-- [ ] Tests: `[let [id: [fn [x] x]] [id 1] [id "a"]]` — two uses of `id` at different types succeed; simple mutual recursion (`even?`/`odd?`) types correctly; non-recursive inner binding generalizes; polymorphic recursion rejected with clear error (`tests/corpus/eval/typecheck/`)
-
 ---
 
 ## Type Quality
@@ -232,13 +222,30 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** 
 
 Grammar: `match_form = { keyword_match ~ value ~ (pattern ~ ":" ~ value)+ }`. **Spec chapters:** `doc/02-syntax.md §3.3.4`, `doc/14-patterns.md`.
 
-- [ ] Rewrite `[match ...]` arm parsing in `src/parser.rs` to use the keyed `pattern: body` form: when inside a `StackFrame::Match` and a key-value entry is parsed (via the `:` colon path), convert the key expression to a pattern via `expr_to_pattern_with_guard` and store the value as the body; this uses tinct's existing keyed-entry parsing machinery rather than the current pattern-detection heuristic (`src/parser.rs`)
+**Evaluator, desugar.rs, resolve.rs, typecheck.rs:** No changes needed — all operate on the `MatchArm` AST struct, which is syntax-agnostic.
+
+**Parser sub-tasks** (audit finding: three distinct colon paths must each add a `StackFrame::Match` arm):
+- [ ] `Token::Colon` handler (`src/parser.rs:2557–2636`): currently rejects colon inside `StackFrame::Match` with "`:` can only appear in dict, call, class, or instance forms"; add `StackFrame::Match` arm that accepts the colon when a `pending_key` is set and transitions to waiting for the body value (`src/parser.rs`)
+- [ ] Identifier-with-colon-ahead detection (`src/parser.rs:2871–2941`): add `StackFrame::Match` arm to store the bare identifier as `pending_key` (parallel to the existing `StackFrame::Dict` arm) (`src/parser.rs`)
+- [ ] Annotated-expr-with-colon detection (`src/parser.rs:2813–2823`): currently only checks `StackFrame::Dict`; add `StackFrame::Match` to support `n@Int:` arm syntax (`src/parser.rs`)
+- [ ] **Bracket patterns as keys** (design decision required before implementation): patterns like `[Ok v]:` and `[ok: result]:` are bracket expressions — the colon appears after the bracket closes, when no `pending_key` exists; two options: (a) in `StackFrame::Match`, the `CloseBracket` handler diverts the completed inner expression into `pending_key` instead of pushing it positionally (check: no pending key yet); (b) the `Token::Colon` handler, when inside `StackFrame::Match` with no `pending_key`, takes the last-finalized positional push retroactively as the key. Option (a) is cleaner since no retroactive mutation is needed (`src/parser.rs`)
+- [ ] Replace `pending_pattern: Option<(Pattern, Option<Spanned<Expr>>)>` + `pending_arm_body: Option<Spanned<Expr>>` fields in `StackFrame::Match` with a single `pending_key: Option<Spanned<Expr>>` field; remove the `expr_to_pattern_with_guard` call from `push_value` (it moves to the `Token::Colon` handler's value path) (`src/parser.rs`)
 - [ ] Multi-body match arms: allow the VALUE side of a `pattern:` entry to be `Expr::Sequential` — the parser wraps multiple body expressions in Sequential when the value is a dict-like block; no new parser arms needed (`src/parser.rs`)
-- [ ] Update `src/formatter.rs`: format match arms as `pattern: body` with alignment; when body is `Expr::Sequential`, format its expressions indented on separate lines (`src/formatter.rs`)
-- [x] Extend `[defmacro ...]` body parsing in `src/parser.rs`: after the param list `[...]`, read remaining expressions as a body sequence; if more than one, wrap in `Expr::Sequential`; same treatment as `[fn ...]` bodies today — **already implemented**: `StackFrame::DefMacro` at `src/parser.rs:2360–2369` already wraps multi-expression bodies in `Expr::Sequential` (`src/parser.rs`)
-- [x] Update `doc/02-syntax.md §3.3.4` grammar rule and examples to keyed `pattern: body` syntax — done 2026-05-12 (`doc/02-syntax.md`)
-- [x] Update `doc/14-patterns.md` to keyed `pattern: body` syntax — done 2026-05-12 (`doc/14-patterns.md`)
-- [x] Tests: match arm with binding dict + result expression, nested match arm multi-body, defmacro with multi-body, formatter round-trip of multi-body match arm (`tests/corpus/eval/`, `tests/corpus/format/`)
+
+**Formatter:**
+- [ ] Update `src/formatter.rs` match arm formatting: output `pattern: body` (not `pattern body`); align `:` across all arms in a match form; when body is `Expr::Sequential`, format its expressions indented on separate lines (`src/formatter.rs`)
+
+**Corpus tests (~36 files, all use old space-separated syntax):**
+- [ ] Rewrite all `tests/corpus/eval/match_*.llt-eval` files to keyed `pattern: body` syntax (10 files: `match_variable_binding`, `match_type_int`, `match_type_str`, `match_type_number`, `match_wildcard`, `match_literal_int`, `match_literal_str`, `match_literal_bool`, `match_dict_type`, `match_nested`) (`tests/corpus/eval/`)
+- [ ] Rewrite all `tests/corpus/eval/pattern_matching/*.llt-eval` files to keyed syntax (~20 files: guard tests, dict destructure tests, seq tests, open/closed matching tests) (`tests/corpus/eval/pattern_matching/`)
+- [ ] Rewrite `tests/corpus/eval/match/pin_pattern.llt-eval` and BAS typecheck match tests (`bas_i_case3_three_arms`, `bas_cls_bot`, `rdnf_match_union_simplification`, `match_arm_scope`) to keyed syntax (`tests/corpus/eval/`)
+- [ ] Rewrite `tests/corpus/eval/stdlib/` match-containing tests to keyed syntax (`ok_ctor_no_circular`, `try_result_match_ok`, `try_result_match_err`, `toml_lite_array_*`) (`tests/corpus/eval/stdlib/`)
+- [ ] Fix `tests/cli_tests.rs:2152` inline `[match]` expression to keyed syntax (`tests/cli_tests.rs`)
+
+- [x] Extend `[defmacro ...]` body parsing in `src/parser.rs` — already implemented at `src/parser.rs:2360–2369`
+- [x] Update `doc/02-syntax.md §3.3.4` grammar rule and examples to keyed `pattern: body` syntax — done 2026-05-12
+- [x] Update `doc/14-patterns.md` to keyed `pattern: body` syntax — done 2026-05-12
+- [x] Update all doc/*.md and doc/feature/*.md match examples to keyed syntax — done 2026-05-12
 
 ---
 
