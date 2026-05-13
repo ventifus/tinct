@@ -63,4 +63,10 @@ write-lines@[doc: "Write a sequence of lines to a WriteHandle"]: [fn@WriteHandle
 # Returns: Bool — true if cap-data returns non-null, false otherwise
 has-cap?@[doc: "Check if a capability is present on a Handle or WriteHandle"]: [fn@Bool [h cap]
   [not [null? [cap-data h cap]]]]
+
+# Copy a file from src to dst.
+# cap: DirCap, src: String source path, dst: String destination path
+# Reads the source file and writes it to the destination (create/truncate).
+copy@[doc: "Copy a file from src to dst"]: [fn [cap src dst]
+  [close [write-handle [raw-create cap dst] [slurp [open cap src Readable Text]]]]]
 ]
