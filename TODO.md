@@ -298,17 +298,64 @@ Five new Rust primitives identified by the boundary audit as the highest-leverag
 
 ## Internal Integrity
 
-### builtin-privacy: Restrict `builtin-*` aliases to prelude evaluation context
+### primitive-privacy: Hide all Rust primitives from user code behind prelude.llt
 
-Accepted 2026-05-11. See `doc/whatif/builtin-privacy.md`. **Spec chapters:** `doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary`.
+**Goal:** User code sees only names exported by `prelude.llt`. Raw Rust primitives (the entire `standard_builtins()` registry) are invisible to user code. No backwards-compatibility concern — tinct has no stable public API yet.
 
-- [x] Migrate `stdlib/macros.llt`: replace all `builtin-*` calls with idiomatic prelude wrappers (`builtin-if` → `if`, `builtin-lt` → `<`, `builtin-add` → `+`, `builtin-get` → `get`, `builtin-reduce` → `reduce`, `builtin-eq` → `=`); run tests to confirm no behavior change (`stdlib/macros.llt`) — **already completed in stdlib-module-org sprint** (verified 2026-05-11: no `builtin-*` calls in file)
-- [x] Migrate `stdlib/path.llt`: replace `builtin-if` → `if`, `builtin-eq` → `=`, `builtin-sub` → `-`, `builtin-add` → `+`, `builtin-get` → `get`; confirm `get` error-on-missing semantics are acceptable for each call site (`stdlib/path.llt`) — **already completed in stdlib-module-org sprint** (verified 2026-05-11: no `builtin-*` calls in file)
-- [x] Migrate `stdlib/toml-lite.llt`: replace all `builtin-*` calls with prelude wrappers; this is the largest migration — `toml-lite.llt` uses nearly every alias; run the TOML corpus tests after migration (`stdlib/toml-lite.llt`) — **already completed in stdlib-module-org sprint** (verified 2026-05-11: no `builtin-*` calls in file)
-- [x] Split `create_root_env()` in `src/builtins.rs`: move `builtin-*` alias registrations out of `create_root_env()` and into a new `inject_prelude_aliases(env)` function; `create_root_env()` returns an env with primary names only (`src/builtins.rs`)
-- [ ] Update prelude loading in `src/imports.rs` (`build_prelude_env`): create `prelude_eval_env` = `create_root_env()` + `inject_prelude_aliases()`; evaluate `prelude.llt` in `prelude_eval_env`; the resulting exported bindings become the prelude output env (no `builtin-*` names exposed) (`src/imports.rs`, `src/builtins.rs`)
-- [x] Add type-checker warning `T009` for `builtin-*` references: in name resolution, when the resolved name matches `^builtin-` and the source file is not `prelude.llt`, emit a warning "direct use of internal builtin alias — use the public wrapper instead" (`src/typecheck.rs`)
-- [ ] Tests: user code referencing `builtin-lt` → `undefined variable` error; `prelude.llt` still uses `builtin-lt` without error; `--strict` mode with `builtin-*` reference → error; migrated `macros.llt`/`path.llt`/`toml-lite.llt` pass all existing corpus tests (`tests/corpus/eval/`)
+**Design (from `doc/whatif/builtin-privacy.md` Approach A, extended to full primitive set):**
+
+```
+prelude_eval_env = create_root_env() + inject_prelude_aliases()
+  (prelude.llt evaluates here, can see all Rust builtins + builtin-* aliases)
+  ↓
+prelude_output_env = result of evaluating prelude.llt
+  (only names prelude.llt defines — no Rust builtins leak through)
+  ↓
+user env
+  (only sees prelude exports)
+```
+
+`prelude.llt` is responsible for explicitly exporting every name it wants users to have access to. For Rust builtins with no tinct wrapper (e.g., `emit`, `error`, `type-of`, `from-json`), prelude.llt adds a pass-through: `emit: builtin-emit` or defines a proper wrapper. The builtin-audit sprint (below) identifies what's missing.
+
+**Already done:**
+- [x] Migrate `stdlib/macros.llt`, `stdlib/path.llt`, `stdlib/toml-lite.llt` to prelude wrappers — no `builtin-*` calls remain
+- [x] Split `create_root_env()` / `inject_prelude_aliases()` in `src/builtins.rs`
+- [x] Type-checker warning `T009` for `builtin-*` references outside `prelude.llt`
+
+**Remaining (env isolation — gate on `stdlib-primitive-audit`):**
+- [ ] **[THE SWITCH]** Update prelude loading in `src/imports.rs` (`build_prelude_env`): build `prelude_eval_env` = `create_root_env()` + `inject_prelude_aliases()`; evaluate `prelude.llt` in `prelude_eval_env`; the output of prelude evaluation becomes the parent of the user env — user env does NOT inherit `create_root_env()` directly; after this change, any builtin not re-exported by prelude or stdlib becomes an `undefined variable` error in user code (`src/imports.rs`, `src/builtins.rs`)
+- [ ] Add all user-facing Rust primitives that lack prelude wrappers as explicit pass-throughs or wrappers in `stdlib/prelude.llt` (see `stdlib-primitive-audit` sprint for the complete list) — gate on audit results (`stdlib/prelude.llt`)
+
+**Depends on:** `stdlib-primitive-audit`
+- [x] Remove vestigial Rust `http-get` builtin (the `Value::HttpConn`/reqwest form) — done 2026-05-13: deleted `builtin_http_get` (107 lines), removed `Value::HttpConn` variant, removed from `standard_builtins()` and `TypeEnv`, removed from `builtins_meta.rs` and `lib.rs` JSON serialization (`src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`, `src/value.rs`)
+- [ ] Tests: user code referencing a raw builtin name → `undefined variable` error (pick 3–5 builtins not re-exported by prelude as test cases); `prelude.llt` itself still works; corpus tests still pass (`tests/corpus/eval/`)
+
+### stdlib-primitive-audit: Add all missing raw-primitive re-exports to prelude.llt
+
+**Audit complete (2026-05-13).** Of ~180 registered builtins, ~130 have no prelude.llt wrapper.
+
+**Key architectural point:** `prelude.llt` is the single choke point. When a user does `[include %libdir "net.llt"]`, net.llt is evaluated in the user env — which after the switch only has prelude exports. So if `connect` and `tls-layer` aren't in prelude, net.llt gets `undefined variable: connect`. Every primitive that any stdlib file needs must be re-exported by prelude first. The stdlib modules (io.llt, net.llt, datetime.llt) build higher-level tinct APIs on top of what prelude exposes — they do not independently wrap Rust primitives.
+
+**All missing re-exports go in `stdlib/prelude.llt`**, grouped by domain for readability. Each is a simple pass-through (`name: name`) unless a wrapper adds value.
+
+- [ ] General string ops: re-export `str`, `split`, `replace`, `trim`, `upper`, `lower`, `starts-with?`, `ends-with?`, `str-chars`, `str-length`, `str-slice`, `str-contains?` (`stdlib/prelude.llt`)
+- [ ] Collection ops: re-export `keys`, `length`, `merge`, `append`, `each`, `each-key`, `each-kv` (`stdlib/prelude.llt`)
+- [ ] Numeric/type: re-export `floor`, `round`, `to-int`, `to-float`, `float`, `type-of` (`stdlib/prelude.llt`)
+- [ ] Type predicates: re-export `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?`, `record?`, `map?` — audit found these are NOT in prelude's public dict despite being used throughout (`stdlib/prelude.llt`)
+- [ ] Error/control: verify `error`, `try`, `eval`, `apply`, `force`, `until` are explicitly in the public dict (they're used in prelude but may not be re-exported as public names) (`stdlib/prelude.llt`)
+- [ ] Data: re-export `from-json`, `validate`, `emit`, `env` (`stdlib/prelude.llt`)
+- [ ] Bytes/encoding: re-export `bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?`, `str-bytes`, `bytes-str`, `char-code`, `chr` — needed by encoding.llt which is loaded at startup (`stdlib/prelude.llt`)
+- [ ] Math primitives: re-export `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?`, `band`, `bor`, `bxor`, `shl`, `shr` — needed by math.llt which is loaded at startup (`stdlib/prelude.llt`)
+- [ ] I/O primitives: re-export `open`, `slurp`, `lines`, `write`, `write-atomic`, `write-handle`, `flush`, `close`, `seek`, `seek-end`, `position`, `list-dir`, `stat`, `make-dir`, `remove`, `rename`, `link`, `read-link`, `narrow`, `revocable`, `revoke-cap`, `cap-data`, `has-cap?` — needed by io.llt (`stdlib/prelude.llt`)
+- [ ] Network primitives: re-export `connect`, `tls-layer`, `tls-peer-cert`, `spki-pin`, `send-datagram`, `recv-datagram`, `http-request`, `http2-session`, `http3-session`, `quic-session`, `quic-open-stream`, `quic-open-datagram`, `icmp-ping`, `uri`, `url`, `urn` — needed by net.llt (`stdlib/prelude.llt`)
+- [ ] Date-time primitives: re-export all timestamp/duration/timezone ops (`parse-timestamp`, `format-timestamp`, `timestamp->unix`, `unix->timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp<?`/`>`/`=?`, `timestamp-year`…`timestamp-second`, `timestamp-parts`, `duration-nanos`…`duration->nanos`, `load-tz`, `timestamp-in-tz`, `local->timestamp`, `local-tz-name`) — needed by datetime.llt (`stdlib/prelude.llt`)
+
+**Intentionally NOT re-exported (internal or meta-language):**
+- `eval-ast`, `gensym` — macro infrastructure internal to `src/expand.rs`
+- `llt-repr`, `tag-of`, `variant` — debugging/introspection; document as internal
+- `decimal`, `big-int` — no dedicated stdlib module yet; leave raw until numeric.llt exists
+- `proxy` — advanced metaprogramming; leave raw
+- `include` — special form consumed by parser, not a callable function
 
 ---
 
