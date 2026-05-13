@@ -2592,6 +2592,114 @@ fn literate_weave_no_substitute_preserves_markers() {
 }
 
 #[test]
+fn literate_weave_replaces_existing_markers() {
+    // Test that re-running weave replaces existing markers instead of appending duplicates
+    let md_with_old_result = concat!(
+        "# Config\n\n",
+        "```tinct\n[x: 10]\n```\n",
+        "<!-- tinct-result: {\"x\":999} -->\n",  // Old result that should be replaced
+        "\n",
+        "Some prose.\n\n",
+        "```tinct\n[y: 20]\n```\n",
+        "<!-- tinct-result: {\"y\":888} -->\n",  // Old result that should be replaced
+        "\n",
+    );
+    let (path, _dir) = write_temp_md("literate_weave_replace", md_with_old_result);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should contain the NEW result (x: 10), not the old one (x: 999)
+    assert!(
+        stdout.contains("<!-- tinct-result: {\"x\":10} -->"),
+        "expected updated result for first block, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("{\"x\":999}"),
+        "expected old result to be replaced, not preserved, got: {stdout}"
+    );
+
+    // Should contain the NEW result (y: 20), not the old one (y: 888)
+    assert!(
+        stdout.contains("<!-- tinct-result: {\"y\":20} -->"),
+        "expected updated result for second block, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("{\"y\":888}"),
+        "expected old result to be replaced, not preserved, got: {stdout}"
+    );
+
+    // Should not have duplicate markers
+    let result_count = stdout.matches("<!-- tinct-result:").count();
+    assert_eq!(
+        result_count, 2,
+        "expected exactly 2 result markers (one per block), got {result_count} in: {stdout}"
+    );
+}
+
+#[test]
+fn literate_weave_mixed_marker_presence() {
+    // Test a file with some blocks having markers and some not
+    let md = concat!(
+        "```tinct\n[x: 10]\n```\n",
+        "<!-- tinct-result: {\"x\":999} -->\n",  // Has old marker
+        "\n",
+        "```tinct\n[y: 20]\n```\n",  // No marker
+        "\n",
+        "```tinct\n[z: 30]\n```\n",
+        "<!-- tinct-result: {\"z\":888} -->\n",  // Has old marker
+        "\n",
+    );
+    let (path, _dir) = write_temp_md("literate_weave_mixed", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // All three blocks should have correct, updated markers
+    assert!(
+        stdout.contains("<!-- tinct-result: {\"x\":10} -->"),
+        "expected updated result for first block, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("<!-- tinct-result: {\"y\":20} -->"),
+        "expected new result for second block, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("<!-- tinct-result: {\"z\":30} -->"),
+        "expected updated result for third block, got: {stdout}"
+    );
+
+    // Old values should be gone
+    assert!(
+        !stdout.contains("999") && !stdout.contains("888"),
+        "expected old results to be replaced, got: {stdout}"
+    );
+
+    // Should have exactly 3 markers
+    let result_count = stdout.matches("<!-- tinct-result:").count();
+    assert_eq!(
+        result_count, 3,
+        "expected exactly 3 result markers, got {result_count} in: {stdout}"
+    );
+}
+
+#[test]
 fn literate_missing_file_is_error() {
     let output = Command::new(tinct_bin())
         .args(["literate", "tangle", "/tmp/nonexistent_literate_test.md"])
@@ -3586,7 +3694,8 @@ fn libdir_path_override_flag_accepted() {
     let (test_path, _test_dir) = write_temp_llt("libdir_override_flag", test_src);
 
     // Try to get the stdlib path from the binary location
-    let stdlib_path = tinct::find_libdir_path().unwrap_or_else(|| std::path::PathBuf::from("stdlib"));
+    let stdlib_path =
+        tinct::find_libdir_path().unwrap_or_else(|| std::path::PathBuf::from("stdlib"));
 
     let output = Command::new(tinct_bin())
         .args([
@@ -3610,8 +3719,10 @@ fn libdir_path_override_flag_accepted() {
         stdout
     );
 
-    let json: serde_json::Value = serde_json::from_str(stdout.trim())
-        .expect(&format!("expected valid JSON. stdout: '{}', stderr: '{}'", stdout, stderr));
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&format!(
+        "expected valid JSON. stdout: '{}', stderr: '{}'",
+        stdout, stderr
+    ));
     assert_eq!(json, serde_json::json!({"x": 1}));
 }
 
@@ -3644,8 +3755,8 @@ fn libdir_path_affects_formatter_resolution() {
     );
 
     assert!(
-        stderr.contains("/tmp/nonexistent-tinct-stdlib/out/json.llt") ||
-        stderr.contains("formatter not found"),
+        stderr.contains("/tmp/nonexistent-tinct-stdlib/out/json.llt")
+            || stderr.contains("formatter not found"),
         "Expected error message about formatter at custom path. stderr: {}",
         stderr
     );

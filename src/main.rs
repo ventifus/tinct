@@ -2110,12 +2110,15 @@ fn run_literate_weave(
         pipeline_input = Some(Rc::clone(&thunk));
     }
 
-    // Now walk the Markdown and insert result comments after each tinct/llt block.
+    // Now walk the Markdown and insert/update result comments after each tinct/llt block.
     let mut block_idx = 0;
     let mut in_tinct_block = false;
     let mut output = String::with_capacity(markdown.len() + block_results.len() * 80);
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut i = 0;
 
-    for line in markdown.lines() {
+    while i < lines.len() {
+        let line = lines[i];
         let trimmed = line.trim();
         output.push_str(line);
         output.push('\n');
@@ -2125,9 +2128,24 @@ fn run_literate_weave(
                 in_tinct_block = true;
             }
         } else if trimmed == "```" {
-            // Closing fence: append the result comment for this block.
+            // Closing fence: check if the next line is a result marker, or insert one.
             in_tinct_block = false;
             if block_idx < block_results.len() {
+                // Look ahead to see if there's already a result marker
+                let next_idx = i + 1;
+                let marker_pattern = "<!-- tinct-result:";
+                let has_existing_marker = if next_idx < lines.len() {
+                    lines[next_idx].trim().starts_with(marker_pattern)
+                } else {
+                    false
+                };
+
+                if has_existing_marker {
+                    // Skip the existing marker line - we'll replace it with the new result
+                    i += 1;
+                }
+
+                // Insert/replace the result marker
                 output.push_str(&format!(
                     "<!-- tinct-result: {} -->\n",
                     block_results[block_idx]
@@ -2135,6 +2153,7 @@ fn run_literate_weave(
                 block_idx += 1;
             }
         }
+        i += 1;
     }
 
     // If no_substitute is false, perform inline marker substitution.
