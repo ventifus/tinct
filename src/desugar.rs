@@ -325,9 +325,9 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             }
         }
 
-        // DefMacro: desugar the transformer expression.
-        Expr::DefMacro { transformer, .. } => {
-            desugar(&mut **transformer, depth);
+        // DefMacro: desugar the body expression.
+        Expr::DefMacro { body, .. } => {
+            desugar(&mut *Rc::make_mut(body), depth);
         }
 
         // ClassDecl: recurse into method signatures (type expressions may contain $_ in complex annotations)

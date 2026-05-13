@@ -193,9 +193,9 @@ fn reset_expr(expr: &Spanned<Expr>) {
             reset_expr(inner);
         }
 
-        // DefMacro: recurse into the transformer
-        Expr::DefMacro { transformer, .. } => {
-            reset_expr(transformer);
+        // DefMacro: recurse into the body
+        Expr::DefMacro { body, .. } => {
+            reset_expr(body);
         }
 
         // Match: recurse into scrutinee and arm bodies
