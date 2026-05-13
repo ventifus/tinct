@@ -1191,7 +1191,6 @@ pub(crate) fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
 ///
 /// The registered thunks are materialized (not lazy), so they can be found immediately when
 /// sibling thunks like `Ok: Ok` are forced.
-#[allow(dead_code)]
 pub(crate) fn eagerly_register_constructors(
     body: &Expr,
     span: Span,
@@ -1250,8 +1249,8 @@ fn eval_quote(
 ///
 /// For Unquote nodes: evaluate the inner expression and return the result.
 /// For UnquoteSplice nodes: error (must be in list position, handled by parent).
-/// For all other nodes: delegate to existing ast_to_dict_expr (unquote handling will be
-/// added to ast_to_dict_expr in a future refactor to eliminate code duplication).
+/// For all other nodes: delegate to existing ast_to_dict_expr (which doesn't handle
+/// nested unquotes yet - this is a known limitation to be fixed in a future sprint).
 fn eval_quote_walk(
     expr: &Expr,
     span: Span,
@@ -1273,10 +1272,8 @@ fn eval_quote_walk(
             .into())
         }
         _ => {
-            // For all other expressions, use the existing ast_to_dict_expr.
-            // TODO: This doesn't handle unquote/unquote-splice in nested positions.
-            // Full implementation requires extending ast_dict.rs to accept an optional
-            // unquote handler callback. For now, this works for simple cases.
+            // TODO: implement eval_quote_preprocess to handle nested unquotes
+            // For now, use the existing ast_to_dict_expr which doesn't handle nested unquotes.
             let opts = AstToDictOpts {
                 source: None,
                 comments: None,
@@ -1286,6 +1283,13 @@ fn eval_quote_walk(
     }
 }
 
+// TODO(eval-gaps): Implement eval_quote_preprocess to handle nested unquotes.
+// This was attempted but had bugs causing infinite loops during testing.
+// The function needs to walk the Expr tree and:
+// - Evaluate Unquote nodes and substitute their results
+// - Handle UnquoteSplice in list positions (Call args, Dict entries)
+// - Recursively process all child expressions
+// See git history for the attempted implementation.
 pub fn eval(
     expr: Rc<Spanned<Expr>>,
     env: Rc<RefCell<Environment>>,
@@ -5487,14 +5491,12 @@ mod tests {
         let b_span = test_span(3, 1, 3, 5);
         let err = materialize(&thunk, Some(&b_span), &ctx).unwrap_err();
         assert!(err.message().contains("undefined variable: missing"));
-        // Note: Currently uses access_span (from DotAccess inline handler in force_step)
-        // rather than b_span. This is a known limitation — nested materializations during
-        // access chain processing use the access expr span, not the outer mat_span.
-        // TODO: propagate outer mat_span through access chain continuations
+        // After threading outer_mat_span through DotAccessForceData, the error should
+        // show b_span (the outermost call-site) rather than access_span (the .x access).
         assert_eq!(
             err.materialization_span,
-            Some(access_span),
-            "currently uses access span due to force_step DotAccess inline handling"
+            Some(b_span),
+            "should use outer materialization span from access chain"
         );
     }
 

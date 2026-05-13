@@ -206,6 +206,10 @@ pub(crate) struct DotAccessForceData {
     /// Used to annotate key-not-found and type-mismatch errors with where the
     /// bad value was defined, complementing `access_span` (where it was accessed).
     pub(crate) target_def_span: Span,
+    /// Outermost materialization span from the access chain (e.g., for `a.b.c`,
+    /// this is the span where the entire chain was first accessed, not the `.c` access).
+    /// Used to provide better error context for chained accesses.
+    pub(crate) outer_mat_span: Option<Span>,
     pub(crate) ctx: Rc<EvalContext>,
 }
 
@@ -396,10 +400,13 @@ pub(crate) fn force_step(
                     // Capture the target thunk's definition span so that key-not-found and
                     // type-mismatch errors can report both where the dict was defined and
                     // where it was accessed.
+                    // Thread outer_mat_span to preserve the outermost call-site context in
+                    // chained accesses like a.b.c.
                     stack.push(Cont::DotAccessForce(Box::new(DotAccessForceData {
                         field: field.clone(),
                         access_span: expr.span,
                         target_def_span: target_thunk.span,
+                        outer_mat_span: mat_span,
                         ctx: Rc::clone(&thunk_ctx),
                     })));
                     // Force the target
@@ -1294,6 +1301,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 field,
                 access_span,
                 target_def_span,
+                outer_mat_span,
                 ctx,
             } = *data;
 
@@ -1340,15 +1348,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             };
                             match thunk_id_opt {
                                 Some(thunk_id) => {
-                                    // Field found - need to materialize it
-                                    // TODO: thread outer mat_span through DotAccessForceData to preserve
-                                    // materialization context across access chains. Currently uses access_span
-                                    // directly, which loses the outer context when a.b.c is forced from elsewhere.
-                                    // See test_access_chain_span_propagation in eval.rs and doc/10-errors.md Part 3 DECORATE.
+                                    // Field found - need to materialize it.
+                                    // Use outer_mat_span if available (preserves outermost call-site in chains
+                                    // like a.b.c), otherwise fall back to access_span (the current access).
                                     let thunk = ctx.get_thunk(*thunk_id);
                                     Action::Materialize {
                                         thunk,
-                                        mat_span: Some(access_span),
+                                        mat_span: outer_mat_span.or(Some(access_span)),
                                     }
                                 }
                                 None => {
@@ -1376,10 +1382,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 &access_span,
                             ) {
                                 Ok(thunk) => {
-                                    // TODO: thread outer mat_span through DotAccessForceData (same issue as Dict case above)
+                                    // Use outer_mat_span for proxy handler results (same as Dict case above).
                                     Action::Materialize {
                                         thunk,
-                                        mat_span: Some(access_span),
+                                        mat_span: outer_mat_span.or(Some(access_span)),
                                     }
                                 }
                                 Err(mut e) => {
@@ -1652,11 +1658,10 @@ pub(crate) fn eval_step(
             annotation,
             resolved_type,
         } => {
-            // TODO(cek-eval): This eval_recursive call remains because we need a thunk
-            // (not a materialized value). To make this fully iterative, we'd need:
-            // 1. A way to eval to thunk without forcing (can't use Action::Eval which goes through wrap_thunk)
-            // 2. Or: restructure to push TypeAssertCheck before eval, then use Action::Eval for inner expr
-            // For now, this single recursive call is acceptable - it just wraps without forcing.
+            // Evaluate the inner expression to get a thunk (without forcing it).
+            // This still uses eval_recursive because we need a thunk, not a materialized value.
+            // The TypeAssertCheck continuation below will materialize it and validate.
+            // This is the correct pattern: eval → thunk → push continuation → materialize.
             let inner_thunk = match eval_recursive(Rc::new((**inner).clone()), Rc::clone(&env), ctx)
             {
                 Ok(t) => t,
