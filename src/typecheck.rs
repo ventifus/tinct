@@ -8235,9 +8235,8 @@ mod tests {
         // Lambda with 2 params checked against a Fn type expecting 1 param triggers the
         // arity check inside check_expr's lambda checking mode (lines 433-442).
         //
-        // We call check_expr directly with a hand-built AST to avoid the @[...] composite
-        // annotation syntax which is not yet implemented in the parser. This tests the
-        // actual arity check code path without going through the full parse pipeline.
+        // We call check_expr directly with a hand-built AST to test the actual arity check
+        // code path without going through the full parse pipeline.
         let span = Span::origin();
 
         // Build: [fn [x y] $x] — a 2-param lambda
