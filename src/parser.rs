@@ -398,9 +398,10 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
         Expr::UnquoteSplice(inner) => {
             Expr::UnquoteSplice(Box::new(adjust_spanned_expr(*inner, base)))
         }
-        Expr::DefMacro { name, transformer } => Expr::DefMacro {
+        Expr::DefMacro { name, params, body } => Expr::DefMacro {
             name,
-            transformer: Box::new(adjust_spanned_expr(*transformer, base)),
+            params,
+            body: Rc::new(adjust_spanned_expr((*body).clone(), base)),
         },
         Expr::Match { scrutinee, arms } => Expr::Match {
             scrutinee: Box::new(adjust_spanned_expr(*scrutinee, base)),
@@ -987,10 +988,11 @@ enum StackFrame {
         expr: Option<Spanned<Expr>>,
         span_start: Position,
     },
-    /// Macro definition: `[defmacro name transformer]`
+    /// Macro definition: `[defmacro name [params] body...]`
     DefMacro {
         name: Option<String>,
-        transformer: Option<Spanned<Expr>>,
+        params: Vec<Spanned<Param>>,
+        body: Vec<Spanned<Expr>>,
         span_start: Position,
     },
     /// Match expression: `[match scrutinee pat1 body1 pat2 body2 ...]`
@@ -999,6 +1001,8 @@ enum StackFrame {
         arms: Vec<MatchArm>,
         /// Pending pattern (with optional guard) for the current arm
         pending_pattern: Option<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>)>,
+        /// Pending arm body expression (exactly one per arm)
+        pending_arm_body: Option<Spanned<Expr>>,
         span_start: Position,
     },
     /// Class declaration: `[class [ClassName param...] method: Type ...]`
@@ -1696,14 +1700,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // DefMacro form: [defmacro name transformer]
+                        // DefMacro form: [defmacro name [params] body...]
                         // (Not a defmacro form if the keyword is followed by colon: [defmacro: x] is a dict.)
                         // (depth already checked above)
-                        stack.push(StackFrame::DefMacro {
-                            name: None,
-                            transformer: None,
-                            span_start: span.start,
-                        });
+
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "defmacro" token
                         i += skip_whitespace_tokens(
@@ -1712,7 +1712,71 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             &mut leading_comments,
                             &mut blank_before,
                         );
-                        i += 1;
+                        i += 1; // consume "defmacro"
+
+                        // Parse the macro name inline
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        let macro_name = if i < token_vec.len() {
+                            match &token_vec[i].node {
+                                Token::Identifier(n) => {
+                                    let n = n.clone();
+                                    i += 1;
+                                    Some(n)
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+
+                        // Parse the param list inline (like fn does) so that
+                        // [x] is treated as a param list, not an implied call.
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        let params = if i < token_vec.len()
+                            && matches!(&token_vec[i].node, Token::OpenBracket)
+                        {
+                            match parse_param_list(
+                                &token_vec,
+                                &mut i,
+                                &mut leading_comments,
+                                &mut blank_before,
+                                input,
+                                Some(&mut recovered_errors),
+                            ) {
+                                Ok(ps) => ps,
+                                Err(param_err) => {
+                                    i = recover_from_failed_open(
+                                        param_err,
+                                        span,
+                                        &token_vec,
+                                        i,
+                                        &mut stack,
+                                        &mut current_document_expressions,
+                                        &mut recovered_errors,
+                                    );
+                                    continue;
+                                }
+                            }
+                        } else {
+                            Vec::new()
+                        };
+
+                        stack.push(StackFrame::DefMacro {
+                            name: macro_name,
+                            params,
+                            body: Vec::new(),
+                            span_start: span.start,
+                        });
                         continue;
                     }
                     Some((Token::Identifier(s), keyword_idx))
@@ -1729,6 +1793,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             scrutinee: None,
                             arms: Vec::new(),
                             pending_pattern: None,
+                            pending_arm_body: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -2268,43 +2333,61 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                     StackFrame::DefMacro {
                         name,
-                        transformer,
+                        params,
+                        body,
                         span_start,
-                    } => match (name, transformer) {
-                        (None, _) => {
+                    } => {
+                        if name.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "defmacro form requires a name".to_string(),
                                 span: Some(span),
                             });
                         }
-                        (Some(_), None) => {
+                        if params.is_empty() {
                             close_bracket_recover!(ParseError {
-                                message: "defmacro form requires a transformer expression"
+                                message: "defmacro form requires a parameter list".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        if body.is_empty() {
+                            close_bracket_recover!(ParseError {
+                                message: "defmacro form requires at least one body expression"
                                     .to_string(),
                                 span: Some(span),
                             });
                         }
-                        (Some(name), Some(transformer)) => {
-                            let defmacro_expr = Expr::DefMacro {
-                                name,
-                                transformer: Box::new(transformer),
-                            };
-                            let spanned_defmacro =
-                                Spanned::new(defmacro_expr, dict_span(span_start));
-                            if let Err(push_err) = push_value(
-                                &mut stack,
-                                &mut current_document_expressions,
-                                spanned_defmacro,
-                            ) {
-                                close_bracket_recover!(push_err);
-                            }
+
+                        // For single-expression bodies, use the expression directly.
+                        // For multi-expression bodies, wrap in Sequential.
+                        let body_expr = if body.len() == 1 {
+                            Rc::new(body.into_iter().next().unwrap())
+                        } else {
+                            Rc::new(Spanned::new(
+                                Expr::Sequential(body.into_iter().map(Rc::new).collect()),
+                                dict_span(span_start),
+                            ))
+                        };
+
+                        let defmacro_expr = Expr::DefMacro {
+                            name: name.unwrap(),
+                            params,
+                            body: body_expr,
+                        };
+                        let spanned_defmacro = Spanned::new(defmacro_expr, dict_span(span_start));
+                        if let Err(push_err) = push_value(
+                            &mut stack,
+                            &mut current_document_expressions,
+                            spanned_defmacro,
+                        ) {
+                            close_bracket_recover!(push_err);
                         }
-                    },
+                    }
 
                     StackFrame::Match {
                         scrutinee,
-                        arms,
+                        mut arms,
                         pending_pattern,
+                        pending_arm_body,
                         span_start,
                     } => {
                         if scrutinee.is_none() {
@@ -2314,10 +2397,19 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             });
                         }
                         if pending_pattern.is_some() {
-                            close_bracket_recover!(ParseError {
-                                message: "match form has unpaired pattern (missing body)"
-                                    .to_string(),
-                                span: Some(span),
+                            // Finalize the last arm if we have a pending pattern and body
+                            if pending_arm_body.is_none() {
+                                close_bracket_recover!(ParseError {
+                                    message: "match form has unpaired pattern (missing body)"
+                                        .to_string(),
+                                    span: Some(span),
+                                });
+                            }
+                            let (pattern, guard) = pending_pattern.unwrap();
+                            arms.push(MatchArm {
+                                pattern,
+                                guard,
+                                body: Box::new(pending_arm_body.unwrap()),
                             });
                         }
                         if arms.is_empty() {
@@ -3880,9 +3972,13 @@ fn pop_last_value_from_frame(
             ref mut scrutinee,
             ref mut arms,
             ref mut pending_pattern,
+            ref mut pending_arm_body,
             ..
         }) => {
-            if pending_pattern.is_some() {
+            if let Some(body) = pending_arm_body.take() {
+                // Pop the pending body expression
+                Ok(body)
+            } else if pending_pattern.is_some() {
                 // Last push was a pattern (already converted) — can't retroactively transform
                 Err(ParseError {
                     message: "dot access on a pattern is not supported".to_string(),
@@ -4382,51 +4478,27 @@ fn push_expr_to_parent(
                 *unquote_splice_expr = Some(expr);
                 Ok(())
             }
-            Some(StackFrame::DefMacro {
-                ref mut name,
-                ref mut transformer,
-                ..
-            }) => {
-                // DefMacro expects: [defmacro name-identifier transformer-expr]
-                // First expression is the name (must be an identifier), second is the transformer
-                if name.is_none() {
-                    // This is the name — must be an identifier
-                    match &expr.node {
-                        Expr::VarRef { name: n, .. } => {
-                            *name = Some(n.clone());
-                            Ok(())
-                        }
-                        _ => Err(ParseError {
-                            message: "defmacro name must be an identifier".to_string(),
-                            span: Some(expr.span),
-                        }),
-                    }
-                } else if transformer.is_none() {
-                    // This is the transformer expression
-                    *transformer = Some(expr);
-                    Ok(())
-                } else {
-                    Err(ParseError {
-                        message: "defmacro form takes exactly two arguments: name and transformer"
-                            .to_string(),
-                        span: Some(expr.span),
-                    })
-                }
+            Some(StackFrame::DefMacro { ref mut body, .. }) => {
+                // Name and params are parsed inline at open-bracket time.
+                // All remaining expressions are body expressions.
+                body.push(expr);
+                Ok(())
             }
             Some(StackFrame::Match {
                 ref mut scrutinee,
                 ref mut arms,
                 ref mut pending_pattern,
+                ref mut pending_arm_body,
                 ..
             }) => {
                 // Match expects: [match scrutinee pat1 body1 pat2 body2 ...]
-                // First expression is the scrutinee, then alternating pattern and body
+                // First expression is the scrutinee, then alternating pattern and single body
                 if scrutinee.is_none() {
                     // This is the scrutinee
                     *scrutinee = Some(expr);
                     Ok(())
                 } else if pending_pattern.is_none() {
-                    // This is a pattern — convert expression to pattern
+                    // No pending pattern — this must be a pattern
                     match expr_to_pattern_with_guard(expr) {
                         Ok((pattern, guard)) => {
                             *pending_pattern = Some((pattern, guard));
@@ -4434,15 +4506,27 @@ fn push_expr_to_parent(
                         }
                         Err(e) => Err(e),
                     }
+                } else if pending_arm_body.is_none() {
+                    // We have a pending pattern but no body yet — this must be the body
+                    *pending_arm_body = Some(expr);
+                    Ok(())
                 } else {
-                    // This is a body — complete the arm
+                    // We have both pattern and body — finalize the arm and start a new pattern
                     let (pattern, guard) = pending_pattern.take().unwrap();
+                    let body = pending_arm_body.take().unwrap();
                     arms.push(MatchArm {
                         pattern,
                         guard,
-                        body: Box::new(expr),
+                        body: Box::new(body),
                     });
-                    Ok(())
+                    // This expression should be the next pattern
+                    match expr_to_pattern_with_guard(expr) {
+                        Ok((new_pattern, new_guard)) => {
+                            *pending_pattern = Some((new_pattern, new_guard));
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
                 }
             }
             Some(StackFrame::ClassDecl {

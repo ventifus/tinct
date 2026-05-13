@@ -245,9 +245,9 @@ impl Resolver {
             Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
                 self.walk_expr(inner);
             }
-            // DefMacro: resolve variables in the transformer expression.
-            Expr::DefMacro { transformer, .. } => {
-                self.walk_expr(transformer);
+            // DefMacro: resolve variables in the body expression.
+            Expr::DefMacro { body, .. } => {
+                self.walk_expr(body);
             }
             // Match: resolve variables in scrutinee, guards, and arm bodies.
             // Patterns don't contain runtime variable references (except Pin patterns,

@@ -264,8 +264,8 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
         Expr::TypeAlias { body, .. } => {
             collect_include_paths_from_expr(&body.node, paths);
         }
-        Expr::DefMacro { transformer, .. } => {
-            collect_include_paths_from_expr(&transformer.node, paths);
+        Expr::DefMacro { body, .. } => {
+            collect_include_paths_from_expr(&body.node, paths);
         }
         Expr::Match { scrutinee, arms } => {
             collect_include_paths_from_expr(&scrutinee.node, paths);

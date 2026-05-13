@@ -440,13 +440,18 @@ fn expand_expr_inner(
     stdlib_env: &Rc<RefCell<Environment>>,
 ) -> EvalResult<Spanned<Expr>> {
     match &expr.node {
-        Expr::DefMacro { name, transformer } => {
-            // Evaluate the transformer in the stdlib environment
-            let transformer_value = eval::eval(
-                Rc::new(transformer.as_ref().clone()),
-                Rc::clone(stdlib_env),
-                ctx,
-            )?;
+        Expr::DefMacro { name, params, body } => {
+            // Wrap params+body in a function expression
+            let fn_expr = Expr::Fn {
+                return_ann: None,
+                params: params.clone(),
+                body: Rc::clone(body),
+                desugared: false,
+            };
+            let fn_spanned = Spanned::new(fn_expr, expr.span);
+
+            // Evaluate the function in the stdlib environment
+            let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
 
             // Register the macro
             env.register_macro(name.clone(), transformer_value, expr.span)?;

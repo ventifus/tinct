@@ -377,11 +377,11 @@ fn hover_at_expr(
             doc_url,
         ),
 
-        Expr::DefMacro { name, transformer } => {
-            // Check if hover is on the transformer
+        Expr::DefMacro { name, body, .. } => {
+            // Check if hover is on the body
             hover_at_expr(
-                &transformer.node,
-                transformer.span,
+                &body.node,
+                body.span,
                 offset,
                 type_map,
                 scheme_map,
@@ -1774,8 +1774,8 @@ fn collect_dict_keys_in_scope(
                 );
             }
         }
-        Expr::DefMacro { transformer, .. } => {
-            collect_dict_keys_in_scope(&transformer.node, transformer.span, offset, items, seen);
+        Expr::DefMacro { body, .. } => {
+            collect_dict_keys_in_scope(&body.node, body.span, offset, items, seen);
         }
         _ => {}
     }

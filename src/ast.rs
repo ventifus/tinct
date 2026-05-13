@@ -213,12 +213,14 @@ pub enum Expr {
     /// Only valid in list positions inside `[quote ...]` (not at top level of quote).
     UnquoteSplice(Box<Spanned<Expr>>),
 
-    /// Macro definition, e.g. `[defmacro unless [fn [args] ...]]` — registers a compile-time
-    /// transformer function. The macro expander evaluates `transformer`, registers it under
-    /// `name`, and removes the DefMacro node from the AST before type-checking.
+    /// Macro definition, e.g. `[defmacro unless [pred] body...]` — registers a compile-time
+    /// transformer function. Multi-body support: body expressions are wrapped in Sequential.
+    /// The macro expander wraps this in a function, evaluates it, registers it under `name`,
+    /// and removes the DefMacro node from the AST before type-checking.
     DefMacro {
         name: String,
-        transformer: Box<Spanned<Expr>>,
+        params: Vec<Spanned<Param>>,
+        body: Rc<Spanned<Expr>>,
     },
 
     /// Pattern matching, e.g. `[match scrutinee pat1 body1 pat2 body2 ...]`
@@ -287,6 +289,20 @@ pub struct Param {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
+}
+
+impl std::fmt::Display for Param {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.variadic {
+            write!(f, "...{}", self.name)?;
+        } else {
+            write!(f, "{}", self.name)?;
+        }
+        if let Some(ref ann) = self.annotation {
+            write!(f, "@{}", ann.node)?;
+        }
+        Ok(())
+    }
 }
 
 /// A match arm: pattern and corresponding body expression
@@ -499,8 +515,15 @@ impl fmt::Display for Expr {
             Expr::Quote(inner) => write!(f, "[quote {}]", inner.node),
             Expr::Unquote(inner) => write!(f, "[unquote {}]", inner.node),
             Expr::UnquoteSplice(inner) => write!(f, "[unquote-splice {}]", inner.node),
-            Expr::DefMacro { name, transformer } => {
-                write!(f, "[defmacro {} {}]", name, transformer.node)
+            Expr::DefMacro { name, params, body } => {
+                write!(f, "[defmacro {} [", name)?;
+                for (i, param) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", param.node)?;
+                }
+                write!(f, "] {}]", body.node)
             }
             Expr::Match { scrutinee, arms } => {
                 write!(f, "[match {}", scrutinee.node)?;

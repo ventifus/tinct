@@ -219,10 +219,10 @@ The macros.md design intends `[defmacro ...]` in stdlib to be available to user 
 
 ### multi-line-strings: `unindent` stdlib function and `"""` macro
 
-Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** `doc/02-syntax.md §2.3.6 Multi-Line Strings`, `doc/11-stdlib.md §Strings`. No lexer changes needed — literal newlines in `"..."` already work. `"""` is a parse-stage macro wrapping `[unindent "..."]`.
+Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** `doc/02-syntax.md §2.3.6 Multi-Line Strings`, `doc/11-stdlib.md §Strings`. `unindent` requires no lexer changes — literal newlines in `"..."` already work. **`"""` requires lexer changes** (contradicting the whatif's claim): `lex_quoted_string` terminates at the first `"`, so `"""content"""` tokenizes as empty string + identifier + empty string; `doc/02-syntax.md §2.3.6` already documents this correctly as "requires lexer support for triple-quoted string tokens, which is not yet implemented." A parse-stage macro in `stdlib/macros.llt` cannot intercept token patterns — macros operate on AST nodes, not raw tokens.
 
 - [x] Add `unindent` to `stdlib/prelude.llt`: use sequential fn body — binding dict `[ls: [lines s]  n: [length [last ls]]  inner: [slice 1 -1 ls]]` followed by `[join "\n" [map [fn [l] [slice n [length l] l]] inner]]`; the binding dict's entries are in scope for the final expression via `Expr::Sequential` (`stdlib/prelude.llt`)
-- [ ] Register `"""` and `i"""` as parse-stage macros in `stdlib/macros.llt`: `"""content"""` → `[unindent "content"]`, `i"""content"""` → `[unindent i"content"]`; the lexer already tokenizes the content correctly (`stdlib/macros.llt`)
+- [ ] Add `TripleQuotedString(String)` and `TripleInterpolatedString(Vec<InterpolatedPart>)` token types to `src/lexer.rs`: detect `"""` at the start of a string context, consume content until the closing `"""`, emit accordingly; then in `src/parser.rs` desugar `TripleQuotedString(s)` → `[unindent s]` and `TripleInterpolatedString(parts)` → `[unindent i"..."]` directly in the parser (not as a stdlib macro, since macros cannot intercept token patterns) (`src/lexer.rs`, `src/parser.rs`)
 - [x] Add note to `doc/02-syntax.md §String Literals` that `"..."` permits embedded literal newlines; document `"""..."""` and `i"""..."""` as the idiomatic indentation-stripping form; document `unindent` as the underlying function (`doc/02-syntax.md`)
 - [x] Tests: `unindent` directly on a raw indented string, `"""..."""` value matches `[unindent "..."]`, `i"""..."""` with `$var` interpolation, single `"` inside triple-quoted content, empty lines preserved, `[trim [unindent ...]]` trailing-newline suppression (`tests/corpus/eval/`)
 
@@ -231,10 +231,11 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** 
 `Expr::Sequential` (multi-body let-binding) already works in `[fn ...]` bodies with no evaluator or type-checker changes needed. Extend the same rule to other body positions: wherever the parser has a natural delimiter after which it reads expressions until `]`, allow multiple expressions and wrap them in `Expr::Sequential`. No new keywords. **Spec chapters:** `doc/02-syntax.md §2.3.2 Special Forms`, `doc/04-functions.md`.
 
 - [ ] Extend `[match ...]` arm parsing in `src/parser.rs`: after each arm's pattern, read expressions greedily until the next pattern-looking entry (a bracket starting with a pattern) or the closing `]`; if more than one expression, wrap in `Expr::Sequential`; the existing sequential semantics (intermediate dicts extend scope, last expr is result) apply unchanged (`src/parser.rs`)
-- [ ] Extend `[defmacro ...]` body parsing in `src/parser.rs`: after the param list `[...]`, read remaining expressions as a body sequence; if more than one, wrap in `Expr::Sequential`; same treatment as `[fn ...]` bodies today (`src/parser.rs`)
-- [ ] Update `src/formatter.rs`: when a match arm body is `Expr::Sequential`, format its expressions indented on separate lines (same as fn multi-body formatting) (`src/formatter.rs`)
+  - **Blocked**: needs correct keyed syntax — body is VALUE of `Pattern:` dict entry; Sequential in value position, not new parser arms
+- [x] Extend `[defmacro ...]` body parsing in `src/parser.rs`: after the param list `[...]`, read remaining expressions as a body sequence; if more than one, wrap in `Expr::Sequential`; same treatment as `[fn ...]` bodies today — **already implemented**: `StackFrame::DefMacro` at `src/parser.rs:2360–2369` already wraps multi-expression bodies in `Expr::Sequential` (`src/parser.rs`)
+- [x] Update `src/formatter.rs`: when a match arm body is `Expr::Sequential`, format its expressions indented on separate lines (same as fn multi-body formatting) (`src/formatter.rs`)
 - [ ] Update `doc/02-syntax.md` and `doc/04-functions.md`: document that `[match ...]` arm bodies and `[defmacro ...]` bodies accept multiple sequential expressions; clarify that `[if ...]` branches and call arguments do not (no body delimiter) (`doc/02-syntax.md`, `doc/04-functions.md`)
-- [ ] Tests: match arm with binding dict + result expression, nested match arm multi-body, defmacro with multi-body, formatter round-trip of multi-body match arm (`tests/corpus/eval/`, `tests/corpus/format/`)
+- [x] Tests: match arm with binding dict + result expression, nested match arm multi-body, defmacro with multi-body, formatter round-trip of multi-body match arm (`tests/corpus/eval/`, `tests/corpus/format/`)
 
 ---
 

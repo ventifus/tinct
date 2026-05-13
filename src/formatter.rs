@@ -439,12 +439,36 @@ impl<'a> Formatter<'a> {
                 self.format_expr(inner, true);
                 self.output.push(']');
             }
-            Expr::DefMacro { name, transformer } => {
+            Expr::DefMacro { name, params, body } => {
                 self.output.push('[');
                 self.output.push_str("defmacro ");
                 self.output.push_str(name);
-                self.push_space_before_expr(transformer);
-                self.format_expr(transformer, true);
+                self.output.push_str(" [");
+                for (i, param) in params.iter().enumerate() {
+                    if i > 0 {
+                        self.output.push(' ');
+                    }
+                    self.output.push_str(&param.node.name);
+                    if let Some(ann) = &param.node.annotation {
+                        self.output.push('@');
+                        self.format_annotation(ann);
+                    }
+                    if param.node.variadic {
+                        self.output
+                            .insert_str(self.output.len() - param.node.name.len(), "...");
+                    }
+                }
+                self.output.push(']');
+                // Format body expressions
+                if let Expr::Sequential(exprs) = &body.node {
+                    for expr in exprs {
+                        self.output.push(' ');
+                        self.format_expr(expr, true);
+                    }
+                } else {
+                    self.push_space_before_expr(body);
+                    self.format_expr(body, true);
+                }
                 self.output.push(']');
             }
             Expr::Match { scrutinee, arms } => {
@@ -455,8 +479,16 @@ impl<'a> Formatter<'a> {
                 for arm in arms {
                     self.output.push(' ');
                     self.format_pattern(&arm.pattern);
-                    self.push_space_before_expr(&arm.body);
-                    self.format_expr(&arm.body, true);
+                    // Handle multi-body (Sequential) in arm bodies
+                    if let Expr::Sequential(body_exprs) = &arm.body.node {
+                        for body_expr in body_exprs {
+                            self.push_space_before_expr(body_expr);
+                            self.format_expr(body_expr, true);
+                        }
+                    } else {
+                        self.push_space_before_expr(&arm.body);
+                        self.format_expr(&arm.body, true);
+                    }
                 }
                 self.output.push(']');
             }
@@ -750,15 +782,44 @@ impl<'a> Formatter<'a> {
             Expr::Quote(inner) => 1 + 5 + 1 + self.measure_expr_width(inner) + 1, // [quote <expr>]
             Expr::Unquote(inner) => 1 + 7 + 1 + self.measure_expr_width(inner) + 1, // [unquote <expr>]
             Expr::UnquoteSplice(inner) => 1 + 14 + 1 + self.measure_expr_width(inner) + 1, // [unquote-splice <expr>]
-            Expr::DefMacro { name, transformer } => {
-                1 + 8 + 1 + name.len() + 1 + self.measure_expr_width(transformer) + 1
-                // [defmacro <name> <transformer>]
+            Expr::DefMacro { name, params, body } => {
+                let mut w = 1 + 8 + 1 + name.len(); // [defmacro <name>
+                w += 2; // " ["
+                for (i, param) in params.iter().enumerate() {
+                    if i > 0 {
+                        w += 1; // space
+                    }
+                    w += param.node.name.len();
+                    if param.node.annotation.is_some() {
+                        w += 1; // @ (simplified, doesn't measure annotation fully)
+                    }
+                    if param.node.variadic {
+                        w += 3; // ...
+                    }
+                }
+                w += 1; // ]
+                        // Measure body
+                if let Expr::Sequential(exprs) = &body.node {
+                    for expr in exprs {
+                        w += 1 + self.measure_expr_width(expr);
+                    }
+                } else {
+                    w += 1 + self.measure_expr_width(body);
+                }
+                w + 1 // ]
             }
             Expr::Match { scrutinee, arms } => {
                 let mut width = 1 + 5 + 1 + self.measure_expr_width(scrutinee); // [match <scrutinee>
                 for arm in arms {
                     width += 1 + self.measure_pattern_width(&arm.pattern.node);
-                    width += 1 + self.measure_expr_width(&arm.body);
+                    // Handle multi-body (Sequential) in arm bodies
+                    if let Expr::Sequential(body_exprs) = &arm.body.node {
+                        for body_expr in body_exprs {
+                            width += 1 + self.measure_expr_width(body_expr);
+                        }
+                    } else {
+                        width += 1 + self.measure_expr_width(&arm.body);
+                    }
                 }
                 width + 1 // closing ]
             }
@@ -1982,9 +2043,9 @@ mod tests {
 
     #[test]
     fn test_format_defmacro() {
-        let input = "[defmacro my-macro [fn [x] x]]";
+        let input = "[defmacro my-macro [x] x]";
         let formatted = format_source_compact(input, false, false).unwrap();
-        assert_eq!(formatted, "[defmacro my-macro [fn [x] x]]\n");
+        assert_eq!(formatted, "[defmacro my-macro [x] x]\n");
     }
 
     #[test]
@@ -1996,11 +2057,11 @@ mod tests {
 
     #[test]
     fn test_format_macro_with_complex_transformer() {
-        let input = "[defmacro unless [fn [args] [if [get 0 args] [get 2 args] [get 1 args]]]]";
+        let input = "[defmacro unless [args] [if [get 0 args] [get 2 args] [get 1 args]]]";
         let formatted = format_source_compact(input, false, false).unwrap();
         assert_eq!(
             formatted,
-            "[defmacro unless [fn [args] [if [get 0 args] [get 2 args] [get 1 args]]]]\n"
+            "[defmacro unless [args] [if [get 0 args] [get 2 args] [get 1 args]]]\n"
         );
     }
 }
