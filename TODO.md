@@ -264,11 +264,11 @@ Accepted 2026-05-11. See `doc/whatif/builtin-privacy.md`. **Spec chapters:** `do
 
 Genuine deferred items from the `http-sessions` and `connector-tls` sprints. Each is a deliberate "implement later" stub.
 
-- [ ] Remove `socks5-connect` and `proxy-connect` from `standard_builtins()`, `TypeEnv::with_builtins()`, and the builtin count assertion — decided 2026-05-09 to remove from registry (they return "not yet implemented" errors and SOCKS5 is implemented as a pure-tinct `socks5-layer` in stdlib) (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`)
-- [ ] Delete stale SPKI comment at `src/builtins_io.rs:3335` — two lines saying "simplified implementation that hashes the whole cert"; `compute_spki_hash` already correctly extracts `subject_pki.raw` (`src/builtins_io.rs`)
-- [ ] Add `Value::QuicDatagramHandle(Rc<quinn::Connection>)` variant to the `Value` enum and its `type_name`/`Display`/`PartialEq` impls (`src/value.rs`)
-- [ ] Register `Type::QuicDatagramHandle` in `TypeEnv::with_builtins` and add type signature for `quic-open-datagram` (`src/type_env.rs`)
-- [ ] Implement `quic-open-datagram`: replace the current "not yet implemented" error body with `block_on(session.open_uni())` to get a send stream; return `Value::QuicDatagramHandle(Rc::clone(&conn))` (`src/builtins_io.rs:4457`)
+- [x] Remove `socks5-connect` and `proxy-connect` from `standard_builtins()`, `TypeEnv::with_builtins()`, and the builtin count assertion — decided 2026-05-09 to remove from registry (they return "not yet implemented" errors and SOCKS5 is implemented as a pure-tinct `socks5-layer` in stdlib) (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`) — ALREADY DONE (verified 2026-05-11: not present in any of these files)
+- [x] Delete stale SPKI comment at `src/builtins_io.rs:3335` — two lines saying "simplified implementation that hashes the whole cert"; `compute_spki_hash` already correctly extracts `subject_pki.raw` (`src/builtins_io.rs`) — ALREADY DONE (verified 2026-05-11: comment not present, implementation correct at line 3121)
+- [x] Add `Value::QuicDatagramHandle(Rc<quinn::Connection>)` variant to the `Value` enum and its `type_name`/`Display`/`PartialEq` impls (`src/value.rs`) — ALREADY DONE (line 396 + impls at lines 474, 560, 648, 735)
+- [x] Register `Type::QuicDatagramHandle` in `TypeEnv::with_builtins` and add type signature for `quic-open-datagram` (`src/type_env.rs`) — ALREADY DONE (lines 1886-1891)
+- [x] Implement `quic-open-datagram`: replace the current "not yet implemented" error body with `block_on(session.open_uni())` to get a send stream; return `Value::QuicDatagramHandle(Rc::clone(&conn))` (`src/builtins_io.rs:4457`) — ALREADY DONE (lines 4181-4231: returns Value::QuicDatagramHandle(conn))
 - [ ] Add `send-datagram` overload for `Value::QuicDatagramHandle`: dispatch to `block_on(conn.send_datagram(bytes))` (`src/builtins_io.rs`)
 - [ ] Add `recv-datagram` overload for `Value::QuicDatagramHandle`: dispatch to `block_on(conn.read_datagram())`, return `Bytes` (`src/builtins_io.rs`)
 - [ ] Add `async_rt::spawn<F: Future>(fut: F) -> JoinHandle<F::Output>` helper using `TOKIO_RT.with(|rt| rt.spawn(fut))` — tokio `current_thread` runtime drives spawned tasks during `block_on` calls (`src/async_rt.rs`)
