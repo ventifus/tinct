@@ -5496,6 +5496,10 @@ All runtime-injected capabilities and ambient handles get a `%` prefix as a visu
 
 **Deferred:** public/private split (prelude.llt — `-impl`/`-step`/`-check` helpers into first dict; out/ formatters; in/json.llt, io.llt, net.llt); union type annotations for dual-dispatch parameters (`@[Dict Seq]` — KNOWN ISSUE, type system limitation); `doc:` annotations on all exported functions; `formatter/compact.llt` public/private split and `[match]` dispatch; `out/` formatters `[match]` dispatch; corpus tests for pattern-matched `try` result sites; `doc/11-stdlib.md` type signature table update.
 
+### doc-weave-result-substitution: Document pipeline result substitution
+
+- [x] **Document result substitution** (`doc/09-documents.md:953`): Implement `weave` mode inline result marker replacement — after evaluating each tinct code block, replace the trailing `<!-- tinct-result: ... -->` HTML comment in the Markdown with the block's JSON output; currently these markers are inserted but never updated on re-run; requires threading the Markdown source through `weave` output generation and scanning for marker positions
+
 ## Known Bugs (Type System)
 
 ### `typecheck-bugs`: Type checker correctness fixes
