@@ -1,0 +1,8 @@
+# Explicit @Unknown annotation: should produce an Info diagnostic (T011)
+# For now, we emit Warn for all Unknown (task says to emit Info for explicit, but
+# we need to detect explicit vs inferred first - that's a TODO in the implementation)
+[f: [fn@Unknown [x] x]]
+=== out
+Dict({"f": Function(x)})
+=== warn
+inferred type is Unknown

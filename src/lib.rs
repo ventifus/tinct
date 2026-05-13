@@ -339,17 +339,18 @@ fn parse_net_cap_entry(s: &str) -> Result<crate::value::NetCapEntry, String> {
 
 /// Parse and type-check LLT source code.
 ///
-/// Returns `Ok(())` if type checking succeeds, or `Err(errors)` with a formatted
-/// error message if type errors are found. Each error includes the error message
-/// and the source span where it occurred.
+/// Returns `Ok(())` if type checking succeeds with no type errors AND no quality
+/// diagnostics (from `scan_type_quality`), or `Err(messages)` with a formatted
+/// error string combining both error and diagnostic messages.
 ///
 /// The type environment is pre-populated with builtin type signatures AND prelude
 /// function types via `imports::build_prelude_env()`, so stdlib builtins (`+`, `merge`)
 /// and prelude functions (`map`, `filter`, `any?`, etc.) are in scope for type checking.
 ///
-/// This function is primarily used for testing and corpus validation to ensure
-/// type checking regressions are caught. The main `eval_source` function treats
-/// type errors as advisory warnings and continues evaluation regardless.
+/// This strict variant is used by the typecheck warnings corpus (which expects specific
+/// diagnostic messages) and the valid corpus (which asserts zero warnings unless an
+/// `=== warn` section is present). For corpus tests that only care about type *errors*
+/// (not quality diagnostics), use [`typecheck_source_errors_only`] instead.
 pub fn typecheck_source(input: &str) -> Result<(), String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
@@ -362,13 +363,47 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     resolve::resolve_file(&file.node);
     // Type check the file with prelude-seeded environment
     let env = imports::build_prelude_env();
+    let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+        typecheck::typecheck_file_with_types_and_env(&file.node, env);
+    if type_errors.is_empty() && diagnostics.is_empty() {
+        Ok(())
+    } else {
+        let mut msgs = Vec::new();
+        for e in &type_errors {
+            msgs.push(format!("{}", e));
+        }
+        for d in &diagnostics {
+            msgs.push(d.message.clone());
+        }
+        Err(msgs.join("\n"))
+    }
+}
+
+/// Parse and type-check LLT source code (errors only, no quality diagnostics).
+///
+/// Like [`typecheck_source`] but only fails on actual type errors, ignoring advisory
+/// quality diagnostics from `scan_type_quality` (e.g., "inferred type is Unknown").
+///
+/// Used by the typecheck corpus (`tests/corpus/eval/typecheck/`) which validates that
+/// programs type-check without errors but may legitimately contain polymorphic or
+/// open-record patterns that produce `Unknown` in intermediate type-map entries.
+pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
+    let file = parse(input).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(file, false).map_err(|e| format!("{e}"))?;
+    let mut file = expand_result.file;
+    desugar::desugar_file(&mut file.node);
+    resolve::resolve_file(&file.node);
+    let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
         typecheck::typecheck_file_with_types_and_env(&file.node, env);
     if type_errors.is_empty() {
         Ok(())
     } else {
-        let error_msgs: Vec<String> = type_errors.iter().map(|e| format!("{}", e)).collect();
-        Err(error_msgs.join("\n"))
+        let mut msgs = Vec::new();
+        for e in &type_errors {
+            msgs.push(format!("{}", e));
+        }
+        Err(msgs.join("\n"))
     }
 }
 
@@ -1677,13 +1712,25 @@ mod tests {
     /// Calling `[call $map [fn [x] x] [1 2 3]]` should type-check without any
     /// "undefined variable" error for `map`, proving that `build_prelude_env()`
     /// is wired into `typecheck_source` and that prelude functions are in scope.
+    ///
+    /// Note: we check only type *errors*, not quality diagnostics — the unannotated
+    /// identity lambda `[fn [x] x]` legitimately triggers "inferred type is Unknown"
+    /// advisories from `scan_type_quality`, but those are informational, not errors.
     #[test]
     fn typecheck_source_resolves_prelude_map() {
-        let result = typecheck_source("[call $map [fn [x] x] [1 2 3]]");
+        let input = "[call $map [fn [x] x] [1 2 3]]";
+        let file = parse(input).expect("parse failed");
+        let expand_result = expand::expand_macros(file, false).expect("macro expansion failed");
+        let mut file = expand_result.file;
+        desugar::desugar_file(&mut file.node);
+        resolve::resolve_file(&file.node);
+        let env = imports::build_prelude_env();
+        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
+            typecheck::typecheck_file_with_types_and_env(&file.node, env);
         assert!(
-            result.is_ok(),
-            "expected typecheck_source to succeed (no undefined-variable error for map), got: {:?}",
-            result
+            type_errors.is_empty(),
+            "expected no type errors (prelude map should be in scope), got: {:?}",
+            type_errors
         );
     }
 
