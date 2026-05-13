@@ -45,7 +45,58 @@ use crate::ast::Span;
 use crate::builtins::{builtin, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{string_val, BuiltinArgs, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, DirPerms, Thunk, Value};
+
+/// Extract DirCap from a Value, checking revocation and returning (dir, perms).
+/// Used by all DirCap-consuming builtins.
+fn extract_dir_cap<'a>(
+    val: &'a Value,
+    builtin_name: &str,
+    span: Span,
+) -> EvalResult<(&'a Rc<cap_std::fs::Dir>, &'a DirPerms)> {
+    match val {
+        Value::DirCap { dir, perms } => Ok((dir, perms)),
+        Value::RevocableDirCap {
+            inner,
+            perms,
+            revoked,
+        } => {
+            if revoked.get() {
+                return Err(EvalError::user_error(
+                    format!("{builtin_name}: capability has been revoked"),
+                    span,
+                )
+                .into());
+            }
+            Ok((inner, perms))
+        }
+        other => Err(EvalError::type_mismatch_ctx(
+            builtin_name.to_string(),
+            "DirCap",
+            other.type_name(),
+            span,
+        )
+        .into()),
+    }
+}
+
+/// Check if a DirCap has the required permission flag.
+fn check_perm(
+    _perms: &DirPerms,
+    perm_name: &str,
+    perm_value: bool,
+    _builtin_name: &str,
+    span: Span,
+) -> EvalResult<()> {
+    if !perm_value {
+        return Err(EvalError::user_error(
+            format!("DirCap: operation requires {perm_name} permission"),
+            span,
+        )
+        .into());
+    }
+    Ok(())
+}
 
 /// `emit`: Write a string to stdout and suppress JSON output.
 /// Takes a String argument, writes it to stdout, sets ctx.emitted flag, returns null (empty dict).
@@ -138,29 +189,8 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "open: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "open".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "open", args[0].span)?;
 
     let path = require_string("open", path_val, args[1].span)?;
 
@@ -179,6 +209,14 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
 
         let mode = require_string("open", third_arg_val, args[2].span)?;
+
+        // Check permissions based on mode
+        match mode.as_str() {
+            "r" => check_perm(perms, "Readable", perms.readable, "open", call_span)?,
+            "w" => check_perm(perms, "Writable", perms.writable, "open", call_span)?,
+            "a" => check_perm(perms, "Appendable", perms.appendable, "open", call_span)?,
+            _ => {}
+        }
 
         // Open the file based on mode
         use std::io::BufReader;
@@ -320,6 +358,14 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     }
 
+    // Check DirCap permissions based on mode
+    if has_readable {
+        check_perm(perms, "Readable", perms.readable, "open", call_span)?;
+    }
+    if has_writable {
+        check_perm(perms, "Writable", perms.writable, "open", call_span)?;
+    }
+
     // Default to Text encoding if neither Binary nor Text specified
     if !has_binary && !has_text {
         caps.insert("Text".to_string(), Value::Dict(IndexMap::new()));
@@ -452,29 +498,8 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let subpath_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "narrow: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "narrow".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and preserve permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span)?;
 
     let subpath = require_string("narrow", subpath_val, args[1].span)?;
 
@@ -486,7 +511,13 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
     })?;
 
-    ok_val(Value::DirCap(Rc::new(narrowed)), call_span)
+    ok_val(
+        Value::DirCap {
+            dir: Rc::new(narrowed),
+            perms: perms.clone(),
+        },
+        call_span,
+    )
 }
 
 /// `revocable`: Wrap a DirCap in a RevocableDirCap.
@@ -501,13 +532,17 @@ pub(crate) fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     let val = crate::builtins::expect_one_arg("revocable", args, named, &ctx, call_span)?;
 
-    // Extract DirCap
-    let dir = match val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked: _ } => {
+    // Extract DirCap and preserve permissions
+    let (dir, perms) = match val {
+        Value::DirCap { dir, perms } => (Rc::clone(&dir), perms.clone()),
+        Value::RevocableDirCap {
+            inner,
+            perms,
+            revoked: _,
+        } => {
             // Already revocable — return a new revocable wrapper with a new flag
             // (allows independent revocation)
-            inner
+            (Rc::clone(&inner), perms.clone())
         }
         other => {
             return Err(EvalError::type_mismatch_ctx(
@@ -526,6 +561,7 @@ pub(crate) fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(
         Value::RevocableDirCap {
             inner: dir,
+            perms,
             revoked,
         },
         call_span,
@@ -799,29 +835,8 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             {
                 let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-                // Extract DirCap for path validation
-                let dir = match cap_val {
-                    Value::DirCap(d) => d,
-                    Value::RevocableDirCap { inner, revoked } => {
-                        if revoked.get() {
-                            return Err(EvalError::user_error(
-                                "connect: capability has been revoked".to_string(),
-                                call_span,
-                            )
-                            .into());
-                        }
-                        inner
-                    }
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "connect".to_string(),
-                            "DirCap",
-                            other.type_name(),
-                            args[0].span,
-                        )
-                        .into())
-                    }
-                };
+                // Extract DirCap for path validation (Unix socket)
+                let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
 
                 let path = require_string("connect", path_val, args[2].span)?;
 
@@ -984,29 +999,8 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             {
                 let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-                // Extract DirCap for path validation
-                let dir = match cap_val {
-                    Value::DirCap(d) => d,
-                    Value::RevocableDirCap { inner, revoked } => {
-                        if revoked.get() {
-                            return Err(EvalError::user_error(
-                                "connect: capability has been revoked".to_string(),
-                                call_span,
-                            )
-                            .into());
-                        }
-                        inner
-                    }
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "connect".to_string(),
-                            "DirCap",
-                            other.type_name(),
-                            args[0].span,
-                        )
-                        .into())
-                    }
-                };
+                // Extract DirCap for path validation (Unix socket)
+                let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
 
                 let path = require_string("connect", path_val, args[2].span)?;
 
@@ -1376,29 +1370,9 @@ pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
     let content_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "write: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "write".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "write", args[0].span)?;
+    check_perm(perms, "Writable", perms.writable, "write", call_span)?;
 
     let path = require_string("write", path_val, args[1].span)?;
     let content = require_string("write", content_val, args[2].span)?;
@@ -1446,29 +1420,9 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
     let content_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "write-atomic: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "write-atomic".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", args[0].span)?;
+    check_perm(perms, "Writable", perms.writable, "write-atomic", call_span)?;
 
     let path = require_string("write-atomic", path_val, args[1].span)?;
     let content = require_string("write-atomic", content_val, args[2].span)?;
@@ -2203,29 +2157,9 @@ pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "list-dir: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "list-dir".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", args[0].span)?;
+    check_perm(perms, "Listable", perms.listable, "list-dir", call_span)?;
 
     let path = require_string("list-dir", path_val, args[1].span)?;
 
@@ -2334,29 +2268,9 @@ pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "stat: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "stat".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "stat", args[0].span)?;
+    check_perm(perms, "Statable", perms.statable, "stat", call_span)?;
 
     let path = require_string("stat", path_val, args[1].span)?;
 
@@ -2457,29 +2371,9 @@ pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "make-dir: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "make-dir".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", args[0].span)?;
+    check_perm(perms, "Writable", perms.writable, "make-dir", call_span)?;
 
     let path = require_string("make-dir", path_val, args[1].span)?;
 
@@ -2514,29 +2408,9 @@ pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "remove: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "remove".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "remove", args[0].span)?;
+    check_perm(perms, "Deletable", perms.deletable, "remove", call_span)?;
 
     let path = require_string("remove", path_val, args[1].span)?;
 
@@ -2576,29 +2450,9 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let old_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
     let new_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "rename: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "rename".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "rename", args[0].span)?;
+    check_perm(perms, "Renameable", perms.renameable, "rename", call_span)?;
 
     let old_path = require_string("rename", old_path_val, args[1].span)?;
     let new_path = require_string("rename", new_path_val, args[2].span)?;
@@ -2637,29 +2491,10 @@ pub(crate) fn builtin_copy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let src_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
     let dst_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "copy: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "copy".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions (copy needs both read and write)
+    let (dir, perms) = extract_dir_cap(&dir_val, "copy", args[0].span)?;
+    check_perm(perms, "Readable", perms.readable, "copy", call_span)?;
+    check_perm(perms, "Writable", perms.writable, "copy", call_span)?;
 
     let src_path = require_string("copy", src_path_val, args[1].span)?;
     let dst_path = require_string("copy", dst_path_val, args[2].span)?;
@@ -2724,29 +2559,9 @@ pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let existing_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
     let link_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "link: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "link".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "link", args[0].span)?;
+    check_perm(perms, "Writable", perms.writable, "link", call_span)?;
 
     let existing_path = require_string("link", existing_path_val, args[1].span)?;
     let link_path = require_string("link", link_path_val, args[2].span)?;
@@ -2785,29 +2600,9 @@ pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap
-    let dir = match dir_val {
-        Value::DirCap(d) => d,
-        Value::RevocableDirCap { inner, revoked } => {
-            if revoked.get() {
-                return Err(EvalError::user_error(
-                    "read-link: capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            inner
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "read-link".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+    // Extract DirCap and check permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "read-link", args[0].span)?;
+    check_perm(perms, "Readable", perms.readable, "read-link", call_span)?;
 
     let path = require_string("read-link", path_val, args[1].span)?;
 

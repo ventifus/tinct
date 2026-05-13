@@ -1066,7 +1066,10 @@ fn run_eval(
         };
         let pwd_dir = cap_std::fs::Dir::open_ambient_dir(&pwd_path, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open %pwd directory: {e}"))?;
-        let pwd_value = Value::DirCap(Rc::new(pwd_dir));
+        let pwd_value = Value::DirCap {
+            dir: Rc::new(pwd_dir),
+            perms: tinct::DirPerms::full(),
+        };
         let pwd_thunk = tinct::Thunk::new_materialized(pwd_value, tinct::Span::origin());
         env.borrow_mut()
             .insert("%pwd".to_string(), Rc::new(pwd_thunk));
@@ -1120,7 +1123,10 @@ fn run_eval(
             if let Ok(libdir_std) =
                 cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
             {
-                let libdir_value = Value::DirCap(Rc::new(libdir_std));
+                let libdir_value = Value::DirCap {
+                    dir: Rc::new(libdir_std),
+                    perms: tinct::DirPerms::full(),
+                };
                 let libdir_thunk =
                     tinct::Thunk::new_materialized(libdir_value, tinct::Span::origin());
                 env.borrow_mut()
@@ -1131,14 +1137,15 @@ fn run_eval(
         // TODO(io-phase2): --libdir-path PATH override for custom installations
     }
 
-    // Inject --cap-fs NAME=PATH entries into the root environment as `%NAME`.
+    // Inject --cap-fs NAME=PATH[:MODE] entries into the root environment as `%NAME`.
     // The `%` prefix makes injected caps visually distinct from user-defined variables.
+    // MODE syntax: r/w/a/s/l letters or [Cap1 Cap2 ...] extended form.
     {
-        use tinct::Value;
+        use tinct::{DirPerms, Value};
         for cap_fs_entry in &cap_fs {
-            let (name, path_str) = cap_fs_entry.split_once('=').ok_or_else(|| {
+            let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
                 format!(
-                    "--cap-fs: expected NAME=PATH format, got {:?}",
+                    "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
                     cap_fs_entry
                 )
             })?;
@@ -1149,6 +1156,13 @@ fn run_eval(
                     cap_fs_entry
                 ));
             }
+
+            // Split PATH:MODE on the last colon (rsplit_once handles Windows drive letters)
+            let (path_str, mode_str) = match path_and_mode.rsplit_once(':') {
+                Some((path, mode)) => (path, Some(mode)),
+                None => (path_and_mode, None),
+            };
+
             let cap_path = std::path::Path::new(path_str.trim());
             let cap_dir =
                 cap_std::fs::Dir::open_ambient_dir(cap_path, cap_std::ambient_authority())
@@ -1158,7 +1172,78 @@ fn run_eval(
                             cap_path.display()
                         )
                     })?;
-            let cap_value = Value::DirCap(Rc::new(cap_dir));
+
+            // Parse mode into DirPerms
+            let perms = if let Some(mode) = mode_str {
+                let mode = mode.trim();
+                if mode.starts_with('[') {
+                    // Extended syntax: [Readable Writable ...]
+                    if !mode.ends_with(']') {
+                        return Err(format!(
+                            "--cap-fs: extended mode must end with ']', got {:?}",
+                            mode
+                        ));
+                    }
+                    let caps_str = &mode[1..mode.len() - 1];
+                    let mut perms = DirPerms {
+                        readable: false,
+                        statable: false,
+                        listable: false,
+                        writable: false,
+                        appendable: false,
+                        deletable: false,
+                        renameable: false,
+                    };
+                    for cap_name in caps_str.split_whitespace() {
+                        match cap_name {
+                            "Readable" => perms.readable = true,
+                            "Statable" => perms.statable = true,
+                            "Listable" => perms.listable = true,
+                            "Writable" => perms.writable = true,
+                            "Appendable" => perms.appendable = true,
+                            "Deletable" => perms.deletable = true,
+                            "Renameable" => perms.renameable = true,
+                            _ => {
+                                return Err(format!(
+                                    "--cap-fs: unknown capability {:?} in extended mode",
+                                    cap_name
+                                ))
+                            }
+                        }
+                    }
+                    perms
+                } else {
+                    // Letter mode: r/w/a/s/l
+                    let mut perms = DirPerms {
+                        readable: false,
+                        statable: false,
+                        listable: false,
+                        writable: false,
+                        appendable: false,
+                        deletable: false,
+                        renameable: false,
+                    };
+                    for c in mode.chars() {
+                        if let Some(letter_perms) = DirPerms::from_letter(c) {
+                            perms = perms.union(&letter_perms);
+                        } else {
+                            return Err(format!(
+                                "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
+                                c
+                            ));
+                        }
+                    }
+                    perms
+                }
+            } else {
+                // No mode specified → full access
+                DirPerms::full()
+            };
+
+            let cap_value = Value::DirCap {
+                dir: Rc::new(cap_dir),
+                perms,
+            };
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
             // Inject as `%NAME` (auto-prefix %).
             let scoped_name = if name.starts_with('%') {

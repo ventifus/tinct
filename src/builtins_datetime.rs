@@ -796,7 +796,7 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let name_val = materialize(name_thunk, Some(&args.call_span), &args.ctx)?;
 
     let dir = match &dir_val {
-        Value::DirCap(d) => d,
+        Value::DirCap { dir, .. } => dir,
         _ => {
             return Err(dt_err(
                 "load-tz requires DirCap as first argument",
@@ -1035,7 +1035,7 @@ pub fn builtin_local_tz_name(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let dir_val = materialize(dir_thunk, Some(&args.call_span), &args.ctx)?;
     let _dir = match &dir_val {
-        Value::DirCap(d) => d,
+        Value::DirCap { dir, .. } => dir,
         _ => return Err(dt_err("local-tz-name requires DirCap", args.call_span)),
     };
 

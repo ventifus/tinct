@@ -124,7 +124,7 @@ pub use repl::run_repl;
 pub use lsp::run_lsp;
 
 /// Runtime value types: values, thunks, environments, and dict keys.
-pub use value::{ClockCapInner, Environment, Key, NetCapEntry, Thunk, Value};
+pub use value::{ClockCapInner, DirPerms, Environment, Key, NetCapEntry, Thunk, Value};
 
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
 /// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) -- not JSON.
@@ -207,7 +207,10 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         if let Ok(pwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         {
-            let pwd_val = Value::DirCap(Rc::new(pwd_dir));
+            let pwd_val = Value::DirCap {
+                dir: Rc::new(pwd_dir),
+                perms: value::DirPerms::full(),
+            };
             let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
             env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
         }
@@ -215,7 +218,10 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             if let Ok(libdir_dir) =
                 cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority())
             {
-                let libdir_val = Value::DirCap(Rc::new(libdir_dir));
+                let libdir_val = Value::DirCap {
+                    dir: Rc::new(libdir_dir),
+                    perms: value::DirPerms::full(),
+                };
                 let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
                 env.borrow_mut().insert("%libdir".to_string(), libdir_thunk);
             }
@@ -288,7 +294,10 @@ pub fn eval_source_with_cap_net(
         if let Ok(pwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         {
-            let pwd_val = Value::DirCap(Rc::new(pwd_dir));
+            let pwd_val = Value::DirCap {
+                dir: Rc::new(pwd_dir),
+                perms: value::DirPerms::full(),
+            };
             let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
             env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
         }
@@ -512,7 +521,7 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::Function { params, .. } => visitor.visit_function(&**params),
         value::Value::Builtin(def) => visitor.visit_builtin(def.name),
         value::Value::Proxy { .. } => visitor.visit_proxy(),
-        value::Value::DirCap(_) => Err(Box::new(error::EvalError::value_not_serializable(
+        value::Value::DirCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
             "DirCap".to_string(),
             ast::Span::origin(),
         ))),

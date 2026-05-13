@@ -746,7 +746,7 @@ fn type_name(val: &Value) -> String {
         Value::Function { .. } => "Function",
         Value::Builtin(_) => "Builtin",
         Value::Proxy { .. } => "Proxy",
-        Value::DirCap(_) | Value::RevocableDirCap { .. } => "DirCap",
+        Value::DirCap { .. } | Value::RevocableDirCap { .. } => "DirCap",
         Value::NetCap(_) => "NetCap",
         Value::Handle { .. } => "Handle",
         Value::WriteHandle { .. } => "WriteHandle",
@@ -961,8 +961,12 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Determine the DirCap from the first argument.
     let first_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let (dir_cap, path_arg_idx, hash_arg_idx) = match &first_val {
-        Value::DirCap(dir) => (Rc::clone(dir), 1, 2),
-        Value::RevocableDirCap { inner, revoked } => {
+        Value::DirCap { dir, .. } => (Rc::clone(dir), 1, 2),
+        Value::RevocableDirCap {
+            inner,
+            perms: _,
+            revoked,
+        } => {
             if revoked.get() {
                 return Err(
                     EvalError::new("capability has been revoked".to_string(), call_span).into(),
@@ -1185,7 +1189,10 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         // Inject %pwd: open "." relative to the included file's dir_cap so that
         // [include %pwd "sibling.llt"] resolves relative to the included file's directory.
         if let Ok(pwd_dir) = included_ctx.config.base_dir.open_dir(".") {
-            let pwd_val = Value::DirCap(Rc::new(pwd_dir));
+            let pwd_val = Value::DirCap {
+                dir: Rc::new(pwd_dir),
+                perms: crate::value::DirPerms::full(),
+            };
             let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
             child.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
         }
@@ -1194,7 +1201,10 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             if let Ok(libdir_dir) =
                 cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority())
             {
-                let libdir_val = Value::DirCap(Rc::new(libdir_dir));
+                let libdir_val = Value::DirCap {
+                    dir: Rc::new(libdir_dir),
+                    perms: crate::value::DirPerms::full(),
+                };
                 let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
                 child
                     .borrow_mut()

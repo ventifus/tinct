@@ -146,7 +146,13 @@ impl DocumentState {
                         ) {
                             e.insert(
                                 "%libdir".to_string(),
-                                Rc::new(Thunk::new_materialized(Value::DirCap(Rc::new(dir)), zero)),
+                                Rc::new(Thunk::new_materialized(
+                                    Value::DirCap {
+                                        dir: Rc::new(dir),
+                                        perms: crate::value::DirPerms::full(),
+                                    },
+                                    zero,
+                                )),
                             );
                         }
                     }
@@ -159,7 +165,13 @@ impl DocumentState {
                         ) {
                             e.insert(
                                 "%pwd".to_string(),
-                                Rc::new(Thunk::new_materialized(Value::DirCap(Rc::new(dir)), zero)),
+                                Rc::new(Thunk::new_materialized(
+                                    Value::DirCap {
+                                        dir: Rc::new(dir),
+                                        perms: crate::value::DirPerms::full(),
+                                    },
+                                    zero,
+                                )),
                             );
                         }
                     }
@@ -206,7 +218,10 @@ impl DocumentState {
                                         )
                                         .expect("failed to open stub dir for LSP caps")
                                     });
-                                    Value::DirCap(Rc::new(stub_dir))
+                                    Value::DirCap {
+                                        dir: Rc::new(stub_dir),
+                                        perms: crate::value::DirPerms::full(),
+                                    }
                                 }
                                 Annotation::Simple(type_name) if type_name == "Handle" => {
                                     let source = Rc::<str>::from("lsp-stub-handle");
