@@ -109,6 +109,9 @@ pub struct MacroEnv {
     in_progress: HashSet<CallSiteId>,
     /// Provenance side map: generated-node span -> expansion origin.
     pub provenance: ProvenanceMap,
+    /// Macros discovered during expansion via `[defmacro ...]` declarations.
+    /// Accumulated during expansion, returned in ExpandResult.
+    pub discovered_macros: Vec<(String, Rc<Thunk>)>,
 }
 
 /// Unique identifier for a macro call site.
@@ -134,6 +137,7 @@ impl MacroEnv {
             node_count: 0,
             in_progress: HashSet::new(),
             provenance: HashMap::new(),
+            discovered_macros: Vec::new(),
         }
     }
 
@@ -227,66 +231,38 @@ impl MacroEnv {
 pub struct ExpandResult {
     pub file: Spanned<File>,
     pub provenance: ProvenanceMap,
+    /// Macros discovered during expansion via `[defmacro ...]` declarations.
+    /// Each entry is `(macro_name, transformer_thunk)`.
+    /// Used to propagate stdlib macros from macros.llt to user code expansion.
+    pub discovered_macros: Vec<(String, Rc<Thunk>)>,
 }
 
-/// Expand all macros in a File AST.
+/// Register stdlib macros by looking up transformer functions in the stdlib environment.
 ///
-/// This is the top-level entry point called from the pipeline.
-/// Takes a no_fs flag to match the pipeline configuration.
-/// Returns the expanded AST and the provenance side map for dual-span error reporting.
-/// Register stdlib macros from the stdlib env into a fresh MacroEnv.
+/// Stdlib macros are defined in `stdlib/macros.llt` as `[defmacro name [args] body]`
+/// declarations. However, we can't use the normal DefMacro expansion mechanism for
+/// stdlib macros because:
+/// 1. create_stdlib_env() loads macros.llt BEFORE expand_macros runs on user code
+/// 2. The DefMacro mechanism requires expand_macros to be running
 ///
-/// Each stdlib macro is exported from `stdlib/macros.llt` as a `<name>-transformer`
-/// Register the built-in `tmpl` macro that expands string interpolation.
-///
-/// The parser emits `[tmpl "raw_template" expr0 expr1 ...]` for `i"..."` literals.
-/// - `raw_template`: the original template string with `$name` → `$name`, `${...}` → `${N}`
-/// - `exprN`: extra positional args for `${N}` expression placeholders
-///
-/// This expands to `[str "seg1" name "seg2" expr0 ...]` at macro-expansion time.
-/// Implemented in Rust to avoid a circular dependency with create_stdlib_env.
-#[allow(dead_code)]
-fn register_tmpl_macro(env_macro: &mut MacroEnv) {
-    // We can't register a Rust closure as a macro (the MacroEnv expects a Thunk/Value::Function).
-    // Instead, emit the [tmpl ...] call as a Call node that the evaluator handles at runtime.
-    // The evaluator finds `tmpl-transformer` in the stdlib env loaded by create_stdlib_env.
-    // This works because macro expansion only needs to handle [defmacro] user macros here;
-    // the `tmpl` builtin is handled by the evaluator via the stdlib env.
-    //
-    // We do NOT register tmpl here; instead, leave [tmpl "..."] calls unchanged.
-    // The evaluator will call `tmpl-transformer` from the stdlib env at runtime.
-    let _ = env_macro; // intentionally unused — no registration needed
-}
-
-/// Register stdlib LLT macro transformers (legacy path, kept for reference).
-///
-/// function. This function looks them up and pre-registers them so that macro calls
-/// like `[tmpl "Hello $name"]` are expanded before any user-defined `[defmacro]` nodes
-/// are processed.
-///
-/// Stdlib macro names must NOT collide with registered Rust builtins (the same check
-/// that `register_macro` performs). This is guaranteed by design: the `tmpl` macro
-/// cannot shadow any builtin since no builtin is named `tmpl`.
-#[allow(dead_code)]
-fn register_stdlib_macros(
+/// Instead, stdlib/macros.llt exports transformer functions as normal dict bindings,
+/// and we register them here by looking them up by name.
+fn register_stdlib_macros_from_env(
     env_macro: &mut MacroEnv,
     stdlib_env: &Rc<RefCell<Environment>>,
     span: Span,
 ) {
-    /// Table of (macro_name, transformer_key_in_stdlib_env) pairs.
-    const STDLIB_MACROS: &[(&str, &str)] =
-        &[("tmpl", "tmpl-transformer"), ("do", "do-transformer")];
+    // Known stdlib macros and their transformer function names.
+    // Future: could auto-discover by scanning for functions with a special naming pattern.
+    const STDLIB_MACROS: &[&str] = &["tmpl", "do", "begin"];
 
-    for (macro_name, transformer_key) in STDLIB_MACROS {
+    for macro_name in STDLIB_MACROS {
         let transformer_thunk = {
             let env_ref = stdlib_env.borrow();
-            env_ref.get(*transformer_key)
+            env_ref.get(macro_name)
         };
         if let Some(transformer) = transformer_thunk {
-            // register_macro checks for builtin collisions. Ignore errors here:
-            // if registration fails (e.g. the key is absent), the macro simply
-            // won't expand and user code gets an "undefined variable: tmpl" error,
-            // which is a clear signal that stdlib/macros.llt is not loaded.
+            // register_macro checks for builtin collisions.
             let _ = env_macro.register_macro((*macro_name).to_string(), transformer, span);
         }
     }
@@ -300,6 +276,12 @@ std::thread_local! {
     static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// Expand all macros in a File AST.
+///
+/// This is the top-level entry point called from the pipeline.
+/// Takes a no_fs flag to match the pipeline configuration.
+/// Returns the expanded AST and the provenance side map for dual-span error reporting.
+/// Stdlib macros are loaded by expanding `stdlib/macros.llt` and collecting discovered macros.
 pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResult> {
     // Detect infinite recursion
     let em_depth = EXPAND_MACROS_DEPTH.get();
@@ -331,35 +313,37 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
         })?;
 
     // Create the stdlib env for macro expansion. Provides prelude functions for [defmacro]
-    // transformer bodies, and tmpl-transformer for i"..." string interpolation.
+    // transformer bodies.
     // The depth guard prevents infinite recursion when create_stdlib_env calls expand_macros:
-    //   expand_macros(user_code) → create_stdlib_env() → load_stdlib_module(prelude.llt) →
-    //   build_prelude_env → expand_macros(prelude.llt) [depth=1 → use create_root_env]
+    //   expand_macros(user_code) → create_stdlib_env() → typecheck calls expand_macros(prelude.llt) →
+    //   use create_root_env to break the cycle
     let depth = EXPAND_MACROS_DEPTH.get();
-    EXPAND_MACROS_DEPTH.set(depth + 1);
     let stdlib_env = if depth == 0 {
-        match builtins::create_stdlib_env() {
+        // Only call create_stdlib_env at depth 0 (top-level user code).
+        // Increment depth to prevent re-entrance.
+        EXPAND_MACROS_DEPTH.set(depth + 1);
+        let result = match builtins::create_stdlib_env() {
             Ok(env) => {
-                // Register stdlib macros (tmpl) only at the outermost level.
-                register_stdlib_macros(&mut env_macro, &env, file.span);
-                env
+                // Load stdlib macros from the fully-evaluated stdlib env.
+                // The stdlib defines macros via regular function exports that we
+                // register by looking them up by name after the stdlib is loaded.
+                register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
+                Ok(env)
             }
-            Err(e) => {
-                EXPAND_MACROS_DEPTH.set(depth);
-                return Err(EvalError::internal(
-                    format!("cannot create stdlib env for macro expansion: {e}"),
-                    file.span,
-                )
-                .into());
-            }
-        }
+            Err(e) => Err(EvalError::internal(
+                format!("cannot create stdlib env for macro expansion: {e}"),
+                file.span,
+            )),
+        };
+        // Reset depth after create_stdlib_env completes
+        EXPAND_MACROS_DEPTH.set(depth);
+        result?
     } else {
-        // Re-entrant call: use bare root env to break the cycle.
-        // [defmacro] macros in stdlib files won't have access to prelude, but
-        // stdlib files don't define user [defmacro] macros so this is fine.
+        // Re-entrant call (depth > 0): use bare root env to break the cycle.
+        // This happens when create_stdlib_env → build_prelude_env → expand_macros(prelude.llt).
+        // The stdlib files don't use [defmacro], so not having stdlib macros registered is fine.
         builtins::create_root_env()
     };
-    EXPAND_MACROS_DEPTH.set(depth);
 
     let ctx = Rc::new(EvalContext::new(base_dir, Rc::clone(&stdlib_env), no_fs));
 
@@ -382,6 +366,7 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
             file.span,
         ),
         provenance: env_macro.provenance,
+        discovered_macros: env_macro.discovered_macros,
     })
 }
 
@@ -454,7 +439,11 @@ fn expand_expr_inner(
             let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
 
             // Register the macro
-            env.register_macro(name.clone(), transformer_value, expr.span)?;
+            env.register_macro(name.clone(), Rc::clone(&transformer_value), expr.span)?;
+
+            // Record the discovered macro for propagation to outer MacroEnv
+            env.discovered_macros
+                .push((name.clone(), transformer_value));
 
             // Return the DefMacro node unchanged (will be filtered out by expand_document)
             Ok(expr)
@@ -935,281 +924,6 @@ fn expand_macro_call(
 
     // Re-expand the result (fixpoint)
     expand_expr(expanded_ast, env, ctx, stdlib_env)
-}
-
-/// Rename bindings introduced by a macro expansion to prevent variable capture.
-///
-/// This implements the core hygiene invariant (Flatt 2016, simplified):
-/// macro-introduced names are structurally distinct from user-code names.
-///
-/// Only *binding sites* are renamed (fn params, dict entry keys). References to
-/// those names within the macro body are also renamed to match. Names that were
-/// spliced from user code via `[unquote]` are NOT renamed — they retain their
-/// original user-code names, which is exactly the hygiene guarantee: user names
-/// and macro names don't interfere.
-///
-/// The renaming scheme uses `:scope:N` suffix (`:` is forbidden in bare-word
-/// identifiers, making collision structurally impossible).
-///
-/// **Phase 2 (future):** Currently reserved for automatic hygiene when the
-/// expander can distinguish template-introduced bindings from user-spliced code.
-/// Phase 1 relies on `gensym` for manual hygiene.
-#[allow(dead_code)]
-fn rename_macro_bindings(expr: &mut Spanned<Expr>, scope_id: ScopeId) {
-    // Collect binding names introduced at this level, then rename references
-    let mut renames: HashMap<String, String> = HashMap::new();
-
-    collect_and_rename_bindings(&mut expr.node, scope_id, &mut renames);
-
-    // Now rename all VarRef occurrences that reference the renamed bindings
-    if !renames.is_empty() {
-        rename_refs(&mut expr.node, &renames);
-    }
-}
-
-/// Walk the expression to find binding sites and rename them.
-#[allow(dead_code)]
-fn collect_and_rename_bindings(
-    expr: &mut Expr,
-    scope_id: ScopeId,
-    renames: &mut HashMap<String, String>,
-) {
-    match expr {
-        Expr::Fn { params, body, .. } => {
-            // Rename fn parameters
-            for param in params.iter_mut() {
-                let old_name = param.node.name.clone();
-                // Don't rename `_` (special desugaring name) or names already scoped
-                if old_name != "_" && !old_name.contains(":scope:") {
-                    let new_name = format!("{}:scope:{}", old_name, scope_id.0);
-                    renames.insert(old_name, new_name.clone());
-                    param.node.name = new_name;
-                }
-            }
-            // Recursively process the body with accumulated renames
-            collect_and_rename_bindings(&mut Rc::make_mut(body).node, scope_id, renames);
-        }
-        Expr::Dict(entries) => {
-            for entry in entries.iter_mut() {
-                // Rename keyed entries (binding sites in dicts)
-                if let Some(ref mut key_expr) = entry.node.key {
-                    if let Expr::Str(ref name) = key_expr.node {
-                        let name = name.clone();
-                        if !name.contains(":scope:") {
-                            let new_name = format!("{}:scope:{}", name, scope_id.0);
-                            renames.insert(name, new_name.clone());
-                            key_expr.node = Expr::Str(new_name);
-                        }
-                    }
-                }
-                // Recurse into values
-                collect_and_rename_bindings(
-                    &mut Rc::make_mut(&mut entry.node.value).node,
-                    scope_id,
-                    renames,
-                );
-            }
-        }
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            collect_and_rename_bindings(&mut func.node, scope_id, renames);
-            for arg in args.iter_mut() {
-                collect_and_rename_bindings(&mut Rc::make_mut(arg).node, scope_id, renames);
-            }
-            for na in named_args.iter_mut() {
-                collect_and_rename_bindings(
-                    &mut Rc::make_mut(&mut na.node.value).node,
-                    scope_id,
-                    renames,
-                );
-            }
-        }
-        Expr::DotAccess { expr: target, .. } => {
-            collect_and_rename_bindings(&mut target.node, scope_id, renames);
-        }
-        Expr::Sequential(exprs) => {
-            for seq_expr in exprs {
-                if let Some(seq_expr_mut) = Rc::get_mut(seq_expr) {
-                    collect_and_rename_bindings(&mut seq_expr_mut.node, scope_id, renames);
-                }
-            }
-        }
-        Expr::Pipe { lhs, rhs } => {
-            collect_and_rename_bindings(&mut lhs.node, scope_id, renames);
-            collect_and_rename_bindings(&mut rhs.node, scope_id, renames);
-        }
-        Expr::TypeAlias { body, .. } => {
-            collect_and_rename_bindings(&mut body.node, scope_id, renames);
-        }
-        Expr::TypeAssert { expr: inner, .. } => {
-            collect_and_rename_bindings(&mut inner.node, scope_id, renames);
-        }
-        Expr::Quote(inner) => {
-            collect_and_rename_bindings(&mut inner.node, scope_id, renames);
-        }
-        Expr::Unquote(inner) => {
-            collect_and_rename_bindings(&mut inner.node, scope_id, renames);
-        }
-        Expr::UnquoteSplice(inner) => {
-            collect_and_rename_bindings(&mut inner.node, scope_id, renames);
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_and_rename_bindings(&mut scrutinee.node, scope_id, renames);
-            for arm in arms.iter_mut() {
-                if let Some(guard) = &mut arm.guard {
-                    collect_and_rename_bindings(&mut guard.node, scope_id, renames);
-                }
-                collect_and_rename_bindings(&mut arm.body.node, scope_id, renames);
-            }
-        }
-        Expr::ClassDecl { methods, .. } => {
-            for method in methods.iter_mut() {
-                if let Some(ref mut key_expr) = method.node.key {
-                    collect_and_rename_bindings(&mut key_expr.node, scope_id, renames);
-                }
-                collect_and_rename_bindings(
-                    &mut Rc::make_mut(&mut method.node.value).node,
-                    scope_id,
-                    renames,
-                );
-            }
-        }
-        Expr::InstanceDecl {
-            instance_type,
-            methods,
-            ..
-        } => {
-            collect_and_rename_bindings(&mut instance_type.node, scope_id, renames);
-            for method in methods.iter_mut() {
-                if let Some(ref mut key_expr) = method.node.key {
-                    collect_and_rename_bindings(&mut key_expr.node, scope_id, renames);
-                }
-                collect_and_rename_bindings(
-                    &mut Rc::make_mut(&mut method.node.value).node,
-                    scope_id,
-                    renames,
-                );
-            }
-        }
-        // Leaf nodes — nothing to do
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Str(_)
-        | Expr::VarRef { .. }
-        | Expr::Annotated { .. }
-        | Expr::Rest(_)
-        | Expr::TypeApp { .. }
-        | Expr::Error(_)
-        | Expr::DefMacro { .. } => {}
-    }
-}
-
-/// Rename variable references to match renamed bindings.
-#[allow(dead_code)]
-fn rename_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
-    match expr {
-        Expr::VarRef { name, .. } => {
-            if let Some(new_name) = renames.get(name.as_str()) {
-                *name = new_name.clone();
-            }
-        }
-        Expr::Fn { body, .. } => {
-            rename_refs(&mut Rc::make_mut(body).node, renames);
-        }
-        Expr::Dict(entries) => {
-            for entry in entries.iter_mut() {
-                rename_refs(&mut Rc::make_mut(&mut entry.node.value).node, renames);
-            }
-        }
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            rename_refs(&mut func.node, renames);
-            for arg in args.iter_mut() {
-                rename_refs(&mut Rc::make_mut(arg).node, renames);
-            }
-            for na in named_args.iter_mut() {
-                rename_refs(&mut Rc::make_mut(&mut na.node.value).node, renames);
-            }
-        }
-        Expr::DotAccess { expr: target, .. } => {
-            rename_refs(&mut target.node, renames);
-        }
-        Expr::Sequential(exprs) => {
-            for seq_expr in exprs {
-                if let Some(seq_expr_mut) = Rc::get_mut(seq_expr) {
-                    rename_refs(&mut seq_expr_mut.node, renames);
-                }
-            }
-        }
-        Expr::Pipe { lhs, rhs } => {
-            rename_refs(&mut lhs.node, renames);
-            rename_refs(&mut rhs.node, renames);
-        }
-        Expr::TypeAlias { body, .. } => {
-            rename_refs(&mut body.node, renames);
-        }
-        Expr::TypeAssert { expr: inner, .. } => {
-            rename_refs(&mut inner.node, renames);
-        }
-        Expr::Quote(inner) => {
-            rename_refs(&mut inner.node, renames);
-        }
-        Expr::Unquote(inner) => {
-            rename_refs(&mut inner.node, renames);
-        }
-        Expr::UnquoteSplice(inner) => {
-            rename_refs(&mut inner.node, renames);
-        }
-        Expr::Match { scrutinee, arms } => {
-            rename_refs(&mut scrutinee.node, renames);
-            for arm in arms {
-                if let Some(guard) = &mut arm.guard {
-                    rename_refs(&mut guard.node, renames);
-                }
-                rename_refs(&mut arm.body.node, renames);
-            }
-        }
-        Expr::ClassDecl { methods, .. } => {
-            for method in methods.iter_mut() {
-                if let Some(ref mut key_expr) = method.node.key {
-                    rename_refs(&mut key_expr.node, renames);
-                }
-                rename_refs(&mut Rc::make_mut(&mut method.node.value).node, renames);
-            }
-        }
-        Expr::InstanceDecl {
-            instance_type,
-            methods,
-            ..
-        } => {
-            rename_refs(&mut instance_type.node, renames);
-            for method in methods.iter_mut() {
-                if let Some(ref mut key_expr) = method.node.key {
-                    rename_refs(&mut key_expr.node, renames);
-                }
-                rename_refs(&mut Rc::make_mut(&mut method.node.value).node, renames);
-            }
-        }
-        // Leaf nodes — nothing to do
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Str(_)
-        | Expr::Annotated { .. }
-        | Expr::Rest(_)
-        | Expr::TypeApp { .. }
-        | Expr::Error(_)
-        | Expr::DefMacro { .. } => {}
-    }
 }
 
 /// Look up provenance for a span and format an "in expansion of" note.

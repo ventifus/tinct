@@ -189,22 +189,6 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 ---
 
-## Macro Architecture
-
-### stdlib-defmacro: Proper stdlib macro registration via ExpandResult
-
-The macros.md design intends `[defmacro ...]` in stdlib to be available to user code — the same as user-defined macros. The current implementation is a workaround: stdlib macros are defined as `*-transformer` functions in `macros.llt` and pre-registered via a hardcoded `STDLIB_MACROS` table in `src/expand.rs`. This breaks for two reasons: (1) the table requires a Rust change for every new stdlib macro, and (2) transformer bodies in macros.llt can't use prelude functions because inner `expand_macros` runs at depth >0 with `create_root_env` (no prelude). The fix: make `ExpandResult` carry discovered macro registrations from stdlib expansion, and evaluate transformer bodies against the full stdlib env at depth 0.
-
-- [ ] Add `pub discovered_macros: Vec<(String, Rc<Thunk>)>` to `ExpandResult` in `src/expand.rs`; when the `expand_macros` pass processes an `Expr::DefMacro` node, push the `(macro_name, transformer_thunk)` to `ExpandResult.discovered_macros` in addition to registering in the local `MacroEnv` (`src/expand.rs`)
-- [ ] Change stdlib loading in `expand_macros`: after `create_stdlib_env()` returns, re-parse and partially-expand `stdlib/macros.llt` at depth 0 (with the full stdlib env available) to collect its `DefMacro` declarations; evaluate each transformer body against the full stdlib env and register in the outer `env_macro` — this replaces `register_stdlib_macros` entirely (`src/expand.rs`, `src/imports.rs`)
-- [ ] Remove `register_stdlib_macros` and the `STDLIB_MACROS` hardcoded table from `src/expand.rs`; remove the `*-transformer` naming convention (no longer needed)
-- [ ] Rewrite `stdlib/macros.llt` to use `[defmacro ...]` declarations directly, with transformer bodies written as normal tinct using prelude functions (`stdlib/macros.llt`): `[defmacro tmpl ...]` / `[defmacro do ...]` replace the `tmpl-transformer` / `do-transformer` function pattern; add `[defmacro begin [args] ...]` whose body uses `reduce`, `range`, `append` to collect args and emits `{type: "sequential"  exprs: arglist}`; once this sprint lands `[begin e1 e2 ...]` is available to all user code with no Rust registration
-- [ ] Fold `stdlib/macros.llt` into `stdlib/prelude.llt`: move the `[defmacro ...]` declarations and their helper functions into prelude.llt (private helpers with `tmpl-` prefix already fit the existing naming convention); rewrite all `builtin-*` calls in the helpers to use normal prelude wrappers (`if`, `=`, `+`, etc.) — these were `builtin-*` only because macros.llt ran at depth>0 with no prelude; remove `load_stdlib_module("macros.llt")` from `src/builtins.rs` (`stdlib/prelude.llt`, `src/builtins.rs`)
-- [ ] Tests: `[begin [a: 1] [+ a 2]]` → 3 in user code; `[begin [a: 1] [b: [+ a 1]] [+ a b]]` → 3; `[begin]` (no args) → empty dict; `i"Hello $name"` still works; `[do]` stub still fires; new stdlib macro added to prelude.llt without any Rust change (`tests/corpus/eval/`)
-- [ ] Either use or delete the three Phase 2 automatic hygiene functions `rename_macro_bindings`, `collect_and_rename_bindings`, `rename_refs` in `src/expand.rs:952,966,1108` (all `#[allow(dead_code)]`, labeled "Phase 2 future") — if automatic hygiene is not in scope for this sprint, delete them and record the decision; if it is, integrate them (`src/expand.rs`)
-
----
-
 ## Syntax
 
 ### multi-line-strings: `unindent` stdlib function and `"""` macro

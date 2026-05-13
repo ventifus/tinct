@@ -2,24 +2,20 @@
 # LLT Standard Library Macros (stdlib/macros.llt)
 # ============================================================================
 #
-# Compile-time AST transformations. Each macro is exported as a
-# `<name>-transformer` function that the expand_macros pass pre-registers
-# in MacroEnv before processing user code.
-#
-# The transformers follow the [defmacro] calling convention:
-# they receive a single `macro-args` dict with integer keys, one per
-# positional argument at the call site.
+# Compile-time AST transformations via [defmacro ...] declarations.
+# Each macro transformer receives a single `args` parameter (dict with integer
+# keys, one per positional argument at the call site).
 #
 # Loaded automatically via create_stdlib_env(). All prelude functions
 # (str, split, str-slice, str-length, str-contains?, starts-with?,
 #  append, reduce, if, =, +, get, to-int, length) are available here.
 #
 # ============================================================================
-# tmpl-transformer — string interpolation macro
+# tmpl macro — string interpolation
 # ============================================================================
 #
 # The parser converts i"Hello $name" to [tmpl "Hello $name"].
-# tmpl-transformer expands [tmpl "raw-template" expr0 expr1 ...] to
+# tmpl expands [tmpl "raw-template" expr0 expr1 ...] to
 # [str segment1 var1 segment2 ...].
 #
 # Raw template encoding (set by the parser in emit_tmpl_call):
@@ -27,16 +23,16 @@
 #   $name — variable reference
 #   ${N}  — expression placeholder where N is the 0-based index into extra args
 #
-# macro-args layout:
-#   macro-args[0] = AST dict for the template string literal
-#   macro-args[1..] = AST dicts for ${N} expression args (if any)
+# args layout:
+#   args[0] = AST dict for the template string literal
+#   args[1..] = AST dicts for ${N} expression args (if any)
 #
 # Implementation strategy (split on "$"):
 #   1. Split template on "$" → [prefix, piece1, piece2, ...]
 #   2. Prefix (piece 0) is always a literal
 #   3. For each subsequent piece:
 #      - empty string  → $$ escape: emit literal "$", skip next piece as literal
-#      - starts with { → ${N} expr placeholder: lookup macro-args[N+1]
+#      - starts with { → ${N} expr placeholder: lookup args[N+1]
 #      - otherwise     → $name variable reference: parse ident up to stop char
 #   4. Return {type: "call", fn: {type: "var", name: "str"}, args: [...], named-args: [], implied: true}
 #
@@ -131,7 +127,7 @@ tmpl-process-var-emit: [fn [piece nodes var-end len]
 #   is-first — true for the first piece (always a literal prefix, not preceded by "$")
 #
 # Returns the updated accumulator.
-tmpl-reduce-step: [fn [macro-args] [fn [acc piece]
+tmpl-reduce-step: [fn [args] [fn [acc piece]
   [if acc.is-first
     # First piece: always a literal prefix (may be empty — skip if so)
     [tmpl-step-literal acc piece]
@@ -143,7 +139,7 @@ tmpl-reduce-step: [fn [macro-args] [fn [acc piece]
         [nodes: [append acc.nodes [tmpl-str-node "$"]]  skip: true  is-first: false]
         [if [starts-with? piece "{"]
           # ${N} expression placeholder
-          [nodes: [tmpl-process-expr-piece piece macro-args acc.nodes]  skip: false  is-first: false]
+          [nodes: [tmpl-process-expr-piece piece args acc.nodes]  skip: false  is-first: false]
           # $name variable reference
           [nodes: [tmpl-process-var-piece piece acc.nodes]  skip: false  is-first: false]
         ]
@@ -160,10 +156,10 @@ tmpl-step-literal: [fn [acc piece]
    is-first: false]]
 
 # Split template string on "$" and fold pieces into AST arg nodes.
-tmpl-expand: [fn [template-str macro-args]
+tmpl-expand: [fn [template-str args]
   [tmpl-emit-call
     [reduce
-      [tmpl-reduce-step macro-args]
+      [tmpl-reduce-step args]
       [nodes: []  skip: false  is-first: true]
       [split "$" template-str]]]]
 
@@ -175,56 +171,41 @@ tmpl-emit-call: [fn [result]
    named-args: []
    implied:    true]]
 
-# ============================================================================
-# do-transformer — monadic do-notation macro (STUB)
-# ============================================================================
-#
-# TODO: Implement full do-notation desugaring.
-# For now, this is a stub that produces a clear error message.
-#
-# Planned desugaring:
-#   [do monad [name: expr] ... final]
-#   → [monad.bind [fn [name] ...] expr]
-#
-# Example:
-#   [do result
-#     [x: [try [fn [] [read-file %pwd "config.toml"]]]]
-#     [parsed: [try [fn [] [parse-toml-lite x]]]]
-#     [Ok parsed.name]]
-#
-#   Desugars to:
-#   [and-then [try [fn [] [read-file %pwd "config.toml"]]]
-#     [fn [x]
-#       [and-then [try [fn [] [parse-toml-lite x]]]
-#         [fn [parsed]
-#           [Ok parsed.name]]]]]
+]
 
-do-stub: [fn [macro-args]
+# ============================================================================
+# Public macro transformer exports
+# ============================================================================
+#
+# These are registered by expand_macros via register_stdlib_macros_from_env.
+# Each function receives a single `args` parameter: a dict with integer keys
+# (one per positional argument at the call site) where each value is an AST dict.
+
+[
+
+# tmpl macro transformer: string interpolation i"...$var..." syntax
+tmpl: [fn [args]
+  # args[0] = AST dict for the template string literal
+  # args[1..] = AST dicts for ${N} expression placeholders (if any)
+  [tmpl-expand
+    [get "value" [get 0 args]]
+    args]]
+
+# do macro transformer: monadic do-notation (STUB)
+do: [fn [args]
+  # TODO: Implement full do-notation desugaring.
+  # Planned: [do monad [name: expr] ... final] → [monad.bind [fn [name] ...] expr]
   [type: "call"
    fn: [type: "var" name: "error"]
    args: [[type: "literal" kind: "str" value: "do macro not yet implemented" bare: false]]
    named-args: []
    implied: true]]
 
-]
-
-# Public exports (second dict — exported by load_stdlib_module into stdlib_env)
-
-[
-
-# tmpl-transformer: the macro body for [defmacro tmpl].
-# Pre-registered as the "tmpl" macro by expand_macros before processing user code.
-# Receives macro-args dict: {0: template-str-ast, 1?: expr-ast-0, 2?: expr-ast-1, ...}
-# Returns an AST call dict for [str ...].
-tmpl-transformer@[doc: "String interpolation macro transformer (i\"...$var...\" syntax)"]: [fn [macro-args]
-  [tmpl-expand
-    [get "value" [get 0 macro-args]]
-    macro-args]]
-
-# do-transformer: the macro body for [defmacro do].
-# Stub implementation — produces an error explaining that do is not yet implemented.
-# Receives macro-args dict: {0: monad-ast, 1: binding-or-expr, ...}
-do-transformer@[doc: "Monadic do-notation macro transformer (STUB)"]: [fn [macro-args]
-  [do-stub macro-args]]
+# begin macro transformer: sequential expression grouping
+begin: [fn [args]
+  # [begin e1 e2 ...] → {type: "sequential", exprs: [e1, e2, ...]}
+  [n: [length args]]
+  [arglist: [reduce [fn [acc i] [append acc [get i args]]] [] [range 0 n]]]
+  [type: "sequential"  exprs: arglist]]
 
 ]

@@ -72,7 +72,9 @@ fn typecheck_and_merge_stdlib_module(
     // Parse the module source
     let file = parser::parse(source).map_err(|_| ())?;
 
-    // Run macro expansion
+    // Run macro expansion.
+    // NOTE: This may recursively call expand_macros if not already inside an expansion.
+    // The expand module's depth guard prevents infinite recursion.
     let expand_result = expand::expand_macros(file, true).map_err(|_| ())?;
     let mut file = expand_result.file;
 
