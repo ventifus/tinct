@@ -345,7 +345,7 @@ pub(crate) use crate::builtins_dict::{
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
     builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit, builtin_env,
-    builtin_flush, builtin_has_cap, builtin_http2_session, builtin_http3_session, builtin_http_get,
+    builtin_flush, builtin_has_cap, builtin_http2_session, builtin_http3_session,
     builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link, builtin_list_dir,
     builtin_make_dir, builtin_narrow, builtin_open, builtin_position, builtin_quic_open_datagram,
     builtin_quic_open_stream, builtin_quic_session, builtin_read_link, builtin_recv_datagram,
@@ -1146,11 +1146,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "spki-pin",
             builtin_spki_pin,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "http-get",
-            builtin_http_get,
             [Strictness::Seq, Strictness::Seq]
         ),
         builtin!("lines", builtin_lines, [Strictness::Seq]),
@@ -6194,7 +6189,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 187,
+            count, 186,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6375,8 +6370,6 @@ mod tests {
         assert!(names.contains(&"tls-layer"), "missing tls-layer");
         assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
         assert!(names.contains(&"spki-pin"), "missing spki-pin");
-        // HTTP / network builtins
-        assert!(names.contains(&"http-get"), "missing http-get");
         // URI parsing builtins
         assert!(names.contains(&"uri"), "missing uri");
         assert!(names.contains(&"url"), "missing url");
@@ -6403,8 +6396,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            187,
-            "expected 187 builtins, got {}",
+            186,
+            "expected 186 builtins, got {}",
             names.len()
         );
     }
