@@ -1430,8 +1430,254 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
     ]
 }
 
+/// Create a virtual Rust module environment containing the named primitive group.
+///
+/// This function is called by the include resolver when evaluating `[include %rust "module-name"]`.
+/// Each module returns an environment containing only the builtins in that group.
+///
+/// Module names:
+/// - `core`: arithmetic, comparison, control flow, core dict primitives, type predicates
+/// - `string`: string manipulation and conversion
+/// - `collection`: dict/seq operations, iteration, sorting
+/// - `io`: filesystem and I/O operations
+/// - `net`: network operations (TCP, QUIC, HTTP, etc.)
+/// - `math`: numeric operations (trig, logarithms, bitwise)
+/// - `datetime`: timestamp and duration operations
+/// - `bytes`: byte sequence operations
+/// - `json`: JSON parsing
+/// - `meta`: runtime introspection (type-of, validate, eval-ast, etc.)
+///
+/// Returns an error if the module name is unknown.
+pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let all_builtins = standard_builtins();
+
+    // Helper to insert a builtin by name
+    let insert = |env: &Rc<RefCell<Environment>>, builtin_name: &str| {
+        if let Some(def) = all_builtins.iter().find(|b| b.name == builtin_name) {
+            let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(*def), Span::origin()));
+            env.borrow_mut().insert(def.name.to_string(), thunk);
+        }
+    };
+
+    match name {
+        "core" => {
+            // Arithmetic
+            insert(&env, "+");
+            insert(&env, "-");
+            insert(&env, "*");
+            insert(&env, "/");
+            // Comparison
+            insert(&env, "=");
+            insert(&env, "<");
+            // Control
+            insert(&env, "if");
+            insert(&env, "error");
+            insert(&env, "try");
+            insert(&env, "force");
+            // Evaluation control
+            insert(&env, "eval");
+            insert(&env, "apply");
+            insert(&env, "eval-ast");
+            insert(&env, "gensym");
+            // Type predicates
+            insert(&env, "int?");
+            insert(&env, "float?");
+            insert(&env, "str?");
+            insert(&env, "bool?");
+            insert(&env, "bytes?");
+            insert(&env, "null?");
+            insert(&env, "dict?");
+            insert(&env, "fn?");
+            insert(&env, "seq?");
+            // Type introspection
+            insert(&env, "type-of");
+        }
+        "string" => {
+            insert(&env, "str");
+            insert(&env, "split");
+            insert(&env, "replace");
+            insert(&env, "trim");
+            insert(&env, "trim-start");
+            insert(&env, "trim-end");
+            insert(&env, "str-length");
+            insert(&env, "str-slice");
+            insert(&env, "str-chars");
+            insert(&env, "char-code");
+            insert(&env, "chr");
+            insert(&env, "str-bytes");
+            insert(&env, "bytes-str");
+            insert(&env, "str-index-of");
+            insert(&env, "str-to-upper-char");
+            insert(&env, "str-to-lower-char");
+            insert(&env, "str-map-chars");
+            insert(&env, "regex-match?");
+        }
+        "collection" => {
+            insert(&env, "keys");
+            insert(&env, "length");
+            insert(&env, "merge");
+            insert(&env, "append");
+            insert(&env, "builtin-get");
+            insert(&env, "get?");
+            insert(&env, "each");
+            insert(&env, "each-key");
+            insert(&env, "each-kv");
+            insert(&env, "builtin-seq");
+            insert(&env, "builtin-head");
+            insert(&env, "builtin-tail");
+            insert(&env, "builtin-collect");
+            insert(&env, "builtin-range");
+            insert(&env, "builtin-repeat");
+            insert(&env, "builtin-cycle");
+            insert(&env, "builtin-iterate");
+            insert(&env, "builtin-unfold");
+            insert(&env, "map");
+            insert(&env, "filter");
+            insert(&env, "take");
+            insert(&env, "drop");
+            insert(&env, "reduce");
+            insert(&env, "builtin-join");
+            insert(&env, "builtin-concat");
+            insert(&env, "builtin-first");
+            insert(&env, "builtin-last");
+            insert(&env, "builtin-rest");
+            insert(&env, "builtin-cons");
+            insert(&env, "builtin-reverse");
+            insert(&env, "builtin-sort");
+        }
+        "io" => {
+            insert(&env, "emit");
+            insert(&env, "env");
+            insert(&env, "open");
+            insert(&env, "slurp");
+            insert(&env, "lines");
+            insert(&env, "write");
+            insert(&env, "write-atomic");
+            insert(&env, "write-handle");
+            insert(&env, "flush");
+            insert(&env, "close");
+            insert(&env, "seek");
+            insert(&env, "seek-end");
+            insert(&env, "position");
+            insert(&env, "list-dir");
+            insert(&env, "stat");
+            insert(&env, "make-dir");
+            insert(&env, "remove");
+            insert(&env, "rename");
+            insert(&env, "link");
+            insert(&env, "read-link");
+            insert(&env, "narrow");
+            insert(&env, "revocable");
+            insert(&env, "revoke-cap");
+            insert(&env, "cap-data");
+            insert(&env, "raw-create");
+        }
+        "net" => {
+            insert(&env, "connect");
+            insert(&env, "tls-layer");
+            insert(&env, "tls-peer-cert");
+            insert(&env, "send-datagram");
+            insert(&env, "recv-datagram");
+            insert(&env, "quic-session");
+            insert(&env, "quic-open-stream");
+            insert(&env, "quic-open-datagram");
+            insert(&env, "http2-session");
+            insert(&env, "http3-session");
+            insert(&env, "http-request");
+            insert(&env, "icmp-ping");
+            insert(&env, "uri");
+            insert(&env, "url");
+            insert(&env, "urn");
+        }
+        "math" => {
+            insert(&env, "floor");
+            insert(&env, "round");
+            insert(&env, "pow");
+            insert(&env, "sqrt");
+            insert(&env, "log");
+            insert(&env, "log2");
+            insert(&env, "log10");
+            insert(&env, "exp");
+            insert(&env, "sin");
+            insert(&env, "cos");
+            insert(&env, "tan");
+            insert(&env, "asin");
+            insert(&env, "acos");
+            insert(&env, "atan");
+            insert(&env, "atan2");
+            insert(&env, "nan?");
+            insert(&env, "inf?");
+            insert(&env, "finite?");
+            insert(&env, "band");
+            insert(&env, "bor");
+            insert(&env, "bxor");
+            insert(&env, "shl");
+            insert(&env, "shr");
+            insert(&env, "float");
+            insert(&env, "to-int");
+            insert(&env, "to-float");
+            insert(&env, "decimal");
+            insert(&env, "big-int");
+        }
+        "datetime" => {
+            insert(&env, "parse-timestamp");
+            insert(&env, "format-timestamp");
+            insert(&env, "timestamp->unix");
+            insert(&env, "unix->timestamp");
+            insert(&env, "now");
+            insert(&env, "fixed-clock");
+            insert(&env, "timestamp-add");
+            insert(&env, "timestamp-diff");
+            insert(&env, "timestamp<?");
+            insert(&env, "timestamp>?");
+            insert(&env, "timestamp=?");
+            insert(&env, "timestamp-year");
+            insert(&env, "timestamp-month");
+            insert(&env, "timestamp-day");
+            insert(&env, "timestamp-hour");
+            insert(&env, "timestamp-minute");
+            insert(&env, "timestamp-second");
+            insert(&env, "timestamp-parts");
+            insert(&env, "duration-nanos");
+            insert(&env, "duration-seconds");
+            insert(&env, "duration-minutes");
+            insert(&env, "duration-hours");
+            insert(&env, "duration-days");
+            insert(&env, "duration->seconds");
+            insert(&env, "duration->nanos");
+            insert(&env, "load-tz");
+            insert(&env, "timestamp-in-tz");
+            insert(&env, "local->timestamp");
+            insert(&env, "local-tz-name");
+        }
+        "bytes" => {
+            insert(&env, "bytes");
+            insert(&env, "bytes-find");
+            insert(&env, "bytes-of");
+            insert(&env, "bytes-equal?");
+            insert(&env, "ct-equal?");
+        }
+        "json" => {
+            insert(&env, "from-json");
+        }
+        "meta" => {
+            insert(&env, "type-of");
+            insert(&env, "validate");
+            insert(&env, "until");
+            insert(&env, "llt-repr");
+            insert(&env, "tag-of");
+            insert(&env, "variant");
+            insert(&env, "eval-ast");
+            insert(&env, "proxy");
+        }
+        _ => return Err(format!("unknown Rust module: {}", name)),
+    }
+
+    Ok(env)
+}
+
 /// Create the root environment with all builtins registered as `Value::Builtin`.
-/// Does NOT include `builtin-*` aliases — those are added by `inject_prelude_aliases()`.
 pub fn create_root_env() -> Rc<RefCell<Environment>> {
     let env = Rc::new(RefCell::new(Environment::new()));
     for def in standard_builtins() {
@@ -1472,56 +1718,34 @@ pub fn inject_prelude_aliases(env: &mut Environment) {
     let aliases: Vec<crate::value::BuiltinDef> = vec![
         builtin!("builtin-lt", builtin_lt, [Strictness::Seq, Strictness::Seq]),
         builtin!("builtin-eq", builtin_eq, [Strictness::Seq, Strictness::Seq]),
-        builtin!(
-            "builtin-add",
-            builtin_add,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-sub",
-            builtin_sub,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-mul",
-            builtin_mul,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-div",
-            builtin_div_float,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-if",
-            builtin_if,
-            [Strictness::Seq, Strictness::Id, Strictness::Id]
-        ),
-        builtin!(
-            "builtin-filter",
-            builtin_filter,
-            [Strictness::Id, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-map",
-            builtin_map,
-            [Strictness::Id, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-reduce",
-            builtin_reduce,
-            [Strictness::Id, Strictness::Id, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-take",
-            builtin_take,
-            [Strictness::Seq, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-drop",
-            builtin_drop,
-            [Strictness::Seq, Strictness::Spine]
-        ),
+        builtin!("builtin-add", builtin_add, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-sub", builtin_sub, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-mul", builtin_mul, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-div", builtin_div_float, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-if", builtin_if),
+        builtin!("builtin-filter", builtin_filter),
+        builtin!("builtin-map", builtin_map),
+        builtin!("builtin-reduce", builtin_reduce),
+        builtin!("builtin-take", builtin_take),
+        builtin!("builtin-drop", builtin_drop),
+        builtin!("builtin-get", builtin_get),
+        builtin!("builtin-seq", builtin_seq),
+        builtin!("builtin-head", builtin_head, [Strictness::Seq]),
+        builtin!("builtin-tail", builtin_tail, [Strictness::Seq]),
+        builtin!("builtin-collect", builtin_collect, [Strictness::Seq]),
+        builtin!("builtin-range", builtin_range),
+        builtin!("builtin-repeat", builtin_repeat),
+        builtin!("builtin-cycle", builtin_cycle),
+        builtin!("builtin-iterate", builtin_iterate),
+        builtin!("builtin-unfold", builtin_unfold),
+        builtin!("builtin-join", builtin_join, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-concat", builtin_concat, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-first", builtin_first, [Strictness::Seq]),
+        builtin!("builtin-last", builtin_last, [Strictness::Seq]),
+        builtin!("builtin-rest", builtin_rest, [Strictness::Seq]),
+        builtin!("builtin-cons", builtin_cons),
+        builtin!("builtin-reverse", builtin_reverse, [Strictness::Seq]),
+        builtin!("builtin-sort", builtin_sort, [Strictness::Seq]),
     ];
 
     for def in aliases {
@@ -1632,17 +1856,6 @@ fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::erro
     // environments that can see builtin-* names.
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
-
-    // TODO(builtin-privacy): Remove builtin-* aliases after prelude is loaded.
-    // Currently, this causes a bug where prelude functions lose access to builtin-*
-    // because they hold Rc<RefCell<Environment>> shared references to stdlib_env.
-    // Removing entries from stdlib_env makes them invisible to ALL closures.
-    //
-    // The fix requires a child-environment approach where prelude functions capture
-    // an environment chain that includes builtin-* while user code gets a separate
-    // environment without them. See doc/whatif/builtin-privacy.md for the design.
-    //
-    // For now, builtin-* names remain visible to user code.
 
     // Load macros — exports tmpl-transformer and helpers used by expand_macros.
     // Loaded after prelude so macro helpers can reference prelude functions.

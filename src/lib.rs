@@ -589,6 +589,10 @@ pub fn visit_value<V: ValueVisitor>(
                 ast::Span::origin(),
             )))
         }
+        value::Value::RustRegistry => Err(Box::new(error::EvalError::value_not_serializable(
+            "RustRegistry".to_string(),
+            ast::Span::origin(),
+        ))),
     }
 }
 
