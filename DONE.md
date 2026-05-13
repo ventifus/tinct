@@ -3311,6 +3311,20 @@ Consolidated from: test-framework-b, test-advanced
 - [x] Add function variance transitivity test or property test — transitivity assumed but not proven for subtyping (`src/types.rs:74-80`) [Major, type-theorist]
 - [x] Add corpus tests for MAX_PARSE_DEPTH boundary: depth_limit_255_succeeds.llt-eval (255 nested brackets) and depth_limit_256_fails.llt-eval (256 nested brackets → error) (`tests/corpus/`) [Minor, grammar-architect C81] (parser_depth_exceeded.llt-eval already exists; boundary tests covered)
 
+## LSP
+
+### lsp-gaps: Prelude go-to-definition and remaining LSP quality items
+
+- [x] **Prelude go-to-definition**: Parse embedded prelude source once at startup; cache `Spanned<File>` AST in `DocumentStore`; extend `definition_at()` to search prelude after local/include miss; resolve URI via `find_libdir_path().join("prelude.llt")` (`src/lsp/analysis.rs`, `src/lsp/document.rs`)
+- [x] **`textDocument/documentSymbol`**: `document_symbols_at` walks top-level dict entries, returns `SymbolKind::VARIABLE` symbols; registered `DocumentSymbolRequest::METHOD`; declared `document_symbol_provider: OneOf::Left(true)` (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
+- [x] **`textDocument/formatting`**: Calls `crate::formatter::format_source`; returns single whole-document `TextEdit`; returns `null` on formatter failure; registered `Formatting::METHOD`; declared `document_formatting_provider: OneOf::Left(true)` (`src/lsp/server.rs`)
+- [x] **`textDocument/references`**: `references_at` finds all `VarRef` spans matching name under cursor; registered `References::METHOD`; declared `references_provider: OneOf::Left(true)` (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
+- [x] **`textDocument/rename`**: `rename_at` produces `TextEdit` list for all refs + definition key; validates new name via `is_valid_tinct_identifier`; registered `Rename::METHOD`; declared `rename_provider: OneOf::Left(true)` (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
+- [x] **`textDocument/inlayHints`**: `inlay_hints_for` emits `: Type` hints after binding names for unannotated top-level dict entries; skips `TypeAssert`-annotated values; registered `InlayHintRequest::METHOD`; declared `inlay_hint_provider: OneOf::Left(true)` (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
+- [x] **`textDocument/signatureHelp`**: `signature_help_at` finds innermost enclosing `Call` at cursor; looks up function's `TypeScheme`; formats `Fn@Return [param@Type ...]` signature label; highlights active parameter by counting args before cursor; registered `SignatureHelpRequest::METHOD`; declared `signature_help_provider` with trigger chars `[" ", "["]` (`src/lsp/server.rs`, `src/lsp/analysis.rs`)
+- [x] **`workspace/symbol`**: `workspace_symbols_for` collects top-level binding names matching case-insensitive prefix query; added `docs_iter()` to `DocumentStore`; searches all open documents; registered `WorkspaceSymbolRequest::METHOD`; declared `workspace_symbol_provider: OneOf::Left(true)` (`src/lsp/server.rs`, `src/lsp/analysis.rs`, `src/lsp/document.rs`)
+- [x] **Pipeline invariant**: Verified `update_document` calls `desugar_file()` before `typecheck_file()`; added PIPELINE INVARIANT comment (`src/lsp/document.rs`)
+
 ## LSP Improvements
 
 ### lsp-caps-and-on-demand: LSP caps assumption + on-demand file loading

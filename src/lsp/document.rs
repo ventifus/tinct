@@ -628,6 +628,13 @@ impl DocumentStore {
     pub fn prelude_ast(&self) -> Option<&Spanned<File>> {
         self.prelude_ast.as_ref()
     }
+
+    /// Iterate over all open documents as `(uri, state)` pairs.
+    ///
+    /// Used by `workspace/symbol` to search across all open documents.
+    pub fn docs_iter(&self) -> impl Iterator<Item = (&Uri, &DocumentState)> {
+        self.docs.iter()
+    }
 }
 
 impl Default for DocumentStore {

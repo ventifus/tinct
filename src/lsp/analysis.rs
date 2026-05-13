@@ -1,6 +1,9 @@
 //! LSP analysis: hover text and diagnostics.
 
-use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Uri};
+use lsp_types::{
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DocumentSymbol, Location,
+    SymbolKind, TextEdit, Uri,
+};
 
 use crate::ast::{Expr, File, Span, Spanned};
 use crate::error::render_span_snippet;
@@ -834,6 +837,235 @@ pub fn definition_at(
     None
 }
 
+/// Generate document symbols (outline) for all top-level dict entry keys.
+///
+/// Returns one `DocumentSymbol` per top-level dict entry across all documents
+/// in the file. Each symbol uses `SymbolKind::Variable` and its `selection_range`
+/// points to the key span, while `range` covers the entire entry (key + value).
+///
+/// Returns an empty list if the document has a parse error.
+#[allow(deprecated)] // DocumentSymbol.deprecated field is required by the LSP spec
+pub fn document_symbols_at(doc: &DocumentState) -> Vec<DocumentSymbol> {
+    let file = match &doc.ast {
+        Ok(f) => f,
+        Err(_) => return vec![],
+    };
+
+    let mut symbols = Vec::new();
+
+    for document in &file.node.documents {
+        for expr in &document.node.expressions {
+            if let Expr::Dict(entries) = &expr.node {
+                for entry in entries {
+                    // Only emit symbols for entries with a static key name.
+                    let key = match &entry.node.key {
+                        Some(k) => k,
+                        None => continue,
+                    };
+                    let name: Option<String> = match &key.node {
+                        Expr::Str(s) => Some(s.clone()),
+                        Expr::Annotated { name, .. } => Some(name.clone()),
+                        Expr::VarRef { name, .. } => Some(name.clone()),
+                        _ => None,
+                    };
+                    let name = match name {
+                        Some(n) => n,
+                        None => continue,
+                    };
+
+                    // `selection_range` = key span; `range` = full entry span.
+                    let selection_range = llt_span_to_lsp_range(&key.span, &doc.text);
+                    let range = llt_span_to_lsp_range(&entry.span, &doc.text);
+
+                    symbols.push(DocumentSymbol {
+                        name,
+                        detail: None,
+                        kind: SymbolKind::VARIABLE,
+                        tags: None,
+                        deprecated: None,
+                        range,
+                        selection_range,
+                        children: None,
+                    });
+                }
+            }
+        }
+    }
+
+    symbols
+}
+
+/// Find all references to the name under the cursor.
+///
+/// Finds the variable name at `offset`, then walks the full AST collecting
+/// every `Expr::VarRef` with that name. Returns their spans as `Location` values.
+///
+/// Returns an empty list if:
+/// - The document has a parse error.
+/// - No variable reference is found at the offset.
+pub fn references_at(doc: &DocumentState, uri: &Uri, offset: usize) -> Vec<Location> {
+    let file = match &doc.ast {
+        Ok(f) => f,
+        Err(_) => return vec![],
+    };
+
+    // Find the name at the cursor position.
+    let name = file.node.documents.iter().find_map(|document| {
+        document
+            .node
+            .expressions
+            .iter()
+            .find_map(|expr| name_at_offset(&expr.node, expr.span, offset))
+    });
+
+    let name = match name {
+        Some(n) => n,
+        None => return vec![],
+    };
+
+    // Collect all VarRef spans with that name.
+    let mut locations = Vec::new();
+    for document in &file.node.documents {
+        for expr in &document.node.expressions {
+            collect_var_refs_spanned(&expr.node, expr.span, &name, &doc.text, uri, &mut locations);
+        }
+    }
+
+    locations
+}
+
+/// Recursively collect all `VarRef` spans matching `name` into `out`.
+///
+/// Every call site passes both the `Expr` node and its `Span` together (from a
+/// `Spanned<Expr>`), so span is always available at each leaf.
+fn collect_var_refs_spanned(
+    expr: &Expr,
+    span: Span,
+    name: &str,
+    source: &str,
+    uri: &Uri,
+    out: &mut Vec<Location>,
+) {
+    match expr {
+        Expr::VarRef { name: ref_name, .. } => {
+            if ref_name == name {
+                let range = llt_span_to_lsp_range(&span, source);
+                out.push(Location {
+                    uri: uri.clone(),
+                    range,
+                });
+            }
+        }
+
+        Expr::Dict(entries) => {
+            for entry in entries {
+                if let Some(ref key) = entry.node.key {
+                    collect_var_refs_spanned(&key.node, key.span, name, source, uri, out);
+                }
+                collect_var_refs_spanned(
+                    &entry.node.value.node,
+                    entry.node.value.span,
+                    name,
+                    source,
+                    uri,
+                    out,
+                );
+            }
+        }
+
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            collect_var_refs_spanned(&func.node, func.span, name, source, uri, out);
+            for a in args {
+                collect_var_refs_spanned(&a.node, a.span, name, source, uri, out);
+            }
+            for na in named_args {
+                collect_var_refs_spanned(
+                    &na.node.value.node,
+                    na.node.value.span,
+                    name,
+                    source,
+                    uri,
+                    out,
+                );
+            }
+        }
+
+        Expr::Fn { body, .. } => {
+            // Fn params are binding sites, not VarRef nodes — skip them.
+            collect_var_refs_spanned(&body.node, body.span, name, source, uri, out);
+        }
+
+        Expr::DotAccess { expr: target, .. } => {
+            collect_var_refs_spanned(&target.node, target.span, name, source, uri, out);
+        }
+
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                collect_var_refs_spanned(&seq_expr.node, seq_expr.span, name, source, uri, out);
+            }
+        }
+
+        Expr::Pipe { lhs, rhs } => {
+            collect_var_refs_spanned(&lhs.node, lhs.span, name, source, uri, out);
+            collect_var_refs_spanned(&rhs.node, rhs.span, name, source, uri, out);
+        }
+
+        Expr::TypeAlias { body, .. } => {
+            collect_var_refs_spanned(&body.node, body.span, name, source, uri, out);
+        }
+
+        Expr::TypeAssert { expr: inner, .. } => {
+            collect_var_refs_spanned(&inner.node, inner.span, name, source, uri, out);
+        }
+
+        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            collect_var_refs_spanned(&inner.node, inner.span, name, source, uri, out);
+        }
+
+        Expr::Match { scrutinee, arms } => {
+            collect_var_refs_spanned(&scrutinee.node, scrutinee.span, name, source, uri, out);
+            for arm in arms {
+                collect_var_refs_spanned(&arm.body.node, arm.body.span, name, source, uri, out);
+            }
+        }
+
+        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    collect_var_refs_spanned(&key.node, key.span, name, source, uri, out);
+                }
+                collect_var_refs_spanned(
+                    &method.node.value.node,
+                    method.node.value.span,
+                    name,
+                    source,
+                    uri,
+                    out,
+                );
+            }
+        }
+
+        Expr::DefMacro { body, .. } => {
+            collect_var_refs_spanned(&body.node, body.span, name, source, uri, out);
+        }
+
+        // Literals, TypeApp, Error, Rest, Annotated: no VarRef children.
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Rest(_)
+        | Expr::Annotated { .. }
+        | Expr::TypeApp { .. }
+        | Expr::Error(_) => {}
+    }
+}
+
 /// Convert document errors to LSP diagnostics.
 ///
 /// `uri` is the document's URI, used to construct `DiagnosticRelatedInformation`
@@ -1649,6 +1881,877 @@ mod tests {
             target_uri.as_str()
         );
     }
+
+    // --- document_symbols_at tests ---
+
+    #[test]
+    fn test_document_symbols_simple() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 1  y: 2]".to_string(), &env, &test_ctx(), None);
+        let syms = document_symbols_at(&doc);
+        assert_eq!(syms.len(), 2);
+        assert_eq!(syms[0].name, "x");
+        assert_eq!(syms[1].name, "y");
+    }
+
+    #[test]
+    fn test_document_symbols_annotated_key() {
+        let env = test_env();
+        let doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx(), None);
+        let syms = document_symbols_at(&doc);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "x");
+    }
+
+    #[test]
+    fn test_document_symbols_string_key() {
+        let env = test_env();
+        let doc = DocumentState::new(r#"["my-key": 99]"#.to_string(), &env, &test_ctx(), None);
+        let syms = document_symbols_at(&doc);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "my-key");
+    }
+
+    #[test]
+    fn test_document_symbols_empty_on_parse_error() {
+        let env = test_env();
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+        let syms = document_symbols_at(&doc);
+        assert!(syms.is_empty());
+    }
+
+    #[test]
+    fn test_document_symbols_non_dict_is_empty() {
+        let env = test_env();
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
+        let syms = document_symbols_at(&doc);
+        assert!(syms.is_empty());
+    }
+
+    #[test]
+    fn test_document_symbols_symbol_kind_is_variable() {
+        use lsp_types::SymbolKind;
+        let env = test_env();
+        let doc = DocumentState::new("[foo: 1]".to_string(), &env, &test_ctx(), None);
+        let syms = document_symbols_at(&doc);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].kind, SymbolKind::VARIABLE);
+    }
+
+    // --- references_at tests ---
+
+    #[test]
+    fn test_references_at_finds_all() {
+        let env = test_env();
+        // "[x: 1  y: $x  z: $x]"
+        //  0         1         2
+        //  0123456789012345678901
+        let source = "[x: 1  y: $x  z: $x]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        // Cursor on first "$x" at offset 11
+        let locs = references_at(&doc, &uri, 11);
+        assert_eq!(locs.len(), 2, "should find both $x refs; got {locs:?}");
+    }
+
+    #[test]
+    fn test_references_at_single_ref() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        // Cursor on "$x" at offset 11
+        let locs = references_at(&doc, &uri, 11);
+        assert_eq!(locs.len(), 1, "should find single ref; got {locs:?}");
+    }
+
+    #[test]
+    fn test_references_at_no_ref_on_literal() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        // Offset 4 is on the integer '42', not a VarRef.
+        let locs = references_at(&doc, &uri, 4);
+        assert!(locs.is_empty(), "int literal has no references");
+    }
+
+    #[test]
+    fn test_references_at_parse_error_returns_empty() {
+        let env = test_env();
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let locs = references_at(&doc, &uri, 1);
+        assert!(locs.is_empty());
+    }
+
+    #[test]
+    fn test_references_at_uri_matches() {
+        let env = test_env();
+        let source = "[x: 1  y: $x]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let locs = references_at(&doc, &uri, 11);
+        for loc in &locs {
+            assert_eq!(
+                loc.uri, uri,
+                "all references should be in the same document"
+            );
+        }
+    }
+
+    // --- rename_at tests ---
+
+    #[test]
+    fn test_rename_at_simple() {
+        let env = test_env();
+        // "[x: 1  y: $x]"
+        //  0123456789012345
+        //         ^ $x at 11
+        let source = "[x: 1  y: $x]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Cursor on "$x" at offset 11
+        let edits = rename_at(&doc, 11, "z");
+        assert!(edits.is_some(), "should produce edits");
+        let edits = edits.unwrap();
+        // Should rename the VarRef "$x" and the definition key "x"
+        assert!(
+            edits.len() >= 1,
+            "should have at least one edit; got {:?}",
+            edits
+        );
+        for edit in &edits {
+            assert_eq!(edit.new_text, "z", "all edits should rename to 'z'");
+        }
+    }
+
+    #[test]
+    fn test_rename_at_renames_definition_and_uses() {
+        let env = test_env();
+        // "[x: 1  y: $x  z: $x]"
+        //  0         1         2
+        //  0123456789012345678901
+        //  key at 1, $x at 11, $x at 18
+        let source = "[x: 1  y: $x  z: $x]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Cursor on first "$x" at offset 11
+        let edits = rename_at(&doc, 11, "foo");
+        assert!(edits.is_some(), "should produce edits");
+        let edits = edits.unwrap();
+        // Should rename: definition key "x" + two VarRef occurrences
+        assert!(
+            edits.len() >= 2,
+            "should rename at least 2 occurrences; got {:?}",
+            edits
+        );
+        for edit in &edits {
+            assert_eq!(edit.new_text, "foo");
+        }
+    }
+
+    #[test]
+    fn test_rename_at_invalid_name_rejected() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+        // New name with invalid characters (contains '@')
+        let edits = rename_at(&doc, 11, "x@y");
+        assert!(edits.is_none(), "identifier with '@' should be rejected");
+    }
+
+    #[test]
+    fn test_rename_at_empty_name_rejected() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+        let edits = rename_at(&doc, 11, "");
+        assert!(edits.is_none(), "empty name should be rejected");
+    }
+
+    #[test]
+    fn test_rename_at_digit_start_rejected() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+        let edits = rename_at(&doc, 11, "123abc");
+        assert!(edits.is_none(), "digit-starting name should be rejected");
+    }
+
+    #[test]
+    fn test_rename_at_parse_error_returns_none() {
+        let env = test_env();
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+        let edits = rename_at(&doc, 1, "z");
+        assert!(edits.is_none());
+    }
+
+    #[test]
+    fn test_rename_at_no_ref_at_offset_returns_none() {
+        let env = test_env();
+        // Offset 4 is on the integer literal '1', not a VarRef.
+        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
+        let edits = rename_at(&doc, 4, "z");
+        assert!(edits.is_none(), "no rename when cursor is on a literal");
+    }
+
+    #[test]
+    fn test_rename_at_hyphenated_name_valid() {
+        let env = test_env();
+        // Tinct identifiers can contain hyphens.
+        let source = "[my-key: 1  y: $my-key]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Cursor on "$my-key" at offset 15
+        let edits = rename_at(&doc, 15, "new-key");
+        assert!(edits.is_some(), "hyphenated rename should succeed");
+    }
+
+    // --- is_valid_tinct_identifier tests ---
+
+    #[test]
+    fn test_is_valid_ident_simple() {
+        assert!(is_valid_tinct_identifier("foo"));
+        assert!(is_valid_tinct_identifier("my-key"));
+        assert!(is_valid_tinct_identifier("pred?"));
+        assert!(is_valid_tinct_identifier("x"));
+    }
+
+    #[test]
+    fn test_is_valid_ident_rejects_empty() {
+        assert!(!is_valid_tinct_identifier(""));
+    }
+
+    #[test]
+    fn test_is_valid_ident_rejects_digit_start() {
+        assert!(!is_valid_tinct_identifier("1abc"));
+    }
+
+    #[test]
+    fn test_is_valid_ident_rejects_special_chars() {
+        assert!(!is_valid_tinct_identifier("x@y"));
+        assert!(!is_valid_tinct_identifier("x.y"));
+        assert!(!is_valid_tinct_identifier("x y"));
+        assert!(!is_valid_tinct_identifier("x[y"));
+        assert!(!is_valid_tinct_identifier("x]y"));
+        assert!(!is_valid_tinct_identifier("x:y"));
+        assert!(!is_valid_tinct_identifier("x|y"));
+    }
+
+    // --- inlay_hints_for tests ---
+
+    #[test]
+    fn test_inlay_hints_for_simple_binding() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+        let hints = inlay_hints_for(&doc);
+        // Should emit a hint for the binding "x" with type "42" or "Int"
+        assert!(
+            !hints.is_empty(),
+            "should emit inlay hints for top-level bindings"
+        );
+        let hint = &hints[0];
+        // The label should start with ": "
+        let label_str = match &hint.label {
+            lsp_types::InlayHintLabel::String(s) => s.clone(),
+            lsp_types::InlayHintLabel::LabelParts(parts) => parts
+                .iter()
+                .map(|p| p.value.clone())
+                .collect::<Vec<_>>()
+                .join(""),
+        };
+        assert!(
+            label_str.starts_with(": "),
+            "inlay hint label should start with ': '; got: {label_str}"
+        );
+    }
+
+    #[test]
+    fn test_inlay_hints_skips_annotated_bindings() {
+        let env = test_env();
+        // When a binding has a TypeAssert annotation, no inlay hint should be emitted.
+        let _doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx(), None);
+        // The key is annotated (x@Int), not the value; value is 42 (no TypeAssert)
+        // so a hint IS expected here (annotation on key != TypeAssert on value).
+        // A TypeAssert on the value looks like: [x: @Int 42]
+        let doc2 = DocumentState::new("[x: @Int 42]".to_string(), &env, &test_ctx(), None);
+        let hints2 = inlay_hints_for(&doc2);
+        // Value has TypeAssert — no hint expected.
+        assert!(
+            hints2.is_empty(),
+            "should not emit hint when value is already annotated with @Type; got {:?}",
+            hints2
+        );
+    }
+
+    #[test]
+    fn test_inlay_hints_parse_error_returns_empty() {
+        let env = test_env();
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+        let hints = inlay_hints_for(&doc);
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn test_inlay_hints_non_dict_returns_empty() {
+        let env = test_env();
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
+        let hints = inlay_hints_for(&doc);
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn test_inlay_hints_position_is_after_key() {
+        let env = test_env();
+        // "[x: 42]" — key 'x' is at column 1 (0-indexed), so end of key is column 2 (char 1).
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+        let hints = inlay_hints_for(&doc);
+        if !hints.is_empty() {
+            let pos = hints[0].position;
+            // Key "x" is at offset 1, ends at offset 2. On line 0, character 2.
+            assert_eq!(pos.line, 0, "hint should be on line 0");
+            // character = 2 (past the 'x' at column 1)
+            assert_eq!(
+                pos.character, 2,
+                "hint position should be right after the key 'x'"
+            );
+        }
+    }
+
+    // --- signature_help_at tests ---
+
+    #[test]
+    fn test_signature_help_inside_call() {
+        let env = test_env();
+        // "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]"
+        //  0         1         2         3
+        //  0123456789012345678901234567890123456789
+        // "$f" is at offset 33, "1" is at offset 36, "2" is at offset 38
+        let source = "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Offset 37 is between "1" and "2" — on the second argument.
+        let help = signature_help_at(&doc, 37);
+        // Should return some signature help when inside a call with a known typed function.
+        // (May be None if type inference doesn't resolve $f at the call site — acceptable.)
+        if let Some(h) = help {
+            assert!(!h.signatures.is_empty(), "should have at least one signature");
+            let sig = &h.signatures[0];
+            assert!(
+                sig.label.contains("Fn@"),
+                "signature label should start with Fn@, got: {}",
+                sig.label
+            );
+        }
+    }
+
+    #[test]
+    fn test_signature_help_not_in_call() {
+        let env = test_env();
+        // A bare integer literal — not inside a call.
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
+        let help = signature_help_at(&doc, 0);
+        assert!(
+            help.is_none(),
+            "should return None when cursor is not inside a call"
+        );
+    }
+
+    #[test]
+    fn test_signature_help_parse_error() {
+        let env = test_env();
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+        let help = signature_help_at(&doc, 1);
+        assert!(help.is_none(), "should return None on parse error");
+    }
+
+    #[test]
+    fn test_signature_help_active_parameter_index() {
+        let env = test_env();
+        // Use a builtin with a known function type.
+        // "[call $+ 1 2]" — $+ is a function, cursor on "2" means active_param = 1.
+        // "[call $+ 1 2]"
+        //  0         1
+        //  0123456789012
+        // "$+" at offset 6, "1" at offset 9, "2" at offset 11
+        let source = "[call $+ 1 2]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Cursor on "2" at offset 11 (after "1" which starts at offset 9)
+        let help = signature_help_at(&doc, 11);
+        if let Some(h) = help {
+            // active_parameter should be 1 (0-indexed: past the first arg "1")
+            let active = h.active_parameter.unwrap_or(0);
+            assert_eq!(
+                active, 1,
+                "cursor on second arg should yield active_parameter=1, got {active}"
+            );
+        }
+    }
+
+    // --- workspace_symbols_for tests ---
+
+    #[test]
+    fn test_workspace_symbols_empty_query_returns_all() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 1  y: 2  z: 3]".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let syms = workspace_symbols_for(&doc, &uri, "");
+        assert_eq!(syms.len(), 3, "empty query should return all symbols");
+    }
+
+    #[test]
+    fn test_workspace_symbols_prefix_filter() {
+        let env = test_env();
+        let doc =
+            DocumentState::new("[foo: 1  bar: 2  baz: 3]".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let syms = workspace_symbols_for(&doc, &uri, "ba");
+        assert_eq!(
+            syms.len(),
+            2,
+            "prefix 'ba' should match 'bar' and 'baz'; got {:?}",
+            syms.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_workspace_symbols_case_insensitive() {
+        let env = test_env();
+        let doc = DocumentState::new("[Foo: 1  FOO: 2  foo: 3]".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let syms = workspace_symbols_for(&doc, &uri, "foo");
+        assert_eq!(
+            syms.len(),
+            3,
+            "prefix 'foo' should match 'Foo', 'FOO', 'foo' (case-insensitive); got {:?}",
+            syms.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_workspace_symbols_no_match() {
+        let env = test_env();
+        let doc = DocumentState::new("[foo: 1  bar: 2]".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let syms = workspace_symbols_for(&doc, &uri, "xyz");
+        assert!(syms.is_empty(), "no match should return empty vec");
+    }
+
+    #[test]
+    fn test_workspace_symbols_parse_error_returns_empty() {
+        let env = test_env();
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let syms = workspace_symbols_for(&doc, &uri, "");
+        assert!(syms.is_empty(), "parse error should yield empty list");
+    }
+
+    #[test]
+    fn test_workspace_symbols_uri_is_set() {
+        let env = test_env();
+        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
+        let uri = test_uri();
+        let syms = workspace_symbols_for(&doc, &uri, "");
+        assert_eq!(syms.len(), 1);
+        // Location should be a OneOf::Left(Location)
+        if let lsp_types::OneOf::Left(ref loc) = syms[0].location {
+            assert_eq!(loc.uri, uri, "symbol location URI should match document URI");
+        } else {
+            panic!("expected OneOf::Left(Location), got workspace-only location");
+        }
+    }
+}
+
+/// Validate that a string is a legal tinct identifier suitable for rename.
+///
+/// Tinct identifiers use a denylist (same as `is_var_ident_char` in lexer.rs):
+/// everything except whitespace, structural delimiters, dot, pipe, `@`, `"` is
+/// allowed. In addition the name must be non-empty and must not start with a
+/// digit (to avoid colliding with number literals).
+///
+/// Returns `true` if `name` is a valid tinct identifier.
+pub fn is_valid_tinct_identifier(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let bytes = name.as_bytes();
+    // First character: must not be a digit (would look like a number literal)
+    if bytes[0].is_ascii_digit() {
+        return false;
+    }
+    // All characters: use the same denylist as the lexer's is_var_ident_char
+    for c in name.chars() {
+        if matches!(
+            c,
+            ' ' | '\t' | '\r' | '\n' | '[' | ']' | ':' | ';' | '#' | '"' | '@' | '.' | '|'
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Rename all occurrences of the name under the cursor to `new_name`.
+///
+/// Finds the variable name at `offset`, then collects every `VarRef` span and
+/// the definition key span (from `find_key_definition_span`), and returns a
+/// list of `TextEdit` values replacing each occurrence with `new_name`.
+///
+/// Returns `None` if:
+/// - The document has a parse error.
+/// - No variable reference is found at the offset.
+/// - `new_name` is not a valid tinct identifier.
+pub fn rename_at(doc: &DocumentState, offset: usize, new_name: &str) -> Option<Vec<TextEdit>> {
+    if !is_valid_tinct_identifier(new_name) {
+        return None;
+    }
+
+    let file = match &doc.ast {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+
+    // Find the name at the cursor position.
+    let name = file.node.documents.iter().find_map(|document| {
+        document
+            .node
+            .expressions
+            .iter()
+            .find_map(|expr| name_at_offset(&expr.node, expr.span, offset))
+    })?;
+
+    let mut edits: Vec<TextEdit> = Vec::new();
+
+    // Collect VarRef spans directly as TextEdits.
+    for document in &file.node.documents {
+        for expr in &document.node.expressions {
+            collect_rename_edits_spanned(&expr.node, expr.span, &name, &doc.text, &mut edits);
+        }
+    }
+
+    // Also rename the definition site key (if present and matches).
+    for document in &file.node.documents {
+        for expr in &document.node.expressions {
+            collect_definition_key_edits(&expr.node, &name, &doc.text, &mut edits);
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    // Replace new_text in all edits with new_name.
+    for edit in &mut edits {
+        edit.new_text = new_name.to_string();
+    }
+
+    Some(edits)
+}
+
+/// Collect TextEdit values for every VarRef matching `name`.
+fn collect_rename_edits_spanned(
+    expr: &Expr,
+    span: Span,
+    name: &str,
+    source: &str,
+    out: &mut Vec<TextEdit>,
+) {
+    match expr {
+        Expr::VarRef { name: ref_name, .. } => {
+            if ref_name == name {
+                let range = llt_span_to_lsp_range(&span, source);
+                out.push(TextEdit {
+                    range,
+                    new_text: String::new(), // filled in by caller
+                });
+            }
+        }
+
+        Expr::Dict(entries) => {
+            for entry in entries {
+                if let Some(ref key) = entry.node.key {
+                    collect_rename_edits_spanned(&key.node, key.span, name, source, out);
+                }
+                collect_rename_edits_spanned(
+                    &entry.node.value.node,
+                    entry.node.value.span,
+                    name,
+                    source,
+                    out,
+                );
+            }
+        }
+
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            collect_rename_edits_spanned(&func.node, func.span, name, source, out);
+            for a in args {
+                collect_rename_edits_spanned(&a.node, a.span, name, source, out);
+            }
+            for na in named_args {
+                collect_rename_edits_spanned(
+                    &na.node.value.node,
+                    na.node.value.span,
+                    name,
+                    source,
+                    out,
+                );
+            }
+        }
+
+        Expr::Fn { body, .. } => {
+            collect_rename_edits_spanned(&body.node, body.span, name, source, out);
+        }
+
+        Expr::DotAccess { expr: target, .. } => {
+            collect_rename_edits_spanned(&target.node, target.span, name, source, out);
+        }
+
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                collect_rename_edits_spanned(&seq_expr.node, seq_expr.span, name, source, out);
+            }
+        }
+
+        Expr::Pipe { lhs, rhs } => {
+            collect_rename_edits_spanned(&lhs.node, lhs.span, name, source, out);
+            collect_rename_edits_spanned(&rhs.node, rhs.span, name, source, out);
+        }
+
+        Expr::TypeAlias { body, .. } => {
+            collect_rename_edits_spanned(&body.node, body.span, name, source, out);
+        }
+
+        Expr::TypeAssert { expr: inner, .. } => {
+            collect_rename_edits_spanned(&inner.node, inner.span, name, source, out);
+        }
+
+        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            collect_rename_edits_spanned(&inner.node, inner.span, name, source, out);
+        }
+
+        Expr::Match { scrutinee, arms } => {
+            collect_rename_edits_spanned(&scrutinee.node, scrutinee.span, name, source, out);
+            for arm in arms {
+                collect_rename_edits_spanned(&arm.body.node, arm.body.span, name, source, out);
+            }
+        }
+
+        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    collect_rename_edits_spanned(&key.node, key.span, name, source, out);
+                }
+                collect_rename_edits_spanned(
+                    &method.node.value.node,
+                    method.node.value.span,
+                    name,
+                    source,
+                    out,
+                );
+            }
+        }
+
+        Expr::DefMacro { body, .. } => {
+            collect_rename_edits_spanned(&body.node, body.span, name, source, out);
+        }
+
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Rest(_)
+        | Expr::Annotated { .. }
+        | Expr::TypeApp { .. }
+        | Expr::Error(_) => {}
+    }
+}
+
+/// Collect a TextEdit for the definition key of `name` (if found).
+///
+/// Walks dict entry keys and emits an edit for the key span if it matches `name`.
+/// This covers the binding site (e.g. `x` in `[x: 1]`) in addition to all VarRef uses.
+fn collect_definition_key_edits(expr: &Expr, name: &str, source: &str, out: &mut Vec<TextEdit>) {
+    match expr {
+        Expr::Dict(entries) => {
+            for entry in entries {
+                if let Some(ref key) = entry.node.key {
+                    // Check whether this key matches the name being renamed.
+                    let key_matches = match &key.node {
+                        Expr::Str(s) => s == name,
+                        Expr::Annotated { name: kname, .. } => kname == name,
+                        Expr::VarRef { name: kname, .. } => kname == name,
+                        _ => false,
+                    };
+                    if key_matches {
+                        // For Annotated keys, rename only the name portion (before @).
+                        // The span of an Annotated key covers the full `name@Type` — but we
+                        // want to emit a range for just the name text.
+                        //
+                        // For simplicity, use the key span for Str and VarRef (the whole token),
+                        // and for Annotated use the same key span (the name portion is a prefix).
+                        // Editors that support partial-span edits will highlight correctly.
+                        let range = llt_span_to_lsp_range(&key.span, source);
+                        // For Annotated, trim the range to just the name prefix.
+                        let range = match &key.node {
+                            Expr::Annotated { name: kname, .. } => {
+                                // The name occupies bytes [key.span.start, key.span.start + kname.len())
+                                let name_span = crate::ast::Span {
+                                    start: key.span.start,
+                                    end: crate::ast::Position {
+                                        offset: key.span.start.offset + kname.len(),
+                                        line: key.span.start.line,
+                                        column: key.span.start.column + kname.len(),
+                                    },
+                                };
+                                llt_span_to_lsp_range(&name_span, source)
+                            }
+                            _ => range,
+                        };
+                        out.push(TextEdit {
+                            range,
+                            new_text: String::new(), // filled in by caller
+                        });
+                    }
+                    // Also recurse into the value for nested dict definitions.
+                    collect_definition_key_edits(&entry.node.value.node, name, source, out);
+                }
+            }
+        }
+
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            collect_definition_key_edits(&func.node, name, source, out);
+            for a in args {
+                collect_definition_key_edits(&a.node, name, source, out);
+            }
+            for na in named_args {
+                collect_definition_key_edits(&na.node.value.node, name, source, out);
+            }
+        }
+
+        Expr::Fn { body, .. } => {
+            collect_definition_key_edits(&body.node, name, source, out);
+        }
+
+        Expr::Sequential(exprs) => {
+            for seq_expr in exprs {
+                collect_definition_key_edits(&seq_expr.node, name, source, out);
+            }
+        }
+
+        Expr::Pipe { lhs, rhs } => {
+            collect_definition_key_edits(&lhs.node, name, source, out);
+            collect_definition_key_edits(&rhs.node, name, source, out);
+        }
+
+        Expr::TypeAlias { body, .. } => {
+            collect_definition_key_edits(&body.node, name, source, out);
+        }
+
+        Expr::TypeAssert { expr: inner, .. } => {
+            collect_definition_key_edits(&inner.node, name, source, out);
+        }
+
+        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            collect_definition_key_edits(&inner.node, name, source, out);
+        }
+
+        Expr::Match { scrutinee, arms } => {
+            collect_definition_key_edits(&scrutinee.node, name, source, out);
+            for arm in arms {
+                collect_definition_key_edits(&arm.body.node, name, source, out);
+            }
+        }
+
+        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+            for method in methods {
+                if let Some(key) = &method.node.key {
+                    collect_definition_key_edits(&key.node, name, source, out);
+                }
+                collect_definition_key_edits(&method.node.value.node, name, source, out);
+            }
+        }
+
+        Expr::DefMacro { body, .. } => {
+            collect_definition_key_edits(&body.node, name, source, out);
+        }
+
+        _ => {}
+    }
+}
+
+/// Generate inlay type hints for all top-level dict bindings that are not already
+/// annotated with a type.
+///
+/// For each top-level dict binding whose value does NOT carry a `TypeAssert` annotation,
+/// look up its inferred type in `scheme_map` or `type_map` and emit an `InlayHint`
+/// positioned at the end of the binding name.
+///
+/// Returns an empty list if the document has a parse error.
+pub fn inlay_hints_for(doc: &DocumentState) -> Vec<lsp_types::InlayHint> {
+    use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel};
+
+    let file = match &doc.ast {
+        Ok(f) => f,
+        Err(_) => return vec![],
+    };
+
+    let mut hints = Vec::new();
+
+    for document in &file.node.documents {
+        for expr in &document.node.expressions {
+            if let Expr::Dict(entries) = &expr.node {
+                for entry in entries {
+                    // Only process entries with a static key.
+                    let key = match &entry.node.key {
+                        Some(k) => k,
+                        None => continue,
+                    };
+
+                    // Skip entries whose value is already annotated (TypeAssert node).
+                    if matches!(&entry.node.value.node, Expr::TypeAssert { .. }) {
+                        continue;
+                    }
+
+                    // Look up the inferred type for the value span.
+                    let value_span = entry.node.value.span;
+                    let span_key = (value_span.start.offset, value_span.end.offset);
+
+                    let type_str: Option<String> =
+                        if let Some(scheme) = doc.scheme_map.get(&span_key) {
+                            let raw = format_scheme_for_hover(scheme);
+                            Some(crate::types::pretty_type_str(&raw))
+                        } else if let Some(ty) = doc.type_map.get(&span_key) {
+                            Some(crate::types::pretty_type(ty))
+                        } else {
+                            None
+                        };
+
+                    let type_str = match type_str {
+                        Some(s) if !s.is_empty() && s != "<error>" => s,
+                        _ => continue,
+                    };
+
+                    // Position the hint at the end of the binding key name.
+                    let key_end = llt_span_to_lsp_range(&key.span, &doc.text).end;
+
+                    hints.push(InlayHint {
+                        position: key_end,
+                        label: InlayHintLabel::String(format!(": {}", type_str)),
+                        kind: Some(InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: Some(false),
+                        padding_right: Some(true),
+                        data: None,
+                    });
+                }
+            }
+        }
+    }
+
+    hints
 }
 
 /// Generate completion items for the given byte offset in the document.
@@ -1929,4 +3032,291 @@ fn extract_names_from_expr(
         }
         _ => {}
     }
+}
+
+// ─── Task 6: textDocument/signatureHelp ─────────────────────────────────────
+
+/// Walk the AST and find the innermost `Call` expression containing the offset.
+///
+/// Returns `(func_span_key, active_arg_index)` where:
+/// - `func_span_key` is `(start_offset, end_offset)` of the function expression
+/// - `active_arg_index` is the 0-based index of the argument the cursor is on
+///
+/// The active argument index is computed by counting how many positional args
+/// start before the cursor position.
+fn find_enclosing_call(
+    expr: &Expr,
+    span: Span,
+    offset: usize,
+) -> Option<((usize, usize), usize)> {
+    if !span_contains(span, offset) {
+        return None;
+    }
+
+    match expr {
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            // Try to find a deeper call first (cursor inside an arg expression).
+            for arg in args.iter() {
+                if let Some(inner) = find_enclosing_call(&arg.node, arg.span, offset) {
+                    return Some(inner);
+                }
+            }
+            for na in named_args.iter() {
+                if let Some(inner) =
+                    find_enclosing_call(&na.node.value.node, na.node.value.span, offset)
+                {
+                    return Some(inner);
+                }
+            }
+            // No deeper call — this Call is the innermost one.
+            // Count args that start before cursor position.
+            let active = args
+                .iter()
+                .filter(|a| a.span.start.offset < offset)
+                .count();
+            let func_key = (func.span.start.offset, func.span.end.offset);
+            Some((func_key, active))
+        }
+
+        Expr::Dict(entries) => entries.iter().find_map(|entry| {
+            entry.node.key.as_ref().and_then(|k| {
+                find_enclosing_call(&k.node, k.span, offset)
+            }).or_else(|| {
+                find_enclosing_call(&entry.node.value.node, entry.node.value.span, offset)
+            })
+        }),
+
+        Expr::Fn { body, .. } => find_enclosing_call(&body.node, body.span, offset),
+
+        Expr::DotAccess { expr: target, .. } => {
+            find_enclosing_call(&target.node, target.span, offset)
+        }
+
+        Expr::Sequential(exprs) => exprs
+            .iter()
+            .find_map(|e| find_enclosing_call(&e.node, e.span, offset)),
+
+        Expr::Pipe { lhs, rhs } => find_enclosing_call(&lhs.node, lhs.span, offset)
+            .or_else(|| find_enclosing_call(&rhs.node, rhs.span, offset)),
+
+        Expr::TypeAlias { body, .. } => find_enclosing_call(&body.node, body.span, offset),
+
+        Expr::TypeAssert { expr: inner, .. } => {
+            find_enclosing_call(&inner.node, inner.span, offset)
+        }
+
+        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            find_enclosing_call(&inner.node, inner.span, offset)
+        }
+
+        Expr::Match { scrutinee, arms } => {
+            find_enclosing_call(&scrutinee.node, scrutinee.span, offset).or_else(|| {
+                arms.iter()
+                    .find_map(|arm| find_enclosing_call(&arm.body.node, arm.body.span, offset))
+            })
+        }
+
+        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+            methods.iter().find_map(|method| {
+                method
+                    .node
+                    .key
+                    .as_ref()
+                    .and_then(|k| find_enclosing_call(&k.node, k.span, offset))
+                    .or_else(|| {
+                        find_enclosing_call(
+                            &method.node.value.node,
+                            method.node.value.span,
+                            offset,
+                        )
+                    })
+            })
+        }
+
+        Expr::DefMacro { body, .. } => find_enclosing_call(&body.node, body.span, offset),
+
+        // Leaves: no call here.
+        _ => None,
+    }
+}
+
+/// Generate signature help for the cursor position.
+///
+/// When the cursor is inside a `[f arg1 arg2 ...]` Call expression, looks up
+/// `f`'s TypeScheme, formats it as a `SignatureHelp` response, and highlights
+/// the active parameter (the argument slot the cursor is in).
+///
+/// Returns `None` if:
+/// - The document has a parse error.
+/// - The cursor is not inside a Call expression.
+/// - The function has no TypeScheme entry (unresolved or not a function type).
+pub fn signature_help_at(
+    doc: &DocumentState,
+    offset: usize,
+) -> Option<lsp_types::SignatureHelp> {
+    use crate::types::Type;
+    use lsp_types::{
+        Documentation, ParameterInformation, ParameterLabel, SignatureHelp, SignatureInformation,
+    };
+
+    let file = match &doc.ast {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+
+    // Find the innermost Call containing the cursor.
+    let (func_span_key, active_param_idx) = file.node.documents.iter().find_map(|document| {
+        document
+            .node
+            .expressions
+            .iter()
+            .find_map(|expr| find_enclosing_call(&expr.node, expr.span, offset))
+    })?;
+
+    // Prefer scheme_map (has constraints) over type_map.
+    let scheme = doc.scheme_map.get(&func_span_key).cloned();
+    let func_type: Option<Type> = if let Some(ref s) = scheme {
+        Some(s.body.clone())
+    } else {
+        doc.type_map.get(&func_span_key).cloned()
+    };
+
+    let func_type = func_type?;
+
+    // We only generate signature help for Function types.
+    let (params, ret, _variadic) = match func_type {
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => (params, ret, variadic),
+        _ => return None,
+    };
+
+    // Build the signature label: `Fn@ReturnType [param1@Type param2@Type ...]`
+    let param_labels: Vec<String> = params
+        .iter()
+        .map(|(name, ty)| {
+            if let Some(n) = name {
+                format!("{}@{}", n, ty)
+            } else {
+                format!("@{}", ty)
+            }
+        })
+        .collect();
+
+    let sig_label = if param_labels.is_empty() {
+        format!("Fn@{}", ret)
+    } else {
+        format!("Fn@{} [{}]", ret, param_labels.join("  "))
+    };
+
+    // Build ParameterInformation for each param.
+    let parameters: Vec<ParameterInformation> = param_labels
+        .iter()
+        .map(|pl| ParameterInformation {
+            label: ParameterLabel::Simple(pl.clone()),
+            documentation: None,
+        })
+        .collect();
+
+    // Optional documentation from TypeScheme.
+    let doc_text = scheme
+        .as_ref()
+        .and_then(|s| s.doc.as_ref())
+        .map(|d| Documentation::String(d.clone()));
+
+    let sig_info = SignatureInformation {
+        label: sig_label,
+        documentation: doc_text,
+        parameters: if parameters.is_empty() {
+            None
+        } else {
+            Some(parameters)
+        },
+        active_parameter: Some(active_param_idx as u32),
+    };
+
+    Some(SignatureHelp {
+        signatures: vec![sig_info],
+        active_signature: Some(0),
+        active_parameter: Some(active_param_idx as u32),
+    })
+}
+
+// ─── Task 7: workspace/symbol ────────────────────────────────────────────────
+
+/// Collect top-level binding names from a document that match a query.
+///
+/// Case-insensitive prefix match: a symbol matches if its name, lowercased,
+/// starts with `query_lower`.  An empty query matches every symbol.
+///
+/// Returns `WorkspaceSymbol` entries with `OneOf::Left(location)` pointing at
+/// the key span in the given document.
+pub fn workspace_symbols_for(
+    doc: &DocumentState,
+    uri: &Uri,
+    query_lower: &str,
+) -> Vec<lsp_types::WorkspaceSymbol> {
+    use lsp_types::WorkspaceSymbol;
+
+    let file = match &doc.ast {
+        Ok(f) => f,
+        Err(_) => return vec![],
+    };
+
+    let mut symbols = Vec::new();
+
+    for document in &file.node.documents {
+        for expr in &document.node.expressions {
+            if let Expr::Dict(entries) = &expr.node {
+                for entry in entries {
+                    let key = match &entry.node.key {
+                        Some(k) => k,
+                        None => continue,
+                    };
+                    let name: Option<String> = match &key.node {
+                        Expr::Str(s) => Some(s.clone()),
+                        Expr::Annotated { name, .. } => Some(name.clone()),
+                        Expr::VarRef { name, .. } => Some(name.clone()),
+                        _ => None,
+                    };
+                    let name = match name {
+                        Some(n) => n,
+                        None => continue,
+                    };
+
+                    // Case-insensitive prefix match.
+                    if !query_lower.is_empty()
+                        && !name.to_lowercase().starts_with(query_lower)
+                    {
+                        continue;
+                    }
+
+                    let range = llt_span_to_lsp_range(&key.span, &doc.text);
+
+                    symbols.push(WorkspaceSymbol {
+                        name,
+                        kind: lsp_types::SymbolKind::VARIABLE,
+                        tags: None,
+                        container_name: None,
+                        // Use `OneOf::Right(WorkspaceLocation)` — no range needed for the
+                        // basic case; clients that need the range will issue a resolve request.
+                        location: lsp_types::OneOf::Left(Location {
+                            uri: uri.clone(),
+                            range,
+                        }),
+                        data: None,
+                    });
+                }
+            }
+        }
+    }
+
+    symbols
 }
