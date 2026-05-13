@@ -269,6 +269,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let mut caps = HashMap::new();
     let mut has_readable = false;
     let mut has_writable = false;
+    let mut has_appendable = false;
     let mut has_binary = false;
     let mut has_text = false;
     let mut has_seekable = false;
@@ -279,9 +280,10 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         match flag_val {
             Value::Variant { ref tag, .. } => match tag.as_str() {
                 "Readable" => {
-                    if has_writable {
+                    if has_writable || has_appendable {
                         return Err(EvalError::user_error(
-                            "open: cannot specify both Readable and Writable flags".to_string(),
+                            "open: cannot specify Readable with Writable or Appendable flags"
+                                .to_string(),
                             call_span,
                         )
                         .into());
@@ -299,6 +301,17 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     }
                     has_writable = true;
                     caps.insert("Writable".to_string(), Value::Bool(true));
+                }
+                "Appendable" => {
+                    if has_readable {
+                        return Err(EvalError::user_error(
+                            "open: cannot specify both Readable and Appendable flags".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    has_appendable = true;
+                    caps.insert("Appendable".to_string(), Value::Bool(true));
                 }
                 "Binary" => {
                     if has_text {
@@ -329,7 +342,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 other => {
                     return Err(EvalError::user_error(
                             format!(
-                                "open: unknown capability flag '{}' (expected Readable, Writable, Binary, Text, or Seekable)",
+                                "open: unknown capability flag '{}' (expected Readable, Writable, Appendable, Binary, Text, or Seekable)",
                                 other
                             ),
                             call_span,
@@ -349,10 +362,11 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     }
 
-    // Require at least one of Readable or Writable
-    if !has_readable && !has_writable {
+    // Require at least one of Readable, Writable, or Appendable
+    if !has_readable && !has_writable && !has_appendable {
         return Err(EvalError::user_error(
-            "open: must specify at least one of Readable or Writable flags".to_string(),
+            "open: must specify at least one of Readable, Writable, or Appendable flags"
+                .to_string(),
             call_span,
         )
         .into());
@@ -365,6 +379,9 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if has_writable {
         check_perm(perms, "Writable", perms.writable, "open", call_span)?;
     }
+    if has_appendable {
+        check_perm(perms, "Appendable", perms.appendable, "open", call_span)?;
+    }
 
     // Default to Text encoding if neither Binary nor Text specified
     if !has_binary && !has_text {
@@ -372,7 +389,8 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Open the file based on flags
-    use std::io::BufReader;
+    use cap_std::fs::OpenOptions;
+    use std::io::{BufReader, BufWriter};
     if has_readable {
         // Read mode
         let file = dir.open(&path).map_err(|e| {
@@ -411,10 +429,53 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             },
             call_span,
         )
+    } else if has_writable {
+        // Write mode: create/truncate
+        let file = dir
+            .open_with(
+                &path,
+                OpenOptions::new().write(true).create(true).truncate(true),
+            )
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("open: failed to open file '{}' for writing: {}", path, e),
+                    call_span,
+                )
+            })?;
+
+        let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
+
+        ok_val(
+            Value::WriteHandle {
+                caps,
+                inner: Rc::new(std::cell::RefCell::new(writer)),
+            },
+            call_span,
+        )
+    } else if has_appendable {
+        // Append mode: append/create
+        let file = dir
+            .open_with(&path, OpenOptions::new().append(true).create(true))
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("open: failed to open file '{}' for appending: {}", path, e),
+                    call_span,
+                )
+            })?;
+
+        let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
+
+        ok_val(
+            Value::WriteHandle {
+                caps,
+                inner: Rc::new(std::cell::RefCell::new(writer)),
+            },
+            call_span,
+        )
     } else {
-        // Write mode (has_writable == true)
+        // Should never reach here due to earlier validation
         return Err(EvalError::user_error(
-            "open: Writable mode not yet implemented (Phase 1 is read-only)".to_string(),
+            "open: internal error - no mode specified".to_string(),
             call_span,
         )
         .into());
@@ -479,8 +540,14 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
-/// `narrow`: Attenuate a DirCap to a subdirectory.
-/// Takes a DirCap and a String subpath, returns a new DirCap for the subdirectory.
+/// `narrow`: Attenuate a DirCap to a subdirectory or restrict permissions.
+/// Two forms:
+///   [narrow cap "path"] — restrict to subdirectory, preserve permissions
+///   [narrow cap FlagName...] — restrict permissions (intersection), preserve directory
+/// Takes a DirCap and either:
+///   - A String subpath to narrow to a subdirectory (preserves permissions)
+///   - One or more Variant flags to restrict permissions (preserves directory)
+/// Returns a new DirCap with the narrowed scope or restricted permissions.
 pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -489,35 +556,174 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
 
-    // Expect 2 args: DirCap, String subpath
-    if args.len() != 2 {
+    // Expect at least 2 args: DirCap, and either a subpath string or flag(s)
+    if args.len() < 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named("narrow", named, call_span)?;
 
     let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let subpath_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Extract DirCap and preserve permissions
+    // Extract DirCap and current permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span)?;
 
-    let subpath = require_string("narrow", subpath_val, args[1].span)?;
+    // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
+    let second_arg_val = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Open subdirectory (RESOLVE_BENEATH applies to subpath)
-    let narrowed = dir.open_dir(&subpath).map_err(|e| {
-        EvalError::user_error(
-            format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
+    if matches!(second_arg_val, Value::String { .. }) {
+        // Subtree narrowing: [narrow cap "path"]
+        if args.len() != 2 {
+            return Err(EvalError::user_error(
+                "narrow: subtree mode requires exactly 2 arguments (cap, subpath)".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        let subpath = require_string("narrow", second_arg_val, args[1].span)?;
+
+        // Open subdirectory (RESOLVE_BENEATH applies to subpath)
+        let narrowed = dir.open_dir(&subpath).map_err(|e| {
+            EvalError::user_error(
+                format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
+                call_span,
+            )
+        })?;
+
+        ok_val(
+            Value::DirCap {
+                dir: Rc::new(narrowed),
+                perms: perms.clone(),
+            },
             call_span,
         )
-    })?;
+    } else if matches!(second_arg_val, Value::Variant { .. }) {
+        // Permission restriction: [narrow cap FlagName...]
+        // Parse requested flags from args[1..]
+        let mut requested = DirPerms {
+            readable: false,
+            statable: false,
+            listable: false,
+            writable: false,
+            appendable: false,
+            deletable: false,
+            renameable: false,
+        };
 
-    ok_val(
-        Value::DirCap {
-            dir: Rc::new(narrowed),
-            perms: perms.clone(),
-        },
-        call_span,
-    )
+        for flag_arg in &args[1..] {
+            let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
+
+            match flag_val {
+                Value::Variant { ref tag, .. } => match tag.as_str() {
+                    "Readable" => requested.readable = true,
+                    "Statable" => requested.statable = true,
+                    "Listable" => requested.listable = true,
+                    "Writable" => requested.writable = true,
+                    "Appendable" => requested.appendable = true,
+                    "Deletable" => requested.deletable = true,
+                    "Renameable" => requested.renameable = true,
+                    other => {
+                        return Err(EvalError::user_error(
+                            format!(
+                                "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable)",
+                                other
+                            ),
+                            call_span,
+                        )
+                        .into());
+                    }
+                },
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "narrow".to_string(),
+                        "Variant (capability flag) or String (subpath)",
+                        other.type_name(),
+                        flag_arg.span,
+                    )
+                    .into());
+                }
+            }
+        }
+
+        // Compute intersection: only grant flags that are BOTH requested AND held by source
+        let narrowed_perms = DirPerms {
+            readable: requested.readable && perms.readable,
+            statable: requested.statable && perms.statable,
+            listable: requested.listable && perms.listable,
+            writable: requested.writable && perms.writable,
+            appendable: requested.appendable && perms.appendable,
+            deletable: requested.deletable && perms.deletable,
+            renameable: requested.renameable && perms.renameable,
+        };
+
+        // Runtime error if a requested flag is not held in the source
+        if requested.readable && !perms.readable {
+            return Err(EvalError::user_error(
+                "narrow: source DirCap does not have Readable permission".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        if requested.statable && !perms.statable {
+            return Err(EvalError::user_error(
+                "narrow: source DirCap does not have Statable permission".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        if requested.listable && !perms.listable {
+            return Err(EvalError::user_error(
+                "narrow: source DirCap does not have Listable permission".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        if requested.writable && !perms.writable {
+            return Err(EvalError::user_error(
+                "narrow: source DirCap does not have Writable permission".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        if requested.appendable && !perms.appendable {
+            return Err(EvalError::user_error(
+                "narrow: source DirCap does not have Appendable permission".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        if requested.deletable && !perms.deletable {
+            return Err(EvalError::user_error(
+                "narrow: source DirCap does not have Deletable permission".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        if requested.renameable && !perms.renameable {
+            return Err(EvalError::user_error(
+                "narrow: source DirCap does not have Renameable permission".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        ok_val(
+            Value::DirCap {
+                dir: Rc::clone(&dir),
+                perms: narrowed_perms,
+            },
+            call_span,
+        )
+    } else {
+        // Invalid second argument
+        Err(EvalError::type_mismatch_ctx(
+            "narrow".to_string(),
+            "String (subpath) or Variant (capability flag)",
+            second_arg_val.type_name(),
+            args[1].span,
+        )
+        .into())
+    }
 }
 
 /// `revocable`: Wrap a DirCap in a RevocableDirCap.

@@ -134,11 +134,14 @@ enum Commands {
         cap_clock_fixed: Option<String>,
 
         /// Inject a named file Handle into the root environment (may be repeated).
-        /// Format: NAME=PATH:MODE — pre-opens PATH and binds %NAME to a Handle.
-        /// MODE: r (readable text), rb (readable binary), w (writable text), wb (writable binary).
+        /// Format: NAME=PATH[:MODE] — pre-opens PATH and binds %NAME to a Handle.
+        /// MODE: r (readable text), rb (readable binary), w (writable text), wb (writable binary),
+        ///       a (appendable text), ab (appendable binary).
+        ///       Extended: [Readable Writable ...] (valid: Readable, Writable, Appendable, Binary).
+        ///       No :MODE suffix → r (readable text).
         /// Example: --cap-file config=Cargo.toml:r injects %config as a readable Handle.
         /// --no-fs also suppresses --cap-file Handles (filesystem access is blocked entirely).
-        #[arg(long, value_name = "NAME=PATH:MODE")]
+        #[arg(long, value_name = "NAME=PATH[:MODE]")]
         cap_file: Vec<String>,
 
         /// Evaluate an inline tinct expression (may be repeated).
@@ -1328,17 +1331,17 @@ fn run_eval(
             .insert("%clock".to_string(), Rc::new(cap_thunk));
     }
 
-    // Inject --cap-file NAME=PATH:MODE entries into the root environment as `%NAME`.
+    // Inject --cap-file NAME=PATH[:MODE] entries into the root environment as `%NAME`.
     // --no-fs suppresses all cap-file entries (filesystem access is blocked globally).
     if !no_fs {
         use std::collections::HashMap;
-        use std::io::BufReader;
+        use std::io::{BufReader, BufWriter};
 
         for cap_file_entry in &cap_file {
-            // Parse NAME=PATH:MODE
+            // Parse NAME=PATH[:MODE]
             let (name, rest) = cap_file_entry.split_once('=').ok_or_else(|| {
                 format!(
-                    "--cap-file: expected NAME=PATH:MODE format, got {:?}",
+                    "--cap-file: expected NAME=PATH[:MODE] format, got {:?}",
                     cap_file_entry
                 )
             })?;
@@ -1352,14 +1355,11 @@ fn run_eval(
 
             // Split PATH:MODE — mode is the suffix after the last ':'
             // PATH may contain ':' on Windows (e.g. C:\foo.txt); find the last ':' for the mode.
-            let (path_str, mode_str) = rest.rsplit_once(':').ok_or_else(|| {
-                format!(
-                    "--cap-file: expected NAME=PATH:MODE format (missing mode suffix r/rb/w/wb), got {:?}",
-                    cap_file_entry
-                )
-            })?;
-            let path_str = path_str.trim();
-            let mode_str = mode_str.trim();
+            // If no ':', mode defaults to "rw" (read-write text).
+            let (path_str, mode_str) = match rest.rsplit_once(':') {
+                Some((path, mode)) => (path.trim(), Some(mode.trim())),
+                None => (rest.trim(), None),
+            };
 
             if path_str.is_empty() {
                 return Err(format!(
@@ -1368,22 +1368,69 @@ fn run_eval(
                 ));
             }
 
-            // Parse mode: r, rb, w, wb
-            let (readable, _writable, binary) = match mode_str {
-                "r" => (true, false, false),
-                "rb" => (true, false, true),
-                "w" => (false, true, false),
-                "wb" => (false, true, true),
-                other => {
-                    return Err(format!(
-                        "--cap-file: invalid mode {:?} in {:?}: must be r, rb, w, or wb",
-                        other, cap_file_entry
-                    ));
+            // Parse mode into capability flags
+            let (readable, writable, appendable, binary) = if let Some(mode) = mode_str {
+                if mode.starts_with('[') {
+                    // Extended syntax: [Readable Writable ...]
+                    if !mode.ends_with(']') {
+                        return Err(format!(
+                            "--cap-file: extended mode must end with ']', got {:?}",
+                            mode
+                        ));
+                    }
+                    let caps_str = &mode[1..mode.len() - 1];
+                    let mut readable = false;
+                    let mut writable = false;
+                    let mut appendable = false;
+                    let mut binary = false;
+                    for cap_name in caps_str.split_whitespace() {
+                        match cap_name {
+                            "Readable" => readable = true,
+                            "Writable" => writable = true,
+                            "Appendable" => appendable = true,
+                            "Binary" => binary = true,
+                            _ => {
+                                return Err(format!(
+                                    "--cap-file: unknown capability {:?} in extended mode (expected Readable, Writable, Appendable, Binary)",
+                                    cap_name
+                                ))
+                            }
+                        }
+                    }
+                    (readable, writable, appendable, binary)
+                } else {
+                    // Letter mode: r/rb/w/wb/a/ab/rw
+                    match mode {
+                        "r" => (true, false, false, false),
+                        "rb" => (true, false, false, true),
+                        "w" => (false, true, false, false),
+                        "wb" => (false, true, false, true),
+                        "a" => (false, false, true, false),
+                        "ab" => (false, false, true, true),
+                        other => {
+                            return Err(format!(
+                                "--cap-file: invalid mode {:?} in {:?}: must be r, rb, w, wb, a, ab, or [Readable Writable ...]",
+                                other, cap_file_entry
+                            ));
+                        }
+                    }
                 }
+            } else {
+                // No mode specified → r (readable text)
+                (true, false, false, false)
             };
 
-            let cap_value = if readable {
-                // Open file for reading
+            // Validate: at least one of readable/writable/appendable must be set
+            if !readable && !writable && !appendable {
+                return Err(format!(
+                    "--cap-file: mode must specify at least one of Readable, Writable, or Appendable in {:?}",
+                    cap_file_entry
+                ));
+            }
+
+            // Build the Handle or WriteHandle value
+            let cap_value = if readable && !writable && !appendable {
+                // Read-only: use Handle with read inner
                 let file = std::fs::File::open(path_str).map_err(|e| {
                     format!("--cap-file: cannot open {:?} for reading: {e}", path_str)
                 })?;
@@ -1412,12 +1459,17 @@ fn run_eval(
                     raw_tcp: None,
                     creation_span: tinct::Span::origin(),
                 }
-            } else {
-                // Open file for writing (create/truncate)
-                let file = std::fs::File::create(path_str).map_err(|e| {
-                    format!("--cap-file: cannot open {:?} for writing: {e}", path_str)
-                })?;
-                let buf_writer: Box<dyn std::io::Write> = Box::new(file);
+            } else if writable && !readable && !appendable {
+                // Write-only (truncate): use WriteHandle
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(path_str)
+                    .map_err(|e| {
+                        format!("--cap-file: cannot open {:?} for writing: {e}", path_str)
+                    })?;
+                let buf_writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
                 let mut caps: HashMap<String, tinct::Value> = HashMap::new();
                 caps.insert(
                     "Writable".to_string(),
@@ -1438,6 +1490,42 @@ fn run_eval(
                     caps,
                     inner: Rc::new(std::cell::RefCell::new(buf_writer)),
                 }
+            } else if appendable && !readable && !writable {
+                // Append-only: use WriteHandle with append flag
+                let file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path_str)
+                    .map_err(|e| {
+                        format!("--cap-file: cannot open {:?} for appending: {e}", path_str)
+                    })?;
+                let buf_writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
+                let mut caps: HashMap<String, tinct::Value> = HashMap::new();
+                caps.insert(
+                    "Appendable".to_string(),
+                    tinct::Value::Dict(indexmap::IndexMap::new()),
+                );
+                if binary {
+                    caps.insert(
+                        "Binary".to_string(),
+                        tinct::Value::Dict(indexmap::IndexMap::new()),
+                    );
+                } else {
+                    caps.insert(
+                        "Text".to_string(),
+                        tinct::Value::Dict(indexmap::IndexMap::new()),
+                    );
+                }
+                tinct::Value::WriteHandle {
+                    caps,
+                    inner: Rc::new(std::cell::RefCell::new(buf_writer)),
+                }
+            } else {
+                // Read-write or other combinations not yet supported
+                return Err(format!(
+                    "--cap-file: read-write and multi-capability modes not yet implemented in {:?} (use separate read/write Handles)",
+                    cap_file_entry
+                ));
             };
 
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());

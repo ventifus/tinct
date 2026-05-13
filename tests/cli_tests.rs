@@ -1686,6 +1686,175 @@ fn landlock_with_cap_fs_permits_include() {
 }
 
 // ---------------------------------------------------------------------------
+// DirPerms and file capability tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cap_fs_read_only_permits_readable() {
+    // --cap-fs mydir=DIR:r grants read-only access to the injected %mydir DirCap.
+    // Just verify the cap is injected and usable.
+    let dir = TempDir::new("cap_fs_ro_list");
+    let test_file = dir.path().join("test.txt");
+    fs::write(&test_file, "test content").unwrap();
+    let main = dir.path().join("main.llt");
+    // Just return the cap itself (proves it's injected and evaluates)
+    let llt_content = r#"%mydir"#;
+    fs::write(&main, llt_content).unwrap();
+
+    let dir_str = dir.path().to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--no-pwd",
+            "--no-libdir",
+            "--cap-fs",
+            &format!("mydir={}:r", dir_str),
+            main.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "cap injection with r perms should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cap_fs_read_only_write_fails() {
+    // --cap-fs mydir=DIR:r grants read-only access. raw-create should fail (needs Writable).
+    let dir = TempDir::new("cap_fs_ro_write_fail");
+    let main = dir.path().join("main.llt");
+    let llt_content = r#"[call $raw-create %mydir "test.txt"]"#;
+    fs::write(&main, llt_content).unwrap();
+
+    let dir_str = dir.path().to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--no-pwd",
+            "--no-libdir",
+            "--cap-fs",
+            &format!("mydir={}:r", dir_str),
+            main.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "raw-create with r perms should fail; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Writable"),
+        "expected permission error mentioning Writable; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn cap_fs_read_write_permits_writable() {
+    // --cap-fs mydir=DIR:rw grants read+write access. Just verify the cap is injected.
+    let test_root = TempDir::new("cap_fs_rw");
+    let data_dir = test_root.path().join("data");
+    fs::create_dir(&data_dir).unwrap();
+    let main = test_root.path().join("main.llt");
+    // Just return the cap itself (proves it's injected with rw perms)
+    let llt_content = r#"%mydir"#;
+    fs::write(&main, llt_content).unwrap();
+
+    let data_str = data_dir.to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--no-pwd",
+            "--no-libdir",
+            "--cap-fs",
+            &format!("mydir={}:rw", data_str),
+            main.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "cap injection with rw perms should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cap_file_no_mode_defaults_to_r() {
+    // --cap-file cfg=FILE (no :mode suffix) should default to r (readable text).
+    // We create a temp file and slurp it.
+    let dir = TempDir::new("cap_file_no_mode");
+    let test_file = dir.path().join("config.txt");
+    fs::write(&test_file, "key: value").unwrap();
+    let main = dir.path().join("main.llt");
+    // Slurp the injected %cfg handle
+    let llt_content = r#"[call $slurp %cfg]"#;
+    fs::write(&main, llt_content).unwrap();
+
+    let file_str = test_file.to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-o",
+            "json",
+            "--no-pwd",
+            "--no-libdir",
+            "--cap-file",
+            &format!("cfg={}", file_str),
+            main.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "slurp with default r mode should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("key: value"),
+        "expected file content in output; stdout: {stdout}"
+    );
+}
+
+#[test]
+fn cap_file_read_mode_succeeds() {
+    // --cap-file cfg=FILE:r should succeed for reading.
+    let dir = TempDir::new("cap_file_r");
+    let test_file = dir.path().join("config.txt");
+    fs::write(&test_file, "test data").unwrap();
+    let main = dir.path().join("main.llt");
+    let llt_content = r#"[call $slurp %cfg]"#;
+    fs::write(&main, llt_content).unwrap();
+
+    let file_str = test_file.to_str().unwrap();
+    let output = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--no-pwd",
+            "--no-libdir",
+            "--cap-file",
+            &format!("cfg={}:r", file_str),
+            main.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "slurp with :r mode should succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // sandbox-c: rlimit resource caps (--max-memory, --max-cpu, --max-fds)
 // ---------------------------------------------------------------------------
 
@@ -3511,6 +3680,8 @@ fn cap_file_readable_slurp() {
             "run",
             "-o",
             "json",
+            "--no-pwd",
+            "--no-libdir",
             "--cap-file",
             &format!("cfg={}:r", data_path.to_str().unwrap()),
             llt_path.to_str().unwrap(),
