@@ -189,15 +189,6 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 ## Syntax
 
-### multi-line-strings: `unindent` stdlib function and `"""` macro
-
-Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md`. **Spec chapters:** `doc/02-syntax.md §2.3.6 Multi-Line Strings`, `doc/11-stdlib.md §Strings`. `unindent` requires no lexer changes — literal newlines in `"..."` already work. **`"""` requires lexer changes** (contradicting the whatif's claim): `lex_quoted_string` terminates at the first `"`, so `"""content"""` tokenizes as empty string + identifier + empty string; `doc/02-syntax.md §2.3.6` already documents this correctly as "requires lexer support for triple-quoted string tokens, which is not yet implemented." A parse-stage macro in `stdlib/macros.llt` cannot intercept token patterns — macros operate on AST nodes, not raw tokens.
-
-- [x] Add `unindent` to `stdlib/prelude.llt`: use sequential fn body — binding dict `[ls: [lines s]  n: [length [last ls]]  inner: [slice 1 -1 ls]]` followed by `[join "\n" [map [fn [l] [slice n [length l] l]] inner]]`; the binding dict's entries are in scope for the final expression via `Expr::Sequential` (`stdlib/prelude.llt`)
-- [ ] Add `TripleQuotedString(String)` and `TripleInterpolatedString(Vec<InterpolatedPart>)` token types to `src/lexer.rs`: detect `"""` at the start of a string context, consume content until the closing `"""`, emit accordingly; then in `src/parser.rs` desugar `TripleQuotedString(s)` → `[unindent s]` and `TripleInterpolatedString(parts)` → `[unindent i"..."]` directly in the parser (not as a stdlib macro, since macros cannot intercept token patterns) (`src/lexer.rs`, `src/parser.rs`)
-- [x] Add note to `doc/02-syntax.md §String Literals` that `"..."` permits embedded literal newlines; document `"""..."""` and `i"""..."""` as the idiomatic indentation-stripping form; document `unindent` as the underlying function (`doc/02-syntax.md`)
-- [x] Tests: `unindent` directly on a raw indented string, `"""..."""` value matches `[unindent "..."]`, `i"""..."""` with `$var` interpolation, single `"` inside triple-quoted content, empty lines preserved, `[trim [unindent ...]]` trailing-newline suppression (`tests/corpus/eval/`)
-
 ### multi-body-positions: Fix match arm syntax to keyed form + multi-body support
 
 **Settled design:** Match arms use `pattern: body` keyed syntax — pattern is the KEY, body is the VALUE. Confirmed in `doc/whatif/completed/pattern-matching.md` (`n@Int: [+ n 1]`) and `doc/whatif/completed/error-patterns.md`. The current parser uses a wrong space-separated pattern-detection approach from an incorrectly implemented sprint.
@@ -236,39 +227,13 @@ Grammar: `match_form = { keyword_match ~ value ~ (pattern ~ ":" ~ value)+ }`. **
 
 ---
 
-## Capability System
-
-### dir-cap-permissions: Fine-grained read/write/list permissions on DirCap and cap-file
-
-See `doc/whatif/dir-cap-permissions.md` (Accepted 2026-05-11). Extends `--cap-fs` (and `--cap-file`) with an optional `:MODE` suffix using letter bundles and an extended `:[Cap1 Cap2 ...]` list syntax; adds a `DirPerms` bitfield to `Value::DirCap`; enforces permissions in DirCap-consuming builtins. No mode on either flag = full access (all capabilities). **Spec chapters:** `doc/whatif/dir-cap-permissions.md`.
-
-**Type system encoding under BAS:** The whatif describes `DirCap[Writable ...]` with a row tail — that was Rémy-style row polymorphism, which BAS removed. The correct BAS encoding is **intersection types**: `DirCap[Writable ...]` → `@[[all DirCap Writable]]` = `Type::Intersection([DirCap, Writable])`. The "at least these flags" semantics fall out from BAS intersection elimination: `A & B & C <: A & B` (if you have all three, you have any two), so `@[[all DirCap Readable Writable]] <: @[[all DirCap Writable]]` — a fully-capable DirCap satisfies any subset-capability constraint.
-
-Capability flags (`Readable`, `Writable`, `Listable`, `Statable`, `Appendable`, `Deletable`, `Renameable`) are registered as nominal unit types in `TypeEnv`. Annotation `@DirCap[Writable]` in `caps:` dicts desugars to `@[[all DirCap Writable]]`.
-
-**Mode grammar (same for `--cap-fs` and `--cap-file`):**
-- No `:mode` suffix → full access (all applicable capabilities)
-- Letter sequence: each letter adds its bundle — `r` = `{Readable, Listable, Statable}`, `w` = `{Writable, Appendable, Deletable, Renameable}`, `a` = `{Appendable}`, `s` = `{Statable}`, `l` = `{Listable, Statable}`; letters compose by union (`rw` = r∪w)
-- Extended syntax: `:[Cap1 Cap2 ...]` — parse as whitespace-separated capability names, exact set granted, no implied additions; detected by mode starting with `[`
-- For `--cap-file`: additional `Binary` flag in extended syntax (`:[Readable Binary]`); letter shorthands `r`/`rb`/`w`/`wb` remain as before (backward compat)
-
-- [x] Refactor `--cap-fs` argument parsing in `src/main.rs`: split on last `:` via `rsplit_once`; if no `:` present, grant full `DirPerms::full()`; if mode starts with `[`, parse as extended capability list; otherwise parse letter-by-letter accumulating bundles (`r`→Readable+Listable+Statable, `w`→Writable+Appendable+Deletable+Renameable, `a`→Appendable, `s`→Statable, `l`→Listable+Statable); unknown letter = startup error (`src/main.rs`)
-- [ ] Extend `--cap-file` argument parsing in `src/main.rs`: same extended syntax — if mode starts with `[`, parse as `[Cap1 Cap2 ...]` list (valid names: `Readable`, `Writable`, `Appendable`, `Binary`); no `:mode` suffix → open file read-write (equivalent to `rw`); retain existing `r`/`rb`/`w`/`wb` letter shorthands for backward compat (`src/main.rs`)
-- [x] Add `DirPerms { readable, statable, listable, writable, appendable, deletable, renameable: bool }` struct to `src/value.rs`; add `perms: DirPerms` field to `Value::DirCap` and `Value::RevocableDirCap`; update all construction sites to use `DirPerms::full()` (`src/value.rs`)
-- [ ] Implement `open` write and append paths in `builtin_open`: the `Writable` and `Appendable` flag branches currently return "not yet implemented" (`src/builtins_io.rs:197,371`); implement using `dir.open_with(path, OpenOptions::new().write(true).create(true).truncate(true))` for Writable and `.append(true)` for Appendable; wrap result in `Value::WriteHandle` with appropriate caps (`src/builtins_io.rs`)
-- [x] Enforce permissions in `builtin_open`: `readable` for `"r"`, `writable` for `"w"`, `appendable` for `"a"`; capability error `"DirCap: open requires <Readable|Writable|Appendable> permission"` on violation (`src/builtins_io.rs`)
-- [x] Enforce `listable` in `builtin_list_dir`; enforce `writable` in `builtin_write`/`builtin_write_atomic`; stubs for future `builtin_delete_file` (needs `deletable`) and `builtin_rename_file` (needs `renameable`) (`src/builtins_io.rs`)
-- [ ] Register capability flag nominal unit types in `TypeEnv`: `Readable`, `Writable`, `Listable`, `Statable`, `Appendable`, `Deletable`, `Renameable` — each as a singleton `Type::NominalTag` (no payload); register `%pwd` and `--cap-fs` DirCaps using BAS intersection types; update builtin type signatures using `Type::Intersection([DirCap, Flag])`: `list-dir` → `Intersection([DirCap, Listable])`, `open "r"` → `Intersection([DirCap, Readable])`, `open "w"` → `Intersection([DirCap, Writable])`; the subtyping `Intersection([DirCap, Readable, Writable]) <: Intersection([DirCap, Writable])` holds automatically under BAS intersection elimination (`src/type_env.rs`, `src/types.rs`)
-- [ ] Add `narrow` overload for DirCap: `[narrow cap@[[all DirCap Flag1 ...]] FlagName...]` produces a new DirCap with the intersection of source permissions and requested flags; the return type is `Intersection([DirCap, requested-flags])` — a BAS intersection narrower than the input; runtime error if a requested flag is not held in the source `DirPerms`; `[narrow cap Subtree "path"]` restricts the directory root to a subdirectory and returns the same intersection type with an updated root path (`src/builtins_io.rs` or new `src/builtins_cap.rs`)
-- [ ] Tests: `--cap-fs root=.:r` → `list-dir` succeeds, `open "w"` fails; `--cap-fs data='./d:[Readable Statable]'` → read succeeds, `list-dir` fails; `--cap-file cfg=Cargo.toml` (no mode) → read-write handle; extended syntax `--cap-file cfg='Cargo.toml:[Readable]'` → read-only handle; `narrow` reduces permissions; `narrow` to non-held flag errors (`tests/corpus/eval/`, `tests/corpus/cli/`)
-
----
-
 ## Standard Library Boundary
 
-### stdlib-io-tinct-migration: Move I/O builtins that don't need to be in Rust
+### stdlib-boundary: stdlib Rust surface area reduction
 
-Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irreducible syscall/opaque-type primitives). These specific ones do not.
+Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irreducible syscall/opaque-type primitives). These specific ones do not. Also adds missing Rust primitives that unlock tinct migrations, and verifies all stdlib modules use `%rust` groups cleanly after `primitive-privacy` Phase 3 lands.
+
+**Depends on:** `stdlib-tinct-migration`
 
 - [ ] Move `spki-pin` to tinct in `stdlib/net.llt`: pure dict construction, no syscalls, no Rust crates; `[fn [algorithm fingerprint] [if [not [has? valid-algos algorithm]] [error [str "unknown algorithm: " algorithm]] [set [set [] "algorithm" algorithm] "fingerprint" fingerprint]]]` where `valid-algos` is a tinct dict of accepted names (`stdlib/net.llt`, `src/builtins_io.rs`)
 - [ ] Add `raw-create : DirCap → Str → WriteHandle` Rust primitive: opens a file for writing (create/truncate) returning a `WriteHandle`; this splits the current `write(DirCap, path, String)` path to allow tinct-level pipe construction (`src/builtins_io.rs`, `src/type_env.rs`)
@@ -276,11 +241,6 @@ Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irredu
 - [ ] Change `cap-data` to return `Null` (empty dict `[]`) when the capability name is not present instead of erroring — this makes it a proper nullable lookup compatible with `get-or` and `has?` patterns (`src/builtins_io.rs`)
 - [ ] Once `cap-data` returns null on miss, rewrite `has-cap?` in tinct as `[fn [h cap] [not [null? [cap-data h cap]]]]`; remove `has-cap?` Rust builtin (`stdlib/io.llt`, `src/builtins_io.rs`)
 - [ ] Investigate and remove the vestigial Rust `http-get` builtin (the `HttpConn` form using `Value::HttpConn`/reqwest client directly): verify it is not called by any corpus tests, `stdlib/net.llt`, or user-facing code; `net.llt`'s `http-get` already implements HTTP without it (`src/builtins_io.rs`, `src/type_env.rs`)
-
-### stdlib-new-primitives: Add missing Rust primitives to unlock tinct migrations
-
-Five new Rust primitives identified by the boundary audit as the highest-leverage additions for shrinking the Rust surface area. Each unlocks one or more stdlib functions that can move from Rust to tinct.
-
 - [x] Add `str-index-of : Str → Str → Int` Rust builtin: native O(n) substring search returning start byte-index or -1 on miss; wraps `str::find`; replaces the O(n²) `str-find-impl` in prelude with an O(n) call (`src/builtins_string.rs`, `src/type_env.rs`, `stdlib/prelude.llt`)
 - [ ] Once `str-index-of` lands, rewrite `str-contains?`, `starts-with?` (string form), `ends-with?` (string form) in `stdlib/strings.llt` as tinct wrappers; remove the three Rust builtins from `standard_builtins()` (`stdlib/strings.llt`, `src/builtins_string.rs`)
 - [ ] Add `str-map-chars : (Str → Str) → Str → Str` Rust builtin: map a tinct function over Unicode codepoints, returning a new string; unlocks `upper`, `lower`, and character-level transforms as tinct stdlib functions (`src/builtins_string.rs`, `src/type_env.rs`)
@@ -289,6 +249,12 @@ Five new Rust primitives identified by the boundary audit as the highest-leverag
 - [ ] Add `regex-match? : Str → Str → Bool` Rust builtin: test if a regex pattern matches anywhere in a string using the `regex` crate; unlocks the `pattern` constraint in `validate` and other regex-dependent stdlib functions as tinct code (`src/builtins_string.rs`, `src/type_env.rs`)
 - [ ] Once `regex-match?` lands, rewrite `validate`'s `pattern` constraint check in tinct; identify which other parts of `validate` can move to tinct vs what must remain Rust (`stdlib/prelude.llt` or `src/builtins_meta.rs`)
 - [ ] Make `builtin-sort` accept an optional comparator argument: `builtin-sort : ((a → a → Bool)? → Dict → Dict)`; when provided, use comparator instead of natural type ordering; this allows `sort` and `sort-by` in prelude to both reduce to one Rust primitive (`src/builtins_seq_prim.rs`, `src/type_env.rs`)
+- [ ] Verify `stdlib/prelude.llt` imports exactly: `rust::core`, `rust::string`, `rust::collection`, `rust::json`, `rust::meta`; no bare Rust primitive references outside these groups; no `builtin-*` names remain (`stdlib/prelude.llt`)
+- [ ] Verify `stdlib/io.llt`, `stdlib/net.llt`, `stdlib/math.llt`, `stdlib/datetime.llt`, `stdlib/encoding.llt` each open with exactly one `[include %rust "..."]` and build entirely on prelude exports + their imported group (`stdlib/*.llt`)
+- [ ] Verify that intentionally unexported primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) are not accessible from user code — write corpus tests confirming `undefined variable` (`tests/corpus/eval/`)
+- [ ] Update `doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary` to document the `%rust` virtual module system and which modules each stdlib file imports (`doc/11-stdlib.md`)
+
+---
 
 ## Internal Integrity
 
@@ -328,48 +294,22 @@ See `doc/whatif/builtin-privacy.md` (redesigned 2026-05-13). **Spec chapters:** 
 - [ ] Remove T009 type-checker warning (no longer needed — `builtin-*` names don't exist) (`src/typecheck.rs`)
 - [ ] Tests: tinct file with no includes produces `undefined variable` for `+`, `error`, `map`; `prelude.llt` itself works; `[include %libdir "io.llt"]` works; user code cannot call `[include %rust "io"]` (undefined variable: `%rust`) (`tests/corpus/eval/`)
 
-### stdlib-primitive-audit: Verify all stdlib modules use `%rust` groups cleanly
-
-Post-rewrite verification sprint — runs after `primitive-privacy` Phase 3 lands.
-
-- [ ] Verify `stdlib/prelude.llt` imports exactly: `rust::core`, `rust::string`, `rust::collection`, `rust::json`, `rust::meta`; no bare Rust primitive references outside these groups; no `builtin-*` names remain (`stdlib/prelude.llt`)
-- [ ] Verify `stdlib/io.llt`, `stdlib/net.llt`, `stdlib/math.llt`, `stdlib/datetime.llt`, `stdlib/encoding.llt` each open with exactly one `[include %rust "..."]` and build entirely on prelude exports + their imported group (`stdlib/*.llt`)
-- [ ] Verify that intentionally unexported primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) are not accessible from user code — write corpus tests confirming `undefined variable` (`tests/corpus/eval/`)
-- [ ] Update `doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary` to document the `%rust` virtual module system and which modules each stdlib file imports (`doc/11-stdlib.md`)
-
 ---
 
-## Networking
+## Miscellaneous
 
-### net-gaps: QUIC datagrams, SPKI correctness, HTTP/3 concurrent driver
+### misc-gaps: Miscellaneous small gaps across the codebase
 
-Genuine deferred items from the `http-sessions` and `connector-tls` sprints. Each is a deliberate "implement later" stub.
+Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer). Genuine deferred items from the `http-sessions` and `connector-tls` sprints. Two correctness/quality gaps in the evaluator noted in source comments. Extends `--cap-fs` and `--cap-file` with fine-grained read/write/list permissions.
 
-- [x] Remove `socks5-connect` and `proxy-connect` from `standard_builtins()`, `TypeEnv::with_builtins()`, and the builtin count assertion — decided 2026-05-09 to remove from registry (they return "not yet implemented" errors and SOCKS5 is implemented as a pure-tinct `socks5-layer` in stdlib) (`src/builtins.rs`, `src/builtins_io.rs`, `src/type_env.rs`) — ALREADY DONE (verified 2026-05-11: not present in any of these files)
-- [x] Delete stale SPKI comment at `src/builtins_io.rs:3335` — two lines saying "simplified implementation that hashes the whole cert"; `compute_spki_hash` already correctly extracts `subject_pki.raw` (`src/builtins_io.rs`) — ALREADY DONE (verified 2026-05-11: comment not present, implementation correct at line 3121)
-- [x] Add `Value::QuicDatagramHandle(Rc<quinn::Connection>)` variant to the `Value` enum and its `type_name`/`Display`/`PartialEq` impls (`src/value.rs`) — ALREADY DONE (line 396 + impls at lines 474, 560, 648, 735)
-- [x] Register `Type::QuicDatagramHandle` in `TypeEnv::with_builtins` and add type signature for `quic-open-datagram` (`src/type_env.rs`) — ALREADY DONE (lines 1886-1891)
-- [x] Implement `quic-open-datagram`: replace the current "not yet implemented" error body with `block_on(session.open_uni())` to get a send stream; return `Value::QuicDatagramHandle(Rc::clone(&conn))` (`src/builtins_io.rs:4457`) — ALREADY DONE (lines 4181-4231: returns Value::QuicDatagramHandle(conn))
-- [x] Add `send-datagram` overload for `Value::QuicDatagramHandle`: dispatch to `block_on(conn.send_datagram(bytes))` (`src/builtins_io.rs`)
-- [x] Add `recv-datagram` overload for `Value::QuicDatagramHandle`: dispatch to `block_on(conn.read_datagram())`, return `Bytes` (`src/builtins_io.rs`)
-- [x] Add `async_rt::spawn<F: Future>(fut: F) -> JoinHandle<F::Output>` helper using `TOKIO_RT.with(|rt| rt.spawn(fut))` — tokio `current_thread` runtime drives spawned tasks during `block_on` calls (`src/async_rt.rs`)
-- [x] Define `Http3SessionState { send_request: h3::client::SendRequest<...>, _driver: JoinHandle<()> }` struct in `src/builtins_io.rs`; spawn the h3 `Connection` driver via `async_rt::spawn` and store its `JoinHandle` in the struct to keep it alive
-- [x] Change `Value::Http3Session` to wrap `Rc<RefCell<Http3SessionState>>` instead of the bare `send_request`; update all match arms that destructure it (`src/value.rs`, `src/builtins_io.rs`)
+- [ ] Add `TripleQuotedString(String)` and `TripleInterpolatedString(Vec<InterpolatedPart>)` token types to `src/lexer.rs`: detect `"""` at the start of a string context, consume content until the closing `"""`, emit accordingly; then in `src/parser.rs` desugar `TripleQuotedString(s)` → `[unindent s]` and `TripleInterpolatedString(parts)` → `[unindent i"..."]` directly in the parser (not as a stdlib macro, since macros cannot intercept token patterns) (`src/lexer.rs`, `src/parser.rs`)
 - [ ] Tests: `quic-open-datagram` + `send-datagram` + `recv-datagram` round-trip corpus test; `http3-session` concurrent request (two sequential requests on one session succeed); QUIC datagram type error on wrong handle type (`tests/corpus/eval/`)
-
----
-
-## Evaluator and Macros
-
-### eval-gaps: Unquote nesting, error span threading
-
-Two correctness/quality gaps in the evaluator noted in source comments.
-
 - [ ] **Unquote in nested positions** (`src/eval.rs:1343`): The `eval_quote` fallback arm (`_ =>`) calls `ast_to_dict_expr` which does not recognize `Expr::Unquote`/`Expr::UnquoteSplice` in nested positions; add a recursive `eval_quote_expr` pre-pass in `src/eval.rs` that walks the full `Expr` tree — when it encounters `Expr::Unquote(inner)`, evaluate `inner` and substitute the result as a serialized AST value node; when it encounters `Expr::UnquoteSplice(inner)` in a list position, splice the evaluated sequence; all other nodes recurse unchanged; replace the `_ =>` arm with a call to `eval_quote_expr` then `ast_to_dict_expr`; `ast_to_dict_expr` is unchanged (`src/eval.rs`); add corpus tests for nested `[unquote ...]` inside call args, dict values, and seq literals (`tests/corpus/eval/`)
-- [x] Remove stale `#[allow(dead_code)]` attribute on `eagerly_register_constructors` in `src/eval.rs:1261` — the function is actively called from `src/eval_dict.rs` and the lint fires spuriously for `pub(crate)` items in some configurations (`src/eval.rs`)
-- [x] Fix stale test comment at `src/typecheck.rs:8200` that says "`@[...]` composite annotation is not yet implemented in the parser" — `Annotation::PropertyDict` is fully implemented and used throughout the prelude; update the comment (`src/typecheck.rs`)
-- [x] Make TypeAssert materialization iterative: replace the `eval_recursive` call at `src/eval_materialize.rs:1655` (`TODO(cek-eval)`) with a `TypeAssertCheck` continuation — push the check onto the continuation stack and use `Action::Eval` for the inner expression instead of recursing (`src/eval_materialize.rs`)
-- [x] **`mat_span` threading through DotAccessForceData** (`src/eval_materialize.rs:1344`, `src/eval_materialize.rs:1379`): When `.field` access in an access chain triggers materialization, the `mat_span` used is the access expression span rather than the outer materialization context's span — this loses the outermost call-site span in error messages for chained access like `a.b.c`; fix by threading `outer_mat_span: Option<Span>` through `DotAccessForceData` and using it in `Action::Materialize`; corresponding test is at `src/eval.rs:5559` (currently asserts the wrong span as a known limitation — update when fixed)
+- [ ] Extend `--cap-file` argument parsing in `src/main.rs`: same extended syntax — if mode starts with `[`, parse as `[Cap1 Cap2 ...]` list (valid names: `Readable`, `Writable`, `Appendable`, `Binary`); no `:mode` suffix → open file read-write (equivalent to `rw`); retain existing `r`/`rb`/`w`/`wb` letter shorthands for backward compat (`src/main.rs`)
+- [ ] Implement `open` write and append paths in `builtin_open`: the `Writable` and `Appendable` flag branches currently return "not yet implemented" (`src/builtins_io.rs:197,371`); implement using `dir.open_with(path, OpenOptions::new().write(true).create(true).truncate(true))` for Writable and `.append(true)` for Appendable; wrap result in `Value::WriteHandle` with appropriate caps (`src/builtins_io.rs`)
+- [ ] Register capability flag nominal unit types in `TypeEnv`: `Readable`, `Writable`, `Listable`, `Statable`, `Appendable`, `Deletable`, `Renameable` — each as a singleton `Type::NominalTag` (no payload); register `%pwd` and `--cap-fs` DirCaps using BAS intersection types; update builtin type signatures using `Type::Intersection([DirCap, Flag])`: `list-dir` → `Intersection([DirCap, Listable])`, `open "r"` → `Intersection([DirCap, Readable])`, `open "w"` → `Intersection([DirCap, Writable])`; the subtyping `Intersection([DirCap, Readable, Writable]) <: Intersection([DirCap, Writable])` holds automatically under BAS intersection elimination (`src/type_env.rs`, `src/types.rs`)
+- [ ] Add `narrow` overload for DirCap: `[narrow cap@[[all DirCap Flag1 ...]] FlagName...]` produces a new DirCap with the intersection of source permissions and requested flags; the return type is `Intersection([DirCap, requested-flags])` — a BAS intersection narrower than the input; runtime error if a requested flag is not held in the source `DirPerms`; `[narrow cap Subtree "path"]` restricts the directory root to a subdirectory and returns the same intersection type with an updated root path (`src/builtins_io.rs` or new `src/builtins_cap.rs`)
+- [ ] Tests: `--cap-fs root=.:r` → `list-dir` succeeds, `open "w"` fails; `--cap-fs data='./d:[Readable Statable]'` → read succeeds, `list-dir` fails; `--cap-file cfg=Cargo.toml` (no mode) → read-write handle; extended syntax `--cap-file cfg='Cargo.toml:[Readable]'` → read-only handle; `narrow` reduces permissions; `narrow` to non-held flag errors (`tests/corpus/eval/`, `tests/corpus/cli/`)
 
 ---
 
