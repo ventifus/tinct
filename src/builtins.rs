@@ -1438,6 +1438,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
 }
 
 /// Create the root environment with all builtins registered as `Value::Builtin`.
+/// Does NOT include `builtin-*` aliases — those are added by `inject_prelude_aliases()`.
 pub fn create_root_env() -> Rc<RefCell<Environment>> {
     let env = Rc::new(RefCell::new(Environment::new()));
     for def in standard_builtins() {
@@ -1445,8 +1446,36 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
         env.borrow_mut().insert(def.name.to_string(), thunk);
     }
 
-    // Add stable "builtin-*" aliases for operators that will be shadowed by prelude wrappers.
-    // These provide an escape hatch to the raw Rust implementations.
+    // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
+    // These are unit variants (no payload) used as flags for `connect` and `tls-connect`.
+    for tag in [
+        "Tcp",
+        "Udp",
+        "UnixStream",
+        "UnixDatagram",
+        "NamedPipe",
+        "Icmp",
+    ] {
+        let thunk = Rc::new(Thunk::new_materialized(
+            Value::Variant {
+                tag: tag.to_string(),
+                payload: None,
+            },
+            Span::origin(),
+        ));
+        env.borrow_mut().insert(tag.to_string(), thunk);
+    }
+
+    env
+}
+
+/// Inject internal `builtin-*` aliases into an environment.
+///
+/// These aliases provide stable names for Rust-native builtin implementations
+/// that prelude wrappers can call even when the user-facing name (e.g., `+`, `map`)
+/// is shadowed. They are internal implementation details and should ONLY be visible
+/// to prelude.llt during its evaluation — user code should use the public wrappers.
+pub fn inject_prelude_aliases(env: &mut Environment) {
     let aliases: Vec<crate::value::BuiltinDef> = vec![
         builtin!("builtin-lt", builtin_lt, [Strictness::Seq, Strictness::Seq]),
         builtin!("builtin-eq", builtin_eq, [Strictness::Seq, Strictness::Seq]),
@@ -1504,30 +1533,8 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
 
     for def in aliases {
         let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
-        env.borrow_mut().insert(def.name.to_string(), thunk);
+        env.insert(def.name.to_string(), thunk);
     }
-
-    // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
-    // These are unit variants (no payload) used as flags for `connect` and `tls-connect`.
-    for tag in [
-        "Tcp",
-        "Udp",
-        "UnixStream",
-        "UnixDatagram",
-        "NamedPipe",
-        "Icmp",
-    ] {
-        let thunk = Rc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: tag.to_string(),
-                payload: None,
-            },
-            Span::origin(),
-        ));
-        env.borrow_mut().insert(tag.to_string(), thunk);
-    }
-
-    env
 }
 
 /// Create the stdlib environment: root builtins + prelude functions.
@@ -1610,7 +1617,7 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
     let root_env = create_root_env();
 
-    // Create a bootstrap EvalContext with just the root env (before stdlib is loaded)
+    // Create a bootstrap EvalContext
     let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| {
             Box::new(crate::error::EvalError::internal(
@@ -1621,14 +1628,28 @@ fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::erro
     let bootstrap_ctx =
         crate::eval::EvalContext::new(bootstrap_base_dir, Rc::clone(&root_env), false);
 
-    // Create a child env with stdlib entries
-    let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(root_env)));
+    // Create stdlib env as a child of root_env
+    let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&root_env))));
+
+    // Temporarily inject builtin-* aliases for prelude evaluation.
+    inject_prelude_aliases(&mut stdlib_env.borrow_mut());
 
     // Load prelude — provides all public stdlib functions.
-    // strings.llt, math.llt, and encoding.llt are available via
-    // [include libdir "strings.llt"] (etc.) — they are not loaded automatically.
+    // Prelude functions will be evaluated in stdlib_env and will capture
+    // environments that can see builtin-* names.
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
+
+    // TODO(builtin-privacy): Remove builtin-* aliases after prelude is loaded.
+    // Currently, this causes a bug where prelude functions lose access to builtin-*
+    // because they hold Rc<RefCell<Environment>> shared references to stdlib_env.
+    // Removing entries from stdlib_env makes them invisible to ALL closures.
+    //
+    // The fix requires a child-environment approach where prelude functions capture
+    // an environment chain that includes builtin-* while user code gets a separate
+    // environment without them. See doc/whatif/builtin-privacy.md for the design.
+    //
+    // For now, builtin-* names remain visible to user code.
 
     // Load macros — exports tmpl-transformer and helpers used by expand_macros.
     // Loaded after prelude so macro helpers can reference prelude functions.
@@ -8463,7 +8484,8 @@ mod tests {
         let stdlib_env = create_stdlib_env().expect("stdlib env");
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&dir, cap_std::ambient_authority())
             .expect("open dir");
-        let ctx = crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true);
+        let ctx =
+            crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true, None);
 
         let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("file.llt"))];
         let err = builtin_include(BuiltinArgs {
@@ -8494,7 +8516,8 @@ mod tests {
         let stdlib_env = create_stdlib_env().expect("stdlib env");
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&dir, cap_std::ambient_authority())
             .expect("open dir");
-        let ctx = crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true);
+        let ctx =
+            crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true, None);
 
         let args = vec![
             thunk(dir_cap_val(&dir)),
@@ -10539,6 +10562,8 @@ mod tests {
     /// Helper: create a function whose closure env contains builtins (needed for
     /// tests where the function body calls builtins like $builtin-add).
     fn n_arg_fn_with_builtins(param_names: &[&str], body_expr: Expr) -> Value {
+        let env = create_root_env();
+        inject_prelude_aliases(&mut env.borrow_mut());
         Value::Function {
             params: Rc::new(
                 param_names
@@ -10551,7 +10576,7 @@ mod tests {
                     .collect(),
             ),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
-            env: create_root_env(),
+            env,
         }
     }
 
