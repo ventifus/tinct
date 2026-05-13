@@ -368,12 +368,6 @@ pub enum Value {
     /// Timezone (parsed IANA TZ rules from zoneinfo file).
     /// Opaque — not serializable, consumed by timezone conversion builtins.
     Timezone(Rc<jiff::tz::TimeZone>),
-    /// HTTP connection pool — persistent connection for HTTP requests.
-    /// Created by reqwest client, consumed by `http-get` and other HTTP verbs.
-    HttpConn {
-        client: Rc<reqwest::blocking::Client>,
-        base_url: Option<String>,
-    },
     /// QUIC session — multiplexed connection over UDP (RFC 9000).
     /// Wraps a `quinn::Connection`. Created by `quic-session`, consumed by
     /// `quic-open-stream` and `quic-open-datagram`.
@@ -387,9 +381,13 @@ pub enum Value {
         base_url: String,
     },
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
-    /// Wraps an `h3::client::SendRequest` over `h3_quinn`. Created by `http3-session`,
-    /// consumed by `http-request`.
-    Http3Session(Rc<RefCell<h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>>>),
+    /// Wraps an `Http3SessionState` containing the `h3::client::SendRequest` and the
+    /// background driver `JoinHandle`. Created by `http3-session`, consumed by `http-request`.
+    Http3Session(Rc<RefCell<Http3SessionState>>),
+    /// QUIC datagram handle — unreliable message delivery over QUIC (RFC 9221).
+    /// Wraps a `quinn::Connection` for datagram send/recv operations.
+    /// Created by `quic-open-datagram`, consumed by `send-datagram` and `recv-datagram`.
+    QuicDatagramHandle(Rc<quinn::Connection>),
     /// Message-oriented datagram socket (UDP or Unix datagram).
     /// Uses `send`/`recv` semantics (message boundaries preserved), not stream I/O.
     /// Created by `connect cap Udp host port` or `connect cap UnixDatagram path`.
@@ -398,6 +396,22 @@ pub enum Value {
         socket: DatagramSocket,
         creation_span: Span,
     },
+}
+
+/// State for an HTTP/3 session: the request sender and the background driver task.
+///
+/// The h3 protocol requires a connection-level "driver" future to be polled
+/// concurrently with request streams — it processes incoming QUIC frames (SETTINGS,
+/// GOAWAY, server push, etc.). We spawn it as a local task via `async_rt::spawn_local`
+/// so it is polled every time `async_rt::block_on` drives the runtime.
+///
+/// Dropping the `_driver` `JoinHandle` would detach the task; keeping it here ensures
+/// the driver is aborted when the session is dropped (all `Rc` clones released).
+pub struct Http3SessionState {
+    /// The request sender half — used by `http-request` to issue HTTP/3 requests.
+    pub send_request: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>,
+    /// Background driver task handle. Dropped (and task aborted) when the session is dropped.
+    pub _driver: tokio::task::JoinHandle<()>,
 }
 
 /// Socket variant carried inside `Value::DatagramHandle`.
@@ -463,10 +477,10 @@ impl Value {
             Value::Duration(_) => "Duration",
             Value::ClockCap(_) => "ClockCap",
             Value::Timezone(_) => "Timezone",
-            Value::HttpConn { .. } => "HttpConn",
             Value::QuicSession(_) => "QuicSession",
             Value::Http2Session { .. } => "Http2Session",
             Value::Http3Session(_) => "Http3Session",
+            Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
             Value::DatagramHandle { .. } => "DatagramHandle",
         }
     }
@@ -542,16 +556,10 @@ impl fmt::Debug for Value {
                 ClockCapInner::Fixed(nanos) => write!(f, "ClockCap(Fixed({nanos} ns))"),
             },
             Value::Timezone(_) => write!(f, "Timezone"),
-            Value::HttpConn { base_url, .. } => {
-                if let Some(base) = base_url {
-                    write!(f, "HttpConn({base})")
-                } else {
-                    write!(f, "HttpConn")
-                }
-            }
             Value::QuicSession(_) => write!(f, "QuicSession"),
             Value::Http2Session { base_url, .. } => write!(f, "Http2Session({base_url})"),
             Value::Http3Session(_) => write!(f, "Http3Session"),
+            Value::QuicDatagramHandle(_) => write!(f, "QuicDatagramHandle"),
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
         }
     }
@@ -629,16 +637,10 @@ impl fmt::Display for Value {
             }
             Value::ClockCap(_) => write!(f, "<ClockCap>"),
             Value::Timezone(_) => write!(f, "<Timezone>"),
-            Value::HttpConn { base_url, .. } => {
-                if let Some(base) = base_url {
-                    write!(f, "<HttpConn {base}>")
-                } else {
-                    write!(f, "<HttpConn>")
-                }
-            }
             Value::QuicSession(_) => write!(f, "<QuicSession>"),
             Value::Http2Session { base_url, .. } => write!(f, "<Http2Session {base_url}>"),
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
+            Value::QuicDatagramHandle(_) => write!(f, "<QuicDatagramHandle>"),
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
         }
     }
@@ -725,7 +727,8 @@ impl PartialEq for Value {
                 Rc::ptr_eq(a, b)
             }
             (Value::Http3Session(a), Value::Http3Session(b)) => Rc::ptr_eq(a, b),
-            // Timezone and HttpConn are not comparable — opaque data
+            (Value::QuicDatagramHandle(a), Value::QuicDatagramHandle(b)) => Rc::ptr_eq(a, b),
+            // Timezone is not comparable — opaque data
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
             // Handle and WriteHandle cannot be meaningfully compared (contain RefCell and trait objects).

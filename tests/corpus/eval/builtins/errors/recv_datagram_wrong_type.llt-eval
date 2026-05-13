@@ -3,7 +3,7 @@
 [recv-datagram "not-a-socket"]
 
 === error
-[E010] recv-datagram: expected DatagramHandle, got String
+[E010] recv-datagram: expected DatagramHandle or QuicDatagramHandle, got String
 
 === warn
 cannot unify DatagramHandle with "not-a-socket" at 2:16-2:30
