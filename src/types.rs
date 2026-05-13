@@ -1603,6 +1603,9 @@ pub struct InferState {
     /// Name of the function currently being inferred (for polymorphic recursion detection).
     /// Set by infer_fn when entering a function body, cleared when exiting.
     pub current_function: Option<String>,
+    /// Source file path being type-checked (for diagnostics that need to know the file).
+    /// Set to `Some("prelude.llt")` when type-checking the prelude, None otherwise.
+    pub source_path: Option<String>,
 }
 
 impl InferState {
@@ -1673,6 +1676,7 @@ impl InferState {
             failed_bindings: HashMap::new(),
             scheme_map: None,
             current_function: None,
+            source_path: None,
         }
     }
 

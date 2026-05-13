@@ -19,7 +19,9 @@ use crate::desugar;
 use crate::expand;
 use crate::parser;
 use crate::resolve;
-use crate::typecheck::{typecheck_file_with_types_and_env, TypeMap};
+use crate::typecheck::{
+    typecheck_file_with_types_and_env, typecheck_file_with_types_and_env_and_source, TypeMap,
+};
 use crate::types::TypeEnv;
 
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
@@ -65,6 +67,7 @@ fn typecheck_and_merge_stdlib_module(
     source: &str,
     parent_env: &Rc<TypeEnv>,
     env: &mut TypeEnv,
+    source_path: Option<&str>,
 ) -> Result<(), ()> {
     // Parse the module source
     let file = parser::parse(source).map_err(|_| ())?;
@@ -79,7 +82,11 @@ fn typecheck_and_merge_stdlib_module(
 
     // Type-check with the parent environment (builtins + prelude)
     let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck_file_with_types_and_env(&file.node, Rc::clone(parent_env));
+        typecheck_file_with_types_and_env_and_source(
+            &file.node,
+            Rc::clone(parent_env),
+            source_path.map(|s| s.to_string()),
+        );
 
     // Silently ignore type errors
     let _ = type_errors;
@@ -113,7 +120,14 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     builtins_env.insert("%stdin".to_string(), crate::types::Type::Handle);
     let builtins_env = Rc::new(builtins_env);
 
-    if typecheck_and_merge_stdlib_module(prelude_source, &builtins_env, &mut env).is_err() {
+    if typecheck_and_merge_stdlib_module(
+        prelude_source,
+        &builtins_env,
+        &mut env,
+        Some("prelude.llt"),
+    )
+    .is_err()
+    {
         // Parse/expand error: return builtins-only environment (with capability bindings)
         return builtins_env;
     }
