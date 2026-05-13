@@ -10820,4 +10820,72 @@ mod tests {
             diagnostics
         );
     }
+
+    // -- Label annotation tests --
+
+    #[test]
+    fn test_label_annotation_anonymous_form() {
+        // key@Label should create an anonymous Label-kinded TypeVar
+        let result = check("[f: [fn@a [key@Label dict@d] dict]]");
+        assert!(
+            result.is_ok(),
+            "key@Label annotation should be accepted: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_label_annotation_named_form() {
+        // key@[label: l] should create a named Label-kinded TypeVar
+        let result = check("[f: [fn@a [key@[label: l] dict@d] dict]]");
+        assert!(
+            result.is_ok(),
+            "key@[label: l] annotation should be accepted: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_label_annotation_same_name_multiple_params() {
+        // Using the same label name in multiple parameters should work
+        let result = check("[f: [fn@a [key1@[label: l] key2@[label: l] dict@d] dict]]");
+        assert!(
+            result.is_ok(),
+            "same label TypeVar in multiple params should work: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_label_annotation_named_form_requires_lowercase() {
+        // label: value must be a lowercase name
+        let result = check("[f: [fn@a [key@[label: UpperCase] dict@d] dict]]");
+        assert!(
+            result.is_err(),
+            "label: value with uppercase name should be rejected"
+        );
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("lowercase type variable")),
+            "should report that label: value must be lowercase, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn test_label_annotation_named_form_requires_bare_name() {
+        // label: value must be a bare name, not a string literal
+        let result = check("[f: [fn@a [key@[label: \"foo\"] dict@d] dict]]");
+        assert!(
+            result.is_err(),
+            "label: value with string literal should be rejected"
+        );
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("bare name")),
+            "should report that label: value must be a bare name, got: {:?}",
+            errs
+        );
+    }
 }
