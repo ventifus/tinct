@@ -1,8 +1,8 @@
 # Expansion-time error shows "in expansion of" provenance.
 # The macro transformer tries to access a nonexistent argument index.
-[defmacro broken [fn [macro-args]
+[defmacro broken [macro-args]
   [type: "var"  name: [get 5 macro-args]]
-]]
+]
 
 [broken 1]
 === error
