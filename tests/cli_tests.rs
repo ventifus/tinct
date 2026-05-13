@@ -2319,8 +2319,8 @@ fn write_and_slurp_roundtrip() {
 [include %libdir "io.llt"]
 [write-file %cap "test.txt" "roundtrip data"]
 [match [read-file %cap "test.txt"]
-  [Ok v] v
-  [Err msg] [error msg]]
+  [Ok v]: v
+  [Err msg]: [error msg]]
 "#;
     let (path, _llt_dir) = write_temp_llt("write_roundtrip", llt_content);
     let output = Command::new(tinct_bin())

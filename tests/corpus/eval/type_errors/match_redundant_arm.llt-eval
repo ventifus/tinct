@@ -1,6 +1,6 @@
 [match [@[Int String] 42]
-    Int     "int"
-    String  "str"
-    Int     "int-again"]
+    Int:     "int"
+    String:  "str"
+    Int:     "int-again"]
 === out
 unreachable match arm

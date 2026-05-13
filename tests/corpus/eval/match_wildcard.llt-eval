@@ -1,6 +1,6 @@
 [match 3.14
-    Int   "number"
-    Str   "string"
-    _     "other"]
+    Int:   "number"
+    Str:   "string"
+    _:     "other"]
 === out
 String("other")

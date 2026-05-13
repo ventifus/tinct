@@ -4,8 +4,8 @@
 # With type narrowing: v gets the type of the ok field from the scrutinee Record.
 [f: [fn [x]
   [match x
-    [ok: v]  [+ v 1]
-    _        0]]
+    [ok: v]:  [+ v 1]
+    _:        0]]
  result: [f [ok: 41]]]
 === out
 Dict({"f": Function(x), "result": Int(42)})

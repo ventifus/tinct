@@ -1,5 +1,5 @@
 [match [user: [name: "alice"]]
-    [user: [name: n]]  n
-    _                   "unknown"]
+    [user: [name: n]]:  n
+    _:                   "unknown"]
 === out
 String("alice")

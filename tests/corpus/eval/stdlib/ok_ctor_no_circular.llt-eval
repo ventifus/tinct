@@ -2,7 +2,7 @@
 # Tests the prelude's Ok: Ok and Err: Err re-exports (fixed by eval_dict pre-pass).
 [ok-val: [Ok 42]
  err-val: [Err "oops"]
- ok-result: [match ok-val [Ok v] v [Err _] 0]
- err-result: [match err-val [Ok v] v [Err _] -1]]
+ ok-result: [match ok-val [Ok v]: v [Err _]: 0]
+ err-result: [match err-val [Ok v]: v [Err _]: -1]]
 === out
 Dict({"ok-val": Variant(Ok, Int(42)), "err-val": Variant(Err, String("oops")), "ok-result": Int(42), "err-result": Int(-1)})

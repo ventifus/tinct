@@ -1,6 +1,6 @@
 [match [ok: 42]
-    [ok: v]     v
-    [err: msg]  0
-    _           -1]
+    [ok: v]:     v
+    [err: msg]:  0
+    _:           -1]
 === out
 Int(42)
