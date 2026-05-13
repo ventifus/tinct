@@ -1,0 +1,5 @@
+# Appendable class declaration evaluates to an empty dict (marker value).
+# The class registers "Appendable" in the runtime class registry.
+[class [Appendable a]]
+=== out
+Dict({})

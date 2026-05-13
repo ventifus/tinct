@@ -1103,6 +1103,60 @@ result-ok@[doc: "Wrap a value in Ok"]: [fn@Unknown [v] [Ok v]]
 result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: result-ok]
 
 # ============================================================================
+# Type Class Declarations: Mappable
+# ============================================================================
+#
+# Mappable generalizes map over type constructors (Seq, Dict).
+# The class parameter `f` has Kind::Operator (pre-registered in InferState::new()
+# with Kind::Operator — the LLT class declaration inherits that kind).
+# The fmap method signature uses HKT type syntax; the runtime value here is
+# the class declaration dict registered in the runtime class registry.
+#
+# Note: satisfies_constraint in type_unify.rs handles Mappable constraint
+# checking via the hardcoded fixed-instance set. These declarations extend
+# the runtime class/instance registry so user code can access the method dicts.
+
+Mappable@[doc: "Type class for mappable type constructors (Seq, Dict)"]:
+  [class [Mappable f]]
+
+MappableSeq@[doc: "Mappable instance for Seq: fmap = builtin-map"]:
+  [instance [Mappable Seq]
+    fmap: [fn [f xs] [builtin-map f xs]]]
+
+MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
+  [instance [Mappable Dict]
+    fmap: [fn [f m] [builtin-map f m]]]
+
+# ============================================================================
+# Type Class Declarations: Appendable
+# ============================================================================
+#
+# Appendable generalizes concatenation over concrete types (String, Dict, Seq).
+# The class parameter `a` has Kind::Type (kind-* typeclass, not Operator-kinded).
+# append-one: binary concatenation; empty: the identity element for concatenation.
+#
+# Note: satisfies_constraint in type_unify.rs handles Appendable constraint
+# checking via the hardcoded fixed-instance set.
+
+Appendable@[doc: "Type class for appendable types (String, Dict, Seq)"]:
+  [class [Appendable a]]
+
+AppendableStr@[doc: "Appendable instance for String: append-one = str, empty = empty string"]:
+  [instance [Appendable String]
+    append-one: [fn [a b] [str a b]]
+    empty: ""]
+
+AppendableRecord@[doc: "Appendable instance for Dict: append-one = merge, empty = empty dict"]:
+  [instance [Appendable Dict]
+    append-one: [fn [a b] [merge a b]]
+    empty: []]
+
+AppendableSeq@[doc: "Appendable instance for Seq: append-one = concat, empty = empty seq"]:
+  [instance [Appendable Seq]
+    append-one: [fn [a b] [builtin-concat a b]]
+    empty: []]
+
+# ============================================================================
 # Sequences
 # ============================================================================
 

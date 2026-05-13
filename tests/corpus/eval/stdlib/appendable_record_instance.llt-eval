@@ -1,0 +1,10 @@
+# AppendableRecord instance: append-one merges two dicts, empty is [].
+# merge is right-biased: keys from second dict override first.
+[
+  inst: [instance [Appendable Dict]
+    append-one: [fn [a b] [merge a b]]
+    empty: []]
+  result: [inst.append-one [x: 1 y: 2] [y: 99 z: 3]]
+]
+=== out
+Dict({"inst": Dict({"append-one": Function(a, b), "empty": Dict({})}), "result": Dict({"x": Int(1), "y": Int(99), "z": Int(3)})})

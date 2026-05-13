@@ -1815,17 +1815,33 @@ fn infer_expr(
                 method_types.insert(method_name, TypeScheme::mono(method_type));
             }
 
-            // Build class declaration with Kind::Type for all params by default.
-            // Kind::Operator params are detected from annotations (hkt-kind-inference).
-            // For now, all params default to Kind::Type (parser doesn't extract @Operator yet).
+            // Build class declaration. Inherit param kinds from any existing pre-registration
+            // (e.g. Mappable is pre-registered with Kind::Operator in InferState::new()).
+            // This preserves the higher-kinded kind even when the parser cannot yet extract
+            // @Operator annotations from class param syntax (hkt-kind-inference).
+            let existing_param_kinds: std::collections::HashMap<String, Kind> = state
+                .class_env
+                .get(name)
+                .map(|existing| existing.params.iter().cloned().collect())
+                .unwrap_or_default();
+
             let class_decl = ClassDecl {
                 name: name.clone(),
-                params: params.iter().map(|p| (p.clone(), Kind::Type)).collect(),
+                params: params
+                    .iter()
+                    .map(|p| {
+                        let kind = existing_param_kinds
+                            .get(p)
+                            .cloned()
+                            .unwrap_or(Kind::Type);
+                        (p.clone(), kind)
+                    })
+                    .collect(),
                 superclasses: superclasses.clone(),
                 methods: method_types,
             };
 
-            // Register in ClassEnv
+            // Register in ClassEnv (replaces any prior registration, preserving inherited kinds)
             state.class_env.insert(class_decl.clone());
 
             // Populate kind_env for Operator-kinded params (hkt-kind-inference Task 1)

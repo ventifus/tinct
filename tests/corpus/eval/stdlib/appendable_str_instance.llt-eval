@@ -1,0 +1,11 @@
+# AppendableStr instance: append-one concatenates two strings, empty is "".
+# Access the append-one and empty methods from the instance dict.
+[
+  inst: [instance [Appendable String]
+    append-one: [fn [a b] [str a b]]
+    empty: ""]
+  result: [inst.append-one "hello" " world"]
+  init: inst.empty
+]
+=== out
+Dict({"inst": Dict({"append-one": Function(a, b), "empty": String("")}), "result": String("hello world"), "init": String("")})
