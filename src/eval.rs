@@ -308,7 +308,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::TypeVar(_, _) => true,
         Type::Record(_) => true, // Records handled separately via proxy wrapping
         Type::Proxy => matches!(value, Value::Proxy { .. }),
-        Type::DirCap => matches!(value, Value::DirCap(_) | Value::RevocableDirCap { .. }),
+        Type::DirCap => matches!(value, Value::DirCap { .. } | Value::RevocableDirCap { .. }),
         Type::NetCap => matches!(value, Value::NetCap(_)),
         Type::Handle => matches!(value, Value::Handle { .. } | Value::WriteHandle { .. }),
         Type::Uri => matches!(value, Value::Uri { .. }),
@@ -6601,7 +6601,10 @@ mod tests {
                 cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
                     .expect("open temp_dir for %pwd");
             let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
                 Span::origin(),
             ));
             test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
@@ -6697,7 +6700,10 @@ mod tests {
                 cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
                     .expect("open temp_dir for %pwd");
             let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
                 Span::origin(),
             ));
             test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
@@ -6769,7 +6775,10 @@ mod tests {
                 cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
                     .expect("open temp_dir1 for %pwd");
             let pwd_thunk1 = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap(Rc::new(pwd_dir1)),
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir1),
+                    perms: crate::value::DirPerms::full(),
+                },
                 Span::origin(),
             ));
             env1.borrow_mut().insert("%pwd".to_string(), pwd_thunk1);
@@ -6795,7 +6804,10 @@ mod tests {
                 cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
                     .expect("open temp_dir2 for %pwd");
             let pwd_thunk2 = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap(Rc::new(pwd_dir2)),
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir2),
+                    perms: crate::value::DirPerms::full(),
+                },
                 Span::origin(),
             ));
             env2.borrow_mut().insert("%pwd".to_string(), pwd_thunk2);
@@ -6892,7 +6904,10 @@ mod tests {
                 cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
                     .expect("open temp_dir1 for %pwd");
             let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
                 Span::origin(),
             ));
             env_ctx1.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
@@ -6970,7 +6985,10 @@ mod tests {
                 cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
                     .expect("open temp_dir2 for %pwd");
             let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap(Rc::new(pwd_dir)),
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
                 Span::origin(),
             ));
             env_ctx2.borrow_mut().insert("%pwd".to_string(), pwd_thunk);

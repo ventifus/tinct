@@ -157,6 +157,112 @@ pub enum ClockCapInner {
     Fixed(i64),
 }
 
+/// Directory capability permissions (Miller 2006 principle of least authority).
+/// Fine-grained permission flags for DirCap — purely additive (no flags means no access).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirPerms {
+    pub readable: bool,
+    pub statable: bool,
+    pub listable: bool,
+    pub writable: bool,
+    pub appendable: bool,
+    pub deletable: bool,
+    pub renameable: bool,
+}
+
+impl DirPerms {
+    /// Full access — all permissions granted.
+    pub fn full() -> Self {
+        Self {
+            readable: true,
+            statable: true,
+            listable: true,
+            writable: true,
+            appendable: true,
+            deletable: true,
+            renameable: true,
+        }
+    }
+
+    /// Read-only access — read files, list directories, stat metadata.
+    pub fn read_only() -> Self {
+        Self {
+            readable: true,
+            statable: true,
+            listable: true,
+            writable: false,
+            appendable: false,
+            deletable: false,
+            renameable: false,
+        }
+    }
+
+    /// Parse a single letter mode (r/w/a/s/l) and return the corresponding permissions.
+    pub fn from_letter(c: char) -> Option<Self> {
+        match c {
+            'r' => Some(Self {
+                readable: true,
+                statable: true,
+                listable: true,
+                writable: false,
+                appendable: false,
+                deletable: false,
+                renameable: false,
+            }),
+            'w' => Some(Self {
+                readable: false,
+                statable: false,
+                listable: false,
+                writable: true,
+                appendable: true,
+                deletable: true,
+                renameable: true,
+            }),
+            'a' => Some(Self {
+                readable: false,
+                statable: false,
+                listable: false,
+                writable: false,
+                appendable: true,
+                deletable: false,
+                renameable: false,
+            }),
+            's' => Some(Self {
+                readable: false,
+                statable: true,
+                listable: false,
+                writable: false,
+                appendable: false,
+                deletable: false,
+                renameable: false,
+            }),
+            'l' => Some(Self {
+                readable: false,
+                statable: true,
+                listable: true,
+                writable: false,
+                appendable: false,
+                deletable: false,
+                renameable: false,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Merge two DirPerms by union (additive composition).
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            readable: self.readable || other.readable,
+            statable: self.statable || other.statable,
+            listable: self.listable || other.listable,
+            writable: self.writable || other.writable,
+            appendable: self.appendable || other.appendable,
+            deletable: self.deletable || other.deletable,
+            renameable: self.renameable || other.renameable,
+        }
+    }
+}
+
 /// A materialized runtime value.
 #[derive(Clone)]
 pub enum Value {
@@ -192,7 +298,10 @@ pub enum Value {
     /// Construction is O(1) — neither L nor R is materialized at merge time.
     Overlay(ThunkId, ThunkId),
     /// Capability-bound directory handle (object capability model)
-    DirCap(Rc<cap_std::fs::Dir>),
+    DirCap {
+        dir: Rc<cap_std::fs::Dir>,
+        perms: DirPerms,
+    },
     /// Network capability — authority to connect to specified hosts/subnets
     NetCap(Rc<Vec<NetCapEntry>>),
     /// Open file/stream handle with capability metadata.
@@ -222,6 +331,7 @@ pub enum Value {
     /// Revocable directory capability
     RevocableDirCap {
         inner: Rc<cap_std::fs::Dir>,
+        perms: DirPerms,
         revoked: Rc<std::cell::Cell<bool>>,
     },
     /// Nominal variant (enum-like value)
@@ -339,7 +449,7 @@ impl Value {
             Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
             Value::Overlay(..) => "Dict",
-            Value::DirCap(_) => "DirCap",
+            Value::DirCap { .. } => "DirCap",
             Value::NetCap(_) => "NetCap",
             Value::Handle { .. } => "Handle",
             Value::WriteHandle { .. } => "WriteHandle",
@@ -400,7 +510,7 @@ impl fmt::Debug for Value {
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::Overlay(..) => write!(f, "Overlay(...)"),
-            Value::DirCap(_) => write!(f, "DirCap"),
+            Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
             Value::Handle { caps, .. } => write!(f, "Handle({} caps)", caps.len()),
             Value::WriteHandle { caps, .. } => write!(f, "WriteHandle({} caps)", caps.len()),
@@ -481,7 +591,7 @@ impl fmt::Display for Value {
             Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::Overlay(..) => write!(f, "[<overlay>]"),
-            Value::DirCap(_) => write!(f, "<DirCap>"),
+            Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap(_) => write!(f, "<NetCap>"),
             Value::Handle { .. } => write!(f, "<Handle>"),
             Value::WriteHandle { .. } => write!(f, "<WriteHandle>"),

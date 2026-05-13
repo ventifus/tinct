@@ -7752,10 +7752,13 @@ mod tests {
 
     /// Helper: create a Value::DirCap for a given directory path.
     fn dir_cap_val(base_dir: &std::path::Path) -> Value {
-        Value::DirCap(Rc::new(
-            cap_std::fs::Dir::open_ambient_dir(base_dir, cap_std::ambient_authority())
-                .expect("open dir for DirCap"),
-        ))
+        Value::DirCap {
+            dir: Rc::new(
+                cap_std::fs::Dir::open_ambient_dir(base_dir, cap_std::ambient_authority())
+                    .expect("open dir for DirCap"),
+            ),
+            perms: crate::value::DirPerms::full(),
+        }
     }
 
     /// Helper: write a temp file and return its path.
