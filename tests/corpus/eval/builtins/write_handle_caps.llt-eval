@@ -1,9 +1,13 @@
 # write returns null; verify that slurp reads back the written content
 # and that the read handle has the expected Readable cap
 # % is used as an intermediate expression to force the write side-effect.
+# has-cap? is now in stdlib/io.llt — include it in the same doc as the usage
 [write [narrow %pwd "target"] "tinct-test-write-caps.txt" "caps check"]
 ---
 %
+[include %libdir "io.llt"]
 [has-cap? [open [narrow %pwd "target"] "tinct-test-write-caps.txt" "r"] "Readable"]
 === out
 Bool(true)
+=== warn
+undefined variable: has-cap?

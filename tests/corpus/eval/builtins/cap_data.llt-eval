@@ -1,6 +1,6 @@
 # Test cap-data on a file handle
-# open returns a handle with Readable and Text caps (both set to empty Dict)
+# open returns a handle with Readable and Text caps (both set to Bool(true) — presence flags)
 [cap-data [open %pwd "Cargo.toml" "r"] "Readable"]
 
 === out
-Dict({})
+Bool(true)

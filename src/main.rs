@@ -1085,11 +1085,8 @@ fn run_eval(
 
         // Create stdin handle with default caps
         let mut caps = HashMap::new();
-        caps.insert(
-            "Readable".to_string(),
-            Value::Dict(indexmap::IndexMap::new()),
-        ); // Null
-        caps.insert("Text".to_string(), Value::Dict(indexmap::IndexMap::new())); // Null
+        caps.insert("Readable".to_string(), Value::Bool(true));
+        caps.insert("Text".to_string(), Value::Bool(true));
 
         let stdin_handle = Value::Handle {
             caps,

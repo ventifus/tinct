@@ -1881,14 +1881,7 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        env.insert(
-            "spki-pin".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Unknown), (None, Type::Bytes)], // HashAlgorithm variant, Bytes fingerprint
-                ret: Box::new(Type::Unknown), // Returns Dict {algorithm, fingerprint}
-                variadic: false,
-            },
-        );
+        // spki-pin is now implemented in stdlib/net.llt (pure dict construction, no Rust needed)
         // HTTP-sessions stubs — return Unknown until full implementation lands
         env.insert(
             "quic-session".to_string(),
@@ -1979,14 +1972,7 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        env.insert(
-            "has-cap?".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Handle), (None, Type::Str)],
-                ret: Box::new(Type::Bool),
-                variadic: false,
-            },
-        );
+        // has-cap? is now implemented in stdlib/io.llt as [not [null? [cap-data h cap]]]
         env.insert(
             "write-handle".to_string(),
             Type::Function {

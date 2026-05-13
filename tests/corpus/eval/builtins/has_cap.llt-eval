@@ -1,6 +1,9 @@
-# Test has-cap? on a file handle
+# Test has-cap? on a file handle (has-cap? is now in stdlib/io.llt)
 # open returns a handle with Readable and Text caps
+[include %libdir "io.llt"]
 [has-cap? [open %pwd "Cargo.toml" "r"] "Readable"]
 
 === out
 Bool(true)
+=== warn
+undefined variable: has-cap?

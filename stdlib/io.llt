@@ -57,4 +57,10 @@ open-append@[doc: "Open a file for appending (creates if doesn't exist, returns 
 # handle: WriteHandle, lines: Seq
 write-lines@[doc: "Write a sequence of lines to a WriteHandle"]: [fn@WriteHandle [handle@WriteHandle lines@Seq]
   [reduce [fn [h line] [write-line h line]] handle lines]]
+
+# Check if a capability is present on a Handle or WriteHandle.
+# h: Handle or WriteHandle, cap: String capability name
+# Returns: Bool — true if cap-data returns non-null, false otherwise
+has-cap?@[doc: "Check if a capability is present on a Handle or WriteHandle"]: [fn@Bool [h cap]
+  [not [null? [cap-data h cap]]]]
 ]

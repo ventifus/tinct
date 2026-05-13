@@ -1,8 +1,12 @@
-# Test: spki-pin rejects invalid hash algorithm
-# Expected: error message about invalid hash algorithm
+# Test: spki-pin (now in net.llt) accepts any algorithm variant and fingerprint bytes
+# Algorithm validation is deferred to tls-connect which validates pins at connection time
+[include %libdir "net.llt"]
 
 [InvalidAlgorithm: [variant "InvalidAlgorithm"]]
-[spki-pin InvalidAlgorithm [bytes-of [65 66 67]]]
+[pin: [spki-pin InvalidAlgorithm [bytes-of [65 66 67]]]]
+[tag-of pin.algorithm]
 
-=== error
-[E080] spki-pin: invalid hash algorithm 'InvalidAlgorithm'
+=== out
+String("InvalidAlgorithm")
+=== warn
+undefined variable: spki-pin
