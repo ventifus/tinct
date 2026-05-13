@@ -1227,6 +1227,25 @@ drop@[doc: "Drop first n elements"]: [fn [n@Int xs] [builtin-drop n xs]]
 collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [xs] [builtin-reduce [fn [acc kv] [merge acc [make-entry kv.key kv.value]]] [] xs]]
 
 # Repeat a string n times.
+# String search helpers (build on str-index-of primitive)
+# str-contains?: String -> String -> Bool
+# assert: [str-contains? "hello world" "world"] => true
+# assert: [str-contains? "hello" "xyz"] => false
+str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [haystack@String needle@String]
+  [>= [str-index-of haystack needle] 0]]
+
+# starts-with?: String -> String -> Bool
+# assert: [starts-with? "hello" "he"] => true
+# assert: [starts-with? "hello" "lo"] => false
+starts-with?@[doc: "Check if string starts with prefix"]: [fn@Bool [s@String prefix@String]
+  [= [str-index-of s prefix] 0]]
+
+# ends-with?: String -> String -> Bool
+# assert: [ends-with? "hello" "lo"] => true
+# assert: [ends-with? "hello" "he"] => false
+ends-with?@[doc: "Check if string ends with suffix"]: [fn@Bool [s@String suffix@String]
+  [= [str-index-of s suffix] [- [length s] [length suffix]]]]
+
 # str-repeat: String -> Int -> String
 # assert: [str-repeat "x" 3] => "xxx"
 # assert: [str-repeat "ab" 2] => "abab"

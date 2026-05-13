@@ -1535,7 +1535,6 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
-
 /// `write-handle`: Write to a WriteHandle or a bidirectional Handle (e.g. TCP socket).
 /// Takes a WriteHandle (or Handle with write_inner) and content (String for Text, Bytes for Binary).
 /// Checks encoding via Binary cap: if present, content must be Bytes; otherwise String.
@@ -1799,6 +1798,66 @@ pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Return Null (the inner writer is dropped when the Rc goes out of scope)
     ok_val(Value::Dict(IndexMap::new()), call_span)
+}
+
+/// `raw-create`: Open a file for writing (create/truncate), returning a WriteHandle.
+///
+/// Takes 2 args: `cap` (DirCap), `path` (String).
+/// Returns a WriteHandle with Writable and Text capabilities.
+/// This is a low-level primitive used to implement higher-level I/O functions in tinct.
+pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("raw-create", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    // Extract DirCap and permissions
+    let (dir, perms) = extract_dir_cap(&dir_val, "raw-create", args[0].span)?;
+
+    // Check Writable permission
+    check_perm(perms, "Writable", perms.writable, "raw-create", call_span)?;
+
+    let path = require_string("raw-create", path_val, args[1].span)?;
+
+    // Open file for writing (create/truncate)
+    use cap_std::fs::OpenOptions;
+    let file = dir
+        .open_with(
+            &path,
+            &OpenOptions::new().write(true).create(true).truncate(true),
+        )
+        .map_err(|e| {
+            EvalError::user_error(
+                format!("raw-create: failed to create file '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+    // Create WriteHandle with Writable and Text capabilities
+    let mut caps = HashMap::new();
+    caps.insert("Writable".to_string(), Value::Bool(true));
+    caps.insert("Text".to_string(), Value::Bool(true));
+
+    use std::io::BufWriter;
+    let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
+
+    ok_val(
+        Value::WriteHandle {
+            caps,
+            inner: Rc::new(std::cell::RefCell::new(writer)),
+        },
+        call_span,
+    )
 }
 
 /// `seek`: Seek to a byte offset from the start of the file.
@@ -2421,72 +2480,6 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `copy`: Copy a file.
 /// Takes a DirCap, source path String, and destination path String, returns Null.
-pub(crate) fn builtin_copy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Expect 3 args: DirCap, String src_path, String dst_path
-    if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-    }
-    reject_named("copy", named, call_span)?;
-
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let src_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let dst_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
-
-    // Extract DirCap and check permissions (copy needs both read and write)
-    let (dir, perms) = extract_dir_cap(&dir_val, "copy", args[0].span)?;
-    check_perm(perms, "Readable", perms.readable, "copy", call_span)?;
-    check_perm(perms, "Writable", perms.writable, "copy", call_span)?;
-
-    let src_path = require_string("copy", src_path_val, args[1].span)?;
-    let dst_path = require_string("copy", dst_path_val, args[2].span)?;
-
-    // Read source file
-    use std::io::Read;
-    let mut src_file = dir.open(&src_path).map_err(|e| {
-        EvalError::user_error(
-            format!("copy: failed to open source file '{}': {}", src_path, e),
-            call_span,
-        )
-    })?;
-    let mut contents = Vec::new();
-    src_file.read_to_end(&mut contents).map_err(|e| {
-        EvalError::user_error(
-            format!("copy: failed to read source file '{}': {}", src_path, e),
-            call_span,
-        )
-    })?;
-
-    // Write to destination file
-    use std::io::Write;
-    let mut dst_file = dir.create(&dst_path).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "copy: failed to create destination file '{}': {}",
-                dst_path, e
-            ),
-            call_span,
-        )
-    })?;
-    dst_file.write_all(&contents).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "copy: failed to write to destination file '{}': {}",
-                dst_path, e
-            ),
-            call_span,
-        )
-    })?;
-
-    ok_val(Value::Dict(IndexMap::new()), call_span)
-}
-
 /// `link`: Create a hard link.
 /// Takes a DirCap, existing path String, and link path String, returns Null.
 pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -3527,7 +3520,6 @@ pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
         .into()),
     }
 }
-
 
 #[cfg(test)]
 mod tests {

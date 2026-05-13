@@ -2001,6 +2001,14 @@ impl TypeEnv {
             },
         );
         env.insert(
+            "raw-create".to_string(),
+            Type::Function {
+                params: vec![(None, Type::DirCap), (None, Type::Str)],
+                ret: Box::new(Type::Handle), // Returns WriteHandle
+                variadic: false,
+            },
+        );
+        env.insert(
             "seek".to_string(),
             Type::Function {
                 params: vec![(None, Type::Handle), (None, Type::Int)], // Handle, byte offset
@@ -2064,17 +2072,6 @@ impl TypeEnv {
         );
         env.insert(
             "rename".to_string(),
-            Type::Function {
-                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-                // Null -- Type::Record(Row::Empty)
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                })),
-                variadic: false,
-            },
-        );
-        env.insert(
-            "copy".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)

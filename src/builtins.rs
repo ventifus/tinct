@@ -344,15 +344,14 @@ pub(crate) use crate::builtins_dict::{
 // Implementations live in builtins_io.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
-    builtin_cap_data, builtin_close, builtin_connect, builtin_copy, builtin_emit, builtin_env,
-    builtin_flush, builtin_http2_session, builtin_http3_session,
-    builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link, builtin_list_dir,
-    builtin_make_dir, builtin_narrow, builtin_open, builtin_position, builtin_quic_open_datagram,
-    builtin_quic_open_stream, builtin_quic_session, builtin_read_link, builtin_recv_datagram,
-    builtin_remove, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
-    builtin_seek_end, builtin_send_datagram, builtin_slurp, builtin_stat,
-    builtin_tls_layer, builtin_tls_peer_cert, builtin_write, builtin_write_atomic,
-    builtin_write_handle,
+    builtin_cap_data, builtin_close, builtin_connect, builtin_emit, builtin_env, builtin_flush,
+    builtin_http2_session, builtin_http3_session, builtin_http_request, builtin_icmp_ping,
+    builtin_lines, builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow, builtin_open,
+    builtin_position, builtin_quic_open_datagram, builtin_quic_open_stream, builtin_quic_session,
+    builtin_raw_create, builtin_read_link, builtin_recv_datagram, builtin_remove, builtin_rename,
+    builtin_revocable, builtin_revoke_cap, builtin_seek, builtin_seek_end, builtin_send_datagram,
+    builtin_slurp, builtin_stat, builtin_tls_layer, builtin_tls_peer_cert, builtin_write,
+    builtin_write_atomic, builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
@@ -370,16 +369,16 @@ pub(crate) use crate::builtins_meta::{
 };
 
 // String builtins: str, split, replace, upper, lower, trim, trim-start, trim-end,
-// str-length, str-contains?, str-index-of, str-slice, str-chars, starts-with?, ends-with?.
+// str-length, str-index-of, str-slice, str-chars, char-code, chr, str-bytes, bytes-str.
 // Implementations live in builtins_string.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 #[cfg(test)]
 pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 pub(crate) use crate::builtins_string::{
-    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_ends_with, builtin_lower,
-    builtin_replace, builtin_split, builtin_starts_with, builtin_str, builtin_str_bytes,
-    builtin_str_chars, builtin_str_contains, builtin_str_index_of, builtin_str_length,
-    builtin_str_slice, builtin_trim, builtin_trim_end, builtin_trim_start, builtin_upper,
+    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_lower, builtin_replace,
+    builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars, builtin_str_index_of,
+    builtin_str_length, builtin_str_slice, builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_upper,
 };
 
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
@@ -1016,22 +1015,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_str_slice,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
-        builtin!(
-            "str-contains?",
-            builtin_str_contains,
-            [Strictness::Seq, Strictness::Seq]
-        ),
         builtin!("str-chars", builtin_str_chars, [Strictness::Seq]),
-        builtin!(
-            "starts-with?",
-            builtin_starts_with,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "ends-with?",
-            builtin_ends_with,
-            [Strictness::Seq, Strictness::Seq]
-        ),
         builtin!("char-code", builtin_char_code, [Strictness::Seq]),
         builtin!("chr", builtin_chr, [Strictness::Seq]),
         builtin!("str-bytes", builtin_str_bytes, [Strictness::Seq]),
@@ -1171,6 +1155,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("flush", builtin_flush, [Strictness::Seq]),
         builtin!("close", builtin_close, [Strictness::Seq]),
+        builtin!(
+            "raw-create",
+            builtin_raw_create,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("seek", builtin_seek, [Strictness::Seq, Strictness::Seq]),
         builtin!("seek-end", builtin_seek_end, [Strictness::Seq]),
         builtin!("position", builtin_position, [Strictness::Seq]),
@@ -1189,11 +1178,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "rename",
             builtin_rename,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "copy",
-            builtin_copy,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
         builtin!(
@@ -6184,7 +6168,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 184,
+            count, 181,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6261,16 +6245,19 @@ mod tests {
         assert!(names.contains(&"write-atomic"), "missing write-atomic");
         assert!(names.contains(&"cap-data"), "missing cap-data");
         // has-cap? is now implemented in stdlib/io.llt as [not [null? [cap-data h cap]]]
-        assert!(!names.contains(&"has-cap?"), "has-cap? should be in stdlib not builtins");
+        assert!(
+            !names.contains(&"has-cap?"),
+            "has-cap? should be in stdlib not builtins"
+        );
         assert!(names.contains(&"write-handle"), "missing write-handle");
         assert!(names.contains(&"flush"), "missing flush");
         assert!(names.contains(&"close"), "missing close");
+        assert!(names.contains(&"raw-create"), "missing raw-create");
         assert!(names.contains(&"list-dir"), "missing list-dir");
         assert!(names.contains(&"stat"), "missing stat");
         assert!(names.contains(&"make-dir"), "missing make-dir");
         assert!(names.contains(&"remove"), "missing remove");
         assert!(names.contains(&"rename"), "missing rename");
-        assert!(names.contains(&"copy"), "missing copy");
         assert!(names.contains(&"link"), "missing link");
         assert!(names.contains(&"read-link"), "missing read-link");
         assert!(names.contains(&"from-json"), "missing from-json");
@@ -6321,10 +6308,7 @@ mod tests {
         assert!(names.contains(&"gensym"), "missing gensym");
         assert!(names.contains(&"str-length"), "missing str-length");
         assert!(names.contains(&"str-slice"), "missing str-slice");
-        assert!(names.contains(&"str-contains?"), "missing str-contains?");
         assert!(names.contains(&"str-chars"), "missing str-chars");
-        assert!(names.contains(&"starts-with?"), "missing starts-with?");
-        assert!(names.contains(&"ends-with?"), "missing ends-with?");
         assert!(names.contains(&"validate"), "missing validate");
         // Math builtins
         assert!(names.contains(&"pow"), "missing pow");
@@ -6366,7 +6350,10 @@ mod tests {
         assert!(names.contains(&"tls-layer"), "missing tls-layer");
         assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
         // spki-pin is now implemented in stdlib/net.llt (pure dict construction, no Rust needed)
-        assert!(!names.contains(&"spki-pin"), "spki-pin should be in stdlib not builtins");
+        assert!(
+            !names.contains(&"spki-pin"),
+            "spki-pin should be in stdlib not builtins"
+        );
         // URI parsing builtins
         assert!(names.contains(&"uri"), "missing uri");
         assert!(names.contains(&"url"), "missing url");
@@ -6393,8 +6380,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            184,
-            "expected 184 builtins, got {} (num?, record?, map?, has-cap?, spki-pin are now LLT-implemented)",
+            181,
+            "expected 181 builtins, got {} (num?, record?, map?, has-cap?, spki-pin are now LLT-implemented)",
             names.len()
         );
     }
