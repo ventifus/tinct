@@ -47,9 +47,10 @@ pub use crate::types::SchemeMap;
 /// the canonical call sequence.
 pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDiagnostic>) {
     let mut errors = Vec::new();
-    let diagnostics = Vec::new(); // Will be populated in future sprints
+    let mut diagnostics = Vec::new();
     let mut env = crate::imports::build_prelude_env();
     let mut state = InferState::new();
+    let mut type_map = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
@@ -60,7 +61,7 @@ pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDia
             doc,
             &env,
             &mut state,
-            &mut None,
+            &mut Some(&mut type_map),
             &pipeline_type,
             &named_types,
         ) {
@@ -78,6 +79,9 @@ pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDia
             Err(mut doc_errors) => errors.append(&mut doc_errors),
         }
     }
+
+    // Scan for type quality issues (Unknown types, over-broad annotations)
+    scan_type_quality(&type_map, file, &mut diagnostics);
 
     (errors, diagnostics)
 }
@@ -279,7 +283,7 @@ pub fn typecheck_file_with_types_and_env(
     reset_elaboration(file);
 
     let mut errors = Vec::new();
-    let diagnostics = Vec::new(); // Will be populated in future sprints
+    let mut diagnostics = Vec::new();
     let mut env = initial_env;
     let mut state = InferState::new();
     // Enable scheme collection for LSP hover (constraints display).
@@ -320,6 +324,9 @@ pub fn typecheck_file_with_types_and_env(
 
     // Extract scheme_map from state (was populated during VarRef inference).
     let scheme_map = state.scheme_map.take().unwrap_or_default();
+
+    // Scan for type quality issues (Unknown types, over-broad annotations)
+    scan_type_quality(&type_map, file, &mut diagnostics);
 
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -3389,6 +3396,62 @@ fn infer_fn(
         ret: Box::new(ret_type),
         variadic: has_variadic,
     })
+}
+
+/// Scan inferred types for quality issues (Unknown types, over-broad annotations).
+///
+/// Emits diagnostics at base level (Info/Warn) — the CLI/LSP layer applies `--strict` bump.
+/// This is called at the end of type checking to produce advisory notifications.
+pub fn scan_type_quality(
+    type_map: &TypeMap,
+    _ast: &File,
+    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
+) {
+    use crate::ast::Position;
+    use crate::error::{DiagnosticLevel, TypeDiagnostic};
+
+    // Helper function to recursively check if a type contains Unknown
+    fn contains_unknown(ty: &Type) -> bool {
+        match ty {
+            Type::Unknown => true,
+            Type::Record(row) => row.fields.values().any(contains_unknown),
+            Type::Function { params, ret, .. } => {
+                params.iter().any(|(_, t)| contains_unknown(t)) || contains_unknown(ret)
+            }
+            Type::Seq(elem) => contains_unknown(elem),
+            Type::Map(k, v) => contains_unknown(k) || contains_unknown(v),
+            Type::Union(members) | Type::Intersection(members) => {
+                members.iter().any(contains_unknown)
+            }
+            Type::Negation(t) => contains_unknown(t),
+            _ => false,
+        }
+    }
+
+    // Scan all inferred types for Unknown
+    for ((start, end), ty) in type_map {
+        if contains_unknown(ty) {
+            // For now, treat all Unknown as inferred (Task 2)
+            // TODO: Check AST annotations to distinguish explicit vs inferred (Task 3)
+            diagnostics.push(TypeDiagnostic {
+                level: DiagnosticLevel::Warn,
+                code: "T010",
+                message: "inferred type is Unknown — consider adding a type annotation".to_string(),
+                span: Span {
+                    start: Position {
+                        offset: *start,
+                        line: 0,
+                        column: 0,
+                    },
+                    end: Position {
+                        offset: *end,
+                        line: 0,
+                        column: 0,
+                    },
+                },
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -10627,6 +10690,52 @@ mod tests {
             result.is_ok(),
             "Union(String, Int) <: ~Bool should hold: {:?}",
             result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_scan_type_quality_detects_unknown() {
+        // Test that scan_type_quality emits a diagnostic for inferred Unknown.
+        // This example produces 2 diagnostics:
+        // 1. The field access r.y has type Unknown
+        // 2. The function's return type contains Unknown
+        let mut file = crate::parse("[f: [fn [r@[x: Int]] r.y]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let (errors, diagnostics) = typecheck_file(&file.node);
+
+        // Should have no type errors
+        assert!(
+            errors.is_empty(),
+            "Expected no type errors, got: {:?}",
+            errors
+        );
+
+        // Should have diagnostics for Unknown
+        assert!(!diagnostics.is_empty(), "Expected diagnostics for Unknown");
+        assert!(diagnostics.iter().all(|d| d.code == "T010"));
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.level == crate::error::DiagnosticLevel::Warn));
+        assert!(diagnostics.iter().all(|d| d.message.contains("Unknown")));
+    }
+
+    #[test]
+    fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
+        // Test that scan_type_quality does NOT emit diagnostics for concrete types
+        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let (errors, diagnostics) = typecheck_file(&file.node);
+
+        // Should have no type errors or diagnostics
+        assert!(
+            errors.is_empty(),
+            "Expected no type errors, got: {:?}",
+            errors
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diagnostics
         );
     }
 }

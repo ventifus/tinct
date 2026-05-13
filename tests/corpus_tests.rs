@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use test_helpers::{find_test_files, run_corpus_dir, split_test_file, CorpusOutcome};
 use tinct::{
     eval_source_with_cap_net, eval_source_with_config, parse, parse_expression, typecheck_source,
+    typecheck_source_errors_only,
 };
 
 #[test]
@@ -32,8 +33,8 @@ fn test_valid_corpus() {
                     None
                 };
 
-                // Run typecheck to get warnings
-                let warnings = match typecheck_source(&test.input) {
+                // Run typecheck to get warnings (errors only, not quality diagnostics)
+                let warnings = match typecheck_source_errors_only(&test.input) {
                     Ok(()) => None,
                     Err(type_errors) => Some(type_errors),
                 };
@@ -248,7 +249,7 @@ fn test_eval_corpus() {
                 } else {
                     eval_source_with_cap_net(&test.input, test.no_fs, &test.cap_net)
                 };
-                let typecheck_result = typecheck_source(&test.input);
+                let typecheck_result = typecheck_source_errors_only(&test.input);
 
                 let (output, error) = match eval_result {
                     Ok(actual) => (Some(actual), None),
@@ -315,7 +316,9 @@ fn test_typecheck_corpus() {
         };
 
         // Type check should succeed for all files in tests/corpus/eval/typecheck/
-        match typecheck_source(&test.input) {
+        // Use errors-only variant: quality diagnostics (e.g. "inferred Unknown") are
+        // advisory and expected for polymorphic/open-record patterns in this corpus.
+        match typecheck_source_errors_only(&test.input) {
             Ok(()) => {
                 // Success - this is expected
             }
