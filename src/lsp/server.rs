@@ -8,14 +8,24 @@ use lsp_types::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
         PublishDiagnostics,
     },
-    request::{Completion, GotoDefinition, HoverRequest, Request as _},
+    request::{
+        Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest,
+        InlayHintRequest, References, Rename, Request as _, SignatureHelpRequest,
+        WorkspaceSymbolRequest,
+    },
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
-    GotoDefinitionParams, GotoDefinitionResponse, HoverContents, HoverParams, InitializeParams,
-    InitializeResult, Location, MarkedString, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DocumentFormattingParams, DocumentSymbol, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverContents, HoverParams, InitializeParams, InitializeResult,
+    InlayHint, InlayHintParams, Location, MarkedString, OneOf, Position, PublishDiagnosticsParams,
+    Range, ReferenceParams, RenameParams, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
-use crate::lsp::analysis::{completion_at, definition_at, diagnostics_for, hover_at};
+use crate::lsp::analysis::{
+    completion_at, definition_at, diagnostics_for, document_symbols_at, hover_at, inlay_hints_for,
+    references_at, rename_at, signature_help_at, workspace_symbols_for,
+};
 use crate::lsp::convert::{llt_span_to_lsp_range, lsp_position_to_offset};
 use crate::lsp::document::DocumentStore;
 
@@ -47,6 +57,18 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         completion_provider: Some(CompletionOptions::default()),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Left(true)),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        signature_help_provider: Some(SignatureHelpOptions {
+            // Trigger on space and open-bracket (entering a new arg position).
+            trigger_characters: Some(vec![" ".to_string(), "[".to_string()]),
+            retrigger_characters: None,
+            work_done_progress_options: Default::default(),
+        }),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
     };
 
@@ -281,6 +303,315 @@ fn handle_request(
             };
 
             let result = serde_json::to_value(CompletionResponse::Array(items))?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        DocumentSymbolRequest::METHOD => {
+            let params: lsp_types::DocumentSymbolParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", DocumentSymbolRequest::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document.uri;
+
+            let symbols: Vec<DocumentSymbol> = if let Some(doc) = store.get(&uri) {
+                document_symbols_at(doc)
+            } else {
+                use crate::lsp::document::load_doc_from_uri;
+                load_doc_from_uri(&uri)
+                    .map(|doc| document_symbols_at(&doc))
+                    .unwrap_or_default()
+            };
+
+            let result = serde_json::to_value(DocumentSymbolResponse::Nested(symbols))?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        Formatting::METHOD => {
+            let params: DocumentFormattingParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", Formatting::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document.uri;
+
+            // Get document text (from store if open, from disk otherwise).
+            let source: Option<String> = if let Some(doc) = store.get(&uri) {
+                Some(doc.text.clone())
+            } else {
+                use crate::lsp::document::load_doc_from_uri;
+                load_doc_from_uri(&uri).map(|doc| doc.text)
+            };
+
+            let edits: Option<Vec<TextEdit>> = source.and_then(|text| {
+                crate::formatter::format_source(&text)
+                    .ok()
+                    .map(|formatted| {
+                        // Single whole-document replace-all edit: start at (0,0), end past last char.
+                        // Count newlines to find the last line number and last-line length.
+                        let newline_count = text.bytes().filter(|&b| b == b'\n').count() as u32;
+                        let last_line_start = text.rfind('\n').map_or(0, |i| i + 1);
+                        let last_line_len = text[last_line_start..].len() as u32;
+                        let end = Position {
+                            line: newline_count,
+                            character: last_line_len,
+                        };
+                        vec![TextEdit {
+                            range: Range {
+                                start: Position {
+                                    line: 0,
+                                    character: 0,
+                                },
+                                end,
+                            },
+                            new_text: formatted,
+                        }]
+                    })
+            });
+
+            let result = serde_json::to_value(edits)?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        References::METHOD => {
+            let params: ReferenceParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", References::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document_position.text_document.uri;
+            let pos = params.text_document_position.position;
+
+            let locations: Vec<Location> = if let Some(doc) = store.get(&uri) {
+                lsp_position_to_offset(&pos, &doc.text)
+                    .map(|offset| references_at(doc, &uri, offset))
+                    .unwrap_or_default()
+            } else {
+                use crate::lsp::document::load_doc_from_uri;
+                load_doc_from_uri(&uri)
+                    .and_then(|doc| {
+                        lsp_position_to_offset(&pos, &doc.text)
+                            .map(|offset| references_at(&doc, &uri, offset))
+                    })
+                    .unwrap_or_default()
+            };
+
+            // LSP spec: respond with null (None) when there are no references, or the list.
+            let result = if locations.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::to_value(locations)?
+            };
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        Rename::METHOD => {
+            let params: RenameParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", Rename::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document_position.text_document.uri;
+            let pos = params.text_document_position.position;
+            let new_name = params.new_name;
+
+            let workspace_edit: Option<WorkspaceEdit> = if let Some(doc) = store.get(&uri) {
+                lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
+                    rename_at(doc, offset, &new_name).map(|edits| {
+                        let mut changes = std::collections::HashMap::new();
+                        changes.insert(uri.clone(), edits);
+                        WorkspaceEdit {
+                            changes: Some(changes),
+                            document_changes: None,
+                            change_annotations: None,
+                        }
+                    })
+                })
+            } else {
+                use crate::lsp::document::load_doc_from_uri;
+                load_doc_from_uri(&uri).and_then(|doc| {
+                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
+                        rename_at(&doc, offset, &new_name).map(|edits| {
+                            let mut changes = std::collections::HashMap::new();
+                            changes.insert(uri.clone(), edits);
+                            WorkspaceEdit {
+                                changes: Some(changes),
+                                document_changes: None,
+                                change_annotations: None,
+                            }
+                        })
+                    })
+                })
+            };
+
+            let result = serde_json::to_value(workspace_edit)?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        InlayHintRequest::METHOD => {
+            let params: InlayHintParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", InlayHintRequest::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document.uri;
+
+            let hints: Vec<InlayHint> = if let Some(doc) = store.get(&uri) {
+                inlay_hints_for(doc)
+            } else {
+                use crate::lsp::document::load_doc_from_uri;
+                load_doc_from_uri(&uri)
+                    .map(|doc| inlay_hints_for(&doc))
+                    .unwrap_or_default()
+            };
+
+            let result = serde_json::to_value(hints)?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        SignatureHelpRequest::METHOD => {
+            let params: lsp_types::SignatureHelpParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", SignatureHelpRequest::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+            let uri = params.text_document_position_params.text_document.uri;
+            let pos = params.text_document_position_params.position;
+
+            let help: Option<SignatureHelp> = if let Some(doc) = store.get(&uri) {
+                lsp_position_to_offset(&pos, &doc.text)
+                    .and_then(|offset| signature_help_at(doc, offset))
+            } else {
+                use crate::lsp::document::load_doc_from_uri;
+                load_doc_from_uri(&uri).and_then(|doc| {
+                    lsp_position_to_offset(&pos, &doc.text)
+                        .and_then(|offset| signature_help_at(&doc, offset))
+                })
+            };
+
+            let result = serde_json::to_value(help)?;
+            connection.sender.send(Message::Response(Response {
+                id: req.id,
+                result: Some(result),
+                error: None,
+            }))?;
+        }
+        WorkspaceSymbolRequest::METHOD => {
+            let params: WorkspaceSymbolParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("invalid {}: {e}", WorkspaceSymbolRequest::METHOD);
+                    connection.sender.send(Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some(lsp_server::ResponseError {
+                            code: lsp_server::ErrorCode::InvalidParams as i32,
+                            message: format!("invalid params: {e}"),
+                            data: None,
+                        }),
+                    }))?;
+                    return Ok(());
+                }
+            };
+
+            let query_lower = params.query.to_lowercase();
+
+            // Collect symbols from all open documents.
+            let mut symbols = Vec::new();
+            for (uri, doc) in store.docs_iter() {
+                symbols.extend(workspace_symbols_for(doc, uri, &query_lower));
+            }
+
+            // When no open documents, return null (empty result).
+            let result = if symbols.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::to_value(WorkspaceSymbolResponse::Nested(symbols))?
+            };
             connection.sender.send(Message::Response(Response {
                 id: req.id,
                 result: Some(result),
@@ -613,5 +944,178 @@ mod tests {
     #[test]
     fn test_max_method_name_len_constant() {
         assert_eq!(MAX_METHOD_NAME_LEN, 256);
+    }
+
+    // --- rename_at tests (via analysis layer) ---
+
+    #[test]
+    fn test_rename_produces_workspace_edit() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[x: 1  y: $x]".to_string());
+        let doc = store.get(&uri).unwrap();
+
+        // Cursor on "$x" at offset 11
+        let edits = rename_at(doc, 11, "newname");
+        assert!(edits.is_some(), "should produce edits");
+        let edits = edits.unwrap();
+        assert!(!edits.is_empty());
+        for edit in &edits {
+            assert_eq!(edit.new_text, "newname");
+        }
+    }
+
+    #[test]
+    fn test_rename_invalid_name() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[x: 1  y: $x]".to_string());
+        let doc = store.get(&uri).unwrap();
+        // '@' is not a valid identifier character.
+        let edits = rename_at(doc, 11, "in@valid");
+        assert!(edits.is_none(), "invalid name should yield None");
+    }
+
+    // --- inlay_hints_for tests (via analysis layer) ---
+
+    #[test]
+    fn test_inlay_hints_emitted_for_typed_bindings() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[x: 42]".to_string());
+        let doc = store.get(&uri).unwrap();
+        let hints = inlay_hints_for(doc);
+        // The binding "x: 42" should produce an inlay hint.
+        assert!(
+            !hints.is_empty(),
+            "typed binding should get an inlay hint; got none"
+        );
+    }
+
+    #[test]
+    fn test_inlay_hints_none_for_parse_error() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[unterminated".to_string());
+        let doc = store.get(&uri).unwrap();
+        let hints = inlay_hints_for(doc);
+        assert!(hints.is_empty());
+    }
+
+    // --- document_symbols_at tests ---
+
+    #[test]
+    fn test_document_symbols_simple() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[x: 1  y: 2]".to_string());
+        let doc = store.get(&uri).unwrap();
+        let syms = document_symbols_at(doc);
+        assert_eq!(syms.len(), 2);
+        assert_eq!(syms[0].name, "x");
+        assert_eq!(syms[1].name, "y");
+    }
+
+    #[test]
+    fn test_document_symbols_annotated_key() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[x@Int: 42]".to_string());
+        let doc = store.get(&uri).unwrap();
+        let syms = document_symbols_at(doc);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "x");
+    }
+
+    #[test]
+    fn test_document_symbols_empty_on_parse_error() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[unterminated".to_string());
+        let doc = store.get(&uri).unwrap();
+        let syms = document_symbols_at(doc);
+        assert!(syms.is_empty());
+    }
+
+    #[test]
+    fn test_document_symbols_non_dict_returns_empty() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        // A bare integer is not a dict — no symbols to extract.
+        store.update_document(uri.clone(), "42".to_string());
+        let doc = store.get(&uri).unwrap();
+        let syms = document_symbols_at(doc);
+        assert!(syms.is_empty());
+    }
+
+    // --- references_at tests ---
+
+    #[test]
+    fn test_references_at_finds_all_refs() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        // "[x: 1  y: $x  z: $x]"
+        //  0         1         2
+        //  0123456789012345678901
+        //             ^ $x at 11, ^ $x at 18
+        store.update_document(uri.clone(), "[x: 1  y: $x  z: $x]".to_string());
+        let doc = store.get(&uri).unwrap();
+        // Cursor on the first "$x" at offset 11
+        let locs = references_at(doc, &uri, 11);
+        assert_eq!(
+            locs.len(),
+            2,
+            "should find both references to $x; got {locs:?}"
+        );
+        // All locations should reference the same document
+        for loc in &locs {
+            assert_eq!(loc.uri, uri);
+        }
+    }
+
+    #[test]
+    fn test_references_at_no_ref_at_offset() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[x: 1]".to_string());
+        let doc = store.get(&uri).unwrap();
+        // Offset 4 is on the integer literal '1', not a VarRef.
+        let locs = references_at(doc, &uri, 4);
+        assert!(locs.is_empty(), "int literal has no references");
+    }
+
+    #[test]
+    fn test_references_at_parse_error_returns_empty() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.llt".parse::<Uri>().unwrap();
+        store.update_document(uri.clone(), "[unterminated".to_string());
+        let doc = store.get(&uri).unwrap();
+        let locs = references_at(doc, &uri, 1);
+        assert!(locs.is_empty());
+    }
+
+    // --- document formatting tests ---
+
+    #[test]
+    fn test_formatting_produces_valid_text_edit() {
+        // A simple document that the formatter can handle.
+        let source = "[x:1  y:2]";
+        let result = crate::formatter::format_source(source);
+        assert!(result.is_ok(), "formatter should succeed on valid source");
+        let formatted = result.unwrap();
+        // The formatter should produce something (possibly identical, possibly normalized).
+        assert!(!formatted.is_empty());
+    }
+
+    #[test]
+    fn test_formatting_end_position() {
+        // Verify the end-position calculation used by the Formatting handler.
+        let text = "line1\nline2\nline3";
+        // 2 newlines → end.line = 2; "line3" is 5 chars → end.character = 5.
+        let newline_count = text.bytes().filter(|&b| b == b'\n').count() as u32;
+        let last_line_start = text.rfind('\n').map_or(0, |i| i + 1);
+        let last_line_len = text[last_line_start..].len() as u32;
+        assert_eq!(newline_count, 2);
+        assert_eq!(last_line_len, 5);
     }
 }
