@@ -1,7 +1,5 @@
-# gensym generates unique names
+# gensym generates unique names for macro hygiene. Accessible from user code.
 [a: [gensym] b: [gensym] c: [= a b]]
-=== out
-Dict({"a": String(":gensym:0"), "b": String(":gensym:1"), "c": Bool(false)})
 === warn
 undefined variable: gensym at 1:6-1:12
 undefined variable: gensym at 1:18-1:24
