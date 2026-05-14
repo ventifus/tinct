@@ -3382,7 +3382,9 @@ mod tests {
     #[test]
     fn test_call_variadic() {
         // f: [fn [x ...rest] $rest]
-        // [call $f 1 2 3] → rest = Dict({0: 2, 1: 3})
+        // [call $f 1 2 3] → rest = Seq(2, Seq(3, {}))
+        // Variadic args are now collected as a lazy Seq cons-list.
+        // Empty variadic = Dict({}) (nil sentinel); non-empty = Seq { head, tail }.
         let env = empty_env();
         let fn_val = Value::Function {
             params: Rc::new(vec![
@@ -3418,19 +3420,27 @@ mod tests {
         let ctx = test_ctx();
         let thunk = eval(Rc::new(call_expr.clone()), env, &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
+        // Outer Seq: head = Int(2), tail = Seq(3, {})
         match val {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                assert_eq!(
-                    mat_id(map.get(&Key::Int(0)).unwrap(), &ctx).unwrap(),
-                    Value::Int(2)
-                );
-                assert_eq!(
-                    mat_id(map.get(&Key::Int(1)).unwrap(), &ctx).unwrap(),
-                    Value::Int(3)
-                );
+            Value::Seq { head, tail } => {
+                assert_eq!(mat_id(&head, &ctx).unwrap(), Value::Int(2));
+                // tail = Seq { head: Int(3), tail: Dict({}) }
+                match mat_id(&tail, &ctx).unwrap() {
+                    Value::Seq {
+                        head: head2,
+                        tail: tail2,
+                    } => {
+                        assert_eq!(mat_id(&head2, &ctx).unwrap(), Value::Int(3));
+                        // tail of tail = nil sentinel (empty Dict)
+                        match mat_id(&tail2, &ctx).unwrap() {
+                            Value::Dict(m) => assert!(m.is_empty()),
+                            other => panic!("expected empty Dict (nil), got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Seq as tail, got {other:?}"),
+                }
             }
-            other => panic!("expected Dict, got {other:?}"),
+            other => panic!("expected Seq, got {other:?}"),
         }
     }
 

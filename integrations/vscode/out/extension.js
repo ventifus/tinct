@@ -18227,14 +18227,14 @@ function highlightTinct(code) {
       continue;
     }
     if (code[i] === "[") {
-      result += `<span class="llt-bracket-${depth % 6}">[</span>`;
+      result += `<span class="llt-bracket-${depth % 3}">[</span>`;
       depth++;
       i++;
       continue;
     }
     if (code[i] === "]") {
       depth = Math.max(0, depth - 1);
-      result += `<span class="llt-bracket-${depth % 6}">]</span>`;
+      result += `<span class="llt-bracket-${depth % 3}">]</span>`;
       i++;
       continue;
     }

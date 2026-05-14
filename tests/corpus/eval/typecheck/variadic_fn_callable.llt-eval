@@ -1,7 +1,7 @@
 # [fn [...xs] xs] can be called with multiple positional arguments.
-# The variadic param xs collects all positional args into an int-keyed Dict at runtime.
-# The type checker assigns Seq(T) to xs; the runtime uses Dict (gradual typing mismatch allowed).
+# The variadic param xs collects all positional args into a Seq cons-list at runtime.
+# The type checker assigns Seq(T) to xs; the runtime now uses Seq (type and runtime aligned).
 [f: [fn [...xs] xs]
  result: [f 10 20 30]]
 === out
-Dict({"f": Function(xs), "result": Dict({0: Int(10), 1: Int(20), 2: Int(30)})})
+Dict({"f": Function(xs), "result": Seq(Int(10), ...)})

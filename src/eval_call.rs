@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::ast::{Expr, NamedArg, Param, Span, Spanned};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::value::{Environment, Key, Thunk, ThunkId, Value};
+use crate::value::{Environment, Thunk, Value};
 
 // Import eval function and context from eval module
 // Note: this creates a circular dependency, but it's safe because
@@ -327,20 +327,27 @@ pub(crate) fn bind_args_thunks(
         }
     }
 
-    // BIND-VARIADIC: Collect excess positional args into a dict with int keys
+    // BIND-VARIADIC: Collect excess positional args into a lazy Seq cons-list.
+    // Empty variadic = Value::Dict({}) (the standard Seq nil sentinel).
+    // Non-empty: build cons-list right-to-left so the first arg becomes the outermost head.
     if let Some(var_param) = variadic_param {
-        let num_variadic_args = positional.len().saturating_sub(max_positional);
-        let mut var_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(num_variadic_args);
-        for (i, thunk) in positional.iter().enumerate().skip(max_positional) {
-            var_map.insert(
-                Key::Int(i64::try_from(i - max_positional).expect("collection too large")),
-                ctx.alloc_thunk(Rc::clone(thunk)),
-            );
-        }
-        let var_thunk = Rc::new(Thunk::new_materialized(Value::Dict(var_map), *call_span));
+        let variadic_args = &positional[max_positional..];
+        // Nil sentinel: empty dict is the standard end-of-Seq marker.
+        let nil = Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), *call_span));
+        let seq_thunk = variadic_args.iter().rev().fold(nil, |tail, head_arg| {
+            let head_id = ctx.alloc_thunk(Rc::clone(head_arg));
+            let tail_id = ctx.alloc_thunk(Rc::clone(&tail));
+            Rc::new(Thunk::new_materialized(
+                Value::Seq {
+                    head: head_id,
+                    tail: tail_id,
+                },
+                *call_span,
+            ))
+        });
         call_env
             .borrow_mut()
-            .insert(var_param.name.clone(), var_thunk);
+            .insert(var_param.name.clone(), seq_thunk);
     }
 
     Ok(call_env)
