@@ -2343,12 +2343,22 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        env.insert(
+        // builtin-repeat: ∀T. T → Seq(T)
+        // Each call site gets its own fresh T, so [repeat 42] infers Seq(Int)
+        // rather than Seq(Top).
+        env.insert_scheme(
             "builtin-repeat".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Top)],
-                ret: Box::new(Type::Seq(Box::new(Type::Top))),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["T".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::TypeVar("T".to_string(), 0))],
+                    ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
         env.insert(
