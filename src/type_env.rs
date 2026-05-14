@@ -1063,6 +1063,24 @@ impl TypeEnv {
     pub fn with_builtins() -> Self {
         let mut env = Self::new();
 
+        // Helper to create DirCap intersection with capability flags.
+        // Creates Intersection([DirCap, Flag1Record, Flag2Record, ...]) where each flag
+        // is a unique singleton record type registered as a type alias.
+        let _dircap_with_flags = |flags: &[&str]| -> Type {
+            let mut members = vec![Type::DirCap];
+            for flag in flags {
+                let mut fields = HashMap::new();
+                fields.insert(
+                    format!("__cap_flag_{}", flag.to_lowercase()),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                );
+                members.push(Type::Record(Row { fields }));
+            }
+            Type::normalize_intersection(members)
+        };
+
         // Arithmetic: Numeric a => a -> a -> a
         // Constrained polymorphic type variables allow precise typing of overloaded operations.
         for name in ["+", "-", "*"] {
@@ -1820,7 +1838,11 @@ impl TypeEnv {
         env.insert(
             "write".to_string(),
             Type::Function {
-                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+                params: vec![
+                    (None, Type::DirCap),
+                    (None, Type::Str),
+                    (None, Type::Str),
+                ],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1831,7 +1853,11 @@ impl TypeEnv {
         env.insert(
             "write-atomic".to_string(),
             Type::Function {
-                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+                params: vec![
+                    (None, Type::DirCap),
+                    (None, Type::Str),
+                    (None, Type::Str),
+                ],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2106,7 +2132,11 @@ impl TypeEnv {
         env.insert(
             "rename".to_string(),
             Type::Function {
-                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+                params: vec![
+                    (None, Type::DirCap),
+                    (None, Type::Str),
+                    (None, Type::Str),
+                ],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2117,7 +2147,11 @@ impl TypeEnv {
         env.insert(
             "link".to_string(),
             Type::Function {
-                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+                params: vec![
+                    (None, Type::DirCap),
+                    (None, Type::Str),
+                    (None, Type::Str),
+                ],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2517,6 +2551,37 @@ impl TypeEnv {
                 body: Type::DatagramHandle,
             },
         );
+
+        // Capability flags: singleton unit types for DirCap permission markers.
+        // Each flag is a unique record type with a distinctive marker field.
+        // These are used in intersection types to express fine-grained capabilities:
+        // e.g., Intersection([DirCap, Readable, Writable]) for a read-write DirCap.
+        for flag_name in [
+            "Readable",
+            "Writable",
+            "Listable",
+            "Statable",
+            "Appendable",
+            "Deletable",
+            "Renameable",
+        ] {
+            let mut fields = HashMap::new();
+            // Use a distinctive marker field name that won't conflict with user data.
+            // The field name encodes the flag identity to ensure structural uniqueness.
+            fields.insert(
+                format!("__cap_flag_{}", flag_name.to_lowercase()),
+                Type::Record(Row {
+                    fields: HashMap::new(),
+                }),
+            );
+            env.insert_type_alias(
+                flag_name.to_string(),
+                TypeAlias {
+                    params: vec![],
+                    body: Type::Record(Row { fields }),
+                },
+            );
+        }
 
         // builtin-get: registered directly. 'get' is a prelude wrapper (not a Rust builtin
         // type), so it is absent from this env when the alias loop below runs. Registering

@@ -1,0 +1,7 @@
+# Triple-quoted interpolated strings desugar to [unindent [tmpl ...]]
+i"""
+  Dear $name,
+  Your order #$order-id is ready.
+  """
+=== out
+[unindent [call tmpl "\n  Dear $name,\n  Your order #$order-id is ready.\n  "]]

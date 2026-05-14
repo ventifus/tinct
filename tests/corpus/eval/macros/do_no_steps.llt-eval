@@ -1,0 +1,6 @@
+# Test do macro with no steps
+# [do monad] with no steps should return [monad.pure []]
+
+[do result]
+---
+[Ok []]

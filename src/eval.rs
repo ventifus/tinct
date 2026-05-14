@@ -26,7 +26,9 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
-use crate::ast::{Annotation, Expr, LiteralPattern, Param, Pattern, Span, Spanned};
+use crate::ast::{
+    Annotation, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span, Spanned,
+};
 use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
 
 use crate::error::{EvalError, EvalResult};
@@ -1248,20 +1250,85 @@ fn eval_quote(
 
 /// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
 ///
-/// For Unquote nodes: evaluate the inner expression and return the result.
-/// For UnquoteSplice nodes: error (must be in list position, handled by parent).
-/// For all other nodes: delegate to existing ast_to_dict_expr (which doesn't handle
-/// nested unquotes yet - this is a known limitation to be fixed in a future sprint).
+/// Preprocesses the expression tree to handle nested unquotes, then converts to dict AST.
 fn eval_quote_walk(
     expr: &Expr,
     span: Span,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
+    // Preprocess to handle nested unquotes
+    let processed_expr = eval_quote_preprocess(expr, span, &env, ctx)?;
+
+    // Convert the preprocessed AST to dict
+    let opts = AstToDictOpts {
+        source: None,
+        comments: None,
+    };
+    ast_to_dict_expr(&processed_expr, &opts, ctx)
+}
+
+/// Convert a runtime Value back to an Expr AST node for unquoting.
+///
+/// If the value is a Dict with a `type` field, treat it as an AST dict and use `dict_to_ast`.
+/// Otherwise, convert the value to its literal Expr representation.
+fn value_to_expr(value: &Value, span: Span, ctx: &Rc<EvalContext>) -> EvalResult<Spanned<Expr>> {
+    match value {
+        Value::Int(n) => Ok(Spanned::new(Expr::Int(*n), span)),
+        Value::Float(f) => Ok(Spanned::new(Expr::Float(*f), span)),
+        Value::Bool(b) => Ok(Spanned::new(Expr::Bool(*b), span)),
+        Value::String { source, start, end } => Ok(Spanned::new(
+            Expr::Str(source[*start..*end].to_string()),
+            span,
+        )),
+        Value::Dict(dict) => {
+            // Check if this is an AST dict (has a "type" field)
+            if dict.contains_key(&Key::String("type".to_string())) {
+                // It's an AST dict — use dict_to_ast
+                crate::ast_dict::dict_to_ast(value, ctx).map_err(|err| {
+                    EvalError::internal(
+                        format!("unquote result dict is not a valid AST: {}", err),
+                        span,
+                    )
+                    .into()
+                })
+            } else {
+                // It's a regular dict — convert to Expr::Dict
+                // This is trickier because dict values are thunk IDs
+                // For now, error on non-AST dicts in unquote
+                Err(EvalError::internal(
+                    "unquote of non-AST dict is not yet supported".to_string(),
+                    span,
+                )
+                .into())
+            }
+        }
+        _ => Err(
+            EvalError::internal(format!("unquote of {:?} is not supported", value), span).into(),
+        ),
+    }
+}
+
+/// Recursively preprocess a quoted expression tree to handle nested unquotes.
+///
+/// This walks the entire AST and:
+/// - Evaluates `Unquote` nodes, converting the result back to AST
+/// - Recurses into all child expressions
+/// - Leaves non-unquote nodes unchanged
+fn eval_quote_preprocess(
+    expr: &Expr,
+    span: Span,
+    env: &Rc<RefCell<Environment>>,
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<Spanned<Expr>> {
     match expr {
         Expr::Unquote(inner) => {
-            // Evaluate the unquoted expression in the current environment
-            eval_recursive(Rc::new((**inner).clone()), env, ctx)
+            // Evaluate the unquoted expression
+            let thunk = eval_recursive(Rc::new((**inner).clone()), env.clone(), ctx)?;
+            let value = materialize(&thunk, Some(&inner.span), ctx)?;
+
+            // Convert the value back to AST
+            value_to_expr(&value, inner.span, ctx)
         }
         Expr::UnquoteSplice(_) => {
             // UnquoteSplice at non-list position is an error
@@ -1272,25 +1339,211 @@ fn eval_quote_walk(
             )
             .into())
         }
-        _ => {
-            // TODO: implement eval_quote_preprocess to handle nested unquotes
-            // For now, use the existing ast_to_dict_expr which doesn't handle nested unquotes.
-            let opts = AstToDictOpts {
-                source: None,
-                comments: None,
-            };
-            ast_to_dict_expr(&Spanned::new(expr.clone(), span), &opts, ctx)
+
+        // Recursively process composite expressions
+        Expr::Dict(entries) => {
+            let processed_entries = entries
+                .iter()
+                .map(|entry| {
+                    let processed_value = eval_quote_preprocess(
+                        &entry.node.value.node,
+                        entry.node.value.span,
+                        env,
+                        ctx,
+                    )?;
+                    let processed_key = if let Some(ref key_expr) = entry.node.key {
+                        Some(eval_quote_preprocess(
+                            &key_expr.node,
+                            key_expr.span,
+                            env,
+                            ctx,
+                        )?)
+                    } else {
+                        None
+                    };
+                    Ok(Spanned::new(
+                        Entry {
+                            key: processed_key,
+                            value: Rc::new(processed_value),
+                        },
+                        entry.span,
+                    ))
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(Expr::Dict(processed_entries), span))
         }
+
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => {
+            let processed_func = eval_quote_preprocess(&func.node, func.span, env, ctx)?;
+            let processed_args = args
+                .iter()
+                .map(|arg| eval_quote_preprocess(&arg.node, arg.span, env, ctx).map(Rc::new))
+                .collect::<EvalResult<Vec<_>>>()?;
+            let processed_named_args = named_args
+                .iter()
+                .map(|na| {
+                    let processed_value =
+                        eval_quote_preprocess(&na.node.value.node, na.node.value.span, env, ctx)?;
+                    Ok(Spanned::new(
+                        NamedArg {
+                            name: na.node.name.clone(),
+                            value: Rc::new(processed_value),
+                        },
+                        na.span,
+                    ))
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(
+                Expr::Call {
+                    func: Box::new(processed_func),
+                    args: processed_args,
+                    named_args: processed_named_args,
+                    implied: *implied,
+                },
+                span,
+            ))
+        }
+
+        Expr::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => {
+            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::Fn {
+                    return_ann: return_ann.clone(),
+                    params: params.clone(),
+                    body: Rc::new(processed_body),
+                    desugared: *desugared,
+                },
+                span,
+            ))
+        }
+
+        Expr::DotAccess {
+            expr: target,
+            field,
+        } => {
+            let processed_target = eval_quote_preprocess(&target.node, target.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::DotAccess {
+                    expr: Box::new(processed_target),
+                    field: field.clone(),
+                },
+                span,
+            ))
+        }
+
+        Expr::Pipe { lhs, rhs } => {
+            let processed_lhs = eval_quote_preprocess(&lhs.node, lhs.span, env, ctx)?;
+            let processed_rhs = eval_quote_preprocess(&rhs.node, rhs.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::Pipe {
+                    lhs: Box::new(processed_lhs),
+                    rhs: Box::new(processed_rhs),
+                },
+                span,
+            ))
+        }
+
+        Expr::Sequential(exprs) => {
+            let processed_exprs = exprs
+                .iter()
+                .map(|e| eval_quote_preprocess(&e.node, e.span, env, ctx).map(Rc::new))
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(Expr::Sequential(processed_exprs), span))
+        }
+
+        Expr::TypeAlias { params, body } => {
+            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::TypeAlias {
+                    params: params.clone(),
+                    body: Box::new(processed_body),
+                },
+                span,
+            ))
+        }
+
+        Expr::TypeAssert {
+            annotation,
+            expr: inner,
+            resolved_type,
+        } => {
+            let processed_expr = eval_quote_preprocess(&inner.node, inner.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::TypeAssert {
+                    annotation: annotation.clone(),
+                    expr: Box::new(processed_expr),
+                    resolved_type: resolved_type.clone(),
+                },
+                span,
+            ))
+        }
+
+        Expr::Quote(inner) => {
+            let processed_inner = eval_quote_preprocess(&inner.node, inner.span, env, ctx)?;
+            Ok(Spanned::new(Expr::Quote(Box::new(processed_inner)), span))
+        }
+
+        Expr::Match { scrutinee, arms } => {
+            let processed_scrutinee =
+                eval_quote_preprocess(&scrutinee.node, scrutinee.span, env, ctx)?;
+            let processed_arms = arms
+                .iter()
+                .map(|arm| {
+                    let processed_body =
+                        eval_quote_preprocess(&arm.body.node, arm.body.span, env, ctx)?;
+                    let processed_guard = if let Some(ref guard) = arm.guard {
+                        Some(Box::new(eval_quote_preprocess(
+                            &guard.node,
+                            guard.span,
+                            env,
+                            ctx,
+                        )?))
+                    } else {
+                        None
+                    };
+                    Ok(MatchArm {
+                        pattern: arm.pattern.clone(),
+                        guard: processed_guard,
+                        body: Box::new(processed_body),
+                    })
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(
+                Expr::Match {
+                    scrutinee: Box::new(processed_scrutinee),
+                    arms: processed_arms,
+                },
+                span,
+            ))
+        }
+
+        Expr::DefMacro { name, params, body } => {
+            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::DefMacro {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: Rc::new(processed_body),
+                },
+                span,
+            ))
+        }
+
+        // All other expressions don't have child expressions, just clone them
+        _ => Ok(Spanned::new(expr.clone(), span)),
     }
 }
 
-// TODO(eval-gaps): Implement eval_quote_preprocess to handle nested unquotes.
-// This was attempted but had bugs causing infinite loops during testing.
-// The function needs to walk the Expr tree and:
-// - Evaluate Unquote nodes and substitute their results
-// - Handle UnquoteSplice in list positions (Call args, Dict entries)
-// - Recursively process all child expressions
-// See git history for the attempted implementation.
 pub fn eval(
     expr: Rc<Spanned<Expr>>,
     env: Rc<RefCell<Environment>>,

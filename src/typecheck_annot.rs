@@ -281,7 +281,9 @@ pub(crate) fn resolve_fn_metadata(
                                     Expr::VarRef { name, .. } => {
                                         // Single class: [a: Comparable]
                                         // Check both hardcoded VALID_CLASSES and dynamically registered classes in state.class_env
-                                        if !VALID_CLASSES.contains(&name.as_str()) && state.class_env.get(name).is_none() {
+                                        if !VALID_CLASSES.contains(&name.as_str())
+                                            && state.class_env.get(name).is_none()
+                                        {
                                             return Err(TypeError::new(
                                                 format!("unknown constraint class '{}'", name),
                                                 c_entry.node.value.span,
@@ -301,7 +303,9 @@ pub(crate) fn resolve_fn_metadata(
                                             match &class_entry.node.value.node {
                                                 Expr::VarRef { name, .. } => {
                                                     // Check both hardcoded VALID_CLASSES and dynamically registered classes in state.class_env
-                                                    if !VALID_CLASSES.contains(&name.as_str()) && state.class_env.get(name).is_none() {
+                                                    if !VALID_CLASSES.contains(&name.as_str())
+                                                        && state.class_env.get(name).is_none()
+                                                    {
                                                         return Err(TypeError::new(
                                                             format!(
                                                                 "unknown constraint class '{}'",

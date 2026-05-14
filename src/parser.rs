@@ -2809,6 +2809,80 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                 continue;
             }
 
+            Token::TripleQuotedString(s) => {
+                // Desugar to [unindent "..."]
+                let str_expr = Spanned::new(Expr::Str(s.clone()), span);
+                let unindent_ref = Spanned::new(Expr::var_ref("unindent".to_string()), span);
+                let args = vec![Rc::new(str_expr)];
+                let expr = Spanned::new(
+                    Expr::Call {
+                        func: Box::new(unindent_ref),
+                        args,
+                        named_args: vec![],
+                        implied: true,
+                    },
+                    span,
+                );
+                if let Err(push_err) =
+                    push_value(&mut stack, &mut current_document_expressions, expr)
+                {
+                    if !stack.is_empty() {
+                        i = recover_from_bracket_error(
+                            push_err,
+                            span,
+                            &token_vec,
+                            i + 1,
+                            &mut stack,
+                            &mut current_document_expressions,
+                            &mut recovered_errors,
+                        );
+                        continue;
+                    }
+                    return Err(push_err);
+                }
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
+            Token::TripleInterpolatedString(parts) => {
+                // Desugar to [unindent i"..."]
+                // First emit the tmpl call for the interpolated string
+                let tmpl_expr = emit_tmpl_call(parts, span)?;
+                // Then wrap it with unindent
+                let unindent_ref = Spanned::new(Expr::var_ref("unindent".to_string()), span);
+                let args = vec![Rc::new(tmpl_expr)];
+                let expr = Spanned::new(
+                    Expr::Call {
+                        func: Box::new(unindent_ref),
+                        args,
+                        named_args: vec![],
+                        implied: true,
+                    },
+                    span,
+                );
+                if let Err(push_err) =
+                    push_value(&mut stack, &mut current_document_expressions, expr)
+                {
+                    if !stack.is_empty() {
+                        i = recover_from_bracket_error(
+                            push_err,
+                            span,
+                            &token_vec,
+                            i + 1,
+                            &mut stack,
+                            &mut current_document_expressions,
+                            &mut recovered_errors,
+                        );
+                        continue;
+                    }
+                    return Err(push_err);
+                }
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
             Token::Identifier(s) => {
                 // Check for annotation: word@Type
                 if i + 1 < token_vec.len() && matches!(&token_vec[i + 1].node, Token::ImmediateAt) {

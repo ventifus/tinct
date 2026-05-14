@@ -1,0 +1,8 @@
+# Triple-quoted string evaluation - verifies desugaring to [unindent "..."]
+[query: """
+  SELECT *
+  FROM users
+  WHERE active = true
+  """]
+=== out
+Dict({"query": String("SELECT *\nFROM users\nWHERE active = true")})

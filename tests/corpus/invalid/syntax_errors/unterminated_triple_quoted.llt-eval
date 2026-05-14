@@ -1,0 +1,6 @@
+# Unterminated triple-quoted string
+"""
+  SELECT *
+  FROM users
+=== out
+unterminated triple-quoted string
