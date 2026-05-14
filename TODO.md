@@ -104,14 +104,14 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 
 **Phase 2 — Mappable migration:**
 - [x] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
-- [ ] Remove hardcoded `Mappable` from `satisfies_constraint` match in `src/type_unify.rs` — **NOT YET DONE** (panel audit 2026-05-13: hardcoded arm still present at `src/type_unify.rs:43-47`); gate on `infer-dict-class-preregistration` landing first (`src/type_unify.rs`)
-- [ ] Remove `Mappable` placeholder pre-registration from `InferState::new()` in `src/types.rs` — gate on hardcoded arm removal above (`src/types.rs`)
+- [x] Remove hardcoded `Mappable` from `satisfies_constraint` — DONE via instance propagation (commit 6544e3b) (`src/type_unify.rs`)
+- [x] Remove `Mappable` placeholder pre-registration from `InferState::new()` — DONE (`src/types.rs`)
 - [ ] Update `$map`/`$filter` type signatures in `src/type_env.rs` to use `Mappable f` constraint instead of hardcoded dual-dispatch (`src/type_env.rs`)
 
 **Phase 3 — Appendable migration:**
 - [x] Write `Appendable` class + instances in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
-- [ ] Remove hardcoded `Appendable` from `satisfies_constraint` match in `src/type_unify.rs` — **NOT YET DONE** (same audit; hardcoded arm still present); gate on `infer-dict-class-preregistration` (`src/type_unify.rs`)
-- [ ] Remove `Appendable` placeholder pre-registration from `InferState::new()` (`src/types.rs`)
+- [x] Remove hardcoded `Appendable` from `satisfies_constraint` — DONE via instance propagation (commit 6544e3b) (`src/type_unify.rs`)
+- [x] Remove `Appendable` placeholder pre-registration from `InferState::new()` — DONE (`src/types.rs`)
 - [ ] Update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/type_env.rs`)
 
 **Phase 4 — Equatable, Comparable, Showable migration (INSTANCE PROPAGATION BLOCKER):**
@@ -121,7 +121,7 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 - [x] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float` in `stdlib/prelude.llt` ✓ (declarations added; hardcoded `satisfies_constraint` arm RETAINED pending instance propagation) (`stdlib/prelude.llt`)
 - [x] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float` in `stdlib/prelude.llt` ✓ (same — declarations present, hardcoded arm retained) (`stdlib/prelude.llt`)
 - [x] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null` in `stdlib/prelude.llt` ✓ (same — declarations present, hardcoded arm retained; `Numeric` stays hardcoded) (`stdlib/prelude.llt`)
-- [ ] Remove `Equatable`/`Comparable`/`Showable` from `satisfies_constraint` and `InferState::new()` — **BLOCKED on instance propagation**: prelude instances must reach user InferState before hardcoded arms can be removed (`src/type_unify.rs`, `src/types.rs`)
+- [x] Remove `Equatable`/`Showable`/`Mappable`/`Appendable` from `satisfies_constraint` — DONE via PRELUDE_INSTANCE_CACHE + seed_infer_state_from_prelude_cache (commit 6544e3b); `Numeric`/`Comparable` remain hardcoded (`src/type_unify.rs`, `src/types.rs`, `src/imports.rs`)
 - [ ] Verify prelude annotations from `builtin-type-audit` batch B still type-check after migrations (`stdlib/prelude.llt`)
 - [ ] Tests: user-defined `Equatable`/`Comparable`/`Showable` instances; `=` on non-Equatable type errors; `satisfies_constraint` no longer special-cases any migrated class (`tests/corpus/eval/typecheck/`)
 
