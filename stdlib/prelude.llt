@@ -535,7 +535,7 @@ cond@[doc: "Multi-branch conditional"]: [fn@[a Null] [pairs@Dict] [cond-impl pai
 # Get value by key from a dict.
 # Signature: Key → Dict → Any (curried for pipeline composition)
 # assert: [get "b" [a: 1  b: 2]] => 2
-get@[doc: "Get value by key with error if missing"]: [fn@Unknown [k xs@Dict] [builtin-get k xs]]
+get@[doc: "Get value by key with error if missing"]: [fn@[return: a] [key@Label dict@d] [builtin-get key dict]]
 
 # Check if a key exists in a dict. Uses try around get access.
 # assert: [has? [x: 1] "x"] => true
@@ -546,8 +546,8 @@ has?@[doc: "Check if dict has key"]: [fn@Bool [xs@Dict k]
 # Get value by key with a default if key is missing.
 # assert: [get-or [x: 1] "x" 99] => 1
 # assert: [get-or [x: 1] "y" 99] => 99
-get-or@[doc: "Get value by key with default"]: [fn@a [xs@Dict k default@a]
-    [builtin-if [has? xs k] [get k xs] default]]
+get-or@[doc: "Get value by key with default"]: [fn@[return: a] [dict@Dict key@Label default@a]
+    [builtin-if [has? dict key] [get key dict] default]]
 
 # Traverse nested dicts by a list of keys.
 # Returns error when any intermediate key is missing.
