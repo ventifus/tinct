@@ -114,10 +114,14 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 - [ ] Remove `Appendable` placeholder pre-registration from `InferState::new()` (`src/types.rs`)
 - [ ] Update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/type_env.rs`)
 
-**Phase 4 — Equatable, Comparable, Showable migration (no chicken-and-egg — pre-registrations in `InferState::new()` at `src/types.rs:1619-1649` handle forward refs; `infer-dict-class-preregistration` handles ordering within `infer_dict`):**
-- [ ] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float`; remove from `satisfies_constraint` (`src/type_unify.rs:16-41`) and `InferState::new()` (`src/types.rs:1620-1635`) (`stdlib/prelude.llt`, `src/type_unify.rs`, `src/types.rs`)
-- [ ] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float`; remove from `satisfies_constraint` and `InferState::new()` (`stdlib/prelude.llt`, `src/type_unify.rs`, `src/types.rs`)
-- [ ] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null`; remove from `satisfies_constraint` and `InferState::new()`; `Numeric` stays hardcoded (`stdlib/prelude.llt`, `src/type_unify.rs`, `src/types.rs`)
+**Phase 4 — Equatable, Comparable, Showable migration (INSTANCE PROPAGATION BLOCKER):**
+
+**BLOCKER (2026-05-14):** Prelude instances (EquatableInt, ShowableStr, etc.) registered in prelude's InferState via Pass 0c, but user code creates a FRESH InferState that doesn't inherit prelude instances. Removing hardcoded arms causes 25 test failures. Fix: propagate prelude instance_env to user InferState (via TypeEnv or seeding mechanism).
+
+- [x] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float` in `stdlib/prelude.llt` ✓ (declarations added; hardcoded `satisfies_constraint` arm RETAINED pending instance propagation) (`stdlib/prelude.llt`)
+- [x] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float` in `stdlib/prelude.llt` ✓ (same — declarations present, hardcoded arm retained) (`stdlib/prelude.llt`)
+- [x] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null` in `stdlib/prelude.llt` ✓ (same — declarations present, hardcoded arm retained; `Numeric` stays hardcoded) (`stdlib/prelude.llt`)
+- [ ] Remove `Equatable`/`Comparable`/`Showable` from `satisfies_constraint` and `InferState::new()` — **BLOCKED on instance propagation**: prelude instances must reach user InferState before hardcoded arms can be removed (`src/type_unify.rs`, `src/types.rs`)
 - [ ] Verify prelude annotations from `builtin-type-audit` batch B still type-check after migrations (`stdlib/prelude.llt`)
 - [ ] Tests: user-defined `Equatable`/`Comparable`/`Showable` instances; `=` on non-Equatable type errors; `satisfies_constraint` no longer special-cases any migrated class (`tests/corpus/eval/typecheck/`)
 

@@ -1625,10 +1625,17 @@ impl InferState {
     pub fn new() -> Self {
         let mut class_env = ClassEnv::new();
 
-        // Register built-in type classes with their superclass relationships
-        // These back the B4 constrained type variables implementation
+        // Register built-in type classes with their superclass relationships.
+        // Class declarations define the hierarchy (which classes extend which).
+        // Instance resolution happens in two stages:
+        //   1. satisfies_constraint: hardcoded for Numeric only
+        //   2. InstanceEnv::resolve_instance: dynamic resolution from prelude.llt instances
+        //
+        // These pre-registrations ensure the class hierarchy is available before prelude.llt
+        // is type-checked. When prelude.llt is loaded, it will register instances (not classes)
+        // which will be used by resolve_instance for constraint checking.
 
-        // Equatable: base class (no superclasses)
+        // Equatable: base class (instances defined in prelude.llt)
         class_env.insert(ClassDecl {
             name: "Equatable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -1636,7 +1643,7 @@ impl InferState {
             methods: HashMap::new(),
         });
 
-        // Numeric: extends Equatable (numbers can be compared for equality)
+        // Numeric: extends Equatable (hardcoded instance set for Int/Float/Number/IntLiteral)
         class_env.insert(ClassDecl {
             name: "Numeric".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -1644,7 +1651,7 @@ impl InferState {
             methods: HashMap::new(),
         });
 
-        // Comparable: extends Equatable (ordered types can be compared for equality)
+        // Comparable: extends Equatable (instances defined in prelude.llt)
         class_env.insert(ClassDecl {
             name: "Comparable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -1652,7 +1659,7 @@ impl InferState {
             methods: HashMap::new(),
         });
 
-        // Showable: base class (all types except Error can be shown)
+        // Showable: base class (instances defined in prelude.llt)
         class_env.insert(ClassDecl {
             name: "Showable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -1660,8 +1667,8 @@ impl InferState {
             methods: HashMap::new(),
         });
 
-        // Mappable: base class (Record and Seq support map operations)
-        // Kind::Operator for higher-kinded type constructor polymorphism (hkt-kind-inference)
+        // Mappable: base class (instances defined in prelude.llt)
+        // Kind::Operator for higher-kinded type constructor polymorphism
         class_env.insert(ClassDecl {
             name: "Mappable".to_string(),
             params: vec![("f".to_string(), Kind::Operator)],
@@ -1669,7 +1676,7 @@ impl InferState {
             methods: HashMap::new(),
         });
 
-        // Appendable: base class (Str, Record, Seq support append operations)
+        // Appendable: base class (instances defined in prelude.llt)
         class_env.insert(ClassDecl {
             name: "Appendable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -6582,13 +6589,10 @@ mod tests {
     // --- Constraint checking tests ---
 
     #[test]
-    fn test_constraint_equatable_satisfied_by_int() {
-        assert!(satisfies_constraint(&Type::Int, "Equatable"));
-        assert!(satisfies_constraint(&Type::IntLiteral(42), "Equatable"));
-    }
-
-    #[test]
-    fn test_constraint_equatable_not_satisfied_by_function() {
+    fn test_constraint_equatable_not_hardcoded() {
+        // Equatable is no longer hardcoded - it's resolved via instances in prelude.llt
+        assert!(!satisfies_constraint(&Type::Int, "Equatable"));
+        assert!(!satisfies_constraint(&Type::IntLiteral(42), "Equatable"));
         let func_ty = Type::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Int),
@@ -6611,26 +6615,28 @@ mod tests {
     }
 
     #[test]
-    fn test_constraint_showable_satisfied_by_all_types() {
-        assert!(satisfies_constraint(&Type::Int, "Showable"));
-        assert!(satisfies_constraint(&Type::Str, "Showable"));
-        assert!(satisfies_constraint(&Type::Bool, "Showable"));
+    fn test_constraint_showable_not_hardcoded() {
+        // Showable is no longer hardcoded - it's resolved via instances in prelude.llt
+        assert!(!satisfies_constraint(&Type::Int, "Showable"));
+        assert!(!satisfies_constraint(&Type::Str, "Showable"));
+        assert!(!satisfies_constraint(&Type::Bool, "Showable"));
         let func_ty = Type::Function {
             params: vec![],
             ret: Box::new(Type::Int),
             variadic: false,
         };
-        assert!(satisfies_constraint(&func_ty, "Showable"));
+        assert!(!satisfies_constraint(&func_ty, "Showable"));
     }
 
     #[test]
-    fn test_constraint_mappable_satisfied_by_dict_and_seq() {
+    fn test_constraint_mappable_not_hardcoded() {
+        // Mappable is no longer hardcoded - it's resolved via instances in prelude.llt
         let dict_ty = Type::Record(Row {
             fields: HashMap::new(),
         });
         let seq_ty = Type::Seq(Box::new(Type::Int));
-        assert!(satisfies_constraint(&dict_ty, "Mappable"));
-        assert!(satisfies_constraint(&seq_ty, "Mappable"));
+        assert!(!satisfies_constraint(&dict_ty, "Mappable"));
+        assert!(!satisfies_constraint(&seq_ty, "Mappable"));
         assert!(!satisfies_constraint(&Type::Int, "Mappable"));
     }
 

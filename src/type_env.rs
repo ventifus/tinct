@@ -2450,7 +2450,7 @@ impl TypeEnv {
         );
         // builtin-sort: Dict -> Dict (natural ordering)
         //            OR (a -> a -> Bool) -> Dict -> Dict (custom comparator)
-        // Uses Unknown for params to support both 1-arg and 2-arg signatures.
+        // Variadic to accept both 1-arg and 2-arg call forms without arity errors.
         env.insert(
             "builtin-sort".to_string(),
             Type::Function {
@@ -2458,7 +2458,7 @@ impl TypeEnv {
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                 })),
-                variadic: false,
+                variadic: true,
             },
         );
 
