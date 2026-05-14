@@ -1,0 +1,4 @@
+# Simple unquote at top level — [quote [unquote expr]] substitutes evaluated expr
+[get "type" [quote [unquote [quote 42]]]]
+=== out
+String("literal")

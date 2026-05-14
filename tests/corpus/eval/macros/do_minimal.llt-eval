@@ -1,0 +1,4 @@
+# Minimal do macro test
+[do result [Ok 42]]
+---
+[Ok 42]

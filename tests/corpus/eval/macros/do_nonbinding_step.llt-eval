@@ -1,0 +1,6 @@
+# Test do macro with a non-binding step
+[do result
+  [x: [Ok 42]]
+  [Ok x]]
+---
+[Ok 42]

@@ -1,0 +1,4 @@
+# Unquote in nested dict entry value: [quote [x: [unquote (+ 1 2)]]] → AST with x: 3
+[= [get "value" [get "value" [get 0 [get "entries" [quote [x: [unquote [+ 1 2]]]]]]]] 3]
+=== out
+Bool(true)

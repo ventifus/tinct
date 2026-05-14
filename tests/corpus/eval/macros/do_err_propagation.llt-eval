@@ -1,0 +1,7 @@
+# Test do macro error propagation
+[do result
+  [x: [Ok 1]]
+  [y: [Err "fail"]]
+  [Ok [+ x y]]]
+---
+[Err "fail"]

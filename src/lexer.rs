@@ -50,6 +50,10 @@ pub enum Token {
     BoolLit(bool),
     /// Interpolated string `i"..."` with parts: literals and variable references
     InterpolatedString(Vec<InterpolatedPart>),
+    /// Triple-quoted string `"""..."""` (raw content, no escape processing except `\"\"\"`)
+    TripleQuotedString(String),
+    /// Triple-quoted interpolated string `i"""..."""` with parts
+    TripleInterpolatedString(Vec<InterpolatedPart>),
 }
 
 /// Parts of an interpolated string.
@@ -97,6 +101,18 @@ impl fmt::Display for Token {
                     }
                 }
                 write!(f, "\"")
+            }
+            Token::TripleQuotedString(s) => write!(f, "\"\"\"{s}\"\"\""),
+            Token::TripleInterpolatedString(parts) => {
+                write!(f, "i\"\"\"")?;
+                for part in parts {
+                    match part {
+                        InterpolatedPart::Literal(s) => write!(f, "{s}")?,
+                        InterpolatedPart::VarRef(name) => write!(f, "${name}")?,
+                        InterpolatedPart::Expr(raw) => write!(f, "${{{raw}}}")?,
+                    }
+                }
+                write!(f, "\"\"\"")
             }
         }
     }
@@ -351,12 +367,22 @@ impl<'a> Lexer<'a> {
             '"' => {
                 self.after_access_dot = false;
                 self.last_was_identifier = false;
-                self.lex_quoted_string()
+                // Check for triple-quoted string `"""`
+                if self.peek_ahead(1) == Some('"') && self.peek_ahead(2) == Some('"') {
+                    self.lex_triple_quoted_string()
+                } else {
+                    self.lex_quoted_string()
+                }
             }
             'i' if self.peek_ahead(1) == Some('"') => {
                 self.after_access_dot = false;
                 self.last_was_identifier = false;
-                self.lex_interpolated_string()
+                // Check for triple-quoted interpolated string `i"""`
+                if self.peek_ahead(2) == Some('"') && self.peek_ahead(3) == Some('"') {
+                    self.lex_triple_interpolated_string()
+                } else {
+                    self.lex_interpolated_string()
+                }
             }
             '$' => {
                 self.after_access_dot = false;
@@ -727,6 +753,253 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         Err(LexError::new(
             "unterminated interpolated string",
+            Span::new(start, end),
+        ))
+    }
+
+    fn lex_triple_quoted_string(&mut self) -> Result<(), LexError> {
+        let start = self.current_position();
+        self.advance(); // skip first '"'
+        self.advance(); // skip second '"'
+        self.advance(); // skip third '"'
+
+        let mut result = String::new();
+        while let Some(c) = self.peek_char() {
+            match c {
+                '"' => {
+                    // Check if this is the closing `"""`
+                    if self.peek_ahead(1) == Some('"') && self.peek_ahead(2) == Some('"') {
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                        let end = self.current_position();
+                        self.tokens.push(Spanned::new(
+                            Token::TripleQuotedString(result),
+                            Span::new(start, end),
+                        ));
+                        return Ok(());
+                    } else {
+                        // Single quote inside content
+                        result.push(c);
+                        self.advance();
+                    }
+                }
+                '\\' => {
+                    // Only process escape for `"""` inside content
+                    self.advance();
+                    match self.peek_char() {
+                        Some('"')
+                            if self.peek_ahead(1) == Some('"')
+                                && self.peek_ahead(2) == Some('"') =>
+                        {
+                            // Escaped triple-quote: `\"""`
+                            result.push('"');
+                            result.push('"');
+                            result.push('"');
+                            self.advance();
+                            self.advance();
+                            self.advance();
+                        }
+                        Some(c) => {
+                            // Other escapes: pass backslash through literally
+                            result.push('\\');
+                            result.push(c);
+                            self.advance();
+                        }
+                        None => {
+                            result.push('\\');
+                        }
+                    }
+                }
+                _ => {
+                    result.push(c);
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.current_position();
+        Err(LexError::new(
+            "unterminated triple-quoted string",
+            Span::new(start, end),
+        ))
+    }
+
+    fn lex_triple_interpolated_string(&mut self) -> Result<(), LexError> {
+        let start = self.current_position();
+        self.advance(); // skip 'i'
+        self.advance(); // skip first '"'
+        self.advance(); // skip second '"'
+        self.advance(); // skip third '"'
+
+        let mut parts = Vec::new();
+        let mut literal = String::new();
+
+        while let Some(c) = self.peek_char() {
+            match c {
+                '"' => {
+                    // Check if this is the closing `"""`
+                    if self.peek_ahead(1) == Some('"') && self.peek_ahead(2) == Some('"') {
+                        if !literal.is_empty() {
+                            parts.push(InterpolatedPart::Literal(literal));
+                        }
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                        let end = self.current_position();
+                        self.tokens.push(Spanned::new(
+                            Token::TripleInterpolatedString(parts),
+                            Span::new(start, end),
+                        ));
+                        return Ok(());
+                    } else {
+                        // Single quote inside content
+                        literal.push(c);
+                        self.advance();
+                    }
+                }
+                '$' => {
+                    // Check for $$ (escaped literal $)
+                    if self.peek_ahead(1) == Some('$') {
+                        literal.push('$');
+                        self.advance();
+                        self.advance();
+                    } else if self.peek_ahead(1) == Some('{') {
+                        // ${expr} expression interpolation — read until matching '}'
+                        // Save current literal part if non-empty
+                        if !literal.is_empty() {
+                            parts.push(InterpolatedPart::Literal(literal.clone()));
+                            literal.clear();
+                        }
+                        self.advance(); // skip '$'
+                        self.advance(); // skip '{'
+
+                        // Collect the inner expression, tracking brace depth.
+                        let expr_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+                        let mut depth: usize = 1;
+                        let mut found_close = false;
+                        while let Some(c) = self.peek_char() {
+                            match c {
+                                '{' => {
+                                    depth += 1;
+                                    self.advance();
+                                }
+                                '}' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        found_close = true;
+                                        break;
+                                    }
+                                    self.advance();
+                                }
+                                _ => self.advance(),
+                            }
+                        }
+
+                        let expr_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+                        if !found_close {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "unterminated ${...} in triple-quoted interpolated string",
+                                Span::new(start, end),
+                            ));
+                        }
+
+                        self.advance(); // skip closing '}'
+
+                        let raw = self.input[expr_start..expr_end].trim().to_string();
+                        if raw.is_empty() {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "empty ${} expression in triple-quoted interpolated string",
+                                Span::new(start, end),
+                            ));
+                        }
+                        parts.push(InterpolatedPart::Expr(raw));
+                    } else {
+                        // Variable reference $name
+                        // Save current literal part if non-empty
+                        if !literal.is_empty() {
+                            parts.push(InterpolatedPart::Literal(literal.clone()));
+                            literal.clear();
+                        }
+                        self.advance(); // skip '$'
+
+                        // Collect identifier characters
+                        let ident_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+                        while let Some(c) = self.peek_char() {
+                            if matches!(
+                                c,
+                                ' ' | '\t'
+                                    | '\r'
+                                    | '\n'
+                                    | '['
+                                    | ']'
+                                    | ':'
+                                    | ';'
+                                    | '#'
+                                    | '"'
+                                    | '@'
+                                    | '.'
+                                    | ','
+                                    | '!'
+                                    | '?'
+                            ) {
+                                break;
+                            }
+                            self.advance();
+                        }
+                        let ident_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+
+                        if ident_start == ident_end {
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "bare $ without identifier in triple-quoted interpolated string",
+                                Span::new(start, end),
+                            ));
+                        }
+
+                        let name = self.input[ident_start..ident_end].to_string();
+                        parts.push(InterpolatedPart::VarRef(name));
+                    }
+                }
+                '\\' => {
+                    // Only process escape for `"""` inside content
+                    self.advance();
+                    match self.peek_char() {
+                        Some('"')
+                            if self.peek_ahead(1) == Some('"')
+                                && self.peek_ahead(2) == Some('"') =>
+                        {
+                            // Escaped triple-quote: `\"""`
+                            literal.push('"');
+                            literal.push('"');
+                            literal.push('"');
+                            self.advance();
+                            self.advance();
+                            self.advance();
+                        }
+                        Some(c) => {
+                            // Other escapes: pass backslash through literally
+                            literal.push('\\');
+                            literal.push(c);
+                            self.advance();
+                        }
+                        None => {
+                            literal.push('\\');
+                        }
+                    }
+                }
+                _ => {
+                    literal.push(c);
+                    self.advance();
+                }
+            }
+        }
+
+        let end = self.current_position();
+        Err(LexError::new(
+            "unterminated triple-quoted interpolated string",
             Span::new(start, end),
         ))
     }

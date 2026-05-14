@@ -1,0 +1,6 @@
+# Triple-quoted strings can contain single and double quotes without escaping
+"""
+  {"key": "value"}
+  """
+=== out
+[unindent "\n  {\"key\": \"value\"}\n  "]

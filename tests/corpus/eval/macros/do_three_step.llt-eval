@@ -1,0 +1,7 @@
+# Test do macro with three binding steps
+[do result
+  [x: [Ok 1]]
+  [y: [Ok 2]]
+  [Ok [+ x y]]]
+---
+[Ok 3]
