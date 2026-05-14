@@ -1110,6 +1110,79 @@ result-ok@[doc: "Wrap a value in Ok"]: [fn@Unknown [v] [Ok v]]
 result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: result-ok]
 
 # ============================================================================
+# Type Class Declarations: Equatable
+# ============================================================================
+#
+# Equatable — types that support equality comparison via `=`.
+# All instance resolution is now dynamic (no hardcoded fixed-instance sets).
+
+Equatable@[doc: "Type class for types that support equality comparison"]:
+  [class [Equatable a]]
+
+EquatableInt@[doc: "Equatable instance for Int"]:
+  [instance [Equatable Int]
+    eq: [fn [a b] [builtin-eq a b]]]
+
+EquatableFloat@[doc: "Equatable instance for Float"]:
+  [instance [Equatable Float]
+    eq: [fn [a b] [builtin-eq a b]]]
+
+EquatableStr@[doc: "Equatable instance for Str"]:
+  [instance [Equatable String]
+    eq: [fn [a b] [builtin-eq a b]]]
+
+EquatableBool@[doc: "Equatable instance for Bool"]:
+  [instance [Equatable Bool]
+    eq: [fn [a b] [builtin-eq a b]]]
+
+# ============================================================================
+# Type Class Declarations: Comparable
+# ============================================================================
+#
+# Comparable — types that support ordering via `<`, `>`, `<=`, `>=`.
+# Extends Equatable (all comparable types are also equatable).
+
+Comparable@[doc: "Type class for types that support ordering"]:
+  [class [Comparable a]]
+
+ComparableInt@[doc: "Comparable instance for Int"]:
+  [instance [Comparable Int]
+    cmp: [fn [a b] [builtin-lt a b]]]
+
+ComparableFloat@[doc: "Comparable instance for Float"]:
+  [instance [Comparable Float]
+    cmp: [fn [a b] [builtin-lt a b]]]
+
+ComparableStr@[doc: "Comparable instance for Str"]:
+  [instance [Comparable String]
+    cmp: [fn [a b] [builtin-lt a b]]]
+
+# ============================================================================
+# Type Class Declarations: Showable
+# ============================================================================
+#
+# Showable — types that have string representations via `str`.
+
+Showable@[doc: "Type class for types that can be converted to strings"]:
+  [class [Showable a]]
+
+ShowableInt@[doc: "Showable instance for Int"]:
+  [instance [Showable Int]
+    show: str]
+
+ShowableFloat@[doc: "Showable instance for Float"]:
+  [instance [Showable Float]
+    show: str]
+
+ShowableStr@[doc: "Showable instance for Str"]:
+  [instance [Showable String]
+    show: str]
+
+ShowableBool@[doc: "Showable instance for Bool"]:
+  [instance [Showable Bool]
+    show: str]
+
+# ============================================================================
 # Type Class Declarations: Mappable
 # ============================================================================
 #
@@ -1118,10 +1191,6 @@ result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  p
 # with Kind::Operator — the LLT class declaration inherits that kind).
 # The fmap method signature uses HKT type syntax; the runtime value here is
 # the class declaration dict registered in the runtime class registry.
-#
-# Note: satisfies_constraint in type_unify.rs handles Mappable constraint
-# checking via the hardcoded fixed-instance set. These declarations extend
-# the runtime class/instance registry so user code can access the method dicts.
 
 Mappable@[doc: "Type class for mappable type constructors (Seq, Dict)"]:
   [class [Mappable f]]
@@ -1141,9 +1210,6 @@ MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
 # Appendable generalizes concatenation over concrete types (String, Dict, Seq).
 # The class parameter `a` has Kind::Type (kind-* typeclass, not Operator-kinded).
 # append-one: binary concatenation; empty: the identity element for concatenation.
-#
-# Note: satisfies_constraint in type_unify.rs handles Appendable constraint
-# checking via the hardcoded fixed-instance set.
 
 Appendable@[doc: "Type class for appendable types (String, Dict, Seq)"]:
   [class [Appendable a]]

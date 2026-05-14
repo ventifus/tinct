@@ -10,7 +10,10 @@ use super::*;
 
 /// Check if a type satisfies a type class constraint.
 /// Returns true if the type is an instance of the class.
-/// This implements the fixed instance sets for Elm-style constrained type variables.
+///
+/// Fixed instance sets are hardcoded here for all built-in classes.
+/// These run before dynamic instance resolution in `check_constraints_on_var`,
+/// ensuring that prelude-registered instances are not required for correctness.
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     // Unknown (the gradual dynamic type ?) satisfies all constraints vacuously.
     // AGT existential lifting: C(?) = ∃t ∈ γ(?). C(t) holds for any non-empty
@@ -48,16 +51,13 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
             ty,
             Type::Int | Type::IntLiteral(_) | Type::Float | Type::Number
         ),
-        "Showable" => {
-            // All types are showable (all have str representations)
-            !matches!(ty, Type::Error)
-        }
+        "Showable" => !matches!(ty, Type::Error),
         "Mappable" => matches!(ty, Type::Record(_) | Type::Seq(_)),
         "Appendable" => matches!(
             ty,
             Type::Str | Type::StringLiteral(_) | Type::Record(_) | Type::Seq(_)
         ),
-        _ => false, // Unknown constraint class
+        _ => false, // Unknown constraint class (fallthrough to instance resolution)
     }
 }
 
