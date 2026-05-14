@@ -1563,9 +1563,9 @@ collect@[doc: "Materialize Seq into Dict"]: [fn [xs] [builtin-collect xs]]
 # Example: [collect [range 0 3]] => [0 1 2]
 # Example: [take 3 [range 5]] => Seq(5, 6, 7, ...)
 range@[doc: "Lazy integer range (1-arg: infinite; 2-arg: finite half-open)"]: [fn [start@Int ...rest]
-    [builtin-if [builtin-eq [length rest] 0]
-        [builtin-range start]
-        [builtin-range start [builtin-get 0 rest]]]]
+    [builtin-if [seq? rest]
+        [builtin-range start [builtin-head rest]]
+        [builtin-range start]]]
 
 # Infinite lazy Seq repeating a single value.
 repeat@[doc: "Infinite lazy Seq repeating a value"]: [fn [x] [builtin-repeat x]]

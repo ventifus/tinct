@@ -70,14 +70,14 @@ Accepted 2026-05-14. See `doc/whatif/inference-completeness.md` and `doc/06-type
 
 See `doc/06-type-inference.md §[FN-VARIADIC] / [CALL-VARIADIC]`. **Spec chapters:** `doc/06-type-inference.md §Inference Judgments`.
 
-**IMPL STATUS (2026-05-13):** Type-only implementation complete. Runtime still collects variadic args as Dict (gradual typing allows type/runtime mismatch). Full runtime migration to Seq deferred to avoid breaking existing code.
+**IMPL STATUS (2026-05-13):** Complete. Runtime now collects variadic args as `Value::Seq` cons-list (type and runtime aligned). Prelude `range` and `->` migrated. All corpus tests pass.
 
 - [x] `infer_fn` in `src/typecheck.rs:3391–3402`: changed variadic param typing from `Type::Unknown` to `Type::Seq(Box::new(state.fresh_type_var()))` — a fresh TypeVar β per function; updated comment (`src/typecheck.rs`)
 - [x] `check_call` / `check_call_with_scheme` in `src/typecheck.rs`: added [CALL-VARIADIC] path — when function type has a `Seq(β)` variadic param, skip variadic param in positional loop, then widen each extra argument type (IntLiteral→Int, StringLiteral→Str) and unify against β; error span on the specific failing argument (`src/typecheck.rs:3107–3132, 3248–3273, 2859–2884`)
-- [ ] **DEFERRED:** `eval_call.rs:330–344` (BIND-VARIADIC): change variadic arg collection from `Value::Dict` with integer keys to `Value::Seq` — breaking change for all code using `args.0` access pattern; requires prelude audit first (`src/eval_call.rs`)
-- [ ] **DEFERRED:** Audit `stdlib/prelude.llt` for functions using variadic params (`->`, `str`, etc.) that access the collected args by integer key (`args.0`, etc.) — migrate to Seq operations (`each`, `map`, `reduce`, index via `get`) (`stdlib/prelude.llt`)
+- [x] `eval_call.rs:330–344` (BIND-VARIADIC): changed variadic arg collection from `Value::Dict` with integer keys to `Value::Seq` lazy cons-list; empty variadic = `Dict({})` (nil sentinel); non-empty = `Seq { head, tail }` built right-to-left (`src/eval_call.rs`)
+- [x] Audited `stdlib/prelude.llt` for variadic param usage: `->` (line 1005) passes `stages` to `builtin-reduce` which already handles Seq — no change needed; `range` (line 1565) accessed `rest` via `[length rest]`/`[builtin-get 0 rest]` — migrated to `[seq? rest]`/`[builtin-head rest]` (`stdlib/prelude.llt`)
 - [x] Updated corpus test at `tests/corpus/eval/typecheck/variadic_param_collects_dict.llt-eval` — updated comment to document type/runtime mismatch
-- [x] Tests: `[fn [...xs] xs]` callable with multiple args (`variadic_fn_callable.llt-eval`), zero-variadic-args case (`variadic_fn_zero_args.llt-eval`), mixed named+variadic params (`variadic_fn_mixed_params.llt-eval`) — all in `tests/corpus/eval/typecheck/`. **DEFERRED:** `[sum 1 2 3]` / `[sum 1 "two" 3]` tests require `sum` to accept variadic positional args (it currently takes a single collection); add only after BIND-VARIADIC runtime migration and prelude audit are complete.
+- [x] Tests: `[fn [...xs] xs]` callable with multiple args (`variadic_fn_callable.llt-eval`), zero-variadic-args case (`variadic_fn_zero_args.llt-eval`), mixed named+variadic params (`variadic_fn_mixed_params.llt-eval`) — all in `tests/corpus/eval/typecheck/`. Updated corpus tests to expect Seq output. `fn_kotlin_variadic_excess.llt-eval` updated. Unit test `test_call_variadic` in `src/eval.rs` updated to verify Seq cons-list structure.
 
 ### inference-completeness-nested-dict: Polymorphic dot-access via TypeScheme.inner_schemes
 

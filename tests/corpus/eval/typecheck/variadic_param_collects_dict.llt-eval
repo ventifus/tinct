@@ -1,10 +1,10 @@
-# Variadic param collects excess positional args into a Dict (at runtime).
+# Variadic param collects excess positional args into a lazy Seq cons-list (at runtime).
 # The variadic param type is Seq(T) where T is inferred from the supplied args.
 # Grammar forbids @annotation on variadic params. param_types[i] and the env binding
 # are both set to Seq(fresh TypeVar) for type inference.
-# At runtime, excess positional args are collected into an int-keyed Dict.
-# The type/runtime mismatch (Seq vs Dict) is allowed in gradual typing.
+# At runtime, excess positional args are collected into a Seq cons-list.
+# Empty variadic = Dict({}) (the nil sentinel); non-empty = Seq(head, ...).
 [f: [fn [x ...rest] rest]
  result: [f 10 20 30]]
 === out
-Dict({"f": Function(x, rest), "result": Dict({0: Int(20), 1: Int(30)})})
+Dict({"f": Function(x, rest), "result": Seq(Int(20), ...)})

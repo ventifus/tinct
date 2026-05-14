@@ -128,7 +128,7 @@ function highlightTinct(code: string): string {
 
     // Opening bracket — color at current depth, then deepen
     if (code[i] === '[') {
-      result += `<span class="llt-bracket-${depth % 6}">[</span>`;
+      result += `<span class="llt-bracket-${depth % 3}">[</span>`;
       depth++;
       i++;
       continue;
@@ -137,7 +137,7 @@ function highlightTinct(code: string): string {
     // Closing bracket — shallow first, then color at new depth
     if (code[i] === ']') {
       depth = Math.max(0, depth - 1);
-      result += `<span class="llt-bracket-${depth % 6}">]</span>`;
+      result += `<span class="llt-bracket-${depth % 3}">]</span>`;
       i++;
       continue;
     }
