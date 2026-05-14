@@ -2175,7 +2175,7 @@ fn check_expr(
                             // (from the resolved type) has no TypeVars. Annotation unification
                             // binds annotation-fresh TypeVars, not expected_ret TypeVars. Retained
                             // as a safety net per Algorithm W substitution threading invariant.
-                            let applied_ret = if state.subst.type_map.is_empty() {
+                            let applied_ret = if state.subst.type_map.borrow().is_empty() {
                                 *expected_ret.clone()
                             } else {
                                 state.subst.apply(expected_ret)
@@ -2791,7 +2791,7 @@ fn check_call_with_scheme(
                 // upstream — only the constraints accumulated during argument unification (merged back
                 // into state.subst at lines 1475-1480) need to be visible to downstream inference.
                 let mut subst = Substitution {
-                    type_map: state.subst.type_map.clone(),
+                    type_map: std::cell::RefCell::new(state.subst.type_map.borrow().clone()),
                 };
                 // Track consumed param indices to prevent named args from overlapping with positional args.
                 // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
@@ -2851,7 +2851,10 @@ fn check_call_with_scheme(
                             match infer_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
                                     // Task 2: merge state.subst updates from infer_expr into local subst
-                                    subst.type_map.extend(state.subst.type_map.clone());
+                                    subst
+                                        .type_map
+                                        .borrow_mut()
+                                        .extend(state.subst.type_map.borrow().clone());
                                     if let Err(e) =
                                         unify(&arg_ty, param_ty, &mut subst, state, na.span)
                                     {
@@ -2890,8 +2893,12 @@ fn check_call_with_scheme(
                 // this merge, bindings accumulated during argument unification (e.g., a
                 // TypeVar constrained to Int) are lost for downstream entries in the same
                 // letrec group. This mirrors infer_dict Pass 3d (lines 764-773).
-                for (k, v) in &subst.type_map {
-                    state.subst.type_map.insert(k.clone(), v.clone());
+                for (k, v) in subst.type_map.borrow().iter() {
+                    state
+                        .subst
+                        .type_map
+                        .borrow_mut()
+                        .insert(k.clone(), v.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
                 // After merging local subst into state.subst, state.subst is a superset of subst.
@@ -8942,7 +8949,7 @@ mod tests {
         );
         assert!(result.is_ok(), "unify(TypeVar, Error) must succeed");
         assert!(
-            subst.type_map.is_empty(),
+            subst.type_map.borrow().is_empty(),
             "TypeVar must NOT be bound when unified with Error (Error carries no type info)"
         );
     }
@@ -10739,7 +10746,7 @@ mod tests {
         // a is bound to Int
         assert_eq!(
             subst.get(&var_name),
-            Some(&Type::Int),
+            Some(Type::Int),
             "TypeVar should be bound to Int"
         );
     }
@@ -10781,7 +10788,7 @@ mod tests {
         );
         assert_eq!(
             subst.get(&var_name),
-            Some(&Type::Int),
+            Some(Type::Int),
             "TypeVar should be bound to Int"
         );
     }
@@ -10801,7 +10808,7 @@ mod tests {
         assert!(result.is_ok(), "C-Var2 should succeed: {result:?}");
         assert_eq!(
             subst.get(&var_name),
-            Some(&Type::Int),
+            Some(Type::Int),
             "TypeVar should be bound to Int"
         );
     }

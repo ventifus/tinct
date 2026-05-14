@@ -4,6 +4,19 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Substitution Performance
+
+### subst-path-compression: Path compression in Substitution::apply_inner
+
+Targeted fix for the O(N²) substitution merge loop in `infer_dict` (`src/typecheck_dict.rs:383-409`). The loop calls `subst.apply(&v)` for each entry, and `apply_inner` follows TypeVar chains of depth ≥4. Path compression compresses these chains on first traversal, making subsequent lookups O(1) amortized.
+
+See `doc/whatif/union-find-substitution.md §Prerequisites` for the documented blocker.
+
+- [ ] Add path compression to `Substitution::apply_inner()` in `src/types.rs`: after resolving a TypeVar chain `t0 → t1 → ... → concrete`, update `type_map` to map `t0`, `t1`, ... directly to the resolved `concrete` type (skipping intermediate nodes). This collapses chains on first traversal — amortized O(1) lookups thereafter. ~15 lines; no struct changes needed. (`src/types.rs`)
+- [ ] Tests: verify `[fn [x] x]` still infers correctly; verify `just test-lib` passes with 64MB stack; spot-check that prelude type-checking completes in < 5s (`tests/`, `stdlib/prelude.llt`)
+
+---
+
 ## Research (requires /rnd before implementing)
 
 - [ ] Research runtime reflection — see `doc/whatif/runtime-reflection.md`. Design: `Value::Function` carries `FnAnnotation` metadata at runtime; `describe` / `render` / `module-docs` / `annotation-of` / `source-of` builtins; `render` replaces manual AST-dict walking in tinct-hosted formatter and makes value→source round-trip possible; enables REPL `:describe`, programmatic docgen via `module-docs`, and metaprogramming.

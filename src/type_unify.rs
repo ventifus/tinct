@@ -12,6 +12,18 @@ use super::*;
 /// Returns true if the type is an instance of the class.
 /// This implements the fixed instance sets for Elm-style constrained type variables.
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
+    // Unknown (the gradual dynamic type ?) satisfies all constraints vacuously.
+    // AGT existential lifting: C(?) = ∃t ∈ γ(?). C(t) holds for any non-empty
+    // class because γ(?) = STypes and every class has at least one instance
+    // (Garcia, Clark & Tanter, POPL 2016). The runtime ClassEnv dispatch provides
+    // the actual check at the gradual boundary.
+    if matches!(ty, Type::Unknown) {
+        return true;
+    }
+    // Top (⊤) has no typeclass instances and falls through to false via the
+    // allowlists below for all classes except Showable, where the !Error check
+    // correctly returns true. C(⊤) ⊢ error for non-Showable classes
+    // (Castagna & Lanvin, ICFP 2017).
     match class_name {
         "Equatable" => matches!(
             ty,
@@ -257,7 +269,7 @@ pub fn resolve_has_field(
         Label::Concrete(s) => s.clone(),
         Label::Var(var_name) => {
             // Look up the label var in substitution
-            match state.subst.type_map.get(var_name) {
+            match state.subst.type_map.borrow().get(var_name) {
                 Some(Type::StringLiteral(s)) => s.clone(),
                 _ => {
                     return Err(TypeError::new(
@@ -332,7 +344,7 @@ pub fn resolve_has_field(
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Substitution {
-    pub type_map: HashMap<String, Type>, // α → τ  (kind: Type)
+    pub type_map: std::cell::RefCell<HashMap<String, Type>>, // α → τ  (kind: Type)
 }
 
 const MAX_APPLY_DEPTH: usize = 256;
@@ -351,24 +363,25 @@ impl Substitution {
     /// for fully-concrete dicts that generate no unification constraints.
     pub fn new() -> Self {
         Self {
-            type_map: HashMap::new(),
+            type_map: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
     /// Check if the substitution is empty (no bindings).
     /// Used to guard against unnecessary allocation in apply() operations.
     pub fn is_empty(&self) -> bool {
-        self.type_map.is_empty()
+        self.type_map.borrow().is_empty()
     }
 
     /// Check if the substitution has exceeded the maximum allowed size.
     /// Returns an error if type_map exceeds MAX_SUBST_SIZE.
     pub(crate) fn check_size(&self, span: Span) -> Result<(), TypeError> {
-        if self.type_map.len() > MAX_SUBST_SIZE {
+        let len = self.type_map.borrow().len();
+        if len > MAX_SUBST_SIZE {
             Err(TypeError::new(
                 format!(
                     "type inference resource limit exceeded (substitution size {} > {}) — use fewer chained dot-accesses or add explicit type annotations to break constraint chains",
-                    self.type_map.len(), MAX_SUBST_SIZE
+                    len, MAX_SUBST_SIZE
                 ),
                 span,
             ))
@@ -451,15 +464,29 @@ impl Substitution {
                 if visited_types.contains(name) {
                     return Cow::Borrowed(ty);
                 }
-                match self.type_map.get(name) {
+                // Look up the binding for this TypeVar
+                let bound_opt = self.type_map.borrow().get(name).cloned();
+                match bound_opt {
                     Some(bound) => {
                         visited_types.insert(name.clone());
                         // Reset depth to 0 when following a TypeVar binding: chain-following
                         // is cycle-protected by visited_types; depth guards structural
                         // recursion only. Resetting prevents premature truncation of
                         // long-but-shallow substitution chains (items 5/6).
-                        let result = self.apply_type(bound, 0, visited_types).into_owned();
+                        let result = self.apply_type(&bound, 0, visited_types).into_owned();
                         visited_types.remove(name);
+
+                        // PATH COMPRESSION: if the resolved type differs from the immediate binding,
+                        // update the map to point directly to the final result. This collapses chains
+                        // like t0 → t1 → t2 → Int into t0 → Int, t1 → Int after first traversal.
+                        // Only compress when result is not a TypeVar to avoid premature compression
+                        // of still-growing chains.
+                        if !matches!(result, Type::TypeVar(..)) && result != bound {
+                            self.type_map
+                                .borrow_mut()
+                                .insert(name.clone(), result.clone());
+                        }
+
                         Cow::Owned(result)
                     }
                     None => Cow::Owned(Type::TypeVar(name.clone(), *level)),
@@ -535,11 +562,20 @@ impl Substitution {
                 if visited_types.contains(name) {
                     return Cow::Borrowed(ty);
                 }
-                match self.type_map.get(name) {
+                let bound_opt = self.type_map.borrow().get(name).cloned();
+                match bound_opt {
                     Some(bound) => {
                         visited_types.insert(name.clone());
-                        let result = self.apply_type(bound, 0, visited_types).into_owned();
+                        let result = self.apply_type(&bound, 0, visited_types).into_owned();
                         visited_types.remove(name);
+
+                        // PATH COMPRESSION for Operator chains as well
+                        if result != bound {
+                            self.type_map
+                                .borrow_mut()
+                                .insert(name.clone(), result.clone());
+                        }
+
                         Cow::Owned(result)
                     }
                     None => Cow::Owned(Type::Operator(name.clone())),
@@ -581,8 +617,8 @@ impl Substitution {
     /// Used in type checker tests for asserting substitution contents; not called from production code.
     /// For production access to substitution results, use `apply()` instead.
     #[cfg(test)]
-    pub fn get(&self, name: &str) -> Option<&Type> {
-        self.type_map.get(name)
+    pub fn get(&self, name: &str) -> Option<Type> {
+        self.type_map.borrow().get(name).cloned()
     }
 }
 
@@ -1209,11 +1245,11 @@ pub fn unify(
             if let Type::TypeVar(beta_name, _) = &b {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.type_map.insert(name.clone(), b);
+                subst.type_map.borrow_mut().insert(name.clone(), b);
             } else {
                 // Binding α to a concrete type — check constraints normally
                 check_constraints_on_var(name, &b, state, span)?;
-                subst.type_map.insert(name.clone(), b);
+                subst.type_map.borrow_mut().insert(name.clone(), b);
             }
             subst.check_size(span)?;
             Ok(())
@@ -1238,11 +1274,11 @@ pub fn unify(
             if let Type::TypeVar(beta_name, _) = &a {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.type_map.insert(name.clone(), a);
+                subst.type_map.borrow_mut().insert(name.clone(), a);
             } else {
                 // Binding α to a concrete type — check constraints normally
                 check_constraints_on_var(name, &a, state, span)?;
-                subst.type_map.insert(name.clone(), a);
+                subst.type_map.borrow_mut().insert(name.clone(), a);
             }
             subst.check_size(span)?;
             Ok(())
@@ -1413,7 +1449,7 @@ pub fn unify(
                     span,
                 ));
             }
-            subst.type_map.insert(m.clone(), b.clone());
+            subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             Ok(())
         }
         // UNIFY-OPERATOR-SYM: symmetric case
@@ -1427,7 +1463,7 @@ pub fn unify(
                     span,
                 ));
             }
-            subst.type_map.insert(m.clone(), a.clone());
+            subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             Ok(())
         }
 
@@ -1523,6 +1559,7 @@ pub fn unify(
                     check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
                     subst
                         .type_map
+                        .borrow_mut()
                         .insert(var_name.clone(), concrete_promoted.clone());
                     subst.check_size(span)?;
                     Ok(())
@@ -1567,6 +1604,7 @@ pub fn unify(
                     check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
                     subst
                         .type_map
+                        .borrow_mut()
                         .insert(var_name.clone(), concrete_promoted.clone());
                     subst.check_size(span)?;
                     Ok(())
@@ -1619,6 +1657,7 @@ pub fn unify(
                     check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
                     subst
                         .type_map
+                        .borrow_mut()
                         .insert(var_name.clone(), concrete_promoted.clone());
                     subst.check_size(span)?;
                     Ok(())
@@ -1662,6 +1701,7 @@ pub fn unify(
                     check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
                     subst
                         .type_map
+                        .borrow_mut()
                         .insert(var_name.clone(), concrete_promoted.clone());
                     subst.check_size(span)?;
                     Ok(())

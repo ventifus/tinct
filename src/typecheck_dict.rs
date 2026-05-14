@@ -287,7 +287,7 @@ pub(crate) fn infer_dict(
 
     // Initialize global substitution and field types accumulator
     let mut subst = Substitution {
-        type_map: state.subst.type_map.clone(),
+        type_map: std::cell::RefCell::new(state.subst.type_map.borrow().clone()),
     };
     let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
@@ -423,24 +423,26 @@ pub(crate) fn infer_dict(
             let state_type_entries: Vec<(String, Type)> = state
                 .subst
                 .type_map
+                .borrow()
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             for (k, v) in state_type_entries {
                 let applied_v = subst.apply(&v);
-                match subst.type_map.get(&k).cloned() {
+                let existing_opt = subst.type_map.borrow().get(&k).cloned();
+                match existing_opt {
                     Some(existing) => {
-                        subst.type_map.remove(&k);
+                        subst.type_map.borrow_mut().remove(&k);
                         if let Err(e) = unify(&existing, &applied_v, &mut subst, state, span) {
                             errors.push(e);
-                            subst.type_map.insert(k, existing);
+                            subst.type_map.borrow_mut().insert(k, existing);
                             continue;
                         }
                         let resolved = subst.apply(&applied_v);
-                        subst.type_map.insert(k, resolved);
+                        subst.type_map.borrow_mut().insert(k, resolved);
                     }
                     None => {
-                        subst.type_map.insert(k, applied_v);
+                        subst.type_map.borrow_mut().insert(k, applied_v);
                     }
                 }
             }
@@ -508,8 +510,12 @@ pub(crate) fn infer_dict(
     }
 
     // Merge local subst back into state.subst
-    for (k, v) in &subst.type_map {
-        state.subst.type_map.insert(k.clone(), v.clone());
+    for (k, v) in subst.type_map.borrow().iter() {
+        state
+            .subst
+            .type_map
+            .borrow_mut()
+            .insert(k.clone(), v.clone());
     }
     state.subst.check_size(span).map_err(|e| vec![e])?;
 

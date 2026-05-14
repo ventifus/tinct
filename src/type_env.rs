@@ -27,11 +27,14 @@ pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
     let mut row_vars = HashSet::new(); // always empty under BAS
     ty.collect_all_vars(&mut type_vars, &mut row_vars);
 
-    let mut renaming = Substitution::new();
+    let renaming = Substitution::new();
     for var in type_vars {
         let fresh = format!("_t{counter}");
         *counter += 1;
-        renaming.type_map.insert(var, Type::TypeVar(fresh, 0));
+        renaming
+            .type_map
+            .borrow_mut()
+            .insert(var, Type::TypeVar(fresh, 0));
     }
 
     (renaming.apply(ty), renaming)
@@ -72,17 +75,18 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // avoiding a resize when the type var count is known upfront (CALL-POLY hot path).
     // Note: capacity hint may be larger than actual unique count if there are duplicates,
     // but this wastes at most a few slots and is cheaper than deduplicating first.
-    let mut renaming = Substitution {
-        type_map: HashMap::with_capacity(type_vars.len()),
+    let renaming = Substitution {
+        type_map: std::cell::RefCell::new(HashMap::with_capacity(type_vars.len())),
     };
     for var in type_vars {
         // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
-        if !renaming.type_map.contains_key(&var) {
+        if !renaming.type_map.borrow().contains_key(&var) {
             let fresh_name = format!("_t{}", state.name_counter);
             state.name_counter = state.name_counter.saturating_add(1);
             state.levels.insert(fresh_name.clone(), state.level);
             renaming
                 .type_map
+                .borrow_mut()
                 .insert(var, Type::TypeVar(fresh_name, state.level));
         }
     }
@@ -229,8 +233,8 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     }
 
     // General path: multiple type variables -- build a full Substitution.
-    let mut renaming = Substitution {
-        type_map: HashMap::with_capacity(scheme.type_vars.len()),
+    let renaming = Substitution {
+        type_map: std::cell::RefCell::new(HashMap::with_capacity(scheme.type_vars.len())),
     };
     for var in &scheme.type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
@@ -239,6 +243,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         var_renaming.insert(var.clone(), fresh_name.clone());
         renaming
             .type_map
+            .borrow_mut()
             .insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
 
         // Re-register label vars in kind_env with Kind::Label

@@ -156,15 +156,34 @@ instantiated via [VAR-POLY] at the current level. The Record field type is used
 only as a fallback for opaque dict parameters, where the original TypeEnv is
 unavailable.
 
-**Mechanism.** Each dict literal that undergoes DICT-GEN produces a TypeEnv
-alongside its Record type. This TypeEnv is propagated through VarRef lookup.
+**Mechanism.** `infer_dict` already returns `(Type, HashMap<String, TypeScheme>)`
+(verified at `src/typecheck_dict.rs:225–231`). The scheme map is added to the
+binding's `TypeScheme` as a new field `inner_schemes: Option<HashMap<String, TypeScheme>>`.
 When `check_dot_access` resolves `d.f`:
 
-1. If `d` resolves to a visible dict literal, look up `f` in that dict's TypeEnv
-   and call `instantiate_scheme(scheme, level, state)` — the same [VAR-POLY] path
+1. If `d` is a `VarRef(name)`, retrieve the binding's `TypeScheme` from `env.get(name)`.
+   If `scheme.inner_schemes` is `Some(ref inner)`, look up `f` in `inner` and call
+   `instantiate_scheme(field_scheme, state.level, state)` — the same `[VAR-POLY]` path
    already used for top-level variable references.
-2. Otherwise (opaque parameter, function argument, cross-file import), look up `f`
-   in the Record type. The bare `Type` is returned without instantiation.
+2. Otherwise (opaque parameter, conditional result, function argument, cross-file import),
+   fall through to the existing `infer_expr` path. The bare `Type` from the `Record`
+   field is returned without instantiation.
+
+This is the least invasive change: `TypeScheme` gains one new optional field; no
+side-table in `InferState` is needed; the scheme map travels through the `TypeEnv`
+chain naturally and works for cross-file includes. `inner_schemes` is `None` for all
+non-dict bindings (function parameters, imported builtins, etc.) — the visible-literal
+boundary is enforced structurally.
+
+**`TypeScheme` change** (`src/types.rs:1509`): add `pub inner_schemes: Option<HashMap<String, TypeScheme>>`. Default `None` in `TypeScheme::mono` and all existing construction sites.
+
+**Binding site** (`src/typecheck_dict.rs`): after Pass 4 generalization, the caller
+that stores the result scheme sets `inner_schemes: Some(field_schemes)` where
+`field_schemes` is the scheme map from `infer_dict`.
+
+**`check_dot_access`** (`src/typecheck.rs:2564`): add a `VarRef` fast-path before
+calling `infer_expr`. If the target is `VarRef(name)` and the binding has
+`inner_schemes`, instantiate from there; otherwise use the existing path.
 
 ```tinct
 # Visible literal: TypeEnv threaded to the access site
