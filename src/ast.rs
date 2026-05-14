@@ -22,7 +22,7 @@ impl std::fmt::Display for DotKey {
 }
 
 /// Byte offset + line/column position in source text
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {
     pub offset: usize,
     pub line: usize,
@@ -30,7 +30,7 @@ pub struct Position {
 }
 
 /// Source span (start..end)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: Position,
     pub end: Position,

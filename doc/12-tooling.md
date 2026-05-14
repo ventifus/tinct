@@ -166,14 +166,14 @@ Semicolons (`;`) are whitespace-equivalent and compress multi-line syntax but do
 
 ### `-i <format>` / `--input <format>` — Input Formatters
 
-Prepend an input formatter from `stdlib/in/<format>.llt` as the first pipeline stage. Suppresses stdin JSON auto-detection so the input program reads from the `%stdin` Handle directly. Error if the formatter file does not exist.
+Prepend an input formatter from `stdlib/cli/in/<format>.llt` as the first pipeline stage. Suppresses stdin JSON auto-detection so the input program reads from the `%stdin` Handle directly. Error if the formatter file does not exist.
 
 ```bash
 # Explicit JSON input (equivalent to auto-detection but via formatter)
 tinct run -i json -e '%.x' <<< '{"x":42}'          # → 42
 ```
 
-**Convention:** Input formatters live in `stdlib/in/`. Each formatter reads from the `%stdin` Handle and produces a tinct value as `%` for the next stage.
+**Convention:** Input formatters live in `stdlib/cli/in/`. Each formatter reads from the `%stdin` Handle and produces a tinct value as `%` for the next stage.
 
 **Included input formatters:**
 - `json` — `[from-json [slurp %stdin]]` (parse JSON from %stdin)
@@ -182,14 +182,14 @@ When `-i` is present, auto-detection is suppressed and the input program reads f
 
 ### `-o <format>` / `--output <format>` — Output Formatters
 
-Append an output formatter from `stdlib/out/<format>.llt` as the final pipeline stage. Error if the formatter file does not exist.
+Append an output formatter from `stdlib/cli/out/<format>.llt` as the final pipeline stage. Error if the formatter file does not exist.
 
 ```bash
 # String output without JSON quotes
 tinct run -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
 ```
 
-**Convention:** Output formatters live in `stdlib/out/`. Each formatter receives `%` and produces formatted output (typically via `$emit` or as the final value).
+**Convention:** Output formatters live in `stdlib/cli/out/`. Each formatter receives `%` and produces formatted output (typically via `$emit` or as the final value).
 
 **Included output formatters:**
 - `raw` — Emit strings unquoted; Seq elements one per line; error for other types
@@ -213,24 +213,24 @@ tinct run -i json -o raw -e '%.response' < mcp.json
 
 ## Default Output Format (`tinct run`)
 
-When `tinct run` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/out/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
+When `tinct run` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/cli/out/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
 
 **Key properties:**
 
-- The formatter is user-visible and lives at `stdlib/out/json.llt`. You can inspect it or use it directly in programs: `[include %libdir "out/json.llt"]`.
-- If `stdlib/out/json.llt` is not found (e.g. running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. Note: the fallback serializes empty dicts as `{}` (JSON empty object) rather than `null`.
+- The formatter is user-visible and lives at `stdlib/cli/out/json.llt`. You can inspect it or use it directly in programs: `[include %libdir "cli/out/json.llt"]`.
+- If `stdlib/cli/out/json.llt` is not found (e.g. running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. Note: the fallback serializes empty dicts as `{}` (JSON empty object) rather than `null`.
 - The output is indented (2-space pretty-printed) by default.
 
 **Using the formatters directly:**
 
 ```bash
-tinct run config.llt                  # indented JSON via stdlib/out/json.llt (2-space pretty-printed)
+tinct run config.llt                  # indented JSON via stdlib/cli/out/json.llt (2-space pretty-printed)
 ```
 
 ```tinct
 # Load and call the JSON formatter explicitly in a pipeline
 [
-  json: [include %libdir "out/json.llt"]
+  json: [include %libdir "cli/out/json.llt"]
   output: [json.json my-value]
 ]
 ```

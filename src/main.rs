@@ -151,12 +151,12 @@ enum Commands {
         #[arg(short = 'e', long = "expr", value_name = "EXPR")]
         expr: Vec<String>,
 
-        /// Prepend an input formatter from stdlib/in/<format>.llt as the first pipeline stage.
+        /// Prepend an input formatter from stdlib/cli/in/<format>.llt as the first pipeline stage.
         /// Suppresses stdin JSON auto-detection. Error if the formatter file does not exist.
         #[arg(short = 'i', long = "input", value_name = "FORMAT")]
         input: Option<String>,
 
-        /// Append an output formatter from stdlib/out/<format>.llt as the final pipeline stage.
+        /// Append an output formatter from stdlib/cli/out/<format>.llt as the final pipeline stage.
         /// Error if the formatter file does not exist.
         #[arg(short = 'o', long = "output", value_name = "FORMAT")]
         output: Option<String>,
@@ -886,7 +886,10 @@ fn run_eval(
     if let Some(ref input_format) = input {
         let libdir_path = resolve_libdir_path(libdir_path.as_deref())
             .ok_or_else(|| format!("--input: stdlib directory not found (libdir)"))?;
-        let input_path = libdir_path.join("in").join(format!("{}.llt", input_format));
+        let input_path = libdir_path
+            .join("cli")
+            .join("in")
+            .join(format!("{}.llt", input_format));
         if !input_path.exists() {
             return Err(format!(
                 "--input: formatter not found: {}",
@@ -909,6 +912,7 @@ fn run_eval(
         let libdir_path = resolve_libdir_path(libdir_path.as_deref())
             .ok_or_else(|| format!("--output: stdlib directory not found (libdir)"))?;
         let output_path = libdir_path
+            .join("cli")
             .join("out")
             .join(format!("{}.llt", output_format));
         if !output_path.exists() {
@@ -1631,7 +1635,9 @@ fn run_eval(
         let type_env = match stage {
             PipelineStage::File(file_path) if file_path != "-" => {
                 // File-based: use build_type_env with base_dir for include resolution
-                tinct::build_type_env(&ast.node, Some(&file_base_dir_path))
+                let (env, _include_bindings) =
+                    tinct::build_type_env(&ast.node, Some(&file_base_dir_path));
+                env
             }
             _ => {
                 // Stdin or inline expr: prelude-only (no include resolution)
@@ -2156,7 +2162,7 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
     if !eval_ctx.emitted.get() {
         // Use the same format_with_json_llt → fallback pattern as run_eval for consistent
         // null semantics ([] → JSON null, not {}).
-        let json_llt_path = find_libdir_path().map(|p| p.join("out").join("json.llt"));
+        let json_llt_path = find_libdir_path().map(|p| p.join("cli").join("out").join("json.llt"));
 
         let output = if let Some(ref json_llt_path) = json_llt_path {
             match format_with_json_llt(Rc::clone(&thunk), &eval_ctx, Rc::clone(&env), json_llt_path)
