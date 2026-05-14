@@ -1,27 +1,31 @@
 # Compact Formatter for Tinct AST
 # Converts AST dict (from ast_to_dict) to compact source text
 #
-# This formatter implements --oneline, --nospaces, and --minimize modes:
+# This formatter renders AST dicts as single-line representations:
 # - Semicolons instead of newlines for section separators
 # - Dicts rendered as [key: value ...] space-separated
 # - No layout decisions (always single-line)
-# - No comments (they're stripped by ast_to_dict in minimal mode)
+# - No comments (they're stripped by ast_to_dict in compact mode)
 #
-# Structure: two-expression document.  The first dict holds private internal
-# utilities; the second dict holds the public node-formatter API and the
-# pipeline emit entry.  eval_document injects the first dict's bindings into
-# scope before evaluating the second, so utilities are accessible by plain
-# name from the public dict but are NOT exported.  The initial % (the AST
-# pipeline input) is bound at the document level and remains in scope for both
-# expressions.
+# Structure: two-expression document.
+# - Expression 1 (intermediate dict): all helpers + format functions.
+#   Its string-keyed entries become scope bindings for expression 2.
+# - Expression 2 (final): [format-file %] — returns the formatted String.
+#
+# The % binding refers to the AST file dict from ast_to_dict.
 
 # ============================================================================
-# Private internal utilities (not exported)
+# Expression 1: All helpers + format functions (intermediate scope)
 # ============================================================================
 
 [
 
-# Join strings with a separator (internal implementation)
+# ---- String utilities ----
+
+# Join strings with a separator
+join-strings: [fn@Str [sep@Str items@Dict]
+  [join-strings-impl sep items 0 ""]]
+
 join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
   [if [>= i [length items]]
     acc
@@ -29,15 +33,12 @@ join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
       sep
       items
       [+ i 1]
-      [str acc
-        [if [> i 0] sep ""]
-        [get i items]]]]]
+      [str acc [if [> i 0] sep ""] [get i items]]]]]
 
-# Join strings with a separator
-join-strings: [fn@Str [sep@Str items@Dict]
-  [join-strings-impl sep items 0 ""]]
+# Map a function over a list-shaped dict (int-keyed 0..n-1)
+map-list: [fn@Dict [f@Fn xs@Dict]
+  [map-list-impl f xs 0]]
 
-# Map a function over a list-shaped dict (internal implementation)
 map-list-impl: [fn@Dict [f@Fn xs@Dict i@Int]
   [if [>= i [length xs]]
     []
@@ -45,20 +46,52 @@ map-list-impl: [fn@Dict [f@Fn xs@Dict i@Int]
       [make-entry i [f [get i xs]]]
       [map-list-impl f xs [+ i 1]]]]]
 
-# Map a function over a list-shaped dict
-map-list: [fn@Dict [f@Fn xs@Dict]
-  [map-list-impl f xs 0]]
-
-# Helper to construct single-entry dict (internal)
+# Construct a single-entry dict with an integer key (for map-list-impl)
 make-entry: [fn@Dict [k v] [$k: v]]
 
-]
+# ---- Pattern formatting ----
 
-# ============================================================================
-# Node Formatters (public API + pipeline emit)
-# ============================================================================
+# Format a literal pattern value: {type: "literal", value: <int|float|bool|str>}
+# Note: pattern literals have no "kind" field. Bool check must come first since
+# [str false] renders "false" correctly, but bool? check ensures we use if/else format.
+format-pattern-literal: [fn@Str [pat@Dict]
+  [if [bool? [get "value" pat]]
+    [if [get "value" pat] "true" "false"]
+    [str [get "value" pat]]]]
 
-[
+# Format a match pattern to source text
+format-pattern: [fn@Str [pat@Dict]
+  [match [get "type" pat]
+    "wildcard":    "_"
+    "var":         [get "name" pat]
+    "variable":    [get "name" pat]
+    "literal":     [format-pattern-literal pat]
+    "constructor": [if [has-binding? pat]
+                     [str [get "tag" pat] " " [format-pattern [get "binding" pat]]]
+                     [get "tag" pat]]
+    "dict":        [format-pattern-dict pat]
+    "seq":         [str "[" [format-pattern [get "head" pat]] " | " [format-pattern [get "tail" pat]] "]"]
+    "or":          [join-strings " | " [map-list format-pattern [get "patterns" pat]]]
+    _:             [error [str "unknown pattern type: " [get "type" pat]]]]]
+
+# Check if a constructor pattern has a binding
+has-binding?: [fn@Bool [pat@Dict]
+  [has? pat "binding"]]
+
+# Format a dict pattern: [key: pat ...]
+# Note: fields dict has string keys "0","1"... so use values to get 0-indexed list
+format-pattern-dict: [fn@Str [pat@Dict]
+  [if [empty? [get "fields" pat]]
+    "[]"
+    [str "["
+      [join-strings " "
+        [map-list
+          [fn [f] [str [get "key" f] ": " [format-pattern [get "pattern" f]]]]
+          [values [get "fields" pat]]]]
+      "]"]]]
+
+# ---- Node formatters ----
+
 # Main entry point: dispatch on node.type
 format-node: [fn@Str [node@Dict]
   [match [get "type" node]
@@ -66,6 +99,7 @@ format-node: [fn@Str [node@Dict]
     "var":            [get "name" node]
     "dot-access":     [format-dot-access node]
     "pipe":           [format-pipe node]
+    "sequential":     [format-sequential node]
     "dict":           [format-dict node]
     "call":           [format-call node]
     "fn":             [format-fn node]
@@ -77,6 +111,10 @@ format-node: [fn@Str [node@Dict]
     "unquote":        [format-unquote node]
     "unquote-splice": [format-unquote-splice node]
     "defmacro":       [format-defmacro node]
+    "match":          [format-match node]
+    "class":          [format-class node]
+    "instance":       [format-instance node]
+    "type-app":       [format-type-app node]
     "error":          "<error>"
     _:                [error [str "unknown node type: " [get "type" node]]]]]
 
@@ -107,15 +145,18 @@ format-pipe: [fn@Str [node@Dict]
     " | "
     [format-node [get "rhs" node]]]]
 
+# Format sequential: expr1; expr2; ...
+format-sequential: [fn@Str [node@Dict]
+  [join-strings "; "
+    [map-list format-node [get "exprs" node]]]]
+
 # Format dict: [key: value ...]
 format-dict: [fn@Str [node@Dict]
   [if [empty? [get "entries" node]]
     "[]"
     [str "["
       [join-strings " "
-        [map-list
-          [fn [e] [format-entry e]]
-          [get "entries" node]]]
+        [map-list format-entry [get "entries" node]]]
       "]"]]]
 
 # Format a single entry
@@ -123,7 +164,7 @@ format-entry: [fn@Str [entry@Dict]
   [if [empty? [get "key" entry]]
     # Auto-indexed entry (no key)
     [format-node [get "value" entry]]
-    # Keyed entry
+    # Keyed entry: key is a node dict
     [str
       [format-node [get "key" entry]]
       ": "
@@ -152,10 +193,14 @@ format-named-arg: [fn@Str [na@Dict]
     ": "
     [format-node [get "value" na]]]]
 
-# Format function: [fn [params] body]
+# Format function: [fn[@RetAnn] [params] body]
 format-fn: [fn@Str [node@Dict]
   [str
-    "[fn ["
+    "[fn"
+    [if [not [empty? [get "return-ann" node]]]
+      [str "@" [format-annotation [get "return-ann" node]]]
+      ""]
+    " ["
     [join-strings " "
       [map-list format-param [get "params" node]]]
     "] "
@@ -173,24 +218,23 @@ format-param: [fn@Str [param@Dict]
 
 # Format annotation
 format-annotation: [fn@Str [ann@Dict]
-  [cond [
-    [[= [get "kind" ann] "simple"]
-      [get "value" ann]]
-    [[= [get "kind" ann] "dict"]
-      [str "["
-        [join-strings " "
-          [map-list
-            [fn [e]
-              [str
-                [get "key" e]
-                ": "
-                [if [str? [get "value" e]]
-                  [get "value" e]
-                  [str [get "value" e]]]]]
-            [get "entries" ann]]]
-        "]"]]
-    [true [error [str "unknown annotation kind: " [get "kind" ann]]]]
-  ]]]
+  [match [get "kind" ann]
+    "simple": [get "value" ann]
+    "dict":   [str "["
+                [join-strings " "
+                  [map-list
+                    [fn [e] [str [get "key" e] ": " [format-annotation-value [get "value" e]]]]
+                    [get "entries" ann]]]
+                "]"]
+    _:        [error [str "unknown annotation kind: " [get "kind" ann]]]]]
+
+# Format an annotation value (which may be a string, int, or nested AST node)
+format-annotation-value: [fn@Str [v]
+  [if [str? v]
+    v
+    [if [int? v]
+      [str v]
+      [format-node v]]]]
 
 # Format type alias: `expr
 format-type-alias: [fn@Str [node@Dict]
@@ -203,7 +247,7 @@ format-type-assert: [fn@Str [node@Dict]
     "@"
     [format-annotation [get "annotation" node]]]]
 
-# Format annotated: @Name expr
+# Format annotated: @Name ann
 format-annotated: [fn@Str [node@Dict]
   [str
     "@"
@@ -231,26 +275,69 @@ format-unquote-splice: [fn@Str [node@Dict]
 
 # Format defmacro: [defmacro name transformer]
 format-defmacro: [fn@Str [node@Dict]
-  [str "[defmacro " [get "name" node] " " [format-node [get "transformer" node]] "]"]]
+  [str "[defmacro " [get "name" node] " " [format-node [get "body" node]] "]"]]
 
-# ============================================================================
-# Document & File Formatters
-# ============================================================================
+# Format match: [match scrutinee pat1 body1 pat2 body2 ...]
+format-match: [fn@Str [node@Dict]
+  [str
+    "[match "
+    [format-node [get "scrutinee" node]]
+    [format-match-arms [get "arms" node]]
+    "]"]]
 
-# Format a document (list of expressions)
+format-match-arms: [fn@Str [arms@Dict]
+  [format-match-arms-impl arms 0 ""]]
+
+format-match-arms-impl: [fn@Str [arms@Dict i@Int acc@Str]
+  [if [>= i [length arms]]
+    acc
+    [format-match-arms-impl
+      arms
+      [+ i 1]
+      [str acc
+        " "
+        [format-pattern [get "pattern" [get i arms]]]
+        ": "
+        [format-node [get "body" [get i arms]]]]]]]
+
+# Format class declaration: [class Name params methods...]
+format-class: [fn@Str [node@Dict]
+  [str
+    "[class "
+    [get "name" node]
+    [if [> [length [get "params" node]] 0]
+      [str " " [join-strings " " [map-list [fn [p] p] [get "params" node]]]]
+      ""]
+    "]"]]
+
+# Format instance declaration: [instance ClassName type methods...]
+format-instance: [fn@Str [node@Dict]
+  [str
+    "[instance "
+    [get "class" node]
+    " "
+    [format-node [get "instance_type" node]]
+    "]"]]
+
+# Format type application: @[func arg]
+format-type-app: [fn@Str [node@Dict]
+  [str "@[" [format-node [get "func" node]] " " [format-node [get "arg" node]] "]"]]
+
+# ---- Document & File formatters ----
+
+# Format a document (list of expressions, separated by "; ")
 format-document: [fn@Str [doc@Dict]
   [join-strings "; "
     [map-list format-node [get "expressions" doc]]]]
 
-# Format a file (list of documents with --- separators)
+# Format a file (list of documents with "---" separators)
 format-file: [fn@Str [file@Dict]
-  [format-file-impl file [get "documents" file] 0 ""]]
+  [format-file-impl [get "documents" file] 0 ""]]
 
-format-file-impl: [fn@Str [file@Dict docs@Dict i@Int acc@Str]
+format-file-impl: [fn@Str [docs@Dict i@Int acc@Str]
   [if [>= i [length docs]]
     [str acc "\n"]
     [format-file-impl
-      file
       docs
       [+ i 1]
       [str
@@ -275,15 +362,10 @@ format-doc-header: [fn@Str [doc@Dict]
       [str " expects: @" [format-annotation [get "expects" doc]]]
       ""]]]
 
-# ============================================================================
-# Public API
-# ============================================================================
-
-# Format an AST dict to compact source
-# Expects % to be a file dict from ast_to_dict
-format@[doc: "Format AST dict to compact source (semicolons, no layout)"]: [fn@Str [ast@Dict]
-  [format-file ast]]
-
-# Pipeline mode: receive AST as % and emit formatted source
-[emit [format %]]
 ]
+
+# ============================================================================
+# Expression 2: return formatted source as a String
+# ============================================================================
+
+[format-file %]

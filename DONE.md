@@ -6129,3 +6129,15 @@ See `doc/whatif/builtin-privacy.md` (redesigned 2026-05-13). **Spec chapters:** 
 **Phase 4 — cleanup and tests:**
 - [x] Remove T009 type-checker warning (no longer needed — `builtin-*` names don't exist) (`src/typecheck.rs`)
 - [x] Tests: tinct file with no includes produces `undefined variable` for `+`, `error`, `map`; `prelude.llt` itself works; `[include %libdir "io.llt"]` works; user code cannot call `[include %rust "io"]` (undefined variable: `%rust`) (`tests/corpus/eval/`)
+
+## Tooling
+
+### tinct-hosted-formatter: Implement stdlib/formatter/format.llt
+
+Accepted 2026-05-05. See `doc/whatif/completed/tinct-hosted-formatter.md` for the full design.
+The Rust formatter (`src/formatter.rs`) is retained for LSP use; this formatter receives the AST dict from `ast_to_dict` and returns formatted source as a tinct string.
+
+- [x] Implement `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` as tinct programs that receive `%` as the AST dict (from `ast_to_dict(Some(src), Some(comments))`) and return formatted source; wire `tinct fmt --compact`/`--pretty` to invoke these via the evaluator
+- [x] Implement `stdlib/formatter/format.llt` as the full formatter — layout algorithm, indentation, comment attachment, multi-line decisions per `doc/whatif/completed/tinct-hosted-formatter.md`; wire to `tinct fmt` (default mode) (implemented as `pretty.llt`; `format_source_tinct(compact: bool)` dispatches)
+- [x] The Rust formatter (`src/formatter.rs`) is retained for LSP use — add a `FormatterMode` enum to dispatch between Rust and tinct-hosted based on invocation context; LSP always uses Rust formatter (`compact: bool` parameter serves as mode; LSP uses `format_source`/Rust path)
+- [x] Tests: round-trip corpus tests (format → re-parse → compare AST); test compact/pretty/full modes; test comment preservation (16 tests in `tests/formatter_tinct_roundtrip.rs`)

@@ -1,31 +1,34 @@
 # Pretty Formatter for Tinct AST
 # Converts AST dict (from ast_to_dict with source+comments) to formatted source
 #
-# This formatter makes layout decisions based on:
-# - Width: single-line if ≤80 chars (including indentation)
-# - Entry count: single-line if ≤4 entries
-# - Comments and blank lines are preserved from source
+# Layout decisions:
+# - Single-line if dict has <=4 entries AND rendered width <=80 chars
+# - Multi-line with 2-space indentation otherwise
+# - Comments and blank lines preserved from source
 #
-# Unlike compact.llt, this formatter:
-# - Uses multi-line mode for dicts that don't fit the width/entry criteria
-# - Preserves comments (leading-comments:, trailing-comment:)
-# - Preserves blank lines (blank-before: field)
-# - Uses 2-space indentation
+# Structure: two-expression document.
+# - Expression 1 (intermediate dict): all helpers + format functions.
+# - Expression 2 (final): [format-file %] — returns the formatted String.
+#
+# The % binding refers to the AST file dict from ast_to_dict (with comments mode).
+
+# ============================================================================
+# Expression 1: All helpers + format functions (intermediate scope)
+# ============================================================================
 
 [
-# ============================================================================
-# Configuration
-# ============================================================================
 
-max-width: 80
-max-entries: 4
-indent-size: 2
+# ---- Configuration ----
 
-# ============================================================================
-# Utilities
-# ============================================================================
+max-width:    80
+max-entries:  4
+indent-size:  2
 
-# Join strings with a separator (internal implementation)
+# ---- String utilities ----
+
+join-strings: [fn@Str [sep@Str items@Dict]
+  [join-strings-impl sep items 0 ""]]
+
 join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
   [if [>= i [length items]]
     acc
@@ -33,15 +36,11 @@ join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
       sep
       items
       [+ i 1]
-      [str acc
-        [if [> i 0] sep ""]
-        [get i items]]]]]
+      [str acc [if [> i 0] sep ""] [get i items]]]]]
 
-# Join strings with a separator
-join-strings: [fn@Str [sep@Str items@Dict]
-  [join-strings-impl sep items 0 ""]]
+map-list: [fn@Dict [f@Fn xs@Dict]
+  [map-list-impl f xs 0]]
 
-# Map a function over a list-shaped dict (internal implementation)
 map-list-impl: [fn@Dict [f@Fn xs@Dict i@Int]
   [if [>= i [length xs]]
     []
@@ -49,156 +48,187 @@ map-list-impl: [fn@Dict [f@Fn xs@Dict i@Int]
       [make-entry i [f [get i xs]]]
       [map-list-impl f xs [+ i 1]]]]]
 
-# Map a function over a list-shaped dict
-map-list: [fn@Dict [f@Fn xs@Dict]
-  [map-list-impl f xs 0]]
-
-# Helper to construct single-entry dict
 make-entry: [fn@Dict [k v] [$k: v]]
 
-# Count entries in a dict node
-entry-count: [fn@Int [node@Dict]
-  [length [get "entries" node]]]
+# Check if a key exists in a dict (returns false on missing key)
+field-has?: [fn@Bool [dict@Dict key@Str]
+  [has? dict key]]
 
-# Check if a field exists and is non-empty
-has?: [fn@Bool [dict@Dict key@Str]
-  [try [fn [] [not [empty? [get key dict]]]] [fn [] false]]]
+# ---- Pattern formatting ----
 
-# ============================================================================
-# Layout Decision Helpers
-# ============================================================================
+# Format a literal pattern value: {type: "literal", value: <int|float|bool|str>}
+# Pattern literals have no "kind" field unlike expression literals.
+format-pattern-literal: [fn@Str [pat@Dict]
+  [if [bool? [get "value" pat]]
+    [if [get "value" pat] "true" "false"]
+    [str [get "value" pat]]]]
 
-# Render a node inline (for width measurement)
+format-pattern: [fn@Str [pat@Dict]
+  [match [get "type" pat]
+    "wildcard":    "_"
+    "var":         [get "name" pat]
+    "variable":    [get "name" pat]
+    "literal":     [format-pattern-literal pat]
+    "constructor": [if [has? pat "binding"]
+                     [str [get "tag" pat] " " [format-pattern [get "binding" pat]]]
+                     [get "tag" pat]]
+    "dict":        [format-pattern-dict pat]
+    "seq":         [str "[" [format-pattern [get "head" pat]] " | " [format-pattern [get "tail" pat]] "]"]
+    "or":          [join-strings " | " [map-list format-pattern [get "patterns" pat]]]
+    _:             [error [str "unknown pattern type: " [get "type" pat]]]]]
+
+# Note: fields dict has string keys "0","1"... so use values to get 0-indexed list
+format-pattern-dict: [fn@Str [pat@Dict]
+  [if [empty? [get "fields" pat]]
+    "[]"
+    [str "["
+      [join-strings " "
+        [map-list
+          [fn [f] [str [get "key" f] ": " [format-pattern [get "pattern" f]]]]
+          [values [get "fields" pat]]]]
+      "]"]]]
+
+# ---- Inline (single-line) rendering for width measurement ----
+
+# Render a node assuming single-line (no indentation)
 render-inline: [fn@Str [node@Dict]
-  [cond [
-    [[= [get "type" node] "literal"]        [format-literal node]]
-    [[= [get "type" node] "var"]            [get "name" node]]
-    [[= [get "type" node] "dot-access"]     [format-dot-access node]]
-    [[= [get "type" node] "pipe"]           [format-pipe node]]
-    [[= [get "type" node] "dict"]           [render-dict-inline node]]
-    [[= [get "type" node] "call"]           [render-call-inline node]]
-    [[= [get "type" node] "fn"]             [render-fn-inline node]]
-    [[= [get "type" node] "type-alias"]     [format-type-alias node]]
-    [[= [get "type" node] "type-assert"]    [format-type-assert node]]
-    [[= [get "type" node] "annotated"]      [format-annotated node]]
-    [[= [get "type" node] "rest"]           [format-rest node]]
-    [[= [get "type" node] "quote"]          [str "[quote " [render-inline [get "expr" node]] "]"]]
-    [[= [get "type" node] "unquote"]        [str "[unquote " [render-inline [get "expr" node]] "]"]]
-    [[= [get "type" node] "unquote-splice"] [str "[unquote-splice " [render-inline [get "expr" node]] "]"]]
-    [[= [get "type" node] "defmacro"]       [str "[defmacro " [get "name" node] " " [render-inline [get "transformer" node]] "]"]]
-    [[= [get "type" node] "error"]          "<error>"]
-    [true [error [str "unknown node type: " [get "type" node]]]]
-  ]]]
+  [match [get "type" node]
+    "literal":        [format-literal node]
+    "var":            [get "name" node]
+    "dot-access":     [str [render-inline [get "target" node]] "." [if [int? [get "field" node]] [str [get "field" node]] [get "field" node]]]
+    "pipe":           [str [render-inline [get "lhs" node]] " | " [render-inline [get "rhs" node]]]
+    "sequential":     [join-strings "; " [map-list render-inline [get "exprs" node]]]
+    "dict":           [render-dict-inline node]
+    "call":           [render-call-inline node]
+    "fn":             [render-fn-inline node]
+    "type-alias":     [str "`" [render-inline [get "expr" node]]]
+    "type-assert":    [str [render-inline [get "expr" node]] "@" [format-annotation [get "annotation" node]]]
+    "annotated":      [str "@" [get "name" node] " " [format-annotation [get "annotation" node]]]
+    "rest":           [if [empty? [get "name" node]] "..." [str "..." [get "name" node]]]
+    "quote":          [str "[quote " [render-inline [get "expr" node]] "]"]
+    "unquote":        [str "[unquote " [render-inline [get "expr" node]] "]"]
+    "unquote-splice": [str "[unquote-splice " [render-inline [get "expr" node]] "]"]
+    "defmacro":       [str "[defmacro " [get "name" node] " " [render-inline [get "body" node]] "]"]
+    "match":          [str "[match " [render-inline [get "scrutinee" node]] [render-match-arms [get "arms" node]] "]"]
+    "class":          [format-class node]
+    "instance":       [format-instance node]
+    "type-app":       [str "@[" [render-inline [get "func" node]] " " [render-inline [get "arg" node]] "]"]
+    "error":          "<error>"
+    _:                [error [str "unknown node type: " [get "type" node]]]]]
 
-# Render dict inline (for measurement)
 render-dict-inline: [fn@Str [node@Dict]
   [if [empty? [get "entries" node]]
     "[]"
     [str "["
       [join-strings " "
         [map-list
-          [fn [e] [format-entry-inline e]]
+          [fn [e] [render-entry-inline e]]
           [get "entries" node]]]
       "]"]]]
 
-# Render call inline (for measurement)
 render-call-inline: [fn@Str [node@Dict]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
     [render-inline [get "fn" node]]
     [if [> [length [get "args" node]] 0]
-      [str " " [join-strings " "
-        [map-list render-inline [get "args" node]]]]
+      [str " " [join-strings " " [map-list render-inline [get "args" node]]]]
       ""]
     [if [> [length [get "named-args" node]] 0]
-      [str " " [join-strings " "
-        [map-list format-named-arg [get "named-args" node]]]]
+      [str " " [join-strings " " [map-list format-named-arg [get "named-args" node]]]]
       ""]
     "]"]]
 
-# Render fn inline (for measurement)
 render-fn-inline: [fn@Str [node@Dict]
   [str
-    "[fn ["
-    [join-strings " "
-      [map-list format-param [get "params" node]]]
+    "[fn"
+    [if [not [empty? [get "return-ann" node]]]
+      [str "@" [format-annotation [get "return-ann" node]]]
+      ""]
+    " ["
+    [join-strings " " [map-list format-param [get "params" node]]]
     "] "
     [render-inline [get "body" node]]
     "]"]]
 
-# Format entry inline (no comments)
-format-entry-inline: [fn@Str [entry@Dict]
+render-entry-inline: [fn@Str [entry@Dict]
   [if [empty? [get "key" entry]]
-    # Auto-indexed entry (no key)
     [render-inline [get "value" entry]]
-    # Keyed entry
-    [str
-      [render-inline [get "key" entry]]
-      ": "
-      [render-inline [get "value" entry]]]]]
+    [str [render-inline [get "key" entry]] ": " [render-inline [get "value" entry]]]]]
 
-# Check if a dict node fits inline
+# Render match arms inline (for width measurement): " pat: body pat: body ..."
+render-match-arms: [fn@Str [arms@Dict]
+  [render-match-arms-impl arms 0 ""]]
+
+render-match-arms-impl: [fn@Str [arms@Dict i@Int acc@Str]
+  [if [>= i [length arms]]
+    acc
+    [render-match-arms-impl
+      arms
+      [+ i 1]
+      [str acc
+        " "
+        [format-pattern [get "pattern" [get i arms]]]
+        ": "
+        [render-inline [get "body" [get i arms]]]]]]]
+
+# ---- Layout decision ----
+
+# Check if a dict node fits inline (within max-width and max-entries)
 fits-inline?: [fn@Bool [node@Dict indent@Int]
   [and
-    [<= [entry-count node] max-entries]
+    [<= [length [get "entries" node]] max-entries]
     [<= [+ indent [str-length [render-dict-inline node]]] max-width]]]
 
-# ============================================================================
-# Comment Formatting
-# ============================================================================
+# ---- Comment formatting ----
 
-# Emit leading comments with proper indentation
 emit-leading-comments: [fn@Str [comments@Dict indent@Int]
   [join-strings "\n"
     [map-list
-      [fn [c] [str [str-repeat " " indent] "# " c]]
+      [fn [c] [str [str-repeat " " indent] "#" c]]
       comments]]]
 
-# Emit trailing comment
 emit-trailing-comment: [fn@Str [comment@Str]
   [str "  # " comment]]
 
-# ============================================================================
-# Node Formatters
-# ============================================================================
+# ---- Node formatters (with indentation) ----
 
 # Main entry point: dispatch on node.type with indentation
 format-node: [fn@Str [node@Dict indent@Int]
-  [cond [
-    [[= [get "type" node] "literal"]        [format-literal node]]
-    [[= [get "type" node] "var"]            [get "name" node]]
-    [[= [get "type" node] "dot-access"]     [format-dot-access node]]
-    [[= [get "type" node] "pipe"]           [format-pipe node]]
-    [[= [get "type" node] "dict"]           [format-dict node indent]]
-    [[= [get "type" node] "call"]           [format-call node indent]]
-    [[= [get "type" node] "fn"]             [format-fn node indent]]
-    [[= [get "type" node] "type-alias"]     [format-type-alias node]]
-    [[= [get "type" node] "type-assert"]    [format-type-assert node]]
-    [[= [get "type" node] "annotated"]      [format-annotated node]]
-    [[= [get "type" node] "rest"]           [format-rest node]]
-    [[= [get "type" node] "quote"]          [format-quote node indent]]
-    [[= [get "type" node] "unquote"]        [format-unquote node indent]]
-    [[= [get "type" node] "unquote-splice"] [format-unquote-splice node indent]]
-    [[= [get "type" node] "defmacro"]       [format-defmacro node indent]]
-    [[= [get "type" node] "error"]          "<error>"]
-    [true [error [str "unknown node type: " [get "type" node]]]]
-  ]]]
+  [match [get "type" node]
+    "literal":        [format-literal node]
+    "var":            [get "name" node]
+    "dot-access":     [format-dot-access node]
+    "pipe":           [format-pipe node]
+    "sequential":     [format-sequential node indent]
+    "dict":           [format-dict node indent]
+    "call":           [format-call node indent]
+    "fn":             [format-fn node indent]
+    "type-alias":     [format-type-alias node]
+    "type-assert":    [format-type-assert node]
+    "annotated":      [format-annotated node]
+    "rest":           [format-rest node]
+    "quote":          [format-quote node indent]
+    "unquote":        [format-unquote node indent]
+    "unquote-splice": [format-unquote-splice node indent]
+    "defmacro":       [format-defmacro node indent]
+    "match":          [format-match node indent]
+    "class":          [format-class node]
+    "instance":       [format-instance node]
+    "type-app":       [format-type-app node]
+    "error":          "<error>"
+    _:                [error [str "unknown node type: " [get "type" node]]]]]
 
 # Format a literal (int, float, bool, str)
 format-literal: [fn@Str [node@Dict]
-  [cond [
-    [[= [get "kind" node] "int"]   [str [get "value" node]]]
-    [[= [get "kind" node] "float"] [str [get "value" node]]]
-    [[= [get "kind" node] "bool"]  [if [get "value" node] "true" "false"]]
-    [[= [get "kind" node] "str"]
-      [if [has? node "bare"]
-        [if [get "bare" node]
-          [get "value" node]
-          [str "\"" [get "value" node] "\""]]
-        [str "\"" [get "value" node] "\""]]]
-    [true [error [str "unknown literal kind: " [get "kind" node]]]]
-  ]]]
+  [match [get "kind" node]
+    "int":   [str [get "value" node]]
+    "float": [str [get "value" node]]
+    "bool":  [if [get "value" node] "true" "false"]
+    "str":   [if [get "bare" node]
+               [get "value" node]
+               [str "\"" [get "value" node] "\""]]
+    _:       [error [str "unknown literal kind: " [get "kind" node]]]]]
 
 # Format dot access: target.field
 format-dot-access: [fn@Str [node@Dict]
@@ -216,19 +246,17 @@ format-pipe: [fn@Str [node@Dict]
     " | "
     [format-node [get "rhs" node] 0]]]
 
+# Format sequential: expr1\n\nexpr2\n\n...
+format-sequential: [fn@Str [node@Dict indent@Int]
+  [join-strings "\n\n"
+    [map-list [fn [e] [format-node e indent]] [get "exprs" node]]]]
+
 # Format dict: decide inline vs block based on width and entry count
 format-dict: [fn@Str [node@Dict indent@Int]
   [if [empty? [get "entries" node]]
     "[]"
     [if [fits-inline? node indent]
-      # Single-line mode
-      [str "["
-        [join-strings " "
-          [map-list
-            [fn [e] [format-entry-inline e]]
-            [get "entries" node]]]
-        "]"]
-      # Multi-line mode
+      [render-dict-inline node]
       [str "[\n"
         [format-entries-block [get "entries" node] [+ indent indent-size]]
         "\n"
@@ -255,11 +283,9 @@ format-entries-block-impl: [fn@Str [entries@Dict indent@Int i@Int acc@Str]
 format-entry-block: [fn@Str [entry@Dict indent@Int]
   [str
     # Blank line before if needed
-    [if [has? entry "blank-before"]
-      [if [get "blank-before" entry] "\n" ""]
-      ""]
+    [if [get "blank-before" entry] "\n" ""]
     # Leading comments
-    [if [has? entry "leading-comments"]
+    [if [field-has? entry "leading-comments"]
       [str [emit-leading-comments [get "leading-comments" entry] indent] "\n"]
       ""]
     # Indentation
@@ -274,7 +300,7 @@ format-entry-block: [fn@Str [entry@Dict indent@Int]
         ": "
         [format-node [get "value" entry] indent]]]
     # Trailing comment
-    [if [has? entry "trailing-comment"]
+    [if [field-has? entry "trailing-comment"]
       [emit-trailing-comment [get "trailing-comment" entry]]
       ""]]]
 
@@ -301,12 +327,15 @@ format-named-arg: [fn@Str [na@Dict]
     ": "
     [format-node [get "value" na] 0]]]
 
-# Format function: [fn [params] body]
+# Format function: [fn[@RetAnn] [params] body]
 format-fn: [fn@Str [node@Dict indent@Int]
   [str
-    "[fn ["
-    [join-strings " "
-      [map-list format-param [get "params" node]]]
+    "[fn"
+    [if [not [empty? [get "return-ann" node]]]
+      [str "@" [format-annotation [get "return-ann" node]]]
+      ""]
+    " ["
+    [join-strings " " [map-list format-param [get "params" node]]]
     "] "
     [format-node [get "body" node] 0]
     "]"]]
@@ -322,24 +351,23 @@ format-param: [fn@Str [param@Dict]
 
 # Format annotation
 format-annotation: [fn@Str [ann@Dict]
-  [cond [
-    [[= [get "kind" ann] "simple"]
-      [get "value" ann]]
-    [[= [get "kind" ann] "dict"]
-      [str "["
-        [join-strings " "
-          [map-list
-            [fn [e]
-              [str
-                [get "key" e]
-                ": "
-                [if [str? [get "value" e]]
-                  [get "value" e]
-                  [str [get "value" e]]]]]
-            [get "entries" ann]]]
-        "]"]]
-    [true [error [str "unknown annotation kind: " [get "kind" ann]]]]
-  ]]]
+  [match [get "kind" ann]
+    "simple": [get "value" ann]
+    "dict":   [str "["
+                [join-strings " "
+                  [map-list
+                    [fn [e] [str [get "key" e] ": " [format-annotation-value [get "value" e]]]]
+                    [get "entries" ann]]]
+                "]"]
+    _:        [error [str "unknown annotation kind: " [get "kind" ann]]]]]
+
+# Format an annotation value (string, int, or nested AST node)
+format-annotation-value: [fn@Str [v]
+  [if [str? v]
+    v
+    [if [int? v]
+      [str v]
+      [format-node v 0]]]]
 
 # Format type alias: `expr
 format-type-alias: [fn@Str [node@Dict]
@@ -352,7 +380,7 @@ format-type-assert: [fn@Str [node@Dict]
     "@"
     [format-annotation [get "annotation" node]]]]
 
-# Format annotated: @Name expr
+# Format annotated: @Name ann
 format-annotated: [fn@Str [node@Dict]
   [str
     "@"
@@ -380,23 +408,68 @@ format-unquote-splice: [fn@Str [node@Dict indent@Int]
 
 # Format defmacro: [defmacro name transformer]
 format-defmacro: [fn@Str [node@Dict indent@Int]
-  [str "[defmacro " [get "name" node] " " [format-node [get "transformer" node] indent] "]"]]
+  [str "[defmacro " [get "name" node] " " [format-node [get "body" node] indent] "]"]]
 
-# ============================================================================
-# Document & File Formatters
-# ============================================================================
+# Format match: [match scrutinee pat1 body1 ...]
+format-match: [fn@Str [node@Dict indent@Int]
+  [str
+    "[match "
+    [format-node [get "scrutinee" node] indent]
+    [format-match-arms [get "arms" node] indent]
+    "]"]]
 
-# Format a document (list of expressions)
+format-match-arms: [fn@Str [arms@Dict indent@Int]
+  [format-match-arms-impl arms indent 0 ""]]
+
+format-match-arms-impl: [fn@Str [arms@Dict indent@Int i@Int acc@Str]
+  [if [>= i [length arms]]
+    acc
+    [format-match-arms-impl
+      arms
+      indent
+      [+ i 1]
+      [str acc
+        "\n"
+        [str-repeat " " [+ indent indent-size]]
+        [format-pattern [get "pattern" [get i arms]]]
+        ": "
+        [format-node [get "body" [get i arms]] [+ indent indent-size]]]]]]
+
+# Format class declaration
+format-class: [fn@Str [node@Dict]
+  [str
+    "[class "
+    [get "name" node]
+    [if [> [length [get "params" node]] 0]
+      [str " " [join-strings " " [map-list [fn [p] p] [get "params" node]]]]
+      ""]
+    "]"]]
+
+# Format instance declaration
+format-instance: [fn@Str [node@Dict]
+  [str
+    "[instance "
+    [get "class" node]
+    " "
+    [format-node [get "instance_type" node] 0]
+    "]"]]
+
+# Format type application: @[func arg]
+format-type-app: [fn@Str [node@Dict]
+  [str "@[" [format-node [get "func" node] 0] " " [format-node [get "arg" node] 0] "]"]]
+
+# ---- Document & File formatters ----
+
+# Format a document (list of expressions, separated by double newlines)
 format-document: [fn@Str [doc@Dict]
   [str
-    # Leading comments (file header)
-    [if [has? doc "leading-comments"]
+    # Leading comments (file/document header)
+    [if [field-has? doc "leading-comments"]
       [str [emit-leading-comments [get "leading-comments" doc] 0] "\n\n"]
       ""]
     # Expressions
     [format-expressions [get "expressions" doc]]]]
 
-# Format expressions with proper spacing
 format-expressions: [fn@Str [exprs@Dict]
   [format-expressions-impl exprs 0 ""]]
 
@@ -413,13 +486,12 @@ format-expressions-impl: [fn@Str [exprs@Dict i@Int acc@Str]
 
 # Format a file (list of documents with --- separators)
 format-file: [fn@Str [file@Dict]
-  [format-file-impl file [get "documents" file] 0 ""]]
+  [format-file-impl [get "documents" file] 0 ""]]
 
-format-file-impl: [fn@Str [file@Dict docs@Dict i@Int acc@Str]
+format-file-impl: [fn@Str [docs@Dict i@Int acc@Str]
   [if [>= i [length docs]]
     [str acc "\n"]
     [format-file-impl
-      file
       docs
       [+ i 1]
       [str
@@ -444,15 +516,10 @@ format-doc-header: [fn@Str [doc@Dict]
       [str " expects: @" [format-annotation [get "expects" doc]]]
       ""]]]
 
-# ============================================================================
-# Public API
-# ============================================================================
-
-# Format an AST dict to pretty source
-# Expects % to be a file dict from ast_to_dict with source+comments mode
-format@[doc: "Format AST dict to pretty source (80-column, 2-space indent, preserves comments)"]: [fn@Str [ast@Dict]
-  [format-file ast]]
-
-# Pipeline mode: receive AST as % and emit formatted source
-[emit [format %]]
 ]
+
+# ============================================================================
+# Expression 2: return formatted source as a String
+# ============================================================================
+
+[format-file %]

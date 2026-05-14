@@ -1966,6 +1966,7 @@ fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::erro
     // Note: this does NOT override prelude's dict entries (those were inserted first
     // and take lexical priority), but it DOES make all builtins accessible via parent
     // chain lookup when not shadowed by prelude.
+    //
     {
         let mut env_borrow = stdlib_env.borrow_mut();
         for def in standard_builtins() {
