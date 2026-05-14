@@ -58,6 +58,8 @@ The explicit `[do monad steps...]` form has **no HKT dependency** — it desugar
 
 **Depends on:** `macro-expansion-boundary`
 
+**BLOCKED (2026-05-14):** Multi-step binding desugaring panics because prelude dicts (like `result = [bind: and-then  pure: result-ok]`) store their entries as `ThunkId` values from the stdlib arena. When the macro transformer accesses `result.bind` or `[get "bind" result]` from the expansion arena, the ThunkId lookup panics (index out of bounds). The `macro-expansion-boundary` sprint materialized the INPUT AST dict but not the transformer's CLOSURE dict values. Fix: either deep-materialize all dict values accessible from the transformer's closure before entering the expansion arena, or change `Value::Dict` to store `Rc<Thunk>` instead of `ThunkId`. Simple cases (`[do result]` no-steps → pure) work because they don't access dict fields.
+
 ### hkt-do-macro-inferred: [do] macro — inferred monad form
 
 The inferred `[do steps...]` form (monad argument omitted, inferred from return type or first binding). Requires `hkt-kind-inference` to provide `App` type inference and `kind_env`-based Monad class lookup.
