@@ -199,6 +199,11 @@ impl EvalContext {
         require_integrity: bool,
         env_allowed: Option<HashSet<String>>,
     ) -> Rc<Self> {
+        // Inherit stdlib ThunkIds: start the arena with a snapshot of stdlib thunks
+        // so that ThunkIds stored in prelude dicts (e.g. result.bind) remain valid.
+        // Falls back to a fresh empty arena if create_stdlib_env hasn't run yet.
+        let thunk_arena = crate::builtins::new_arena_with_stdlib_snapshot()
+            .unwrap_or_else(|| Rc::new(RefCell::new(ThunkArena::new())));
         Rc::new(Self {
             config: Rc::new(EvalConfig {
                 base_dir,
@@ -214,10 +219,46 @@ impl EvalContext {
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
             })),
-            thunk_arena: Rc::new(RefCell::new(ThunkArena::new())),
+            thunk_arena,
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
             emitted: std::cell::Cell::new(false),
             env_allowed,
+            blame_map: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// Create a new EvalContext that shares an existing stdlib arena.
+    ///
+    /// Used by macro expansion so that ThunkIds allocated during stdlib/prelude
+    /// loading remain valid when the transformer function accesses prelude dict
+    /// values (e.g., `result.bind`). Without sharing, those ThunkIds are indices
+    /// into the stdlib context's arena; the expansion context's fresh arena
+    /// doesn't contain them, causing an index-out-of-bounds panic.
+    pub(crate) fn new_with_stdlib_arena(
+        base_dir: cap_std::fs::Dir,
+        stdlib_env: Rc<RefCell<Environment>>,
+        no_fs: bool,
+        stdlib_arena: Rc<RefCell<ThunkArena>>,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            config: Rc::new(EvalConfig {
+                base_dir,
+                stdlib_env,
+                no_fs,
+                require_integrity: false,
+            }),
+            state: Rc::new(RefCell::new(EvalState {
+                include_guard: HashSet::new(),
+                include_cache: HashMap::new(),
+                include_chain: Vec::new(),
+                eval_stack: Vec::new(),
+                class_registry: HashMap::new(),
+                instance_registry: HashMap::new(),
+            })),
+            thunk_arena: stdlib_arena,
+            env_arena: Rc::new(RefCell::new(EnvArena::new())),
+            emitted: std::cell::Cell::new(false),
+            env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
         })
     }

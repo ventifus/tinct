@@ -192,7 +192,13 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     resolve::resolve_file(&file.node);
     // Type errors are advisory; evaluation proceeds regardless.
     let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
-    let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
+    // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
+    // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
+    // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
+    // causing an index-out-of-bounds panic. The shared arena contains all ThunkIds
+    // allocated during prelude and macros.llt loading.
+    let (env, stdlib_arena) =
+        builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
     // Create evaluation context (current directory, configurable sandbox)
     let base_dir_path = std::env::current_dir()
         .ok()
@@ -200,7 +206,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
+    let ctx = eval::EvalContext::new_with_stdlib_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
     // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
     // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
@@ -280,7 +286,8 @@ pub fn eval_source_with_cap_net(
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
     let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
-    let env = builtins::create_stdlib_env().map_err(|e| format!("{e}"))?;
+    let (env, stdlib_arena) =
+        builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
 
     let base_dir_path = std::env::current_dir()
         .ok()
@@ -288,7 +295,8 @@ pub fn eval_source_with_cap_net(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx = eval::EvalContext::new(base_dir, Rc::clone(&env), no_fs);
+    let ctx =
+        eval::EvalContext::new_with_stdlib_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
 
     if !no_fs {
         if let Ok(pwd_dir) =
@@ -1843,6 +1851,81 @@ mod tests {
         assert!(
             msg.contains("undefined variable: data"),
             "error should name 'data', got: {msg}"
+        );
+    }
+
+    // --- [do] macro desugaring tests ---
+
+    /// `[do result [Ok 42]]` — single-step (final expr only) returns Ok 42.
+    ///
+    /// Desugars to just `[Ok 42]` (the final step is returned as-is when there
+    /// are no preceding binding steps).
+    #[test]
+    fn test_do_macro_single_step() {
+        let result = eval_source("[do result [Ok 42]]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert!(
+            output.contains("42"),
+            "expected Ok(42) in output, got: {output}"
+        );
+    }
+
+    /// `[do result [x: [Ok 1]] [Ok [+ x 1]]]` — one binding step.
+    ///
+    /// Desugars to `[result.bind [Ok 1] [fn [x] [Ok [+ x 1]]]]`
+    /// = `[and-then [Ok 1] [fn [x] [Ok [+ x 1]]]]`
+    /// = `[Ok 2]`
+    #[test]
+    fn test_do_macro_one_binding_step() {
+        let result = eval_source("[do result [x: [Ok 1]] [Ok [+ x 1]]]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert!(
+            output.contains("2"),
+            "expected Ok(2) in output, got: {output}"
+        );
+    }
+
+    /// Three binding steps: `[do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]` → Ok(3).
+    #[test]
+    fn test_do_macro_three_steps() {
+        let result = eval_source("[do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert!(
+            output.contains("3"),
+            "expected Ok(3) in output, got: {output}"
+        );
+    }
+
+    /// Error short-circuits: `[Err "fail"]` in a binding step propagates.
+    #[test]
+    fn test_do_macro_err_propagation() {
+        let result = eval_source("[do result [x: [Ok 1]] [y: [Err \"fail\"]] [Ok [+ x y]]]");
+        assert!(result.is_ok(), "expected Ok result from eval, got: {:?}", result);
+        let output = result.unwrap();
+        assert!(
+            output.contains("fail"),
+            "expected Err(fail) in output, got: {output}"
+        );
+        // Must NOT contain the final computation result
+        assert!(
+            !output.contains("Ok"),
+            "expected no Ok in error path output, got: {output}"
+        );
+    }
+
+    /// `[do result]` — no steps, calls `result.pure []` → `Ok([])`.
+    #[test]
+    fn test_do_macro_no_steps_calls_pure() {
+        let result = eval_source("[do result]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        // result.pure is result-ok, so [result.pure []] = [Ok []]
+        assert!(
+            output.contains("Ok"),
+            "expected Ok in output, got: {output}"
         );
     }
 }

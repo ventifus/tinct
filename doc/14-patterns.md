@@ -202,7 +202,7 @@ See the comparison table below for how Tinct relates to JSONnet, Dhall, Nix, CUE
 | Computed key | `.["k"]` | `$['k']` | N/A | `[get data key]` |
 | Key index | `.["k"]` | `$[0]`, `$[1]` | `[0]`, `[-1]` | `[get data 0]`, `[get data -1]` (key-based) |
 | Positional index | `.[0]`, `.[-1]` | N/A | N/A | `[nth data 0]`, `[nth data -1]` |
-| Key-range slice | N/A | N/A | N/A | `[slice data 2 5]` (positional; bracket access removed) |
+| Key-range slice | N/A | N/A | N/A | `[slice data 2 5]` |
 | Positional slice | `.[2:5]` | `$[2:5]` | `[2:5]` | `[slice data 2 5]` |
 | First/last | `.[0]`, `.[-1]` | `$[0]` | `[0]`, `[-1]` | `[get data 0]` (key 0), `[last data]` |
 | Flatten | `flatten` | N/A | `[]` | `[flatten list]` |

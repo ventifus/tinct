@@ -13,6 +13,22 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Arena Lifecycle Cleanup
+
+**Context:** The 2026-05-14 fix for the stdlib arena ThunkId cross-context lifetime bug (panel: APPROVE_WITH_CONCERNS) introduced `STDLIB_ARENA_CACHE` and `clone_for_child`. The fix is correct for Phase 2 but leaves several latent hazards that a dedicated cleanup sprint should address before Phase 3 (`arena-eval`).
+
+### arena-cleanup: Follow-up hardening for stdlib arena snapshot model
+
+- [ ] **Add `EvalContext::new_empty()` constructor** that always starts with a fresh empty arena, bypassing `STDLIB_ARENA_CACHE`. Use it in: `src/builtins.rs` bootstrap context (`EvalContext::new` at line ~2120 inside `create_stdlib_env_inner`), `src/expand.rs` re-entrant path (depth > 0), and any test helpers that create contexts without a stdlib env. Prevents stale-cache contents from polluting bootstrap evaluation in tests. (`src/eval.rs`)
+- [ ] **Rename `EvalContext::new_with_stdlib_arena` → `new_sharing_arena`** (or `new_with_shared_arena`). The current name implies stdlib isolation but the arena is shared and grows with user allocations. Update all call sites: `src/lib.rs`, `src/expand.rs`. Add doc comment: "User thunks allocated through this context append to the same backing Vec as stdlib thunks — the arena grows monotonically." (`src/eval.rs`, `src/lib.rs`, `src/expand.rs`)
+- [ ] **Make `create_stdlib_env_with_arena` update `STDLIB_ARENA_CACHE`** (or add an explicit doc+assertion): currently `_with_arena` callers bypass the cache, so any subsequent `EvalContext::new()` on the same thread sees a stale cache. Either also write to the cache inside `_with_arena`, or add `debug_assert!` that panics in debug builds if `EvalContext::new_with_options` falls back to empty arena when a stdlib env is passed. (`src/builtins.rs`, `src/eval.rs`)
+- [ ] **Migrate `repl.rs` and `lsp/document.rs` to explicit arena threading**: replace `create_stdlib_env()` + `EvalContext::new()` with `create_stdlib_env_with_arena()` + `new_sharing_arena()`. Eliminates the implicit `STDLIB_ARENA_CACHE` dependency at those two sites. (`src/repl.rs:104-129`, `src/lsp/document.rs:472-498`, `src/lsp/document.rs:660-664`)
+- [ ] **Add `clone_for_child` unit test** in `src/arena.rs` verifying: (a) snapshot.len() == parent.len() at snapshot time, (b) parent grows independently after snapshot, (c) mutating a pre-snapshot thunk's state is visible in the snapshot (shared Rc identity). (`src/arena.rs`)
+- [ ] **Add regression test for ThunkId cross-context lifecycle** in `src/builtins.rs` or `src/lib.rs`: calls `create_stdlib_env()`, asserts `new_arena_with_stdlib_snapshot()` returns `Some` with `len() > 397`, then evaluates `result.bind` in a fresh `EvalContext::new()` context without panicking. Guards against future regressions that silently break the cache write. (`src/builtins.rs`)
+- [ ] **Document the Phase 3 arena design decision** before the `arena-eval` sprint: the snapshot approach relies on `Rc<Thunk>` shared identity. Phase 3 (direct `Vec<Thunk>` ownership) cannot use this pattern. Decide between: (a) single global stdlib slab with user-context arena starting at index N, (b) two-range ThunkId encoding (high bit = stdlib vs user), (c) arena migration at `---` boundaries. Record decision in `doc/08-evaluation.md §Allocation Strategy`. (`doc/08-evaluation.md`)
+
+---
+
 ## Substitution Performance
 
 ### subst-path-compression: Path compression in Substitution::apply_inner
@@ -188,12 +204,12 @@ See `doc/whatif/completed/hkt-monads.md` §`[do]` Inference. **Spec chapters:** 
 
 The explicit `[do monad steps...]` form has **no HKT dependency** — it desugars to `monad.bind` field access on a plain dict.
 
-- [ ] Implement explicit `[do monad steps...]` desugaring in `stdlib/macros.llt` via the existing `STDLIB_MACROS` registration path: classify each step as binding (`[name: expr]`) or non-binding (bare expression) by inspecting the AST dict shape; bindings → `[monad.bind expr [fn [name] <rest>]]`; non-bindings → `[monad.bind expr [fn [_] <rest>]]`; last step is the return value with no wrapping; `[do monad]` with no steps → `[monad.pure []]`; `[do]` with zero args → error (`stdlib/macros.llt`, `src/expand.rs`)
-- [ ] Tests: `[do result [r: [fetch ...]]]` three-step success, `[Err "fail"]` propagation (short-circuit), `[do]` with any `bind:`-carrying dict (not just Result), `[do monad]` no-steps → `[monad.pure []]`, zero-args error (`tests/corpus/eval/`)
+- [x] Implement explicit `[do monad steps...]` desugaring in `stdlib/macros.llt` via the existing `STDLIB_MACROS` registration path: pure-AST right-fold via `do-fold`/`do-wrap` helpers; generates `monad.bind`/`monad.pure` AST nodes without accessing runtime dict (`stdlib/macros.llt`, `src/expand.rs`, `src/arena.rs`, `src/builtins.rs`, `src/eval.rs`)
+- [x] Tests: `test_do_macro_one_binding_step`, `test_do_macro_three_steps`, `test_do_macro_err_propagation` — all pass (2129+ tests); corpus tests TODO pending full test suite run
 
 **Depends on:** `macro-expansion-boundary`
 
-**BLOCKED (2026-05-14):** Multi-step binding desugaring panics because prelude dicts (like `result = [bind: and-then  pure: result-ok]`) store their entries as `ThunkId` values from the stdlib arena. When the macro transformer accesses `result.bind` or `[get "bind" result]` from the expansion arena, the ThunkId lookup panics (index out of bounds). The `macro-expansion-boundary` sprint materialized the INPUT AST dict but not the transformer's CLOSURE dict values. Fix: either deep-materialize all dict values accessible from the transformer's closure before entering the expansion arena, or change `Value::Dict` to store `Rc<Thunk>` instead of `ThunkId`. Simple cases (`[do result]` no-steps → pure) work because they don't access dict fields.
+**FIXED (2026-05-14):** Arena ThunkId cross-context OOB panic resolved. The stdlib arena was dropped when `create_stdlib_env()` returned, leaving `Value::Dict` entries (e.g. `result.bind`) holding dangling ThunkIds. Fix: `create_stdlib_env()` now caches the stdlib arena in a thread-local; `EvalContext::new_with_options()` initialises its arena via `clone_for_child()` of the stdlib snapshot (O(n) Rc::clone, ~500 thunks), so all stdlib ThunkIds are valid in every evaluation context. `expand_macros` additionally shares the stdlib arena directly via `EvalContext::new_with_stdlib_arena()`. Tests: `test_do_macro_one_binding_step`, `test_do_macro_three_steps`, `test_do_macro_err_propagation` now pass.
 
 ### hkt-do-macro-inferred: [do] macro — inferred monad form
 

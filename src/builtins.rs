@@ -2043,9 +2043,46 @@ fn load_stdlib_module(
 // Reentrance guard for create_stdlib_env to detect unexpected recursive calls.
 std::thread_local! {
     static STDLIB_ENV_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Cache of the stdlib arena so EvalContexts created after create_stdlib_env()
+    /// can inherit the stdlib ThunkIds without the caller explicitly threading the arena.
+    static STDLIB_ARENA_CACHE: std::cell::RefCell<Option<Rc<RefCell<crate::arena::ThunkArena>>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Return a new ThunkArena pre-populated with the stdlib thunks (via Rc::clone),
+/// so ThunkIds allocated during stdlib loading are valid in the returned arena.
+/// Returns None if create_stdlib_env has not yet been called on this thread.
+pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Rc<RefCell<crate::arena::ThunkArena>>> {
+    STDLIB_ARENA_CACHE.with(|c| {
+        c.borrow().as_ref().map(|stdlib_arena| {
+            Rc::new(RefCell::new(stdlib_arena.borrow().clone_for_child()))
+        })
+    })
 }
 
 pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
+    let (env, arena) = create_stdlib_env_with_arena()?;
+    // Cache the arena so subsequent EvalContext::new() calls can inherit stdlib ThunkIds.
+    STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = Some(arena));
+    Ok(env)
+}
+
+/// Like `create_stdlib_env` but also returns the arena used during stdlib evaluation.
+/// The arena holds all ThunkIds allocated while loading the prelude and macros.llt.
+/// Callers (e.g., macro expansion) that need to share the same ThunkId space should
+/// use this arena when constructing their EvalContext via `EvalContext::new_with_stdlib_arena`.
+///
+/// **IMPORTANT:** This function does NOT update `STDLIB_ARENA_CACHE`. Callers must wire the
+/// returned arena via `EvalContext::new_with_stdlib_arena()` rather than `EvalContext::new()`;
+/// using `EvalContext::new()` after this function (without a prior `create_stdlib_env()` call)
+/// will silently fall back to an empty arena and panic on prelude dict field access.
+pub(crate) fn create_stdlib_env_with_arena() -> Result<
+    (
+        Rc<RefCell<Environment>>,
+        Rc<RefCell<crate::arena::ThunkArena>>,
+    ),
+    Box<crate::error::EvalError>,
+> {
     let d = STDLIB_ENV_DEPTH.get();
     if d > 5 {
         panic!(
@@ -2059,7 +2096,13 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
     result
 }
 
-fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
+fn create_stdlib_env_inner() -> Result<
+    (
+        Rc<RefCell<Environment>>,
+        Rc<RefCell<crate::arena::ThunkArena>>,
+    ),
+    Box<crate::error::EvalError>,
+> {
     // Phase 2: Bootstrap env switch.
     // The bootstrap env contains ONLY `include` and `%rust`. Prelude uses
     // `[include %rust "core"]`, `[include %rust "collection"]`, etc. to pull in
@@ -2147,7 +2190,12 @@ fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::erro
     let macros_source = include_str!("../stdlib/macros.llt");
     load_stdlib_module(macros_source, "macros", &stdlib_env, &bootstrap_ctx)?;
 
-    Ok(stdlib_env)
+    // Keep the arena alive: bootstrap_ctx is dropped here, but its arena holds all
+    // ThunkIds allocated during prelude/macros loading. Callers that need to share
+    // the same ThunkId space (e.g., macro expansion) clone this Rc before returning.
+    let arena = Rc::clone(&bootstrap_ctx.thunk_arena);
+
+    Ok((stdlib_env, arena))
 }
 
 #[cfg(test)]

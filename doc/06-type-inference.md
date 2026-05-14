@@ -23,7 +23,7 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Top                        universal supertype ⊤ (supertype of everything)
 ```
 
-*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. The `ρ` (row-rest) parameter has been removed — records no longer carry a row tail. Width subtyping handles record openness via intersection and negation. The archived Rémy-style row polymorphism notation (`Record(f₁:τ₁...fₙ:τₙ, ρ)` with `ρ ::= Closed | RowVar(r)`) is documented in [Type System Extensions](07-type-extensions.md) Appendix.
+*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The Rémy-style row polymorphism notation (`Record(f₁:τ₁...fₙ:τₙ, ρ)` with `ρ ::= Closed | RowVar(r)`) is documented in [Type System Extensions](07-type-extensions.md) Appendix.
 
 **Additional types** (not expressible in annotations, used internally by inference):
 
@@ -63,7 +63,7 @@ Implementation:
 
 **Note:** The complete `check_expr` implementation handles lambda checking mode (propagating expected parameter types to unannotated lambda parameters when the expected type is fully concrete), annotated parameter type resolution, checking against expected return annotations, and subsumption via `[U-SUBSUME]`. See `src/typecheck.rs` for the full implementation (search for `fn check_expr`).
 
-`check_expr` is used for both CALL-MONO and CALL-POLY argument checking (unified path as of 2026-05-11). When the expected type contains type variables (CALL-POLY), `check_expr` internally dispatches to unification to bind them. When the expected type is fully concrete (CALL-MONO), it uses subsumption checking. This unified approach eliminates verdict divergence between the two paths. See [U-SUBSUME] in the Unification section.
+`check_expr` is used for both CALL-MONO and CALL-POLY argument checking. When the expected type contains type variables (CALL-POLY), `check_expr` internally dispatches to unification to bind them. When the expected type is fully concrete (CALL-MONO), it uses subsumption checking. See [U-SUBSUME] in the Unification section.
 
 **Checking positions** (expected type fully concrete, uses `check_expr` with [SUB]):
 
@@ -93,7 +93,7 @@ Implementation:
 | Function definitions | `Fn(params → ret)` |
 | Access chains (dot, bracket, range) | Field type or `Unknown` |
 
-**Confluence.** Both CALL-MONO and CALL-POLY now use `check_expr`, which internally dispatches to unification when type variables are present (CALL-POLY) or to subsumption when the expected type is fully concrete (CALL-MONO). When unification resolves a type variable to a concrete type, subsequent unification attempts against that concrete type use [U-SUBSUME] — a bidirectional subsumption fallback that checks `is_subtype` in both directions. This ensures argument ordering does not affect whether type checking succeeds. See the Unification section for details.
+**Confluence.** Both CALL-MONO and CALL-POLY use `check_expr`, which internally dispatches to unification when type variables are present (CALL-POLY) or to subsumption when the expected type is fully concrete (CALL-MONO). When unification resolves a type variable to a concrete type, subsequent unification attempts against that concrete type use [U-SUBSUME] — a bidirectional subsumption fallback that checks `is_subtype` in both directions. This ensures argument ordering does not affect whether type checking succeeds. See the Unification section for details.
 
 ## Inference Judgments: Γ ⊢ e ⇒ τ
 
@@ -205,7 +205,7 @@ S = unify(σ'₁ ≐ τ₁, ..., σ'ₙ ≐ τₙ)                  [with U-SUBS
 
 Polymorphic path with unification: arguments are checked via `check_expr`, which internally dispatches to unification when the expected type contains type variables. Unification binds type variables via [U-VAR] and handles concrete-type comparisons via [U-SUBSUME] (bidirectional subsumption fallback). This is critical for confluence: when multiple arguments constrain the same type variable with different precision (e.g., `IntLiteral(42)` and `Int`), the subsumptive fallback ensures type checking succeeds regardless of argument order. See the Unification section for [U-SUBSUME] details.
 
-Note: Both CALL-MONO and CALL-POLY now use `check_expr` (unified path as of 2026-05-11). `check_expr` internally dispatches to unification when the expected type has type variables (CALL-POLY), or to subsumption when fully concrete (CALL-MONO).
+Note: Both CALL-MONO and CALL-POLY use `check_expr`. `check_expr` internally dispatches to unification when the expected type has type variables (CALL-POLY), or to subsumption when fully concrete (CALL-MONO).
 
 **CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is more permissive than CALL-MONO for most literal type pairs. The divergence arises because `unify()` has bidirectional literal promotion rules (5 type pairs × 2 directions = 10 match alternatives in `src/types.rs`), while `check_expr` uses directional `is_subtype(actual, expected)`. Concrete-type pair behavior across both paths (rows marked **fails** reject under both CALL-MONO and CALL-POLY; the `IntLiteral`/`Float` pair is documented here because [U-SUBSUME] correctly rejects it after removal of the former unsound promotion arm):
 
@@ -221,7 +221,7 @@ Note: Both CALL-MONO and CALL-POLY now use `check_expr` (unified path as of 2026
 
 In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. The [U-SUBSUME] fallback in `unify()` checks `is_subtype` in both directions for concrete type pairs, producing the same result as the explicit promotion arms for all valid subtype relationships. The `IntLiteral`/`Float` pair correctly fails under [U-SUBSUME] because they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`, but no `IntLiteral <: Float` rule exists). Full divergence elimination (making CALL-MONO and CALL-POLY agree on all cases) requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
 
-**Unified CALL-MONO/CALL-POLY path (implemented 2026-05-11).** The divergence described above has been eliminated. Both CALL-MONO and CALL-POLY now route through `check_expr`, which internally dispatches to `unify` when the expected type has inference vars (TypeVars), or to `is_subtype` when fully concrete. This ensures identical literal pairs receive consistent verdicts regardless of whether the function type has inference vars. The table above is retained for historical reference but no longer reflects implementation behavior.
+**Unified CALL-MONO/CALL-POLY path.** Both CALL-MONO and CALL-POLY route through `check_expr`, which internally dispatches to `unify` when the expected type has inference vars (TypeVars), or to `is_subtype` when fully concrete. This ensures identical literal pairs receive consistent verdicts regardless of whether the function type has inference vars. The table above illustrates the logical difference between subsumption and unification semantics; in practice both paths produce the same verdict.
 
 ```
 Γ ⊢ f ⇒ Unknown
@@ -268,7 +268,7 @@ S = unify(α ≐ Record({k: β}))
 
 After unification, α is bound in S — references to α in the conclusion denote its resolved image S(α), not the original variable. The occurs check and level lowering for α, β, and ρ are handled internally by `unify()`.
 
-*Note: The [DOT-ROWVAR] rule that previously appeared here (binding RowVar tails on field access) is archived — RowVar has been removed under BAS. Under the current system, accessing a field not present in a closed record is a static error. See [Type System Extensions](07-type-extensions.md) §Boolean-Algebraic Subtyping.*
+*Note: Under BAS, all records are closed. Accessing a field not present in a closed record is a static error. See [Type System Extensions](07-type-extensions.md) §Boolean-Algebraic Subtyping.*
 
 ```
 Γ ⊢ e : Record(F, ρ),  Γ ⊢ key : StringLiteral(k),  F(k) = τ
@@ -419,7 +419,7 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
                                                  [S-FN]
 ```
 
-**Note on Unknown and Top:** `Unknown` relates to other types via consistency (~), not subtyping (<:) — see `is_consistent()`. `Top` is the true universal supertype with `τ <: Top` for all `τ`. The pre-B2 `Any` type that served as both top and bottom (violating antisymmetry) has been eliminated by the gradual-typing-split sprint — see `doc/whatif/completed/gradual-typing.md`.
+**Note on Unknown and Top:** `Unknown` relates to other types via consistency (~), not subtyping (<:) — see `is_consistent()`. `Top` is the true universal supertype with `τ <: Top` for all `τ`. `Unknown` and `Top` are distinct: `Unknown` is the gradual typing escape hatch (consistent with all types), while `Top` is the genuine lattice top (a supertype of all types without special consistency rules). See `doc/whatif/completed/gradual-typing.md`.
 
 ## Instantiation
 
@@ -431,9 +431,8 @@ instantiate(τ) = (S(τ), S)
 
 FTV(τ) collects type variables via collect_type_vars().
 
-Under BAS, row variables have been removed. The substitution map
-contains only type_map (no row_map). TypeScheme carries only
-type_vars (no row_vars field). All records are closed; openness
+Under BAS, all records are closed. The substitution map contains
+only type_map. TypeScheme carries only type_vars. Record openness
 is expressed via width subtyping in is_subtype.
 ```
 
@@ -457,7 +456,7 @@ pub struct TypeScheme {
     pub type_vars: Vec<String>,         // quantified type variable names
     pub constraints: Vec<Constraint>,   // constraints on quantified vars
     pub label_vars: Vec<String>,        // quantified label variables (Kind::Label)
-    pub doc: Option<String>,            // documentation from annotations (added in constraint-annotations sprint)
+    pub doc: Option<String>,            // documentation from annotations
     pub body: Type,
 }
 
@@ -474,7 +473,7 @@ impl TypeScheme {
 }
 ```
 
-**TypeScheme grammar:** `σ ::= ∀(α₁...αₙ). [C₁ a₁, ...] τ` where α₁...αₙ are type variables, C₁ a₁, ... are constraints, and τ is the body type. The row variable portion (`ρ₁...ρₘ`) from the original Remy-style grammar has been removed under BAS.
+**TypeScheme grammar:** `σ ::= ∀(α₁...αₙ). [C₁ a₁, ...] τ` where α₁...αₙ are type variables, C₁ a₁, ... are constraints, and τ is the body type. Under BAS, all records are closed and type schemes carry only type variables — no row variable quantifier.
 
 `PartialEq` for `TypeScheme` compares structurally (type_vars + constraints + label_vars + doc + body). `Display` shows `∀a b. [Eq a] Fn(a → b)` for constrained schemes, or the bare type for monomorphic ones. Located in `types.rs`.
 
@@ -483,7 +482,7 @@ impl TypeScheme {
 - Fresh type variables are created at ℓ_current
 - `Type::TypeVar(String)` becomes `Type::TypeVar(String, u32)` (name + level)
 - `PartialEq` for `Type` is implemented manually: `TypeVar(a, _) == TypeVar(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
-- Under BAS, all records are closed. Row variables (`RowTail::RowVar`) have been removed — the `Row` struct now contains only `fields: HashMap<String, Type>` with no tail field. Width subtyping handles record openness.
+- Under BAS, all records are closed. The `Row` struct contains only `fields: HashMap<String, Type>` with no tail. Width subtyping handles record openness.
 - `Display` for `TypeVar` hides the level (internal inference state, not user-facing).
 
 **Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Since `Type` is a value type, levels are stored in a separate mutable map alongside the substitution:
@@ -497,11 +496,10 @@ pub struct InferState {
 }
 ```
 
-`InferState.subst` accumulates row-variable constraints from [DOT-VAR] and [DOT-ROWVAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** rather than dropped, maintaining substitution composition soundness. After merging, Pass 3d writes the fully-merged local substitution back into `state.subst` so that subsequent dicts in the same document see the letrec bindings. See the Pass 3b merge algorithm in [DICT-GEN] below for the precise pseudocode.
+`InferState.subst` accumulates type-variable constraints from [DOT-VAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** rather than dropped, maintaining substitution composition soundness. After merging, Pass 3d writes the fully-merged local substitution back into `state.subst` so that subsequent dicts in the same document see the letrec bindings. See the Pass 3b merge algorithm in [DICT-GEN] below for the precise pseudocode.
 
 When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `TypeVar(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
 
-**RowVar level semantics.** `RowTail::RowVar(String, u32)` carries the same creation-time level as `TypeVar`. The level stored in the `RowVar` variant is set at creation and never mutated directly — it is the *creation-time* level. The *current* (possibly lowered) level is always read from `InferState.levels[name]`. During row-variable binding (Case 2, 3, and 4 of `unify_remainders`), `lower_row_var_levels` is called with the binding RowVar's current level (read from `state.levels`, not from the `RowVar` variant itself) to lower the levels of all type and row variables in the bound row. `generalize()` generalizes a RowVar with name `r` when `levels[r] > enclosing_level`, identically to `TypeVar`. This two-field design (creation-time level in the variant, current level in `state.levels`) matches the `TypeVar` design: the variant field is only used during construction and display; all level queries go through `state.levels`.
 
 **Level adjustment during unification (symmetric).** Both branches of type variable unification perform level lowering:
 
@@ -655,11 +653,11 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 **Interaction with CALL-POLY.** When a call expression targets a `VarRef`, the inference engine inspects the scheme directly before any instantiation. This determines the routing:
 
-- **Polymorphic scheme** (has quantified `type_vars` or `row_vars`): routes to `check_call_with_scheme`, which calls `instantiate_scheme` once to produce a function type with fresh `_tN` variables at ℓ_current. It then checks `has_inference_vars()` on the *post-instantiation* type: if all variables were resolved (fully concrete), it takes the CALL-MONO path (bidirectional checking via `check_expr`); if type variables remain, it takes the CALL-POLY path (synthesize arguments, unify, apply substitution to return type). This avoids double instantiation — without this optimization, VAR-POLY would instantiate the scheme at the reference site, producing `_tN` variables, and then CALL-POLY's `instantiate_at_level` would freshen those into yet more `_tM` variables.
+- **Polymorphic scheme** (has quantified `type_vars`): routes to `check_call_with_scheme`, which calls `instantiate_scheme` once to produce a function type with fresh `_tN` variables at ℓ_current. It then checks `has_inference_vars()` on the *post-instantiation* type: if all variables were resolved (fully concrete), it takes the CALL-MONO path (bidirectional checking via `check_expr`); if type variables remain, it takes the CALL-POLY path (synthesize arguments, unify, apply substitution to return type). This avoids double instantiation — without this optimization, VAR-POLY would instantiate the scheme at the reference site, producing `_tN` variables, and then CALL-POLY's `instantiate_at_level` would freshen those into yet more `_tM` variables.
 - **Monomorphic scheme** (no quantified vars): routes to `check_call`, which infers the function expression normally. Since the scheme has no quantified variables, no instantiation occurs. The inferred type is typically concrete, so the CALL-MONO path fires directly.
 - **Non-VarRef function expressions** (e.g., inline lambdas): always route to `check_call`.
 
-**Substitution name uniqueness.** `Substitution::type_map` and `Substitution::row_map` are keyed by variable name, routing type and row variable bindings to their respective maps. User-annotated type variables (e.g., `@a`) are mapped to fresh `_tN` names by `resolve_type_name` during Pass 3 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different `_tN` than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same `_tN` variable (ensuring constraints are shared as intended). After Pass 4 generalization produces `TypeScheme`s, `instantiate_scheme()` renames the quantified variables to fresh `_tM` names at each call site, preventing cross-call-site interference.
+**Substitution name uniqueness.** `Substitution::type_map` is keyed by variable name, routing type variable bindings. User-annotated type variables (e.g., `@a`) are mapped to fresh `_tN` names by `resolve_type_name` during Pass 3 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different `_tN` than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same `_tN` variable (ensuring constraints are shared as intended). After Pass 4 generalization produces `TypeScheme`s, `instantiate_scheme()` renames the quantified variables to fresh `_tM` names at each call site, preventing cross-call-site interference.
 
 **Error recovery.** If Pass 3 inference fails for an entry, `Type::Unknown` is inserted for that entry (matching current behavior). Level lowering from partial unification before the failure is retained in `InferState.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries get `TypeScheme::mono(Type::Unknown)`.
 
@@ -900,7 +898,7 @@ Kind ::= *         -- concrete types (Int, Str, Record, ...)
 
 `Operator` is notation for `* → *`. A TypeVar of kind `Operator` ranges over type constructors; a TypeVar of kind `Label` ranges over string field names.
 
-The kind of each TypeVar is tracked in `InferState.kind_env: HashMap<String, Kind>`. TypeVars of kind `Operator` arise from `@Operator` annotations on class parameters; TypeVars of kind `Label` arise from Label annotations (`key@Label` for anonymous or `key@[label: l]` for named, per the `label-annotation-syntax` sprint).
+The kind of each TypeVar is tracked in `InferState.kind_env: HashMap<String, Kind>`. TypeVars of kind `Operator` arise from `@Operator` annotations on class parameters; TypeVars of kind `Label` arise from Label annotations (`key@Label` for anonymous or `key@[label: l]` for named).
 
 ### Type Constructor Application
 

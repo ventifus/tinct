@@ -186,7 +186,7 @@ person.name                     # string key "name"
 config.database.host            # chained string key access
 data.0                          # integer dot access — looks up Key::Int(0)
 
-# get builtin (key first, collection second — replaces bracket access)
+# get builtin (key first, collection second)
 [get 5 data]                    # Integer key 5
 [get "name" data]               # String key "name"
 [get $key data]                 # Computed key lookup ($key is a variable reference)
@@ -195,7 +195,7 @@ data.0                          # integer dot access — looks up Key::Int(0)
 
 **Rules:** Identifiers can start access chains directly — `foo.bar` and `$foo.bar` are both valid. `[get key data]` finds the entry whose key matches `key`, not the nth entry by position.
 
-**Note:** Bracket access (`data[5]`, `data[$key]`) was removed in access-pipeline-phase2. Use `[get key data]` for integer and dynamic key access.
+Use `[get key data]` for integer and dynamic key access.
 
 **Subsequence operations** — stdlib functions:
 
@@ -205,7 +205,7 @@ data.0                          # integer dot access — looks up Key::Int(0)
 [drop 2 data]                   # All entries after the first 2
 ```
 
-**Note:** Range access (`data[2..5]`, `data[2..]`, `data[..3]`) was removed in access-pipeline-phase2. Use `slice`, `take`, and `drop` for subsequences.
+Use `slice`, `take`, and `drop` for subsequences.
 
 **Position-based access** — stdlib functions:
 
@@ -458,7 +458,7 @@ sparse: [0: a  5: b  10: c]
 
 Formalizes access forms (dot and `get` builtin) as an access algebra with compositional chain semantics. Access chains are the primary data extraction mechanism in tinct — they desugar to nested AST nodes that the evaluator reduces inside-out, materializing the target at each step.
 
-**Note:** Bracket access (`data[key]`) and range access (`data[2..5]`) were removed in access-pipeline-phase2. The formal specification below covers the current implementation: dot access and the `get` builtin. The ACCESS-BRACKET and ACCESS-RANGE rules below are retained as historical reference (they document the removed evaluation rules).
+The formal specification below covers dot access and the `get` builtin.
 
 #### Part 1: Access Algebra
 
@@ -470,7 +470,6 @@ An **access chain** is a sequence of projections applied left-to-right to a targ
 π ::= dot(f)              — field access by literal string key f (or integer key n for dot-int access)
 ```
 
-(Historical: `bracket(e)` and `range(s?, e?)` projections were removed — see note above.)
 
 **Chains.** An access chain `C = π₁ · π₂ · ... · πₙ` applied to target expression `t` evaluates as left-to-right composition:
 
@@ -489,7 +488,7 @@ DotAccess(
   "c")
 ```
 
-(Bracket access was removed — see note at top of this section. Use `[get 0 $a.b].c` for this pattern.)
+Use `[get 0 $a.b].c` for dynamic key access followed by dot access.
 
 The evaluator reduces inside-out: first `eval(VarRef("a"))`, then `apply(dot("b"), ...)`, then `apply(dot(0), ...)`, then `apply(dot("c"), ...)`. This inside-out reduction is equivalent to the left-to-right chain evaluation defined above.
 
@@ -521,13 +520,6 @@ eval_dot(target, field, ρ, d) ⇒ θ
 
 Error case: if `key ∉ dom(map)`, error `key_not_found(field, span)`. No default — missing keys are always errors (§No Null — Missing Keys Are Errors).
 
-**[ACCESS-BRACKET]** — Bracket access (historical — removed in access-pipeline-phase2)
-
-Bracket access (`$target[key_expr]`) was removed. Use `[get key_expr target]` (the `get` builtin) for dynamic key access. The `get` builtin evaluates its key argument and materializes it to a concrete `String` or `Int` key, then performs the lookup. Error if key not found.
-
-**[ACCESS-RANGE]** — Range access (historical — removed in access-pipeline-phase2)
-
-Range access (`$target[start..end]`) was removed. Use `[slice target start end]`, `[take n target]`, or `[drop n target]` for subsequences. These builtins work on position (insertion order), not on key values.
 
 #### Part 3: Error Taxonomy
 
@@ -539,7 +531,7 @@ Error classes for current access forms:
 | Key not found (dot) | ACCESS-DOT | `String(field) ∉ dom(map)` | `key_not_found(field)` |
 | Key not found (`get`) | `get` builtin | `key ∉ dom(map)` | `key_not_found(key)` |
 
-Error context is enriched via `push_frame`: dot access adds `"accessing .{field}"`. (Bracket and range push_frame entries were removed with ACCESS-BRACKET and ACCESS-RANGE in access-pipeline-phase2.)
+Error context is enriched via `push_frame`: dot access adds `"accessing .{field}"`.
 
 #### Part 4: Chain Properties
 
@@ -577,7 +569,7 @@ Five properties that hold for all access chains.
 
 #### Part 5: Type System Correspondence
 
-Under Boolean Algebraic Subtyping (BAS), all records are closed. Dot access on a closed record returns the declared field type if the field exists, or produces a type error if the field is missing. There is no "open record" fallback to `Any` — records are precise. See `doc/05-type-annotations.md` §Row polymorphism syntax (removed under BAS) for the archived Remy-style row-variable unification mechanism.
+Under Boolean Algebraic Subtyping (BAS), all records are closed. Dot access on a closed record returns the declared field type if the field exists, or produces a type error if the field is missing. There is no "open record" fallback to `Any` — records are precise.
 
 The type checker mirrors the access algebra with type-level projections:
 
@@ -585,13 +577,13 @@ The type checker mirrors the access algebra with type-level projections:
 |-------------|-----------|-------------------|
 | ACCESS-DOT | `check_dot_access` (DotKey::Str arm) | `Record(fields) → fields[f]`; closed + missing → error |
 | ACCESS-DOT (Int) | `check_dot_access` (DotKey::Int arm) | Integer dot access `.N`; looks up `Key::Int(N)` |
-| `get` builtin | `check_bracket_access` (historical) | Now handled as a regular builtin call; key access via `[get key data]` |
+| `get` builtin | regular builtin call | Key access via `[get key data]` |
 
-**Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error (`typecheck.rs:313` falls through to `not_a_record`). Under BAS, all records are closed — openness is expressed via width subtyping rather than row variables. The `RowTail` and `RowVar` mechanisms described in the archived Remy section of [Type System Extensions](07-type-extensions.md) have been removed.
+**Type variable access:** Accessing a field on a type variable (`TypeVar(α)`) is a type error (`typecheck.rs:313` falls through to `not_a_record`). Under BAS, all records are closed — openness is expressed via width subtyping rather than row variables.
 
 **Closed records:** Under BAS, all records are closed. Dot access on a closed record returns the declared field type if present, or produces a type error if missing. There is no runtime fallback — the type checker enforces exact field presence.
 
-**`get` builtin precision:** When the key passed to `[get key data]` is a literal (`Expr::Str` or `Expr::Int`), the type checker performs exact field lookup. When the key is a variable with type `Str`, `Int`, or `Any`, the result type is `Any` — since the key value is not known until runtime, the type checker cannot determine which field will be accessed. The `get` builtin is now checked as a regular call rather than via the historical `check_bracket_access` function (removed in access-pipeline-phase2).
+**`get` builtin precision:** When the key passed to `[get key data]` is a literal (`Expr::Str` or `Expr::Int`), the type checker performs exact field lookup. When the key is a variable with type `Str`, `Int`, or `Any`, the result type is `Any` — since the key value is not known until runtime, the type checker cannot determine which field will be accessed. The `get` builtin is checked as a regular call.
 
 #### Part 6: Implementation Correspondence
 
@@ -602,7 +594,6 @@ The type checker mirrors the access algebra with type-level projections:
 | `Key::PartialOrd` | `impl PartialOrd for Key` | `value.rs` |
 | Chain nesting | Parser produces nested `DotAccess` AST nodes | `ast.rs` |
 | Type-level dot | `check_dot_access()` | `typecheck.rs` |
-| Note: `BracketForceTarget`, `eval_range_access`, `key_in_range`, `check_bracket_access`, `check_range_access` | All removed in access-pipeline-phase2 | — |
 
 #### Part 7: Worked Examples
 
@@ -630,9 +621,8 @@ Note: `θ_port` is never materialized — Property 2 (result laziness) means acc
 
 `[get 0 services]` calls the `get` builtin with key `Int(0)` and dict `services`. The builtin materializes `services`, looks up `Key::Int(0)` → `θ_svc0`. Then `.host` dot-accesses `θ_svc0`.
 
-(Historical: The old `services[0].host` — bracket access followed by dot — was removed in access-pipeline-phase2.)
 
-**Example 3: Subsequence with `slice` (replaces range access)**
+**Example 3: Subsequence with `slice`**
 
 ```tinct
 data: [a: 1  b: 2  c: 3  d: 4]
@@ -641,4 +631,3 @@ data: [a: 1  b: 2  c: 3  d: 4]
 
 `[slice data 1 3]` returns entries at positions 1 and 2 (half-open interval `[1, 3)` by insertion order), yielding `[0: 2  1: 3]` (renumbered). Use `slice`, `take`, and `drop` for subsequences.
 
-(Historical: The old `data["b".."d"]` — range access by key value — was removed in access-pipeline-phase2.)

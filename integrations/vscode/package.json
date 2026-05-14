@@ -12,13 +12,13 @@
     "vscode": "^1.75.0"
   },
   "categories": ["Programming Languages"],
-  "activationEvents": ["onLanguage:llt"],
+  "activationEvents": ["onStartupFinished", "onLanguage:llt"],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
         "id": "llt",
-        "aliases": ["Tinct", "llt"],
+        "aliases": ["Tinct", "tinct", "llt"],
         "extensions": [".llt", ".tinct"],
         "configuration": "./language-configuration.json"
       }

@@ -240,9 +240,9 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `trunc` | `[fn [x] [builtin-if [>= x 0] [floor x] [ceil x]]]` | Conditional floor/ceil |
 | `words` | `[builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]` | Uses stable `builtin-filter`, `builtin-eq` |
 
-**Recent migrations from Rust to tinct (stdlib-boundary sprint, 2026-05-11):**
+**Functions implemented in tinct (not Rust):**
 
-The following functions were Rust builtins and have been rewritten as tinct implementations. They are now in `stdlib/strings.llt` or `stdlib/io.llt` / `stdlib/net.llt` and are built on the primitives that did require Rust:
+The following functions are tinct implementations in `stdlib/strings.llt` or `stdlib/io.llt` / `stdlib/net.llt`, built on the primitives that require Rust:
 
 | Function | Now lives in | Built on |
 |----------|-------------|----------|
@@ -327,7 +327,7 @@ The stdlib follows four organizing principles:
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
-**New stdlib categories (added in recent cycles):**
+**Stdlib categories:**
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
 - **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
@@ -340,7 +340,7 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Network handles** (`connect`, `tls-connect`, `tls-peer-cert`, `spki-pin`, `http-connect`, `socks5-connect`, `proxy-connect` as Rust builtins) — TCP/UDP/TLS connections with capability security; SPKI pinning; HTTP/2+3 connection pools; SOCKS5 and HTTP proxy tunneling
 - **I/O handles** (`open`, `slurp`, `lines`, `write`, `write-atomic`, `cap-data`, `has-cap?`, `write-handle`, `flush`, `close` as Rust builtins; `write-line` in `stdlib/io.llt`) — file/stream I/O with capability rows (Readable/Writable/Binary/Text/Seekable/Stream/Datagram/Tls); WriteHandle streaming output
 
-These additions bring Tinct's stdlib coverage closer to mature configuration languages while maintaining the LLT-first principle; predicate builtins are Rust-native, `list?` is LLT-implemented on top of them.
+Predicate builtins are Rust-native; `list?` is LLT-implemented on top of them.
 
 > **Note:** Overrides apply to the initial dispatch only; Seq corecursion steps always call the underlying Rust implementation directly.
 

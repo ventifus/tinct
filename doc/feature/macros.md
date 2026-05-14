@@ -55,7 +55,7 @@ The acid test for the macro system: can `_` desugaring be expressed as a user-de
 The `_` transformation requires (per doc/04-functions.md `_` Desugaring):
 
 1. **DIRECT predicate** — identify `VarRef("_")` or access chains rooted at `_` (e.g., `_.name`, `_[0]`)
-2. **Top-down WRAP check** — examine raw children of Call, Dict, DotAccess, and Pipe before recursing (bracket access and range access were removed in access-pipeline-phase2)
+2. **Top-down WRAP check** — examine raw children of Call, Dict, DotAccess, and Pipe before recursing
 3. **Func-position exclusion** — `_` in function position of a Call does NOT trigger wrapping
 4. **Depth-based shadowing** — inside `[fn [_] ...]`, the `_` parameter shadows `_` desugaring
 5. **Lambda wrapping** — wrap the containing expression in `[fn [_] expr]` with span preservation
