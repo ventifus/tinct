@@ -174,11 +174,16 @@ pub annotation: Option<Box<FnAnnotation>>,
 [type:       "fn"
  return-ann: annotation_to_thunk_id(fn.annotation.return_ann)   # existing schema
  params:     [[name: p.name  annotation: annotation_to_thunk_id(p.annotation)] ...]
- body:       Unevaluated thunk → ast_to_dict_expr(fn.body)       # lazy: only serialized on access
+ body:       ast_to_dict_expr(fn.body)                           # eagerly serialized
 ]
 ```
 
-`body:` is a lazy `Unevaluated` thunk — the body AST is only serialized when accessed, not on every `ast-of` call. `return-ann:` and `params:` are materialized immediately (small, always needed for `describe` and signature help).
+`body:` is eagerly serialized on each `ast-of` call. `Thunk::new_unevaluated`
+takes an `Expr` and cannot defer a Rust closure; a truly lazy body would
+require a `PendingBuiltin` thunk variant, which is not worth the complexity.
+In practice `describe`, `annotation-of`, and `sig-from-ast` never access
+`body`, so the eager cost is paid only when the caller explicitly reads it.
+`return-ann:` and `params:` are also materialized immediately.
 
 For `Value::Builtin`: `ast-of` uses a shared static lookup table `builtin_type_for(name) → TypeScheme` extracted into a new module (e.g. `src/builtin_types.rs`). Both `standard_builtins()` and `TypeEnv::with_builtins()` currently register the same builtin names in parallel — the table de-duplicates this into a single source of truth. `ast-of` calls `builtin_type_for(def.name)` directly with no `EvalContext` change and no eval/typecheck boundary violation. The existing `TypeScheme.doc` field is already present and available for free.
 
@@ -413,7 +418,7 @@ All `[include %libdir "formatter/compact.llt"]` references in this whatif are co
 
 **Open questions before implementation:**
 - ~~Builtin introspection~~ **Resolved:** extract a shared `builtin_type_for(name)` static table into a new module; both `standard_builtins()` and `TypeEnv::with_builtins()` read from it; `ast-of` calls it directly — no EvalContext change, no duplication.
-- ~~`source_file` threading~~ **Resolved:** add `current_file: Option<PathBuf>` to `EvalConfig`; repurpose the existing `with_base_dir_and_path` stub at `src/eval.rs:255` (currently ignores its path arg) to set this field; `builtin_include` already has `file_path_str` in scope at the `ctx.with_base_dir(included_dir)` call (`src/builtins_meta.rs:1167`) — pass it through; `eval_fn` reads `ctx.config.current_file.clone()`. This information exists in the include context but must be threaded into `EvalContext`.
+- ~~`source_file` threading~~ **Resolved:** add `current_file: Option<PathBuf>` to `EvalConfig`; repurpose the existing `with_base_dir_and_path` stub at `src/eval.rs:255` (currently ignores its `_base_dir_path` arg — verified) to set this field; change `builtin_include` at `src/builtins_meta.rs:1167` from `ctx.with_base_dir(included_dir)` to `ctx.with_base_dir_and_path(included_dir, Some(file_path))` — the call site must change, not just the stub; `eval_fn` reads `ctx.config.current_file.clone()`. This information exists in the include context but must be threaded into `EvalContext`.
 - ~~Round-trip eval~~ **Resolved:** `eval-ast` already exists (`src/builtins_meta.rs:377`, registered at `src/builtins.rs:1093`); it takes an AST dict and evaluates it in `stdlib_env`. In-memory round-trip: `[eval-ast [ast-of f]]`. File persistence: `[format-pretty [ast-of f]]` written to a `DirCap` file, then `[include %doc "file.llt"]` to read back. No `eval-llt` string-eval primitive needed. Caveat: `eval-ast` evaluates in `stdlib_env`, so free variables beyond stdlib won't resolve — correct behavior, since functions worth serializing are pure/stdlib-only.
 
 ## References
@@ -422,3 +427,4 @@ All `[include %libdir "formatter/compact.llt"]` references in this whatif are co
 - Common Lisp `describe` and `documentation` — built-in reflection on symbols, functions, classes; `(describe #'map)` prints type, args, docstring
 - Elixir `Module.docs/2` — doc strings as first-class module attributes, accessible at runtime via `Code.fetch_docs/1`; powers `h(Function)` in IEx (interactive shell)
 - Python `inspect` module — `inspect.signature(f)`, `inspect.getsource(f)`, `f.__doc__` — full runtime introspection of function annotations and source; `ast.unparse` for round-trip source reconstruction
+- Sheard, T. & Peyton Jones, S. (2002). "Template Haskell." *Haskell Workshop*, pp. 1-16. — [staged metaprogramming in a typed functional language; `ast-of` + `eval-ast` is a single-stage runtime analogue of TH's splice/quote mechanism]

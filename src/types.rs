@@ -623,6 +623,18 @@ impl Type {
             (Type::Top, _) | (_, Type::Top) => true,
             // Never is consistent with everything (like Unknown, for gradual typing)
             (Type::Never, _) | (_, Type::Never) => true,
+            // TypeVar is consistent with everything: an unresolved TypeVar represents an
+            // unknown type and is gradual-typing consistent with any other type. This mirrors
+            // Unknown's behavior in the consistency relation and prevents spurious inference
+            // failures when internal TypeVars — from annotated params, `instantiate_scheme`,
+            // or `fresh_type_var` in pass-1 positions — appear during prelude body checking
+            // before the substitution has fully resolved them. The is_consistent check here is
+            // only reached in subsumption contexts (expected_resolved.has_inference_vars() = false);
+            // when the expected type has TypeVars, check_expr uses unification instead.
+            //
+            // Without this, `check_expr(TypeVar("xs"), Seq(⊤))` falls to `_ => false`,
+            // failing prelude inference for wrappers like `drop: [fn [n@Int xs] ...]`.
+            (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => true,
             // Negation: structurally consistent
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),
             // Capability types, Proxy: consistent only if equal (handled by a == b above)

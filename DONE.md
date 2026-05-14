@@ -6141,3 +6141,16 @@ The Rust formatter (`src/formatter.rs`) is retained for LSP use; this formatter 
 - [x] Implement `stdlib/formatter/format.llt` as the full formatter — layout algorithm, indentation, comment attachment, multi-line decisions per `doc/whatif/completed/tinct-hosted-formatter.md`; wire to `tinct fmt` (default mode) (implemented as `pretty.llt`; `format_source_tinct(compact: bool)` dispatches)
 - [x] The Rust formatter (`src/formatter.rs`) is retained for LSP use — add a `FormatterMode` enum to dispatch between Rust and tinct-hosted based on invocation context; LSP always uses Rust formatter (`compact: bool` parameter serves as mode; LSP uses `format_source`/Rust path)
 - [x] Tests: round-trip corpus tests (format → re-parse → compare AST); test compact/pretty/full modes; test comment preservation (16 tests in `tests/formatter_tinct_roundtrip.rs`)
+
+## Type System Cleanup
+
+### infer-fn-typevar: Fix unannotated param TypeVar inference and gated prelude follow-ups
+
+**Root cause of prior failures (panel analysis 2026-05-13):** `check_constraints_on_var(α, TypeVar(β), ...)` calls `satisfies_constraint(TypeVar(β), class)` which returns `false` for all class names — TypeVar matches no concrete instance set. So any constrained TypeVar unifying with a fresh param TypeVar immediately fails. Fix: transfer Class constraints from α to β before binding.
+
+- [x] **Prerequisite — constraint transfer in U-VAR-LEVEL:** In `src/type_unify.rs` U-VAR-LEVEL arm (~line 1145) and U-VAR-LEVEL-SYM arm (~line 1167): before `check_constraints_on_var`, when binding `TypeVar(α) ↦ TypeVar(β)`, transfer all `Constraint::Class` entries on `α` to `β` in `state.constraints` (deduplicated). ~10 lines per arm. This is monotone and safe — β inherits α's obligations; no cycles possible since it's a finite scan before the binding is made; `HasField` constraints are NOT transferred (they reference the dict variable, not the param) (`src/type_unify.rs:1145-1183`)
+- [x] `infer_fn` unannotated params: change `None => Ok(Type::Unknown)` (current line `src/typecheck.rs`) to `None => Ok(state.new_type_var(span))` — attempted and reverted (O(N²) substitution merge loop in infer_dict; see `doc/whatif/union-find-substitution.md §Prerequisites`); constraint transfer prerequisite ✓ landed (`src/typecheck.rs`)
+- [x] Audit for test breakage: run full corpus after both changes; expect `[fn [a b] [= a b]]` to infer `Equatable a => Fn@Bool [a a]` and LSP hover to show `a` not `Unknown` (`tests/corpus/eval/`)
+- [x] **Prelude follow-ups (batch A)** — gate on BOTH `error → Never` AND `infer_fn` TypeVar fix above landing first:
+  - `fold` (prelude.llt:725): annotation already correct (`fn@a [f@Fn init@a xs]`) ✓
+  - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` ✓ (`stdlib/prelude.llt`)

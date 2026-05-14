@@ -18,14 +18,19 @@ struct Scc {
 
 /// Tarjan's algorithm for computing SCCs in topological order.
 /// Returns SCCs in reverse topological order (dependencies before dependents).
+///
+/// Uses an iterative worklist implementation to avoid stack overflow on large
+/// prelude dicts with many interdependent bindings. The recursive formulation
+/// of Tarjan's algorithm would overflow on dicts with O(n) dependency chains;
+/// the iterative version uses an explicit work stack instead of the call stack.
 fn compute_sccs(entries: &[Spanned<Entry>], key_entries: &[(Option<String>, bool)]) -> Vec<Scc> {
     let n = entries.len();
 
     // Build name-to-index map for O(1) lookup
     let mut name_to_idx: HashMap<String, usize> = HashMap::new();
-    for (i, (name, _)) in key_entries.iter().enumerate() {
-        if let Some(ref n) = name {
-            name_to_idx.insert(n.clone(), i);
+    for (i, (key_name, _)) in key_entries.iter().enumerate() {
+        if let Some(ref kn) = key_name {
+            name_to_idx.insert(kn.clone(), i);
         }
     }
 
@@ -36,77 +41,94 @@ fn compute_sccs(entries: &[Spanned<Entry>], key_entries: &[(Option<String>, bool
         graph[i] = deps;
     }
 
-    // Tarjan's algorithm state
-    let mut index = 0;
-    let mut stack: Vec<usize> = Vec::new();
-    let mut indices: Vec<Option<usize>> = vec![None; n];
+    // Tarjan's algorithm state (Cormen et al. 2009 §22.5 formulation)
+    let mut index = 0usize;
+    let mut tarjan_stack: Vec<usize> = Vec::new(); // Tarjan's S stack
+    let mut disc: Vec<Option<usize>> = vec![None; n]; // discovery time
     let mut lowlinks: Vec<usize> = vec![0; n];
     let mut on_stack: Vec<bool> = vec![false; n];
     let mut sccs: Vec<Scc> = Vec::new();
 
-    fn strongconnect(
-        v: usize,
-        index: &mut usize,
-        stack: &mut Vec<usize>,
-        indices: &mut [Option<usize>],
-        lowlinks: &mut [usize],
-        on_stack: &mut [bool],
-        sccs: &mut Vec<Scc>,
-        graph: &[Vec<usize>],
-    ) {
-        // Set the depth index for v
-        indices[v] = Some(*index);
-        lowlinks[v] = *index;
-        *index += 1;
-        stack.push(v);
-        on_stack[v] = true;
+    // Iterative Tarjan's SCC using an explicit work stack.
+    //
+    // Each work frame stores (node v, index into graph[v] — the next successor to process).
+    // On push: initialize v and visit the first unvisited successor.
+    // On resume: advance the successor index, propagate lowlink, check root condition.
+    //
+    // This exactly mirrors the recursive call structure without using the call stack.
+    // Each "frame" is (v, next_successor_idx) where next_successor_idx is the 0-based
+    // index of the next successor of v to process. When next_successor_idx == graph[v].len(),
+    // all successors are done and we check the root condition.
+    let mut call_stack: Vec<(usize, usize)> = Vec::new(); // (node, next_succ_idx)
 
-        // Consider successors of v
-        for &w in &graph[v] {
-            if indices[w].is_none() {
-                // Successor w has not yet been visited; recurse on it
-                strongconnect(w, index, stack, indices, lowlinks, on_stack, sccs, graph);
-                lowlinks[v] = lowlinks[v].min(lowlinks[w]);
-            } else if on_stack[w] {
-                // Successor w is in stack and hence in the current SCC
-                lowlinks[v] = lowlinks[v].min(indices[w].unwrap());
-            }
+    for start in 0..n {
+        if disc[start].is_some() {
+            continue;
         }
 
-        // If v is a root node, pop the stack and create an SCC
-        if Some(lowlinks[v]) == indices[v] {
-            let mut scc_indices = Vec::new();
-            loop {
-                let w = stack.pop().unwrap();
-                on_stack[w] = false;
-                scc_indices.push(w);
-                if w == v {
-                    break;
+        // Initialize start node and push its frame
+        disc[start] = Some(index);
+        lowlinks[start] = index;
+        index += 1;
+        tarjan_stack.push(start);
+        on_stack[start] = true;
+        call_stack.push((start, 0));
+
+        'outer: while let Some((v, succ_idx)) = call_stack.last().copied() {
+            let succs = &graph[v];
+
+            // Find the next successor to process starting from succ_idx
+            let mut next_succ = succ_idx;
+            while next_succ < succs.len() {
+                let w = succs[next_succ];
+                if disc[w].is_none() {
+                    // Tree edge: initialize w and recurse into it.
+                    // Update call_stack frame for v to resume at next_succ+1 after w returns.
+                    call_stack.last_mut().unwrap().1 = next_succ + 1;
+                    disc[w] = Some(index);
+                    lowlinks[w] = index;
+                    index += 1;
+                    tarjan_stack.push(w);
+                    on_stack[w] = true;
+                    call_stack.push((w, 0));
+                    continue 'outer;
+                } else if on_stack[w] {
+                    // Back edge: w is on the tarjan stack, update lowlink for v
+                    lowlinks[v] = lowlinks[v].min(disc[w].unwrap());
                 }
+                // Already-visited and not on stack (cross/forward edge — skip): no lowlink update needed
+                next_succ += 1;
             }
-            sccs.push(Scc {
-                indices: scc_indices,
-            });
+
+            // All successors of v are processed. Propagate lowlink to parent and check root.
+            call_stack.pop();
+            if let Some(&(parent, _)) = call_stack.last() {
+                // Propagate lowlink: parent's lowlink = min(parent's lowlink, v's lowlink)
+                lowlinks[parent] = lowlinks[parent].min(lowlinks[v]);
+            }
+
+            // Root check: if disc[v] == lowlinks[v], v is the root of an SCC
+            if Some(lowlinks[v]) == disc[v] {
+                let mut scc_indices = Vec::new();
+                loop {
+                    let x = tarjan_stack.pop().unwrap();
+                    on_stack[x] = false;
+                    scc_indices.push(x);
+                    if x == v {
+                        break;
+                    }
+                }
+                sccs.push(Scc {
+                    indices: scc_indices,
+                });
+            }
         }
     }
 
-    // Run Tarjan's algorithm from each unvisited node
-    for v in 0..n {
-        if indices[v].is_none() {
-            strongconnect(
-                v,
-                &mut index,
-                &mut stack,
-                &mut indices,
-                &mut lowlinks,
-                &mut on_stack,
-                &mut sccs,
-                &graph,
-            );
-        }
-    }
-
-    // Tarjan's algorithm produces SCCs in reverse topological order, which is what we want
+    // Tarjan's algorithm produces SCCs in reverse topological order of the condensation DAG:
+    // dependency SCCs are emitted before the SCCs that depend on them. infer_dict processes
+    // the returned list front-to-back, so dependencies are inferred (and generalized) before
+    // the dependent SCCs that reference them — exactly the order we need.
     sccs
 }
 

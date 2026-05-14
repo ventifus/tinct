@@ -107,12 +107,18 @@ result type is uniquely determined (Jones 1994):
 Add a b c | (a,b) → c
 
 instances:
-  Add Int   Int   Int
-  Add Float Float Float
-  Add Int   Float Float    ← Int widened to Float
-  Add Float Int   Float    ← Int widened to Float
+  Add Int    Int    Int    ← homogeneous int
+  Add Float  Float  Float  ← homogeneous float
+  Add Int    Float  Float  ← Int widened to Float
+  Add Float  Int    Float  ← Int widened to Float
   Add Number Number Number ← gradual numeric
+  Add Number Int    Number ← gradual + int
+  Add Int    Number Number ← int + gradual
+  Add Number Float  Number ← gradual + float
+  Add Float  Number Number ← float + gradual
 ```
+
+The Number-involving instances preserve Number as the result type (rather than widening to Float) because Number is the gradual numeric type — a Number-typed value could be Int or Float at runtime, so the result must remain Number to preserve soundness. Widening to Float would incorrectly discard the possibility that both operands are Int.
 
 The arithmetic primitives are re-registered:
 
@@ -176,9 +182,29 @@ two propagation rules to `check_constraints`:
 [CONSTRAIN-FIELD]   C({f: τ}) ⊢ satisfied    iff    C(τ) ⊢ satisfied
 [CONSTRAIN-INTER]   C(τ₁ & τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
 [CONSTRAIN-UNION]   C(τ₁ | τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
-[CONSTRAIN-TOP]     C(⊤) ⊢ satisfied                (⊤ has no fields — vacuously true)
+[CONSTRAIN-TOP]     *** GAP — see below ***
 [CONSTRAIN-NEVER]   C(⊥) ⊢ satisfied                (⊥ is uninhabited — vacuously true)
 ```
+
+**[CONSTRAIN-FIELD] restriction:** `C({f: τ}) iff C(τ)` assumes the class has a
+compositional/structural interpretation — i.e., satisfaction of the field types
+implies satisfaction of the whole record. This holds for all built-in classes
+(`Equatable`, `Comparable`, `Showable`, `Numeric`). For user-defined classes with
+non-structural semantics, the rule must not propagate automatically. Restrict
+automatic field propagation to built-in classes until a declarative opt-in
+mechanism is designed.
+
+**[CONSTRAIN-UNION] direction:** The `∧` (AND) in `[CONSTRAIN-UNION]` is
+intentional — ALL members must satisfy the constraint, not ANY. A union-typed
+value could be either alternative at runtime, so both branches must support the
+operation. Implementors: use `all()`, not `any()`.
+
+**[CONSTRAIN-TOP] — Open design gap:** `C(⊤) ⊢ satisfied` is unsound for
+`Equatable` and `Comparable`: a `Top`-typed value could be a function or `DirCap`
+at runtime, neither of which is equatable, and no ClassEnv dispatch is triggered
+for `Top`. For `Showable`, vacuous satisfaction is defensible (everything can
+produce some string representation). The correct rule for `Equatable`/`Comparable`
+on `Top` is an open decision — see gaps discussion.
 
 These rules apply when the constrained type variable is unified with a Record
 type during constraint checking. The propagation is automatic — no new
@@ -212,6 +238,12 @@ values of a union type if you can compare values of each alternative.
 in the type algebra, [CONSTRAIN-INTER] fires during the existing constraint
 checking pass — no separate record-walking logic is needed. The propagation
 follows the existing BAS normalization structure.
+
+**Normalization ordering:** BAS normalization must complete before constraint
+propagation fires. [CONSTRAIN-INTER] can only decompose a type already in
+intersection normal form. If constraint checking runs on a pre-normalized
+multi-field record, the match arms for `Intersection` do not fire. The
+implementation must ensure `satisfies_constraint` is called on normalized types.
 
 ### Runtime Dispatch via ClassEnv Lookup
 
@@ -304,7 +336,12 @@ The MPTCs and runtime dispatch interact cleanly with the HKT typeclass hierarchy
 
 ### Limitations
 
-**Overlapping instances are rejected.** Two instances for the same `(class, type)` pair are a coherence violation — the type checker rejects them. This matches Haskell's global coherence model and ensures dispatch is always deterministic.
+**Overlapping instances are rejected.** For single-parameter classes, two
+instances for the same `(class, type)` pair are a coherence violation. For
+MPTCs with functional dependencies, the check is per **determining-position
+tuple**: two `Add` instances with the same `(a, b)` pair but different `c` are
+a coherence violation, regardless of `c`. The type checker rejects them. This
+ensures dispatch is always deterministic (Sulzmann et al. 2007).
 
 **Functional dependency coverage must be complete.** Every combination of `(a, b)` used with `[+]` must have a matching `Add a b c` instance. Using `[+]` on a custom type without a registered instance produces a type error at the call site, not a runtime error.
 
@@ -359,4 +396,5 @@ The MPTCs and runtime dispatch interact cleanly with the HKT typeclass hierarchy
 - Jones, M.P. (1995). *Qualified Types: Theory and Practice.* Cambridge University Press. — [dictionary translation; constraint satisfaction; instance coherence]
 - Jones, M.P. (2000). "Type classes with functional dependencies." *ESOP 2000*, LNCS 1782. — [the functional dependency extension that makes MPTC inference decidable; (a,b)→c for Add]
 - Peyton Jones, S., Jones, M. & Meijer, E. (1997). "Type classes: an exploration of the design space." *Haskell Workshop*. — [design tensions in MPTC: ambiguity, coverage, coherence; informs tinct's overlap-rejection policy]
+- Sulzmann, M., Duck, G.J., Peyton Jones, S. & Stuckey, P.J. (2007). "Understanding functional dependencies via Constraint Handling Rules." *JFP*, 17(1), 83-137. — [CHR-based formal semantics for functional dependencies; confluence and termination proofs; the formal justification for tinct's coherence check]
 - Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." *POPL '89*, pp. 60-76. ACM. — [original typeclass paper; dictionary translation; the mechanism tinct's runtime dispatch adapts]

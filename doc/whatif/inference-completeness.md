@@ -1,6 +1,6 @@
 # What If: Inference Completeness for tinct
 
-**State:** Proposal
+**State:** Partially implemented — SCC-based binding group analysis is done (`src/typecheck_dict.rs`). Remaining: variadic `Seq(T)` and nested dict polymorphism.
 
 What would it take to close the gaps between what tinct's HM inference engine
 can express and what it actually infers — making tinct a fully polymorphic,
@@ -9,22 +9,19 @@ precisely typed general-purpose language?
 ## Current State
 
 Tinct uses levels-based Hindley-Milner inference (Kiselyov 2013) with a
-four-pass letrec algorithm (DICT-GEN). Three gaps limit inference precision.
+four-pass letrec algorithm (DICT-GEN). Three gaps were identified; the first
+is now closed. Two gaps remain.
 
-**Letrec monomorphism.** DICT-GEN treats every dict as a single monomorphic
-letrec group. In Pass 1, all entries are bound to fresh TypeVars at level ℓ+1.
-During Pass 3, sibling entries see these fresh TypeVars — not the eventually-
-generalized schemes. A polymorphic function and its users in the same dict
-constrain each other through the shared TypeVar, collapsing the polymorphism.
+**Letrec monomorphism — Implemented.** SCC-based binding group analysis
+(`src/typecheck_dict.rs`) closes this gap. Independent dict entries are
+generalized before their dependents are inferred. The following now
+type-checks correctly:
 
 ```tinct
-# `id` and its users are siblings in one letrec group.
-# `result` constrains `id`'s TypeVar to Fn(Int→Int).
-# `other-result` then fails: id is no longer polymorphic.
 [
   id:           [fn [x] x]
-  result:       [id 42]
-  other-result: [id "hello"]   # type error
+  result:       [id 42]       # ok — a=Int ✓
+  other-result: [id "hello"]  # ok — a=Str ✓
 ]
 ```
 
@@ -53,7 +50,7 @@ sum: [fn [...nums] [reduce [fn [a b] [+ a b]] 0 nums]]
 
 ### What's Missing
 
-1. Independent generalization of dict entries that are not mutually dependent.
+1. ~~Independent generalization of dict entries~~ — **Implemented** (`src/typecheck_dict.rs`).
 2. Polymorphic scheme instantiation when accessing entries through visible nested dicts.
 3. Typed collection of variadic arguments with element-type inference at call sites.
 4. Typeclass-based heterogeneous variadic patterns (printf-style) for cases where argument types vary by position.
@@ -82,7 +79,9 @@ constraints, element types, and return types precisely.
 
 ## Design
 
-### SCC-Based Binding Group Analysis
+### SCC-Based Binding Group Analysis — Implemented
+
+**Status: Implemented** in `src/typecheck_dict.rs` (`compute_sccs`, `collect_dependencies`, per-SCC Pass 1/3/4 loop). The following describes the algorithm for reference.
 
 DICT-GEN is extended with a dependency analysis phase between Pass 0 and Pass 1.
 
@@ -214,8 +213,11 @@ where T is a fresh TypeVar β unified against each variadic argument at call sit
   Γ ⊢ [f a₁...aₖ] : S(τ_ret)
 ```
 
-All variadic arguments are unified against the same TypeVar β. Heterogeneous
-variadic arguments produce a type error.
+All variadic arguments are unified against the same TypeVar β. Literal types
+(`IntLiteral(n)`, `FloatLiteral(n)`, `StrLiteral(s)`) are widened to their
+base types (`Int`, `Float`, `Str`) before unification, so `[sum 42 1]`
+succeeds with β = `Int` rather than failing on `unify(IntLiteral(42),
+IntLiteral(1))`. Heterogeneous variadic arguments produce a type error.
 
 Within the function body, the variadic parameter `args` has type `Seq(β)` and
 is directly iterable with all Seq operations:
@@ -288,11 +290,11 @@ produces a type error.
 
 ## What Would Change
 
-### `src/typecheck.rs` — DICT-GEN algorithm
+### `src/typecheck_dict.rs` — DICT-GEN algorithm — **Done**
 
-**Current:** `infer_dict` processes all entries as a single letrec group (Passes 1–4 over all n entries simultaneously).
-**Proposed:** Insert Pass 0a (dependency graph) and Pass 0b (Tarjan SCC) between Pass 0 and Pass 1. The inference loop runs Passes 1–4 for each SCC in topological order. Each singleton SCC infers and generalizes before dependent SCCs see it.
-**Impact:** Moderate. Core change to `infer_dict`. Tarjan's algorithm is O(V+E) over entry count — negligible for typical dicts.
+`compute_sccs()` (lines 26–130), `collect_dependencies()` (lines 132–220), and
+the per-SCC Pass 1/3/4 loop are implemented. Polymorphic recursion detection
+fires at `src/typecheck.rs:1478–1481` via `state.current_function`.
 
 ### `src/typecheck.rs` — dot-access resolution
 
@@ -336,3 +338,4 @@ produces a type error.
 - Pottier, F. & Rémy, D. (2005). "The essence of ML type inference." In *ATTAPL*, ch. 10. MIT Press. — [constraint-based framework; SCC interaction with constraint generation]
 - Tarjan, R.E. (1972). "Depth-first search and linear graph algorithms." *SIAM Journal on Computing*, 1(2), 146-160. — [the SCC algorithm used in DICT-GEN-SCC Pass 0b]
 - Wells, J.B. (1999). "Typability and type checking in System F are equivalent and undecidable." *Annals of Pure and Applied Logic*, 98(1-3), 111-156. — [why full polymorphic record fields through opaque parameters require System F]
+- Wright, A.K. (1995). "Simple imperative polymorphism." *Lisp and Symbolic Computation*, 8(4), 343-355. — [the value restriction paper; tinct's purity means this restriction is unnecessary]

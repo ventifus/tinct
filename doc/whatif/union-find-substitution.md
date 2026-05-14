@@ -55,6 +55,8 @@ struct UnionFind {
 
 ## Prerequisites
 
+The specific performance blocker motivating this proposal is the substitution merge loop in `typecheck_dict.rs:383–409` (inside `infer_dict`). After each SCC is inferred, the loop iterates over every entry in `state.subst.type_map` and calls `subst.apply()` on each value. With TypeVar-annotated function parameters, each param introduces a fresh TypeVar that creates TypeVar→TypeVar chains in `state.subst`. The merge loop applies `subst.apply()` O(|state.subst|) times per SCC, and `apply()` itself is O(chain_depth) per call. Across all SCCs in a large prelude, this becomes O(|SCCs| × |state.subst|²) — the reason the `infer-fn-typevar` sprint had to revert unannotated-param TypeVar inference. Union-find (or an O(1) `None`-branch fast-path for the common TypeVar-not-in-subst case) is the prerequisite for enabling TypeVar params in `infer_fn`.
+
 - Chain-depth instrumentation added to `apply_inner()` (counts hops per chain; emits max/average on test exit behind `--debug-types`). Profiling on large real-world tinct configs confirms average chain depth ≥4. If chains are consistently depth ≤2, the current HashMap is already O(1) and union-find adds overhead with no benefit.
 - `MAX_SUBST_SIZE` guard may be removed or reframed as union-find node count once the structure is replaced.
 

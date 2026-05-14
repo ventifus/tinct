@@ -1193,7 +1193,7 @@ AppendableSeq@[doc: "Appendable instance for Seq: append-one = concat, empty = e
 
 # Assert a condition; if false, raise an error with the given message.
 # Inherently materializing: must materialize condition to check.
-assert@[doc: "Assert condition with error message"]: [fn@Unknown [cond msg@Stringing] [builtin-if cond true [error msg]]]
+assert@[doc: "Assert condition with error message"]: [fn@Bool [cond msg@Stringing] [builtin-if cond true [error msg]]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
