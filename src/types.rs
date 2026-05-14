@@ -6666,6 +6666,116 @@ mod tests {
         assert!(!satisfies_constraint(&Type::Int, "Mappable"));
     }
 
+    // --- BAS constraint propagation tests ---
+
+    #[test]
+    fn test_constraint_record_field_propagation() {
+        // [CONSTRAIN-FIELD]: C(Record({f: τ})) satisfied iff C(τ) for all fields
+        // Applies only to structural constraints: Numeric, Comparable
+        use std::collections::HashMap;
+
+        // Record with all Numeric fields -> satisfies Numeric
+        let mut fields_numeric = HashMap::new();
+        fields_numeric.insert("x".to_string(), Type::Int);
+        fields_numeric.insert("y".to_string(), Type::Float);
+        let record_numeric = Type::Record(Row {
+            fields: fields_numeric,
+        });
+        assert!(satisfies_constraint(&record_numeric, "Numeric"));
+
+        // Record with mixed fields -> does NOT satisfy Numeric
+        let mut fields_mixed = HashMap::new();
+        fields_mixed.insert("x".to_string(), Type::Int);
+        fields_mixed.insert("y".to_string(), Type::Str);
+        let record_mixed = Type::Record(Row {
+            fields: fields_mixed,
+        });
+        assert!(!satisfies_constraint(&record_mixed, "Numeric"));
+
+        // Record with all Comparable fields -> satisfies Comparable
+        let mut fields_comparable = HashMap::new();
+        fields_comparable.insert("x".to_string(), Type::Int);
+        fields_comparable.insert("y".to_string(), Type::Str);
+        let record_comparable = Type::Record(Row {
+            fields: fields_comparable,
+        });
+        assert!(satisfies_constraint(&record_comparable, "Comparable"));
+
+        // Equatable/Showable/Mappable do NOT propagate structurally - they use instance resolution
+        let mut fields_any = HashMap::new();
+        fields_any.insert("x".to_string(), Type::Int);
+        let record_any = Type::Record(Row {
+            fields: fields_any,
+        });
+        assert!(!satisfies_constraint(&record_any, "Equatable")); // instance-based
+        assert!(!satisfies_constraint(&record_any, "Showable"));  // instance-based
+        assert!(!satisfies_constraint(&record_any, "Mappable"));  // instance-based
+    }
+
+    #[test]
+    fn test_constraint_union_all_members() {
+        // [CONSTRAIN-UNION]: C(τ₁ | τ₂) satisfied iff C(τ₁) ∧ C(τ₂) (ALL members)
+
+        // Union of Numeric types -> satisfies Numeric
+        let union_numeric = Type::normalize_union(vec![Type::Int, Type::Float]);
+        assert!(satisfies_constraint(&union_numeric, "Numeric"));
+
+        // Union with non-Numeric member -> does NOT satisfy Numeric
+        let union_mixed = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(!satisfies_constraint(&union_mixed, "Numeric"));
+
+        // Union of Comparable types -> satisfies Comparable
+        let union_comparable = Type::normalize_union(vec![Type::Int, Type::Str]);
+        assert!(satisfies_constraint(&union_comparable, "Comparable"));
+    }
+
+    #[test]
+    fn test_constraint_intersection_all_members() {
+        // [CONSTRAIN-INTER]: C(τ₁ & τ₂) satisfied iff C(τ₁) ∧ C(τ₂) (ALL members)
+
+        // Intersection of Numeric types -> satisfies Numeric
+        let inter_numeric = Type::normalize_intersection(vec![Type::Int, Type::Number]);
+        assert!(satisfies_constraint(&inter_numeric, "Numeric"));
+
+        // Intersection with non-Numeric member -> does NOT satisfy Numeric
+        // Note: Can't use Top because normalize_intersection removes it (identity element).
+        // Use Record with a non-Numeric field.
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), Type::Str); // Str is NOT Numeric
+        let record_ty = Type::Record(Row { fields });
+        let inter_mixed = Type::Intersection(vec![Type::Int, record_ty]);
+        assert!(!satisfies_constraint(&inter_mixed, "Numeric"));
+    }
+
+    #[test]
+    fn test_constraint_never_vacuous() {
+        // [CONSTRAIN-NEVER]: C(⊥) satisfied (vacuously — Never is uninhabited)
+        assert!(satisfies_constraint(&Type::Never, "Numeric"));
+        assert!(satisfies_constraint(&Type::Never, "Equatable"));
+        assert!(satisfies_constraint(&Type::Never, "Showable"));
+        assert!(satisfies_constraint(&Type::Never, "Comparable"));
+        assert!(satisfies_constraint(&Type::Never, "Mappable"));
+    }
+
+    #[test]
+    fn test_constraint_top_showable_only() {
+        // [CONSTRAIN-TOP]: Showable(⊤) satisfied, all other classes ⊢ error
+        assert!(satisfies_constraint(&Type::Top, "Showable"));
+        assert!(!satisfies_constraint(&Type::Top, "Equatable"));
+        assert!(!satisfies_constraint(&Type::Top, "Comparable"));
+        assert!(!satisfies_constraint(&Type::Top, "Numeric"));
+        assert!(!satisfies_constraint(&Type::Top, "Mappable"));
+    }
+
+    #[test]
+    fn test_constraint_unknown_vacuous() {
+        // Unknown satisfies all constraints (gradual typing existential lifting)
+        assert!(satisfies_constraint(&Type::Unknown, "Numeric"));
+        assert!(satisfies_constraint(&Type::Unknown, "Equatable"));
+        assert!(satisfies_constraint(&Type::Unknown, "Showable"));
+        assert!(satisfies_constraint(&Type::Unknown, "Comparable"));
+    }
+
     #[test]
     fn test_instantiate_scheme_with_constraints() {
         // Create a scheme with Numeric constraint: Numeric a => a -> a -> a

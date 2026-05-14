@@ -25,9 +25,44 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     if matches!(ty, Type::Unknown) {
         return true;
     }
-    // Top (⊤) has no typeclass instances and falls through to false via the
-    // allowlists below for all classes.
-    // C(⊤) ⊢ error for all classes (Castagna & Lanvin, ICFP 2017).
+
+    // [CONSTRAIN-NEVER]: C(⊥) ⊢ satisfied (vacuously — Never is uninhabited)
+    if matches!(ty, Type::Never) {
+        return true;
+    }
+
+    // [CONSTRAIN-TOP]: Showable(⊤) satisfied, all other classes ⊢ error.
+    // Top concretizes only to itself (γ(⊤) = {⊤}), so class membership requires
+    // a literal Top instance. Showable is the sole exception (total function policy).
+    if matches!(ty, Type::Top) {
+        return class_name == "Showable";
+    }
+
+    // [CONSTRAIN-FIELD]: C(Record({f: τ})) ⊢ satisfied iff C(τ) for all fields.
+    // Applies only to built-in STRUCTURAL/COMPOSITIONAL classes where constraint satisfaction
+    // is determined by field types (Numeric, Comparable). Does NOT apply to Equatable, Showable,
+    // Mappable, Appendable - those are resolved via instance declarations, not structural propagation.
+    if let Type::Record(row) = ty {
+        match class_name {
+            "Numeric" | "Comparable" => {
+                return row.fields.values().all(|field_ty| satisfies_constraint(field_ty, class_name));
+            }
+            _ => {} // Fall through to instance resolution
+        }
+    }
+
+    // [CONSTRAIN-UNION]: C(τ₁ | τ₂) ⊢ satisfied iff C(τ₁) ∧ C(τ₂) (ALL members).
+    // A union-typed value could be either alternative at runtime, so both branches must
+    // satisfy the constraint. Use all(), NOT any().
+    if let Type::Union(members) = ty {
+        return members.iter().all(|member| satisfies_constraint(member, class_name));
+    }
+
+    // [CONSTRAIN-INTER]: C(τ₁ & τ₂) ⊢ satisfied iff C(τ₁) ∧ C(τ₂) (ALL members).
+    if let Type::Intersection(members) = ty {
+        return members.iter().all(|member| satisfies_constraint(member, class_name));
+    }
+
     match class_name {
         // Comparable subsumes Equatable via superclass relationship.
         // These are kept hardcoded because they are used in the early stages of type
