@@ -22,21 +22,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Type System Cleanup
-
-### infer-fn-typevar: Fix unannotated param TypeVar inference and gated prelude follow-ups
-
-**Root cause of prior failures (panel analysis 2026-05-13):** `check_constraints_on_var(α, TypeVar(β), ...)` calls `satisfies_constraint(TypeVar(β), class)` which returns `false` for all class names — TypeVar matches no concrete instance set. So any constrained TypeVar unifying with a fresh param TypeVar immediately fails. Fix: transfer Class constraints from α to β before binding.
-
-- [ ] **Prerequisite — constraint transfer in U-VAR-LEVEL:** In `src/type_unify.rs` U-VAR-LEVEL arm (~line 1145) and U-VAR-LEVEL-SYM arm (~line 1167): before `check_constraints_on_var`, when binding `TypeVar(α) ↦ TypeVar(β)`, transfer all `Constraint::Class` entries on `α` to `β` in `state.constraints` (deduplicated). ~10 lines per arm. This is monotone and safe — β inherits α's obligations; no cycles possible since it's a finite scan before the binding is made; `HasField` constraints are NOT transferred (they reference the dict variable, not the param) (`src/type_unify.rs:1145-1183`)
-- [ ] `infer_fn` unannotated params: change `None => Ok(Type::Unknown)` (current line `src/typecheck.rs`) to `None => Ok(state.new_type_var(span))` — unannotated params get fresh TypeVars for proper HM inference; gate on constraint transfer fix above (`src/typecheck.rs`)
-- [ ] Audit for test breakage: run full corpus after both changes; expect `[fn [a b] [= a b]]` to infer `Equatable a => Fn@Bool [a a]` and LSP hover to show `a` not `Unknown` (`tests/corpus/eval/`)
-- [ ] **Prelude follow-ups (batch A)** — gate on BOTH `error → Never` AND `infer_fn` TypeVar fix above landing first:
-  - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
-  - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
-
----
-
 ## Type Quality
 
 Two-tier Unknown diagnostic policy: explicitly annotated `@Unknown` is silenced in default mode and warned in `--strict`; inferred `Unknown` is warned in default mode and errors in `--strict`. The same warning channel also surfaces over-broad annotations where inference determines the type is narrower than declared. Both sprints are independent of HKT and can land at any time.

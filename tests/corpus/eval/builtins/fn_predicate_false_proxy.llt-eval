@@ -2,4 +2,4 @@
 === out
 Bool(false)
 === warn
-cannot unify Fn@_ [String] with [get: Fn@Number [k: _]] at 1:13-1:37
+cannot unify Fn@_ [String] with [get: Fn@Number

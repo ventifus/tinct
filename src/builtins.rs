@@ -1455,7 +1455,10 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
     // Helper to insert a builtin by name
     let insert = |env: &Rc<RefCell<Environment>>, builtin_name: &str| {
         if let Some(def) = all_builtins.iter().find(|b| b.name == builtin_name) {
-            let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(*def), Span::origin()));
+            let thunk = Rc::new(Thunk::new_materialized(
+                Value::Builtin(*def),
+                Span::origin(),
+            ));
             env.borrow_mut().insert(def.name.to_string(), thunk);
         }
     };
@@ -1498,15 +1501,16 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             // These names match the builtin-* prefix used in inject_prelude_aliases().
             // Aliases share the function pointer and strictness with the public name;
             // only the env key differs.
-            let alias_from_public = |env: &Rc<RefCell<Environment>>,
-                                     alias_name: &'static str,
-                                     public_name: &str| {
-                if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
-                    let thunk =
-                        Rc::new(Thunk::new_materialized(Value::Builtin(*def), Span::origin()));
-                    env.borrow_mut().insert(alias_name.to_string(), thunk);
-                }
-            };
+            let alias_from_public =
+                |env: &Rc<RefCell<Environment>>, alias_name: &'static str, public_name: &str| {
+                    if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
+                        let thunk = Rc::new(Thunk::new_materialized(
+                            Value::Builtin(*def),
+                            Span::origin(),
+                        ));
+                        env.borrow_mut().insert(alias_name.to_string(), thunk);
+                    }
+                };
             alias_from_public(&env, "builtin-lt", "<");
             alias_from_public(&env, "builtin-eq", "=");
             alias_from_public(&env, "builtin-add", "+");
@@ -1748,14 +1752,12 @@ pub fn create_bootstrap_env() -> Rc<RefCell<Environment>> {
         Value::Builtin(include_def),
         Span::origin(),
     ));
-    env.borrow_mut().insert("include".to_string(), include_thunk);
+    env.borrow_mut()
+        .insert("include".to_string(), include_thunk);
 
     // Register `%rust` — the opaque registry sentinel.
     // Prelude uses `[include %rust "module"]` to get Rust primitive groups.
-    let rust_thunk = Rc::new(Thunk::new_materialized(
-        Value::RustRegistry,
-        Span::origin(),
-    ));
+    let rust_thunk = Rc::new(Thunk::new_materialized(Value::RustRegistry, Span::origin()));
     env.borrow_mut().insert("%rust".to_string(), rust_thunk);
 
     env
@@ -1804,10 +1806,26 @@ pub fn inject_prelude_aliases(env: &mut Environment) {
     let aliases: Vec<crate::value::BuiltinDef> = vec![
         builtin!("builtin-lt", builtin_lt, [Strictness::Seq, Strictness::Seq]),
         builtin!("builtin-eq", builtin_eq, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-add", builtin_add, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-sub", builtin_sub, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-mul", builtin_mul, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-div", builtin_div_float, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "builtin-add",
+            builtin_add,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-sub",
+            builtin_sub,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-mul",
+            builtin_mul,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-div",
+            builtin_div_float,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("builtin-if", builtin_if),
         builtin!("builtin-filter", builtin_filter),
         builtin!("builtin-map", builtin_map),
@@ -1824,8 +1842,16 @@ pub fn inject_prelude_aliases(env: &mut Environment) {
         builtin!("builtin-cycle", builtin_cycle),
         builtin!("builtin-iterate", builtin_iterate),
         builtin!("builtin-unfold", builtin_unfold),
-        builtin!("builtin-join", builtin_join, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-concat", builtin_concat, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "builtin-join",
+            builtin_join,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-concat",
+            builtin_concat,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("builtin-first", builtin_first, [Strictness::Seq]),
         builtin!("builtin-last", builtin_last, [Strictness::Seq]),
         builtin!("builtin-rest", builtin_rest, [Strictness::Seq]),
@@ -1972,15 +1998,19 @@ fn create_stdlib_env_inner() -> Result<Rc<RefCell<Environment>>, Box<crate::erro
         for def in standard_builtins() {
             // Only insert if not already present (prelude entries take priority).
             if env_borrow.get(def.name).is_none() {
-                let thunk = Rc::new(Thunk::new_materialized(
-                    Value::Builtin(def),
-                    Span::origin(),
-                ));
+                let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
                 env_borrow.insert(def.name.to_string(), thunk);
             }
         }
         // Transport nominal variant constants (Tcp, Udp, etc.)
-        for tag in ["Tcp", "Udp", "UnixStream", "UnixDatagram", "NamedPipe", "Icmp"] {
+        for tag in [
+            "Tcp",
+            "Udp",
+            "UnixStream",
+            "UnixDatagram",
+            "NamedPipe",
+            "Icmp",
+        ] {
             if env_borrow.get(tag).is_none() {
                 let thunk = Rc::new(Thunk::new_materialized(
                     Value::Variant {

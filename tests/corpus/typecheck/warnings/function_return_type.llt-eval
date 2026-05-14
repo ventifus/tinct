@@ -4,4 +4,4 @@
 === out
 Dict({"f": Function(x), "result": Int(42)})
 === warn
-cannot unify Int with Number at 1:19-1:26
+inferred type is Unknown

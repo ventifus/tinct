@@ -1810,6 +1810,41 @@ mod tests {
             "snippet must NOT contain '...' truncation; all lines should be shown, got:\n{snippet}"
         );
     }
+
+    /// Regression test: undefined variable inside a call argument must still produce an error.
+    ///
+    /// `[tail: [drop 2 data]]` — `data` is a free variable in the call to `drop`.
+    /// `typecheck_source_errors_only` must return `Err("undefined variable: data ...")`.
+    /// This exercises the CALL-MONO path for `drop` (prelude-registered `Fn(Int, Seq(Top))`)
+    /// and verifies that undefined-variable errors in call arguments are NOT swallowed.
+    #[test]
+    fn test_undefined_var_in_call_arg_drop() {
+        let result = typecheck_source_errors_only("[tail: [drop 2 data]]");
+        assert!(
+            result.is_err(),
+            "expected Err(undefined variable: data), got Ok(())"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("undefined variable: data"),
+            "error should name 'data', got: {msg}"
+        );
+    }
+
+    /// Same regression for `take`.
+    #[test]
+    fn test_undefined_var_in_call_arg_take() {
+        let result = typecheck_source_errors_only("[head: [take 3 data]]");
+        assert!(
+            result.is_err(),
+            "expected Err(undefined variable: data), got Ok(())"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("undefined variable: data"),
+            "error should name 'data', got: {msg}"
+        );
+    }
 }
 
 /// Resolve the stdlib directory path from the binary location.

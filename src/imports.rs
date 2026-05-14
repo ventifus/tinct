@@ -137,6 +137,60 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     Rc::new(env)
 }
 
+/// Replace all TypeVar occurrences in a type with Unknown.
+///
+/// TypeVars extracted from the prelude's type_map are stale: they were created
+/// in the prelude's InferState and have no meaning in user code's InferState.
+/// Leaving them in the prelude env causes CALL-POLY at user call sites, where
+/// the first argument binds the TypeVar and subsequent arguments are checked via
+/// subsumption against the first argument's type — producing false type errors.
+///
+/// Replacing stale TypeVars with Unknown restores the pre-sprint gradual behavior:
+/// any argument type is acceptable (Unknown ~ T for all T).
+fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
+    use crate::types::{Row, Type};
+    match ty {
+        Type::TypeVar(_, _) => Type::Unknown,
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|(name, t)| (name.clone(), erase_type_vars(t)))
+                .collect(),
+            ret: Box::new(erase_type_vars(ret)),
+            variadic: *variadic,
+        },
+        Type::Record(row) => Type::Record(Row {
+            fields: row
+                .fields
+                .iter()
+                .map(|(k, t)| (k.clone(), erase_type_vars(t)))
+                .collect(),
+        }),
+        Type::Seq(elem) => Type::Seq(Box::new(erase_type_vars(elem))),
+        Type::Map(k, v) => Type::Map(Box::new(erase_type_vars(k)), Box::new(erase_type_vars(v))),
+        Type::Union(members) => {
+            Type::normalize_union(members.iter().map(erase_type_vars).collect())
+        }
+        Type::Intersection(members) => {
+            // Preserve the intersection structure but erase TypeVars inside
+            let erased: Vec<Type> = members.iter().map(erase_type_vars).collect();
+            if erased.len() == 1 {
+                erased.into_iter().next().unwrap()
+            } else {
+                Type::Intersection(erased)
+            }
+        }
+        Type::Negation(inner) => Type::Negation(Box::new(erase_type_vars(inner))),
+        Type::App(f, a) => Type::App(Box::new(erase_type_vars(f)), Box::new(erase_type_vars(a))),
+        // Concrete types: return unchanged
+        other => other.clone(),
+    }
+}
+
 /// Extract top-level binding names and their types from a File's type map.
 ///
 /// Walks the File's documents and expressions, looking for dict entries that
@@ -177,11 +231,21 @@ fn extract_bindings_from_expr(expr: &Expr, type_map: &TypeMap, env: &mut TypeEnv
                         _ => None,
                     };
                     if let Some(name) = name {
-                        // Look up the value's inferred type in the type_map
+                        // Look up the value's inferred type in the type_map.
+                        // Replace any TypeVars with Unknown before inserting: TypeVars from
+                        // the prelude's InferState are stale relative to user code's InferState.
+                        // A stale TypeVar in the prelude env (e.g., from `=: [fn@[constraint:...]
+                        // [x@a y@a] ...]` where `a` stays unbound) would trigger CALL-POLY in
+                        // user code, causing the first argument's type to be bound to the TypeVar
+                        // and the second argument to be checked against it via subsumption —
+                        // producing false type errors like `cannot unify [a: 1] with [a: 2]`.
+                        // Replacing stale TypeVars with Unknown restores the pre-sprint gradual
+                        // behavior for prelude-exported functions.
                         let value_span = entry.node.value.span;
                         let key = (value_span.start.offset, value_span.end.offset);
                         if let Some(ty) = type_map.get(&key) {
-                            env.insert(name, ty.clone());
+                            let sanitized = erase_type_vars(ty);
+                            env.insert(name, sanitized);
                         }
                     }
                 }

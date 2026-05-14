@@ -12,50 +12,60 @@ use tinct::{
 fn test_valid_corpus() {
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/valid");
 
-    let failures = run_corpus_dir(&corpus_dir, &[], |test| {
-        // Parse-only pipeline: parse() + typecheck_source()
-        // Parse failure maps to error, success maps to output (for AST comparison)
-        match parse(&test.input) {
-            Ok(_) => {
-                // For files with === out, we need to produce the AST Display string
-                let output = if test.expectations.out.is_some() {
-                    match parse_expression(&test.input) {
-                        Ok(ast) => Some(format!("{}", ast.node)),
-                        Err(e) => {
-                            return CorpusOutcome {
-                                output: None,
-                                warnings: None,
-                                error: Some(format!("{e}")),
+    // Spawn thread with large stack to match the RUST_MIN_STACK used in the justfile
+    // for lib tests (64MB). The default 2MB thread stack may be insufficient for
+    // deeply-nested parse/typecheck calls when running without RUST_MIN_STACK set.
+    let result = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024) // 64MB — matches RUST_MIN_STACK in justfile
+        .spawn(move || {
+            run_corpus_dir(&corpus_dir, &[], |test| {
+                // Parse-only pipeline: parse() + typecheck_source()
+                // Parse failure maps to error, success maps to output (for AST comparison)
+                match parse(&test.input) {
+                    Ok(_) => {
+                        // For files with === out, we need to produce the AST Display string
+                        let output = if test.expectations.out.is_some() {
+                            match parse_expression(&test.input) {
+                                Ok(ast) => Some(format!("{}", ast.node)),
+                                Err(e) => {
+                                    return CorpusOutcome {
+                                        output: None,
+                                        warnings: None,
+                                        error: Some(format!("{e}")),
+                                    }
+                                }
                             }
+                        } else {
+                            None
+                        };
+
+                        // Run typecheck to get warnings (errors only, not quality diagnostics)
+                        let warnings = match typecheck_source_errors_only(&test.input) {
+                            Ok(()) => None,
+                            Err(type_errors) => Some(type_errors),
+                        };
+
+                        CorpusOutcome {
+                            output,
+                            warnings,
+                            error: None,
                         }
                     }
-                } else {
-                    None
-                };
-
-                // Run typecheck to get warnings (errors only, not quality diagnostics)
-                let warnings = match typecheck_source_errors_only(&test.input) {
-                    Ok(()) => None,
-                    Err(type_errors) => Some(type_errors),
-                };
-
-                CorpusOutcome {
-                    output,
-                    warnings,
-                    error: None,
+                    Err(e) => CorpusOutcome {
+                        output: None,
+                        warnings: None,
+                        error: Some(format!("{e}")),
+                    },
                 }
-            }
-            Err(e) => CorpusOutcome {
-                output: None,
-                warnings: None,
-                error: Some(format!("{e}")),
-            },
-        }
-    });
+            })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 
-    if !failures.is_empty() {
-        eprintln!("\n{} valid test(s) failed:", failures.len());
-        for failure in &failures {
+    if !result.is_empty() {
+        eprintln!("\n{} valid test(s) failed:", result.len());
+        for failure in &result {
             eprintln!("  - {}: {}", failure.path.display(), failure.message);
         }
         panic!("Valid corpus tests failed");

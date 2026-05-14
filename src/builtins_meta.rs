@@ -928,9 +928,8 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let module_name = require_string("include", module_name_val, args[1].span)?;
 
         // Resolve the module to an environment.
-        let module_env = crate::builtins::rust_module(&module_name).map_err(|e| {
-            EvalError::new(format!("Rust module error: {}", e), call_span)
-        })?;
+        let module_env = crate::builtins::rust_module(&module_name)
+            .map_err(|e| EvalError::new(format!("Rust module error: {}", e), call_span))?;
 
         // Convert the environment to a Dict value.
         // The environment already contains materialized Rc<Thunk> values, so we just

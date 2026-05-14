@@ -217,6 +217,7 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
         Constraint::Class { var, .. } => var == var_name,
         _ => false,
     });
+
     if !has_class_constraints {
         return ty;
     }
@@ -1063,6 +1064,49 @@ pub fn constrain(
     }
 }
 
+/// Transfer all `Constraint::Class` entries from `alpha` to `beta` (deduplicated).
+///
+/// Called during TypeVar→TypeVar binding (U-VAR-LEVEL and U-VAR-LEVEL-SYM arms) to move
+/// α's class obligations onto β before α is eliminated. This allows the constraint check
+/// to be deferred until β is eventually bound to a concrete type. `HasField` constraints
+/// are NOT transferred — they reference the specific dict variable and must not migrate.
+///
+/// Returns immediately if α has no class constraints (fast path for the common case).
+fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
+    // Collect all Class constraints on α. Early-exit if there are none.
+    let alpha_constraints: Vec<String> = state
+        .constraints
+        .iter()
+        .filter_map(|c| match c {
+            Constraint::Class { class, var } if var == alpha => Some(class.clone()),
+            _ => None,
+        })
+        .collect();
+    if alpha_constraints.is_empty() {
+        return;
+    }
+
+    // Transfer to β (deduplicated: only add if not already present).
+    // Collect β's existing class names as owned Strings so we do not hold a
+    // shared borrow on `state.constraints` while the loop pushes new entries.
+    let beta_existing: HashSet<String> = state
+        .constraints
+        .iter()
+        .filter_map(|c| match c {
+            Constraint::Class { class, var } if var == beta => Some(class.clone()),
+            _ => None,
+        })
+        .collect();
+    for class in alpha_constraints {
+        if !beta_existing.contains(&class) {
+            state.constraints.push(Constraint::Class {
+                class,
+                var: beta.to_string(),
+            });
+        }
+    }
+}
+
 pub fn unify(
     a: &Type,
     b: &Type,
@@ -1157,9 +1201,20 @@ pub fn unify(
             // Without this, `[+ 1 2]` would bind _t0 to IntLiteral(1) and then fail
             // to unify IntLiteral(1) with IntLiteral(2) for the second argument.
             let b = promote_literal_for_constrained_var(name, b, state);
-            // Check constraints before binding
-            check_constraints_on_var(name, &b, state, span)?;
-            subst.type_map.insert(name.clone(), b);
+
+            // CONSTRAINT TRANSFER: when binding α to β (both TypeVars), transfer Class constraints
+            // from α to β instead of checking. β inherits α's obligations and will be checked when
+            // β is bound to a concrete type. HasField constraints are NOT transferred (they reference
+            // the dict variable, not the param).
+            if let Type::TypeVar(beta_name, _) = &b {
+                transfer_class_constraints(name, beta_name, state);
+                // After transferring constraints, bind α to β directly — no check_constraints_on_var
+                subst.type_map.insert(name.clone(), b);
+            } else {
+                // Binding α to a concrete type — check constraints normally
+                check_constraints_on_var(name, &b, state, span)?;
+                subst.type_map.insert(name.clone(), b);
+            }
             subst.check_size(span)?;
             Ok(())
         }
@@ -1175,9 +1230,20 @@ pub fn unify(
             }
             // Promote literal types when binding a constrained type variable.
             let a = promote_literal_for_constrained_var(name, a, state);
-            // Check constraints before binding
-            check_constraints_on_var(name, &a, state, span)?;
-            subst.type_map.insert(name.clone(), a);
+
+            // CONSTRAINT TRANSFER: when binding α to β (both TypeVars), transfer Class constraints
+            // from α to β instead of checking. β inherits α's obligations and will be checked when
+            // β is bound to a concrete type. HasField constraints are NOT transferred (they reference
+            // the dict variable, not the param).
+            if let Type::TypeVar(beta_name, _) = &a {
+                transfer_class_constraints(name, beta_name, state);
+                // After transferring constraints, bind α to β directly — no check_constraints_on_var
+                subst.type_map.insert(name.clone(), a);
+            } else {
+                // Binding α to a concrete type — check constraints normally
+                check_constraints_on_var(name, &a, state, span)?;
+                subst.type_map.insert(name.clone(), a);
+            }
             subst.check_size(span)?;
             Ok(())
         }
@@ -1202,20 +1268,14 @@ pub fn unify(
         (Type::Int | Type::Number, Type::IntLiteral(_)) | (Type::Number, Type::Int) => Ok(()),
         (Type::Float, Type::Number) | (Type::Number, Type::Float) => Ok(()),
         (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => Ok(()),
-        // Same-value literals: covered by the `a == b` early-return above, but listed here
-        // for completeness. Different-value literals fall through to U-SUBSUME → type_mismatch.
-        (Type::IntLiteral(v1), Type::IntLiteral(v2)) if v1 != v2 => Err(TypeError::type_mismatch(
-            &Type::IntLiteral(*v1),
-            &Type::IntLiteral(*v2),
-            span,
-        )),
-        (Type::StringLiteral(s1), Type::StringLiteral(s2)) if s1 != s2 => {
-            Err(TypeError::type_mismatch(
-                &Type::StringLiteral(s1.clone()),
-                &Type::StringLiteral(s2.clone()),
-                span,
-            ))
-        }
+        // Same-value literals: covered by the `a == b` early-return above.
+        // Different-value literals of the same base type are NOT unifiable — they are distinct
+        // singleton types with no subtype relationship between them. U-SUBSUME (the
+        // is_subtype(a,b) || is_subtype(b,a) fallback) also fails because IntLiteral(n1)
+        // is not a subtype of IntLiteral(n2) when n1≠n2, so U-SUBSUME produces a type mismatch
+        // as well. Callers that need to accept either value must widen to Int/Str first (e.g.
+        // via constrained type variables with promote_literal_for_constrained_var, or dict
+        // field promotion in typecheck_dict).
         (
             Type::Function {
                 params: p1,

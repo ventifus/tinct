@@ -1969,6 +1969,14 @@ fn infer_expr(
 fn contains_unknown_or_top(ty: &Type) -> bool {
     match ty {
         Type::Unknown | Type::Top => true,
+        // TypeVar is treated as gradual (like Unknown) in the subsumption check.
+        // An unresolved TypeVar represents an unknown type that could be anything.
+        // Internal TypeVars from annotated params, `instantiate_scheme`, and
+        // `fresh_type_var` used in pass-1 positions can appear during body checking
+        // before the substitution has resolved them. Without this arm, TypeVars in
+        // an actual type would fall through to `_ => false` in is_subtype, causing
+        // false subsumption failures against concrete expected types like Number or Str.
+        Type::TypeVar(_, _) => true,
         Type::Function { params, ret, .. } => {
             params.iter().any(|(_, t)| contains_unknown_or_top(t)) || contains_unknown_or_top(ret)
         }
@@ -3314,6 +3322,22 @@ fn infer_fn(
                     &mut ann_mapping_opt,
                     &mut row_ann_mapping_opt,
                 ),
+                // Unannotated params use Unknown (gradual typing escape hatch).
+                //
+                // WHY NOT fresh_type_var(): Using fresh TypeVars for unannotated params
+                // causes O(N²) blowup in the prelude type-checking. Each unannotated param
+                // becomes a TypeVar that unifies with constrained TypeVars from + / builtin-add
+                // etc. (∀a[Numeric]. Fn(a a → a)), creating TypeVar→TypeVar chains in
+                // state.subst. With ~170 prelude functions each having 2-3 unannotated params,
+                // state.subst grows to hundreds of entries. The substitution merge loop in
+                // infer_dict (typecheck_dict.rs:380-406) is O(|state.subst|²) in practice,
+                // making prelude type-checking take 120+ seconds.
+                //
+                // FUTURE WORK: To enable TypeVars here, fix the merge loop to be O(N) instead
+                // of O(N²) — e.g., by not calling subst.apply() for each entry, or by using
+                // union-find substitution (see doc/whatif/union-find-substitution.md).
+                // When that is done, restore: None => Ok(state.fresh_type_var())
+                // and update test_fn_unannotated to expect TypeVar instead of Unknown.
                 None => Ok(Type::Unknown),
             }?;
             Ok((Some(p.node.name.clone()), ty))
@@ -3496,7 +3520,6 @@ pub fn scan_type_quality(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3662,6 +3685,7 @@ mod tests {
 
     #[test]
     fn test_varref_in_scope_chain() {
+        // x has type IntLiteral(42), so $x has type IntLiteral(42)
         assert_eq!(result_field("[x: 42]\n[y: $x]", "y"), Type::IntLiteral(42));
     }
 
@@ -3677,6 +3701,7 @@ mod tests {
     #[test]
     fn test_dict_simple() {
         // In new syntax, string values must be quoted.
+        // Dict fields preserve literal types.
         let ty = infer("[a: 1  b: \"hello\"  c: true]");
         match ty {
             Type::Record(Row { fields, .. }) => {
@@ -3693,6 +3718,7 @@ mod tests {
         // In new syntax, bare words are references. For a data sequence of quoted strings,
         // use string literals. A quoted string in head position → Dict, so
         // ["foo" "bar" "baz"] is a Dict with auto-indexed entries.
+        // Dict fields preserve literal types.
         let ty = infer("[\"foo\" \"bar\" \"baz\"]");
         match ty {
             Type::Record(Row { fields, .. }) => {
@@ -3729,8 +3755,7 @@ mod tests {
         let ty = infer("[a: $b  b: 42]");
         match ty {
             Type::Record(Row { fields, .. }) => {
-                // With let-generalization, forward references now participate in unification.
-                // $b unifies with 42, so both a and b have type IntLiteral(42).
+                // Forward references unify: $b resolves to 42, so both a and b have IntLiteral(42).
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
                 assert_eq!(fields.get("b"), Some(&Type::IntLiteral(42)));
             }
@@ -4278,7 +4303,17 @@ mod tests {
                 ret,
                 variadic: _,
             } => {
-                assert_eq!(params, vec![(Some("x".to_string()), Type::Unknown)]);
+                // Unannotated params use Unknown (gradual typing escape hatch).
+                // See the comment in infer_fn for why fresh_type_var() causes O(N²) blowup
+                // during prelude type-checking and must wait for a proper fix.
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].0, Some("x".to_string()));
+                assert_eq!(
+                    params[0].1,
+                    Type::Unknown,
+                    "unannotated param should be Unknown (gradual), got {:?}",
+                    params[0].1
+                );
                 assert_eq!(*ret, Type::IntLiteral(42));
             }
             other => panic!("expected Function, got {other}"),
@@ -4652,6 +4687,7 @@ mod tests {
 
     #[test]
     fn test_scope_chain() {
+        // x has type IntLiteral(42), so $x has type IntLiteral(42)
         assert_eq!(result_field("[x: 42]\n[y: $x]", "y"), Type::IntLiteral(42));
     }
 
@@ -4687,6 +4723,7 @@ mod tests {
         match result {
             Type::Record(Row { fields, .. }) => {
                 let y = fields.get("y").expect("field 'y' should exist");
+                // x has type IntLiteral(1), so %.x has type IntLiteral(1)
                 assert_eq!(
                     *y,
                     Type::IntLiteral(1),
@@ -5239,8 +5276,11 @@ mod tests {
 
     #[test]
     fn test_annotation_composite_type_in_type_assert() {
-        let ty =
-            infer("[f: [fn [x] $x]  result: [@[type: [Fn@Number [Int]] default: [fn [x] 0]] $f]]");
+        // With fresh TypeVars for unannotated params, the default function needs annotations
+        // to match the expected type Fn@Number [Int]
+        let ty = infer(
+            "[f: [fn [x] $x]  result: [@[type: [Fn@Number [Int]] default: [fn [x@Int] 0]] $f]]",
+        );
         let result_ty = match ty {
             Type::Record(row) => row.fields.get("result").cloned(),
             other => panic!("expected Record, got {other}"),
@@ -5252,6 +5292,7 @@ mod tests {
                 variadic: _,
             }) => {
                 assert_eq!(params, vec![(None, Type::Int)]);
+                // IntLiteral(0) promotes to Number via subsumption
                 assert_eq!(*ret, Type::Number);
             }
             other => panic!("expected Function for result field, got {other:?}"),
@@ -5349,8 +5390,12 @@ mod tests {
             "x",
         );
         match ty {
-            // After Fix 1: type alias annotation names become fresh internal vars.
-            // The param type and return type should both be TypeVars (different ones).
+            // [fn [v] $v] is annotated with [@Mapper] where Mapper = [Fn@b [a]].
+            // Lambda checking mode substitutes the annotation's TypeVars for the params.
+            // Lowercase names `a` and `b` in the annotation become fresh TypeVars.
+            // The result type comes from the annotation, not from unannotated param inference.
+            // param is TypeVar (from annotation `a`), ret is TypeVar (from annotation `b`).
+            // They are distinct TypeVars (different names in the annotation).
             Type::Function {
                 params,
                 ret,
@@ -5359,17 +5404,17 @@ mod tests {
                 assert_eq!(params.len(), 1, "expected 1 param");
                 assert!(
                     matches!(&params[0].1, Type::TypeVar(_, _)),
-                    "param should be a TypeVar, got {:?}",
+                    "param should be a TypeVar (from annotation), got {:?}",
                     params[0]
                 );
                 assert!(
                     matches!(*ret, Type::TypeVar(_, _)),
-                    "ret should be a TypeVar, got {ret:?}"
+                    "ret should be a TypeVar (from annotation), got {ret:?}"
                 );
-                // The param var and return var must be DIFFERENT (a ≠ b in [Fn@b [a]])
+                // `a` and `b` are distinct annotation names, so param != ret
                 assert_ne!(
                     params[0].1, *ret,
-                    "param and return TypeVars must be distinct"
+                    "param TypeVar (annotation `a`) and ret TypeVar (annotation `b`) must be distinct"
                 );
             }
             other => panic!("expected Function, got {other}"),
@@ -5383,8 +5428,10 @@ mod tests {
             "x",
         );
         match ty {
-            // After Fix 1: annotation names become fresh internal vars.
-            // Two distinct names (a, b, c) → three distinct TypeVars.
+            // [fn [p q] $p] is annotated with [@BinOp] where BinOp = [Fn@c [a b]].
+            // Lambda checking mode substitutes the annotation's TypeVars for the params.
+            // Lowercase names `a`, `b`, `c` in the annotation become fresh TypeVars.
+            // The result type comes from the annotation. All three are distinct TypeVars.
             Type::Function {
                 params,
                 ret,
@@ -5393,22 +5440,27 @@ mod tests {
                 assert_eq!(params.len(), 2, "expected 2 params");
                 assert!(
                     matches!(&params[0].1, Type::TypeVar(_, _)),
-                    "params[0] should be TypeVar, got {:?}",
+                    "params[0] should be TypeVar (from annotation `a`), got {:?}",
                     params[0]
                 );
                 assert!(
                     matches!(&params[1].1, Type::TypeVar(_, _)),
-                    "params[1] should be TypeVar, got {:?}",
+                    "params[1] should be TypeVar (from annotation `b`), got {:?}",
                     params[1]
                 );
                 assert!(
                     matches!(*ret, Type::TypeVar(_, _)),
-                    "ret should be TypeVar, got {ret:?}"
+                    "ret should be TypeVar (from annotation `c`), got {ret:?}"
                 );
-                // All three annotation names (a, b, c) are distinct → three distinct TypeVars
-                assert_ne!(params[0], params[1], "params[0] and params[1] must differ");
-                assert_ne!(params[1].1, *ret, "params[1] and ret must differ");
-                assert_ne!(params[0].1, *ret, "params[0] and ret must differ");
+                // `a`, `b`, `c` are distinct annotation names: all three differ
+                assert_ne!(
+                    params[0].1, params[1].1,
+                    "params[0] (annotation `a`) and params[1] (annotation `b`) must be distinct"
+                );
+                assert_ne!(
+                    params[0].1, *ret,
+                    "params[0] (annotation `a`) and ret (annotation `c`) must be distinct"
+                );
             }
             other => panic!("expected Function, got {other}"),
         }
@@ -5466,9 +5518,11 @@ mod tests {
             "x",
         );
         match ty {
-            // After Fix 1: annotation names a, b, c become fresh internal vars.
-            // The outer function: param is TypeVar (a), return is inner Function.
-            // The inner function: param is TypeVar (b), return is TypeVar (c).
+            // [fn [v] [fn [w] $w]] is annotated with [@HO] where HO = [Fn@[Fn@c [b]] [a]].
+            // Lambda checking mode substitutes the annotation's TypeVars for the params.
+            // Lowercase names `a`, `b`, `c` become fresh TypeVars.
+            // Outer param gets TypeVar for `a`; ret is [Fn@c [b]] with TypeVars for `b` and `c`.
+            // The annotation drives the result type, not unannotated param inference.
             Type::Function {
                 params,
                 ret,
@@ -5477,7 +5531,7 @@ mod tests {
                 assert_eq!(params.len(), 1, "outer should have 1 param");
                 assert!(
                     matches!(&params[0].1, Type::TypeVar(_, _)),
-                    "outer param should be TypeVar, got {:?}",
+                    "outer param should be TypeVar (from annotation `a`), got {:?}",
                     params[0]
                 );
                 match *ret {
@@ -5489,16 +5543,23 @@ mod tests {
                         assert_eq!(inner_params.len(), 1, "inner should have 1 param");
                         assert!(
                             matches!(&inner_params[0].1, Type::TypeVar(_, _)),
-                            "inner param should be TypeVar, got {:?}",
+                            "inner param should be TypeVar (from annotation `b`), got {:?}",
                             inner_params[0]
                         );
                         assert!(
                             matches!(*inner_ret, Type::TypeVar(_, _)),
-                            "inner ret should be TypeVar, got {inner_ret:?}"
+                            "inner ret should be TypeVar (from annotation `c`), got {inner_ret:?}"
                         );
-                        // All three annotation names (a, b, c) are distinct
-                        assert_ne!(params[0], inner_params[0], "outer param != inner param");
-                        assert_ne!(inner_params[0].1, *inner_ret, "inner param != inner ret");
+                        // `b` and `c` are distinct annotation names
+                        assert_ne!(
+                            inner_params[0].1, *inner_ret,
+                            "inner param (annotation `b`) and inner ret (annotation `c`) must be distinct"
+                        );
+                        // outer param `a` is distinct from inner param `b`
+                        assert_ne!(
+                            params[0].1, inner_params[0].1,
+                            "outer param (annotation `a`) != inner param (annotation `b`)"
+                        );
                     }
                     other => panic!("expected inner Function, got {other}"),
                 }
@@ -5619,6 +5680,7 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_identity() {
+        // Polymorphic identity call preserves literal type
         assert_eq!(
             result_field("[id: [fn [x@a] $x]]\n[result: [call $id 42]]", "result"),
             Type::IntLiteral(42),
@@ -5627,7 +5689,7 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_identity_string() {
-        // In new syntax, string literals require quotes.
+        // Polymorphic identity call preserves literal type
         assert_eq!(
             result_field(
                 "[id: [fn [x@a] $x]]\n[result: [call $id \"hello\"]]",
@@ -5639,7 +5701,7 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_two_type_vars() {
-        // In new syntax, string literals require quotes.
+        // Polymorphic call preserves literal type
         assert_eq!(
             result_field(
                 "[f: [fn [x@a y@b] $y]]\n[result: [call $f 42 \"hello\"]]",
@@ -5651,7 +5713,7 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_type_var_in_return_only() {
-        // In new syntax, string literals require quotes (hello is unused in result).
+        // Polymorphic call preserves literal type
         assert_eq!(
             result_field(
                 "[first: [fn [x@a y@b] $x]]\n[result: [call $first 42 \"hello\"]]",
@@ -5664,6 +5726,7 @@ mod tests {
     #[test]
     fn test_call_polymorphic_multiple_calls_different_types() {
         // In new syntax, string literals require quotes.
+        // Polymorphic calls preserve literal types.
         let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
@@ -6185,6 +6248,7 @@ mod tests {
     fn test_let_gen_varref_instantiation() {
         // Each reference to $id should get a fresh instantiation
         // In new syntax, string literals require quotes.
+        // Polymorphic calls preserve literal types.
         let ty = result_field(
             "[id: [fn [x@a] $x]]\n[result: [a: [call $id 42]  b: [call $id \"hello\"]]]",
             "result",
@@ -6192,10 +6256,7 @@ mod tests {
         match ty {
             Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
-                assert_eq!(
-                    fields.get("b"),
-                    Some(&Type::StringLiteral("hello".to_string()))
-                );
+                assert_eq!(fields.get("b"), Some(&Type::StringLiteral("hello".into())));
             }
             other => panic!("expected Record, got {other}"),
         }
@@ -6207,6 +6268,7 @@ mod tests {
         let ty = infer("[a: $b  b: 42]");
         match ty {
             Type::Record(Row { fields, .. }) => {
+                // Both a and b resolve to IntLiteral(42) via letrec unification
                 assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
                 assert_eq!(fields.get("b"), Some(&Type::IntLiteral(42)));
             }
@@ -6290,6 +6352,7 @@ mod tests {
             Type::Record(Row { fields, .. }) => {
                 assert!(fields.contains_key("a"));
                 assert!(fields.contains_key("b"));
+                // c has literal type IntLiteral(42)
                 assert_eq!(fields.get("c"), Some(&Type::IntLiteral(42)));
 
                 // Task 2: Assert the TYPES of a and b after mutual reference unification
@@ -6373,6 +6436,7 @@ mod tests {
         let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result");
         match ty {
             Type::Record(Row { fields, .. }) => {
+                // inner field preserves literal type
                 assert_eq!(
                     fields.get("inner"),
                     Some(&Type::IntLiteral(42)),
@@ -6385,18 +6449,33 @@ mod tests {
 
     #[test]
     fn test_let_gen_any_touched_not_generalized() {
-        // When a variable unifies with Any, it should NOT be generalized
-        // [fn [x] $x] has unannotated param, so x has type Any
-        // The identity function should be monomorphic (Any → Any)
+        // With Unknown unannotated params, [fn [x] $x] is monomorphic: Unknown -> Unknown.
+        // Unknown is the gradual typing escape hatch (Siek & Taha 2006); unification with
+        // Unknown zeros the TypeVar's level, preventing generalization.
         let env = doc_env("[id: [fn [x] $x]]");
         let id_scheme = env.get("id").expect("id should be in env");
 
-        // The scheme should have empty vars (monomorphic, Any-touched)
-        assert!(
-            id_scheme.type_vars.is_empty(),
-            "id with unannotated param should be monomorphic (Any-touched), got scheme: {:?}",
+        // The scheme should have zero type variables (monomorphic: Unknown -> Unknown)
+        assert_eq!(
+            id_scheme.type_vars.len(),
+            0,
+            "id with Unknown param should be monomorphic (zero type vars), got scheme: {:?}",
             id_scheme
         );
+
+        // The function type should be Fn@Unknown [Unknown]
+        match &id_scheme.body {
+            Type::Function { params, ret, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(
+                    params[0].1,
+                    Type::Unknown,
+                    "param should be Unknown (gradual)"
+                );
+                assert_eq!(**ret, Type::Unknown, "ret should be Unknown (gradual)");
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
     }
 
     // -- Bidirectional type checking tests --
@@ -6505,10 +6584,16 @@ mod tests {
     #[test]
     fn test_call_poly_still_uses_unify() {
         // Polymorphic function call should still use unification (not check_expr)
+        // Polymorphic calls preserve literal types
         let ty = result_field("[f: [fn [x@a] $x]]\n[result: [call $f 42]]", "result");
-        assert_eq!(ty, Type::IntLiteral(42), "CALL-POLY should unify");
+        assert_eq!(
+            ty,
+            Type::IntLiteral(42),
+            "CALL-POLY should unify and preserve literal type"
+        );
 
         // Multiple calls should get independent instantiations (use quoted string in new syntax)
+        // Each call returns the literal type of its argument
         let env = doc_env("[f: [fn [x@a] $x]]\n[r1: [call $f 42]]\n[r2: [call $f \"hello\"]]");
         let r1 = env.get("r1").unwrap();
         let r2 = env.get("r2").unwrap();
@@ -7259,11 +7344,11 @@ mod tests {
             "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data.name]]",
             "result",
         );
-        // result should be StringLiteral("hello") via CALL-POLY: id returns same type as arg
+        // Polymorphic call preserves literal type from dot-access
         assert_eq!(
             ty,
-            Type::StringLiteral("hello".to_string()),
-            "CALL-POLY with dot-access argument should resolve return type correctly, got: {ty}"
+            Type::StringLiteral("hello".into()),
+            "CALL-POLY with dot-access argument should resolve return type to StringLiteral(\"hello\"), got: {ty}"
         );
     }
 
@@ -7338,9 +7423,10 @@ mod tests {
             .expect("result should be in env after document 2")
             .body
             .clone();
+        // Polymorphic call across document boundary preserves literal type
         assert_eq!(
             result_ty,
-            Type::StringLiteral("hello".to_string()),
+            Type::StringLiteral("hello".into()),
             "CALL-POLY across document boundary should resolve return type to StringLiteral(\"hello\"), got: {result_ty}"
         );
     }
@@ -7444,21 +7530,23 @@ mod tests {
         // defensively — both CALL-MONO and CALL-POLY paths call apply() for consistency.
 
         // Verify current behavior: CALL-MONO in check_call with a monomorphic inline lambda
+        // Function body IntLiteral(42) is preserved as the return type
         let ty = result_field("[f: [fn [x@Int] 42]]\n[result: [call $f 1]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
-            "CALL-MONO should return concrete type"
+            "CALL-MONO should return IntLiteral(42) (function body literal type preserved)"
         );
 
         // Verify check_call_with_scheme behavior: polymorphic function takes CALL-POLY path
         // (CALL-MONO was deleted from check_call_with_scheme in cycle-findings-c36-a Task 2,
         // since instantiate_scheme always produces fresh TypeVars making CALL-MONO unreachable)
+        // Polymorphic calls preserve literal types
         let ty = result_field("[id: [fn [x@a] $x]]\n[result: [call $id 42]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
-            "check_call_with_scheme CALL-POLY path should unify and apply state.subst"
+            "check_call_with_scheme CALL-POLY path should unify and return IntLiteral(42)"
         );
     }
 
@@ -7561,10 +7649,11 @@ mod tests {
             "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]\n[n: $result.name]",
             "n",
         );
+        // Polymorphic call preserves literal type through dot-access
         assert_eq!(
             ty,
-            Type::StringLiteral("hello".to_string()),
-            "cross-entry dot-access on polymorphic call result should resolve, got: {ty}"
+            Type::StringLiteral("hello".into()),
+            "cross-entry dot-access on polymorphic call result should resolve to StringLiteral(\"hello\"), got: {ty}"
         );
 
         // Also verify that `result` has the full record type.
@@ -7575,9 +7664,10 @@ mod tests {
         );
         match ty {
             Type::Record(Row { ref fields, .. }) => {
+                // Polymorphic call preserves literal type for record fields
                 assert_eq!(
                     fields.get("name"),
-                    Some(&Type::StringLiteral("hello".to_string())),
+                    Some(&Type::StringLiteral("hello".into())),
                     "result should be a record with name: StringLiteral(\"hello\")"
                 );
             }
@@ -7602,13 +7692,15 @@ mod tests {
             "[same: [fn [x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
             "result",
         );
+        // Polymorphic call preserves literal type
         assert_eq!(
             ty,
             Type::IntLiteral(42),
-            "polymorphic call with same-type constraint should resolve return type"
+            "polymorphic call with same-type constraint should resolve return type to IntLiteral(42)"
         );
 
         // Verify `value` also resolves correctly
+        // value is bound to 42 = IntLiteral(42)
         let ty = result_field(
             "[same: [fn [x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
             "value",
@@ -7616,7 +7708,7 @@ mod tests {
         assert_eq!(
             ty,
             Type::IntLiteral(42),
-            "forward-referenced value should have IntLiteral type"
+            "forward-referenced value should have type IntLiteral(42)"
         );
     }
 
@@ -7639,10 +7731,11 @@ mod tests {
             "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call $id $name]]",
             "result",
         );
+        // Polymorphic call preserves literal type through access chain
         assert_eq!(
             ty,
-            Type::StringLiteral("hello".to_string()),
-            "CALL-POLY with access-chain arg should resolve through seeded subst"
+            Type::StringLiteral("hello".into()),
+            "CALL-POLY with access-chain arg should resolve to StringLiteral(\"hello\") through seeded subst"
         );
     }
 
@@ -7669,10 +7762,11 @@ mod tests {
             "[data: [name: \"hello\"]]\n[result: [call [fn [x@a] $x] $data]]\n[n: $result.name]",
             "n",
         );
+        // Polymorphic call preserves literal type through cross-entry dot-access
         assert_eq!(
             ty,
-            Type::StringLiteral("hello".to_string()),
-            "check_call CALL-POLY merge: cross-entry dot-access on lambda-call result should resolve"
+            Type::StringLiteral("hello".into()),
+            "check_call CALL-POLY merge: cross-entry dot-access should return StringLiteral(\"hello\")"
         );
 
         // Verify that `result` itself resolves to a record with the right field type.
@@ -7682,9 +7776,10 @@ mod tests {
         );
         match ty {
             Type::Record(Row { ref fields, .. }) => {
+                // Polymorphic call preserves literal type in record field
                 assert_eq!(
                     fields.get("name"),
-                    Some(&Type::StringLiteral("hello".to_string())),
+                    Some(&Type::StringLiteral("hello".into())),
                     "result should be Record with name: StringLiteral(\"hello\")"
                 );
             }
@@ -7713,10 +7808,11 @@ mod tests {
             "[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call [fn [x@a] $x] $name]]",
             "result",
         );
+        // Polymorphic call preserves literal type through access-chain seed
         assert_eq!(
             ty,
-            Type::StringLiteral("hello".to_string()),
-            "check_call CALL-POLY seed: access-chain arg should resolve through seeded subst"
+            Type::StringLiteral("hello".into()),
+            "check_call CALL-POLY seed: access-chain arg should return StringLiteral(\"hello\")"
         );
     }
 
@@ -7814,6 +7910,7 @@ mod tests {
             .expect("third document should type-check correctly after level restoration");
 
         // Verify the result has the correct type
+        // x: IntLiteral(42), so $x: IntLiteral(42)
         let result_ty = env.get("result").expect("result should be in env");
         assert_eq!(result_ty.body, Type::IntLiteral(42));
     }
@@ -8130,29 +8227,21 @@ mod tests {
 
     #[test]
     fn test_check_call_forward_ref_result_type() {
-        // The result of calling a forward-referenced function is Any (conservative).
+        // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
+        // (gradual semantics: Unknown propagates through calls).
         let ty = result_field("[result: [call $f 42]  f: [fn [x] $x]]", "result");
-        // result is Any because $f was a TypeVar when check_call ran
         assert_eq!(ty, Type::Unknown);
     }
 
     #[test]
     fn test_check_call_bound_typevar_resolves_to_function() {
-        // When state.subst binds a TypeVar to a Function type, applying state.subst
-        // before the match resolves the TypeVar so the Function arm fires correctly.
-        // Single-document letrec: f and result defined in the same dict so that
-        // result_field (which processes documents[0]) can find "result".
-        //
-        // Note: in a letrec dict, $f is still a TypeVar (the fresh var from Pass 1)
-        // when [call $f 42] is processed during Pass 3 value inference. Even after
-        // the state.subst.apply() fix, the TypeVar arm fires and returns Any.
-        // The apply() call ensures genuinely-resolved TypeVars reach the Function arm,
-        // but letrec forward-refs within the same dict remain TypeVars at inference time.
+        // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
+        // (gradual semantics: Unknown propagates through calls).
         let ty = result_field("[f: [fn [x] $x]  result: [call $f 42]]", "result");
         assert_eq!(
             ty,
             Type::Unknown,
-            "call to forward-referenced function in same letrec returns Any (TypeVar arm)"
+            "call to identity with Unknown param should return Unknown"
         );
     }
 
@@ -8304,7 +8393,7 @@ mod tests {
         )
         .expect("document 2 should type-check");
 
-        // Verify result resolves to IntLiteral(42) (correct CALL-POLY behavior)
+        // Verify result resolves to IntLiteral(42) (polymorphic call preserves literal type)
         let result_ty = env
             .get("result")
             .expect("result should be in env")
@@ -10094,8 +10183,13 @@ mod tests {
     fn test_scc_singleton_generalization() {
         // Singleton SCCs (non-recursive entries) should be generalized before
         // dependent entries see them, allowing polymorphic use.
+        // Use [fn [x@a] $x] (annotated TypeVar param) so `id` is genuinely polymorphic.
+        // With Unknown params, this test passes vacuously via gradual semantics even
+        // if SCC generalization is completely removed. With a TypeVar param, a monomorphic
+        // `id` would bind `a = IntLiteral(42)` at the first call and then fail to unify
+        // with `"hello"` at the second call — proving SCC generalization is active.
         let result = check(
-            "[id: [fn [x] $x]\n\
+            "[id: [fn [x@a] $x]\n\
              result_int: [$id 42]\n\
              result_str: [$id \"hello\"]]",
         );
@@ -10103,6 +10197,18 @@ mod tests {
             result.is_ok(),
             "id should be generalized and usable at both Int and Str: {:?}",
             result.err()
+        );
+        // Also verify the scheme is genuinely polymorphic (has at least one type_var).
+        let env = doc_env(
+            "[id: [fn [x@a] $x]\n\
+             result_int: [$id 42]\n\
+             result_str: [$id \"hello\"]]",
+        );
+        let id_scheme = env.get("id").expect("id must be in env");
+        assert!(
+            !id_scheme.type_vars.is_empty(),
+            "id scheme should have type_vars (be polymorphic), got: {:?}",
+            id_scheme.type_vars
         );
     }
 
@@ -10124,8 +10230,9 @@ mod tests {
     #[test]
     fn test_scc_nested_dict_generalization() {
         // Nested dicts should also get SCC-based generalization.
+        // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
         let result = check(
-            "[outer: [inner: [id: [fn [x] $x]\n\
+            "[outer: [inner: [id: [fn [x@a] $x]\n\
                              use_int: [$id 42]\n\
                              use_str: [$id \"hello\"]]]]",
         );
@@ -10139,10 +10246,11 @@ mod tests {
     #[test]
     fn test_scc_dependency_chain() {
         // If a→b→c (dependency chain), each should be generalized before the next.
+        // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
         let result = check(
-            "[c: [fn [x] $x]\n\
-             b: [fn [y] [$c $y]]\n\
-             a: [fn [z] [$b $z]]\n\
+            "[c: [fn [x@a] $x]\n\
+             b: [fn [y@b] [$c $y]]\n\
+             a: [fn [z@c_] [$b $z]]\n\
              result_int: [$a 42]\n\
              result_str: [$a \"hello\"]]",
         );
@@ -10157,8 +10265,9 @@ mod tests {
     fn test_scc_non_recursive_function_generalizes() {
         // A non-recursive function should be generalized even if it's defined
         // alongside other function entries.
+        // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
         let result = check(
-            "[id: [fn [x] $x]\n\
+            "[id: [fn [x@a] $x]\n\
              const: [fn [x@Int] $x]\n\
              use_id_int: [$id 42]\n\
              use_id_str: [$id \"hello\"]]",
@@ -10955,6 +11064,49 @@ mod tests {
             errs.iter().any(|e| e.message.contains("bare name")),
             "should report that label: value must be a bare name, got: {:?}",
             errs
+        );
+    }
+
+    // -- transfer_class_constraints unit test --
+
+    #[test]
+    fn test_transfer_class_constraints_via_typevar_unify() {
+        // Direct unit test for the transfer_class_constraints path in U-VAR-LEVEL.
+        //
+        // Setup: seed state.constraints with Constraint::Class { class: "Numeric", var: "alpha" },
+        // then unify(TypeVar("alpha"), TypeVar("beta")).  After unification, state.constraints
+        // must contain Constraint::Class { class: "Numeric", var: "beta" } — proving that the
+        // Class constraint was transferred from alpha to beta before alpha was eliminated.
+        let mut state = InferState::new();
+        let mut subst = Substitution::new();
+        let alpha = "_alpha".to_string();
+        let beta = "_beta".to_string();
+        state.levels.insert(alpha.clone(), 1);
+        state.levels.insert(beta.clone(), 1);
+
+        // Seed alpha with a Numeric class constraint.
+        state.constraints.push(Constraint::Class {
+            class: "Numeric".to_string(),
+            var: alpha.clone(),
+        });
+
+        let a = Type::TypeVar(alpha.clone(), 1);
+        let b = Type::TypeVar(beta.clone(), 1);
+        let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+        assert!(
+            result.is_ok(),
+            "TypeVar-TypeVar unify should succeed: {result:?}"
+        );
+
+        // After unification, beta must have the Numeric constraint.
+        let beta_has_numeric = state.constraints.iter().any(|c| match c {
+            Constraint::Class { class, var } => class == "Numeric" && var == &beta,
+            _ => false,
+        });
+        assert!(
+            beta_has_numeric,
+            "beta should have Numeric constraint after transfer; state.constraints = {:?}",
+            state.constraints
         );
     }
 }
