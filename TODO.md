@@ -86,14 +86,29 @@ Three design corrections discovered after `hkt-field-access` was implemented:
 - [x] Remove the stale note at the bottom of `hkt-field-access` sprint about `constraint-annotations` dependency for HasField syntax — both the dependency and the HasField annotation syntax were incorrect
 - [x] Tests: `key@Label` generates HasField constraint and returns precise field type; `key@[label: l]` where same `l` is used in two parameters works; `get`/`get-or` return precise types at call sites with string literal keys (`tests/corpus/eval/typecheck/`, `tests/lsp_corpus_tests.rs`)
 
+### macro-expansion-boundary: Fix macro expander arena isolation (prerequisite for hkt-do-macro-*)
+
+**Root cause (panel review 2026-05-13):** `expand_macros` creates a fresh `ThunkArena` (Arena-B), but `create_stdlib_env()` creates its own separate arena (Arena-A). Macro transformer closures from the stdlib contain ThunkIds pointing into Arena-A. When `deep_materialize` runs using Arena-B's context, `ctx.get_thunk(id)` panics: the ID is an out-of-bounds index into the wrong Vec.
+
+**Architectural decision — Option C (phase separation):** Macro expansion boundaries are *data boundaries*. Inputs and outputs must be fully materialized — no arena-relative ThunkId handles may cross them. This is consistent with the Racket syntax-object model and is forward-compatible with Phase 3 per-section arena lifetimes (Option D — sharing arenas — defeats per-section reclamation).
+
+The output side is already correct (`deep_materialize` at `expand.rs:886`). Only the input side needs fixing.
+
+- [ ] In `expand_macro_call` (`src/expand.rs`): after `ast_to_dict_expr` produces the quoted-args AST dict thunk at `expand.rs:801`, call `deep_materialize` on it before passing to the transformer; since `ast_to_dict_expr` creates only `Thunk::new_materialized` entries, every force is a cache hit — no lazy computation is triggered, cost is O(AST node count) (`src/expand.rs`)
+- [ ] Add `doc` comment to `expand_macro_call` stating the invariant: "The macro expansion boundary is a data boundary. Both the input AST dict and the output AST dict are fully materialized before crossing. No arena-relative ThunkId handles may flow from the stdlib arena into the expansion arena or vice versa." (`src/expand.rs`)
+- [ ] Add `debug_assert!` after both the input deep-materialize and the existing output `deep_materialize` confirming all thunks in the value are `Materialized`; this makes the invariant machine-checkable in debug builds (`src/expand.rs`)
+- [ ] Tests: write a macro transformer that reads from its own closure (stdlib env) and returns a dict that includes those closure values; verify no panic (`tests/corpus/eval/macros/`)
+
 ### hkt-do-macro-explicit: Implement [do] macro — explicit form
 
 See `doc/whatif/completed/hkt-monads.md` §`[do]` Inference. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`.
 
-The explicit `[do monad steps...]` form has **no HKT dependency** — it desugars to `monad.bind` field access on a plain dict. It can land before `hkt-kind-inference` completes. The inferred `[do steps...]` form (no explicit monad arg) requires `App` type inference from `hkt-kind-inference` and is a separate follow-on task in `hkt-do-macro-inferred`.
+The explicit `[do monad steps...]` form has **no HKT dependency** — it desugars to `monad.bind` field access on a plain dict.
 
-- [ ] Implement explicit `[do monad steps...]` desugaring in `stdlib/macros.llt` via the existing `STDLIB_MACROS` registration path (no `stdlib-defmacro` needed): classify each step as binding (`[name: expr]`) or non-binding (bare expression) by inspecting the AST dict shape; bindings → `[monad.bind expr [fn [name] <rest>]]`; non-bindings → `[monad.bind expr [fn [_] <rest>]]`; last step is the return value with no wrapping; `[do monad]` with no steps → `[monad.pure []]`; `[do]` with zero args → error (`stdlib/macros.llt`, `src/expand.rs`)
+- [ ] Implement explicit `[do monad steps...]` desugaring in `stdlib/macros.llt` via the existing `STDLIB_MACROS` registration path: classify each step as binding (`[name: expr]`) or non-binding (bare expression) by inspecting the AST dict shape; bindings → `[monad.bind expr [fn [name] <rest>]]`; non-bindings → `[monad.bind expr [fn [_] <rest>]]`; last step is the return value with no wrapping; `[do monad]` with no steps → `[monad.pure []]`; `[do]` with zero args → error (`stdlib/macros.llt`, `src/expand.rs`)
 - [ ] Tests: `[do result [r: [fetch ...]]]` three-step success, `[Err "fail"]` propagation (short-circuit), `[do]` with any `bind:`-carrying dict (not just Result), `[do monad]` no-steps → `[monad.pure []]`, zero-args error (`tests/corpus/eval/`)
+
+**Depends on:** `macro-expansion-boundary`
 
 ### hkt-do-macro-inferred: [do] macro — inferred monad form
 
@@ -103,6 +118,8 @@ The inferred `[do steps...]` form (monad argument omitted, inferred from return 
 - [ ] In `src/expand.rs`: when `[do]` has no explicit monad arg, emit `[do %do-infer steps...]` sentinel — `Expr::VarRef("%do-infer")` as the monad argument; runtime never sees this sentinel — it is resolved and substituted by the type checker before eval (`src/expand.rs`)
 - [ ] In `src/typecheck.rs` `infer_expr` for `[do]`: when monad is `VarRef("%do-infer")`, resolve monad via: (1) `state.expected_return` unified against `App(m, _)` for a registered Monad class; (2) first binding RHS type `App(m, a)` for a known Monad; (3) emit "cannot infer monad — add explicit monad arg or annotate return type" on failure; substitute resolved monad name into the desugared `[monad.bind ...]` chain before evaluation (`src/typecheck.rs`)
 - [ ] Tests: inferred `[do]` from `fn@Result` return annotation, inferred from first binding type, unresolvable monad error, `[do]` inside HKT-generic function (`tests/corpus/eval/`)
+
+**Depends on:** `hkt-do-macro-explicit`, `macro-expansion-boundary`
 
 
 ### hkt-mappable-appendable: Rewrite Mappable and Appendable from hardcoded to class-based
@@ -201,11 +218,11 @@ Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irredu
 - [x] Once `str-map-chars` lands, rewrite `upper` and `lower` in `stdlib/strings.llt` as tinct functions using `str-map-chars` + `char-code`/`chr` arithmetic for ASCII fast path; remove Rust builtins (`stdlib/strings.llt`, `src/builtins_string.rs`)
 - [x] Add `trim-start : Str → Str` and `trim-end : Str → Str` Rust builtins: strip leading/trailing whitespace from one end only (`src/builtins_string.rs`, `src/type_env.rs`)
 - [x] Add `regex-match? : Str → Str → Bool` Rust builtin: test if a regex pattern matches anywhere in a string using the `regex` crate; unlocks the `pattern` constraint in `validate` and other regex-dependent stdlib functions as tinct code (`src/builtins_string.rs`, `src/type_env.rs`)
-- [ ] Once `regex-match?` lands, rewrite `validate`'s `pattern` constraint check in tinct; identify which other parts of `validate` can move to tinct vs what must remain Rust (`stdlib/prelude.llt` or `src/builtins_meta.rs`)
+- [ ] Once `regex-match?` lands, rewrite `validate`'s `pattern` constraint check in tinct; identify which other parts of `validate` can move to tinct vs what must remain Rust (`stdlib/prelude.llt` or `src/builtins_meta.rs`) — **DEFERRED**: `validate` is a 350-line recursive Rust function (`validate_value`); moving just the pattern check requires calling back into the tinct evaluator from within Rust recursion; the only gain would be calling the `regex-match?` Rust function instead of `regex::Regex::new()` directly, which is still Rust; a full rewrite in tinct (the only real migration) requires recursive dict schemas and is a separate sprint
 - [ ] Make `builtin-sort` accept an optional comparator argument: `builtin-sort : ((a → a → Bool)? → Dict → Dict)`; when provided, use comparator instead of natural type ordering; this allows `sort` and `sort-by` in prelude to both reduce to one Rust primitive (`src/builtins_seq_prim.rs`, `src/type_env.rs`)
-- [ ] Verify `stdlib/prelude.llt` imports exactly: `rust::core`, `rust::string`, `rust::collection`, `rust::json`, `rust::meta`; no bare Rust primitive references outside these groups; no `builtin-*` names remain (`stdlib/prelude.llt`)
-- [ ] Verify `stdlib/io.llt`, `stdlib/net.llt`, `stdlib/math.llt`, `stdlib/datetime.llt`, `stdlib/encoding.llt` each open with exactly one `[include %rust "..."]` and build entirely on prelude exports + their imported group (`stdlib/*.llt`)
-- [ ] Verify that intentionally unexported primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) are not accessible from user code — write corpus tests confirming `undefined variable` (`tests/corpus/eval/`)
+- [x] Verify `stdlib/prelude.llt` imports exactly: `rust::core`, `rust::string`, `rust::collection`, `rust::json`, `rust::meta`; no bare Rust primitive references outside these groups; no `builtin-*` names remain — **VERIFIED 2026-05-11**: prelude opens with 8 `[include %rust "..."]` groups (core, collection, string, bytes, math, meta, json, io); the listed primitives (`builtin-*`) are now only in scope via `inject_prelude_aliases()` called at stdlib_env creation after prelude loads — they are NOT in prelude's dict and are not directly called by prelude code (prelude uses its own local `builtin-*` names obtained from the `%rust` includes) (`stdlib/prelude.llt`)
+- [x] Verify `stdlib/io.llt`, `stdlib/net.llt`, `stdlib/math.llt`, `stdlib/datetime.llt`, `stdlib/encoding.llt` each open with exactly one `[include %rust "..."]` and build entirely on prelude exports + their imported group — **VERIFIED 2026-05-11**: io.llt→`[include %rust "io"]`; net.llt→`[include %rust "net"]`+`[include %rust "io"]`+`[include %rust "string"]` (3 groups needed since net uses write-handle from io and split from string); math.llt→`[include %rust "math"]`; datetime.llt→`[include %rust "datetime"]`; encoding.llt→`[include %rust "core"]`+`[include %rust "string"]`+`[include %rust "math"]` (bxor from math); strings.llt→`[include %rust "core"]`+`[include %rust "string"]`; all build on prelude exports for higher-level functions (`stdlib/*.llt`)
+- [ ] Verify that intentionally unexported primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) are not accessible from user code — write corpus tests confirming `undefined variable` (`tests/corpus/eval/`) — **DESIGN CONFLICT**: `eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant` are documented as user-facing builtins in `doc/11a-builtins.md`; `gensym` is actively used by macro authors for hygiene (`tests/corpus/eval/macros/hygiene_no_capture.llt-eval`); the `%rust` registry is accessible from user scope via the bootstrap_env parent chain (code comment says "Full isolation (hiding %rust from user scope) is future work"); items remain accessible via the backward-compat injection in `create_stdlib_env_inner`; **actual future work**: remove the backward-compat injection and decide which of these to keep as public API vs truly internal
 - [x] Update `doc/11-stdlib.md §Rust-Native vs Tinct-Implemented Boundary` to document the `%rust` virtual module system and which modules each stdlib file imports (`doc/11-stdlib.md`)
 
 ---
