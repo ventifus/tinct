@@ -1619,6 +1619,10 @@ pub struct InferState {
     /// Name of the function currently being inferred (for polymorphic recursion detection).
     /// Set by infer_fn when entering a function body, cleared when exiting.
     pub current_function: Option<String>,
+    /// Expected return type of the currently-inferring function (if annotated).
+    /// Set by infer_fn when entering a function body with an explicit return annotation,
+    /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
+    pub expected_return: Option<Type>,
 }
 
 impl InferState {
@@ -1697,6 +1701,7 @@ impl InferState {
             failed_bindings: HashMap::new(),
             scheme_map: None,
             current_function: None,
+            expected_return: None,
         }
     }
 
