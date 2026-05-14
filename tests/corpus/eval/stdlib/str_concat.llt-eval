@@ -1,0 +1,4 @@
+# str: variadic string concatenation — verifies str builtin works correctly after class migration
+[str "hello" " world"]
+=== out
+String("hello world")

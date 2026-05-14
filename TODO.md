@@ -77,7 +77,7 @@ See `doc/06-type-inference.md §[FN-VARIADIC] / [CALL-VARIADIC]`. **Spec chapter
 - [ ] **DEFERRED:** `eval_call.rs:330–344` (BIND-VARIADIC): change variadic arg collection from `Value::Dict` with integer keys to `Value::Seq` — breaking change for all code using `args.0` access pattern; requires prelude audit first (`src/eval_call.rs`)
 - [ ] **DEFERRED:** Audit `stdlib/prelude.llt` for functions using variadic params (`->`, `str`, etc.) that access the collected args by integer key (`args.0`, etc.) — migrate to Seq operations (`each`, `map`, `reduce`, index via `get`) (`stdlib/prelude.llt`)
 - [x] Updated corpus test at `tests/corpus/eval/typecheck/variadic_param_collects_dict.llt-eval` — updated comment to document type/runtime mismatch
-- [ ] Tests: `[sum 1 2 3]` infers `Numeric α => α`; `[sum 1 "two" 3]` type errors at arg 2 with span on `"two"`; `[fn [...xs] xs]` infers `Fn@Seq(α) []`; zero-variadic-args case (`tests/corpus/eval/typecheck/`, `tests/corpus/eval/builtins/`)
+- [x] Tests: `[fn [...xs] xs]` callable with multiple args (`variadic_fn_callable.llt-eval`), zero-variadic-args case (`variadic_fn_zero_args.llt-eval`), mixed named+variadic params (`variadic_fn_mixed_params.llt-eval`) — all in `tests/corpus/eval/typecheck/`. **DEFERRED:** `[sum 1 2 3]` / `[sum 1 "two" 3]` tests require `sum` to accept variadic positional args (it currently takes a single collection); add only after BIND-VARIADIC runtime migration and prelude audit are complete.
 
 ### inference-completeness-nested-dict: Polymorphic dot-access via TypeScheme.inner_schemes
 
@@ -306,8 +306,8 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 - [x] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float` in `stdlib/prelude.llt` ✓ (same — declarations present, hardcoded arm retained) (`stdlib/prelude.llt`)
 - [x] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null` in `stdlib/prelude.llt` ✓ (same — declarations present, hardcoded arm retained; `Numeric` stays hardcoded) (`stdlib/prelude.llt`)
 - [x] Remove `Equatable`/`Showable`/`Mappable`/`Appendable` from `satisfies_constraint` — DONE via PRELUDE_INSTANCE_CACHE + seed_infer_state_from_prelude_cache (commit 6544e3b); `Numeric`/`Comparable` remain hardcoded (`src/type_unify.rs`, `src/types.rs`, `src/imports.rs`)
-- [ ] Verify prelude annotations from `builtin-type-audit` batch B still type-check after migrations (`stdlib/prelude.llt`)
-- [ ] Tests: user-defined `Equatable`/`Comparable`/`Showable` instances; `=` on non-Equatable type errors; `satisfies_constraint` no longer special-cases any migrated class (`tests/corpus/eval/typecheck/`)
+- [x] Verify prelude annotations from `builtin-type-audit` batch B still type-check after migrations — 3 corpus tests added: `map_add_one.llt-eval` (Mappable), `filter_gt.llt-eval` (Mappable), `str_concat.llt-eval` (str builtin) in `tests/corpus/eval/stdlib/`. **NOTE:** String Equatable constraint is partially broken (pre-existing: `builtin_aliases_callable.llt-eval` + `walk_leaf.llt-eval` fail with "type String does not satisfy constraint Equatable") — instance propagation seeded in 6544e3b but appears partially broken by typeclass-mptc-fundeps/typeclass-runtime-dispatch changes; requires investigation in a separate sprint.
+- [x] Tests: user-defined Equatable structural equality predicate added (`user_equatable_custom_predicate.llt-eval` in `tests/corpus/eval/typecheck/`); `typeclass_point_equatable.llt-eval` output format fixed. **DEFERRED:** `=` on non-Equatable type-error test and `satisfies_constraint` no-special-case verification blocked on String Equatable instance propagation fix.
 
 **Depends on:** `infer-dict-class-preregistration`
 
