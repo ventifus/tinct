@@ -1944,7 +1944,16 @@ fn infer_expr(
         )]),
 
         Expr::TypeApp { .. } => {
-            // Stub: TypeApp is type-level only, quality implementation in hkt-doc-lsp
+            // TypeApp is type-level only — look up the resolved App type from type_map.
+            // When resolve_type_expr processes a TypeApp annotation, it resolves to Type::App
+            // and stores it in type_map. If not found (e.g., TypeApp outside annotation context),
+            // gracefully return Unknown.
+            if let Some(ref map) = type_map {
+                let key = (expr.span.start.offset, expr.span.end.offset);
+                if let Some(resolved_ty) = map.get(&key) {
+                    return Ok(resolved_ty.clone());
+                }
+            }
             Ok(Type::Unknown)
         }
 

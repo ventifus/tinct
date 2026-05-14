@@ -1253,6 +1253,42 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
+## Runtime Reflection
+
+### `FnAnnotation` — Function Metadata at Runtime
+
+`Value::Function` carries a `FnAnnotation` alongside its `params`, `body`, and `env`:
+
+```rust
+pub struct FnAnnotation {
+    pub doc: Option<String>,              // extracted from fn@[doc: "..."] at eval_fn time
+    pub return_ann: Option<Annotation>,   // the fn-level Annotation (return type, constraints)
+    pub constraints: Vec<Constraint>,     // parsed from return_ann at creation time
+    pub source_file: Option<PathBuf>,     // file path — from EvalConfig.current_file
+    pub source_span: Span,               // always available at eval_fn time
+}
+```
+
+Wrapped as `Option<Box<FnAnnotation>>` — `None` for unannotated functions (zero overhead). `doc` is extracted from `return_ann` at function creation if `return_ann` is a `PropertyDict` with a `"doc"` entry. `source_file` is threaded from `EvalConfig.current_file`, set via `with_base_dir_and_path` at `src/builtins_meta.rs:1152`.
+
+### `ast-of` Builtin
+
+`ast-of` is a Rust primitive in the `%rust "meta"` module. It returns the AST dict for any value using the existing `ast_to_dict` schema (`doc/15-ast.md §AST Dict Schema`):
+
+- **`Value::Function`**: returns `[type: "fn" return-ann: <ann-dict> params: [...] body: <ast-dict>]`. The body is eagerly serialized via `ast_to_dict_expr`. `return-ann` and each param's annotation use the existing `annotation_to_thunk_id` schema, with compound annotation entry values recursively serialized (not placeholder strings).
+- **`Value::Builtin`**: returns `[type: "builtin" name: <name> module: <module>]` using a shared `builtin_type_for(name)` static table that de-duplicates the parallel registration in `standard_builtins()` and `TypeEnv::with_builtins()`.
+- **Other values**: `[type: type-of(val)]` — a minimal structural description.
+
+`ast-of` returns `Unknown` from the type checker's perspective. Field accesses on the result are on an `Unknown`-typed value and are not statically verified. The reflection layer is inherently dynamically typed — consistent with Python `inspect`, Common Lisp `describe`, and Elixir `Module.docs/2`. Tinct's gradual typing allows this: `@Unknown` opts out of static checking for the reflection helpers.
+
+### Reflection Helpers in Prelude
+
+`describe`, `sig-from-ast`, `annotation-to-str`, `annotation-of`, and `source-of` are pure tinct functions in `stdlib/prelude.llt` using only existing primitives. They use `find-first-or` (not `find-first`) for null-safe annotation entry lookup. `describe` on a function returns a dict with `doc:`, `return-ann:`, `params:`, and `sig:` fields; on a non-function value it returns `[type: type-of(val)]`.
+
+The round-trip paths are: in-memory (`[eval-ast [ast-of f]]`, works for pure/stdlib-only functions); file persistence (format via formatter, write to `DirCap`, re-include).
+
+**References:** Sheard, T. & Peyton Jones, S. (2002). "Template Haskell." *Haskell Workshop.* [runtime staging analogue]
+
 ## Quote Semantics
 
 `[quote expr]` converts the syntactic form of `expr` into an AST dict (per `doc/15-ast.md` §AST Dict Schema) without evaluating it. The conversion happens when the `Expr::Quote` node is materialized by the normal evaluator — this is runtime evaluation, not a compile-time operation. The result is an ordinary `Value::Dict`.

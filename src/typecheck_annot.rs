@@ -1717,9 +1717,12 @@ pub(crate) fn resolve_type_dict(
                 )?;
 
                 // Rank-1 restriction (hkt-kind-inference Task 3): reject App(Operator, Operator)
-                if matches!(&a_type, Type::Operator(_)) {
+                if let Type::Operator(op_name) = &a_type {
                     return Err(TypeError::new(
-                        "rank-2 type constructor application is not supported — type constructor variables must be applied to concrete types, not other constructors",
+                        format!(
+                            "kind mismatch: expected `*`, got `* → *` — type constructor `{}` cannot be applied to another type constructor `{}`; use a concrete type instead",
+                            f_name, op_name
+                        ),
                         span,
                     ));
                 }

@@ -1,5 +1,7 @@
 # What If: Runtime Reflection — Annotations as Value Metadata
 
+**State:** Accepted — 2026-05-14
+
 What would it take to make tinct values carry their full annotation metadata at runtime, enabling inspection, documentation generation, and round-trip source reconstruction?
 
 ## Design

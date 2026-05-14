@@ -65,7 +65,7 @@ See `doc/feature/boolean-algebraic-subtyping.md` (canonical post-implementation 
 
 The type system addresses three complementary areas.
 
-**Precision.** `TypeEnv::with_builtins()` pre-registers precise type signatures for all Rust-native builtins. Non-overloaded builtins carry exact types (`$+ : Fn(Number, Number → Number)`, `$length : Fn(Unknown → Int)`); sequence constructors carry typed returns (`$range → Seq(Int)`, `$repeat: (T) → Seq(T)`); dual-dispatch builtins are typed via `Mappable` — see §Dual-Dispatch Builtins. `Type::Error` propagates silently through inference — `unify(Error, τ) = S` unchanged, `is_subtype(Error, _) = false` — preventing cascading errors from a single failing subexpression. LSP hover shows "error" for error-typed bindings.
+**Precision.** `TypeEnv::with_builtins()` pre-registers precise type signatures for all Rust-native builtins. Non-overloaded builtins carry exact types (`$length : Fn(Unknown → Int)`); arithmetic builtins use MPTC signatures (`+ : Add a b c => a → b → c` — see `doc/06-type-inference.md §Multi-Parameter Type Classes`); sequence constructors carry typed returns (`$range → Seq(Int)`, `$repeat: (T) → Seq(T)`); dual-dispatch builtins are typed via `Mappable` — see §Dual-Dispatch Builtins. `Type::Error` propagates silently through inference — `unify(Error, τ) = S` unchanged, `is_subtype(Error, _) = false` — preventing cascading errors from a single failing subexpression. LSP hover shows "error" for error-typed bindings.
 
 **Completeness.** `Type::Function` carries `params: Vec<(Option<String>, Type)>`; named args are matched by name, not position. Polymorphic recursion is rejected at depth 1 with a clear error: "polymorphic recursion requires an explicit type annotation". CALL-MONO and CALL-POLY share a single structural `check_expr` pass applying [SUB] at leaves and unification only at TypeVar positions, eliminating verdict divergence for identical literal type pairs. `Unknown`'s consistency semantics follow the AGT model — see `doc/whatif/completed/gradual-typing.md`.
 
@@ -277,6 +277,8 @@ name@[type: String  repr: "u8"]: "hello"   # ERROR: repr: requires numeric type
 ## Dual-Dispatch Builtins
 
 **Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. `$try` returns a precise `Ok[T] | Err[String]` nominal result type under BAS.
+
+User-defined types participate in `=`, `<`, `str`, and arithmetic by declaring `Equatable`, `Comparable`, `Showable`, and `Add`/`Sub`/`Mul`/`Div` instances. Primitive operator dispatch checks the ClassEnv for a registered instance before falling back to the built-in Rust implementation. See `doc/feature/advanced-typeclasses.md`.
 
 ### Detailed Dispatch Table
 

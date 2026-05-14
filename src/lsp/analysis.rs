@@ -588,7 +588,10 @@ fn hover_at_expr(
             None
         }),
 
-        Expr::TypeApp { .. } => Some("Type application".to_string()),
+        Expr::TypeApp { .. } => Some(format!(
+            "Type application{}",
+            type_suffix(span, type_map, scheme_map, include_graph, doc_url)
+        )),
 
         Expr::Error(span) => Some(format!(
             "Parse error at {}:{}",

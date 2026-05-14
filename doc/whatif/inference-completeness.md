@@ -1,6 +1,6 @@
 # What If: Inference Completeness for tinct
 
-**State:** Partially implemented — SCC-based binding group analysis is done (`src/typecheck_dict.rs`). Remaining: variadic `Seq(T)` and nested dict polymorphism.
+**State:** Accepted — 2026-05-14
 
 What would it take to close the gaps between what tinct's HM inference engine
 can express and what it actually infers — making tinct a fully polymorphic,

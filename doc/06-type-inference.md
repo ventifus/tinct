@@ -132,9 +132,9 @@ Dicts are inferred in five sequential passes using the [DICT-GEN] rule — see �
 
 ```
 For each param pᵢ:
-    if variadic (...pᵢ): σᵢ = Unknown                   (see Limitation #3)
+    if variadic (...pᵢ): β fresh; σᵢ = Seq(β)           [FN-VARIADIC]
     else if annotated pᵢ@σᵢ: use σᵢ
-    else: σᵢ = Unknown
+    else: σᵢ = fresh TypeVar at current level
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
 If return annotation @σᵣ given:
     if has_type_vars(σᵣ):
@@ -155,7 +155,7 @@ Else:
 Γ ⊢ [fn@σᵣ [p₁@τ₁ ... pₙ@τₙ] body] ⇐ Fn(σ₁...σₙ → σ_exp)
     where ¬has_type_vars(Fn(σ₁...σₙ → σ_exp))       (expected type fully concrete)
 For each param pᵢ:
-    if variadic: use Unknown
+    if variadic: β fresh; use Seq(β)
     else if annotated pᵢ@τᵢ:
         if has_type_vars(τᵢ): unify(σᵢ, τᵢ, S)       (annotation with TypeVars)
         else: check σᵢ <: τᵢ                         (contravariant check)
@@ -230,6 +230,20 @@ In practice, this divergence rarely surfaces because CALL-MONO only fires for mo
 ```
 
 Calling a value typed as Unknown returns Unknown. Arguments are still synthesized (for type map population and nested error detection) but not checked against parameter types.
+
+**Variadic call:**
+
+```
+Γ ⊢ f ⇒ Fn(σ₁...σₙ₋₁, Seq(β) → σᵣ)
+Γ ⊢ aᵢ ⇒ τᵢ  for i = 1..n-1               (positional params)
+Γ ⊢ aₙ ⇒ υₙ, ..., Γ ⊢ aₖ ⇒ υₖ            (variadic args, k ≥ n-1)
+widen(υᵢ) = base type of υᵢ                (IntLiteral→Int, FloatLiteral→Float, StrLiteral→Str)
+S = compose(unify(β, widen(υₙ)), ..., unify(β, widen(υₖ)))
+──────────────────────────────────────── [CALL-VARIADIC]
+Γ ⊢ [call f a₁...aₖ] ⇒ S(σᵣ)
+```
+
+All variadic arguments are unified against the same TypeVar β after widening to their base types. Heterogeneous variadic arguments produce a unification error. Inside the variadic function body, the collected parameter has type `Seq(β)` and supports all Seq operations.
 
 Named argument type checking is implemented. `Type::Function` carries `params: Vec<(Option<String>, Type)>` where `Some(name)` is a user-defined function parameter name extracted from the AST and `None` is a builtin parameter (no name exposed at the type level). Three paths check named args:
 
@@ -727,6 +741,28 @@ Four classes have primitive built-in instances whose dispatch is handled by the 
 
 All other classes (`Mappable`, `Appendable`, `Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`) are declared in the stdlib using `[class ...]` and `[instance ...]` forms and are fully user-extensible — see §Higher-Kinded Types and Type Classes.
 
+### Constraint Propagation over BAS Types
+
+When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation rules distribute the constraint over the type's structure (Garcia, Clark & Tanter 2016; Castagna & Lanvin 2017):
+
+```
+[CONSTRAIN-FIELD]   C({f: τ}) ⊢ satisfied    iff    C(τ) ⊢ satisfied
+[CONSTRAIN-INTER]   C(τ₁ & τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
+[CONSTRAIN-UNION]   C(τ₁ | τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
+[CONSTRAIN-TOP]     Showable(⊤) ⊢ satisfied
+                    C(⊤) ⊢ error   for C ∈ {Equatable, Comparable, Numeric, Mappable, Appendable}
+[CONSTRAIN-UNKNOWN] C(?) ⊢ satisfied             (AGT existential — deferred to runtime ClassEnv)
+[CONSTRAIN-NEVER]   C(⊥) ⊢ satisfied             (⊥ is uninhabited — vacuously true)
+```
+
+**[CONSTRAIN-FIELD]** applies only to built-in classes with compositional/structural semantics (`Equatable`, `Comparable`, `Showable`, `Numeric`, `Mappable`, `Appendable`). User-defined classes do not automatically propagate over record fields unless declared with the appropriate instance.
+
+**[CONSTRAIN-UNION]** direction is `∧` (ALL members) — a union-typed value could be either alternative at runtime, so both branches must satisfy the constraint. Implementors: use `all()`, not `any()`.
+
+**[CONSTRAIN-TOP]** distinction: `⊤` concretizes only to itself (`γ(⊤) = {⊤}`), so `Equatable(⊤)` requires Top to be a literal Equatable instance — it is not. `Showable` is the sole exception because `str` is defined as a total function by policy. `?` concretizes to all static types (`γ(?) = STypes`), so `Equatable(?)` is existentially satisfied and deferred to runtime ClassEnv dispatch.
+
+**Normalization ordering:** BAS normalization must complete before constraint propagation fires. `satisfies_constraint` is called on already-normalized types.
+
 ### Constraint Generation and Checking
 
 1. **Builtin registration** (`TypeEnv::with_builtins`): Overloaded builtins are registered with constrained type schemes:
@@ -802,15 +838,50 @@ result: [= [fn [] 1] [fn [] 2]]
    - Error: "type Fn@Int [] does not satisfy constraint Equatable"
 ```
 
-### Current Limitations of Hardcoded Constraints
+### Multi-Parameter Type Classes and Functional Dependencies
 
-1. **Numeric stays hardcoded:** `Numeric` cannot be expressed as a single-parameter class because `Int + Float → Float` requires multi-parameter type classes. It remains as a fixed instance set.
+Arithmetic operators use a 3-parameter `Add` class with functional dependency `(a, b) → c` — given the types of both operands, the result type is uniquely determined (Jones 2000):
 
-2. **Primitive operators are not overloadable by user instances:** Builtin operators (`=`, `<`, `str`, etc.) dispatch via hardcoded Rust type inspection and cannot be routed through user-defined typeclass instances. User-defined instances are invoked by explicit dict method call (`inst.method args`); the primitive operators never implicitly delegate to instance dicts. This is by design — implicit dictionary threading (Haskell-style) is not supported. User-defined monads and other class instances DO dispatch at runtime via explicit instance dicts (the `[do monad ...]` form passes the monad dict explicitly).
+```
++ : Add a b c => a → b → c
+- : Sub a b c => a → b → c
+* : Mul a b c => a → b → c
+/ : Div a b c => a → b → c
+```
 
-3. **No constrained row variables:** `Equatable [name: a ...]` (requiring all fields to satisfy Equatable) requires row-level constraints (Gaster & Jones 1996).
+**Instances** (closed set; user-defined types may add instances):
 
-**References:** Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." Jones, M.P. (1995). *Qualified types: Theory and practice.*
+| `Add a b c` | Result |
+|---|---|
+| `Add Int Int Int` | homogeneous int |
+| `Add Float Float Float` | homogeneous float |
+| `Add Int Float Float` | Int widened to Float |
+| `Add Float Int Float` | Int widened to Float |
+| `Add Number Number Number` | gradual numeric |
+| `Add Number Int Number` / `Add Int Number Number` | gradual + int |
+| `Add Number Float Number` / `Add Float Number Number` | gradual + float |
+
+**Residual constraints and improvement.** `Add a b c` propagates as a residual constraint in `TypeScheme.constraints` (Jones 1995 qualified types). Improvement fires eagerly in `check_constraints_on_var` whenever the determining positions (`a`, `b`) become ground: look up the matching instance and unify `c` with the instance's result type. `[fn [x y] [+ x y]]` infers `Add a b c => Fn@c [a b]` without annotation. If both determining vars are ground at generalization but no instance matches, the type checker rejects immediately (Sulzmann et al. 2007).
+
+**Coherence.** For MPTCs with functional dependencies, the coherence check is per determining-position tuple: two `Add` instances with the same `(a, b)` pair but different `c` are rejected regardless of `c`.
+
+**Cross-arity entailment.** `Add a b c` does not automatically entail `Numeric a` or `Numeric b`. The closed instance set already restricts operands to numeric types — any non-numeric type produces a type error at the call site. Same-arity entailment (`Comparable a` entails `Equatable a`) is supported via the existing `entails()` function.
+
+### Nested Dict Polymorphism
+
+When a dict literal is bound by name (e.g., `helpers: [id: [fn [x] x] ...]`), the dict's generalized entry schemes are stored in the binding's `TypeScheme` as `inner_schemes: Option<HashMap<String, TypeScheme>>`. Dot-access on a `VarRef` target retrieves the scheme and instantiates it via `[VAR-POLY]`:
+
+```
+Γ(d) = TypeScheme { body: Record(...), inner_schemes: Some(inner) }
+inner(f) = ∀α₁...αₙ[C₁...Cₙ]. τ_f
+τ' = instantiate_scheme(inner(f), ℓ_current)
+──────────────────────────────────────── [DOT-POLY]
+Γ ⊢ d.f : τ'
+```
+
+This applies only when `d` resolves to a visible dict literal (VarRef to a dict-binding in scope). For opaque function parameters, cross-file imports via opaque types, or non-VarRef expressions, the bare `Type::Record` field type is used — no polymorphic instantiation. This mirrors ML's structure/signature distinction: visible literals carry full polymorphic schemes; opaque dict parameters expose only their declared interface (Wells 1999).
+
+**References:** Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." Jones, M.P. (1995). *Qualified types: Theory and practice.* Jones, M.P. (2000). "Type classes with functional dependencies." Sulzmann, M. et al. (2007). "Understanding FDs via CHR." Garcia, R. et al. (2016). "Abstracting gradual typing." Castagna, G. & Lanvin, V. (2017). "Gradual typing with union and intersection types."
 
 ## Higher-Kinded Types and Type Classes
 
@@ -988,10 +1059,178 @@ BAS operates on types of kind `*`. With HKT:
 
 **References:** Jones, M.P. (1993). "A system of constructor classes." Jones, M.P. (1994). "Qualified types." Gaster, B.R. & Jones, M.P. (1996). "A polymorphic type system for extensible records." Castagna, G. (2023). "Typing records, maps, and structs." ICFP.
 
+## Type Classes and Higher-Kinded Types — Formal Rules
+
+This section formalizes the kind system, type constructor application, constraint generation, and instance resolution for higher-kinded types and type classes. The implementation supports rank-1 higher-kinded types (Jones 1993) with kind inference for class parameters.
+
+### Kind System
+
+Kinds classify types by their arity. The kind grammar:
+
+```
+κ ::= *           concrete types (Int, Str, Record, TypeVar)
+    | Row         record field sets (internal, not user-exposed)
+    | Operator    type constructors (* → *, written Operator)
+    | Label       type-level string labels (for HasField constraints)
+```
+
+Kinds are tracked in `InferState.kind_env: HashMap<String, Kind>`. TypeVars default to kind `*`. Operator-kinded TypeVars arise from `@Operator` annotations on class parameters. Label-kinded TypeVars arise from Label annotations (`key@Label` or `key@[label: l]`).
+
+### KIND-CLASS-PARAM — Class Parameter Kind Registration
+
+When a ClassDecl is processed, class parameters with `@Operator` annotations are registered in `kind_env`:
+
+```
+Γ ⊢ [class [C f@Operator] ...]
+For each param (name, Kind::Operator) in ClassDecl.params:
+    kind_env[name] ← Kind::Operator
+```
+
+**Implementation:** `src/typecheck.rs:1869-1874`. After ClassDecl registration in `class_env`, a loop populates `state.kind_env` for Operator-kinded params.
+
+**Current limitation:** The parser (`src/parser.rs:4564`) extracts plain identifiers from class headers and does not preserve `@Operator` annotations. The kind environment is seeded via hardcoded mappings in `InferState::new()` (e.g., `Mappable` → `Kind::Operator`). Full parser support for `[class [Mappable f@Operator] ...]` is deferred.
+
+### KIND-OPERATOR — Type Constructor Application
+
+Type constructor application `[f a]` (no colons) resolves to `Type::App(Operator(f), a)` when `f` is Operator-kinded in `kind_env`. This check occurs before the union type path to prevent `[m Int]` from being parsed as `Union(Operator("m"), Int)`.
+
+```
+resolve_type_expr([f a], env, state, ...) where all_positional ∧ len = 2:
+    if kind_env[f] = Operator:
+        f_type ← Operator(f)
+        a_type ← resolve_type_expr(a, ...)
+        if a_type is Operator(_):
+            error "rank-2 type constructor application not supported"  [rank-1 restriction]
+        return App(f_type, a_type)
+    else:
+        ... fall through to union type path
+```
+
+**Implementation:** `src/typecheck_annot.rs:1703-1730`. Checks `state.kind_env.get(f_name)` for `Kind::Operator` before union path. Rejects `App(Operator(_), Operator(_))` (rank-2 application) with a user-facing error.
+
+**Rank-1 restriction:** `App(Operator("f"), Operator("g"))` (applying one Operator variable to another) is excluded. Multiple flat Operator quantifiers in one method type are allowed — `traverse` has both `f@Applicative` and `t@Traversable` in its signature, which is rank-1. The restriction prevents rank-2 polymorphism (higher-rank constructors), which would require impredicative instantiation and significantly complicates inference.
+
+### UNIFY-OPERATOR / UNIFY-APP — Unification Rules
+
+Type constructor variables unify via occurs check and binding, analogous to `TypeVar` unification:
+
+```
+UNIFY-OPERATOR:
+  m ∉ ftv(T)    (occurs check prevents infinite kinds)
+  ──────────────────────────────────
+  unify(Operator(m), T) = S[m ↦ T]
+
+  unify(Operator(m), Operator(n)) = S[m ↦ Operator(n)]   (symmetric)
+```
+
+Type constructor applications unify via decomposition (standard Robinson, constructor then argument):
+
+```
+UNIFY-APP:
+  unify(f₁, f₂) = θ₁    unify(θ₁(a₁), θ₁(a₂)) = θ₂
+  ─────────────────────────────────────────────────────
+  unify(App(f₁, a₁), App(f₂, a₂)) = θ₂ ∘ θ₁
+```
+
+**Implementation:** `src/type_unify.rs:1430-1470`. UNIFY-OPERATOR binds Operator variables in `subst.type_map` with occurs check (`m ∉ ftv(T)`). UNIFY-APP delegates to recursive `unify()` calls, relying on substitution application at the top of `unify()` to thread bindings from constructor unification into argument unification.
+
+**Normalization:** After unification resolves `Operator("Seq")` or `Operator("Result")` to a builtin constructor, `apply_type` normalizes `App(Operator("Seq"), T)` → `Type::Seq(T)` to maintain the invariant that builtin constructors use dedicated Type variants (`src/type_unify.rs:535-550`).
+
+### Constraint Generation
+
+Constraints are generated when a constrained type scheme is instantiated at a call site. Each constraint in the scheme is copied with renamed type variables.
+
+```
+instantiate_scheme(σ, ℓ_current, state) where σ = ∀(α₁...αₙ). [C₁ a₁, ...] τ:
+  For each αᵢ: fresh_var ← TypeVar(_tN, ℓ_current)
+               S[αᵢ ↦ fresh_var]
+               state.levels[_tN] ← ℓ_current
+  For each constraint Cᵢ aᵢ in σ.constraints:
+      state.constraints.push(Constraint { class: Cᵢ, var: S(aᵢ) })
+  return S(τ)
+```
+
+**Example:** Instantiating `Numeric a => Fn@a [a a]` produces a fresh `_t0`, constraint `Numeric _t0`, and type `Fn@_t0 [_t0 _t0]`.
+
+**Implementation:** `src/types.rs:instantiate_scheme`. Constraints are stored in `InferState.constraints: Vec<Constraint>` and checked during unification.
+
+### Entailment — Constraint Checking
+
+Constraints are checked during type variable binding (U-VAR-LEVEL arm of `unify`). For each active constraint `C(α)`, when binding `α ↦ τ`:
+
+```
+check_constraints_on_var(α, τ, state):
+  For each constraint C(α) in state.constraints:
+      if ¬satisfies(τ, C, state):
+          error "type {τ} does not satisfy constraint {C}"
+```
+
+**Implementation:** `src/type_unify.rs:156-198` (`check_constraints_on_var`). Called from U-VAR-LEVEL after binding `α` in `subst`.
+
+**Primitive vs dynamic resolution:**
+
+- **Primitive classes** (`Numeric`, `Comparable`): hardcoded in `satisfies_constraint()` via allowlists (`src/type_unify.rs:19-54`). These are checked early, before prelude instances are loaded.
+- **User-defined classes** (`Mappable`, `Appendable`, `Functor`, etc.): resolved via `InstanceEnv::resolve_instance()` (`src/type_env.rs:931-997`). Requires prelude instances to be propagated into `InferState.instance_env`.
+
+**Entailment via superclass closure:** When simplifying constraints during generalization, `entails(class_env, context, target)` checks if `target` is directly present in `context` or implied via superclass relationships (`src/type_unify.rs:65-111`). For example, `Comparable a` entails `Equatable a` because Comparable has Equatable as a superclass.
+
+### Dictionary Elaboration
+
+Instance declarations register method implementations in `InstanceEnv`:
+
+```
+Γ ⊢ [instance [C T] [method₁: impl₁] [method₂: impl₂] ...]
+InstanceDecl {
+    class_name: "C"
+    instance_type: resolve_type_expr(T)
+    method_types: { method₁ ↦ infer_expr(impl₁), ... }
+}
+InstanceEnv.instances[(C, T)] ← decl
+```
+
+**Implementation:** `src/typecheck.rs:1882-1952`. Instance methods are inferred as ordinary expressions; their types are stored in `InstanceDecl.method_types: HashMap<String, Type>`.
+
+**Superclass method inheritance:** Instance declarations may use `extends` to declare superclass relationships (`[class [Monad m@Operator] extends [Applicative m] ...]`). The `Monad` instance implicitly carries `bind` plus inherited `pure`, `lift2`, and `fmap` from the Applicative and Functor instances. The ClassEnv stores superclass chains (`ClassDecl.superclasses: Vec<Constraint>`); instance resolution follows the chain to retrieve inherited methods.
+
+### Parameterized Instance Head Resolution
+
+When a constraint `C m` is active and `m` is later unified with a concrete type `T`, instance resolution looks up `[instance [C T'] ...]` and attempts unification:
+
+```
+resolve_instance(class_name, target_type, state):
+  For each instance decl with decl.class_name = class_name:
+      freshened_inst_type ← instantiate_at_level(decl.instance_type, state)
+      temp_subst ← clone(state.subst)
+      if unify(freshened_inst_type, target_type, temp_subst, state) succeeds:
+          freshened_methods ← apply temp_subst to decl.method_types
+          return InstanceDecl { instance_type: freshened_inst_type, method_types: freshened_methods }
+  return None
+```
+
+**Freshening:** Instance type variables are freshened at each resolution attempt (`src/type_env.rs:962`) to prevent variable leakage. For example, `AppendableSeq: [instance [Appendable [Seq b]] ...]` has `b` freshened to `_tN` at each resolution, then unified with the target type.
+
+**Method substitution threading:** After unification succeeds, the `temp_subst` (which now binds instance type variables) is applied to method types (`src/type_env.rs:979-986`). This threads concrete types from the target into the method signatures.
+
+**Implementation:** `src/type_env.rs:931-997`. Tries each candidate in order; returns the first that unifies. No overlap detection or backtracking — overlapping instances are undefined behavior.
+
+### Inference Flow Example
+
+```tinct
+# User code
+[fmap: [fn@[m b] [m@Monad  f@b [a]  xs@[m a]]
+  [m.bind xs [fn [x@a] [m.pure [f x]]]]]]
+```
+
+**Inference steps:**
+
+1. **Constraint generation:** `m@Monad` annotation generates `Monad m` constraint, stored in `state.constraints`.
+2. **TYPE-OPERATOR:** `[m a]` in return annotation resolves to `App(Operator("m"), TypeVar("b"))` via KIND-OPERATOR.
+3. **Constraint checking:** When `m` is instantiated at a call site (e.g., `[fmap inc [result-ok 42]]`), the evaluator infers `target_type = Result` and calls `resolve_instance("Monad", Result, state)`.
+4. **Instance resolution:** `resolve_instance` finds `[instance [Monad Result] ...]`, freshens its type, unifies `Result` with the target, and returns the instance dict with method types.
+5. **Method dispatch:** The `m.bind` field access resolves to the `bind` method from the MonadResult instance dict.
+
+**References:** Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." Robinson, J.A. (1965). "A machine-oriented logic based on the resolution principle." Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc."
+
 ## Limitations and Non-Guarantees
 
-1. **Forward references are monomorphic within letrec.** In letrec dicts, entries that reference later siblings see a fresh type variable (from Pass 1), not the eventually-generalized type scheme. Within the letrec group, mutual references are monomorphic — each entry constrains the others through unification. Polymorphic recursion (Mycroft, 1984) would require fixpoint iteration and is not supported.
-
-2. **Variadic params typed as Unknown.** Variadic parameters (`...args`) are assigned type `Unknown`. Annotations on variadic params are forbidden by design: the runtime collects remaining positional args into an Int-keyed Dict, but row types only describe string-keyed records, so annotations cannot participate in type inference.
-
-3. **Nested dicts do not receive full let-polymorphism.** Only top-level dict entries are generalized in Pass 4 of the DICT-GEN rule. Inner dict entries remain at the outer level and are not independently generalized. For example, in `[outer: [inner: [fn [x] x]]]`, the `inner` entry's function receives the same level as `outer`, not a deeper level, so forward references within the nested dict do not benefit from polymorphic instantiation.
+1. **Mutually recursive entries are monomorphic with respect to each other.** Entries that form a cycle in the dependency graph are inferred together as a single letrec group; each constrains the others through unification. Non-mutually-recursive entries are SCC-decomposed and generalized independently before their dependents are inferred — this is the standard behavior. Polymorphic recursion (a function calling itself at a different type than its declaration) requires an explicit return type annotation and is rejected without one (Mycroft 1984, Henglein 1993).

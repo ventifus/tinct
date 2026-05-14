@@ -95,6 +95,16 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 Cross-reference of each proposal against open TODO items and gating conditions.
 
+### Accepted (in progress)
+
+Accepted proposals with sprints in TODO.md. Not yet fully implemented.
+
+| Proposal | Summary | Accepted |
+|----------|---------|----------|
+| [Advanced Typeclass Extensions](advanced-typeclasses.md) | MPTC `Add a b c \| (a,b)→c` for precise arithmetic; `[CONSTRAIN-FIELD/INTER/UNION/TOP/UNKNOWN/NEVER]` row-level propagation; ClassEnv runtime dispatch | 2026-05-14 |
+| [Inference Completeness](inference-completeness.md) | SCC DICT-GEN (done); variadic `Seq(T)`; nested dict polymorphism via `TypeScheme.inner_schemes` | 2026-05-14 |
+| [Runtime Reflection — Annotations as Value Metadata](runtime-reflection.md) | `FnAnnotation` on `Value::Function`; `ast-of` Rust primitive; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude | 2026-05-14 |
+
 ### Completed
 
 These proposals are fully implemented. Source documents are archived in [doc/whatif/completed/](completed/).
