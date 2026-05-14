@@ -1869,6 +1869,7 @@ pub fn unify_kind(k1: &Kind, k2: &Kind, state: &mut KindState) -> Result<(), Kin
 }
 
 #[cfg(test)]
+#[allow(unused_mut)] // Substitution uses RefCell for interior mutability; mut not always needed
 mod tests {
     use super::*;
     use crate::test_util::test_span;
@@ -2949,7 +2950,7 @@ mod tests {
 
     #[test]
     fn test_substitution_empty_apply() {
-        let subst = Substitution::new();
+        let mut subst = Substitution::new();
         assert_eq!(subst.apply(&Type::Int), Type::Int);
         assert_eq!(
             subst.apply(&Type::TypeVar("a".into(), 0)),
@@ -2960,7 +2961,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_bound() {
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
@@ -2969,8 +2970,9 @@ mod tests {
         let mut subst = Substitution::new();
         subst
             .type_map
+            .borrow_mut()
             .insert("a".into(), Type::TypeVar("b".into(), 0));
-        subst.type_map.insert("b".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("b".into(), Type::Int);
         assert_eq!(subst.apply(&Type::TypeVar("a".into(), 0)), Type::Int);
     }
 
@@ -2982,8 +2984,9 @@ mod tests {
         let mut subst = Substitution::new();
         subst
             .type_map
+            .borrow_mut()
             .insert("a".into(), Type::TypeVar("b".into(), 0));
-        subst.type_map.insert("b".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("b".into(), Type::Int);
 
         let ty = Type::TypeVar("a".into(), 0);
         let result_once = subst.apply(&ty);
@@ -2996,10 +2999,47 @@ mod tests {
     }
 
     #[test]
+    fn test_substitution_path_compression() {
+        // Verify that path compression collapses chains: t0 → t1 → t2 → Int
+        // After applying t0, both t0 and t1 should map directly to Int (not to t2).
+        let mut subst = Substitution::new();
+        subst
+            .type_map
+            .borrow_mut()
+            .insert("t0".into(), Type::TypeVar("t1".into(), 0));
+        subst
+            .type_map
+            .borrow_mut()
+            .insert("t1".into(), Type::TypeVar("t2".into(), 0));
+        subst.type_map.borrow_mut().insert("t2".into(), Type::Int);
+
+        // First access: apply(t0) should resolve to Int and compress the path
+        let result = subst.apply(&Type::TypeVar("t0".into(), 0));
+        assert_eq!(result, Type::Int);
+
+        // After path compression, t0 should map directly to Int (not to t1)
+        assert_eq!(
+            subst.type_map.borrow().get("t0").cloned(),
+            Some(Type::Int),
+            "t0 should be compressed to Int"
+        );
+
+        // t1 should also be compressed to Int (not to t2)
+        assert_eq!(
+            subst.type_map.borrow().get("t1").cloned(),
+            Some(Type::Int),
+            "t1 should be compressed to Int"
+        );
+
+        // t2 → Int remains unchanged
+        assert_eq!(subst.type_map.borrow().get("t2").cloned(), Some(Type::Int));
+    }
+
+    #[test]
     fn test_substitution_apply_in_function() {
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
-        subst.type_map.insert("b".into(), Type::Str);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("b".into(), Type::Str);
         let ty = Type::Function {
             params: vec![(None, Type::TypeVar("a".into(), 0))],
             ret: Box::new(Type::TypeVar("b".into(), 0)),
@@ -3018,7 +3058,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_in_record() {
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
         fields.insert("y".into(), Type::Str);
@@ -3033,7 +3073,7 @@ mod tests {
     #[test]
     fn test_substitution_leaves_unbound_alone() {
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
         assert_eq!(
             subst.apply(&Type::TypeVar("b".into(), 0)),
             Type::TypeVar("b".into(), 0)
@@ -3045,6 +3085,7 @@ mod tests {
         let mut subst = Substitution::new();
         subst
             .type_map
+            .borrow_mut()
             .insert("a".into(), Type::TypeVar("a".into(), 0));
         assert_eq!(
             subst.apply(&Type::TypeVar("a".into(), 0)),
@@ -3057,9 +3098,11 @@ mod tests {
         let mut subst = Substitution::new();
         subst
             .type_map
+            .borrow_mut()
             .insert("a".into(), Type::TypeVar("b".into(), 0));
         subst
             .type_map
+            .borrow_mut()
             .insert("b".into(), Type::TypeVar("a".into(), 0));
         // When we apply starting from "a", we get "a" back because:
         // a -> b (with a visited) -> a (already visited, return TypeVar("a"))
@@ -3092,7 +3135,7 @@ mod tests {
             span,
         )
         .unwrap();
-        assert_eq!(subst.get("a"), Some(&Type::Int));
+        assert_eq!(subst.get("a"), Some(Type::Int));
     }
 
     #[test]
@@ -3108,7 +3151,7 @@ mod tests {
             span,
         )
         .unwrap();
-        assert_eq!(subst.get("a"), Some(&Type::Int));
+        assert_eq!(subst.get("a"), Some(Type::Int));
     }
 
     #[test]
@@ -3662,7 +3705,7 @@ mod tests {
         // Under BAS all records are closed (RowTail::Empty). Substitution applies to
         // field types (TypeVars) but there is no row_map to follow.
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Str);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Str);
 
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
@@ -3677,7 +3720,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_row_var_unbound() {
         // BAS: row_map is always empty; closed records apply unchanged
-        let subst = Substitution::new();
+        let mut subst = Substitution::new();
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = closed_record(fields.clone());
@@ -3690,7 +3733,7 @@ mod tests {
         // BAS: field types in records are subject to TypeVar substitution.
         // There is no row_map merging (no RowVar tails exist).
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
 
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::TypeVar("a".into(), 0));
@@ -3808,7 +3851,7 @@ mod tests {
     #[test]
     fn test_substitution_apply_seq() {
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
         let ty = Type::Seq(Box::new(Type::TypeVar("a".into(), 0)));
         assert_eq!(subst.apply(&ty), Type::Seq(Box::new(Type::Int)));
     }
@@ -3905,6 +3948,7 @@ mod tests {
         let mut subst = Substitution::new();
         subst
             .type_map
+            .borrow_mut()
             .insert("m".into(), Type::Operator("Seq".into()));
         let app_type = Type::App(Box::new(Type::Operator("m".into())), Box::new(Type::Int));
         let normalized = subst.apply(&app_type);
@@ -3928,7 +3972,7 @@ mod tests {
             span,
         );
         assert!(result.is_ok());
-        assert_eq!(subst.type_map.get("m"), Some(&Type::Int));
+        assert_eq!(subst.type_map.borrow().get("m"), Some(&Type::Int));
     }
 
     #[test]
@@ -4053,7 +4097,7 @@ mod tests {
             "same-name TypeVar with different levels should unify via [U-REFL]"
         );
         assert!(
-            subst.type_map.is_empty(),
+            subst.type_map.borrow().is_empty(),
             "fast path must not bind anything in the substitution"
         );
     }
@@ -4500,7 +4544,11 @@ mod tests {
         state.levels.insert("a".into(), 2);
 
         // Bind "a" to Int in the substitution
-        state.subst.type_map.insert("a".into(), Type::Int);
+        state
+            .subst
+            .type_map
+            .borrow_mut()
+            .insert("a".into(), Type::Int);
 
         // Create a type containing the bound variable
         let ty = Type::TypeVar("a".into(), 2);
@@ -4976,7 +5024,7 @@ mod tests {
     fn test_row_occurs_check_removed_under_bas() {
         // Placeholder test documenting that row occurs checks are removed under BAS.
         // All records are closed; no row variables to chase or cycle through.
-        let subst = Substitution::new();
+        let mut subst = Substitution::new();
         assert!(subst.is_empty(), "BAS: substitution starts empty");
     }
 
@@ -5843,7 +5891,7 @@ mod tests {
 
         // After unification with Int, t_inner is bound (not generalized freely)
         assert!(
-            subst.type_map.contains_key("t_inner"),
+            subst.type_map.borrow().contains_key("t_inner"),
             "t_inner should be bound"
         );
 
@@ -6002,14 +6050,20 @@ mod tests {
         let beta_bound = Type::Record(Row {
             fields: beta_fields,
         });
-        subst.type_map.insert("beta".into(), beta_bound);
+        subst
+            .type_map
+            .borrow_mut()
+            .insert("beta".into(), beta_bound);
 
         let mut alpha_fields = HashMap::new();
         alpha_fields.insert("x".into(), Type::TypeVar("beta".into(), 0));
         let alpha_bound = Type::Record(Row {
             fields: alpha_fields,
         });
-        subst.type_map.insert("alpha".into(), alpha_bound);
+        subst
+            .type_map
+            .borrow_mut()
+            .insert("alpha".into(), alpha_bound);
 
         // Substitution.apply correctly resolves TypeVar → Record
         let tv_alpha = Type::TypeVar("alpha".into(), 0);
@@ -6196,7 +6250,7 @@ mod tests {
         assert!(result.is_ok());
         // TypeVar "a" must not be bound — Error does not carry type information
         assert!(
-            subst.type_map.is_empty(),
+            subst.type_map.borrow().is_empty(),
             "TypeVar must not be bound when unified with Error"
         );
     }
@@ -6204,11 +6258,14 @@ mod tests {
     #[test]
     fn test_apply_preserves_error() {
         // Substitution::apply must pass Error through unchanged
-        let subst = Substitution::new();
+        let mut subst = Substitution::new();
         assert_eq!(subst.apply(&Type::Error), Type::Error);
 
-        let mut subst_with_binding = Substitution::new();
-        subst_with_binding.type_map.insert("a".into(), Type::Int);
+        let subst_with_binding = Substitution::new();
+        subst_with_binding
+            .type_map
+            .borrow_mut()
+            .insert("a".into(), Type::Int);
         assert_eq!(subst_with_binding.apply(&Type::Error), Type::Error);
     }
 
@@ -6461,7 +6518,7 @@ mod tests {
         let union = Type::Union(vec![tv, Type::Str]);
 
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
 
         let result = subst.apply(&union);
 
@@ -6484,8 +6541,8 @@ mod tests {
         let union = Type::Union(vec![tv_a, tv_b]);
 
         let mut subst = Substitution::new();
-        subst.type_map.insert("a".into(), Type::Int);
-        subst.type_map.insert("b".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("a".into(), Type::Int);
+        subst.type_map.borrow_mut().insert("b".into(), Type::Int);
 
         let result = subst.apply(&union);
 
@@ -6626,7 +6683,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(subst.type_map.get("a"), Some(&Type::Int));
+        assert_eq!(subst.type_map.borrow().get("a"), Some(&Type::Int));
     }
 
     #[test]

@@ -86,6 +86,31 @@ an instance, exactly as users already write Functor or Monad instances.
 
 ### Multi-Parameter Type Classes and Functional Dependencies
 
+#### Functional Dependency Resolution
+
+`Add a b c` constraints propagate as **residual constraints** in `TypeScheme.constraints`
+(Jones 1995 qualified types). Resolution fires via **improvement** (Jones 2000, §5–6):
+whenever the determining positions (`a`, `b`) become ground by unification, the
+type checker looks up the matching `Add` instance and unifies `c` with the instance's
+result type. This is eager — it fires during `check_constraints` whenever new bindings
+are made, not deferred to call sites.
+
+Consequence: `[fn [x y] [+ x y]]` infers `Add a b c => Fn@c [a b]` without annotation.
+At each call site, `a` and `b` are instantiated to concrete types, improvement fires,
+and `c` is resolved. If both determining vars are ground at generalization but no
+instance matches, the type checker rejects immediately (GHC §9.4.1 refinement).
+No defaulting rule or monomorphism restriction is needed — tinct's instance table
+is closed.
+
+Implementation: improvement fires in `check_constraints_on_var` when a TypeVar
+bound to a determining position becomes ground. It checks whether all determining
+positions of any pending FD constraint are now ground, looks up the instance, and
+binds the determined position(s). This is the same pass that already fires constraint
+satisfaction checks — no new infrastructure required beyond the MPTC constraint form.
+
+References: Jones (2000) §5–6 (improving substitutions); Sulzmann et al. (2007)
+(CHR confirmation: rules fire when guard is satisfied, otherwise retained).
+
 The `Constraint` enum gains support for multi-parameter bindings:
 
 ```rust
@@ -182,7 +207,9 @@ two propagation rules to `check_constraints`:
 [CONSTRAIN-FIELD]   C({f: τ}) ⊢ satisfied    iff    C(τ) ⊢ satisfied
 [CONSTRAIN-INTER]   C(τ₁ & τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
 [CONSTRAIN-UNION]   C(τ₁ | τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
-[CONSTRAIN-TOP]     *** GAP — see below ***
+[CONSTRAIN-TOP]     Showable(⊤) ⊢ satisfied
+                    C(⊤) ⊢ error   for C ∈ {Equatable, Comparable, Numeric, Mappable, Appendable}
+[CONSTRAIN-UNKNOWN] C(?) ⊢ satisfied             (AGT existential — deferred to runtime ClassEnv)
 [CONSTRAIN-NEVER]   C(⊥) ⊢ satisfied                (⊥ is uninhabited — vacuously true)
 ```
 
@@ -199,12 +226,26 @@ intentional — ALL members must satisfy the constraint, not ANY. A union-typed
 value could be either alternative at runtime, so both branches must support the
 operation. Implementors: use `all()`, not `any()`.
 
-**[CONSTRAIN-TOP] — Open design gap:** `C(⊤) ⊢ satisfied` is unsound for
-`Equatable` and `Comparable`: a `Top`-typed value could be a function or `DirCap`
-at runtime, neither of which is equatable, and no ClassEnv dispatch is triggered
-for `Top`. For `Showable`, vacuous satisfaction is defensible (everything can
-produce some string representation). The correct rule for `Equatable`/`Comparable`
-on `Top` is an open decision — see gaps discussion.
+**[CONSTRAIN-TOP] and [CONSTRAIN-UNKNOWN]:** The rules follow from AGT existential
+lifting (Garcia, Clark & Tanter, POPL 2016): `C(A) = ∃t ∈ γ(A). C(t)`.
+
+- `γ(⊤) = {⊤}` — Top concretizes only to itself. Since Top is not a member of
+  any class's instance set, `C(⊤)` fails for all classes except `Showable`.
+  `Showable(⊤)` succeeds because `Showable` is a total function by policy
+  (`!matches!(ty, Error)` in `satisfies_constraint`). **Current code is
+  correct — Top falls through to `false` for non-Showable classes by the
+  existing allowlists.** No code change needed for Top.
+
+- `γ(?) = STypes` — Unknown concretizes to the set of all static types.
+  `C(?) = ∃t ∈ STypes. C(t)` holds for any non-empty class. `Equatable(?)`
+  succeeds because `Equatable(Int)` holds; the runtime ClassEnv dispatch
+  provides the actual check at the gradual boundary. **Code change required:**
+  `satisfies_constraint` returns `false` for `Unknown` by accident (it is not
+  in any allowlist); an explicit `Type::Unknown => return true` pre-check is
+  needed so that `[CONSTRAIN-FIELD]` propagation through `Unknown`-typed fields
+  gives the AGT-correct answer. This is implemented in `src/type_unify.rs`.
+
+References: Garcia, Clark & Tanter (POPL 2016); Castagna & Lanvin (ICFP 2017).
 
 These rules apply when the constrained type variable is unified with a Record
 type during constraint checking. The propagation is automatic — no new
@@ -332,7 +373,8 @@ The MPTCs and runtime dispatch interact cleanly with the HKT typeclass hierarchy
 - `Equatable` and `Comparable` remain kind-`*` classes — single-type-variable, no HKT dependency.
 - `Add`/`Sub`/`Mul`/`Div` are MPTC (3 type variables) but still kind-`*` on each parameter.
 - The ClassEnv used for runtime dispatch is the same `ClassEnv` that stores Functor/Monad instances — one unified registry.
-- Constraint entailment: `Comparable a` entails `Equatable a` — if a user declares `ComparablePriority`, `EquatablePriority` is derived automatically from the superclass relationship.
+- Constraint entailment: `Comparable a` entails `Equatable a` — if a user declares `ComparablePriority`, `EquatablePriority` is derived automatically from the superclass relationship. Same-arity superclass entailment is supported via the existing `entails()` function (`src/type_unify.rs:73–96`).
+- **Cross-arity entailment is not supported.** `Add a b c` does not automatically entail `Numeric a` or `Numeric b`. No position-mapping syntax exists for cross-arity superclass declarations, and none is needed: `Add`'s closed instance set already restricts operands to numeric types — any type without an `Add` instance produces a type error at the call site, which is the correct enforcement mechanism. Cross-arity entailment would require explicit position-mapping declarations (e.g. `superclass Add[0] Numeric`) which is out of scope.
 
 ### Limitations
 
@@ -391,6 +433,8 @@ ensures dispatch is always deterministic (Sulzmann et al. 2007).
 
 ## References
 
+- Castagna, G. & Lanvin, V. (2017). "Gradual typing with union and intersection types." *ICFP '17*, pp. 1-28. ACM. — [set-theoretic treatment of ⊤ vs ? in gradual systems; confirms C(⊤) requires a literal instance while C(?) is existential]
+- Garcia, R., Clark, A.M. & Tanter, É. (2016). "Abstracting gradual typing." *POPL '16*, pp. 429-442. ACM. — [AGT existential lifting: C(?) = ∃t ∈ γ(?). C(t); the formal basis for [CONSTRAIN-UNKNOWN]]
 - Gaster, B.R. & Jones, M.P. (1996). "A polymorphic type system for extensible records and variants." Technical Report NOTTCS-TR-96-3. — [first-class labels and row-level constraints; BAS intersection propagation is a closed-record analogue]
 - Jones, M.P. (1994). "A theory of qualified types." *Science of Computer Programming*, 22(3), 231-256. — [qualified types with multi-parameter constraints and functional dependencies; the formal model for Add a b c | (a,b)→c]
 - Jones, M.P. (1995). *Qualified Types: Theory and Practice.* Cambridge University Press. — [dictionary translation; constraint satisfaction; instance coherence]
