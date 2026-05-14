@@ -11683,7 +11683,8 @@ mod tests {
         // Seed alpha with a Numeric class constraint.
         state.constraints.push(Constraint::Class {
             class: "Numeric".to_string(),
-            var: alpha.clone(),
+            vars: vec![alpha.clone()],
+            fundeps: vec![],
         });
 
         let a = Type::TypeVar(alpha.clone(), 1);
@@ -11696,7 +11697,9 @@ mod tests {
 
         // After unification, beta must have the Numeric constraint.
         let beta_has_numeric = state.constraints.iter().any(|c| match c {
-            Constraint::Class { class, var } => class == "Numeric" && var == &beta,
+            Constraint::Class { class, vars, .. } => {
+                class == "Numeric" && vars.len() == 1 && vars[0] == beta
+            }
             _ => false,
         });
         assert!(
@@ -11704,5 +11707,47 @@ mod tests {
             "beta should have Numeric constraint after transfer; state.constraints = {:?}",
             state.constraints
         );
+    }
+
+    // -- MPTC functional dependency tests --
+
+    /// Helper to infer type of an expression with builtins in scope
+    fn infer_with_builtins(input: &str) -> Type {
+        let mut file = crate::parse(input).unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let env = Rc::new(TypeEnv::with_builtins());
+        let mut state = InferState::new();
+        let expr = &file.node.documents[0].node.expressions[0];
+        infer_expr(expr, &env, &mut state, &mut None).unwrap()
+    }
+
+    #[test]
+    fn test_add_homogeneous_int() {
+        // [+ 1 2] should infer Int via Add Int Int Int instance
+        assert_eq!(infer_with_builtins("[+ 1 2]"), Type::Int);
+    }
+
+    #[test]
+    fn test_add_mixed_int_float() {
+        // [+ 1 2.0] should infer Float via Add Int Float Float instance
+        assert_eq!(infer_with_builtins("[+ 1 2.0]"), Type::Float);
+    }
+
+    #[test]
+    fn test_add_float_int() {
+        // [+ 2.0 1] should infer Float via Add Float Int Float instance
+        assert_eq!(infer_with_builtins("[+ 2.0 1]"), Type::Float);
+    }
+
+    #[test]
+    fn test_sub_homogeneous_int() {
+        // [- 5 3] should infer Int via Sub Int Int Int instance
+        assert_eq!(infer_with_builtins("[- 5 3]"), Type::Int);
+    }
+
+    #[test]
+    fn test_div_int_int_returns_float() {
+        // [/ 10 2] should infer Float via Div Int Int Float instance
+        assert_eq!(infer_with_builtins("[/ 10 2]"), Type::Float);
     }
 }
