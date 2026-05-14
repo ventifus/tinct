@@ -17,22 +17,204 @@ A list is equivalent to a dict with integer keys:
 
 **Implementation:** May use different internal representations (dense vector for list-like data, HashMap for sparse/string keys) as a transparent performance optimization. Users never see the difference.
 
-**Type-theoretic implication:** At runtime, every `[]` expression creates a `Value::Dict`. At the type level, the type checker uses `Record` to describe the static field structure of a dict. The terms "dict" (runtime) and "Record" (type) refer to the same value viewed from two levels. The static `Record` type tracks only string-keyed fields; integer-keyed (positional) entries are not part of the record type. A dict `[a b c  name: Alice]` has record type `[name: String]` — the positional entries `a`, `b`, `c` are invisible to the type checker. This is a deliberate consequence of unifying lists and records: positional entries are list-like data without static field names, while named entries form the record structure that type inference reasons about. See [Type Annotations](05-type-annotations.md) for the user-facing annotation syntax and [Type Inference](06-type-inference.md) for the formal Record type definition.
+## Dict Properties
 
-## One Bracket, One Structure
+### Heterogeneous Keys
 
-**`[]` is the only bracket type.** There is one syntax for the one fundamental data structure. Entries with `key:` are keyed; entries without get auto-incrementing integer keys. Both can appear in the same `[]`.
+**Computed keys and the type checker:** Dict keys can be variable references (`[$k: value]`). The evaluator resolves computed keys at runtime. The type checker resolves them at compile time via literal types: if `$k` has type `StringLiteral("name")`, the field name is `"name"`. If the type is not a literal (e.g., plain `String`), the field is excluded from the Record type. See [Type Annotations](05-type-annotations.md) §Literal Types for details.
+
+### Insertion Order
+
+**Dicts preserve insertion order for iteration and display.** Semantically, entry order doesn't matter (letrec scoping). But iteration via `$keys`, `$values`, `$map` etc. follows the order entries appear in source. `$merge` preserves left order, appends new keys from right.
+
+### Duplicate Keys Are Errors
+
+**Duplicate keys in dict literals are an error.** Use `merge` for intentional overrides.
 
 ```tinct
-[name: "Alice"  age: 30]        # All keyed — a "dict"
-[a b c]                         # All auto-indexed — a "list" = [0: a  1: b  2: c]
-[f x timeout: 60]               # Mixed — positional + named (implied call; see doc/04)
-[]                              # Empty — list and dict are identical
+[name: "Alice"  name: "Bob"]              # → Error: duplicate key "name"
+[merge [name: "Alice"] [name: "Bob"]]     # → [name: "Bob"]  (right-biased, intentional)
 ```
 
-**Parsing rule:** After parsing an entry, look ahead for `:`. If found, the entry is a key and the next thing is its value. If not, the entry is auto-indexed. The integer counter only increments for unkeyed entries — keyed entries don't consume an index.
+**Why:** Duplicate keys + lazy evaluation creates confusing semantics — depending on the scoping model, derived values may see different bindings of the same key. Prohibiting duplicates eliminates the ambiguity entirely and catches copy-paste errors.
 
-**Positional and named entries may appear in any order.** Auto-indices are assigned sequentially to positional entries regardless of where named entries appear. For function calls, the binding priority chain (§Call Convention, C-PRIORITY) resolves positional arguments by index, then named arguments fill remaining parameters, then defaults apply.
+## Record and Map
+
+At the runtime level, all dicts are `Value::Dict`. At the type level, the type checker distinguishes two forms:
+
+**Record** — a dict whose field names are statically known. Annotated as `@[name: String  age: Int]`. The type checker tracks each field and its type precisely. `get` on a Record field with a known key returns the field type directly.
+
+**Map[K V]** — a homogeneous dict where all keys have type K and all values have type V. Annotated as `@Map@[K: V]` — the compact form reads as "map from K to V". Key type K must be `Int`, `Str`, or `Int | Str`. `get` on a `Map[K V]` returns `V | Null` (the key may be absent). Bare `@Map` means `Map[Any Any]`. The explicit named form `@Map@[key: K  value: V]` is also accepted when maximum clarity is needed.
+
+**`Dict`** is the union of both — `@Dict` accepts either form.
+
+```tinct
+# Named Record type alias — define once, use everywhere
+Config: [type Record@[host: String  port: Int]]
+process: [fn [config@Config] ...]                              # using the alias
+
+# Inline annotation at the parameter or type-assertion site
+process: [fn [config@Record@[host: String  port: Int]] ...]   # parameter annotation
+validate: [fn [r] [@Record@[host: String  port: Int] r]]      # type assertion
+
+# Shorthand @[...] form also works for parameters (no collision with type/default/doc fields)
+process: [fn [config@[host: String  port: Int]] ...]
+
+# Named Map type alias
+Scoreboard: [type Map@[String: Int]]
+lookup: [fn@Int [s@Scoreboard  key@String] [get-or s key 0]]  # using the alias
+
+# Inline annotation
+lookup: [fn [s@Map@[String: Int]] [get-or s "default" 0]]     # parameter annotation
+index@Map@[String: Any]                                        # string-keyed, untyped values
+cache@Map                                                      # bare: Map[Any Any]
+
+# Explicit named form — same meaning, more readable for complex types
+transitions@Map@[key: Int  value: Seq@Int]
+
+# Dict — either form accepted
+process: [fn@Null [d@Dict] ...]
+```
+
+The distinction is purely static. At runtime, both are the same `Value::Dict`. Most dict literals are Records unless annotated otherwise.
+
+## Equality
+
+**Dict equality is order-insensitive and structural.** Two dicts are equal if they have the same key set and equal values at each key, regardless of insertion order. This follows from the extensional (finite-map) semantics of Dict: a dict is a partial function from keys to values, and two functions are equal when they agree on every point in their domain.
+
+```tinct
+[= [a: 1  b: 2] [b: 2  a: 1]]   # → true  (same keys and values, different order)
+[= [a: 1] [a: 2]]                 # → false (value at "a" differs)
+[= [a: 1  b: 2] [a: 1]]          # → false (different key sets)
+[= [] []]                          # → true  (empty dicts are equal)
+```
+
+Both Record and Map forms use the same order-insensitive comparison — the runtime representation is the same `Value::Dict`, so `=` treats them identically. Cycle detection via a visited-pair set prevents infinite loops on self-referential structures.
+
+Functions and builtins always compare as unequal to each other (no meaningful closure equality).
+
+## Null and Missing Keys
+
+**Null is the empty dict `[]`.** There is no separate null type — null is simply `[]` with type `@Null` (`Type::Record(Row::Empty)`). The `null?` predicate tests for it:
+
+```tinct
+[null? []]         # → true
+[null? [a: 1]]     # → false
+[null? "hello"]    # → false
+```
+
+Functions that may return nothing return `[]`. Annotate with `@Null`:
+
+```tinct
+find: [fn@[Ok String | Null] [haystack@String needle@String]
+  [if [str-contains haystack needle] [Ok haystack] []]]
+```
+
+**Missing keys are errors.** A key not being present in a dict is distinct from a key being present with value `[]`. Accessing a missing key errors immediately:
+
+```tinct
+[get person "name"]              # → "Alice"
+[get person "occupation"]        # → Error: key "occupation" not found
+
+# Safe alternatives
+[get-or config "timeout" 30]    # → 30 if "timeout" missing
+[has? config "timeout"]          # → true/false
+```
+
+**JSON null mapping:** `from-json` maps JSON `null` to `[]`. After conversion, `null?` on the result returns true, consistent with tinct's null-as-empty-dict model.
+
+## Data Access — Two Modes
+
+Data access has two distinct modes: **key-based** (look up by key) and **position-based** (look up by insertion-order index). For dense lists `[a b c]` = `[0: a 1: b 2: c]`, these coincide. They diverge for sparse or mutated dicts.
+
+**Key-based access** — dot notation and `get` builtin:
+
+```tinct
+# Dot notation (string keys and integer dot access)
+person.name                     # string key "name"
+config.database.host            # chained string key access
+data.0                          # integer dot access — looks up Key::Int(0)
+
+# get builtin (key first, collection second)
+[get 5 data]                    # Integer key 5
+[get "name" data]               # String key "name"
+[get $key data]                 # Computed key lookup ($key is a variable reference)
+[get 0 config.services].host    # Dynamic key then dot chain
+```
+
+**Rules:** Identifiers can start access chains directly — `foo.bar` and `$foo.bar` are both valid. `[get key data]` finds the entry whose key matches `key`, not the nth entry by position.
+
+Use `[get key data]` for integer and dynamic key access.
+
+**Subsequence operations** — stdlib functions:
+
+```tinct
+[slice data 2 5]                # Entries at positions 2, 3, 4 (position-based)
+[take 3 data]                   # First 3 entries
+[drop 2 data]                   # All entries after the first 2
+```
+
+Use `slice`, `take`, and `drop` for subsequences.
+
+**Position-based access** — stdlib functions:
+
+```tinct
+[nth data 0]                    # First entry (position 0)
+[nth data -1]                   # Last entry (negative = from end)
+[last data]                     # Last entry (alias)
+[slice data 2 5]                # Entries at positions 2, 3, 4
+```
+
+**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `[get 0 data]` (key 0) and `[nth data 0]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
+
+## List vs Dict Operations — Renumbering Rule
+
+**List operations require integer keys and always produce dense `[0..n]`.** Error on string keys. Dict operations preserve keys. Universal operations work on both and preserve keys.
+
+```tinct
+# List operations — integer keys only, always renumber
+[first [alice bob carol]]               # → alice
+[rest [alice bob carol]]                # → [bob carol] = [0: bob  1: carol]
+[cons z [a b c]]                        # → [z a b c] = [0: z  1: a  2: b  3: c]
+[conj [a b c] d]                        # → [a b c d] = [0: a  1: b  2: c  3: d]
+[concat [a b] [c d]]                    # → [a b c d] = [0: a  1: b  2: c  3: d]
+[reverse [a b c]]                       # → [c b a] = [0: c  1: b  2: a]
+[sort [cherry apple banana]]            # → [apple banana cherry] — sorts by value, discards original keys
+[reindex [0: a  5: b  10: c]]           # → [a b c] = [0: a  1: b  2: c]
+```
+
+**Why this split:**
+- No ambiguity about which operations renumber — it's determined by the category, not the data
+- List operations always give you clean, predictable lists
+- Dict operations never silently destroy your key structure
+- `filter` returns a Seq of matching values (since inclusion requires predicate evaluation, keys are not preserved) — use `collect` to get a dict back
+- The type system enforces the boundary: list operations require `[a]` (integer-keyed)
+
+```tinct
+# filter returns a Seq of matching values (dual-dispatch)
+data: [alice bob carol dave]
+[filter [fn [x] [not [= x bob]]] data]
+# → Seq(alice, carol, dave)    use collect for a dict
+
+# Pipe through collect for a clean list
+[collect [filter [fn [x] [not [= x bob]]] data]]
+# → [0: alice  1: carol  2: dave]
+
+# filter on string-keyed dicts also returns Seq of values
+[collect [filter [fn [v] [> v 0]] [x: 1  y: -2  z: 3]]]
+# → [0: 1  1: 3]
+```
+
+**`conj` on sparse data:** `conj` delegates to `append`, which uses the maximum existing integer key + 1 as the new key (or 0 if no integer keys exist). This avoids key collisions even on sparse data:
+
+```tinct
+# Dense list — conj works as expected
+[conj [a b c] d]                        # → [0: a  1: b  2: c  3: d]
+
+# Sparse data — no collision, key 11 is used (max 10 + 1)
+sparse: [0: a  5: b  10: c]
+[conj sparse d]                         # → [0: a  5: b  10: c  11: d]
+```
 
 ## Value Types — Overview
 
@@ -61,42 +243,6 @@ Tinct has a fixed set of runtime value types. The following table lists all type
 | `QuicSession` | QUIC session handle | [Builtins Reference](11a-builtins.md) §Network |
 | `Http2Session` | HTTP/2 session handle | [Builtins Reference](11a-builtins.md) §Network |
 | `Http3Session` | HTTP/3 session handle | [Builtins Reference](11a-builtins.md) §Network |
-
-## Heterogeneous Keys
-
-**Allowed by default.** Integer and string keys can coexist in the same dict. Quoted strings are valid as keys, allowing keys with spaces or special characters: `["my key": value  "another:key": 42]`.
-
-**Computed keys and the type checker:** Dict keys can be variable references (`[$k: value]`). The evaluator resolves computed keys at runtime. The type checker resolves them at compile time via literal types: if `$k` has type `StringLiteral("name")`, the field name is `"name"`. If the type is not a literal (e.g., plain `String`), the field is excluded from the Record type. See [Type Annotations](05-type-annotations.md) §Literal Types for details.
-
-## Insertion Order
-
-**Dicts preserve insertion order for iteration and display.** Semantically, entry order doesn't matter (letrec scoping). But iteration via `$keys`, `$values`, `$map` etc. follows the order entries appear in source. `$merge` preserves left order, appends new keys from right.
-
-## Duplicate Keys Are Errors
-
-**Duplicate keys in dict literals are an error.** Use `merge` for intentional overrides.
-
-```tinct
-[name: "Alice"  name: "Bob"]              # → Error: duplicate key "name"
-[merge [name: "Alice"] [name: "Bob"]]     # → [name: "Bob"]  (right-biased, intentional)
-```
-
-**Why:** Duplicate keys + lazy evaluation creates confusing semantics — depending on the scoping model, derived values may see different bindings of the same key. Prohibiting duplicates eliminates the ambiguity entirely and catches copy-paste errors.
-
-## Equality
-
-**Dict equality is order-insensitive and structural.** Two dicts are equal if they have the same key set and equal values at each key, regardless of insertion order. This follows from the extensional (finite-map) semantics of Dict: a dict is a partial function from keys to values, and two functions are equal when they agree on every point in their domain.
-
-```tinct
-[= [a: 1  b: 2] [b: 2  a: 1]]   # → true  (same keys and values, different order)
-[= [a: 1] [a: 2]]                 # → false (value at "a" differs)
-[= [a: 1  b: 2] [a: 1]]          # → false (different key sets)
-[= [] []]                          # → true  (empty dicts are equal)
-```
-
-Both Record and Map forms use the same order-insensitive comparison — the runtime representation is the same `Value::Dict`, so `=` treats them identically. Cycle detection via a visited-pair set prevents infinite loops on self-referential structures.
-
-Functions and builtins always compare as unequal to each other (no meaningful closure equality).
 
 ## Numeric Types — `Int`, `Float`, `Number`
 
@@ -149,86 +295,17 @@ z@Number                        # accepts either
 
 **Width-specific types** (`Int32`, `Int64`, `Int128`, etc.) are range constraints expressed through the contracts system, not new runtime representations. `Decimal` is a first-class runtime type created via `[decimal "3.14159"]`, backed by `rust_decimal::Decimal` (96-bit software decimal). `BigInt` is an arbitrary-precision integer created via `[big-int "12345678901234567890"]`, backed by `num_bigint::BigInt`.
 
-The promotion table is built into the evaluator. User-defined numeric types participating in arithmetic would require type classes — see `doc/whatif/typeclasses.md` for the accepted design.
-
-## No Null — Missing Keys Are Errors
-
-**No `null` value in the language.** Accessing a nonexistent key is an error.
-
-```tinct
-[get person "name"]              # → "Alice"
-[get person "occupation"]        # → Error: key "occupation" not found
-
-# Safe alternative with default
-[get-or config "timeout" 30]    # → 30 if "timeout" is missing
-
-# Check existence
-[has? config "timeout"]          # → true/false
-```
-
-**Why no null:**
-- **Row polymorphism catches it at compile time.** A function taking `[name: String ...]` guarantees `name` exists. Most missing-key bugs never reach runtime.
-- **Lazy eval provides a safety net.** `[x: [get dict "maybe-missing"]]` doesn't error until `x` is materialized. If you never use `x`, no error.
-- **No null confusion.** Can't confuse "key exists with null" vs "key is missing." Every key that exists has a real value.
-- **Clean data representation.** Config files have no `null` noise — every key is meaningful.
-
-**JSON null mapping:** Since Tinct has no null value, `from-json` (and CLI stdin JSON injection) maps JSON `null` to `[]` (empty dict). This means it is impossible to distinguish "was null" from "was empty object" after conversion. This is an intentional trade-off -- Tinct's "no null" design prioritizes simplicity over round-trip fidelity with JSON.
-
-## Data Access — Two Modes
-
-Data access has two distinct modes: **key-based** (look up by key) and **position-based** (look up by insertion-order index). For dense lists `[a b c]` = `[0: a 1: b 2: c]`, these coincide. They diverge for sparse or mutated dicts.
-
-**Key-based access** — dot notation and `get` builtin:
-
-```tinct
-# Dot notation (string keys and integer dot access)
-person.name                     # string key "name"
-config.database.host            # chained string key access
-data.0                          # integer dot access — looks up Key::Int(0)
-
-# get builtin (key first, collection second)
-[get 5 data]                    # Integer key 5
-[get "name" data]               # String key "name"
-[get $key data]                 # Computed key lookup ($key is a variable reference)
-[get 0 config.services].host    # Dynamic key then dot chain
-```
-
-**Rules:** Identifiers can start access chains directly — `foo.bar` and `$foo.bar` are both valid. `[get key data]` finds the entry whose key matches `key`, not the nth entry by position.
-
-Use `[get key data]` for integer and dynamic key access.
-
-**Subsequence operations** — stdlib functions:
-
-```tinct
-[slice data 2 5]                # Entries at positions 2, 3, 4 (position-based)
-[take 3 data]                   # First 3 entries
-[drop 2 data]                   # All entries after the first 2
-```
-
-Use `slice`, `take`, and `drop` for subsequences.
-
-**Position-based access** — stdlib functions:
-
-```tinct
-[nth data 0]                    # First entry (position 0)
-[nth data -1]                   # Last entry (negative = from end)
-[last data]                     # Last entry (alias)
-[slice data 2 5]                # Entries at positions 2, 3, 4
-```
-
-**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `[get 0 data]` (key 0) and `[nth data 0]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
-
-### Lazy Sequences — Value::Seq
+## Lazy Sequences
 
 **Lazy sequences (`Value::Seq`) are a runtime-only value type** representing infinite or demand-driven data (from `$range`, `$repeat`, `$cycle`, `$iterate`, etc.). They exist alongside `Dict`, `Int`, `Float`, `String`, `Bool`, `Function`, `Handle`, `HttpConn`, `Uri`, `Decimal`, `BigInt`, `Variant`, `Timestamp`, `Duration`, and `Bytes` in the value representation. Sequences have no literal syntax — they are produced by builtin functions and consumed by sequence operations like `$map`, `$filter`, `$take`, `$collect`.
 
 Sequences are dual-dispatch targets: `$map` on a Seq returns a lazy Seq, `$filter` on a Seq returns a lazy Seq. Use `$collect` to materialize a Seq to a dense dict. Attempting operations that require full materialization (like `$sort` or `$length`) on an infinite Seq will error. See doc/08-evaluation.md §Lazy Sequences for implementation details and laziness semantics.
 
-### Handles — Value::Handle
+## Handles
 
 **Handles (`Value::Handle`) are runtime-only values representing open I/O resources** — file descriptors, network streams, and other OS-level channels. A Handle is an unforgeable reference in the capability sense (Dennis & Van Horn 1966): holding it is sufficient authority to perform I/O; no separate capability argument is required at use time.
 
-#### Capability Row
+### Capability Row
 
 Every Handle carries a **capability row** — a `HashMap<String, Value>` mapping capability names to associated data. The row is immutable after construction; each operation that adds a capability produces a new Handle wrapping the old one. The capability row determines which builtins are callable on the Handle:
 
@@ -247,7 +324,7 @@ Boolean capabilities (Readable, Writable, Binary, Text, Stream, Datagram, Seekab
 
 **Reading capability data:** Use `cap-data h name` to read the associated `Value` for a capability, and `has-cap? h name` to test whether a capability is present without extracting data.
 
-#### Network Handles
+### Network Handles
 
 `connect` dispatches on the Transport variant to determine the address format and capability routing. Port is absent for transports that have no port concept:
 
@@ -270,7 +347,7 @@ Capability routing: `Tcp`/`Udp`/`Icmp` require a `NetCap` (allowlist checked bef
 
 The `Tls` capability value is a dict with the same fields as the `PeerCert` type returned by `tls-peer-cert` (see [Builtins](11a-builtins.md) §Network).
 
-#### Layers — Handle→Handle Protocol Upgrades
+### Layers — Handle→Handle Protocol Upgrades
 
 A **Layer** is any function that takes a Handle and returns a Handle with augmented capabilities (`Handle[R] → Handle[R ∪ NewCaps]`). There is no Layer typeclass — the composition is structural. Any pure-tinct function with the right signature is a Layer.
 
@@ -286,7 +363,7 @@ Layers compose left-to-right with Connectors:
 
 The original Handle is consumed; subsequent operations on it produce a runtime error. The new Handle wraps the protocol-upgraded connection.
 
-#### Sessions — Multiplexed Connections
+### Sessions — Multiplexed Connections
 
 A **Session** is a multiplexed connection: one physical channel carrying multiple independent logical streams. Sessions are opened from Handles or Connectors; stream Handles are opened from Sessions.
 
@@ -315,11 +392,11 @@ Three Session types exist as runtime-only opaque values:
 
 `http-request` is the uniform application-level call across all HTTP session types, returning `{ok: {status: Int  headers: Dict  body: Bytes}} | {err: String}`.
 
-### URI Values — Dict-based parsed URIs
+## URI Values
 
 The `uri`, `url`, and `urn` builtins parse URI strings and return **plain dicts** with the documented fields accessible via dot notation. There are no distinct `Value::Url` or `Value::Urn` enum variants — all three builtins return `Value::Dict`, and `type-of` reports `"Dict"` for all three. (`Value::Uri { scheme, uri }` exists as an enum variant but is reserved for internal use and is not produced by any builtin.)
 
-#### uri (RFC 3986 §3)
+### uri (RFC 3986 §3)
 
 **`uri` parses a generic RFC 3986 URI** and returns a dict, covering all URI forms including non-hierarchical ones (mailto:, tel:, urn:, news:).
 
@@ -351,7 +428,7 @@ m.host      # → [] (empty dict — non-hierarchical)
 m.path      # → "user@example.com"
 ```
 
-#### url (RFC 3986 §3.2)
+### url (RFC 3986 §3.2)
 
 **`url` parses a hierarchical URI with a required authority (host and port)** and returns a dict. The builtin errors if the URI has no authority component. Network functions (`http-get`, `tls-layer`) accept url dicts.
 
@@ -381,7 +458,7 @@ u.query     # → "page=2"
 [url "urn:isbn:978-0-306-40615-7"] # → Error: no authority component
 ```
 
-#### urn (RFC 8141)
+### urn (RFC 8141)
 
 **`urn` parses a URN per RFC 8141**: `urn:NID:NSS[?+r][?=q][#f]` and returns a dict. The builtin errors if the string is not a `urn:` URI.
 
@@ -405,62 +482,13 @@ u.nid    # → "uuid"
 u.nss    # → "6e8bc430-9c3a-11d9-9669-0800200c9a66"
 ```
 
-### List vs Dict Operations — Renumbering Rule
-
-**List operations require integer keys and always produce dense `[0..n]`.** Error on string keys. Dict operations preserve keys. Universal operations work on both and preserve keys.
-
-```tinct
-# List operations — integer keys only, always renumber
-[first [alice bob carol]]               # → alice
-[rest [alice bob carol]]                # → [bob carol] = [0: bob  1: carol]
-[cons z [a b c]]                        # → [z a b c] = [0: z  1: a  2: b  3: c]
-[conj [a b c] d]                        # → [a b c d] = [0: a  1: b  2: c  3: d]
-[concat [a b] [c d]]                    # → [a b c d] = [0: a  1: b  2: c  3: d]
-[reverse [a b c]]                       # → [c b a] = [0: c  1: b  2: a]
-[sort [cherry apple banana]]            # → [apple banana cherry] — sorts by value, discards original keys
-[reindex [0: a  5: b  10: c]]           # → [a b c] = [0: a  1: b  2: c]
-```
-
-**Why this split:**
-- No ambiguity about which operations renumber — it's determined by the category, not the data
-- List operations always give you clean, predictable lists
-- Dict operations never silently destroy your key structure
-- `filter` returns a Seq of matching values (since inclusion requires predicate evaluation, keys are not preserved) — use `collect` to get a dict back
-- The type system enforces the boundary: list operations require `[a]` (integer-keyed)
-
-```tinct
-# filter returns a Seq of matching values (dual-dispatch)
-data: [alice bob carol dave]
-[filter [fn [x] [not [= x bob]]] data]
-# → Seq(alice, carol, dave)    use collect for a dict
-
-# Pipe through collect for a clean list
-[collect [filter [fn [x] [not [= x bob]]] data]]
-# → [0: alice  1: carol  2: dave]
-
-# filter on string-keyed dicts also returns Seq of values
-[collect [filter [fn [v] [> v 0]] [x: 1  y: -2  z: 3]]]
-# → [0: 1  1: 3]
-```
-
-**`conj` on sparse data:** `conj` delegates to `append`, which uses the maximum existing integer key + 1 as the new key (or 0 if no integer keys exist). This avoids key collisions even on sparse data:
-
-```tinct
-# Dense list — conj works as expected
-[conj [a b c] d]                        # → [0: a  1: b  2: c  3: d]
-
-# Sparse data — no collision, key 11 is used (max 10 + 1)
-sparse: [0: a  5: b  10: c]
-[conj sparse d]                         # → [0: a  5: b  10: c  11: d]
-```
-
-### Access Chain Evaluation — Formal Specification
+## Access Chain Evaluation — Formal Specification
 
 Formalizes access forms (dot and `get` builtin) as an access algebra with compositional chain semantics. Access chains are the primary data extraction mechanism in tinct — they desugar to nested AST nodes that the evaluator reduces inside-out, materializing the target at each step.
 
 The formal specification below covers dot access and the `get` builtin.
 
-#### Part 1: Access Algebra
+### Part 1: Access Algebra
 
 An **access chain** is a sequence of projections applied left-to-right to a target expression. The parser produces nested AST nodes; the algebra makes the compositional structure explicit.
 
@@ -492,7 +520,7 @@ Use `[get 0 $a.b].c` for dynamic key access followed by dot access.
 
 The evaluator reduces inside-out: first `eval(VarRef("a"))`, then `apply(dot("b"), ...)`, then `apply(dot(0), ...)`, then `apply(dot("c"), ...)`. This inside-out reduction is equivalent to the left-to-right chain evaluation defined above.
 
-#### Part 2: Projection Rules
+### Part 2: Projection Rules
 
 Each projection materializes its target to a `Dict`, then extracts by key. All three rules share a common materialization step formalized as `materialize_dict`.
 
@@ -518,10 +546,10 @@ map[key] = θ                                 (look up key; error if absent)
 eval_dot(target, field, ρ, d) ⇒ θ
 ```
 
-Error case: if `key ∉ dom(map)`, error `key_not_found(field, span)`. No default — missing keys are always errors (§No Null — Missing Keys Are Errors).
+Error case: if `key ∉ dom(map)`, error `key_not_found(field, span)`. No default — missing keys are always errors (§Null and Missing Keys).
 
 
-#### Part 3: Error Taxonomy
+### Part 3: Error Taxonomy
 
 Error classes for current access forms:
 
@@ -533,7 +561,7 @@ Error classes for current access forms:
 
 Error context is enriched via `push_frame`: dot access adds `"accessing .{field}"`.
 
-#### Part 4: Chain Properties
+### Part 4: Chain Properties
 
 Five properties that hold for all access chains.
 
@@ -567,7 +595,7 @@ Five properties that hold for all access chains.
 
 *Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)`. The `Rc` reference count increases, but both the dict entry and the accessor hold pointers to the same `Thunk`. When either materializes it, the thunk transitions to `Materialized` (or `Failed`), and subsequent accesses via any alias see the cached state. This is the Launchbury (1993) sharing guarantee applied to record projection — access is observation, not duplication. ∎
 
-#### Part 5: Type System Correspondence
+### Part 5: Type System Correspondence
 
 Under Boolean Algebraic Subtyping (BAS), all records are closed. Dot access on a closed record returns the declared field type if the field exists, or produces a type error if the field is missing. There is no "open record" fallback to `Any` — records are precise.
 
@@ -585,7 +613,7 @@ The type checker mirrors the access algebra with type-level projections:
 
 **`get` builtin precision:** When the key passed to `[get key data]` is a literal (`Expr::Str` or `Expr::Int`), the type checker performs exact field lookup. When the key is a variable with type `Str`, `Int`, or `Any`, the result type is `Any` — since the key value is not known until runtime, the type checker cannot determine which field will be accessed. The `get` builtin is checked as a regular call.
 
-#### Part 6: Implementation Correspondence
+### Part 6: Implementation Correspondence
 
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
@@ -595,7 +623,7 @@ The type checker mirrors the access algebra with type-level projections:
 | Chain nesting | Parser produces nested `DotAccess` AST nodes | `ast.rs` |
 | Type-level dot | `check_dot_access()` | `typecheck.rs` |
 
-#### Part 7: Worked Examples
+### Part 7: Worked Examples
 
 **Example 1: Chained dot access**
 
@@ -630,4 +658,3 @@ data: [a: 1  b: 2  c: 3  d: 4]
 ```
 
 `[slice data 1 3]` returns entries at positions 1 and 2 (half-open interval `[1, 3)` by insertion order), yielding `[0: 2  1: 3]` (renumbered). Use `slice`, `take`, and `drop` for subsequences.
-

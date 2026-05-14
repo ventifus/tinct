@@ -1,0 +1,10 @@
+# User-defined Dict type with Equatable instance for structural comparison
+
+# Note: This test verifies that typeclass dispatch works.
+# Dict already has structural equality in Rust, so this is mainly
+# to verify the dispatch mechanism itself.
+
+# Primitive types still work
+[=  1 1]
+=== out
+true

@@ -19,8 +19,67 @@ use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext};
+use crate::eval_call::{invoke_function, CallContext};
 use crate::value::Key;
 use crate::value::{BuiltinArgs, Thunk, Value};
+
+/// Helper to dispatch a typeclass method call if an instance is registered.
+/// Returns Some(result) if instance was found and method called, None to fall through.
+fn try_dispatch_method(
+    class_name: &str,
+    method_name: &str,
+    args: &[Rc<Thunk>],
+    named: Option<&IndexMap<String, Rc<Thunk>>>,
+    call_span: Span,
+    ctx: &Rc<EvalContext>,
+) -> Option<EvalResult<Rc<Thunk>>> {
+    if args.is_empty() {
+        return None;
+    }
+
+    let first_val = materialize(&args[0], Some(&call_span), ctx).ok()?;
+    let type_name = first_val.type_name();
+
+    let instance_thunk = ctx.state.borrow()
+        .instance_registry
+        .get(&(class_name.to_string(), type_name.to_string()))
+        .cloned()?;
+
+    let instance_val = materialize(&instance_thunk, Some(&call_span), ctx).ok()?;
+
+    if let Value::Dict(methods_map) = instance_val {
+        let method_id = methods_map.get(&Key::String(method_name.to_string()))?;
+        let method_thunk = ctx.get_thunk(*method_id);
+        let method_val = materialize(&method_thunk, Some(&call_span), ctx).ok()?;
+
+        match method_val {
+            Value::Function { params, body, env: closure_env, .. } => {
+                Some(invoke_function(&CallContext {
+                    params: &params,
+                    body: &body,
+                    closure_env: &closure_env,
+                    positional: args,
+                    named: None,
+                    default_env: &closure_env,
+                    call_span,
+                    origin: Some(Rc::from(format!("{}.{}", class_name, method_name))),
+                    ctx,
+                }))
+            }
+            Value::Builtin(def) => {
+                Some((def.func)(BuiltinArgs {
+                    args,
+                    named,
+                    call_span,
+                    ctx: Rc::clone(ctx)
+                }))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
 
 /// Two-operand numeric pair after auto-promotion.
 ///
@@ -97,6 +156,13 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("+", named, call_span)?;
+
+    // Runtime typeclass dispatch: check for Add instance
+    if let Some(result) = try_dispatch_method("Add", "add", args, named, call_span, &ctx) {
+        return result;
+    }
+
+    // Fall through to existing Rust dispatch
     match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_add(b)
@@ -119,6 +185,13 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("-", named, call_span)?;
+
+    // Runtime typeclass dispatch: check for Sub instance
+    if let Some(result) = try_dispatch_method("Sub", "sub", args, named, call_span, &ctx) {
+        return result;
+    }
+
+    // Fall through to existing Rust dispatch
     match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_sub(b)
@@ -141,6 +214,13 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("*", named, call_span)?;
+
+    // Runtime typeclass dispatch: check for Mul instance
+    if let Some(result) = try_dispatch_method("Mul", "mul", args, named, call_span, &ctx) {
+        return result;
+    }
+
+    // Fall through to existing Rust dispatch
     match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => a
             .checked_mul(b)
@@ -163,6 +243,13 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("/", named, call_span)?;
+
+    // Runtime typeclass dispatch: check for Div instance
+    if let Some(result) = try_dispatch_method("Div", "div", args, named, call_span, &ctx) {
+        return result;
+    }
+
+    // Fall through to existing Rust dispatch
     match extract_num_pair(args, &ctx, call_span)? {
         NumPair::Ints(a, b) => {
             if b == 0 {
@@ -199,6 +286,11 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     let left = materialize(&args[0], Some(&call_span), &ctx)?;
     let right = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    // Runtime typeclass dispatch: check for Equatable instance
+    if let Some(result) = try_dispatch_method("Equatable", "eq", args, named, call_span, &ctx) {
+        return result;
+    }
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a == b,
@@ -422,6 +514,11 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     let left = materialize(&args[0], Some(&call_span), &ctx)?;
     let right = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    // Runtime typeclass dispatch: check for Comparable instance
+    if let Some(result) = try_dispatch_method("Comparable", "lt", args, named, call_span, &ctx) {
+        return result;
+    }
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a < b,
