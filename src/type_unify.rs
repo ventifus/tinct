@@ -11,9 +11,11 @@ use super::*;
 /// Check if a type satisfies a type class constraint.
 /// Returns true if the type is an instance of the class.
 ///
-/// Fixed instance sets are hardcoded here for all built-in classes.
-/// These run before dynamic instance resolution in `check_constraints_on_var`,
-/// ensuring that prelude-registered instances are not required for correctness.
+/// Only `Numeric` and `Comparable` are handled here via fixed instance sets —
+/// all other classes (Equatable, Showable, Mappable, Appendable) are resolved
+/// dynamically via `InstanceEnv::resolve_instance` in `check_constraints_on_var`.
+/// This requires prelude.llt instances to be propagated into the `InferState`
+/// (done by `imports::seed_infer_state_from_prelude_cache`).
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     // Unknown (the gradual dynamic type ?) satisfies all constraints vacuously.
     // AGT existential lifting: C(?) = ∃t ∈ γ(?). C(t) holds for any non-empty
@@ -24,20 +26,13 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
         return true;
     }
     // Top (⊤) has no typeclass instances and falls through to false via the
-    // allowlists below for all classes except Showable, where the !Error check
-    // correctly returns true. C(⊤) ⊢ error for non-Showable classes
-    // (Castagna & Lanvin, ICFP 2017).
+    // allowlists below for all classes.
+    // C(⊤) ⊢ error for all classes (Castagna & Lanvin, ICFP 2017).
     match class_name {
-        "Equatable" => matches!(
-            ty,
-            Type::Int
-                | Type::IntLiteral(_)
-                | Type::Float
-                | Type::Str
-                | Type::StringLiteral(_)
-                | Type::Bool
-                | Type::Number
-        ),
+        // Comparable subsumes Equatable via superclass relationship.
+        // These are kept hardcoded because they are used in the early stages of type
+        // checking (before prelude instances are loaded) and during operator type
+        // inference ([< $a $b], [> $a $b], etc.).
         "Comparable" => matches!(
             ty,
             Type::Int
@@ -47,17 +42,14 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
                 | Type::StringLiteral(_)
                 | Type::Number
         ),
+        // Numeric is kept hardcoded: arithmetic operators ([+ $a $b], [* $a $b], etc.)
+        // require Numeric constraint checking during core type inference, before prelude
+        // instances are loaded. Removing this would break basic arithmetic type checking.
         "Numeric" => matches!(
             ty,
             Type::Int | Type::IntLiteral(_) | Type::Float | Type::Number
         ),
-        "Showable" => !matches!(ty, Type::Error),
-        "Mappable" => matches!(ty, Type::Record(_) | Type::Seq(_)),
-        "Appendable" => matches!(
-            ty,
-            Type::Str | Type::StringLiteral(_) | Type::Record(_) | Type::Seq(_)
-        ),
-        _ => false, // Unknown constraint class (fallthrough to instance resolution)
+        _ => false, // All other classes resolved via InstanceEnv::resolve_instance
     }
 }
 

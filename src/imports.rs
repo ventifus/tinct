@@ -20,9 +20,10 @@ use crate::expand;
 use crate::parser;
 use crate::resolve;
 use crate::typecheck::{
-    typecheck_file_with_types_and_env, typecheck_file_with_types_and_env_and_source, TypeMap,
+    typecheck_file_with_types_and_env,
+    typecheck_file_with_types_and_env_and_source_returning_state, TypeMap,
 };
-use crate::types::TypeEnv;
+use crate::types::{ClassEnv, InferState, InstanceEnv, TypeEnv};
 
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
 const MAX_INCLUDE_DEPTH: usize = 16;
@@ -31,6 +32,16 @@ thread_local! {
     /// Thread-local cache of the prelude type environment.
     /// Built once per thread on first access, then reused for all subsequent calls.
     static PRELUDE_CACHE: RefCell<Option<Rc<TypeEnv>>> = const { RefCell::new(None) };
+
+    /// Thread-local cache of the prelude's class and instance environments.
+    ///
+    /// Populated after prelude.llt is type-checked (in `build_prelude_env_inner`).
+    /// Consumed by `seed_infer_state_from_prelude_cache` to propagate prelude-registered
+    /// instances (Equatable, Comparable, Showable, Mappable, Appendable) to user-code
+    /// type-checking sessions. Without this, each fresh `InferState::new()` starts with
+    /// an empty `instance_env`, so constraint checking for those classes always falls through
+    /// to the hardcoded arms in `satisfies_constraint`.
+    static PRELUDE_INSTANCE_CACHE: RefCell<Option<(ClassEnv, InstanceEnv)>> = const { RefCell::new(None) };
 }
 
 /// Build or retrieve the prelude type environment.
@@ -62,13 +73,14 @@ pub fn build_prelude_env() -> Rc<TypeEnv> {
 /// (expand → desugar → resolve → typecheck), and extracts all top-level binding
 /// types into a new `TypeEnv`. Returns the environment even if type errors occur
 /// (best-effort approach).
-/// Helper function to type-check a stdlib module and extract its bindings into the given env
+/// Helper function to type-check a stdlib module and extract its bindings into the given env.
+/// Returns the final `InferState` on success (used by the prelude path to capture instance_env).
 fn typecheck_and_merge_stdlib_module(
     source: &str,
     parent_env: &Rc<TypeEnv>,
     env: &mut TypeEnv,
-    source_path: Option<&str>,
-) -> Result<(), ()> {
+    _source_path: Option<&str>,
+) -> Result<InferState, ()> {
     // Parse the module source
     let file = parser::parse(source).map_err(|_| ())?;
 
@@ -82,12 +94,13 @@ fn typecheck_and_merge_stdlib_module(
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
 
-    // Type-check with the parent environment (builtins + prelude)
-    let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck_file_with_types_and_env_and_source(
+    // Type-check with the parent environment (builtins + prelude), capturing InferState.
+    // `enable_scheme_map: false` — no LSP hover needed for stdlib modules.
+    let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, state) =
+        typecheck_file_with_types_and_env_and_source_returning_state(
             &file.node,
             Rc::clone(parent_env),
-            source_path.map(|s| s.to_string()),
+            false,
         );
 
     // Silently ignore type errors
@@ -96,7 +109,7 @@ fn typecheck_and_merge_stdlib_module(
     // Extract bindings directly into the provided env
     extract_bindings_from_file(&file.node, &type_map, env);
 
-    Ok(())
+    Ok(state)
 }
 
 fn build_prelude_env_inner() -> Rc<TypeEnv> {
@@ -122,19 +135,59 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     builtins_env.insert("%stdin".to_string(), crate::types::Type::Handle);
     let builtins_env = Rc::new(builtins_env);
 
-    if typecheck_and_merge_stdlib_module(
+    match typecheck_and_merge_stdlib_module(
         prelude_source,
         &builtins_env,
         &mut env,
         Some("prelude.llt"),
-    )
-    .is_err()
-    {
-        // Parse/expand error: return builtins-only environment (with capability bindings)
-        return builtins_env;
+    ) {
+        Err(_) => {
+            // Parse/expand error: return builtins-only environment (with capability bindings)
+            return builtins_env;
+        }
+        Ok(prelude_state) => {
+            // Cache the prelude's class and instance environments.
+            // User-code InferState instances are seeded from this cache (via
+            // `seed_infer_state_from_prelude_cache`) so that prelude-registered instances
+            // (Equatable, Comparable, Showable, Mappable, Appendable) are visible during
+            // constraint checking. Without this, `check_constraints_on_var` falls through
+            // to the hardcoded arms in `satisfies_constraint` for all non-Numeric classes.
+            PRELUDE_INSTANCE_CACHE.with(|cache| {
+                *cache.borrow_mut() =
+                    Some((prelude_state.class_env.clone(), prelude_state.instance_env.clone()));
+            });
+        }
     }
 
     Rc::new(env)
+}
+
+/// Seed a fresh [`InferState`] with the prelude's class and instance environments.
+///
+/// Called at the start of every user-code type-checking session (in `typecheck_file`
+/// and `typecheck_file_with_types_and_env_and_source_returning_state`). This ensures
+/// that class instances registered by `prelude.llt` (Equatable for Int/Float/Str/Bool,
+/// Comparable for Int/Float/Str, Showable for all, Mappable for Record/Seq, Appendable
+/// for Str/Record/Seq) are available to `check_constraints_on_var` without requiring
+/// hardcoded arms in `satisfies_constraint`.
+///
+/// This is a no-op when:
+/// - The prelude has not yet been type-checked (cache is empty). This handles the case
+///   where we are currently type-checking the prelude itself.
+/// - The cache is empty due to a prelude parse/expand error.
+pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
+    PRELUDE_INSTANCE_CACHE.with(|cache| {
+        if let Some((class_env, instance_env)) = &*cache.borrow() {
+            // Merge prelude classes into state (or_insert: don't overwrite user-defined classes)
+            for class_decl in class_env.iter_classes() {
+                state.class_env.insert_if_absent(class_decl.clone());
+            }
+            // Merge prelude instances into state (skip overlapping instances silently)
+            for inst_decl in instance_env.iter_instances() {
+                let _ = state.instance_env.insert(inst_decl.clone());
+            }
+        }
+    });
 }
 
 /// Replace all TypeVar occurrences in a type with Unknown.
