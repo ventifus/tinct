@@ -4,6 +4,15 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Semicolon as Newline Alias
+
+`;` is intended to be a universal newline alias — equivalent to `\n` in all parse positions. Two gaps:
+
+- [ ] **Semantic gap** — `peek_next_horizontal` in `src/parser.rs:70` skips `Token::Semicolon` but stops at `Token::Newline`, so `foo;: value` is parsed as a dict entry while `foo\n: value` is not. Fix: remove `Token::Semicolon` from the skip list in `peek_next_horizontal` so `;` also terminates the horizontal scan (`src/parser.rs:70`)
+- [ ] **Formatter gap** — blank-before tracking in `src/parser.rs:220` resets `consecutive_newlines` to 0 on `;` without incrementing, so `a;b` never gets a blank-line marker even when sandwiched between real newlines. Fix: treat `Semicolon` the same as `Newline` in consecutive-newline counting (`src/parser.rs:220`)
+
+---
+
 ## Substitution Performance
 
 ### subst-path-compression: Path compression in Substitution::apply_inner
@@ -45,11 +54,13 @@ Accepted 2026-05-14. See `doc/whatif/inference-completeness.md` and `doc/06-type
 
 See `doc/06-type-inference.md §[FN-VARIADIC] / [CALL-VARIADIC]`. **Spec chapters:** `doc/06-type-inference.md §Inference Judgments`.
 
-- [ ] `infer_fn` in `src/typecheck.rs:3357–3362`: change variadic param typing from `Type::Unknown` to `Type::Seq(state.fresh_type_var(span))` — a fresh TypeVar β per function; update comment from "Any" to "Seq(β)" (`src/typecheck.rs`)
-- [ ] `check_call` / `check_call_with_scheme` in `src/typecheck.rs`: add [CALL-VARIADIC] path — when function type has a `Seq(β)` variadic param, widen each variadic argument type (IntLiteral→Int, FloatLiteral→Float, StrLiteral→Str) then unify against β; error span on the specific failing argument (`src/typecheck.rs`)
-- [ ] `eval_call.rs:330–344` (BIND-VARIADIC): change variadic arg collection from `Value::Dict` with integer keys to `Value::Seq` — a `Vec`-backed seq value; update comment (`src/eval_call.rs`)
-- [ ] Audit `stdlib/prelude.llt` for functions using variadic params (`->`, `str`, etc.) that access the collected args by integer key (`args.0`, etc.) — migrate to Seq operations (`each`, `map`, `reduce`, index via `get`) (`stdlib/prelude.llt`)
-- [ ] Update corpus test at `tests/corpus/eval/` that asserts `rest = Dict({0: 2, 1: 3})` for variadic collection — update to Seq assertion
+**IMPL STATUS (2026-05-13):** Type-only implementation complete. Runtime still collects variadic args as Dict (gradual typing allows type/runtime mismatch). Full runtime migration to Seq deferred to avoid breaking existing code.
+
+- [x] `infer_fn` in `src/typecheck.rs:3391–3402`: changed variadic param typing from `Type::Unknown` to `Type::Seq(Box::new(state.fresh_type_var()))` — a fresh TypeVar β per function; updated comment (`src/typecheck.rs`)
+- [x] `check_call` / `check_call_with_scheme` in `src/typecheck.rs`: added [CALL-VARIADIC] path — when function type has a `Seq(β)` variadic param, skip variadic param in positional loop, then widen each extra argument type (IntLiteral→Int, StringLiteral→Str) and unify against β; error span on the specific failing argument (`src/typecheck.rs:3107–3132, 3248–3273, 2859–2884`)
+- [ ] **DEFERRED:** `eval_call.rs:330–344` (BIND-VARIADIC): change variadic arg collection from `Value::Dict` with integer keys to `Value::Seq` — breaking change for all code using `args.0` access pattern; requires prelude audit first (`src/eval_call.rs`)
+- [ ] **DEFERRED:** Audit `stdlib/prelude.llt` for functions using variadic params (`->`, `str`, etc.) that access the collected args by integer key (`args.0`, etc.) — migrate to Seq operations (`each`, `map`, `reduce`, index via `get`) (`stdlib/prelude.llt`)
+- [x] Updated corpus test at `tests/corpus/eval/typecheck/variadic_param_collects_dict.llt-eval` — updated comment to document type/runtime mismatch
 - [ ] Tests: `[sum 1 2 3]` infers `Numeric α => α`; `[sum 1 "two" 3]` type errors at arg 2 with span on `"two"`; `[fn [...xs] xs]` infers `Fn@Seq(α) []`; zero-variadic-args case (`tests/corpus/eval/typecheck/`, `tests/corpus/eval/builtins/`)
 
 ### inference-completeness-nested-dict: Polymorphic dot-access via TypeScheme.inner_schemes
@@ -137,6 +148,12 @@ See `doc/whatif/runtime-reflection.md §include Return Type` and `§Stdlib Reorg
 - [ ] Post-pass in `build_type_env`: after `resolve_includes`, walk AST for `[include %libdir "literal-path"]` expressions; construct `Type::Record([name: type ...])` from contributed bindings; store as the inferred type of that include expression in the type map (`src/imports.rs`, `src/typecheck.rs`)
 - [ ] Move `stdlib/in/` → `stdlib/cli/in/`, `stdlib/out/` → `stdlib/cli/out/`; update `src/main.rs:886`, `:909`, `:2074`; create thin `stdlib/cli/fmt/compact.llt` and `stdlib/cli/fmt/pretty.llt` wrapper pipeline files; update `src/formatter.rs` include path; update `doc/12-tooling.md` (`src/main.rs`, `src/formatter.rs`, `stdlib/`)
 - [ ] Tests: `[io: [include %libdir "io.llt"]]` → `io` has a precise `Record` type with known fields; `io.read-file` has function type in LSP hover; stdlib pipeline paths work after reorganization (`tests/corpus/eval/typecheck/`)
+
+---
+
+## Builtin Type Precision
+
+- [ ] `builtin-repeat` in `src/type_env.rs:2255–2262`: currently registered as `Top → Seq(Top)`; should be `∀T. T → Seq(T)` — register as a `TypeScheme` with a fresh type var so `[repeat 42]` infers `Seq(Int)` rather than `Seq(Top)` (`src/type_env.rs`)
 
 ---
 

@@ -1,8 +1,9 @@
-# Variadic param collects excess positional args into a Dict.
-# The variadic param type is set to Any in type inference (typecheck.rs:1480):
-# grammar forbids @annotation on variadic params, so param_types[i] and the
-# env binding are both set to Any for consistency.
+# Variadic param collects excess positional args into a Dict (at runtime).
+# The variadic param type is Seq(T) where T is inferred from the supplied args.
+# Grammar forbids @annotation on variadic params. param_types[i] and the env binding
+# are both set to Seq(fresh TypeVar) for type inference.
 # At runtime, excess positional args are collected into an int-keyed Dict.
+# The type/runtime mismatch (Seq vs Dict) is allowed in gradual typing.
 [f: [fn [x ...rest] rest]
  result: [f 10 20 30]]
 === out
