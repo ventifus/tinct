@@ -766,9 +766,14 @@ fn typecheck_document(
 
     let mut result_env = TypeEnv::with_parent(&env);
 
-    // If the last expression was a dict, thread its schemes into the result environment
+    // If the last expression was a dict, thread its schemes into the result environment.
+    // For dict literals, also attach inner_schemes to enable polymorphic dot-access.
     if let Some(schemes) = last_dict_schemes {
         for (name, scheme) in schemes {
+            // If the scheme's body is a Record type and this came from a dict literal,
+            // the dict literal's inner schemes should be attached to enable [DOT-POLY].
+            // However, at this point we don't have access to the inner dict's schemes.
+            // This will be handled separately for nested dicts.
             result_env.insert_scheme(name, scheme);
         }
     }
@@ -2612,6 +2617,20 @@ fn check_dot_access(
             return check_dot_access_int(target, *n, env, span, state, type_map)
         }
     };
+
+    // [DOT-POLY] fast-path: if target is a VarRef and its scheme has inner_schemes,
+    // instantiate the field's scheme polymorphically
+    if let Expr::VarRef { name, .. } = &target.node {
+        if let Some(scheme) = env.get(name) {
+            if let Some(ref inner_schemes) = scheme.inner_schemes {
+                if let Some(field_scheme) = inner_schemes.get(field_str) {
+                    let instantiated = instantiate_scheme(field_scheme, state.level, state);
+                    return Ok(instantiated);
+                }
+            }
+        }
+    }
+
     let target_ty = infer_expr(target, env, state, type_map)?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
@@ -4893,6 +4912,7 @@ mod tests {
                 body: Type::Int,
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
         let parent_env = Rc::new(parent_env);

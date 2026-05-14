@@ -292,6 +292,9 @@ pub(crate) fn infer_dict(
     let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
 
+    // Track inner_schemes for nested dict values (DOT-POLY support)
+    let mut entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>> = HashMap::new();
+
     // Pass 0c: pre-register class/instance declarations so all classes and instances
     // are visible during body type-checking, regardless of declaration order in the file.
     // Modeled on Pass 2 (type alias pre-registration). (Wadler & Blott 1989 — class/instance
@@ -373,13 +376,26 @@ pub(crate) fn infer_dict(
                     state.current_function = Some(name.clone());
                 }
 
-                let infer_result = infer_expr(&entry.node.value, &dict_env_rc, state, type_map);
+                // Special case: if the value is a Dict, call infer_dict directly to capture schemes
+                let (value_ty, nested_schemes_opt) = if let Expr::Dict(nested_entries) = &entry.node.value.node {
+                    match infer_dict(nested_entries, &dict_env_rc, state, type_map, entry.node.value.span) {
+                        Ok((ty, schemes)) => (Ok(ty), Some(schemes)),
+                        Err(errs) => (Err(errs), None),
+                    }
+                } else {
+                    (infer_expr(&entry.node.value, &dict_env_rc, state, type_map), None)
+                };
 
                 if should_check_recursion {
                     state.current_function = None;
                 }
 
-                match infer_result {
+                // Store nested schemes if present
+                if let Some(nested_schemes) = nested_schemes_opt {
+                    entry_inner_schemes.insert(name.clone(), nested_schemes);
+                }
+
+                match value_ty {
                     Ok(value_ty) => {
                         // Get the bound TypeVar from Pass 1_i
                         if let Some(bound_var) = fresh_vars.get(name.as_str()) {
@@ -500,7 +516,12 @@ pub(crate) fn infer_dict(
 
                     // Value doc takes precedence over key doc
                     let doc = value_doc.or(key_doc);
-                    let scheme = generalize_with_doc(enclosing_level, ty, state, doc);
+                    let mut scheme = generalize_with_doc(enclosing_level, ty, state, doc);
+
+                    // Attach inner_schemes if this entry's value was a dict literal
+                    if let Some(inner) = entry_inner_schemes.get(name) {
+                        scheme.inner_schemes = Some(inner.clone());
+                    }
 
                     // Update dict_env with the generalized scheme for subsequent SCCs
                     dict_env.insert_scheme(name.clone(), scheme);
