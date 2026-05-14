@@ -61,16 +61,6 @@ Dict equality is **order-insensitive structural equality** for both Record and M
 
 See `doc/feature/boolean-algebraic-subtyping.md` (canonical post-implementation document) and `doc/whatif/completed/boolean-algebraic-subtyping.md` (archived design) for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.
 
-## Type System Extension Roadmap
-
-The type system addresses three complementary areas.
-
-**Precision.** `TypeEnv::with_builtins()` pre-registers precise type signatures for all Rust-native builtins. Non-overloaded builtins carry exact types (`$length : Fn(Unknown → Int)`); arithmetic builtins use MPTC signatures (`+ : Add a b c => a → b → c` — see `doc/06-type-inference.md §Multi-Parameter Type Classes`); sequence constructors carry typed returns (`$range → Seq(Int)`, `$repeat: (T) → Seq(T)`); dual-dispatch builtins are typed via `Mappable` — see §Dual-Dispatch Builtins. `Type::Error` propagates silently through inference — `unify(Error, τ) = S` unchanged, `is_subtype(Error, _) = false` — preventing cascading errors from a single failing subexpression. LSP hover shows "error" for error-typed bindings.
-
-**Completeness.** `Type::Function` carries `params: Vec<(Option<String>, Type)>`; named args are matched by name, not position. Polymorphic recursion is rejected at depth 1 with a clear error: "polymorphic recursion requires an explicit type annotation". CALL-MONO and CALL-POLY share a single structural `check_expr` pass applying [SUB] at leaves and unification only at TypeVar positions, eliminating verdict divergence for identical literal type pairs. `Unknown`'s consistency semantics follow the AGT model — see `doc/whatif/completed/gradual-typing.md`.
-
-**Expressiveness.** Union types via the BAS lattice, type classes with constrained polymorphism, and the AGT gradual typing model are all part of the type system — see `doc/whatif/completed/`. TypeAssert uses structural validation via `resolved_type` embedded in the AST — see §TypeAssert Runtime Validation.
-
 ## TypeAssert Runtime Validation
 
 Both static and runtime TypeAssert checks are structural. The evaluator validates values against the full resolved `Type`, not a type name string. Record fields are checked lazily via proxy contracts (Findler & Felleisen 2002), preserving tinct's lazy evaluation guarantees.

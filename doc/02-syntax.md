@@ -104,7 +104,6 @@ The `(NEWLINE | EOI)` anchor ensures a comment consumes through the end of the l
 
 - `a.b` — dot access
 - `a .b` — also dot access (whitespace before `.` is allowed, same behavior as Nix/Jsonnet)
-- `a[0]` — two separate expressions: bare identifier `a` followed by nested expression `[0: 0]` (bracket access was removed in access-pipeline-phase2; use `[get 0 a]` instead)
 - `word@Annotation` — annotation (no whitespace before `@`)
 - `word @Annotation` — bare identifier `word` followed by separate expression
 
@@ -194,7 +193,6 @@ name .field          # Tokens: Identifier("name"), Dot, Identifier("field") — 
 name.0               # Tokens: Identifier("name"), Dot, Int(0) — integer dot access (looks up Key::Int(0))
 ```
 
-Note: Bracket access (`name[0]`) was removed in access-pipeline-phase2. Use `[get 0 name]` for integer key access and `name.field` for string key access.
 
 **Unicode homograph risk:** Unicode homographs (e.g., Cyrillic `а` vs Latin `a`) create invisible name collisions; tinct accepts all Unicode identifier characters without NFC normalization.
 
@@ -371,7 +369,7 @@ ident_char = _{
 | `[` | Ends the identifier (starts a new bracket expression) |
 | `]` | Ends the identifier (closes enclosing expression) |
 | `:` | Ends the identifier (key-value separator) |
-| `;` | Ends the identifier (entry separator) |
+| `;` | Ends the identifier (newline alias) |
 | `#` | Ends the identifier (starts comment) |
 | `@` | Ends the identifier (starts annotation) |
 | `$` | Ends the identifier (starts escaped reference) |
@@ -437,13 +435,9 @@ $x . y                   # $x is an EscapedRef; . y is also dot access (whitespa
 | `$a .b` | `EscapedRef("a")`, `Dot`, `Identifier("b")` | Dot access (whitespace before `.` ignored) |
 | `$a.0.b` | `EscapedRef("a")`, `Dot`, `Int(0)`, `Dot`, `Identifier("b")` | Integer dot access then field access |
 
-Note: Bracket access and range access were removed in access-pipeline-phase2. Use `[get key data]` for dynamic key access and `[slice data start end]` / `[take n data]` / `[drop n data]` for subsequences.
-
 ```tinct
-# Old syntax (removed):  $data[5]   $data[$key]   $data[2..5]
-# New syntax:
-[get 5 data]             # Integer key access via builtin
-[get $key data]          # Dynamic key access via builtin
+[get 5 data]             # Integer key access
+[get $key data]          # Dynamic key access
 data.name                # String key access via dot notation
 data.0                   # Integer dot access (looks up Key::Int(0))
 [slice data 2 5]         # Subsequence by position
@@ -451,7 +445,7 @@ data.0                   # Integer dot access (looks up Key::Int(0))
 
 #### `..` Tokenization
 
-`..` always emits two consecutive `Dot` tokens regardless of context — there is no `Token::Range`. A bare `1..5` lexes as `Int(1)`, `Dot`, `Dot`, `Int(5)` and produces a parse error at top level (dot-access on `Int(1)` requires a field name).
+`..` always emits two consecutive `Dot` tokens. A double dot in an identifier-like context is therefore two dot-access steps, not a range operator:
 
 ```tinct
 config..bak              # Identifier("config"), Dot, Dot, Identifier("bak") — NOT a single string
@@ -805,7 +799,7 @@ Quoted strings are valid as keys, allowing keys that contain spaces, colons, or 
 
 **Mixed ordering:** positional (auto-indexed) and keyed (named) entries may appear in any order within a single `[]`. Auto-indices are assigned sequentially to positional entries regardless of where keyed entries appear.
 
-**Semicolons:** `;` acts as an optional entry separator for multiple entries on one line. It is not required (whitespace alone suffices), but it enables one-line dict literals:
+**Semicolons:** `;` is a newline alias — it is equivalent to `\n` in all parse positions and can be used anywhere a newline is valid. It is not required (a newline or whitespace alone suffices), but it enables one-line dict literals:
 
 ```tinct
 [a: 1; b: 2; c: 3]

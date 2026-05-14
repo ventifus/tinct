@@ -1,0 +1,47 @@
+# Variadic params are typed as Seq(T) where T is inferred
+---
+# Test 1: All variadic args have the same type (Int)
+[@Fn(Int ... → Int)]
+let $sum-ints: fn x ...: [
+  # Runtime collects variadic args into a Dict with int keys
+  # Type system sees it as Seq(Int)
+  [+ x.0 x.1]
+]
+
+$sum-ints 10 20
+---
+# Expected: Type checks successfully (both args are Int)
+# Runtime: 30
+---
+# Test 2: Variadic args have mixed types (error)
+[@Fn(Int ... → Int)]
+let $bad-sum: fn x ...: [+ x.0 x.1]
+
+$bad-sum 10 "hello"
+---
+# Expected: Type error — "hello" is Str, expected Int
+---
+# Test 3: Variadic params infer the element type from usage
+let $first-or-default: fn default val ...:
+  [if [> val.0 0] val.0 default]
+
+$first-or-default 42 100
+---
+# Expected: Type checks — infers Seq(Int) for val
+# Runtime: 100
+---
+# Test 4: Multiple variadic args with consistent type
+let $sum3: fn x ...: [+ [+ x.0 x.1] x.2]
+
+$sum3 1 2 3
+---
+# Expected: Type checks successfully
+# Runtime: 6
+---
+# Test 5: Empty variadic (allowed — Seq can be empty at runtime)
+let $variadic-empty: fn x ...: 0
+
+$variadic-empty
+---
+# Expected: Type checks — no variadic args supplied is OK
+# Runtime: 0

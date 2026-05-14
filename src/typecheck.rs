@@ -2833,14 +2833,40 @@ fn check_call_with_scheme(
                 // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
                 // ALL params by name could accidentally match a positional-consumed param.
                 let mut consumed_params = std::collections::HashSet::new();
+                // If the function is variadic, stop before the last param (which is the variadic param itself).
+                let non_variadic_param_count = if *variadic && !params.is_empty() {
+                    params.len() - 1
+                } else {
+                    params.len()
+                };
                 for (idx, ((_, param_ty), arg_ty)) in
-                    params.iter().zip(arg_types.iter()).enumerate()
+                    params.iter().take(non_variadic_param_count).zip(arg_types.iter()).enumerate()
                 {
                     consumed_params.insert(idx);
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
                     if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span) {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
+                    }
+                }
+                // Check variadic args: if the function is variadic, unify all arg_types starting at
+                // non_variadic_param_count against the Seq element type. Widen literals first.
+                if *variadic && arg_types.len() > non_variadic_param_count {
+                    // The last param is the variadic param — extract its Seq element type
+                    if let Some((_, param_ty)) = params.last() {
+                        if let Type::Seq(elem_ty) = param_ty {
+                            for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
+                                // Widen literal types before unifying
+                                let widened_ty = match arg_ty {
+                                    Type::IntLiteral(_) => Type::Int,
+                                    Type::StringLiteral(_) => Type::Str,
+                                    other => other.clone(),
+                                };
+                                if let Err(e) = unify(elem_ty, &widened_ty, &mut subst, state, span) {
+                                    arg_errors.get_or_insert_with(Vec::new).push(e);
+                                }
+                            }
+                        }
                     }
                 }
                 // Check for duplicate named argument names
@@ -3069,13 +3095,50 @@ fn check_call(
                 // supplies both positional and named args (e.g., [call $f 42 x: 99] where param 0 is
                 // named x would check param 0 twice).
                 let mut consumed_params = std::collections::HashSet::new();
-                // Check positional args
+                // Check positional args against non-variadic params.
+                // If the function is variadic, stop before the last param (which is the variadic param itself).
+                let non_variadic_param_count = if *variadic && !params.is_empty() {
+                    params.len() - 1
+                } else {
+                    params.len()
+                };
                 for (idx, (arg, (_param_name, param_ty))) in
-                    args.iter().zip(params.iter()).enumerate()
+                    args.iter().zip(params.iter().take(non_variadic_param_count)).enumerate()
                 {
                     consumed_params.insert(idx);
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
                         errors.append(&mut errs);
+                    }
+                }
+                // Check variadic args: if the function is variadic, infer all args starting at
+                // non_variadic_param_count and unify them against the Seq element type.
+                // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
+                if *variadic && args.len() > non_variadic_param_count {
+                    // The last param is the variadic param — extract its Seq element type
+                    if let Some((_, param_ty)) = params.last() {
+                        if let Type::Seq(elem_ty) = param_ty {
+                            for arg in args.iter().skip(non_variadic_param_count) {
+                                match infer_expr(arg, env, state, type_map) {
+                                    Ok(arg_ty) => {
+                                        // Widen literal types before unifying to allow [f 10 20 30]
+                                        // where 10, 20, 30 all unify with Int element type.
+                                        let widened_ty = match arg_ty {
+                                            Type::IntLiteral(_) => Type::Int,
+                                            Type::StringLiteral(_) => Type::Str,
+                                            other => other,
+                                        };
+                                        let mut subst = std::mem::take(&mut state.subst);
+                                        if let Err(e) = unify(&widened_ty, elem_ty, &mut subst, state, arg.span) {
+                                            errors.push(e);
+                                        }
+                                        state.subst = subst;
+                                    }
+                                    Err(mut errs) => {
+                                        errors.append(&mut errs);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // Check for duplicate named argument names
@@ -3186,12 +3249,48 @@ fn check_call(
                 let mut consumed_params = std::collections::HashSet::new();
                 // Check positional args via check_expr (unified CALL-MONO/CALL-POLY path).
                 // check_expr will use unification internally because inst_params contain TypeVars.
+                // If the function is variadic, stop before the last param (which is the variadic param itself).
+                let non_variadic_param_count = if *variadic && !inst_params.is_empty() {
+                    inst_params.len() - 1
+                } else {
+                    inst_params.len()
+                };
                 for (idx, (arg, (_param_name, param_ty))) in
-                    args.iter().zip(inst_params.iter()).enumerate()
+                    args.iter().zip(inst_params.iter().take(non_variadic_param_count)).enumerate()
                 {
                     consumed_params.insert(idx);
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                    }
+                }
+                // Check variadic args: if the function is variadic, infer all args starting at
+                // non_variadic_param_count and unify them against the Seq element type.
+                // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
+                if *variadic && args.len() > non_variadic_param_count {
+                    // The last param is the variadic param — extract its Seq element type
+                    if let Some((_, param_ty)) = inst_params.last() {
+                        if let Type::Seq(elem_ty) = param_ty {
+                            for arg in args.iter().skip(non_variadic_param_count) {
+                                match infer_expr(arg, env, state, type_map) {
+                                    Ok(arg_ty) => {
+                                        // Widen literal types before unifying
+                                        let widened_ty = match arg_ty {
+                                            Type::IntLiteral(_) => Type::Int,
+                                            Type::StringLiteral(_) => Type::Str,
+                                            other => other,
+                                        };
+                                        let mut subst = std::mem::take(&mut state.subst);
+                                        if let Err(e) = unify(&widened_ty, elem_ty, &mut subst, state, arg.span) {
+                                            arg_errors.get_or_insert_with(Vec::new).push(e);
+                                        }
+                                        state.subst = subst;
+                                    }
+                                    Err(mut errs) => {
+                                        arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // Check for duplicate named argument names
@@ -3391,8 +3490,10 @@ fn infer_fn(
     let mut fn_env = TypeEnv::with_parent(env);
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
-            let variadic_ty = Type::Unknown;
-            // Variadic params accept arbitrary fields, typed as Any.
+            // Variadic params collect extra positional args into a Seq(T) where T is inferred.
+            // Runtime still uses Dict with int keys (gradual typing allows this mismatch).
+            let elem_ty = state.fresh_type_var();
+            let variadic_ty = Type::Seq(Box::new(elem_ty));
             // Update param_types[i] to match the env binding so the function signature is accurate.
             param_types[i].1 = variadic_ty.clone();
             fn_env.insert(param.node.name.clone(), variadic_ty);
@@ -7900,20 +8001,20 @@ mod tests {
 
     #[test]
     fn test_variadic_param_type_is_any() {
-        // Variadic params accept arbitrary fields, typed as Any in the function signature.
+        // Variadic params collect extra positional args into a Seq(T) where T is inferred.
         //
         // Grammar: variadic_param = @{ "..." ~ param_name } — no @annotation syntax.
         // The param_types override at infer_fn ensures the function type reflects
-        // Any for the variadic slot.
+        // Seq(TypeVar) for the variadic slot.
 
-        // Basic variadic: single param, collects all positional args as a dict
+        // Basic variadic: single param, collects all positional args as a seq
         let ty = result_field("[f: [fn [...rest] $rest]]", "f");
         match ty {
             Type::Function { params, .. } => {
                 assert_eq!(params.len(), 1, "variadic function should have 1 param");
                 assert!(
-                    matches!(&params[0].1, Type::Unknown),
-                    "variadic param should have type Any, got: {:?}",
+                    matches!(&params[0].1, Type::Seq(_)),
+                    "variadic param should have type Seq(T), got: {:?}",
                     params[0]
                 );
             }
@@ -7932,10 +8033,10 @@ mod tests {
                     "annotated param 'a' should be Int, got: {:?}",
                     params[0]
                 );
-                // Third param (variadic) must be Any
+                // Third param (variadic) must be Seq(T)
                 assert!(
-                    matches!(&params[2].1, Type::Unknown),
-                    "variadic param 'rest' should have type Any, got: {:?}",
+                    matches!(&params[2].1, Type::Seq(_)),
+                    "variadic param 'rest' should have type Seq(T), got: {:?}",
                     params[2]
                 );
             }
@@ -7945,17 +8046,17 @@ mod tests {
 
     #[test]
     fn test_variadic_param_env_binding_is_any() {
-        // The env binding for a variadic param inside the function body is Any.
+        // The env binding for a variadic param inside the function body is Seq(T).
         //
         // If the body references $rest, its inferred type comes from the env binding.
-        // Returning $rest should give the function an Any return type.
+        // Returning $rest should give the function a Seq(T) return type.
 
         let ty = result_field("[f: [fn [x ...rest] $rest]]", "f");
         match ty {
             Type::Function { ret, .. } => {
                 assert!(
-                    matches!(ret.as_ref(), Type::Unknown),
-                    "function returning variadic param should have Any return type, got: {ret:?}"
+                    matches!(ret.as_ref(), Type::Seq(_)),
+                    "function returning variadic param should have Seq(T) return type, got: {ret:?}"
                 );
             }
             other => panic!("expected Function type for f, got {other}"),

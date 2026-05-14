@@ -18,7 +18,7 @@ pub enum Token {
     CloseBracket,
     /// `:` (key-value separator)
     Colon,
-    /// `;` (optional entry separator)
+    /// `;` (newline alias — equivalent to `\n` in all parse positions)
     Semicolon,
     /// `.` (dot access operator, only in access context)
     Dot,
