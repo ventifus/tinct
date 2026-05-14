@@ -153,8 +153,10 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             // constraint checking. Without this, `check_constraints_on_var` falls through
             // to the hardcoded arms in `satisfies_constraint` for all non-Numeric classes.
             PRELUDE_INSTANCE_CACHE.with(|cache| {
-                *cache.borrow_mut() =
-                    Some((prelude_state.class_env.clone(), prelude_state.instance_env.clone()));
+                *cache.borrow_mut() = Some((
+                    prelude_state.class_env.clone(),
+                    prelude_state.instance_env.clone(),
+                ));
             });
         }
     }

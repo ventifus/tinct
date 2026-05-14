@@ -1,6 +1,6 @@
 # What If: Advanced Typeclass Extensions for tinct
 
-**State:** Proposal — `[CONSTRAIN-UNKNOWN]` fix already applied (`src/type_unify.rs:23`); remainder is proposed
+**State:** Accepted — 2026-05-14
 
 What would it take to make tinct's typeclass system fully expressive — letting
 user-defined types participate in primitive operators, express constraints over
@@ -249,7 +249,7 @@ lifting (Garcia, Clark & Tanter, POPL 2016): `C(A) = ∃t ∈ γ(A). C(t)`.
   in any allowlist); an explicit `Type::Unknown => return true` pre-check is
   needed so that `[CONSTRAIN-FIELD]` propagation through `Unknown`-typed fields
   gives the AGT-correct answer. **This fix is already applied** in `src/type_unify.rs`
-  (the `if matches!(ty, Type::Unknown) { return true; }` pre-check at line 23)
+  (the `if matches!(ty, Type::Unknown) { return true; }` pre-check at line 25)
   and is independent of the rest of this proposal.
 
 References: Garcia, Clark & Tanter (POPL 2016); Castagna & Lanvin (ICFP 2017).

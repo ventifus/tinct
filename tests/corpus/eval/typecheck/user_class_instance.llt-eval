@@ -13,10 +13,10 @@
 
   # Call the function with an Int
   result: [use-myclass 5]
-
-  ---
-
-  result
 ]
+
+---
+
+result
 === out
 Int(7)

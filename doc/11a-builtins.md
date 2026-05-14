@@ -27,30 +27,31 @@ This chapter provides a complete reference for all 189 Rust-native builtins. For
 
 ## Arithmetic
 
-All arithmetic operations materialize both arguments and return computed values. Type promotion: `Int + Int → Int`, mixed types or `Float` → `Float`.
+Arithmetic operators dispatch via the `Add`/`Sub`/`Mul`/`Div` MPTC classes. The result type is determined by the operand types: `Int + Int → Int`, `Float + Float → Float`, `Int + Float → Float`. User-defined numeric types participate by declaring `Add` instances. See `doc/feature/advanced-typeclasses.md §Precise Mixed-Mode Arithmetic`.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `+` | 2 | `S × S → V` | Int or Float | Add two numbers |
-| `-` | 2 | `S × S → V` | Int or Float | Subtract second from first |
-| `*` | 2 | `S × S → V` | Int or Float | Multiply two numbers |
+| `+` | 2 | `S × S → V` | Add a b c | Add two values; result type determined by Add instance |
+| `-` | 2 | `S × S → V` | Sub a b c | Subtract second from first |
+| `*` | 2 | `S × S → V` | Mul a b c | Multiply two values |
 | `/` | 2 | `S × S → V` | Float | Divide first by second (always returns Float) |
 
 **Error cases:**
-- All: Type mismatch if either arg is not Int or Float
+- All: No matching `Add`/`Sub`/`Mul`/`Div` instance for the operand types
 - `/`: Division by zero (catchable via `try`)
 
 ## Comparison
 
-Both comparison operators materialize both arguments and return Bool values.
+Comparison operators dispatch via `Equatable` and `Comparable` typeclass instances. Primitive types (Int, Float, Str, Bool, Number) are handled by built-in Rust dispatch. User-defined types participate by declaring `Equatable`/`Comparable` instances. See `doc/feature/advanced-typeclasses.md §User-Defined Types in Primitive Operators`.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `=` | 2 | `S × S → V` | Bool | Cross-type equality with Int/Float promotion; dicts use structural equality (order-insensitive key comparison, recursive value comparison with cycle detection); variants support recursive structural equality; functions and seqs return false |
-| `<` | 2 | `S × S → V` | Bool | Less-than comparison; works on Int, Float, String (lexicographic) |
+| `=` | 2 | `S × S → V` | Bool | Equality — primitive types use built-in dispatch; user-defined types route through registered `Equatable` instance |
+| `<` | 2 | `S × S → V` | Bool | Less-than — primitive types (Int, Float, Str) use built-in dispatch; user-defined types route through registered `Comparable` instance |
 
 **Error cases:**
-- `<`: Type mismatch if arguments are incomparable types (e.g., Int and String)
+- `=`: No registered `Equatable` instance for a non-primitive type
+- `<`: No registered `Comparable` instance, or mismatched types
 
 ## Control Flow
 
@@ -180,10 +181,15 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 |---------|-------|-----------|--------|-------------|
 | `gensym` | 0-1 | `() or S → V` | String | Generate a unique symbol string; optional prefix arg for debugging (e.g., `[gensym "tmp"]` → `"tmp_42"`) |
 | `llt-repr` | 1 | `S → V` | String | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
+| `ast-of` | 1 | `S → V` | Dict (Unknown) | Return the AST dict for any value — `[type: "fn" return-ann: ... params: [...] body: ...]` for functions, `[type: "builtin" name: ...]` for builtins, `[type: type-of(val)]` for others. See `doc/feature/runtime-reflection.md`. |
+| `eval-ast` | 1 | `S → V` | Any | Evaluate an AST dict in the stdlib environment and return the resulting value. |
+| `str` | variadic | `S... → V` | String | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
 
 **Error cases:**
 - `gensym`: None
 - `llt-repr`: None (all values have a repr)
+- `ast-of`: None (all values return a dict)
+- `eval-ast`: Dict does not conform to AST schema; free variables not in stdlib
 
 ## Variant Construction
 

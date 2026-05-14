@@ -672,7 +672,7 @@ sort-by@[doc: "Sort with custom comparator"]: [fn@Dict [cmp@Fn xs@Dict]
 # Type: (Seq a | Dict Comparable -> Dict Comparable)
 # Example: [sorted [filter [fn [x] [> x 2]] [1 3 2 4]]] => [3 4]
 # Example: [sorted [3 1 2]] => [1 2 3]
-sorted@[doc: "Sort collection in ascending order"]: [fn@Dict [xs]
+sorted@[doc: "Sort collection in ascending order"]: [fn@[return: Dict constraint: [a: Comparable]] [xs]
     [builtin-sort [builtin-if [seq? xs] [builtin-collect xs] xs]]]
 
 # Like sorted, with a custom comparator.
