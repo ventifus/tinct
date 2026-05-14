@@ -1838,11 +1838,7 @@ impl TypeEnv {
         env.insert(
             "write".to_string(),
             Type::Function {
-                params: vec![
-                    (None, Type::DirCap),
-                    (None, Type::Str),
-                    (None, Type::Str),
-                ],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1853,11 +1849,7 @@ impl TypeEnv {
         env.insert(
             "write-atomic".to_string(),
             Type::Function {
-                params: vec![
-                    (None, Type::DirCap),
-                    (None, Type::Str),
-                    (None, Type::Str),
-                ],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2132,11 +2124,7 @@ impl TypeEnv {
         env.insert(
             "rename".to_string(),
             Type::Function {
-                params: vec![
-                    (None, Type::DirCap),
-                    (None, Type::Str),
-                    (None, Type::Str),
-                ],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2147,11 +2135,7 @@ impl TypeEnv {
         env.insert(
             "link".to_string(),
             Type::Function {
-                params: vec![
-                    (None, Type::DirCap),
-                    (None, Type::Str),
-                    (None, Type::Str),
-                ],
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2459,16 +2443,13 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // builtin-sort: Dict -> Dict (natural ordering, O(n log n))
+        // builtin-sort: Dict -> Dict (natural ordering)
+        //            OR (a -> a -> Bool) -> Dict -> Dict (custom comparator)
+        // Uses Unknown for params to support both 1-arg and 2-arg signatures.
         env.insert(
             "builtin-sort".to_string(),
             Type::Function {
-                params: vec![(
-                    None,
-                    Type::Record(Row {
-                        fields: HashMap::new(),
-                    }),
-                )],
+                params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                 })),

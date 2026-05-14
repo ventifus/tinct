@@ -654,21 +654,11 @@ reindex@[doc: "Rebuild with dense 0..n integer keys"]: [fn@Dict [xs@Dict] [reind
 # ============================================================================
 
 # sort: delegates to builtin-sort (see wrappers section at bottom of this dict).
-# O(n log n) natural ordering mergesort. Errors on Seq input (collect first).
+# O(n log n) natural ordering sort. Errors on Seq input (collect first).
 # Example: [sort [3 1 2]] => [1 2 3]
 # Example: [sort ["c" "a" "b"]] => ["a" "b" "c"]
 
-# sort-merge depends on empty? (public) — lives in the public dict for mutual recursion.
-sort-merge@[doc: "Merge two sorted lists (internal helper)"]: [fn@Dict [cmp@Fn left@Dict right@Dict]
-    [builtin-if [empty? left]
-        right
-        [builtin-if [empty? right]
-            left
-            [builtin-if [cmp left.0 right.0]
-                [builtin-cons left.0 [sort-merge cmp [builtin-rest left] right]]
-                [builtin-cons right.0 [sort-merge cmp left [builtin-rest right]]]]]]]
-
-# Sort a list using a custom comparator (mergesort, stable).
+# Sort a list using a custom comparator.
 # Type: ((a -> a -> Bool) -> Dict a -> Dict a)
 # cmp is a less-than function: [cmp a b] returns true if a should come before b.
 # Example: [sort-by [fn [a b] [> a b]] [3 1 2]] => [3 2 1]  (descending)
@@ -676,11 +666,7 @@ sort-merge@[doc: "Merge two sorted lists (internal helper)"]: [fn@Dict [cmp@Fn l
 sort-by@[doc: "Sort with custom comparator"]: [fn@Dict [cmp@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "sort-by: expected Dict, got Seq -- collect the Seq first"]
-        [builtin-if [<= [length xs] 1]
-            xs
-            [sort-merge cmp
-                [sort-by cmp [builtin-take [quot [length xs] 2] xs]]
-                [sort-by cmp [reindex [builtin-drop [quot [length xs] 2] xs]]]]]]]
+        [builtin-sort cmp xs]]]
 
 # Like Python's sorted() — accepts both Seq and Dict; collects a Seq first.
 # Type: (Seq a | Dict Comparable -> Dict Comparable)

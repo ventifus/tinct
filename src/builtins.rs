@@ -35,6 +35,7 @@ use crate::value::Strictness;
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
 use crate::eval::materialize;
+use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{BuiltinArgs, Environment, Key, Thunk, Value};
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
@@ -871,12 +872,16 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
     Ok(result)
 }
 
-/// `sort`: Sort a dict list by natural ordering.
+/// `sort`: Sort a dict list by natural ordering or with a custom comparator.
 ///
-/// - Takes 1 arg: a Dict (list-like, integer-keyed).
-/// - Materializes all values, sorts by natural ordering (same semantics as `<`).
-/// - O(n log n) using Rust's `sort_by` with the `compare_values` helper.
-/// - Errors on mixed incompatible types (e.g. Int and String in same collection).
+/// - Takes 1 or 2 args:
+///   - 1 arg: a Dict (list-like, integer-keyed). Sorts by natural ordering.
+///   - 2 args: a comparator function and a Dict. The comparator takes two values
+///     and returns a Bool (true if first should come before second).
+/// - Materializes all values, sorts by natural ordering (same semantics as `<`)
+///   or by calling the comparator function for each comparison.
+/// - O(n log n) using Rust's `sort_by`.
+/// - Errors on mixed incompatible types when using natural ordering.
 /// - Errors on Seq input (callers must `$collect` first).
 /// Inherently materializing: must inspect all values to determine sort order.
 fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -887,11 +892,34 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("sort", named, call_span)?;
-    if args.len() != 1 {
+
+    // Accept 1 arg (dict only) or 2 args (comparator, dict)
+    if args.len() != 1 && args.len() != 2 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let map = require_dict("sort", val, args[0].span, &ctx, call_span)?;
+
+    // Determine if we have a comparator function
+    let (comparator_opt, dict_arg_idx) = if args.len() == 2 {
+        // First arg is comparator, second is dict
+        let cmp_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        match cmp_val {
+            Value::Function { .. } | Value::Builtin(_) => (Some((cmp_val, args[0].span)), 1),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "sort".to_string(),
+                    "Function",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into());
+            }
+        }
+    } else {
+        (None, 0)
+    };
+
+    let val = materialize(&args[dict_arg_idx], Some(&call_span), &ctx)?;
+    let map = require_dict("sort", val, args[dict_arg_idx].span, &ctx, call_span)?;
 
     // Materialize all values so we can compare them.
     let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
@@ -901,20 +929,108 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         pairs.push((mat, thunk.span));
     }
 
-    // Sort by natural ordering. Collect any comparison error.
+    // Sort using comparator or natural ordering. Collect any comparison error.
     let mut sort_error: Option<Box<crate::error::EvalError>> = None;
-    pairs.sort_by(|(a, _), (b, _)| {
-        if sort_error.is_some() {
-            return std::cmp::Ordering::Equal;
-        }
-        match compare_values(a, b, call_span) {
-            Ok(ord) => ord,
-            Err(e) => {
-                sort_error = Some(e);
-                std::cmp::Ordering::Equal
+
+    if let Some((cmp_val, cmp_span)) = comparator_opt {
+        // Use custom comparator function
+        pairs.sort_by(|(a, a_span), (b, b_span)| {
+            if sort_error.is_some() {
+                return std::cmp::Ordering::Equal;
             }
-        }
-    });
+
+            // Create thunks for the two values to pass to the comparator
+            let a_thunk = Rc::new(Thunk::new_materialized(a.clone(), *a_span));
+            let b_thunk = Rc::new(Thunk::new_materialized(b.clone(), *b_span));
+            let pos_args = vec![a_thunk, b_thunk];
+
+            // Call the comparator function
+            let result_thunk = match &cmp_val {
+                Value::Function {
+                    params,
+                    body,
+                    env: closure_env,
+                    ..
+                } => {
+                    match invoke_function(&CallContext {
+                        params,
+                        body,
+                        closure_env,
+                        positional: &pos_args,
+                        named: None,
+                        default_env: closure_env,
+                        call_span,
+                        origin: Some(Rc::from("sort")),
+                        ctx: &ctx,
+                    }) {
+                        Ok(thunk) => thunk,
+                        Err(e) => {
+                            sort_error = Some(e);
+                            return std::cmp::Ordering::Equal;
+                        }
+                    }
+                }
+                Value::Builtin(def) => {
+                    let builtin_args = BuiltinArgs {
+                        args: &pos_args,
+                        named: None,
+                        call_span,
+                        ctx: Rc::clone(&ctx),
+                    };
+                    match (def.func)(builtin_args) {
+                        Ok(thunk) => thunk,
+                        Err(e) => {
+                            sort_error = Some(e);
+                            return std::cmp::Ordering::Equal;
+                        }
+                    }
+                }
+                _ => {
+                    sort_error = Some(Box::new(EvalError::type_mismatch_ctx(
+                        "sort".to_string(),
+                        "Function",
+                        cmp_val.type_name(),
+                        cmp_span,
+                    )));
+                    return std::cmp::Ordering::Equal;
+                }
+            };
+
+            // Materialize the result and require it to be a Bool
+            match materialize(&result_thunk, Some(&call_span), &ctx) {
+                Ok(Value::Bool(true)) => std::cmp::Ordering::Less,
+                Ok(Value::Bool(false)) => std::cmp::Ordering::Greater,
+                Ok(other) => {
+                    sort_error = Some(Box::new(EvalError::type_mismatch_ctx(
+                        "sort".to_string(),
+                        "Bool",
+                        other.type_name(),
+                        result_thunk.span,
+                    )));
+                    std::cmp::Ordering::Equal
+                }
+                Err(e) => {
+                    sort_error = Some(e);
+                    std::cmp::Ordering::Equal
+                }
+            }
+        });
+    } else {
+        // Use natural ordering
+        pairs.sort_by(|(a, _), (b, _)| {
+            if sort_error.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
+            match compare_values(a, b, call_span) {
+                Ok(ord) => ord,
+                Err(e) => {
+                    sort_error = Some(e);
+                    std::cmp::Ordering::Equal
+                }
+            }
+        });
+    }
+
     if let Some(e) = sort_error {
         return Err(e);
     }
