@@ -3466,15 +3466,17 @@ fn infer_fn(
 
 /// Scan inferred types for quality issues (Unknown types, over-broad annotations).
 ///
-/// Emits diagnostics at base level (Info/Warn) — the CLI/LSP layer applies `--strict` bump.
+/// Emits diagnostics at base level (Info/Warn). The CLI/LSP layer WILL apply a `--strict` bump
+/// once the type-warning channel is wired (TODO — escalation is not yet implemented).
 /// This is called at the end of type checking to produce advisory notifications.
 pub fn scan_type_quality(
     type_map: &TypeMap,
-    _ast: &File,
+    ast: &File,
     diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
 ) {
-    use crate::ast::Position;
+    use crate::ast::{Annotation, Position};
     use crate::error::{DiagnosticLevel, TypeDiagnostic};
+    use std::collections::HashSet;
 
     // Helper function to recursively check if a type contains Unknown
     fn contains_unknown(ty: &Type) -> bool {
@@ -3494,15 +3496,157 @@ pub fn scan_type_quality(
         }
     }
 
+    // Helper to check if an annotation explicitly references Unknown
+    fn is_unknown_annotation(ann: &Annotation) -> bool {
+        use crate::ast::Expr;
+        match ann {
+            Annotation::Simple(name) => name == "Unknown",
+            Annotation::PropertyDict(entries) => {
+                // Check if there's a "return: Unknown" entry (for function metadata dicts)
+                entries.iter().any(|entry| {
+                    if let Some(key_expr) = &entry.node.key {
+                        if let Expr::Str(key_name) = &key_expr.node {
+                            if key_name == "return" {
+                                // Check if the value is a VarRef to "Unknown"
+                                if let Expr::VarRef { name, .. } = &entry.node.value.node {
+                                    return name == "Unknown";
+                                }
+                            }
+                        }
+                    }
+                    false
+                })
+            }
+        }
+    }
+
+    // Collect all explicit @Unknown annotation spans from the AST
+    fn collect_explicit_unknown_spans(ast: &File) -> HashSet<(usize, usize)> {
+        use crate::ast::Expr;
+        let mut spans = HashSet::new();
+
+        fn walk_expr(expr: &Spanned<Expr>, spans: &mut HashSet<(usize, usize)>) {
+            match &expr.node {
+                Expr::TypeAssert {
+                    annotation,
+                    expr: inner,
+                    ..
+                } => {
+                    if is_unknown_annotation(&annotation.node) {
+                        // Record the span of the entire TypeAssert expression
+                        spans.insert((expr.span.start.offset, expr.span.end.offset));
+                    }
+                    walk_expr(inner, spans);
+                }
+                Expr::Fn {
+                    return_ann, body, ..
+                } => {
+                    // Check for @Unknown return annotation
+                    if let Some(ann) = return_ann {
+                        if is_unknown_annotation(&ann.node) {
+                            // Record the span of the function expression
+                            spans.insert((expr.span.start.offset, expr.span.end.offset));
+                        }
+                    }
+                    walk_expr(body, spans);
+                }
+                Expr::Call { func, args, .. } => {
+                    walk_expr(func, spans);
+                    for arg in args {
+                        walk_expr(arg, spans);
+                    }
+                }
+                Expr::Sequential(exprs) => {
+                    for e in exprs {
+                        walk_expr(e, spans);
+                    }
+                }
+                Expr::DotAccess { expr, .. } => {
+                    walk_expr(expr, spans);
+                }
+                Expr::Pipe { lhs, rhs } => {
+                    walk_expr(lhs, spans);
+                    walk_expr(rhs, spans);
+                }
+                Expr::Match {
+                    scrutinee, arms, ..
+                } => {
+                    walk_expr(scrutinee, spans);
+                    for arm in arms {
+                        walk_expr(&arm.body, spans);
+                        if let Some(guard) = &arm.guard {
+                            walk_expr(guard, spans);
+                        }
+                    }
+                }
+                Expr::Dict(entries) => {
+                    for entry in entries {
+                        if let Some(key) = &entry.node.key {
+                            walk_expr(key, spans);
+                        }
+                        walk_expr(&entry.node.value, spans);
+                    }
+                }
+                Expr::Quote(e)
+                | Expr::Unquote(e)
+                | Expr::UnquoteSplice(e)
+                | Expr::TypeAlias { body: e, .. } => {
+                    walk_expr(e, spans);
+                }
+                Expr::DefMacro { body, .. } => {
+                    walk_expr(body, spans);
+                }
+                Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+                    for entry in methods {
+                        if let Some(key) = &entry.node.key {
+                            walk_expr(key, spans);
+                        }
+                        walk_expr(&entry.node.value, spans);
+                    }
+                }
+                Expr::TypeApp { func, arg } => {
+                    walk_expr(func, spans);
+                    walk_expr(arg, spans);
+                }
+                _ => {}
+            }
+        }
+
+        for doc in &ast.documents {
+            for expr in &doc.node.expressions {
+                walk_expr(expr, &mut spans);
+            }
+        }
+
+        spans
+    }
+
+    let explicit_unknown_spans = collect_explicit_unknown_spans(ast);
+
     // Scan all inferred types for Unknown
     for ((start, end), ty) in type_map {
         if contains_unknown(ty) {
-            // For now, treat all Unknown as inferred (Task 2)
-            // TODO: Check AST annotations to distinguish explicit vs inferred (Task 3)
+            // Check if this is an explicit @Unknown annotation
+            let is_explicit = explicit_unknown_spans.contains(&(*start, *end));
+
+            let (level, code, message) = if is_explicit {
+                (
+                    DiagnosticLevel::Info,
+                    "T011",
+                    "explicit @Unknown annotation — type is not statically known".to_string(),
+                )
+            } else {
+                (
+                    DiagnosticLevel::Warn,
+                    "T010",
+                    "inferred type is Unknown — consider adding a type annotation".to_string(),
+                )
+            };
+
             diagnostics.push(TypeDiagnostic {
-                level: DiagnosticLevel::Warn,
-                code: "T010",
-                message: "inferred type is Unknown — consider adding a type annotation".to_string(),
+                level,
+                code,
+                message,
                 span: Span {
                     start: Position {
                         offset: *start,
@@ -3516,6 +3660,158 @@ pub fn scan_type_quality(
                     },
                 },
             });
+        }
+    }
+
+    // Over-broad annotation detection (Tasks 3 & 4)
+    // Check for function return annotations that are wider than the inferred body type
+    check_overbroad_annotations(ast, type_map, diagnostics);
+}
+
+/// Check for over-broad annotations where the declared type is wider than inferred.
+///
+/// Detects patterns like:
+/// - `fn@Number` when body infers `Int` → suggest `@Int`
+/// - `fn@Top` when body infers a specific type → suggest the specific type
+fn check_overbroad_annotations(
+    ast: &File,
+    type_map: &TypeMap,
+    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
+) {
+    use crate::ast::{Annotation, Expr};
+    use crate::error::{DiagnosticLevel, TypeDiagnostic};
+
+    // Helper to resolve an annotation to a Type for comparison
+    fn resolve_simple_annotation(ann: &Annotation) -> Option<Type> {
+        match ann {
+            Annotation::Simple(name) => match name.as_str() {
+                "Int" => Some(Type::Int),
+                "Float" => Some(Type::Float),
+                "Number" => Some(Type::Number),
+                "Str" => Some(Type::Str),
+                "Bool" => Some(Type::Bool),
+                "Top" => Some(Type::Top),
+                "Unknown" => Some(Type::Unknown),
+                _ => None, // Type variables, named types, etc.
+            },
+            Annotation::PropertyDict(_) => None, // Complex annotations not handled yet
+        }
+    }
+
+    // Walk the AST to find function expressions with return annotations
+    fn walk_for_functions(
+        expr: &Spanned<Expr>,
+        type_map: &TypeMap,
+        diagnostics: &mut Vec<TypeDiagnostic>,
+    ) {
+        match &expr.node {
+            Expr::Fn {
+                return_ann: Some(ann),
+                body,
+                ..
+            } => {
+                // Only check simple annotations for now
+                if let Some(declared_type) = resolve_simple_annotation(&ann.node) {
+                    // Look up the inferred body type
+                    let body_key = (body.span.start.offset, body.span.end.offset);
+                    if let Some(inferred_type) = type_map.get(&body_key) {
+                        // Check if declared is over-broad:
+                        // inferred <: declared (inferred is narrower)
+                        // but NOT declared <: inferred (declared is NOT narrower)
+                        if Type::is_subtype(inferred_type, &declared_type)
+                            && !Type::is_subtype(&declared_type, inferred_type)
+                        {
+                            // Found an over-broad annotation
+                            let type_str = format!("{}", inferred_type);
+                            let ann_str = format!("{}", ann.node);
+                            diagnostics.push(TypeDiagnostic {
+                                level: DiagnosticLevel::Info,
+                                code: "T012",
+                                message: format!(
+                                    "annotation @{} is over-broad — inferred type is {}; consider using @{}",
+                                    ann_str, type_str, type_str
+                                ),
+                                span: ann.span,
+                            });
+                        }
+                    }
+                }
+                // Continue walking into the body
+                walk_for_functions(body, type_map, diagnostics);
+            }
+            // Fn without return annotation: no over-broad check needed, but must
+            // walk the body so nested annotated functions are still visited.
+            Expr::Fn { body, .. } => {
+                walk_for_functions(body, type_map, diagnostics);
+            }
+            Expr::Call { func, args, .. } => {
+                walk_for_functions(func, type_map, diagnostics);
+                for arg in args {
+                    walk_for_functions(arg, type_map, diagnostics);
+                }
+            }
+            Expr::Sequential(exprs) => {
+                for e in exprs {
+                    walk_for_functions(e, type_map, diagnostics);
+                }
+            }
+            Expr::DotAccess { expr, .. } => {
+                walk_for_functions(expr, type_map, diagnostics);
+            }
+            Expr::Pipe { lhs, rhs } => {
+                walk_for_functions(lhs, type_map, diagnostics);
+                walk_for_functions(rhs, type_map, diagnostics);
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                walk_for_functions(scrutinee, type_map, diagnostics);
+                for arm in arms {
+                    walk_for_functions(&arm.body, type_map, diagnostics);
+                    if let Some(guard) = &arm.guard {
+                        walk_for_functions(guard, type_map, diagnostics);
+                    }
+                }
+            }
+            Expr::Dict(entries) => {
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        walk_for_functions(key, type_map, diagnostics);
+                    }
+                    walk_for_functions(&entry.node.value, type_map, diagnostics);
+                }
+            }
+            Expr::TypeAssert { expr, .. } => {
+                walk_for_functions(expr, type_map, diagnostics);
+            }
+            Expr::Quote(e)
+            | Expr::Unquote(e)
+            | Expr::UnquoteSplice(e)
+            | Expr::TypeAlias { body: e, .. } => {
+                walk_for_functions(e, type_map, diagnostics);
+            }
+            Expr::DefMacro { body, .. } => {
+                walk_for_functions(body, type_map, diagnostics);
+            }
+            Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+                for entry in methods {
+                    if let Some(key) = &entry.node.key {
+                        walk_for_functions(key, type_map, diagnostics);
+                    }
+                    walk_for_functions(&entry.node.value, type_map, diagnostics);
+                }
+            }
+            Expr::TypeApp { func, arg } => {
+                walk_for_functions(func, type_map, diagnostics);
+                walk_for_functions(arg, type_map, diagnostics);
+            }
+            _ => {}
+        }
+    }
+
+    for doc in &ast.documents {
+        for expr in &doc.node.expressions {
+            walk_for_functions(expr, type_map, diagnostics);
         }
     }
 }
@@ -10995,6 +11291,126 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "Expected no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_scan_type_quality_explicit_unknown_annotation() {
+        // Test that explicit @Unknown produces Info diagnostic (T011), not Warn (T010)
+        let mut file = crate::parse("[f: [fn@Unknown [x] x]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let (errors, diagnostics) = typecheck_file(&file.node);
+
+        // Should have no type errors
+        assert!(
+            errors.is_empty(),
+            "Expected no type errors, got: {:?}",
+            errors
+        );
+
+        // Should have Info diagnostic for explicit Unknown
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected diagnostics for explicit Unknown"
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.code == "T011"),
+            "Expected T011 diagnostic for explicit Unknown, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.level == crate::error::DiagnosticLevel::Info),
+            "Expected Info level for explicit Unknown, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_scan_type_quality_typeassert_unknown() {
+        // Test that [@Unknown expr] produces Info diagnostic (T011)
+        let mut file = crate::parse("[x: [@Unknown 42]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let (errors, diagnostics) = typecheck_file(&file.node);
+
+        // Should have no type errors
+        assert!(
+            errors.is_empty(),
+            "Expected no type errors, got: {:?}",
+            errors
+        );
+
+        // Should have Info diagnostic for explicit Unknown
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected diagnostics for explicit Unknown"
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.code == "T011"),
+            "Expected T011 diagnostic for explicit Unknown in TypeAssert, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.level == crate::error::DiagnosticLevel::Info),
+            "Expected Info level for explicit Unknown, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_scan_type_quality_overbroad_number_annotation() {
+        // Test that fn@Number when body infers Int produces Info diagnostic (T012)
+        let mut file = crate::parse("[f: [fn@Number [x@Int] x]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let (errors, diagnostics) = typecheck_file(&file.node);
+
+        // Should have no type errors
+        assert!(
+            errors.is_empty(),
+            "Expected no type errors, got: {:?}",
+            errors
+        );
+
+        // Should have Info diagnostic for over-broad annotation
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected diagnostics for over-broad annotation"
+        );
+        let t012_diag = diagnostics.iter().find(|d| d.code == "T012");
+        assert!(
+            t012_diag.is_some(),
+            "Expected T012 diagnostic for over-broad annotation, got: {:?}",
+            diagnostics
+        );
+        let diag = t012_diag.unwrap();
+        assert_eq!(diag.level, crate::error::DiagnosticLevel::Info);
+        assert!(
+            diag.message.contains("Number") && diag.message.contains("Int"),
+            "Expected message to mention Number and Int, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn test_scan_type_quality_no_overbroad_for_matching_type() {
+        // Test that fn@Int when body infers Int does NOT produce over-broad diagnostic
+        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap();
+        crate::desugar::desugar_file(&mut file.node);
+        let (errors, diagnostics) = typecheck_file(&file.node);
+
+        // Should have no type errors or diagnostics
+        assert!(
+            errors.is_empty(),
+            "Expected no type errors, got: {:?}",
+            errors
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.code == "T012"),
+            "Did not expect T012 diagnostic for matching annotation, got: {:?}",
             diagnostics
         );
     }

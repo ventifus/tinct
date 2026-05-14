@@ -1,0 +1,8 @@
+# Over-broad annotation on inner fn nested inside an unannotated outer fn
+# walk_for_functions must recurse into unannotated fn bodies so T012 is emitted
+# for the inner @Number annotation even though the outer fn has no return annotation.
+[outer: [fn [x] [fn@Number [y@Int] y]]]
+=== out
+Dict({"outer": Function(x)})
+=== warn
+annotation @Number is over-broad

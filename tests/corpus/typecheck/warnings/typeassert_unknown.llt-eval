@@ -1,0 +1,7 @@
+# TypeAssert with @Unknown: should produce Info diagnostic (T011)
+# [@Unknown expr] is an explicit type assertion to Unknown
+[x: [@Unknown 42]]
+=== out
+Dict({"x": Int(42)})
+=== warn
+explicit @Unknown annotation
