@@ -937,6 +937,9 @@ impl<'a> Formatter<'a> {
         match annotation {
             Annotation::Simple(name) => name.len(),
             Annotation::PropertyDict(entries) => self.measure_dict_width(entries),
+            Annotation::Annotated(name, inner) => {
+                name.len() + 1 + self.measure_annotation_width(inner)  // name + @ + inner
+            }
         }
     }
 
@@ -1177,6 +1180,13 @@ impl<'a> Formatter<'a> {
             Annotation::PropertyDict(entries) => {
                 // Format as a dict bracket
                 self.format_dict(entries);
+            }
+            Annotation::Annotated(name, inner) => {
+                self.output.push_str(name);
+                self.output.push('@');
+                // Create a temporary Spanned wrapper for the inner annotation
+                let inner_spanned = Spanned::new(inner.as_ref().clone(), annotation.span);
+                self.format_annotation(&inner_spanned);
             }
         }
     }

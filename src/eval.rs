@@ -83,6 +83,7 @@ pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool 
                 })
                 .is_some_and(|name| !ANNOTATION_META_KEYS.contains(&name))
         }),
+        Annotation::Annotated(_, _) => false,
     }
 }
 
@@ -911,6 +912,7 @@ pub(crate) fn eval_recursive(
                                 Expr::Str(s) => Some(s.as_str()),
                                 _ => None,
                             }),
+                        Annotation::Annotated(name, _) => Some(name.as_str()),
                     };
 
                 if let Some(expected) = expected_type {

@@ -379,6 +379,9 @@ fn desugar_annotation(ann: &mut Annotation, depth: usize) {
                 desugar_entry(&mut entry_spanned.node, depth);
             }
         }
+        Annotation::Annotated(_name, inner) => {
+            desugar_annotation(inner, depth);
+        }
     }
 }
 

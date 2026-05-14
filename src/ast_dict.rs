@@ -1221,6 +1221,20 @@ fn annotation_to_thunk_id(
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
+        Annotation::Annotated(name, inner) => {
+            dict.insert(
+                Key::String("kind".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("annotated"), span))),
+            );
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            dict.insert(
+                Key::String("inner".into()),
+                annotation_to_thunk_id(inner, span, ctx)?,
+            );
+        }
         Annotation::PropertyDict(entries) => {
             dict.insert(
                 Key::String("kind".into()),

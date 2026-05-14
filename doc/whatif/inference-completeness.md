@@ -205,7 +205,7 @@ This stratification mirrors ML's module system: first-class dict literals
 (analogous to ML structures) carry full polymorphic schemes when visible; opaque
 dict types (analogous to ML signatures) expose only their declared interface.
 
-### Typed Variadic Parameters: Seq[T]
+### Typed Variadic Parameters: Seq@T
 
 `...args` changes runtime representation from an Int-keyed Dict to a `Seq(T)`,
 where T is a fresh TypeVar β unified against each variadic argument at call sites.

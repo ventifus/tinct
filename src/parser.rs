@@ -451,6 +451,9 @@ fn adjust_annotation(ann: Annotation, base: Position) -> Annotation {
         Annotation::PropertyDict(entries) => {
             Annotation::PropertyDict(adjust_entries(entries, base))
         }
+        Annotation::Annotated(name, inner) => {
+            Annotation::Annotated(name, Box::new(adjust_annotation(*inner, base)))
+        }
     }
 }
 
@@ -525,9 +528,35 @@ fn parse_annotation(
 
     match &ann_token.node {
         Token::Identifier(name) => {
+            let name_span = ann_token.span;
+            let next_i = i + 1;
+
+            // Check for chained annotation: Seq@Int, Map@[String: Int], etc.
+            if next_i < tokens.len() {
+                if let Token::ImmediateAt = tokens[next_i].node {
+                    // Recursively parse the inner annotation
+                    let (inner_ann, final_i) = parse_annotation(
+                        tokens,
+                        next_i,
+                        leading_comments,
+                        blank_before,
+                        input,
+                        recovered_errors,
+                    )?;
+
+                    let full_span = Span {
+                        start: name_span.start,
+                        end: inner_ann.span.end,
+                    };
+
+                    let annotation = Annotation::Annotated(name.clone(), Box::new(inner_ann.node));
+                    return Ok((Spanned::new(annotation, full_span), final_i));
+                }
+            }
+
             // Simple annotation: @Number, @a, etc.
             let annotation = Annotation::Simple(name.clone());
-            Ok((Spanned::new(annotation, ann_token.span), i + 1))
+            Ok((Spanned::new(annotation, name_span), next_i))
         }
         Token::OpenBracket => {
             // Property dict annotation: @[key: value ...]

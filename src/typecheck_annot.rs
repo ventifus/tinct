@@ -521,6 +521,18 @@ fn resolve_annotation_as_type(
         Annotation::PropertyDict(entries) => {
             resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping)
         }
+        Annotation::Annotated(name, inner) => {
+            // For fn annotations, forward to full resolver
+            // (e.g., fn@Seq@Int should resolve the Annotated properly)
+            resolve_annotation(
+                &Annotation::Annotated(name.clone(), inner.clone()),
+                env,
+                span,
+                state,
+                ann_mapping,
+                row_ann_mapping,
+            )
+        }
     }
 }
 
@@ -536,6 +548,92 @@ pub(crate) fn resolve_annotation(
         Annotation::Simple(name) => {
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(name, env, span, state, ann_mapping, &row_ref)
+        }
+        Annotation::Annotated(name, inner) => {
+            // Parameterized type annotations: Seq@Int, Map@[String: Int], Record@[field: Type]
+            match name.as_str() {
+                "Seq" => {
+                    // Resolve the inner type
+                    let elem_type = resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                    Ok(Type::Seq(Box::new(elem_type)))
+                }
+                "Map" => {
+                    // Resolve the inner annotation for key and value types
+                    match inner.as_ref() {
+                        Annotation::Simple(_) => {
+                            // @Map@T (single type) → Map[Unknown: T]
+                            let value_type = resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                            Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
+                        }
+                        Annotation::PropertyDict(entries) => {
+                            // @Map@[K: V] or @Map@[key: K value: V]
+                            // Check for compact form: single entry with key and value
+                            if entries.len() == 1 && entries[0].node.key.is_some() {
+                                // Compact form: @Map@[String: Int]
+                                let key_expr = entries[0].node.key.as_ref().unwrap();
+                                let value_expr = &entries[0].node.value;
+                                let key_type = resolve_type_expr(key_expr, env, state, ann_mapping, row_ann_mapping)?;
+                                let value_type = resolve_type_expr(value_expr, env, state, ann_mapping, row_ann_mapping)?;
+                                Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
+                            } else {
+                                // Named form: @Map@[key: K value: V]
+                                let mut key_type = Type::Unknown;
+                                let mut value_type = Type::Unknown;
+                                for entry in entries {
+                                    if let Some(key_expr) = &entry.node.key {
+                                        if let Expr::Str(key_name) = &key_expr.node {
+                                            match key_name.as_str() {
+                                                "key" => {
+                                                    key_type = resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                                                }
+                                                "value" => {
+                                                    value_type = resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
+                            }
+                        }
+                        _ => {
+                            // Other forms like @Map@Annotated — treat as single value type
+                            let value_type = resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                            Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
+                        }
+                    }
+                }
+                "Record" => {
+                    // @Record@[field: Type ...]
+                    match inner.as_ref() {
+                        Annotation::PropertyDict(entries) => {
+                            // Resolve entries as Record fields
+                            resolve_property_dict_as_record(
+                                entries,
+                                env,
+                                span,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )
+                        }
+                        _ => {
+                            return Err(TypeError::new(
+                                "Record parameterization requires a dict: @Record@[field: Type ...]",
+                                span,
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    // Unknown parameterized type — could be a type alias or error
+                    Err(TypeError::new(
+                        format!("unknown parameterized type: {}", name),
+                        span,
+                    ))
+                }
+            }
         }
         Annotation::PropertyDict(entries) => {
             // Check for @[label: name] named Label-kinded TypeVar form.
@@ -881,6 +979,10 @@ fn apply_type_alias_substitution(
         Type::Negation(inner) => {
             Type::Negation(Box::new(apply_type_alias_substitution(inner, subst, state)))
         }
+        Type::Map(key, value) => Type::Map(
+            Box::new(apply_type_alias_substitution(key, subst, state)),
+            Box::new(apply_type_alias_substitution(value, subst, state)),
+        ),
         // All other types are atomic and don't contain substitutable parameters
         _ => ty.clone(),
     }
@@ -911,6 +1013,8 @@ pub(crate) fn resolve_type_name_with_guard(
                 | "Seq"
                 | "Null"
                 | "Dict"
+                | "Map"
+                | "Record"
                 | "Fn"
                 | "Never"
                 | "Top"
@@ -1007,6 +1111,16 @@ pub(crate) fn resolve_type_name(
         "Dict" => {
             // Empty record — represents "any dict" under BAS width subtyping.
             // Any concrete record is a subtype because all required fields (none) are present.
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+            }))
+        }
+        "Map" => {
+            // Bare @Map → Map[Unknown: Unknown]
+            Ok(Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)))
+        }
+        "Record" => {
+            // Bare @Record → open record (empty fields)
             Ok(Type::Record(Row {
                 fields: HashMap::new(),
             }))
@@ -1249,6 +1363,31 @@ fn expand_alias_body_guarded(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Type::Intersection(new_members))
+        }
+        Type::Map(key, value) => {
+            let new_key = Box::new(expand_alias_body_guarded(
+                key,
+                env,
+                state,
+                ann_mapping,
+                row_ann_mapping,
+                alias_guard,
+                current_alias,
+                depth,
+                span,
+            )?);
+            let new_value = Box::new(expand_alias_body_guarded(
+                value,
+                env,
+                state,
+                ann_mapping,
+                row_ann_mapping,
+                alias_guard,
+                current_alias,
+                depth,
+                span,
+            )?);
+            Ok(Type::Map(new_key, new_value))
         }
         // For all other types (primitives, type vars, etc.), return as-is
         // Note: Type alias references would be in type expressions, not in the resolved Type itself

@@ -29,7 +29,7 @@ Multi-field annotations are intersections: `@[x: T  y: U]` = `{x: T} ∧ {y: U}`
 
 **S-RcdTop** (Parreaux & Chau 2022, §2.2.2): `{x: τ} ∨ {y: π} ≡ ⊤` when `x ≠ y`. Unions of records with disjoint field names collapse to the top type. **Consequence:** structural `{ok: T} | {err: String}` is not a discriminated union — it equals ⊤. Use nominal class-tagged unions for ADTs.
 
-**S-ClsBot** (Parreaux & Chau 2022, §2.2.2): `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags. Nominal unions (`Ok[T] | Err[String]`) remain discriminated.
+**S-ClsBot** (Parreaux & Chau 2022, §2.2.2): `#C₁ & #C₂ ≤ Never` for unrelated nominal class tags. Nominal unions (`Ok@T | Err@String`) remain discriminated.
 
 **C-Var1/2**: Constraints of the form `τ₁ ≤ τ₂ ∨ α` rewrite losslessly to `τ₁ & ~τ₂ ≤ α` using Boolean algebra. This eliminates backtracking and yields principal types.
 
@@ -43,17 +43,17 @@ Under BAS, the Result type must use **nominal variants** to be discriminated:
 [Result: [type [Ok a] [Err String]]]
 ```
 
-`Ok[T] | Err[String]` is discriminated by S-ClsBot (`#Ok & #Err ≤ Never`). Pattern matching uses nominal patterns `[Ok v]` / `[Err msg]`. The `try` builtin returns `Ok(value)` on success and `Err(message)` on caught error. Structural `{ok: v}` / `{err: msg}` dicts remain valid as plain dicts but are not a discriminated union under BAS.
+`Ok@T | Err@String` is discriminated by S-ClsBot (`#Ok & #Err ≤ Never`). Pattern matching uses nominal patterns `[Ok v]` / `[Err msg]`. The `try` builtin returns `Ok(value)` on success and `Err(message)` on caught error. Structural `{ok: v}` / `{err: msg}` dicts remain valid as plain dicts but are not a discriminated union under BAS.
 
 ### Record/Map Split and `Dict`
 
-`Dict` is the BAS union of `Record` and `Map[K V]` — two different type constructors, not field-disjoint records, so S-RcdTop does not collapse this union:
+`Dict` is the BAS union of `Record` and `Map@[K: V]` — two different type constructors, not field-disjoint records, so S-RcdTop does not collapse this union:
 
 ```
-Dict = Record ∨ Map[K V]
+Dict = Record ∨ Map@[K: V]
 ```
 
-`Record` uses BAS row intersection for multi-field records. `Map[K V]` is a parameterized type constructor for homogeneous maps. `get` on `Map[K V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
+`Record` uses BAS row intersection for multi-field records. `Map@[K: V]` is a parameterized type constructor for homogeneous maps. `get` on `Map@[K: V]` returns `V | Null` (key may be absent); `get` on `Record` with a known field returns the field type directly (total access).
 
 **`@Dict` resolution:** `@Dict` resolves as `Record(Row{})` (width-subtyping fallback). The `Dict = Record ∨ Map` union form is the semantic target; BAS constraint resolution handles the union at type-checking time.
 
@@ -266,7 +266,7 @@ name@[type: String  repr: "u8"]: "hello"   # ERROR: repr: requires numeric type
 
 ## Dual-Dispatch Builtins
 
-**Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. `$try` returns a precise `Ok[T] | Err[String]` nominal result type under BAS.
+**Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. `$try` returns a precise `Ok@T | Err@String` nominal result type under BAS.
 
 User-defined types participate in `=`, `<`, `str`, and arithmetic by declaring `Equatable`, `Comparable`, `Showable`, and `Add`/`Sub`/`Mul`/`Div` instances. Primitive operator dispatch checks the ClassEnv for a registered instance before falling back to the built-in Rust implementation. See `doc/feature/advanced-typeclasses.md`.
 

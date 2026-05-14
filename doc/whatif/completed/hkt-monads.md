@@ -729,11 +729,11 @@ intersection is conservative, not incorrect.
 
 ## Interaction with Row Polymorphism
 
-Tinct already has `Handle[R]` — tinct's streaming session type where `R` is a row of protocol operations (see `doc/09-documents.md`) — this is `Handle : Row → *`, a type constructor taking a row argument. The new `Operator` kind is the value-type-parameter analog. All three new kinds are mutually orthogonal:
+Tinct already has `Handle@[...]` — tinct's streaming session type where the parameter is a row of protocol operations (see `doc/09-documents.md`) — this is `Handle : Row → *`, a type constructor taking a row argument. The new `Operator` kind is the value-type-parameter analog. All three new kinds are mutually orthogonal:
 
-- `Handle[Tls Stream]` uses `Row` kind
+- `Handle@[Tls Stream]` uses `Row` kind
 - `@[Result T]` uses `Operator` kind
-- `@[Map K V]` uses `Operator → Operator → *` (rank-2, supported for concrete applications only)
+- `@Map@[K: V]` uses `Operator → Operator → *` (rank-2, supported for concrete applications only)
 - `key@Label` or `key@[label: l]` uses `Label` kind — a label TypeVar names a specific field; it does not participate in row construction or type constructor application. `Seq(TypeVar(l, Label))` is a `KIND-LABEL-ERROR` — `Seq` expects a `*`-kinded argument.
 
 Row variables remain unchanged. `Operator` and `Label` variables are new and separate from each other and from row variables. The existing `Row`-kinded `Handle` is not affected.

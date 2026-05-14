@@ -310,7 +310,7 @@ The return type of `[include %libdir "io.llt"]` is currently `Unknown`. This sho
 # io : Record([
 #   read-file:   Fn@[Ok Str | Err Str] [DirCap Str]
 #   write-file:  Fn@Null [DirCap Str Str]
-#   write-lines: Fn@Null [WriteHandle Seq[Str]]
+#   write-lines: Fn@Null [WriteHandle Seq@Str]
 #   ...
 # ])
 ```
