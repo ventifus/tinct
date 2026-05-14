@@ -899,7 +899,7 @@ pub fn value_to_display_string(
     visit_value(val, ctx, depth, &DisplayVisitor)
 }
 
-/// Format a tinct value as a compact JSON string using `stdlib/out/json.llt`.
+/// Format a tinct value as a compact JSON string using `stdlib/cli/out/json.llt`.
 ///
 /// Reads and evaluates the json.llt file at `json_llt_path`, then calls its
 /// `json` function with `result_thunk` as the argument in the same evaluation

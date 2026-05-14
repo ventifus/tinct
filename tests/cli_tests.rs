@@ -498,7 +498,7 @@ fn eval_invalid_format() {
         .output()
         .expect("failed to run tinct");
 
-    // The output formatter file stdlib/out/xml.llt does not exist
+    // The output formatter file stdlib/cli/out/xml.llt does not exist
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -3176,15 +3176,15 @@ fn expr_flag_chained() {
 
 #[test]
 fn input_flag_json() {
-    // Skip if stdlib/in/json.llt doesn't exist (created by another agent)
+    // Skip if stdlib/cli/in/json.llt doesn't exist (created by another agent)
     let _libdir = match std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
         .filter(|p| p.is_dir())
     {
-        Some(path) if path.join("in").join("json.llt").exists() => path,
+        Some(path) if path.join("cli").join("in").join("json.llt").exists() => path,
         _ => {
-            eprintln!("Skipping input_flag_json: stdlib/in/json.llt not found");
+            eprintln!("Skipping input_flag_json: stdlib/cli/in/json.llt not found");
             return;
         }
     };
@@ -3240,15 +3240,15 @@ fn input_flag_unknown_format() {
 
 #[test]
 fn output_flag_raw() {
-    // Skip if stdlib/out/raw.llt doesn't exist (created by another agent)
+    // Skip if stdlib/cli/out/raw.llt doesn't exist (created by another agent)
     let _libdir = match std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
         .filter(|p| p.is_dir())
     {
-        Some(path) if path.join("out").join("raw.llt").exists() => path,
+        Some(path) if path.join("cli").join("out").join("raw.llt").exists() => path,
         _ => {
-            eprintln!("Skipping output_flag_raw: stdlib/out/raw.llt not found");
+            eprintln!("Skipping output_flag_raw: stdlib/cli/out/raw.llt not found");
             return;
         }
     };
@@ -3926,7 +3926,7 @@ fn libdir_path_affects_formatter_resolution() {
     );
 
     assert!(
-        stderr.contains("/tmp/nonexistent-tinct-stdlib/out/json.llt")
+        stderr.contains("/tmp/nonexistent-tinct-stdlib/cli/out/json.llt")
             || stderr.contains("formatter not found"),
         "Expected error message about formatter at custom path. stderr: {}",
         stderr

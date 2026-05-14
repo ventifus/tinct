@@ -294,11 +294,11 @@ The `builtin-*` aliases are invisible to user code and non-prelude stdlib module
 | `io.llt` | `write-line`, `write-file`, `write-file-atomic`, `read-file` | File I/O helpers |
 | `net.llt` | `http-get`, `fetch`, `uri-params`, `uri-origin`, `uri->string` | HTTP client utilities |
 | `toml-lite.llt` | `parse-toml-lite` | Subset TOML parser |
-| `in/json.llt` | JSON pipeline input (stdin → parsed dict) | Pipeline input stage |
-| `out/json.llt` | `json` | JSON output formatting |
-| `stdlib/out/yaml.llt` | `yaml` | YAML output formatting |
-| `stdlib/out/csv.llt` | `csv` | CSV output formatting |
-| `stdlib/out/toml.llt` | `toml` | TOML output formatting |
+| `cli/in/json.llt` | JSON pipeline input (stdin → parsed dict) | Pipeline input stage |
+| `cli/out/json.llt` | `json` | JSON output formatting |
+| `cli/out/yaml.llt` | `yaml` | YAML output formatting |
+| `cli/out/csv.llt` | `csv` | CSV output formatting |
+| `cli/out/toml.llt` | `toml` | TOML output formatting |
 
 Note: the Rust builtins in each domain (e.g., `starts-with?`, `pow`, `band`, `uri`) are always available without any include — only the pure-tinct helper functions require an explicit include.
 
@@ -310,7 +310,7 @@ The stdlib follows four organizing principles:
 
 2. **Domain modules** (`strings.llt`, `math.llt`, `encoding.llt`, `path.llt`, `io.llt`, `net.llt`, `regex.llt`, `toml-lite.llt`, `datetime.llt`) — Single-topic, explicit `[include %libdir "..."]` required. Depend on prelude (always in scope); two-dict pattern; no prelude duplication.
 
-3. **Pipeline adapters** (`in/`, `out/`, `formatter/`) — Thin wrappers for document pipeline stages; not general-purpose libraries.
+3. **Pipeline adapters** (`cli/in/`, `cli/out/`, `cli/fmt/`) — Thin wrappers for document pipeline stages; not general-purpose libraries.
 
 4. **Protocol libraries** (`protocols/`) — Low-level RFC wire format helpers; self-contained; no prelude duplication.
 
@@ -318,7 +318,7 @@ The stdlib follows four organizing principles:
 |-------|----------|-------------|-----------------|
 | Core prelude | `stdlib/prelude.llt` | Yes | No |
 | Domain modules | `stdlib/*.llt` | No | Yes |
-| Pipeline adapters | `stdlib/in/`, `stdlib/out/`, `stdlib/formatter/` | No | Yes |
+| Pipeline adapters | `stdlib/cli/in/`, `stdlib/cli/out/`, `stdlib/cli/fmt/` | No | Yes |
 | Protocol libraries | `stdlib/protocols/` | No | Yes |
 
 ## Stdlib Function Reference

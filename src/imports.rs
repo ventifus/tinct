@@ -10,7 +10,7 @@
 //! of the cached environment.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -23,7 +23,7 @@ use crate::typecheck::{
     typecheck_file_with_types_and_env,
     typecheck_file_with_types_and_env_and_source_returning_state, TypeMap,
 };
-use crate::types::{ClassEnv, InferState, InstanceEnv, TypeEnv};
+use crate::types::{ClassEnv, InferState, InstanceEnv, Type, TypeEnv};
 
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
 const MAX_INCLUDE_DEPTH: usize = 16;
@@ -267,6 +267,21 @@ fn extract_bindings_from_file(file: &File, type_map: &TypeMap, env: &mut TypeEnv
     }
 }
 
+/// Extract top-level binding names and their types from a File's type map as a Vec.
+///
+/// Like `extract_bindings_from_file`, but returns a vector of (name, type) pairs
+/// instead of mutating a TypeEnv. This is used by `resolve_includes` to track
+/// which bindings each include contributed.
+fn extract_bindings_from_file_as_vec(file: &File, type_map: &TypeMap) -> Vec<(String, Type)> {
+    let mut bindings = Vec::new();
+    for doc in &file.documents {
+        for expr in &doc.node.expressions {
+            extract_bindings_from_expr_to_vec(&expr.node, type_map, &mut bindings);
+        }
+    }
+    bindings
+}
+
 /// Recursively extract bindings from an expression tree.
 ///
 /// Focuses on Dict expressions, which represent letrec scopes. For each dict
@@ -311,6 +326,49 @@ fn extract_bindings_from_expr(expr: &Expr, type_map: &TypeMap, env: &mut TypeEnv
         Expr::Sequential(exprs) => {
             for expr in exprs {
                 extract_bindings_from_expr(&expr.node, type_map, env);
+            }
+        }
+        _ => {
+            // Other expression types don't introduce bindings at the top level
+        }
+    }
+}
+
+/// Recursively extract bindings from an expression tree into a Vec.
+///
+/// Like `extract_bindings_from_expr`, but appends to a vector instead of mutating a TypeEnv.
+fn extract_bindings_from_expr_to_vec(
+    expr: &Expr,
+    type_map: &TypeMap,
+    bindings: &mut Vec<(String, Type)>,
+) {
+    match expr {
+        Expr::Dict(entries) => {
+            // Extract all top-level bindings from this dict
+            for entry in entries {
+                // Only process entries with explicit string keys (VarRef or Annotated)
+                if let Some(ref key_expr) = entry.node.key {
+                    let name = match &key_expr.node {
+                        Expr::Str(n) => Some(n.clone()),
+                        Expr::VarRef { name, .. } => Some(name.clone()),
+                        Expr::Annotated { name, .. } => Some(name.clone()),
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        let value_span = entry.node.value.span;
+                        let key = (value_span.start.offset, value_span.end.offset);
+                        if let Some(ty) = type_map.get(&key) {
+                            let sanitized = erase_type_vars(ty);
+                            bindings.push((name, sanitized));
+                        }
+                    }
+                }
+            }
+        }
+        // Sequential expressions: process ALL expressions in order.
+        Expr::Sequential(exprs) => {
+            for expr in exprs {
+                extract_bindings_from_expr_to_vec(&expr.node, type_map, bindings);
             }
         }
         _ => {
@@ -446,6 +504,10 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
 /// - `%pwd` → resolve relative to `base_dir` parameter
 /// - Other caps → skip silently (e.g., `%custom_cap` is not supported)
 ///
+/// Returns a tuple of:
+/// - The accumulated `TypeEnv` with all included bindings
+/// - A mapping from each include call's `Span` to the bindings it contributed
+///
 /// Returns `base_env` unchanged on any IO or parse failure (best-effort approach).
 /// Depth is capped at `MAX_INCLUDE_DEPTH` to prevent runaway recursion.
 fn resolve_includes(
@@ -455,15 +517,16 @@ fn resolve_includes(
     base_env: Rc<TypeEnv>,
     visited: &mut HashSet<String>,
     depth: usize,
-) -> Rc<TypeEnv> {
+) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
     if depth >= MAX_INCLUDE_DEPTH {
-        // Depth limit reached: return base_env unchanged
-        return base_env;
+        // Depth limit reached: return base_env unchanged with empty binding map
+        return (base_env, HashMap::new());
     }
 
     let mut env = base_env;
+    let mut include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
 
-    for (_span, cap_name, path) in include_paths {
+    for (span, cap_name, path) in include_paths {
         // Determine the base directory based on the cap variable
         let resolve_base = match cap_name.as_deref() {
             Some("%libdir") => libdir,
@@ -535,15 +598,21 @@ fn resolve_includes(
         let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types_and_env(&file.node, Rc::clone(&env));
 
-        // Extract bindings from this file
+        // Extract bindings from this file and track them
         let mut new_env = TypeEnv::with_parent(&env);
-        extract_bindings_from_file(&file.node, &type_map, &mut new_env);
+        let bindings = extract_bindings_from_file_as_vec(&file.node, &type_map);
+        for (name, ty) in &bindings {
+            new_env.insert(name.clone(), ty.clone());
+        }
         env = Rc::new(new_env);
+
+        // Store the bindings for this include call's span
+        include_bindings.insert(*span, bindings);
 
         // Recursively resolve includes from this file
         let nested_includes = collect_include_paths(&file.node);
         let parent_dir = normalized.parent();
-        env = resolve_includes(
+        let (nested_env, nested_bindings) = resolve_includes(
             &nested_includes,
             parent_dir,
             libdir,
@@ -551,9 +620,13 @@ fn resolve_includes(
             visited,
             depth + 1,
         );
+        env = nested_env;
+
+        // Merge nested include bindings into our map
+        include_bindings.extend(nested_bindings);
     }
 
-    env
+    (env, include_bindings)
 }
 
 /// Build a type environment seeded with prelude types and optionally with
@@ -568,9 +641,15 @@ fn resolve_includes(
 ///    resolve them recursively, extending the environment with each included
 ///    file's top-level bindings.
 ///
-/// Returns the accumulated environment. Best-effort: IO failures, parse errors,
-/// and type errors are silently ignored.
-pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> Rc<TypeEnv> {
+/// Returns a tuple of:
+/// - The accumulated `TypeEnv` with all bindings
+/// - A mapping from each include call's `Span` to the bindings it contributed
+///
+/// Best-effort: IO failures, parse errors, and type errors are silently ignored.
+pub fn build_type_env(
+    file: &File,
+    base_dir: Option<&Path>,
+) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
     let prelude_env = build_prelude_env();
 
     // Seed with always-available cap types
@@ -580,11 +659,13 @@ pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> Rc<TypeEnv> {
     env.insert("%stdin".to_string(), crate::types::Type::Handle);
     let mut env = Rc::new(env);
 
+    let mut include_bindings = HashMap::new();
+
     if let Some(dir) = base_dir {
         let include_paths = collect_include_paths(file);
         let mut visited = HashSet::new();
         let libdir = crate::find_libdir_path();
-        env = resolve_includes(
+        let (new_env, bindings) = resolve_includes(
             &include_paths,
             Some(dir),
             libdir.as_deref(),
@@ -592,9 +673,11 @@ pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> Rc<TypeEnv> {
             &mut visited,
             0,
         );
+        env = new_env;
+        include_bindings = bindings;
     }
 
-    env
+    (env, include_bindings)
 }
 
 #[cfg(test)]
@@ -738,7 +821,7 @@ mod tests {
         let tmp = std::env::temp_dir();
         let mut visited = HashSet::new();
 
-        let result = resolve_includes(
+        let (result_env, result_bindings) = resolve_includes(
             &include_paths,
             Some(tmp.as_path()),
             None, // no libdir
@@ -749,8 +832,12 @@ mod tests {
 
         // Missing file: canonicalize fails → skipped → base_env returned as-is.
         assert!(
-            Rc::ptr_eq(&result, &base_env),
+            Rc::ptr_eq(&result_env, &base_env),
             "expected resolve_includes to return the original base_env when file is missing"
+        );
+        assert!(
+            result_bindings.is_empty(),
+            "expected no bindings when file is missing"
         );
     }
 
@@ -758,7 +845,7 @@ mod tests {
     #[test]
     fn test_build_type_env_has_cap_types() {
         let file = File { documents: vec![] };
-        let env = build_type_env(&file, None);
+        let (env, _bindings) = build_type_env(&file, None);
 
         // Check that cap variables are present with correct types
         assert!(env.get("%pwd").is_some(), "expected %pwd in type env");
@@ -770,5 +857,28 @@ mod tests {
         assert_eq!(env.get("%pwd").unwrap().body, Type::DirCap);
         assert_eq!(env.get("%libdir").unwrap().body, Type::DirCap);
         assert_eq!(env.get("%stdin").unwrap().body, Type::Handle);
+    }
+
+    /// Verify that `build_type_env` returns binding maps for includes.
+    ///
+    /// This test verifies Task 1 of the runtime-reflection-include sprint:
+    /// resolve_includes returns a mapping from each include call's span to
+    /// the bindings it contributed.
+    #[test]
+    fn test_build_type_env_returns_include_bindings() {
+        // Parse a simple LLT file that includes another file
+        let source = r#"
+            [x: 42]
+        "#;
+        let file = parser::parse(source).unwrap();
+
+        // Without any includes, the binding map should be empty
+        let (_env, bindings) = build_type_env(&file.node, None);
+        assert!(
+            bindings.is_empty(),
+            "expected empty bindings when there are no includes"
+        );
+
+        // Future work: test with actual include statements once we have test fixtures
     }
 }
