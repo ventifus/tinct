@@ -75,6 +75,23 @@ impl ThunkArena {
         let thunk = Rc::new(Thunk::new_placeholder(Span::origin()));
         self.alloc(thunk)
     }
+
+    /// Create a new arena pre-populated with clones of this arena's entries.
+    ///
+    /// Used to give each EvalContext its own growable arena while still sharing
+    /// stdlib thunks: the child arena starts with Rc::clone of every thunk in self,
+    /// preserving ThunkId validity (same indices 0..N), then appends its own thunks
+    /// starting at N.  Dropping the child does not affect the parent's thunks.
+    pub(crate) fn clone_for_child(&self) -> Self {
+        Self {
+            thunks: self.thunks.iter().map(Rc::clone).collect(),
+        }
+    }
+
+    /// Number of thunks currently in the arena.
+    pub(crate) fn len(&self) -> usize {
+        self.thunks.len()
+    }
 }
 
 impl Default for ThunkArena {

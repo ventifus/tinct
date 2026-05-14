@@ -318,17 +318,25 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
     //   expand_macros(user_code) → create_stdlib_env() → typecheck calls expand_macros(prelude.llt) →
     //   use create_root_env to break the cycle
     let depth = EXPAND_MACROS_DEPTH.get();
-    let stdlib_env = if depth == 0 {
+    let (stdlib_env, ctx) = if depth == 0 {
         // Only call create_stdlib_env at depth 0 (top-level user code).
         // Increment depth to prevent re-entrance.
         EXPAND_MACROS_DEPTH.set(depth + 1);
-        let result = match builtins::create_stdlib_env() {
-            Ok(env) => {
+        let result = match builtins::create_stdlib_env_with_arena() {
+            Ok((env, arena)) => {
                 // Load stdlib macros from the fully-evaluated stdlib env.
                 // The stdlib defines macros via regular function exports that we
                 // register by looking them up by name after the stdlib is loaded.
                 register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
-                Ok(env)
+                // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
+                // remain valid when transformer functions access them during expansion.
+                let ctx = EvalContext::new_with_stdlib_arena(
+                    base_dir,
+                    Rc::clone(&env),
+                    no_fs,
+                    arena,
+                );
+                Ok((env, ctx))
             }
             Err(e) => Err(EvalError::internal(
                 format!("cannot create stdlib env for macro expansion: {e}"),
@@ -342,10 +350,13 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
         // Re-entrant call (depth > 0): use bare root env to break the cycle.
         // This happens when create_stdlib_env → build_prelude_env → expand_macros(prelude.llt).
         // The stdlib files don't use [defmacro], so not having stdlib macros registered is fine.
-        builtins::create_root_env()
+        // Root env has no prelude dicts — no ThunkId cross-context accesses occur here.
+        // STDLIB_ARENA_CACHE may be empty or stale at this depth; the empty-arena fallback is safe.
+        let env = builtins::create_root_env();
+        let ctx = EvalContext::new(base_dir, Rc::clone(&env), no_fs);
+        (env, ctx)
     };
-
-    let ctx = Rc::new(EvalContext::new(base_dir, Rc::clone(&stdlib_env), no_fs));
+    let ctx = Rc::new(ctx);
 
     // Process each document in the file
     let expanded_documents = file

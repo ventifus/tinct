@@ -252,7 +252,7 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 
 | Transition | Trigger | Atomicity |
 |-----------|---------|-----------|
-| Placeholder → {any non-InProgress state} | `set_state(...)` at arena-eval allocation time | Direct write — pre-construction sentinel only; materializing a `Placeholder` thunk panics. Legal targets: Unevaluated, PendingBuiltin, PendingCall, Guarded, Materialized. InProgress is excluded because it would trigger cycle detection on the next materialization attempt. |
+| Placeholder → {any non-InProgress state} | `set_state(...)` at arena allocation time | Direct write — pre-construction sentinel only; materializing a `Placeholder` thunk panics. Legal targets: Unevaluated, PendingBuiltin, PendingCall, Guarded, Materialized. InProgress is excluded because it would trigger cycle detection on the next materialization attempt. |
 | Unevaluated → InProgress | `take_unevaluated()` | Atomic (`mem::replace`) |
 | PendingBuiltin → InProgress | `take_pending_builtin()` | Atomic (`mem::replace`) |
 | PendingCall → InProgress | `take_pending_call()` | Atomic (`mem::replace`) |
@@ -487,7 +487,7 @@ The iterative evaluator (§Iterative Evaluator) uses explicit `Cont` variants on
 - **PendingCall** stores deferred function calls for lazy dispatch and tail-call optimization. Represents work already done by `eval_call` (evaluated func_expr, wrapped args) that Unevaluated would duplicate.
 - The monotonicity proof and semantic properties remain unchanged — the 7-state transition graph (Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed) is the stable design.
 - **Sharing preservation is the critical migration invariant**: thunk identity (`Rc<Thunk>` pointer) must be preserved through continuation dispatch. A materialized thunk must be the same allocation that was created at the definition site.
-- MAX_EVAL_DEPTH has been removed — the iterative CEK machine uses heap-allocated continuations with no hardcoded depth bound
+- The iterative CEK machine uses heap-allocated continuations with no hardcoded depth bound
 
 ## Error Reporting
 
@@ -1084,7 +1084,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 - **SmallVec**: `SmallVec<[Rc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
 - **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
 
-**Arena allocation (current implementation).** The runtime uses `ThunkArena` with `ThunkId` handles for all thunk storage. This is the "arena-backed registry" approach implemented in the arena-eval sprint (DONE.md:4572):
+**Arena allocation (current implementation).** The runtime uses `ThunkArena` with `ThunkId` handles for all thunk storage. This is the "arena-backed registry" approach:
 - `ThunkArena` exists in `EvalContext` with `RefCell` interior mutability
 - `Value` variants use `ThunkId` handles: `Dict(IndexMap<Key, ThunkId>)`, `Seq { head: ThunkId, tail: ThunkId }`, `Overlay(ThunkId, ThunkId)`
 - Allocation goes through `ctx.alloc_thunk(Thunk)` which wraps in `Rc<Thunk>` and stores in arena `Vec<Rc<Thunk>>`

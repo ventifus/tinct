@@ -34,7 +34,7 @@
 └─────────────┘
 ```
 
-> **Note:** The Desugar pass is mandatory and must run after parsing and before both type checking and evaluation. Both downstream phases assume `_` has been eliminated — skipping desugar causes the type checker to see `VarRef("_")` instead of `Fn` nodes, producing spurious "undefined variable _" errors.
+> **Note:** The Desugar pass is mandatory and must run after parsing and before both type checking and evaluation. Both downstream phases require `_` to be eliminated — skipping desugar causes the type checker to see `VarRef("_")` instead of `Fn` nodes, producing spurious "undefined variable _" errors.
 
 > **Note:** The type checker runs after desugaring but type errors are advisory — evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
 
@@ -60,7 +60,7 @@
 
 > For the formal evaluation semantics (thunk lifecycle, materialization rules, laziness design), see [Evaluation](08-evaluation.md). For the type system extensions that interact with evaluation (TypeAssert contracts, row polymorphism), see [Type System Extensions](07-type-extensions.md).
 
-> **Implementation status:** `materialize_rc` is replaced by the iterative `run()` loop with `Vec<Cont>` stack. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions are iterative (Action::Eval). **Remaining recursive: 1 `eval_recursive` call** (TypeAssert inner expression at eval_materialize.rs:1855 — needs a thunk without materializing, can't use Action::Eval which goes through wrap_thunk). Structural cleanup complete: MatCont→Cont rename, Action enum, run() function. Modules: `eval_call.rs`, `eval_deep.rs`, `eval_access.rs`.
+> **Implementation note:** The iterative `run()` loop with `Vec<Cont>` stack drives all materialization. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions use Action::Eval. **One remaining recursive path:** `eval_recursive` (TypeAssert inner expression at eval_materialize.rs:1855 — needs a thunk without materializing, cannot use Action::Eval which goes through wrap_thunk). Modules: `eval_call.rs`, `eval_deep.rs`, `eval_access.rs`.
 
 The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.
 
@@ -152,7 +152,7 @@ fn run(initial: Action, _ctx: &Rc<EvalContext>) -> EvalResult<Value> {
 
 The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and builtin dispatch. This separates evaluation infrastructure (file resolution, sandboxing) from variable bindings (`Environment`).
 
-**Status:** Types defined and threaded throughout the evaluator. Thread-local `INCLUDE_CTX` fully removed — no longer present in codebase. Iterative CEK machine eliminated depth tracking.
+EvalContext is defined and threaded throughout the evaluator. There is no thread-local `INCLUDE_CTX`. The iterative CEK machine uses heap-allocated continuations with no depth tracking.
 
 **Config/State split:** EvalContext separates immutable session configuration from mutable evaluation state. Config is `Rc` (no RefCell) — the compiler enforces immutability. State is `Rc<RefCell>` for interior mutability.
 
@@ -192,9 +192,9 @@ struct EvalContext {
 
 **ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<EvalContext>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is materialized, it uses the captured context for include resolution, sandboxing, etc.
 
-**BuiltinArgs:** Carries `ctx: Rc<EvalContext>`. Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. The `depth` field was removed when the CEK machine (see §Iterative Evaluator) eliminated depth tracking from the core loop.
+**BuiltinArgs:** Carries `ctx: Rc<EvalContext>`. Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. There is no `depth` field — the iterative CEK machine (see §Iterative Evaluator) uses heap-allocated continuations rather than tracking recursion depth.
 
-**Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. The `set_include_context()` / `clear_include_context()` functions are removed — the fragile set/clear ceremony is replaced by straightforward parameter passing.
+**Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. Include context is passed as a parameter — no global set/clear functions.
 
 **Per-caller patterns:**
 - **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_file.
@@ -513,7 +513,7 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 | **File I/O** | `--no-fs` flag, LSP default | `src/main.rs:39`, `src/lsp/document.rs:109` | Disables `$include` and `$from-json` file reads; LSP enables by default (CWE-22 mitigation) |
 | **Eval timeout** | `--timeout` flag (Unix only) | `src/main.rs:43` | Wall-clock timeout with SIGALRM; exits with code 2 on expiry |
 
-**Note:** `MAX_EVAL_DEPTH` was removed in the sequential-strict sprint. Evaluation depth is now bounded only by available Rust call stack. Input nesting is still bounded by `MAX_PARSE_DEPTH` (256).
+**Note:** There is no `MAX_EVAL_DEPTH` — evaluation depth is bounded only by available Rust call stack. Input nesting is still bounded by `MAX_PARSE_DEPTH` (256).
 
 **What is NOT restricted:**
 
@@ -542,9 +542,9 @@ The following kernel-level security features are implemented in `src/main.rs` an
 
 The following security features are implemented:
 
-- **Import integrity hashes**: `$include` with optional hash verification (Dhall-inspired) to detect file tampering; `--require-integrity` flag to enforce hashes on all includes (DONE.md:2492)
-- **File descriptor-based `$include`**: Eliminates TOCTOU race (canonicalize → metadata → read) by using `cap-std` for fd-based path resolution with `RESOLVE_BENEATH` semantics (DONE.md:3932)
-- **Dependency scanning**: `cargo audit` as CI gate to surface RustSec advisories before they accumulate (DONE.md:2487)
+- **Import integrity hashes**: `$include` with optional hash verification (Dhall-inspired) to detect file tampering; `--require-integrity` flag to enforce hashes on all includes
+- **File descriptor-based `$include`**: Eliminates TOCTOU race (canonicalize → metadata → read) by using `cap-std` for fd-based path resolution with `RESOLVE_BENEATH` semantics
+- **Dependency scanning**: `cargo audit` as CI gate to surface RustSec advisories before they accumulate
 
 ### Attack Surface Analysis
 
@@ -566,7 +566,7 @@ The following security features are implemented:
 
 **Dependency hygiene**:
 - All dependencies are actively maintained stable crates (clap, indexmap, serde_json, lsp-server, lsp-types, rustyline)
-- No known CVEs as of last audit (April 2026)
+- No known CVEs
 - `cargo audit` is automated in CI
 
 ## Testing Strategy

@@ -21,7 +21,7 @@ timeout@[type: Number  default: 30]   # named param with default
 
 # On fn — return type
 [fn@Number [x@Number] ...]            # shorthand: returns Number
-[fn@[type: Number  doc: "Sum"] ...]   # full form
+[fn@[return: Number  doc: "Sum"] ...]   # full form
 ```
 
 **Parameter properties:**
@@ -345,17 +345,7 @@ The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annot
 
 **Note:** `Fn@Number` in a bare context (not inside `[]`) is also valid and parsed via the `annotated_bare` grammar rule, producing the same AST structure.
 
-**Row polymorphism syntax (removed under BAS):** The `...` and `...name` rest entry syntax that previously appeared in type expressions has been removed. Under BAS (Boolean-Algebraic Subtyping), all records are closed. Openness is now expressed via width subtyping: a record with MORE fields is a subtype of one with FEWER fields.
-
-```tinct
-# Previously valid (now removed):
-# [name: String ...]            # open record syntax — NO LONGER VALID
-# [name: String ...r]           # named row variable — NO LONGER VALID
-
-# Current BAS approach:
-# Width subtyping handles openness automatically.
-# [name: String  port: Int] <: [name: String]  (extra fields permitted)
-```
+**Row polymorphism and width subtyping.** Under BAS (Boolean-Algebraic Subtyping), all records are closed — there are no row variables. Openness is expressed via width subtyping: a record with more fields is a subtype of one with fewer fields, so a function annotated `@[name: String]` accepts any record that has at least a `name: String` field. The `...` and `...name` rest entry forms are valid syntax and express user intent for openness, but they produce the same closed record type — width subtyping handles the structural openness automatically without row variables.
 
 **Type conventions** (not enforced by parser, enforced by type checker):
 - Uppercase first letter = concrete type (`String`, `Number`, `Person`, `Fn`)

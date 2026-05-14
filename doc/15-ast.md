@@ -6,11 +6,11 @@ Every grammar rule maps to an AST node. All nodes carry source span information 
 
 Tinct uses a **hand-written iterative descent parser** composed of two phases:
 
-1. **Tokenization** (`src/lexer.rs`): Converts raw input into a flat token stream with accurate source spans. The lexer handles whitespace-sensitive disambiguation (e.g., `word@annotation` vs `word @annotation`) by tracking whitespace gaps and emitting context-aware tokens (`ImmediateAt`, `Dot`). Note: `[` is not whitespace-sensitive — bracket access was removed in access-pipeline-phase2; `a[0]` now parses as two separate expressions.
+1. **Tokenization** (`src/lexer.rs`): Converts raw input into a flat token stream with accurate source spans. The lexer handles whitespace-sensitive disambiguation (e.g., `word@annotation` vs `word @annotation`) by tracking whitespace gaps and emitting context-aware tokens (`ImmediateAt`, `Dot`). Note: `[` is not whitespace-sensitive — `a[0]` parses as two separate expressions.
 
 2. **Parsing** (`src/parser.rs`): Consumes the token stream using an explicit `Vec<StackFrame>` to avoid Rust call-stack recursion. The iterative parser enforces a maximum nesting depth (`MAX_PARSE_DEPTH = 256`) before allocating stack frames, preventing unbounded memory use.
 
-**Historical note:** Tinct originally used a pest PEG grammar. The hand-written parser (commit cc8333c) replaced pest to gain precise control over error messages, whitespace sensitivity, and stack depth limits.
+The hand-written parser provides precise control over error messages, whitespace sensitivity, and stack depth limits.
 
 ## AST Node Types
 
@@ -94,7 +94,6 @@ enum Expr {
         expr: Box<Spanned<Expr>>,
         field: DotKey,  // DotKey::Ident("name") or DotKey::Int(0)
     },
-    // Note: BracketAccess and RangeAccess were removed in access-pipeline-phase2.
     // Use [get key data] (builtin) for dynamic key access, and slice/drop/take for ranges.
 
     // Data
@@ -320,7 +319,7 @@ Dot notation and bracket notation desugar to nested access nodes:
 |---------------|-----|
 | `data.name` | `DotAccess { field: DotKey::Ident("name"), .. }` |
 | `data.0` | `DotAccess { field: DotKey::Int(0), .. }` — integer key; looks up `Key::Int(0)` at eval time |
-| `[get 5 data]` | `Call(VarRef("get"), [Int(5), VarRef("data")])` — use `get` builtin for dynamic key access (bracket access removed in access-pipeline-phase2) |
+| `[get 5 data]` | `Call(VarRef("get"), [Int(5), VarRef("data")])` — use `get` builtin for dynamic key access |
 | `a.b.0.c` | `DotAccess(DotAccess(DotAccess(VarRef("a"), Ident("b")), Int(0)), Ident("c"))` |
 
 ### Pipe Desugaring

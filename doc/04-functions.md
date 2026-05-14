@@ -100,7 +100,7 @@ Examples:
 ```tinct
 [fn [x] x]
 [fn@Number [x@Number y@Number] [+ x y]]
-[fn@[type: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [+ x y]]
+[fn@[return: Number  doc: "Sum"] [x@Number  y@[type: Number  default: 0]] [+ x y]]
 [fn [f ...args] [map f args]]
 ```
 
@@ -160,7 +160,7 @@ This is useful for creating projection functions in pipelines:
 
 **`_` in func position:** `_` in the function position of `[_ ...]` does **not** trigger implicit lambda desugaring. Only `_` in arguments, named arguments, dict values, and access chains triggers desugaring. `[_ x]` is a call where the function is looked up from the variable `_`, not an implicit lambda.
 
-**`_` in dict entry keys:** `_` as a dict entry key (e.g., `[_: value]`) does **not** trigger desugaring. Only `_` as the *target* of a dot access chain (e.g., `_.name`) or as a direct argument triggers implicit lambda wrapping. (Bracket access was removed in access-pipeline-phase2; `_[0]` no longer parses as bracket access.)
+**`_` in dict entry keys:** `_` as a dict entry key (e.g., `[_: value]`) does **not** trigger desugaring. Only `_` as the *target* of a dot access chain (e.g., `_.name`) or as a direct argument triggers implicit lambda wrapping.
 
 **Scoping rule:** The lambda boundary is the innermost `[...]` that directly contains `_`. Nested bracket expressions that contain their own `_` create separate lambdas:
 
@@ -216,7 +216,7 @@ DIRECT(e) = match e with:
   | _                        → false
 ```
 
-Note: `BracketAccess` and `RangeAccess` arms were removed from DIRECT in access-pipeline-phase2 (those AST variants no longer exist).
+Note: `BracketAccess` and `RangeAccess` AST variants do not exist in this language — only dot access chains are supported.
 
 **Rewrite rules.** The pass checks WRAP conditions on **raw** (un-desugared) children *before* recursing. DIRECT subtrees are left as-is inside the generated `Fn` body — they are variable references to the `_` parameter, not candidates for further wrapping. Non-DIRECT children are recursed into at depth+1 (inside the generated lambda, `_` is bound). This avoids the greedy-wrapping problem where naive bottom-up traversal would wrap `_.age` before its enclosing Call could claim it (Visser 1998).
 
@@ -253,8 +253,8 @@ DESUGAR(e, depth) =
       where DIRECT(target)
       → Fn([_], DotAccess(target, field))                -- [WRAP-DOT]
 
-  -- Note: WRAP-BRACKET and WRAP-RANGE were removed in access-pipeline-phase2.
-  -- BracketAccess and RangeAccess AST variants no longer exist.
+  -- Note: There are no WRAP-BRACKET or WRAP-RANGE rules.
+  -- BracketAccess and RangeAccess AST variants do not exist in this language.
 
   -- PASS: no wrapping, recurse into all children
   | _ → RECURSE_CHILDREN(e, depth)                       -- [PASS]
@@ -269,7 +269,7 @@ DESUGAR(e, depth) =
 | WRAP-DOT | Standalone `_.field` (not inside a Call/Dict that claims it) | Wrap in `Fn([_], DotAccess(...))` |
 | WRAP-PIPE | `$_ \| f` — lhs is `$_` (implicit arg) | Wrap in `Fn([_], Pipe(_, f))` |
 
-Note: WRAP-BRACKET and WRAP-RANGE were removed in access-pipeline-phase2 (bracket/range access no longer exists).
+Note: There are no WRAP-BRACKET or WRAP-RANGE rules — bracket and range access are not part of the language.
 
 **Exclusions.** The following positions do **not** trigger desugaring:
 
@@ -324,11 +324,11 @@ fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
 }
 ```
 
-**Migration from eval-time desugaring.** The implementation in `eval()` (`should_desugar_underscore` + `wrap_in_lambda` at `src/eval.rs:66-71`) was removed when the AST pass was activated. The pass subsumes it entirely. The eval-time functions (`contains_direct_underscore`, `call_has_direct_underscore`, `should_desugar_underscore`, `wrap_in_lambda`) moved to a new `src/desugar.rs` module with the scope-tracking addition. Existing unit tests (`test_underscore_*` in `eval.rs`) now call `desugar_expr()` before `eval()`.
+**Implementation location.** The desugaring pass lives in `src/desugar.rs`. The entry points are `desugar_file()` for multi-document files and `desugar_expr()` for single expressions (REPL). Unit tests for `_` desugaring call `desugar_expr()` before `eval()`.
 
 #### Testing Requirements
 
-Corpus tests are required for each WRAP rule (WRAP-CALL, WRAP-DICT, WRAP-DOT, WRAP-PIPE) and each exclusion position (func position in Call, dict entry keys). Tests should verify that desugaring produces the expected `Fn([_], ...)` wrapper and that excluded positions do not trigger wrapping. (WRAP-BRACKET and WRAP-RANGE are not supported — bracket access is not part of the language.)
+Corpus tests are required for each WRAP rule (WRAP-CALL, WRAP-DICT, WRAP-DOT, WRAP-PIPE) and each exclusion position (func position in Call, dict entry keys). Tests should verify that desugaring produces the expected `Fn([_], ...)` wrapper and that excluded positions do not trigger wrapping.
 
 ## Call Convention — Formal Specification
 
@@ -555,7 +555,7 @@ The binding algorithm produces four distinct error classes. Each corresponds to 
 
 Default evaluation errors (from `eval(default(pᵢ), env_d)` in BIND-POSITIONAL) are not binding errors — they propagate as normal evaluation errors with the default expression's span.
 
-**Implementation note:** Implemented as of call-convention-kotlin. The evaluator uses per-parameter coverage (C-COVERAGE) and accepts named args for any parameter, not just `default:` params.
+**Implementation note:** The evaluator uses per-parameter coverage (C-COVERAGE) and accepts named args for any parameter, not just `default:` params.
 
 ### Part 5: `$apply` and the Default Environment
 

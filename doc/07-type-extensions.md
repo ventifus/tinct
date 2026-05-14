@@ -2,11 +2,11 @@
 
 For the user-facing annotation syntax, see [Type Annotations](05-type-annotations.md). For the formal inference algorithm, see [Type Inference](06-type-inference.md).
 
-**Current design:** Tinct uses Boolean-Algebraic Subtyping (BAS) for record types and union types. See §Boolean-Algebraic Subtyping below for the live specification. The original Rémy-style row polymorphism design has been archived — see Appendix at the end of this document.
+**Current design:** Tinct uses Boolean-Algebraic Subtyping (BAS) for record types and union types. See §Boolean-Algebraic Subtyping below for the live specification. The Rémy-style row polymorphism design is documented in the Appendix at the end of this document.
 
 ## Boolean-Algebraic Subtyping (BAS)
 
-Tinct's type system migrates from Rémy-style row polymorphism to Boolean-Algebraic Subtyping (BAS), following Chau & Parreaux (POPL 2026). BAS encodes all of union, intersection, negation, and record extension in one distributive Boolean lattice — eliminating row variables and their associated soundness gaps.
+Tinct's type system uses Boolean-Algebraic Subtyping (BAS), following Chau & Parreaux (POPL 2026). BAS encodes all of union, intersection, negation, and record extension in one distributive Boolean lattice, with all records closed and record openness expressed via width subtyping.
 
 ### The BAS Type Algebra
 
@@ -346,13 +346,11 @@ Builtins that return materialized values wrap them in `Thunk::new_materialized()
 
 # Appendix: Archived Rémy Row Polymorphism Design
 
-> **Note:** The following sections describe the original Rémy row polymorphism design that has been superseded by BAS (Boolean-Algebraic Subtyping). Preserved for historical reference.
-
-The Rémy-style row polymorphism design (Parts 1–10) was implemented and subsequently replaced by Boolean-Algebraic Subtyping (BAS). The `RowTail` enum, `row_map` in `Substitution`, and `row_vars` in `TypeScheme` have all been removed from the codebase. Under BAS, all records are closed — openness is expressed via width subtyping in `is_subtype()`. See §Boolean-Algebraic Subtyping above for the live specification.
+> **Note:** The following sections describe the Rémy row polymorphism design. Under the current BAS implementation, the `RowTail` enum, `row_map` in `Substitution`, and `row_vars` in `TypeScheme` are not present. All records are closed — openness is expressed via width subtyping in `is_subtype()`. See §Boolean-Algebraic Subtyping above for the live specification.
 
 ## Row-Variable Unification — Kinded Rémy Model (ARCHIVED)
 
-The original design replaced closed-strict/open-lenient record unification with kinded row-variable unification following Rémy (1994). Row variables were first-class participants in type inference with a separate **Row kind**, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
+This design uses kinded row-variable unification following Rémy (1994). Row variables are first-class participants in type inference with a separate **Row kind**, enabling the type checker to infer record extension and restriction through polymorphic function boundaries.
 
 **Representation choice:** The Row type used a **dict+tail** representation (field map plus tail variable) rather than Rémy's cons-list (`Extend(l, τ, ρ)`). Rémy's left-commutativity equations (`l₁:τ₁ ; l₂:τ₂ ; ρ ≡ l₂:τ₂ ; l₁:τ₁ ; ρ`) make rows semantically unordered — the dict+tail representation computes directly in the quotient algebra of rows under these equations, representing each equivalence class as a single canonical form (unordered field map) rather than an arbitrary representative (ordered cons-list).
 
@@ -426,9 +424,9 @@ The current design is a strict subset — every field entry `l: τ` is implicitl
 
 ### Part 2: Substitution and Occurs Check (ARCHIVED)
 
-> **Note:** The `row_map` field has been removed from `Substitution`. Under BAS, all records are closed — substitution operates only on type variables, not row variables. This section is preserved for historical reference.
+> **Note:** Under BAS, all records are closed — `Substitution` operates only on type variables, not row variables. The `row_map` described below is not present in the current implementation.
 
-The original Rémy design split substitution into two kinded maps:
+The Rémy design split substitution into two kinded maps:
 
 ```rust
 pub struct Substitution {
@@ -499,9 +497,9 @@ The row-variable occurs check traverses **both** the tail (preventing direct inf
 
 ### Part 3: Row Unification (ARCHIVED)
 
-> **Note:** Row unification has been replaced by BAS lattice operations. Under BAS, record unification is handled via `is_subtype()` checks using Boolean algebra rules, not field partitioning. This section describes the superseded Rémy-era algorithm.
+> **Note:** Under BAS, record unification is handled via `is_subtype()` checks using Boolean algebra rules, not field partitioning. The row unification algorithm below is not active in the current implementation.
 
-In the original Rémy design, row unification was the core of the type system. It used **field partitioning** — given two rows, partition their fields into shared (present in both) and unique (present in only one), then unify shared field types and bind row variable tails to the other side's unique fields. This directly computed in the quotient algebra of Rémy's left-commutativity equations.
+In the Rémy design, row unification was the core of the type system. It used **field partitioning** — given two rows, partition their fields into shared (present in both) and unique (present in only one), then unify shared field types and bind row variable tails to the other side's unique fields. This directly computed in the quotient algebra of Rémy's left-commutativity equations.
 
 **Unification algorithm:**
 
@@ -672,7 +670,7 @@ instantiate(τ, counter):
 
 Row variables and type variables use **separate namespaces** — `_t0` is unambiguously a type variable or a row variable depending on which map it appears in. Both share the `_t{n}` naming counter (via `InferState.name_counter`), but are separated by the kinded `type_map` vs `row_map` in Substitution. This separation is enforced structurally by Rust's type system: `type_map: IndexMap<String, Type>` binds type variable names to Type, while `row_map: IndexMap<String, Row>` binds row variable names to Row. A variable name cannot appear in both maps simultaneously during well-formed unification. (User-supplied annotation names that violate kind separation can break this invariant — the `ann_mapping` cross-kind collision is a known limitation.)
 
-**Generalization** (with levels, per [Type Inference](06-type-inference.md) §Let-Generalization): In the original Rémy design, row variables carried levels identically to type variables. Under BAS, the `TypeScheme` structure no longer tracks row variables:
+**Generalization** (with levels, per [Type Inference](06-type-inference.md) §Let-Generalization): In the Rémy design, row variables carried levels identically to type variables. Under BAS, `TypeScheme` carries only type variables:
 
 ```rust
 pub struct TypeScheme {
@@ -686,9 +684,9 @@ Generalization now operates only on type variables. Record width subtyping is ha
 
 ### Part 5: Access Chain Constraint Generation (ARCHIVED)
 
-> **Note:** Under BAS, access chains no longer generate row variable constraints. Width subtyping is handled via BAS rules, not row polymorphism. This section describes the superseded Rémy-era approach.
+> **Note:** Under BAS, access chains do not generate row variable constraints. Width subtyping is handled via BAS rules. The constraint generation described below is not active in the current implementation.
 
-In the original Rémy design, row variables enabled constraint generation for access chains instead of falling back to `Unknown`.
+In the Rémy design, row variables enabled constraint generation for access chains instead of falling back to `Unknown`.
 
 ```
 check_dot_access(Γ, e, field) :
@@ -715,7 +713,7 @@ The TypeVar case is new and important: `$x.name` where `$x` has unknown type `α
 
 The RowVar case in Record access binds `ρ` to `Row({field: β}, RowVar(ρ_fresh))`, correctly recording the constraint "ρ must contain field with type β, plus whatever else is in ρ_fresh." This is sound because if ρ is later unified with a row that lacks the field, the binding will conflict.
 
-Part 5 was complete as of row-unification-e. Now archived — row variables replaced by BAS width subtyping (see §Boolean-Algebraic Subtyping below).
+Under BAS, width subtyping replaces row variable constraints for access chains (see §Boolean-Algebraic Subtyping above).
 
 ### Part 6: Subtyping (ARCHIVED)
 
@@ -752,26 +750,26 @@ Examples (BAS era):
 - `Record({name: Str, age: Int})` → `[name: Str  age: Int]`
 - `Record({})` → `[]`
 
-The original Rémy design supported row variable tails (`...r`) in display output. That logic has been removed.
+Under BAS, record types display using field-only syntax (no row variable tail).
 
 ### Part 8: Migration Reference (ARCHIVED)
 
-The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and changed `Record(IndexMap, RowRest)` to `Record(Row)`:
+The Rémy design uses `RowTail` (not `RowRest`), a `Row` struct, and `Record(Row)` (not `Record(IndexMap, RowRest)`). The representation correspondence is:
 
-| Before | After |
+| Simpler model | Rémy design |
 |--------|-------|
 | `RowRest::Closed` | `RowTail::Empty` |
-| `RowRest::Open` | `RowTail::RowVar(fresh)` (anonymous open became named) |
+| `RowRest::Open` | `RowTail::RowVar(fresh)` (anonymous open is named) |
 | `RowRest::RowVar(name)` | `RowTail::RowVar(name)` |
 | `Record(fields, rest)` | `Record(Row { fields, tail })` |
 | `Substitution { map }` | `Substitution { type_map, row_map }` |
 | `collect_type_vars` (single set) | `collect_type_vars` + `collect_row_vars` (two sets) |
 
-**`RowRest::Open` elimination.** Anonymous open records (`[name: Str ...]`) became `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` for the source syntax; the type checker owns the fresh-name counter and generates `_open{n}` names during type resolution (distinct from the `_t{n}` prefix used for type variables, though both share the same monotonic counter). This made all openness explicit and eliminated the `Open` variant entirely.
+**`RowRest::Open` handling.** Anonymous open records (`[name: Str ...]`) use `Record(Row { fields: {name: Str}, tail: RowVar(fresh) })` — the type checker generates a fresh row variable name when resolving `Expr::Rest(None)`. The parser produces `Expr::Rest(None)` for the source syntax; the type checker owns the fresh-name counter and generates `_open{n}` names during type resolution (distinct from the `_t{n}` prefix used for type variables, though both share the same monotonic counter). This makes all openness explicit.
 
 **Annotation isolation constraint.** Each annotation containing an anonymous open record (`[x: Int ...]`) gets a fresh row variable generated inline in `resolve_property_dict_as_record`: the name counter is read as `_open{n}` (via `format!("_open{}", state.name_counter)`), the counter is incremented, and the level is registered in `state.levels`. There is no helper method wrapping this logic; the freshening happens at the `Expr::Rest(None)` match arm. This ensures that two annotations with the same shape in different positions (e.g., two function parameters both typed as `[x: Int ...]`) get distinct row variables (`_open3`, `_open4`), preventing spurious constraint propagation. Without this isolation, unifying one annotation's row variable during constraint solving would affect the other annotation's row, causing type errors for structurally identical but semantically independent open records. The isolation is achieved by freshening during the type checking pass, not during parsing — the parser produces `Expr::Rest(None)`, and freshening happens per annotation site, not per source occurrence.
 
-**Structural similarity.** The dict+tail representation was structurally close to the prior `Record(IndexMap<String, Type>, RowRest)` — the field map was preserved as-is, and `RowRest` became `RowTail` with `Closed` → `Empty` and `Open` eliminated. This minimized the migration surface compared to a cons-list representation. Pattern matches on `Record(fields, rest)` became `Record(Row { fields, tail })` — a mechanical transformation.
+**Structural comparison to simpler model.** The dict+tail representation is structurally close to `Record(IndexMap<String, Type>, RowRest)` — the field map is the same, and `RowRest` maps to `RowTail` with the `Open` variant replaced by a named `RowVar`. Pattern matches on `Record(fields, rest)` become `Record(Row { fields, tail })` — a mechanical transformation.
 
 **Substitution split.** The unification function routes variable bindings to the correct map based on the variable's kind (inferred from context: `TypeVar(α)` → `type_map`, `RowTail::RowVar(ρ)` → `row_map`). Type variables and row variables occupy separate namespaces enforced by the `Substitution` structure.
 
@@ -787,7 +785,7 @@ The migration replaced `RowRest` with `RowTail`, added `Row` as a struct, and ch
 
 **P4 — Occurs check termination.** The per-kind occurs check prevents infinite types (`α = Record({x: α})`) and infinite rows (`ρ = {x: Int, ...ρ}`). The row-variable occurs check traverses field types to prevent infinite structures through nesting (`ρ = {x: Record({y: Int, ...ρ})}`). Combined with the finite-depth property of tinct's AST, unification terminates.
 
-**P5 — Backward compatibility.** All well-typed programs remain well-typed after the migration. The migration changes internal representation but not the type language visible to users. Programs that previously inferred `Unknown` for row-polymorphic positions now infer more precise types — this is strictly more informative, not breaking.
+**P5 — Type language stability.** The type language visible to users is unchanged by the internal representation. Programs using open-record annotations infer more precise types under row polymorphism than they would under `Unknown` fallback — this is strictly more informative.
 
 **P6 — Forward compatibility with full Rémy.** Adding presence/absence flags changes field map values from `Type` to `(FieldPresence, Type)`. The partitioning algorithm gains a presence-compatibility check (Present must match Present, Absent must match Absent), and field access must skip Absent fields. The overall structure (partition shared/unique, unify shared, bind tails) is preserved. See Part 1: Row Kind for the extension point.
 
