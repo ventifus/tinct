@@ -1,0 +1,26 @@
+# Test that macro transformers can safely return AST dicts through the
+# deep_materialize output boundary without errors.
+#
+# What this exercises: the output deep_materialize at the macro expansion
+# boundary runs on the dict returned by the transformer and correctly
+# traverses all ThunkIds in the output Value::Dict. The transformer returns
+# a shallow AST dict with primitive field values (Value::Bool), which
+# validates the happy path of the boundary with no lazy thunks.
+#
+# Note: `true` here is a parser literal (Value::Bool), not a prelude binding.
+# Environment stores Rc<Thunk> (not ThunkId), so closure captures from the
+# prelude env do not leak ThunkIds between arenas. The cross-arena panic
+# requires a ThunkId from the stdlib arena to end up inside a Value::Dict
+# or Value::Seq in the transformer output — which this test does not
+# produce (primitives contain no ThunkId).
+
+[defmacro const-true [args]
+  # Returns an AST dict for the literal `true`.
+  # The dict itself (Value::Dict with ThunkIds) is traversed by
+  # deep_materialize at the output boundary.
+  [type: "literal"  kind: "bool"  value: true]
+]
+
+[const-true 42]
+=== out
+Bool(true)

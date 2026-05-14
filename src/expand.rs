@@ -770,6 +770,16 @@ fn expand_expr_inner(
 /// Hygiene: a fresh `ScopeId` is allocated per invocation, and any bindings
 /// introduced by the expansion (fn params, dict keys that are new names) are
 /// renamed to `name:scope:N` to prevent capture of call-site variables.
+///
+/// ## Arena Boundary Invariant
+///
+/// The macro expansion boundary is a data boundary. Both the input AST dict and the output
+/// AST dict are fully materialized before crossing. No arena-relative ThunkId handles may
+/// flow from the stdlib arena into the expansion arena or vice versa.
+///
+/// This ensures that transformer functions from the stdlib (which contain ThunkIds pointing
+/// into their creation-time arena) cannot leak those handles into the expansion arena's
+/// value graph. Both input and output are pure Value trees with no lazy references.
 fn expand_macro_call(
     macro_name: &str,
     args: &[Rc<Spanned<Expr>>],
@@ -809,7 +819,27 @@ fn expand_macro_call(
         args_dict.insert(Key::Int(i as i64), thunk_id);
     }
     let args_value = Value::Dict(args_dict);
-    let args_thunk = Rc::new(Thunk::new_materialized(args_value, call_span));
+
+    // ARENA BOUNDARY: Deep-materialize the input AST dict before passing to the transformer.
+    // ast_to_dict_expr creates all thunks as Materialized, so this is a validation pass
+    // with no lazy computation triggered. Cost is O(AST node count) cache hits.
+    let deep_args_value =
+        eval::deep_materialize(&args_value, ctx, Some(&call_span)).map_err(|mut e| {
+            e.push_frame(
+                format!("deep-materializing input to macro '{}'", macro_name),
+                call_span,
+            );
+            e
+        })?;
+
+    // Debug assertion: verify all thunks in the input are materialized
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        all_thunks_materialized(&deep_args_value, ctx),
+        "macro expansion boundary violated: input contains lazy thunks"
+    );
+
+    let args_thunk = Rc::new(Thunk::new_materialized(deep_args_value, call_span));
 
     // Get the transformer and call it with the args list
     let transformer = env
@@ -888,6 +918,13 @@ fn expand_macro_call(
         e
     })?;
 
+    // Debug assertion: verify all thunks in the output are materialized
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        all_thunks_materialized(&deep_result, ctx),
+        "macro expansion boundary violated: output contains lazy thunks"
+    );
+
     // Convert the result dict back to AST
     let mut expanded_ast = dict_to_ast(&deep_result, ctx).map_err(|e| {
         EvalError::user_error(
@@ -935,4 +972,114 @@ pub fn format_provenance(provenance: &ProvenanceMap, span: Span) -> Option<Strin
             prov.macro_name, prov.call_site_span.start.line, prov.call_site_span.start.column,
         )
     })
+}
+
+/// Debug assertion helper: check that all thunks in a value tree are materialized.
+/// Used to validate the macro expansion boundary invariant: no lazy thunks cross
+/// from the stdlib arena to the expansion arena or vice versa.
+#[cfg(debug_assertions)]
+fn all_thunks_materialized(val: &Value, ctx: &Rc<EvalContext>) -> bool {
+    match val {
+        Value::Dict(map) => {
+            for thunk_id in map.values() {
+                let thunk = ctx.get_thunk(*thunk_id);
+                let state = thunk.state();
+                if !matches!(&*state, crate::value::ThunkState::Materialized(_)) {
+                    return false;
+                }
+                // Recursively check the materialized value
+                if let crate::value::ThunkState::Materialized(ref inner_val) = &*state {
+                    if !all_thunks_materialized(inner_val, ctx) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        Value::Seq {
+            head: head_id,
+            tail: tail_id,
+        } => {
+            // Check head
+            let head_thunk = ctx.get_thunk(*head_id);
+            let head_state = head_thunk.state();
+            if !matches!(&*head_state, crate::value::ThunkState::Materialized(_)) {
+                return false;
+            }
+            if let crate::value::ThunkState::Materialized(ref head_val) = &*head_state {
+                if !all_thunks_materialized(head_val, ctx) {
+                    return false;
+                }
+            }
+            // Check tail
+            let tail_thunk = ctx.get_thunk(*tail_id);
+            let tail_state = tail_thunk.state();
+            if !matches!(&*tail_state, crate::value::ThunkState::Materialized(_)) {
+                return false;
+            }
+            if let crate::value::ThunkState::Materialized(ref tail_val) = &*tail_state {
+                if !all_thunks_materialized(tail_val, ctx) {
+                    return false;
+                }
+            }
+            true
+        }
+        Value::Proxy { handler } => {
+            // Check handler
+            let handler_thunk = ctx.get_thunk(*handler);
+            let handler_state = handler_thunk.state();
+            if !matches!(&*handler_state, crate::value::ThunkState::Materialized(_)) {
+                return false;
+            }
+            if let crate::value::ThunkState::Materialized(ref handler_val) = &*handler_state {
+                if !all_thunks_materialized(handler_val, ctx) {
+                    return false;
+                }
+            }
+            true
+        }
+        Value::Overlay(left, right) => {
+            // Check left
+            let left_thunk = ctx.get_thunk(*left);
+            let left_state = left_thunk.state();
+            if !matches!(&*left_state, crate::value::ThunkState::Materialized(_)) {
+                return false;
+            }
+            if let crate::value::ThunkState::Materialized(ref left_val) = &*left_state {
+                if !all_thunks_materialized(left_val, ctx) {
+                    return false;
+                }
+            }
+            // Check right
+            let right_thunk = ctx.get_thunk(*right);
+            let right_state = right_thunk.state();
+            if !matches!(&*right_state, crate::value::ThunkState::Materialized(_)) {
+                return false;
+            }
+            if let crate::value::ThunkState::Materialized(ref right_val) = &*right_state {
+                if !all_thunks_materialized(right_val, ctx) {
+                    return false;
+                }
+            }
+            true
+        }
+        Value::Variant {
+            payload: Some(id), ..
+        } => {
+            let thunk = ctx.get_thunk(*id);
+            let state = thunk.state();
+            if !matches!(&*state, crate::value::ThunkState::Materialized(_)) {
+                return false;
+            }
+            if let crate::value::ThunkState::Materialized(ref inner_val) = &*state {
+                if !all_thunks_materialized(inner_val, ctx) {
+                    return false;
+                }
+            }
+            true
+        }
+        Value::Variant { payload: None, .. } => true,
+        // All other values (primitives, functions, capabilities, etc.) have no thunks to check
+        _ => true,
+    }
 }

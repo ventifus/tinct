@@ -6178,3 +6178,16 @@ Post-processing pass after `typecheck_file` completes: walk each binding's final
 - [x] Over-broad detection covers: `fn@Number` when body infers `Int`; `param@Dict` when inference constrains to a specific record; `@Top` / `@Any` when a precise type is inferred; union annotations `@[Int String]` when inference produces only one branch (`src/typecheck.rs`)
 - [x] Wire `scan_type_quality` into `typecheck_file`; pass the `Vec<TypeDiagnostic>` through the return; `--strict` bump is applied at emission time in the CLI/LSP layer, not in the scanner itself — the scanner always emits at the base level (`src/typecheck.rs`, `src/main.rs`)
 - [x] Tests: corpus tests with `=== warn` sections for: inferred Unknown warns; explicit `@Unknown` silent in default; explicit `@Unknown` warns in `--strict`; inferred Unknown errors in `--strict`; `[@Unknown expr]` same as explicit; `fn@Number` with `Int` body warns "consider @Int"; `param@Dict` with specific record warns; `--strict` escalation (`tests/corpus/eval/typecheck/`)
+
+### macro-expansion-boundary: Fix macro expander arena isolation (prerequisite for hkt-do-macro-*)
+
+**Root cause (panel review 2026-05-13):** `expand_macros` creates a fresh `ThunkArena` (Arena-B), but `create_stdlib_env()` creates its own separate arena (Arena-A). Macro transformer closures from the stdlib contain ThunkIds pointing into Arena-A. When `deep_materialize` runs using Arena-B's context, `ctx.get_thunk(id)` panics: the ID is an out-of-bounds index into the wrong Vec.
+
+**Architectural decision — Option C (phase separation):** Macro expansion boundaries are *data boundaries*. Inputs and outputs must be fully materialized — no arena-relative ThunkId handles may cross them. This is consistent with the Racket syntax-object model and is forward-compatible with Phase 3 per-section arena lifetimes (Option D — sharing arenas — defeats per-section reclamation).
+
+The output side is already correct (`deep_materialize` at `expand.rs:886`). Only the input side needs fixing.
+
+- [x] In `expand_macro_call` (`src/expand.rs`): after `ast_to_dict_expr` produces the quoted-args AST dict thunk at `expand.rs:801`, call `deep_materialize` on it before passing to the transformer; since `ast_to_dict_expr` creates only `Thunk::new_materialized` entries, every force is a cache hit — no lazy computation is triggered, cost is O(AST node count) (`src/expand.rs`)
+- [x] Add `doc` comment to `expand_macro_call` stating the invariant: "The macro expansion boundary is a data boundary. Both the input AST dict and the output AST dict are fully materialized before crossing. No arena-relative ThunkId handles may flow from the stdlib arena into the expansion arena or vice versa." (`src/expand.rs`)
+- [x] Add `debug_assert!` after both the input deep-materialize and the existing output `deep_materialize` confirming all thunks in the value are `Materialized`; this makes the invariant machine-checkable in debug builds (`src/expand.rs`)
+- [x] Tests: write a macro transformer that reads from its own closure (stdlib env) and returns a dict that includes those closure values; verify no panic (`tests/corpus/eval/macros/`)

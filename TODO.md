@@ -47,19 +47,6 @@ Three design corrections discovered after `hkt-field-access` was implemented:
 - [x] Remove the stale note at the bottom of `hkt-field-access` sprint about `constraint-annotations` dependency for HasField syntax — both the dependency and the HasField annotation syntax were incorrect
 - [x] Tests: `key@Label` generates HasField constraint and returns precise field type; `key@[label: l]` where same `l` is used in two parameters works; `get`/`get-or` return precise types at call sites with string literal keys (`tests/corpus/eval/typecheck/`, `tests/lsp_corpus_tests.rs`)
 
-### macro-expansion-boundary: Fix macro expander arena isolation (prerequisite for hkt-do-macro-*)
-
-**Root cause (panel review 2026-05-13):** `expand_macros` creates a fresh `ThunkArena` (Arena-B), but `create_stdlib_env()` creates its own separate arena (Arena-A). Macro transformer closures from the stdlib contain ThunkIds pointing into Arena-A. When `deep_materialize` runs using Arena-B's context, `ctx.get_thunk(id)` panics: the ID is an out-of-bounds index into the wrong Vec.
-
-**Architectural decision — Option C (phase separation):** Macro expansion boundaries are *data boundaries*. Inputs and outputs must be fully materialized — no arena-relative ThunkId handles may cross them. This is consistent with the Racket syntax-object model and is forward-compatible with Phase 3 per-section arena lifetimes (Option D — sharing arenas — defeats per-section reclamation).
-
-The output side is already correct (`deep_materialize` at `expand.rs:886`). Only the input side needs fixing.
-
-- [ ] In `expand_macro_call` (`src/expand.rs`): after `ast_to_dict_expr` produces the quoted-args AST dict thunk at `expand.rs:801`, call `deep_materialize` on it before passing to the transformer; since `ast_to_dict_expr` creates only `Thunk::new_materialized` entries, every force is a cache hit — no lazy computation is triggered, cost is O(AST node count) (`src/expand.rs`)
-- [ ] Add `doc` comment to `expand_macro_call` stating the invariant: "The macro expansion boundary is a data boundary. Both the input AST dict and the output AST dict are fully materialized before crossing. No arena-relative ThunkId handles may flow from the stdlib arena into the expansion arena or vice versa." (`src/expand.rs`)
-- [ ] Add `debug_assert!` after both the input deep-materialize and the existing output `deep_materialize` confirming all thunks in the value are `Materialized`; this makes the invariant machine-checkable in debug builds (`src/expand.rs`)
-- [ ] Tests: write a macro transformer that reads from its own closure (stdlib env) and returns a dict that includes those closure values; verify no panic (`tests/corpus/eval/macros/`)
-
 ### hkt-do-macro-explicit: Implement [do] macro — explicit form
 
 See `doc/whatif/completed/hkt-monads.md` §`[do]` Inference. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`.
