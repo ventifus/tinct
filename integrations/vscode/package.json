@@ -38,6 +38,8 @@
         }
       }
     ],
+    "markdown.markdownItPlugins": true,
+    "markdown.previewStyles": ["./media/preview.css"],
     "configuration": {
       "title": "tinct",
       "properties": {

@@ -2,4 +2,6 @@
 [FunctorResult.fmap [fn [x] [+ x 1]] [Ok 42]]
 
 === out
-Ok(43)
+Variant(Ok, Int(43))
+=== warn
+undefined variable: FunctorResult

@@ -2,4 +2,6 @@
 [MonadResult.bind [Err "fail"] [fn [x] [Ok [+ x 1]]]]
 
 === out
-Err("fail")
+Variant(Err, String("fail"))
+=== warn
+undefined variable: MonadResult

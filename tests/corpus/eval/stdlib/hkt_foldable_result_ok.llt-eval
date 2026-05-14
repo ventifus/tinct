@@ -2,4 +2,6 @@
 [FoldableResult.to-seq [Ok 42]]
 
 === out
-[42]
+Dict({0: Int(42)})
+=== warn
+undefined variable: FoldableResult

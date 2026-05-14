@@ -1331,6 +1331,32 @@ This is a simplification of Flatt's full biggest-subset binding resolution rule,
 
 **No intentional hygiene escape hatch.** `var!` or any mechanism that lets a macro inject bindings into the caller's scope is not provided. Macro bindings are always hygienic.
 
+## Allocation Strategy
+
+**Current (Phase 2): Hybrid Arena + Rc\<Thunk\> Model**
+
+Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but still wrapped in `Rc<Thunk>` and stored directly in `Value` variants. The arena acts as a registry: `alloc_thunk(Rc<Thunk>)` appends to `Vec<Rc<Thunk>>` and returns a `ThunkId(u32)` index. This establishes the arena pattern without requiring a massive `Value` enum refactor (Phase 3 work).
+
+**Arena sharing via `Rc::clone()`:** Child contexts (created via `with_base_dir()` for `$include`, or `new_sharing_arena()` for macro expansion) share the parent's arena via `Rc<RefCell<ThunkArena>>`. This is critical for stdlib ThunkId validity: prelude dicts store `ThunkId` handles allocated during stdlib loading. When user code accesses `result.bind`, the ThunkId resolves via the shared arena.
+
+**Snapshot pattern (`clone_for_child()`):** When creating a child context that needs stdlib ThunkIds but will grow independently, the arena is cloned via `clone_for_child()`, which creates a new `Vec<Rc<Thunk>>` pre-populated with `Rc::clone()` of every existing thunk. The child arena starts with the same indices 0..N (stdlib thunks) and appends user thunks starting at N+1. This preserves ThunkId validity while allowing independent growth.
+
+**Cache consistency:** `create_stdlib_env_with_arena()` writes the stdlib arena to `STDLIB_ARENA_CACHE` (thread-local storage) so that subsequent `EvalContext::new()` calls on the same thread inherit stdlib ThunkIds without explicit arena threading. This is a convenience layer — explicit arena threading via `new_sharing_arena()` is preferred for non-test code.
+
+**Phase 3 Migration Path:**
+
+The current snapshot approach relies on `Rc<Thunk>` shared identity: cloning the arena shares the same `Rc` pointers, so mutating a thunk's state (e.g., `Placeholder → Materialized`) is visible in both parent and child arenas. Phase 3 will migrate to direct `Vec<Thunk>` ownership (no `Rc` wrapper), which breaks this sharing model.
+
+**Three options for Phase 3:**
+
+1. **Single global stdlib slab:** Stdlib thunks live in a global arena (indices 0..N). User-context arenas start at index N. ThunkId encoding: `id < N` → stdlib slab, `id >= N` → user arena. Requires coordinating slab boundaries across all contexts.
+
+2. **Two-range ThunkId encoding:** High bit indicates stdlib vs user (`id & 0x80000000`). Stdlib arena is global, user arenas are per-context. Lookup dispatches on the high bit. Halves the ThunkId address space (2^31 thunks per range).
+
+3. **Arena migration at `---` boundaries:** Each document section gets its own arena. At `---` boundaries, the `%` pipeline variable is deep-materialized and copied into the next section's arena. No cross-arena ThunkIds. Matches the document pipeline semantics but adds materialization overhead at boundaries.
+
+**Decision deferred to `arena-eval` sprint.** Option 3 aligns with the document-as-phase-boundary model but may conflict with lazy `%` passing (current behavior: `%` is an `Unevaluated` thunk that crosses `---` without materialization). Option 1 is simplest but requires global coordination. Option 2 has the cleanest dispatch but halves the address space.
+
 **Precedent:** Jsonnet's VM uses 22 `FrameKind` variants with a value register (production-tested at Google). Nickel uses an iterative stack machine with `OpFirst`/`OpSecond` continuations (production Rust). Both are defunctionalized CPS machines. The theoretical foundation is Felleisen & Friedman's CEK machine.
 
 **Recursive call sites being converted:**
