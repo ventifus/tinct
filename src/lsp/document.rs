@@ -111,10 +111,12 @@ impl DocumentState {
             // Run type checker (advisory), collecting the span-to-type map for hover.
             // Seed the type environment with prelude types and resolved includes via the
             // shared imports module to suppress false "undefined variable" errors.
-            let (seeded_env, _include_bindings) =
+            let (seeded_env, include_bindings) =
                 crate::imports::build_type_env(&file.node, base_dir);
-            let (errs, map, docs, smap, _diagnostics) =
+            let (errs, mut map, docs, smap, _diagnostics) =
                 typecheck_file_with_types_and_env(&file.node, seeded_env);
+            // Post-pass: inject precise Record types for [include %cap "path"] expressions.
+            crate::imports::apply_include_type_post_pass(&file.node, &include_bindings, &mut map);
             type_errors = errs;
             type_map = map;
             doc_map = docs;

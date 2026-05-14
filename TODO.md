@@ -161,7 +161,7 @@ See `doc/08-evaluation.md §Runtime Reflection`. **Spec chapters:** `doc/08-eval
 See `doc/whatif/runtime-reflection.md §include Return Type` and `§Stdlib Reorganization`. **Spec chapters:** `doc/08-evaluation.md §Runtime Reflection`. **Depends on:** `runtime-reflection-core`.
 
 - [x] Extend `resolve_includes` in `src/imports.rs` to additionally return `HashMap<Span, Vec<(String, Type)>>` mapping each include call's span to the bindings it contributed (`src/imports.rs`)
-- [ ] Post-pass in `build_type_env`: after `resolve_includes`, walk AST for `[include %libdir "literal-path"]` expressions; construct `Type::Record([name: type ...])` from contributed bindings; store as the inferred type of that include expression in the type map (`src/imports.rs`, `src/typecheck.rs`) — **DEFERRED**: include type inference post-pass
+- [x] Post-pass in `build_type_env`: after `resolve_includes`, walk AST for `[include %libdir "literal-path"]` expressions; construct `Type::Record([name: type ...])` from contributed bindings; store as the inferred type of that include expression in the type map (`src/imports.rs`, `src/typecheck.rs`) — **DEFERRED**: include type inference post-pass
 - [x] Move `stdlib/in/` → `stdlib/cli/in/`, `stdlib/out/` → `stdlib/cli/out/`; update `src/main.rs:886`, `:909`, `:2074`; create thin `stdlib/cli/fmt/compact.llt` and `stdlib/cli/fmt/pretty.llt` wrapper pipeline files; update `src/formatter.rs` include path; update `doc/12-tooling.md` (`src/main.rs`, `src/formatter.rs`, `stdlib/`)
 - [x] Tests: `[io: [include %libdir "io.llt"]]` → `io` has a precise `Record` type with known fields; `io.read-file` has function type in LSP hover; stdlib pipeline paths work after reorganization (`tests/corpus/eval/typecheck/`)
 

@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
-use crate::ast::{Expr, File, Span};
+use crate::ast::{Expr, File, Span, Spanned};
 use crate::desugar;
 use crate::expand;
 use crate::parser;
@@ -23,7 +23,7 @@ use crate::typecheck::{
     typecheck_file_with_types_and_env,
     typecheck_file_with_types_and_env_and_source_returning_state, TypeMap,
 };
-use crate::types::{ClassEnv, InferState, InstanceEnv, Type, TypeEnv};
+use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeEnv};
 
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
 const MAX_INCLUDE_DEPTH: usize = 16;
@@ -629,6 +629,153 @@ fn resolve_includes(
     (env, include_bindings)
 }
 
+/// Post-pass: populate `type_map` with `Type::Record` types for include call expressions.
+///
+/// After `typecheck_file_with_types_and_env` runs, call this function to inject inferred
+/// types for `[include %cap "path"]` expressions into the TypeMap. The type checker does not
+/// visit include calls specially — it sees them as opaque function calls returning `Unknown`.
+/// This post-pass replaces those `Unknown` entries with precise `Record` types derived from
+/// the bindings each include contributed.
+///
+/// # Algorithm
+///
+/// Walks the AST as `Spanned<Expr>` nodes to capture call-site spans. For each
+/// `[include %cap "path"]` call:
+///
+/// 1. Looks up `args[1].span` (the path string's span) in `include_bindings`.
+/// 2. If found, constructs `Type::Record(Row { fields })` from the contributed bindings.
+/// 3. Inserts the Record type at the call expression's span `(start_offset, end_offset)`
+///    in `type_map`.
+///
+/// This enables `[io: [include %libdir "io.llt"]]` to give `io` a precise Record type
+/// with the exact fields exported by `io.llt`.
+///
+/// # Span key: path argument, not call expression
+///
+/// `resolve_includes` stores binding maps keyed by `args[1].span` (the path string literal).
+/// This post-pass re-walks the AST as `Spanned<Expr>` to recover the call expression's own
+/// span, using `args[1].span` as the lookup key.
+pub fn apply_include_type_post_pass(
+    file: &File,
+    include_bindings: &HashMap<Span, Vec<(String, Type)>>,
+    type_map: &mut TypeMap,
+) {
+    for doc in &file.documents {
+        for expr in &doc.node.expressions {
+            apply_include_type_to_spanned(expr.as_ref(), include_bindings, type_map);
+        }
+    }
+}
+
+/// Recursively walk `Spanned<Expr>` nodes and inject Record types for include calls.
+fn apply_include_type_to_spanned(
+    spanned: &Spanned<Expr>,
+    include_bindings: &HashMap<Span, Vec<(String, Type)>>,
+    type_map: &mut TypeMap,
+) {
+    match &spanned.node {
+        Expr::Call {
+            func,
+            args,
+            named_args: _,
+            implied: _,
+        } => {
+            // Check for a cap-qualified include call: [include %cap "path"]
+            if let Expr::VarRef { name, .. } = &func.node {
+                if name == "include" && args.len() == 2 {
+                    if let Expr::VarRef { .. } = &args[0].node {
+                        if let Expr::Str(_) = &args[1].node {
+                            // args[1].span is the lookup key used by resolve_includes
+                            let path_span = args[1].span;
+                            if let Some(bindings) = include_bindings.get(&path_span) {
+                                // Build a closed Record type from the contributed bindings
+                                let fields: HashMap<String, Type> = bindings
+                                    .iter()
+                                    .map(|(name, ty)| (name.clone(), ty.clone()))
+                                    .collect();
+                                let record_ty = Type::Record(Row { fields });
+                                // Store at the call expression's span
+                                let key = (
+                                    spanned.span.start.offset,
+                                    spanned.span.end.offset,
+                                );
+                                type_map.insert(key, record_ty);
+                            }
+                        }
+                    }
+                }
+            }
+            // Recurse into function and arguments (handles nested includes)
+            apply_include_type_to_spanned(func, include_bindings, type_map);
+            for arg in args {
+                apply_include_type_to_spanned(arg.as_ref(), include_bindings, type_map);
+            }
+        }
+        Expr::Dict(entries) => {
+            for entry in entries {
+                if let Some(ref key) = entry.node.key {
+                    apply_include_type_to_spanned(key, include_bindings, type_map);
+                }
+                apply_include_type_to_spanned(entry.node.value.as_ref(), include_bindings, type_map);
+            }
+        }
+        Expr::Fn { body, .. } => {
+            apply_include_type_to_spanned(body.as_ref(), include_bindings, type_map);
+        }
+        Expr::TypeAssert { expr: inner, .. } => {
+            apply_include_type_to_spanned(inner, include_bindings, type_map);
+        }
+        Expr::Pipe { lhs, rhs } => {
+            apply_include_type_to_spanned(lhs, include_bindings, type_map);
+            apply_include_type_to_spanned(rhs, include_bindings, type_map);
+        }
+        Expr::Sequential(exprs) => {
+            for e in exprs {
+                apply_include_type_to_spanned(e.as_ref(), include_bindings, type_map);
+            }
+        }
+        Expr::DotAccess { expr: target, .. } => {
+            apply_include_type_to_spanned(target, include_bindings, type_map);
+        }
+        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
+            apply_include_type_to_spanned(inner, include_bindings, type_map);
+        }
+        Expr::TypeAlias { body, .. } => {
+            apply_include_type_to_spanned(body, include_bindings, type_map);
+        }
+        Expr::DefMacro { body, .. } => {
+            apply_include_type_to_spanned(body.as_ref(), include_bindings, type_map);
+        }
+        Expr::Match { scrutinee, arms } => {
+            apply_include_type_to_spanned(scrutinee, include_bindings, type_map);
+            for arm in arms {
+                if let Some(ref guard) = arm.guard {
+                    apply_include_type_to_spanned(guard, include_bindings, type_map);
+                }
+                apply_include_type_to_spanned(&arm.body, include_bindings, type_map);
+            }
+        }
+        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+            for method in methods {
+                if let Some(ref key) = method.node.key {
+                    apply_include_type_to_spanned(key, include_bindings, type_map);
+                }
+                apply_include_type_to_spanned(method.node.value.as_ref(), include_bindings, type_map);
+            }
+        }
+        // Leaf nodes: no recursive traversal needed
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::VarRef { .. }
+        | Expr::Rest(_)
+        | Expr::Annotated { .. }
+        | Expr::TypeApp { .. }
+        | Expr::Error(_) => {}
+    }
+}
+
 /// Build a type environment seeded with prelude types and optionally with
 /// types from statically-resolvable includes.
 ///
@@ -880,5 +1027,134 @@ mod tests {
         );
 
         // Future work: test with actual include statements once we have test fixtures
+    }
+
+    /// Verify that `apply_include_type_post_pass` injects a Record type for an include call.
+    ///
+    /// This test constructs an artificial scenario: a file with an include call, and a
+    /// manually-built `include_bindings` map that maps the path-argument span to a set of
+    /// bindings. The post-pass should inject a `Type::Record` with those bindings at the
+    /// call expression's span in the TypeMap.
+    #[test]
+    fn apply_include_type_post_pass_injects_record_type() {
+        use crate::ast::Span;
+        use crate::typecheck::TypeMap;
+        use crate::types::{Row, Type};
+        use std::collections::HashMap;
+
+        // Parse a source with a cap-qualified include call.
+        // We use %pwd (cap var) with a path literal "foo.llt".
+        let source = r#"[include %pwd "foo.llt"]"#;
+        let file = parser::parse(source).unwrap();
+
+        // Find the span of the path string argument ("foo.llt") by walking the AST.
+        // We need this span as the key into include_bindings.
+        let include_paths = collect_include_paths(&file.node);
+        assert_eq!(include_paths.len(), 1, "expected one include path");
+        let path_span = include_paths[0].0;
+
+        // Build a fake binding map: path_span → [(name, type)]
+        let bindings = vec![
+            ("foo".to_string(), Type::Int),
+            ("bar".to_string(), Type::Str),
+        ];
+        let mut include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
+        include_bindings.insert(path_span, bindings);
+
+        // Run the post-pass on an empty TypeMap.
+        let mut type_map = TypeMap::new();
+        apply_include_type_post_pass(&file.node, &include_bindings, &mut type_map);
+
+        // The post-pass should have injected a Record type at the call expression's span.
+        // The call expression span is the full "[include %pwd "foo.llt"]" span.
+        // Since the source starts at offset 0, the call's span is (0, source.len()).
+        let call_key = (0usize, source.len());
+        let injected = type_map.get(&call_key);
+        assert!(
+            injected.is_some(),
+            "expected Record type injected at call expression span; type_map keys: {:?}",
+            type_map.keys().collect::<Vec<_>>()
+        );
+
+        // Check the injected type is a Record with the expected fields.
+        match injected.unwrap() {
+            Type::Record(Row { fields }) => {
+                assert_eq!(
+                    fields.get("foo"),
+                    Some(&Type::Int),
+                    "expected foo: Int in Record"
+                );
+                assert_eq!(
+                    fields.get("bar"),
+                    Some(&Type::Str),
+                    "expected bar: Str in Record"
+                );
+                assert_eq!(fields.len(), 2, "expected exactly 2 fields in Record");
+            }
+            other => panic!("expected Type::Record, got {:?}", other),
+        }
+    }
+
+    /// Verify that `apply_include_type_post_pass` is a no-op when include_bindings is empty.
+    #[test]
+    fn apply_include_type_post_pass_empty_bindings_no_change() {
+        use crate::ast::Span;
+        use crate::typecheck::TypeMap;
+        use crate::types::Type;
+        use std::collections::HashMap;
+
+        let source = r#"[include %pwd "foo.llt"]"#;
+        let file = parser::parse(source).unwrap();
+
+        let include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
+        let mut type_map = TypeMap::new();
+        apply_include_type_post_pass(&file.node, &include_bindings, &mut type_map);
+
+        // No bindings → TypeMap should remain empty.
+        assert!(
+            type_map.is_empty(),
+            "expected TypeMap to remain empty when include_bindings is empty"
+        );
+    }
+
+    /// Verify that `apply_include_type_post_pass` handles include calls nested in a dict.
+    #[test]
+    fn apply_include_type_post_pass_nested_in_dict() {
+        use crate::ast::Span;
+        use crate::typecheck::TypeMap;
+        use crate::types::{Row, Type};
+        use std::collections::HashMap;
+
+        // The include call is nested inside a dict entry.
+        let source = r#"[io: [include %pwd "io.llt"]]"#;
+        let file = parser::parse(source).unwrap();
+
+        // Find the path-argument span.
+        let include_paths = collect_include_paths(&file.node);
+        assert_eq!(include_paths.len(), 1, "expected one include path");
+        let path_span = include_paths[0].0;
+
+        let bindings = vec![("read".to_string(), Type::Unknown)];
+        let mut include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
+        include_bindings.insert(path_span, bindings);
+
+        let mut type_map = TypeMap::new();
+        apply_include_type_post_pass(&file.node, &include_bindings, &mut type_map);
+
+        // At least one entry should be in type_map (the include call's Record type).
+        assert!(
+            !type_map.is_empty(),
+            "expected type_map to have the injected Record type for the nested include call"
+        );
+
+        // The injected value should be a Record with a "read" field.
+        let record_found = type_map.values().any(|ty| {
+            matches!(ty, Type::Record(Row { fields }) if fields.contains_key("read"))
+        });
+        assert!(
+            record_found,
+            "expected a Record with 'read' field in type_map; got: {:?}",
+            type_map
+        );
     }
 }
