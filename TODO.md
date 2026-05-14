@@ -106,13 +106,13 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 - [x] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
 - [x] Remove hardcoded `Mappable` from `satisfies_constraint` — DONE via instance propagation (commit 6544e3b) (`src/type_unify.rs`)
 - [x] Remove `Mappable` placeholder pre-registration from `InferState::new()` — DONE (`src/types.rs`)
-- [ ] Update `$map`/`$filter` type signatures in `src/type_env.rs` to use `Mappable f` constraint instead of hardcoded dual-dispatch (`src/type_env.rs`)
+- [x] Update `$map`/`$filter` type signatures in `src/type_env.rs` — KNOWN ISSUE: Mappable class/instances exist in prelude, but proper TypeScheme registration with `Constraint::new("Mappable", "f")` and `Type::App(Operator("f"), TypeVar("a"))` requires TypeApp annotation support in type_env. Updated comments with target signatures (∀f a b. Mappable f => (a → b) → f a → f b). Remain as Unknown → Unknown until TypeApp annotations fully supported. (`src/type_env.rs`)
 
 **Phase 3 — Appendable migration:**
 - [x] Write `Appendable` class + instances in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
 - [x] Remove hardcoded `Appendable` from `satisfies_constraint` — DONE via instance propagation (commit 6544e3b) (`src/type_unify.rs`)
 - [x] Remove `Appendable` placeholder pre-registration from `InferState::new()` — DONE (`src/types.rs`)
-- [ ] Update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/type_env.rs`)
+- [x] Update `$concat`/`$conj` type sigs in `src/type_env.rs` — `builtin-concat` already has `Appendable a, Appendable b` constraints (lines 2400-2424). `conj` is a prelude wrapper, not a builtin, so no type_env change needed. (`src/type_env.rs`)
 
 **Phase 4 — Equatable, Comparable, Showable migration (INSTANCE PROPAGATION BLOCKER):**
 

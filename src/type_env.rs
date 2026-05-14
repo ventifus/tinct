@@ -2306,8 +2306,12 @@ impl TypeEnv {
         );
 
         // Sequences: transforms
-        // Note: Mappable constraint requires higher-kinded types (Phase 3 / D1 scope).
-        // For now, these remain typed as Unknown.
+        // KNOWN ISSUE: Mappable class and instances exist in stdlib/prelude.llt
+        // (MappableSeq, MappableDict), but proper TypeScheme registration with
+        // `Constraint::new("Mappable", "f")` and `Type::App(Operator("f"), TypeVar("a"))`
+        // requires TypeApp annotation support in type_env registration.
+        // For now, these remain typed as Unknown → Unknown.
+        // Target signature: ∀f a b. Mappable f => (a → b) → f a → f b
         env.insert(
             "map".to_string(),
             Type::Function {
@@ -2326,6 +2330,7 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // Target signature: ∀f a. Mappable f => (a → Bool) → f a → f a
         env.insert(
             "filter".to_string(),
             Type::Function {
