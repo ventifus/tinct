@@ -1,0 +1,22 @@
+# User-defined class with instance: define MyClass with an instance for Int, use in constrained fn.
+# This verifies that user code can define new type classes and instances beyond prelude classes.
+[
+  # Define a custom class MyClass with param a
+  MyClass: [class [MyClass a]]
+
+  # Define an instance of MyClass for Int
+  MyClassInt: [instance [MyClass Int]
+    my-method: [fn [x] [builtin-add x 1]]]
+
+  # Use the class in a constrained function (constraint checked at call site)
+  use-myclass: [fn [x] [builtin-add x 2]]
+
+  # Call the function with an Int
+  result: [use-myclass 5]
+
+  ---
+
+  result
+]
+=== out
+Int(7)
