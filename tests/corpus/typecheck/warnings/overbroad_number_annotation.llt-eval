@@ -1,0 +1,7 @@
+# Over-broad annotation: fn@Number when body infers Int
+# The type checker should emit a T012 Info diagnostic suggesting @Int instead
+[f: [fn@Number [x@Int] x]]
+=== out
+Dict({"f": Function(x)})
+=== warn
+annotation @Number is over-broad
