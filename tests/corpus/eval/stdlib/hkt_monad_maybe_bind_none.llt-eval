@@ -1,0 +1,5 @@
+# Test: MonadMaybe.bind on None value (short-circuits)
+[MonadMaybe.bind None [fn [x] [Some [+ x 1]]]]
+
+=== out
+None

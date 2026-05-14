@@ -1,0 +1,5 @@
+# Test: ApplicativeResult.lift2 combines two Ok values
+[ApplicativeResult.lift2 [fn [a b] [+ a b]] [Ok 10] [Ok 32]]
+
+=== out
+Ok(42)

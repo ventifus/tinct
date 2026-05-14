@@ -1,0 +1,5 @@
+# Test: MonadResult.bind on Ok value
+[MonadResult.bind [Ok 1] [fn [x] [Ok [+ x 1]]]]
+
+=== out
+Ok(2)

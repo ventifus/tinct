@@ -1,0 +1,5 @@
+# Test: maybe-map on None value (passes through)
+[maybe-map [fn [x] [+ x 1]] None]
+
+=== out
+None

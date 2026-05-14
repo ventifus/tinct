@@ -1,0 +1,5 @@
+# Test: FoldableResult.to-seq on Err value (returns empty list)
+[FoldableResult.to-seq [Err "x"]]
+
+=== out
+[]

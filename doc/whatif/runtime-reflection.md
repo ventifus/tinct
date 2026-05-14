@@ -97,7 +97,7 @@ annotation-to-str: [fn [ann]
           [str "[" [join " " [map [fn [e] [annotation-value-str e.value]] positional]] "]"]
           # Named entries → metadata dict (return:, doc:, constraint:, ...)
           # Extract the return type value for display
-          [let [ret: [find-first [fn [e] [= "return" e.key]] ann.entries]]
+          [let [ret: [find-first-or [fn [e] [= "return" e.key]] null ann.entries]]
             [if [null? ret] "" [annotation-value-str ret.value]]]]
       _: ""]]]
 
@@ -120,7 +120,7 @@ describe: [fn [val]
     [doc:       [let [ann: [get-or ast "return-ann" null]]
                   [if [null? ann] ""
                     [if [= ann.kind "dict"]
-                      [let [d: [find-first [fn [e] [= "doc" e.key]] ann.entries]]
+                      [let [d: [find-first-or [fn [e] [= "doc" e.key]] null ann.entries]]
                         [if [null? d] "" d.value]]
                       ""]]]
      return-ann: [get-or ast "return-ann" null]   # full annotation dict for introspection
@@ -132,7 +132,7 @@ describe: [fn [val]
 **What's needed for pure-tinct `describe`:**
 1. `ast-of` Rust primitive — the only Rust piece required
 2. The one-line fix in `ast_dict.rs` — annotation entry values now recursively serialize instead of falling back to `"<expr at N:M>"` (already applied)
-3. Everything else (`match`, `get-or`, `join`, `map`, `str`, `has?`, `find-first`, `null?`) is already in prelude
+3. Everything else (`match`, `get-or`, `join`, `map`, `str`, `has?`, `find-first-or`, `null?`) is already in prelude
 
 ### `ast-of` in `rust::meta`
 
@@ -151,7 +151,9 @@ pub struct FnAnnotation {
     pub doc: Option<String>,              // extracted from fn@[doc: "..."] at eval_fn time
     pub return_ann: Option<Annotation>,   // the fn-level Annotation (for return type, constraints)
     pub constraints: Vec<Constraint>,     // Vec<Constraint> — reuses the existing enum from types.rs
-                                          // covers Class { class, var } and HasField { label, dict_var, field_var }
+                                          // covers Class { class, var } (single-var form) and HasField { label, dict_var, field_var }
+                                          // Note: Constraint::Class is single-var until the MPTC sprint lands;
+                                          // multi-parameter constraints are not yet representable here
     pub source_file: Option<PathBuf>,     // file path — Span alone carries no file identity
     pub source_span: Span,               // always available at eval_fn time; non-optional
 }
@@ -418,7 +420,7 @@ All `[include %libdir "formatter/compact.llt"]` references in this whatif are co
 
 **Open questions before implementation:**
 - ~~Builtin introspection~~ **Resolved:** extract a shared `builtin_type_for(name)` static table into a new module; both `standard_builtins()` and `TypeEnv::with_builtins()` read from it; `ast-of` calls it directly — no EvalContext change, no duplication.
-- ~~`source_file` threading~~ **Resolved:** add `current_file: Option<PathBuf>` to `EvalConfig`; repurpose the existing `with_base_dir_and_path` stub at `src/eval.rs:255` (currently ignores its `_base_dir_path` arg — verified) to set this field; change `builtin_include` at `src/builtins_meta.rs:1167` from `ctx.with_base_dir(included_dir)` to `ctx.with_base_dir_and_path(included_dir, Some(file_path))` — the call site must change, not just the stub; `eval_fn` reads `ctx.config.current_file.clone()`. This information exists in the include context but must be threaded into `EvalContext`.
+- ~~`source_file` threading~~ **Resolved:** add `current_file: Option<PathBuf>` to `EvalConfig`; repurpose the existing `with_base_dir_and_path` stub at `src/eval.rs:255` (currently ignores its `_base_dir_path` arg — verified) to set this field; change `builtin_include` at `src/builtins_meta.rs:1152` from `ctx.with_base_dir(included_dir)` to `ctx.with_base_dir_and_path(included_dir, Some(file_path))` — the call site must change, not just the stub; `eval_fn` reads `ctx.config.current_file.clone()`. This information exists in the include context but must be threaded into `EvalContext`.
 - ~~Round-trip eval~~ **Resolved:** `eval-ast` already exists (`src/builtins_meta.rs:377`, registered at `src/builtins.rs:1093`); it takes an AST dict and evaluates it in `stdlib_env`. In-memory round-trip: `[eval-ast [ast-of f]]`. File persistence: `[format-pretty [ast-of f]]` written to a `DirCap` file, then `[include %doc "file.llt"]` to read back. No `eval-llt` string-eval primitive needed. Caveat: `eval-ast` evaluates in `stdlib_env`, so free variables beyond stdlib won't resolve — correct behavior, since functions worth serializing are pure/stdlib-only.
 
 ## References

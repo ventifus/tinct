@@ -1,0 +1,5 @@
+# Test: MonadResult.bind on Err value (short-circuits)
+[MonadResult.bind [Err "fail"] [fn [x] [Ok [+ x 1]]]]
+
+=== out
+Err("fail")

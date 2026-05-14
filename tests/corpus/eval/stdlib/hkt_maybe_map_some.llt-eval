@@ -1,0 +1,5 @@
+# Test: maybe-map on Some value
+[maybe-map [fn [x] [+ x 1]] [Some 42]]
+
+=== out
+Some(43)

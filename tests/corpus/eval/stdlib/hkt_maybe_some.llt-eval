@@ -1,0 +1,5 @@
+# Test: Some constructor
+[Some 42]
+
+=== out
+Some(42)

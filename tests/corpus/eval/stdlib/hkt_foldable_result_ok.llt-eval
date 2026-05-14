@@ -1,0 +1,5 @@
+# Test: FoldableResult.to-seq on Ok value
+[FoldableResult.to-seq [Ok 42]]
+
+=== out
+[42]
