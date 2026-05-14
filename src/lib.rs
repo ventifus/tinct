@@ -993,6 +993,7 @@ pub fn format_with_json_llt(
             params,
             body,
             env: closure_env,
+            ..
         } => {
             let call_ctx = CallContext {
                 params,
@@ -1318,6 +1319,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(ast::Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
+            annotation: None,
         };
         let err = value_to_json(&f, &test_ctx()).unwrap_err();
         assert!(

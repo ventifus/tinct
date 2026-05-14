@@ -362,11 +362,12 @@ pub(crate) use crate::builtins_io::{
 pub(crate) use crate::builtins_meta::blake3_hex;
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
-    builtin_apply, builtin_big_int, builtin_bool_check, builtin_bytes_check, builtin_decimal,
-    builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast, builtin_float_check,
-    builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include,
-    builtin_int_check, builtin_llt_repr, builtin_null_check, builtin_str_check, builtin_tag_of,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_apply, builtin_ast_of, builtin_big_int, builtin_bool_check, builtin_bytes_check,
+    builtin_decimal, builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast,
+    builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
+    builtin_include, builtin_int_check, builtin_llt_repr, builtin_null_check, builtin_str_check,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
+    builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1226,6 +1227,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
+        builtin!("ast-of", builtin_ast_of, [Strictness::Seq]),
         builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
         builtin!("variant", builtin_variant, [Strictness::Seq]),
@@ -1828,6 +1830,7 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
         }
         "meta" => {
             insert(&env, "type-of");
+            insert(&env, "ast-of");
             insert(&env, "validate");
             insert(&env, "until");
             insert(&env, "llt-repr");
@@ -2249,6 +2252,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
             env: Rc::new(RefCell::new(Environment::new())),
+            annotation: None,
         }
     }
 
@@ -2267,6 +2271,7 @@ mod tests {
             ),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
             env: Rc::new(RefCell::new(Environment::new())),
+            annotation: None,
         }
     }
 
@@ -10858,6 +10863,7 @@ mod tests {
             ),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
             env,
+            annotation: None,
         }
     }
 

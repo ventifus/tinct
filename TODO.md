@@ -190,17 +190,19 @@ Introduces chained `@` in annotation position, enabling parameterized type forms
 - `@Record` — any record (bare)
 - `@Map` — any map (bare, `Map[Any Any]`)
 
-**Grammar extension** (`src/parser.rs`, `src/lexer.rs`):
-- [ ] Extend `annotation_value` to allow chained `@`: `annotated_bare_ann = annotation_word "@" annotation_value`. Currently `annotation_value = bracket_expr | annotation_word`; extend to `bracket_expr | annotated_bare_ann | annotation_word`. Ensures `Seq@Int`, `Map@[String: Int]`, `Record@[host: String  port: Int]` parse as single annotation values (`src/parser.rs`)
+**Grammar extension** (`src/parser.rs`, `src/ast.rs`, `src/lexer.rs`):
+- [ ] Add `Annotation::Annotated(String, Box<Annotation>)` variant to `src/ast.rs` — currently only `Simple(String)` and `PropertyDict(Vec<AnnotationEntry>)` exist; the chained form needs a new node to represent `Seq@Int` = `Annotated("Seq", Simple("Int"))` (`src/ast.rs`)
+- [ ] Extend `parse_annotation` in `src/parser.rs:527–530`: after reading `Identifier(name)`, peek at the next token; if it is `ImmediateAt`, recursively parse the inner annotation and return `Annotation::Annotated(name, Box::new(inner))`. The lexer already emits `ImmediateAt` for `Seq@Int` (no space before `@`) via `last_was_identifier` — no lexer changes needed (`src/parser.rs`)
 
 **Seq parameterization** (`src/typecheck_annot.rs`):
 - [ ] In `resolve_type_name` / annotation resolver: when `Annotated("Seq", inner_ann)` is seen, resolve `inner_ann` as a type and produce `Type::Seq(inner_type)`. Currently bare `"Seq"` → `Seq(Unknown)` (line 976); extend to handle the parameterized `Seq@T` form (`src/typecheck_annot.rs`)
 
 **Map annotation** (`src/typecheck_annot.rs`):
 - [ ] Add `"Map"` arm to `resolve_type_name`: bare `@Map` → `Type::Map(Unknown, Unknown)` (`src/typecheck_annot.rs`)
+- [ ] Handle single-argument form `@Map@T` (where T is any type name or alias): `Annotated("Map", Simple(T))` → `Type::Map(Unknown, resolve(T))` — T is the **value** type, key defaults to `Any`. This is the "collection" perspective: you care about the values, not the key type. Contrast with `@Map@[String: T]` (the "lookup" perspective: key type matters). Enables `Hosts: [type Map@T1]` where T1 is a Record alias, producing `Map(Any, T1)` (`src/typecheck_annot.rs`)
 - [ ] Handle compact form `@Map@[K: V]`: when `Annotated("Map", PropertyDict([{key: Some(K_name), value: V_ann}]))` has exactly one named entry, resolve K_name as type and V_ann as type → `Type::Map(K, V)` (`src/typecheck_annot.rs`)
 - [ ] Handle explicit form `@Map@[key: K  value: V]`: when inner PropertyDict has `key:` and `value:` named entries, resolve both → `Type::Map(K, V)` (`src/typecheck_annot.rs`)
-- [ ] Kind check for K: at resolution time, verify K resolves to `Int`, `Str`, or a union of those; emit `TypeError` "Map key type must be Int, Str, or Int|Str" otherwise (`src/typecheck_annot.rs`)
+- [ ] Kind check for K: at resolution time, verify K resolves to `Int`, `Str`, or a union of those; emit `TypeError` "Map key type must be Int, Str, or Int|Str" otherwise; skip check when K is `Unknown` (bare `@Map` or single-arg `@Map@T`) (`src/typecheck_annot.rs`)
 
 **Record annotation** (`src/typecheck_annot.rs`):
 - [ ] Add `"Record"` arm to `resolve_type_name`: bare `@Record` → `Type::Record(Row { fields: HashMap::new() })` (same as `@Dict` today) (`src/typecheck_annot.rs`)
@@ -208,7 +210,7 @@ Introduces chained `@` in annotation position, enabling parameterized type forms
 
 **Tests**:
 - [ ] `xs@Seq@Int` infers `Seq(Int)`; `fn@Seq@String [s@String]` return type is `Seq(Str)`; `xs@Seq@a` introduces TypeVar (`tests/corpus/eval/typecheck/`)
-- [ ] `m@Map@[String: Int]` and `m@Map@[key: String  value: Int]` both produce `Map(Str, Int)`; `@Map` produces `Map(Unknown, Unknown)`; K kind error on `@Map@[Bool: Int]` (`tests/corpus/eval/typecheck/`)
+- [ ] `m@Map@[String: Int]` and `m@Map@[key: String  value: Int]` both produce `Map(Str, Int)`; `@Map` produces `Map(Unknown, Unknown)`; K kind error on `@Map@[Bool: Int]`; `T1: [type Record@[host: String  port: Int]]` then `T2: [type Map@T1]` produces `Map(Unknown, T1)` and `list@T2` annotates correctly (`tests/corpus/eval/typecheck/`)
 - [ ] `config@Record@[host: String  port: Int]` produces `Record([host: String, port: Int])`; `r@Record@[type: String  id: Int]` produces `Record([type: String, id: Int])` — not interpreted as property dict (`tests/corpus/eval/typecheck/`)
 - [ ] `@Record` bare produces open record accepting any dict; existing `@[host: String  port: Int]` form continues to work unchanged (`tests/corpus/eval/typecheck/`)
 
