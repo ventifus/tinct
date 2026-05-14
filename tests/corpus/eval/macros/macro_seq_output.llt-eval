@@ -1,0 +1,32 @@
+# Test that macro transformers can call prelude functions returning structural
+# values (Value::Seq, Value::Dict) internally and produce correct results.
+#
+# What this exercises: the transformer body uses `range` (produces Value::Seq)
+# and `collect` (forces spine materialization) as intermediate computations,
+# then returns a nested call-expression AST dict. The output deep_materialize
+# at the macro expansion boundary must traverse nested dicts (the call AST's
+# fn and args fields), exercising multi-level traversal of the output boundary.
+#
+# The intermediate seq from `range` and `collect` is internal to the transformer
+# body and evaluated in the expansion context. This validates that prelude
+# functions producing structural values can be called freely in transformer bodies.
+
+[defmacro add-range-length [macro-args]
+  # Compute how many elements are in [range 0 3] to produce a literal int.
+  # `collect` forces the seq, `length` counts it. Both are prelude/builtin calls
+  # that produce structural intermediate values (Value::Seq, Value::Dict).
+  [n: [length [collect [range 0 3]]]]
+  # Return an AST call: first-arg + n  (i.e., arg0 + 3)
+  [type: "call"
+   implied: true
+   fn: [type: "var"  name: "+"]
+   args: [
+     [get 0 macro-args]
+     [type: "literal"  kind: "int"  value: n]
+   ]
+   named-args: []]
+]
+
+[add-range-length 10]
+=== out
+Int(13)
