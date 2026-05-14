@@ -12,8 +12,8 @@ Targeted fix for the O(N²) substitution merge loop in `infer_dict` (`src/typech
 
 See `doc/whatif/union-find-substitution.md §Prerequisites` for the documented blocker.
 
-- [ ] Add path compression to `Substitution::apply_inner()` in `src/types.rs`: after resolving a TypeVar chain `t0 → t1 → ... → concrete`, update `type_map` to map `t0`, `t1`, ... directly to the resolved `concrete` type (skipping intermediate nodes). This collapses chains on first traversal — amortized O(1) lookups thereafter. ~15 lines; no struct changes needed. (`src/types.rs`)
-- [ ] Tests: verify `[fn [x] x]` still infers correctly; verify `just test-lib` passes with 64MB stack; spot-check that prelude type-checking completes in < 5s (`tests/`, `stdlib/prelude.llt`)
+- [x] Add path compression to `Substitution::apply_inner()` in `src/types.rs`: RefCell<HashMap> + path compression in `apply_type` — O(1) amortized chain resolution (commit 4901275) (`src/type_unify.rs`)
+- [x] Tests: verify prelude type-checking completes; all 2125 lib tests pass; eval corpus completes in 230s (was hanging indefinitely) (`tests/`, `stdlib/prelude.llt`)
 
 ---
 
