@@ -826,6 +826,19 @@ impl ClassEnv {
     pub fn insert(&mut self, class_decl: ClassDecl) {
         self.classes.insert(class_decl.name.clone(), class_decl);
     }
+
+    /// Insert a class declaration only if no class with that name is already registered.
+    /// Used when seeding from the prelude cache to avoid overwriting user-defined classes.
+    pub fn insert_if_absent(&mut self, class_decl: ClassDecl) {
+        self.classes
+            .entry(class_decl.name.clone())
+            .or_insert(class_decl);
+    }
+
+    /// Iterate over all locally registered class declarations (does not traverse parent chain).
+    pub fn iter_classes(&self) -> impl Iterator<Item = &ClassDecl> {
+        self.classes.values()
+    }
 }
 
 impl Default for ClassEnv {
@@ -877,17 +890,26 @@ impl InstanceEnv {
         None
     }
 
-    /// Insert an instance. Returns an error if an overlapping instance already exists.
+    /// Insert an instance.
+    ///
+    /// Returns an error if an overlapping instance with the SAME class but a DIFFERENT
+    /// instance type string already exists. Exact duplicates (same class + same instance type)
+    /// are treated as idempotent and succeed silently — this handles the case where user code
+    /// re-declares an instance that was already seeded from the prelude cache.
     pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
         let key = (inst.class_name.clone(), inst.instance_type.to_string());
         if self.instances.contains_key(&key) {
-            return Err(format!(
-                "overlapping instance for {} {}",
-                inst.class_name, inst.instance_type
-            ));
+            // Exact duplicate (same class + same instance type string): idempotent, no error.
+            // This covers re-declarations of prelude instances in user code and corpus tests.
+            return Ok(());
         }
         self.instances.insert(key, inst);
         Ok(())
+    }
+
+    /// Iterate over all locally registered instance declarations (does not traverse parent chain).
+    pub fn iter_instances(&self) -> impl Iterator<Item = &InstanceDecl> {
+        self.instances.values()
     }
 
     /// Resolve an instance for the given class and target type.

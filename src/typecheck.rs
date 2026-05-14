@@ -50,6 +50,8 @@ pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDia
     let mut diagnostics = Vec::new();
     let mut env = crate::imports::build_prelude_env();
     let mut state = InferState::new();
+    // Seed with prelude instances so constraint checking works for dynamically registered classes.
+    crate::imports::seed_infer_state_from_prelude_cache(&mut state);
     let mut type_map = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
@@ -300,6 +302,26 @@ pub fn typecheck_file_with_types_and_env_and_source(
     SchemeMap,
     Vec<crate::error::TypeDiagnostic>,
 ) {
+    let (errors, type_map, doc_map, scheme_map, diagnostics, _state) =
+        typecheck_file_with_types_and_env_and_source_returning_state(file, initial_env, true);
+    (errors, type_map, doc_map, scheme_map, diagnostics)
+}
+
+/// Like [`typecheck_file_with_types_and_env_and_source`], but also returns the final
+/// [`InferState`]. Used by `imports::build_prelude_env_inner` to capture the prelude's
+/// `instance_env` for propagation to user-code type-checking sessions.
+pub(crate) fn typecheck_file_with_types_and_env_and_source_returning_state(
+    file: &File,
+    initial_env: Rc<TypeEnv>,
+    enable_scheme_map: bool,
+) -> (
+    Vec<TypeError>,
+    TypeMap,
+    DocMap,
+    SchemeMap,
+    Vec<crate::error::TypeDiagnostic>,
+    InferState,
+) {
     // Reset elaboration state to allow re-typechecking cached ASTs
     reset_elaboration(file);
 
@@ -307,8 +329,13 @@ pub fn typecheck_file_with_types_and_env_and_source(
     let mut diagnostics = Vec::new();
     let mut env = initial_env;
     let mut state = InferState::new();
-    // Enable scheme collection for LSP hover (constraints display).
-    state.scheme_map = Some(SchemeMap::new());
+    // Seed with prelude instances so user code sees class instances registered by prelude.llt.
+    // This call is a no-op when the cache is empty (i.e., when we ARE type-checking the prelude).
+    crate::imports::seed_infer_state_from_prelude_cache(&mut state);
+    if enable_scheme_map {
+        // Enable scheme collection for LSP hover (constraints display).
+        state.scheme_map = Some(SchemeMap::new());
+    }
     let mut type_map = TypeMap::new();
     let mut doc_map = DocMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
@@ -349,7 +376,7 @@ pub fn typecheck_file_with_types_and_env_and_source(
     // Scan for type quality issues (Unknown types, over-broad annotations)
     scan_type_quality(&type_map, file, &mut diagnostics);
 
-    (errors, type_map, doc_map, scheme_map, diagnostics)
+    (errors, type_map, doc_map, scheme_map, diagnostics, state)
 }
 
 /// Extract documentation strings from parameter and function annotations.
@@ -3864,8 +3891,15 @@ mod tests {
     fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
         let mut file = crate::parse(input).unwrap();
         crate::desugar::desugar_file(&mut file.node);
+        // Populate PRELUDE_INSTANCE_CACHE so Equatable/Comparable/Showable/etc. instances are
+        // available via dynamic resolution (no longer hardcoded in satisfies_constraint).
+        // We call build_prelude_env() for the side-effect of populating the cache, but still
+        // use TypeEnv::with_builtins() as the type environment so tests that override
+        // prelude functions (e.g., [and: [fn ...]] [has?: [fn ...]]) work correctly.
+        let _ = crate::imports::build_prelude_env();
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
+        crate::imports::seed_infer_state_from_prelude_cache(&mut state);
         typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
     }
 
