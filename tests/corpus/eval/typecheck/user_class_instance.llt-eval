@@ -17,6 +17,6 @@
 
 ---
 
-result
+%.result
 === out
 Int(7)

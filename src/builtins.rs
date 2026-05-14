@@ -2061,21 +2061,20 @@ pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Rc<RefCell<crate::arena
 }
 
 pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
-    let (env, arena) = create_stdlib_env_with_arena()?;
-    // Cache the arena so subsequent EvalContext::new() calls can inherit stdlib ThunkIds.
-    STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = Some(arena));
+    let (env, _arena) = create_stdlib_env_with_arena()?;
+    // Arena already cached by create_stdlib_env_with_arena
     Ok(env)
 }
 
 /// Like `create_stdlib_env` but also returns the arena used during stdlib evaluation.
 /// The arena holds all ThunkIds allocated while loading the prelude and macros.llt.
 /// Callers (e.g., macro expansion) that need to share the same ThunkId space should
-/// use this arena when constructing their EvalContext via `EvalContext::new_with_stdlib_arena`.
+/// use this arena when constructing their EvalContext via `EvalContext::new_sharing_arena`.
 ///
-/// **IMPORTANT:** This function does NOT update `STDLIB_ARENA_CACHE`. Callers must wire the
-/// returned arena via `EvalContext::new_with_stdlib_arena()` rather than `EvalContext::new()`;
-/// using `EvalContext::new()` after this function (without a prior `create_stdlib_env()` call)
-/// will silently fall back to an empty arena and panic on prelude dict field access.
+/// **Cache consistency:** This function ALSO updates `STDLIB_ARENA_CACHE` so that subsequent
+/// `EvalContext::new()` calls on this thread inherit the stdlib ThunkIds. This ensures cache
+/// consistency regardless of which entry point (`create_stdlib_env()` or
+/// `create_stdlib_env_with_arena()`) was used to build the stdlib.
 pub(crate) fn create_stdlib_env_with_arena() -> Result<
     (
         Rc<RefCell<Environment>>,
@@ -2093,6 +2092,10 @@ pub(crate) fn create_stdlib_env_with_arena() -> Result<
     STDLIB_ENV_DEPTH.set(d + 1);
     let result = create_stdlib_env_inner();
     STDLIB_ENV_DEPTH.set(d);
+    // Cache the arena so subsequent EvalContext::new() calls can inherit stdlib ThunkIds.
+    if let Ok((_, ref arena)) = result {
+        STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = Some(Rc::clone(arena)));
+    }
     result
 }
 
@@ -2121,8 +2124,10 @@ fn create_stdlib_env_inner() -> Result<
                 Span::origin(),
             ))
         })?;
+    // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're BUILDING the stdlib here,
+    // so we need a fresh arena, not one seeded with stale cache contents.
     let bootstrap_ctx =
-        crate::eval::EvalContext::new(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
+        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
 
     // Create stdlib env as a child of bootstrap_env.
     // This means: user code (child of stdlib_env) can walk up to bootstrap_env
@@ -6425,6 +6430,34 @@ mod tests {
             err.message().contains("named arguments"),
             "got: {}",
             err.message()
+        );
+    }
+
+    /// Regression test for ThunkId cross-context lifecycle.
+    ///
+    /// Guards against breaking the STDLIB_ARENA_CACHE write in create_stdlib_env_with_arena.
+    /// If the cache write is accidentally removed, new_arena_with_stdlib_snapshot() will
+    /// return None and EvalContext::new() will get an empty arena, causing index-out-of-bounds
+    /// panics when accessing stdlib ThunkIds.
+    #[test]
+    fn stdlib_arena_cache_preserves_thunk_ids() {
+        // Create stdlib env — this should cache the arena
+        let (_env, arena) = create_stdlib_env_with_arena().expect("failed to create stdlib env");
+
+        // Verify the cache is populated by create_stdlib_env_with_arena
+        let cached_arena = new_arena_with_stdlib_snapshot().expect("arena cache should be populated after create_stdlib_env_with_arena");
+
+        // The cached arena should be a snapshot of the stdlib arena
+        assert_eq!(
+            cached_arena.borrow().len(),
+            arena.borrow().len(),
+            "cached arena should be a snapshot of the stdlib arena"
+        );
+
+        assert!(
+            cached_arena.borrow().len() > 397,
+            "cached arena should contain at least 397 stdlib thunks (prelude + macros), got {}",
+            cached_arena.borrow().len()
         );
     }
 

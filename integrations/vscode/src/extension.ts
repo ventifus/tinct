@@ -71,6 +71,7 @@ function span(cls: string, text: string): string {
 function highlightTinct(code: string): string {
   let result = '';
   let i = 0;
+  let depth = 0;
   const n = code.length;
 
   while (i < n) {
@@ -125,9 +126,20 @@ function highlightTinct(code: string): string {
     // Pipe operator
     if (code[i] === '|') { result += span('operator', '|'); i++; continue; }
 
-    // Brackets
-    if (code[i] === '[' || code[i] === ']') {
-      result += span('punctuation', code[i]); i++; continue;
+    // Opening bracket — color at current depth, then deepen
+    if (code[i] === '[') {
+      result += `<span class="llt-bracket-${depth % 6}">[</span>`;
+      depth++;
+      i++;
+      continue;
+    }
+
+    // Closing bracket — shallow first, then color at new depth
+    if (code[i] === ']') {
+      depth = Math.max(0, depth - 1);
+      result += `<span class="llt-bracket-${depth % 6}">]</span>`;
+      i++;
+      continue;
     }
 
     // Colon (key separator)

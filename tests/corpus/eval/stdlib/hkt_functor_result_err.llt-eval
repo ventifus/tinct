@@ -2,4 +2,6 @@
 [FunctorResult.fmap [fn [x] [+ x 1]] [Err "fail"]]
 
 === out
-Err("fail")
+Variant(Err, String("fail"))
+=== warn
+undefined variable: FunctorResult

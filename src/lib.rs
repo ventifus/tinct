@@ -206,7 +206,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx = eval::EvalContext::new_with_stdlib_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
+    let ctx = eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
     // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
     // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
@@ -296,7 +296,7 @@ pub fn eval_source_with_cap_net(
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx =
-        eval::EvalContext::new_with_stdlib_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
+        eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
 
     if !no_fs {
         if let Ok(pwd_dir) =

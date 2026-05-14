@@ -2,4 +2,6 @@
 [MonadMaybe.bind [Some 42] [fn [x] [Some [+ x 1]]]]
 
 === out
-Some(43)
+Variant(Some, Int(43))
+=== warn
+undefined variable: MonadMaybe

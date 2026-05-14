@@ -7,7 +7,7 @@ use std::rc::Rc;
 use lsp_types::Uri;
 
 use crate::ast::{File, Spanned};
-use crate::builtins::create_stdlib_env;
+use crate::builtins::create_stdlib_env_with_arena;
 use crate::error::EvalError;
 use crate::parser::{parse2, ParseError};
 use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, SchemeMap, TypeMap};
@@ -467,10 +467,14 @@ pub struct DocumentStore {
 
 impl DocumentStore {
     pub fn new() -> Self {
-        // Load stdlib once. If it fails, fall back to an empty environment
+        // Load stdlib once. If it fails, fall back to an empty environment + empty arena
         // so the LSP can still provide parsing/type-checking diagnostics.
-        let stdlib_env =
-            create_stdlib_env().unwrap_or_else(|_| Rc::new(RefCell::new(Environment::new())));
+        let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().unwrap_or_else(|_| {
+            (
+                Rc::new(RefCell::new(Environment::new())),
+                Rc::new(RefCell::new(crate::arena::ThunkArena::new())),
+            )
+        });
         // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
@@ -495,7 +499,8 @@ impl DocumentStore {
         // path-traversal protection. %libdir and %pwd are injected as real DirCaps in
         // DocumentState::new(), which limits access to the stdlib dir and document dir
         // respectively. Bare capless includes are rejected by builtin_include (see builtins_meta.rs).
-        let base_eval_ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
+        let base_eval_ctx =
+            crate::eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&stdlib_env), false, stdlib_arena);
 
         // Parse the embedded prelude source once for go-to-definition support.
         // If parsing fails, store None — prelude go-to-definition will be unavailable
@@ -659,12 +664,13 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     let text = std::fs::read_to_string(&path).ok()?;
 
     // Create minimal environment for LSP analysis
-    let stdlib_env = create_stdlib_env().ok()?;
+    let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().ok()?;
     let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
-    let eval_ctx = Rc::new(crate::eval::EvalContext::new(
+    let eval_ctx = Rc::new(crate::eval::EvalContext::new_sharing_arena(
         base_dir,
         Rc::clone(&stdlib_env),
         false,
+        stdlib_arena,
     ));
 
     // Create document state with the file's directory as base_dir for include resolution
@@ -681,15 +687,23 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
 mod tests {
     use super::*;
 
-    /// Helper: create a stdlib env for tests.
+    /// Helper: create a stdlib env and arena for tests.
+    fn test_env_and_arena() -> (
+        Rc<RefCell<Environment>>,
+        Rc<RefCell<crate::arena::ThunkArena>>,
+    ) {
+        create_stdlib_env_with_arena().unwrap()
+    }
+
     fn test_env() -> Rc<RefCell<Environment>> {
-        create_stdlib_env().unwrap()
+        test_env_and_arena().0
     }
 
     fn test_ctx() -> Rc<crate::eval::EvalContext> {
+        let (env, arena) = test_env_and_arena();
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, test_env(), false)
+        crate::eval::EvalContext::new_sharing_arena(base_dir, env, false, arena)
     }
 
     #[test]

@@ -20,7 +20,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::builtins::{create_stdlib_env, MAX_FILE_SIZE};
+use crate::builtins::{create_stdlib_env_with_arena, MAX_FILE_SIZE};
 use crate::eval::{deep_materialize, eval_file_with_input, materialize};
 use crate::parser::parse2;
 use crate::typecheck::{DocMap, TypeMap};
@@ -101,15 +101,33 @@ impl ReplSession {
     ///
     /// Returns an error if the stdlib fails to load (e.g., prelude parse error).
     pub fn new() -> Result<Self, String> {
-        let stdlib_env = create_stdlib_env().map_err(|e| format!("{e}"))?;
-        Self::with_env(stdlib_env)
+        let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        Self::with_env_and_arena(stdlib_env, stdlib_arena)
     }
 
     /// Create a new REPL session using a pre-created stdlib environment.
     ///
     /// This allows the caller to share the same `stdlib_env` with other
     /// infrastructure (e.g., `EvalContext`).
+    ///
+    /// **Note:** This method relies on `STDLIB_ARENA_CACHE` being populated by a prior
+    /// call to `create_stdlib_env()` or `create_stdlib_env_with_arena()`. For explicit
+    /// arena control, use `with_env_and_arena()` instead.
     pub fn with_env(stdlib_env: Rc<RefCell<Environment>>) -> Result<Self, String> {
+        // Rely on STDLIB_ARENA_CACHE for arena snapshot
+        let (_, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        Self::with_env_and_arena(stdlib_env, stdlib_arena)
+    }
+
+    /// Create a new REPL session using a pre-created stdlib environment and arena.
+    ///
+    /// This is the explicit arena threading version that does NOT rely on
+    /// `STDLIB_ARENA_CACHE`. Use this when you've already called
+    /// `create_stdlib_env_with_arena()` and want to share the same arena.
+    pub(crate) fn with_env_and_arena(
+        stdlib_env: Rc<RefCell<Environment>>,
+        stdlib_arena: Rc<RefCell<crate::arena::ThunkArena>>,
+    ) -> Result<Self, String> {
         // Create a session env as a child of stdlib, with % = empty dict.
         let session_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
             &stdlib_env,
@@ -126,7 +144,12 @@ impl ReplSession {
         // Create REPL session context (REPL runs in current directory, no sandbox)
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .map_err(|e| format!("cannot open current directory: {e}"))?;
-        let ctx = crate::eval::EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
+        let ctx = crate::eval::EvalContext::new_sharing_arena(
+            base_dir,
+            Rc::clone(&stdlib_env),
+            false,
+            stdlib_arena,
+        );
 
         Ok(Self {
             env: session_env,
@@ -366,8 +389,8 @@ pub fn run_repl() -> Result<(), String> {
     use rustyline::DefaultEditor;
 
     // Create the stdlib env once and share it between the session and $include context.
-    let stdlib_env = create_stdlib_env().map_err(|e| format!("{e}"))?;
-    let mut session = ReplSession::with_env(Rc::clone(&stdlib_env))?;
+    let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+    let mut session = ReplSession::with_env_and_arena(Rc::clone(&stdlib_env), stdlib_arena)?;
 
     // The ReplSession already has an EvalContext set up with CWD as base_dir,
     // so $include will work correctly using the context threading.

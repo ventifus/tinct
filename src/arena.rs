@@ -515,4 +515,71 @@ mod tests {
         assert_eq!(id.0, 456);
         assert_eq!(id_copy.0, 456);
     }
+
+    #[test]
+    fn test_clone_for_child_snapshot_size() {
+        // Test (a): snapshot.len() == parent.len() at snapshot time
+        let mut parent = ThunkArena::new();
+        let id1 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(1), test_span())));
+        let id2 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(2), test_span())));
+        let id3 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(3), test_span())));
+
+        let snapshot = parent.clone_for_child();
+
+        // Snapshot should have the same length as parent at snapshot time
+        assert_eq!(snapshot.len(), parent.len());
+        assert_eq!(snapshot.len(), 3);
+
+        // Verify snapshot contains the same ThunkIds
+        assert_eq!(snapshot.get(id1).try_get_materialized(), Some(Value::Int(1)));
+        assert_eq!(snapshot.get(id2).try_get_materialized(), Some(Value::Int(2)));
+        assert_eq!(snapshot.get(id3).try_get_materialized(), Some(Value::Int(3)));
+    }
+
+    #[test]
+    fn test_clone_for_child_independent_growth() {
+        // Test (b): parent grows independently after snapshot
+        let mut parent = ThunkArena::new();
+        let id1 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(1), test_span())));
+
+        let mut snapshot = parent.clone_for_child();
+
+        // Parent grows
+        let id2 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(2), test_span())));
+
+        // Snapshot grows independently
+        let id3 = snapshot.alloc(Rc::new(Thunk::new_materialized(Value::Int(3), test_span())));
+
+        // Parent should have 2 thunks
+        assert_eq!(parent.len(), 2);
+        assert_eq!(parent.get(id1).try_get_materialized(), Some(Value::Int(1)));
+        assert_eq!(parent.get(id2).try_get_materialized(), Some(Value::Int(2)));
+
+        // Snapshot should have 2 thunks (original + new allocation)
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot.get(id1).try_get_materialized(), Some(Value::Int(1)));
+        assert_eq!(snapshot.get(id3).try_get_materialized(), Some(Value::Int(3)));
+    }
+
+    #[test]
+    fn test_clone_for_child_shared_rc_identity() {
+        use std::rc::Rc;
+
+        // Test (c): mutating a pre-snapshot thunk's state is visible in the snapshot
+        let mut parent = ThunkArena::new();
+        let thunk = Rc::new(Thunk::new_placeholder(test_span()));
+        let id = parent.alloc(Rc::clone(&thunk));
+
+        let snapshot = parent.clone_for_child();
+
+        // Mutate the thunk's state via the parent's reference
+        thunk.set_state(ThunkState::Materialized(Value::Int(42)));
+
+        // The mutation should be visible in both parent and snapshot (shared Rc)
+        assert_eq!(parent.get(id).try_get_materialized(), Some(Value::Int(42)));
+        assert_eq!(snapshot.get(id).try_get_materialized(), Some(Value::Int(42)));
+
+        // Verify they point to the same underlying Thunk (Rc identity)
+        assert!(Rc::ptr_eq(parent.get(id), snapshot.get(id)));
+    }
 }

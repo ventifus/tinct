@@ -330,7 +330,7 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
                 register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
                 // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
                 // remain valid when transformer functions access them during expansion.
-                let ctx = EvalContext::new_with_stdlib_arena(
+                let ctx = EvalContext::new_sharing_arena(
                     base_dir,
                     Rc::clone(&env),
                     no_fs,
@@ -351,9 +351,10 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
         // This happens when create_stdlib_env → build_prelude_env → expand_macros(prelude.llt).
         // The stdlib files don't use [defmacro], so not having stdlib macros registered is fine.
         // Root env has no prelude dicts — no ThunkId cross-context accesses occur here.
-        // STDLIB_ARENA_CACHE may be empty or stale at this depth; the empty-arena fallback is safe.
+        // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're in the middle of building
+        // stdlib, so we need a fresh arena, not one seeded with potentially stale cache contents.
         let env = builtins::create_root_env();
-        let ctx = EvalContext::new(base_dir, Rc::clone(&env), no_fs);
+        let ctx = EvalContext::new_empty(base_dir, Rc::clone(&env), no_fs);
         (env, ctx)
     };
     let ctx = Rc::new(ctx);

@@ -87,7 +87,8 @@ fetch: [fn@String [url@String  timeout@[type: Number  default: 30]]
 apply-all: [fn [f ...args] [map f args]]
 
 # Type alias
-Name: [type TypeExpression]
+User: [type [name: String  age: Number]]
+greet: [fn@String [u@User] [str "Hello " u.name]]
 
 # @ property annotations
 param@Type                      # Shorthand: param@[type: Type]
@@ -534,12 +535,25 @@ Type expressions appear in annotations and `[type ...]` declarations. They use t
 [Fn@c [a b]]            # Two-arg function
 ```
 
-**Type alias:**
+**Type alias.** Bind a name to a type expression using `[type ...]` as a dict value. The alias name is then usable in annotations:
 
 ```tinct
-[type [Fn@b [a]]]
-[type [name: String  age: Number]]
+# Define aliases
+Name: [type String]
+Age:  [type Number]
+User: [type [name: Name  age: Age]]
+Predicate: [type [Fn@Bool [a]]]
+Transform:  [type [Fn@b [a]]]
+
+# Use in annotations
+greet: [fn@String [u@User] [str "Hello " u.name]]
+users: [filter [fn [u@User] [> u.age 18]] all-users]
+
+# Aliases compose
+AdminUser: [type [name: Name  age: Age  role: String]]
 ```
+
+Type aliases are resolved at type-check time — they have no runtime cost.
 
 **Row polymorphism.** `...` marks an open record type; `...name` introduces a named row variable:
 
@@ -562,22 +576,33 @@ Type expressions appear in annotations and `[type ...]` declarations. They use t
   _: "other"]
 
 [match response
-  [ok: result]: result
-  [err: msg]:   [error msg]]
+  [Ok result]: result
+  [Err msg]:   [error msg]]
 ```
 
 Patterns include wildcards, variable bindings, literals, type tags, pins, and dict/list destructuring.
 
 ### Quasiquoting
 
-`quote`, `unquote`, and `unquote-splice` treat code as data.
+`quote`, `unquote`, and `unquote-splice` treat code as data. `[quote expr]` produces an AST dict; `[eval-ast dict]` evaluates one back into a value.
 
 ```tinct
-[quote [+ 1 2]]           # → dict representing the Call AST node
-[quote [+ [unquote x] 1]] # → Call node with x's value spliced in
+[ast: [quote [+ 1 2]]]    # → [type: "call"  fn: "+"  args: [1 2]]
+ast.fn                     # → "+"
+
+# Splice a runtime value into a quoted expression
+[op: "+"]
+[quote [[unquote op] 1 2]] # → [type: "call"  fn: "+"  args: [1 2]]
+
+# Round-trip: quote then evaluate
+[eval-ast [quote [+ 1 2]]] # → 3
+
+# Build and run code programmatically
+[template: [fn [op a b] [eval-ast [quote [[unquote op] [unquote a] [unquote b]]]]]]
+[template "+" 10 20]        # → 30
 ```
 
-`[quote expr]` converts `expr` into its AST dict representation without evaluating it. `[unquote expr]` is valid only inside `[quote ...]` and evaluates `expr` in the current environment. `[unquote-splice expr]` splices a sequence into a list position inside `[quote ...]`.
+`[unquote expr]` is valid only inside `[quote ...]`. `[unquote-splice expr]` splices a sequence into a list position inside `[quote ...]`.
 
 ### Macro Definition
 
@@ -958,7 +983,5 @@ The parser determines how to interpret a `[]` by examining its first entry:
 | `call@Type` (first in `[]`) | Annotated (NOT keyword) | `@` after identifier converts keyword candidate |
 | `call:` | Dict key | Colon makes it a key |
 | `%config` | Reference to pipeline section `config` | Identifier with `%` prefix (convention) |
-| `a..b` | `Identifier("a")`, `Dot`, `Dot`, `Identifier("b")` | `.` excluded from identifier chars; both dots are access operators |
-| `a[2..5]` | `Identifier("a")`, `OpenBracket`, `Int(2)`, `Dot`, `Dot`, `Int(5)`, `CloseBracket` | Two separate expressions; use `[slice a 2 5]` for subsequences |
 | `---` (between exprs) | Document separator | `doc_separator` rule |
 | `----` | Identifier | `!ident_char` prevents separator match |

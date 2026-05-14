@@ -192,6 +192,44 @@ impl EvalContext {
         Self::new_with_options(base_dir, stdlib_env, no_fs, false, None)
     }
 
+    /// Create a new EvalContext with a FRESH EMPTY arena, bypassing `STDLIB_ARENA_CACHE`.
+    ///
+    /// This constructor is for contexts that should NOT inherit stdlib thunks:
+    /// - Bootstrap contexts (inside `create_stdlib_env_inner` where stdlib is being loaded)
+    /// - Re-entrant macro expansion (depth > 0 in expand.rs)
+    /// - Test helpers that create contexts without a stdlib env
+    ///
+    /// Using `new()` or `new_with_options()` in these cases would pull in stale cache contents
+    /// and pollute the bootstrap evaluation. Always use `new_empty()` when the stdlib env
+    /// being passed is NOT the standard prelude-loaded environment.
+    pub fn new_empty(
+        base_dir: cap_std::fs::Dir,
+        stdlib_env: Rc<RefCell<Environment>>,
+        no_fs: bool,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            config: Rc::new(EvalConfig {
+                base_dir,
+                stdlib_env,
+                no_fs,
+                require_integrity: false,
+            }),
+            state: Rc::new(RefCell::new(EvalState {
+                include_guard: HashSet::new(),
+                include_cache: HashMap::new(),
+                include_chain: Vec::new(),
+                eval_stack: Vec::new(),
+                class_registry: HashMap::new(),
+                instance_registry: HashMap::new(),
+            })),
+            thunk_arena: Rc::new(RefCell::new(ThunkArena::new())),
+            env_arena: Rc::new(RefCell::new(EnvArena::new())),
+            emitted: std::cell::Cell::new(false),
+            env_allowed: None,
+            blame_map: RefCell::new(HashMap::new()),
+        })
+    }
+
     pub fn new_with_options(
         base_dir: cap_std::fs::Dir,
         stdlib_env: Rc<RefCell<Environment>>,
@@ -227,18 +265,25 @@ impl EvalContext {
         })
     }
 
-    /// Create a new EvalContext that shares an existing stdlib arena.
+    /// Create a new EvalContext that shares an existing arena.
     ///
-    /// Used by macro expansion so that ThunkIds allocated during stdlib/prelude
-    /// loading remain valid when the transformer function accesses prelude dict
-    /// values (e.g., `result.bind`). Without sharing, those ThunkIds are indices
-    /// into the stdlib context's arena; the expansion context's fresh arena
-    /// doesn't contain them, causing an index-out-of-bounds panic.
-    pub(crate) fn new_with_stdlib_arena(
+    /// The arena is SHARED via `Rc::clone()` — user thunks allocated through this context
+    /// append to the same backing Vec as the thunks already in the arena. The arena grows
+    /// monotonically. This is critical for ThunkId validity: if the arena contains stdlib
+    /// thunks (indices 0..N), then ThunkIds stored in prelude dicts (e.g., `result.bind`)
+    /// remain valid when accessed from this context.
+    ///
+    /// **Use cases:**
+    /// - Macro expansion contexts that need to access prelude dict fields
+    /// - Included files that reference stdlib values via ThunkIds
+    /// - Any evaluation context where prelude values will be accessed
+    ///
+    /// **Not for:** Bootstrap contexts (use `new_empty()` instead).
+    pub(crate) fn new_sharing_arena(
         base_dir: cap_std::fs::Dir,
         stdlib_env: Rc<RefCell<Environment>>,
         no_fs: bool,
-        stdlib_arena: Rc<RefCell<ThunkArena>>,
+        shared_arena: Rc<RefCell<ThunkArena>>,
     ) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -255,7 +300,7 @@ impl EvalContext {
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
             })),
-            thunk_arena: stdlib_arena,
+            thunk_arena: shared_arena,
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
             emitted: std::cell::Cell::new(false),
             env_allowed: None,
@@ -1207,6 +1252,20 @@ pub(crate) fn is_nominal_constructor(expr: &Expr) -> Option<(String, bool)> {
             }
             None
         }
+        // Unit constructor written as a 0-arg call: [None] in [type [Some a] [None]]
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } if named_args.is_empty() && args.is_empty() => {
+            if let Expr::VarRef { name, .. } = &func.node {
+                if is_constructor_name(name) {
+                    return Some((name.clone(), false));
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -2129,7 +2188,14 @@ fn match_pattern(
             Ok(Some(child_env))
         }
         Pattern::TypeTag(tag) => {
-            // TypeTag matches if type-of the value equals the tag
+            // TypeTag matches if type-of the value equals the tag.
+            // Also matches unit-variant values whose tag equals the pattern tag.
+            // A bare uppercase identifier like `None` in a match arm is parsed as
+            // Pattern::TypeTag("None"). For unit constructors (Value::Variant with
+            // no payload), we check the variant tag directly so that:
+            //   match ma
+            //     [Some a]: ...
+            //     None:     ...    <- TypeTag("None") matches Variant{tag:"None",payload:None}
             let type_name = value.type_name();
             // Handle supertypes and aliases:
             //   Number matches both Int and Float
@@ -2138,6 +2204,13 @@ fn match_pattern(
                 type_name == "Int" || type_name == "Float"
             } else if tag == "Str" {
                 type_name == "String"
+            } else if let Value::Variant {
+                tag: variant_tag,
+                payload: None,
+            } = value
+            {
+                // Unit variant: match by tag name, not by type_name() (which returns "Variant")
+                variant_tag == tag
             } else {
                 type_name == tag
             };

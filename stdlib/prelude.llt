@@ -1185,7 +1185,7 @@ FoldableResult@[doc: "Foldable instance for Result"]:
         [Err _]: init]]
     to-seq: [fn [r]
       [match r
-        [Ok a]:  [a]
+        [Ok a]:  [0: a]
         [Err _]: []]]]
 
 Traversable@[doc: "Type class for traversable structures"]:

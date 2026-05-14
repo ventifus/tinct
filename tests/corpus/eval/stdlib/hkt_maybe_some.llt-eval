@@ -2,4 +2,4 @@
 [Some 42]
 
 === out
-Some(42)
+Variant(Some, Int(42))

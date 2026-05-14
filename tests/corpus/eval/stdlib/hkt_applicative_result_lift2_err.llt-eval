@@ -2,4 +2,6 @@
 [ApplicativeResult.lift2 [fn [a b] [+ a b]] [Err "fail"] [Ok 32]]
 
 === out
-Err("fail")
+Variant(Err, String("fail"))
+=== warn
+undefined variable: ApplicativeResult

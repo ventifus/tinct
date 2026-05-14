@@ -1,5 +1,5 @@
-# Test: FunctorSeq.fmap on a sequence
-[collect [FunctorSeq.fmap [fn [x] [* x 2]] [1 2 3]]]
+# Test: FunctorSeq.fmap on a list (integer-keyed dict)
+[FunctorSeq.fmap [fn [x] [* x 2]] [1 2 3]]
 
 === out
-[0: 2, 1: 4, 2: 6]
+Dict({0: Int(2), 1: Int(4), 2: Int(6)})

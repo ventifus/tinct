@@ -18135,9 +18135,118 @@ function activate(context) {
   );
   client.start();
   context.subscriptions.push(client);
+  return {
+    extendMarkdownIt(md) {
+      const orig = md.options.highlight;
+      md.options.highlight = function(str, lang) {
+        const l = lang.trim().toLowerCase();
+        if (l === "llt" || l === "tinct") {
+          return '<pre class="hljs"><code class="hljs language-llt">' + highlightTinct(str) + "</code></pre>";
+        }
+        return orig ? orig.call(this, str, lang) : "";
+      };
+      return md;
+    }
+  };
 }
 function deactivate() {
   return client?.stop();
+}
+function esc(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function span(cls, text) {
+  return `<span class="hljs-${cls}">${esc(text)}</span>`;
+}
+function highlightTinct(code) {
+  let result = "";
+  let i = 0;
+  let depth = 0;
+  const n = code.length;
+  while (i < n) {
+    const rest = code.slice(i);
+    let m;
+    m = rest.match(/^(#[^\n]*)/);
+    if (m) {
+      result += span("comment", m[1]);
+      i += m[1].length;
+      continue;
+    }
+    m = rest.match(/^(i?"(?:[^"\\]|\\.)*")/);
+    if (m) {
+      result += span("string", m[1]);
+      i += m[1].length;
+      continue;
+    }
+    m = rest.match(/^(---)/);
+    if (m && (i + 3 >= n || /\s/.test(code[i + 3]))) {
+      result += span("meta", m[1]);
+      i += 3;
+      continue;
+    }
+    m = rest.match(/^(%[a-zA-Z_][a-zA-Z0-9_-]*|%)/);
+    if (m) {
+      result += span("variable", m[1]);
+      i += m[1].length;
+      continue;
+    }
+    m = rest.match(/^(\$\$|\$[a-zA-Z_][a-zA-Z0-9_-]*)/);
+    if (m) {
+      result += span("variable", m[1]);
+      i += m[1].length;
+      continue;
+    }
+    m = rest.match(/^(@[A-Za-z][A-Za-z0-9]*(?:\[.*?\])?)/);
+    if (m) {
+      result += span("type", m[1]);
+      i += m[1].length;
+      continue;
+    }
+    m = rest.match(/^(-?\d+(?:\.\d+)?)\b/);
+    if (m) {
+      result += span("number", m[1]);
+      i += m[1].length;
+      continue;
+    }
+    m = rest.match(/^([a-zA-Z_][a-zA-Z0-9_-]*)/);
+    if (m) {
+      const word = m[1];
+      if (word === "fn" || word === "call" || word === "type") {
+        result += span("keyword", word);
+      } else if (word === "true" || word === "false") {
+        result += span("literal", word);
+      } else {
+        result += esc(word);
+      }
+      i += word.length;
+      continue;
+    }
+    if (code[i] === "|") {
+      result += span("operator", "|");
+      i++;
+      continue;
+    }
+    if (code[i] === "[") {
+      result += `<span class="llt-bracket-${depth % 6}">[</span>`;
+      depth++;
+      i++;
+      continue;
+    }
+    if (code[i] === "]") {
+      depth = Math.max(0, depth - 1);
+      result += `<span class="llt-bracket-${depth % 6}">]</span>`;
+      i++;
+      continue;
+    }
+    if (code[i] === ":") {
+      result += span("punctuation", ":");
+      i++;
+      continue;
+    }
+    result += esc(code[i]);
+    i++;
+  }
+  return result;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
