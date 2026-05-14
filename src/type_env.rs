@@ -350,6 +350,7 @@ pub fn generalize_with_doc(
             body: ty.clone(),
             label_vars: Vec::new(),
             doc,
+            inner_schemes: None,
         };
     }
 
@@ -377,6 +378,7 @@ pub fn generalize_with_doc(
             body: ty.clone(),
             label_vars: Vec::new(),
             doc,
+            inner_schemes: None,
         }
     } else {
         // Filter constraints: keep only those on generalized variables
@@ -422,6 +424,7 @@ pub fn generalize_with_doc(
             body: ty.clone(),
             label_vars,
             doc,
+            inner_schemes: None,
         }
     }
 }
@@ -1126,6 +1129,7 @@ impl TypeEnv {
                     },
                     label_vars: vec![],
                     doc: None,
+                    inner_schemes: None,
                 },
             );
         }
@@ -1146,6 +1150,7 @@ impl TypeEnv {
                 },
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
 
@@ -1165,6 +1170,7 @@ impl TypeEnv {
                 },
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
 
@@ -1184,6 +1190,7 @@ impl TypeEnv {
                 },
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
 
@@ -1290,6 +1297,7 @@ impl TypeEnv {
                 },
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
         env.insert(
@@ -2420,6 +2428,7 @@ impl TypeEnv {
                 },
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
 
@@ -2612,6 +2621,7 @@ impl TypeEnv {
                 },
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
 
@@ -2636,6 +2646,7 @@ impl TypeEnv {
                 },
                 label_vars: vec![],
                 doc: None,
+                inner_schemes: None,
             },
         );
 

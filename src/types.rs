@@ -1517,6 +1517,12 @@ pub struct TypeScheme {
     /// Optional documentation string (from `fn@[doc: "..."]` annotations).
     /// Not part of the type; used by LSP hover display.
     pub doc: Option<String>,
+    /// Nested dict polymorphism: when this scheme binds a dict literal, stores
+    /// the generalized TypeScheme for each dict entry. Used by [DOT-POLY] to
+    /// instantiate polymorphic functions accessed via dot-notation.
+    /// Only `Some` for dict literals bound directly; `None` for function params,
+    /// cross-file opaque types, and non-dict schemes.
+    pub inner_schemes: Option<HashMap<String, TypeScheme>>,
 }
 
 impl TypeScheme {
@@ -1528,6 +1534,7 @@ impl TypeScheme {
             body: ty,
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         }
     }
 }
@@ -4175,6 +4182,7 @@ mod tests {
             },
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         assert_eq!(format!("{scheme}"), "∀a b. Fn@a [a b]");
     }
@@ -4187,6 +4195,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         assert_eq!(format!("{scheme}"), "∀a. a");
     }
@@ -4199,6 +4208,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         let s2 = TypeScheme {
             type_vars: vec!["a".into()],
@@ -4206,6 +4216,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         assert_eq!(s1, s2);
     }
@@ -4218,6 +4229,7 @@ mod tests {
             body: Type::Int,
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         let s2 = TypeScheme {
             type_vars: vec!["b".into()],
@@ -4225,6 +4237,7 @@ mod tests {
             body: Type::Int,
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         assert_ne!(s1, s2);
     }
@@ -4245,6 +4258,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         assert_ne!(s1, s2);
     }
@@ -4322,6 +4336,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         env.insert_scheme("f".into(), scheme.clone());
         assert_eq!(env.get("f"), Some(&scheme));
@@ -4341,6 +4356,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         child.insert_scheme("x".into(), child_scheme.clone());
 
@@ -4372,6 +4388,7 @@ mod tests {
             },
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         let mut state = InferState::new();
         state.level = 3;
@@ -4414,6 +4431,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         let mut state = InferState::new();
 
@@ -4433,6 +4451,7 @@ mod tests {
             body: Type::TypeVar("a".into(), 0),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
         let mut state = InferState::new();
         state.level = 2;
@@ -4764,6 +4783,7 @@ mod tests {
             body: closed_record(fields.clone()),
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
 
         let mut state = InferState::new();
@@ -4797,6 +4817,7 @@ mod tests {
             },
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
 
         let mut state = InferState::new();
@@ -6661,6 +6682,7 @@ mod tests {
             },
             label_vars: vec![],
             doc: None,
+            inner_schemes: None,
         };
 
         let mut state = InferState::new();
