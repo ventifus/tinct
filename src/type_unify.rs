@@ -105,17 +105,21 @@ pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint
 
     // Superclass check: is there a constraint C in context such that
     // C has target.class as a superclass (transitively)?
-    // Only applicable to Class constraints
+    // Only applicable to single-param Class constraints (MPTC entailment is future work)
     if let Constraint::Class {
         class: target_class,
-        var: target_var,
+        vars: target_vars,
+        ..
     } = target
     {
-        for constraint in context {
-            if let Constraint::Class { class, var } = constraint {
-                if var == target_var {
-                    if is_superclass_of(class_env, class, target_class) {
-                        return true;
+        if target_vars.len() == 1 {
+            let target_var = &target_vars[0];
+            for constraint in context {
+                if let Constraint::Class { class, vars, .. } = constraint {
+                    if vars.len() == 1 && vars[0] == *target_var {
+                        if is_superclass_of(class_env, class, target_class) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -203,7 +207,8 @@ fn check_constraints_on_var(
     // Find all constraints on this variable
     for constraint in &state.constraints.clone() {
         match constraint {
-            Constraint::Class { class, var } if var == var_name => {
+            Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == var_name => {
+                // Single-parameter type class constraint (e.g., Numeric a)
                 // First, check the fixed instance sets (B4 constrained type variables)
                 if satisfies_constraint(concrete_ty, class) {
                     continue;
@@ -228,6 +233,23 @@ fn check_constraints_on_var(
                     span,
                 ));
             }
+            Constraint::Class {
+                class,
+                vars,
+                fundeps,
+            } if vars.len() > 1 => {
+                // Multi-parameter type class constraint with functional dependencies
+                // Check if this variable binding triggers FD improvement
+                improve_functional_dependency(
+                    class,
+                    vars,
+                    fundeps,
+                    var_name,
+                    concrete_ty,
+                    state,
+                    span,
+                )?;
+            }
             Constraint::HasField { .. } => {
                 // HasField constraints are resolved separately in resolve_has_field
                 // They don't participate in check_constraints_on_var
@@ -237,6 +259,145 @@ fn check_constraints_on_var(
         }
     }
     Ok(())
+}
+
+/// Functional dependency improvement for multi-parameter type classes (Jones 2000).
+///
+/// When a type variable α in a determining position of a functional dependency becomes ground,
+/// and ALL determining positions are now ground, look up the matching instance and unify
+/// the determined positions with the instance's result types.
+///
+/// For Add a b c with FD (a,b) → c: when both a and b are ground, resolve c from the instance table.
+fn improve_functional_dependency(
+    class: &str,
+    vars: &[String],
+    fundeps: &[(Vec<usize>, Vec<usize>)],
+    bound_var: &str,
+    _bound_type: &Type,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
+    // For each functional dependency (determining → determined)
+    for (det_positions, ded_positions) in fundeps {
+        // Check if the bound variable is in a determining position
+        let bound_var_positions: Vec<usize> = vars
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| *v == bound_var)
+            .map(|(i, _)| i)
+            .collect();
+
+        if !bound_var_positions.iter().any(|p| det_positions.contains(p)) {
+            // This binding doesn't affect this FD
+            continue;
+        }
+
+        // Collect the current types for all determining positions
+        let mut det_types = Vec::new();
+        for &pos in det_positions {
+            if pos >= vars.len() {
+                continue;
+            }
+            let var = &vars[pos];
+            let ty = state.subst.apply(&Type::TypeVar(var.clone(), 0));
+            det_types.push((pos, var, ty));
+        }
+
+        // Check if ALL determining positions are ground
+        let all_det_ground = det_types.iter().all(|(_, _, ty)| !ty.has_inference_vars());
+
+        if !all_det_ground {
+            // Not all determining positions are ground yet - can't improve
+            continue;
+        }
+
+        // All determining positions are ground - look up the instance
+        let result_type = lookup_arithmetic_instance(
+            class,
+            &det_types.iter().map(|(_, _, ty)| ty.clone()).collect::<Vec<_>>(),
+        )?;
+
+        // Unify each determined position with the result type
+        for &ded_pos in ded_positions {
+            if ded_pos >= vars.len() {
+                continue;
+            }
+            let ded_var = &vars[ded_pos];
+            let ded_type_var = Type::TypeVar(ded_var.clone(), 0);
+
+            // Unify the determined variable with the result type
+            // Use std::mem::take to avoid borrow conflicts (same pattern as typecheck.rs:2124)
+            let mut subst = std::mem::take(&mut state.subst);
+            let result = unify(&ded_type_var, &result_type, &mut subst, state, span);
+            state.subst = subst;
+            result?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Hardcoded instance lookup for arithmetic type classes with functional dependencies.
+/// Given the determining types (a, b), returns the determined type (c).
+///
+/// This is a closed lookup table for the 9 instances of Add/Sub/Mul/Div.
+fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, TypeError> {
+    if det_types.len() != 2 {
+        return Err(TypeError::new(
+            format!("arithmetic class {} expects 2 determining types, got {}", class, det_types.len()),
+            Span::origin(),
+        ));
+    }
+
+    let a = &det_types[0];
+    let b = &det_types[1];
+
+    // Normalize types for comparison
+    let key = (type_key(a), type_key(b));
+
+    match class {
+        "Add" | "Sub" | "Mul" => {
+            match key {
+                ("Int", "Int") => Ok(Type::Int),
+                ("Float", "Float") => Ok(Type::Float),
+                ("Int", "Float") | ("Float", "Int") => Ok(Type::Float),
+                ("Number", "Number") | ("Number", "Int") | ("Int", "Number")
+                | ("Number", "Float") | ("Float", "Number") => Ok(Type::Number),
+                _ => Err(TypeError::new(
+                    format!("no instance for {} {} {}", class, a, b),
+                    Span::origin(),
+                )),
+            }
+        }
+        "Div" => {
+            match key {
+                ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
+                    Ok(Type::Float)
+                }
+                ("Number", "Number") | ("Number", "Int") | ("Int", "Number")
+                | ("Number", "Float") | ("Float", "Number") => Ok(Type::Number),
+                _ => Err(TypeError::new(
+                    format!("no instance for Div {} {}", a, b),
+                    Span::origin(),
+                )),
+            }
+        }
+        _ => Err(TypeError::new(
+            format!("unknown arithmetic class {}", class),
+            Span::origin(),
+        )),
+    }
+}
+
+/// Helper to extract a type key for instance lookup
+fn type_key(ty: &Type) -> &'static str {
+    match ty {
+        Type::Int => "Int",
+        Type::Float => "Float",
+        Type::Number => "Number",
+        Type::IntLiteral(_) => "Int",  // Promoted
+        _ => "Unknown",
+    }
 }
 
 /// When binding a constrained type variable, promote literal types to their parent types.
@@ -253,7 +414,7 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
 
     // Only promote if the variable has Class constraints
     let has_class_constraints = state.constraints.iter().any(|c| match c {
-        Constraint::Class { var, .. } => var == var_name,
+        Constraint::Class { vars, .. } => vars.contains(&var_name.to_string()),
         _ => false,
     });
 
@@ -1137,11 +1298,18 @@ pub fn constrain(
 /// Returns immediately if α has no class constraints (fast path for the common case).
 fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
     // Collect all Class constraints on α. Early-exit if there are none.
-    let alpha_constraints: Vec<String> = state
+    // For single-param constraints only (MPTC transfer is more complex and deferred)
+    let alpha_constraints: Vec<(String, Vec<String>, Vec<(Vec<usize>, Vec<usize>)>)> = state
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, var } if var == alpha => Some(class.clone()),
+            Constraint::Class {
+                class,
+                vars,
+                fundeps,
+            } if vars.len() == 1 && vars[0] == alpha => {
+                Some((class.clone(), vars.clone(), fundeps.clone()))
+            }
             _ => None,
         })
         .collect();
@@ -1156,15 +1324,18 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, var } if var == beta => Some(class.clone()),
+            Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == beta => {
+                Some(class.clone())
+            }
             _ => None,
         })
         .collect();
-    for class in alpha_constraints {
+    for (class, _vars, fundeps) in alpha_constraints {
         if !beta_existing.contains(&class) {
             state.constraints.push(Constraint::Class {
                 class,
-                var: beta.to_string(),
+                vars: vec![beta.to_string()],
+                fundeps,
             });
         }
     }

@@ -1421,8 +1421,17 @@ pub fn check_kind_wellformed(
 /// Constraint on a type variable (type class membership or structural property)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Constraint {
-    /// Type class constraint: `class var` (e.g., `Numeric a`)
-    Class { class: String, var: String },
+    /// Type class constraint: `class vars` (e.g., `Numeric a` or `Add a b c`)
+    ///
+    /// `vars`: Type variable names in the constraint (e.g., ["a"] for single-param, ["a", "b", "c"] for MPTC)
+    /// `fundeps`: Functional dependencies as (determining positions, determined positions) pairs.
+    ///            Each pair is (Vec<usize>, Vec<usize>) indexing into `vars`.
+    ///            For `Add a b c` with FD `(a,b) → c`: fundeps = vec![(vec![0,1], vec![2])]
+    Class {
+        class: String,
+        vars: Vec<String>,
+        fundeps: Vec<(Vec<usize>, Vec<usize>)>,
+    },
     /// HasField constraint: `HasField label dict_var field_var`
     /// Asserts that dict_var has a field at label with type field_var.
     /// Functional dependency: (label, dict_var) → field_var
@@ -1434,11 +1443,12 @@ pub enum Constraint {
 }
 
 impl Constraint {
-    /// Create a Class constraint (backward compatibility helper)
+    /// Create a single-parameter Class constraint (backward compatibility helper)
     pub fn new(class: impl Into<String>, var: impl Into<String>) -> Self {
         Self::Class {
             class: class.into(),
-            var: var.into(),
+            vars: vec![var.into()],
+            fundeps: vec![],
         }
     }
 }
@@ -1446,7 +1456,13 @@ impl Constraint {
 impl fmt::Display for Constraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Constraint::Class { class, var } => write!(f, "{} {}", class, var),
+            Constraint::Class { class, vars, .. } => {
+                write!(f, "{}", class)?;
+                for var in vars {
+                    write!(f, " {}", var)?;
+                }
+                Ok(())
+            }
             Constraint::HasField {
                 label,
                 dict_var,
@@ -1659,6 +1675,55 @@ impl InferState {
             name: "Numeric".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
             superclasses: vec![("Equatable".to_string(), "a".to_string())],
+            methods: HashMap::new(),
+        });
+
+        // Add: 3-parameter type class with functional dependency (a,b) → c
+        // Functional dependencies are stored in Constraint, not ClassDecl
+        class_env.insert(ClassDecl {
+            name: "Add".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            methods: HashMap::new(),
+        });
+
+        // Sub: 3-parameter type class with functional dependency (a,b) → c
+        class_env.insert(ClassDecl {
+            name: "Sub".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            methods: HashMap::new(),
+        });
+
+        // Mul: 3-parameter type class with functional dependency (a,b) → c
+        class_env.insert(ClassDecl {
+            name: "Mul".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            methods: HashMap::new(),
+        });
+
+        // Div: 3-parameter type class with functional dependency (a,b) → c
+        class_env.insert(ClassDecl {
+            name: "Div".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
             methods: HashMap::new(),
         });
 
@@ -2844,17 +2909,25 @@ mod tests {
 
     #[test]
     fn test_with_builtins_arithmetic_signature() {
-        // + is now Numeric a => a -> a -> a (constrained polymorphic)
+        // + is now Add a b c => a -> b -> c (MPTC with functional dependency)
         let env = TypeEnv::with_builtins();
         let add_scheme = env.get("+").expect("+ should be registered");
         // Check constraints
         assert_eq!(add_scheme.constraints.len(), 1);
         assert!(matches!(
             &add_scheme.constraints[0],
-            Constraint::Class { class, var } if class == "Numeric" && var == "a"
+            Constraint::Class { class, vars, fundeps }
+            if class == "Add"
+                && vars == &vec!["a".to_string(), "b".to_string(), "c".to_string()]
+                && fundeps.len() == 1
+                && fundeps[0].0 == vec![0, 1]  // (a,b) → c
+                && fundeps[0].1 == vec![2]
         ));
         // Check type_vars
-        assert_eq!(add_scheme.type_vars, vec!["a".to_string()]);
+        assert_eq!(
+            add_scheme.type_vars,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
         match &add_scheme.body {
             Type::Function {
                 params,
@@ -2863,8 +2936,8 @@ mod tests {
             } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].1, Type::TypeVar("a".into(), 0));
-                assert_eq!(params[1].1, Type::TypeVar("a".into(), 0));
-                assert_eq!(&**ret, &Type::TypeVar("a".into(), 0));
+                assert_eq!(params[1].1, Type::TypeVar("b".into(), 0));
+                assert_eq!(&**ret, &Type::TypeVar("c".into(), 0));
             }
             other => panic!("expected Function type for +, got {other}"),
         }
@@ -2872,20 +2945,20 @@ mod tests {
 
     #[test]
     fn test_with_builtins_division_returns_float() {
-        // / is now Numeric a => a -> a -> Float (constrained polymorphic, always returns Float)
+        // / is now Div a b c => a -> b -> c (MPTC with functional dependency)
         let env = TypeEnv::with_builtins();
         let div_scheme = env.get("/").expect("/ should be registered");
         assert_eq!(div_scheme.constraints.len(), 1);
         assert!(matches!(
             &div_scheme.constraints[0],
-            Constraint::Class { class, .. } if class == "Numeric"
+            Constraint::Class { class, .. } if class == "Div"
         ));
         match &div_scheme.body {
             Type::Function { params, ret, .. } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].1, Type::TypeVar("a".into(), 0));
-                assert_eq!(params[1].1, Type::TypeVar("a".into(), 0));
-                assert_eq!(&**ret, &Type::Float);
+                assert_eq!(params[1].1, Type::TypeVar("b".into(), 0));
+                assert_eq!(&**ret, &Type::TypeVar("c".into(), 0));
             }
             other => panic!("expected Function type for /, got {other}"),
         }
@@ -2899,7 +2972,7 @@ mod tests {
         assert_eq!(eq_scheme.constraints.len(), 1);
         assert!(matches!(
             &eq_scheme.constraints[0],
-            Constraint::Class { class, var } if class == "Equatable" && var == "a"
+            Constraint::Class { class, vars, .. } if class == "Equatable" && vars == &vec!["a".to_string()]
         ));
         match &eq_scheme.body {
             Type::Function {
@@ -6803,7 +6876,7 @@ mod tests {
         assert_eq!(state.constraints.len(), 1);
         assert!(matches!(
             &state.constraints[0],
-            Constraint::Class { class, var } if class == "Numeric" && var.starts_with("_t")
+            Constraint::Class { class, vars, .. } if class == "Numeric" && vars.len() == 1 && vars[0].starts_with("_t")
         ));
     }
 
@@ -7274,7 +7347,7 @@ mod tests {
         assert_eq!(constraints.len(), 1);
         assert!(matches!(
             &constraints[0],
-            Constraint::Class { class, var } if class == "Numeric" && var == "a"
+            Constraint::Class { class, vars, .. } if class == "Numeric" && vars == &vec!["a".to_string()]
         ));
     }
 

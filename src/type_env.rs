@@ -186,9 +186,22 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         // Copy constraints with renamed variables
         for constraint in &scheme.constraints {
             match constraint {
-                Constraint::Class { class, var } => {
-                    if let Some(fresh_var) = var_renaming.get(var) {
-                        state.add_constraint(class.clone(), fresh_var.clone());
+                Constraint::Class {
+                    class,
+                    vars,
+                    fundeps,
+                } => {
+                    // Rename all vars in the constraint
+                    let fresh_vars: Vec<String> = vars
+                        .iter()
+                        .filter_map(|v| var_renaming.get(v).cloned())
+                        .collect();
+                    if fresh_vars.len() == vars.len() {
+                        state.constraints.push(Constraint::Class {
+                            class: class.clone(),
+                            vars: fresh_vars,
+                            fundeps: fundeps.clone(),
+                        });
                     }
                 }
                 Constraint::HasField {
@@ -255,9 +268,22 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     // Copy constraints with renamed variables
     for constraint in &scheme.constraints {
         match constraint {
-            Constraint::Class { class, var } => {
-                if let Some(fresh_var) = var_renaming.get(var) {
-                    state.add_constraint(class.clone(), fresh_var.clone());
+            Constraint::Class {
+                class,
+                vars,
+                fundeps,
+            } => {
+                // Rename all vars in the constraint
+                let fresh_vars: Vec<String> = vars
+                    .iter()
+                    .filter_map(|v| var_renaming.get(v).cloned())
+                    .collect();
+                if fresh_vars.len() == vars.len() {
+                    state.constraints.push(Constraint::Class {
+                        class: class.clone(),
+                        vars: fresh_vars,
+                        fundeps: fundeps.clone(),
+                    });
                 }
             }
             Constraint::HasField {
@@ -388,7 +414,10 @@ pub fn generalize_with_doc(
             .constraints
             .iter()
             .filter(|c| match c {
-                Constraint::Class { var, .. } => generalizable_vars.contains(var),
+                Constraint::Class { vars, .. } => {
+                    // Keep constraint if ALL vars are generalizable
+                    vars.iter().all(|v| generalizable_vars.contains(v))
+                }
                 Constraint::HasField {
                     label,
                     dict_var,
@@ -1111,41 +1140,95 @@ impl TypeEnv {
             Type::normalize_intersection(members)
         };
 
-        // Arithmetic: Numeric a => a -> a -> a
-        // Constrained polymorphic type variables allow precise typing of overloaded operations.
-        for name in ["+", "-", "*"] {
-            env.insert_scheme(
-                name.to_string(),
-                TypeScheme {
-                    type_vars: vec!["a".to_string()],
-                    constraints: vec![Constraint::new("Numeric", "a")],
-                    body: Type::Function {
-                        params: vec![
-                            (None, Type::TypeVar("a".to_string(), 0)),
-                            (None, Type::TypeVar("a".to_string(), 0)),
-                        ],
-                        ret: Box::new(Type::TypeVar("a".to_string(), 0)),
-                        variadic: false,
-                    },
-                    label_vars: vec![],
-                    doc: None,
-                    inner_schemes: None,
-                },
-            );
-        }
-
-        // Division: Numeric a => a -> a -> Float
+        // Addition: Add a b c => a -> b -> c
+        // Multi-parameter type class with functional dependency (a,b) → c
         env.insert_scheme(
-            "/".to_string(),
+            "+".to_string(),
             TypeScheme {
-                type_vars: vec!["a".to_string()],
-                constraints: vec![Constraint::new("Numeric", "a")],
+                type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                constraints: vec![Constraint::Class {
+                    class: "Add".to_string(),
+                    vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
+                }],
                 body: Type::Function {
                     params: vec![
                         (None, Type::TypeVar("a".to_string(), 0)),
-                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("b".to_string(), 0)),
                     ],
-                    ret: Box::new(Type::Float),
+                    ret: Box::new(Type::TypeVar("c".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
+        // Subtraction: Sub a b c => a -> b -> c
+        env.insert_scheme(
+            "-".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                constraints: vec![Constraint::Class {
+                    class: "Sub".to_string(),
+                    vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
+                }],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("b".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::TypeVar("c".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
+        // Multiplication: Mul a b c => a -> b -> c
+        env.insert_scheme(
+            "*".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                constraints: vec![Constraint::Class {
+                    class: "Mul".to_string(),
+                    vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
+                }],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("b".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::TypeVar("c".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
+        // Division: Div a b c => a -> b -> c
+        env.insert_scheme(
+            "/".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                constraints: vec![Constraint::Class {
+                    class: "Div".to_string(),
+                    vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
+                }],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("b".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::TypeVar("c".to_string(), 0)),
                     variadic: false,
                 },
                 label_vars: vec![],
