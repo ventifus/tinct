@@ -169,7 +169,7 @@ See `doc/whatif/runtime-reflection.md §include Return Type` and `§Stdlib Reorg
 
 ## Builtin Type Precision
 
-- [ ] `builtin-repeat` in `src/type_env.rs:2255–2262`: currently registered as `Top → Seq(Top)`; should be `∀T. T → Seq(T)` — register as a `TypeScheme` with a fresh type var so `[repeat 42]` infers `Seq(Int)` rather than `Seq(Top)` (`src/type_env.rs`)
+- [x] `builtin-repeat` in `src/type_env.rs:2255–2262`: currently registered as `Top → Seq(Top)`; should be `∀T. T → Seq(T)` — register as a `TypeScheme` with a fresh type var so `[repeat 42]` infers `Seq(Int)` rather than `Seq(Top)` (`src/type_env.rs`)
 
 ### type-alias-record-context: Fix [type [...]] body to never apply property-dict disambiguation
 
