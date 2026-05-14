@@ -8,8 +8,8 @@ See DONE.md for the full history of completed sprints.
 
 `;` is intended to be a universal newline alias — equivalent to `\n` in all parse positions. Two gaps:
 
-- [ ] **Semantic gap** — `peek_next_horizontal` in `src/parser.rs:70` skips `Token::Semicolon` but stops at `Token::Newline`, so `foo;: value` is parsed as a dict entry while `foo\n: value` is not. Fix: remove `Token::Semicolon` from the skip list in `peek_next_horizontal` so `;` also terminates the horizontal scan (`src/parser.rs:70`)
-- [ ] **Formatter gap** — blank-before tracking in `src/parser.rs:220` resets `consecutive_newlines` to 0 on `;` without incrementing, so `a;b` never gets a blank-line marker even when sandwiched between real newlines. Fix: treat `Semicolon` the same as `Newline` in consecutive-newline counting (`src/parser.rs:220`)
+- [x] **Semantic gap** — `peek_next_horizontal` in `src/parser.rs:70` skips `Token::Semicolon` but stops at `Token::Newline`, so `foo;: value` is parsed as a dict entry while `foo\n: value` is not. Fix: remove `Token::Semicolon` from the skip list in `peek_next_horizontal` so `;` also terminates the horizontal scan (`src/parser.rs:70`)
+- [x] **Formatter gap** — blank-before tracking in `src/parser.rs:220` resets `consecutive_newlines` to 0 on `;` without incrementing, so `a;b` never gets a blank-line marker even when sandwiched between real newlines. Fix: treat `Semicolon` the same as `Newline` in consecutive-newline counting (`src/parser.rs:220`)
 
 ---
 

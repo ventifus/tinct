@@ -58,8 +58,8 @@ fn peek_next_significant<'a>(
     None
 }
 
-/// Helper: peek at the next horizontally adjacent token (skip comments and semicolons, but NOT newlines).
-/// Used for keyword-colon lookahead where `[call\n: x]` must NOT be classified as a dict entry.
+/// Helper: peek at the next horizontally adjacent token (skip comments only, but NOT newlines or semicolons).
+/// Used for keyword-colon lookahead where `[call\n: x]` and `[call;: x]` must NOT be classified as dict entries.
 fn peek_next_horizontal<'a>(
     tokens: &'a [Spanned<Token>],
     current_index: usize,
@@ -67,7 +67,7 @@ fn peek_next_horizontal<'a>(
     let mut idx = current_index + 1;
     while idx < tokens.len() {
         match &tokens[idx].node {
-            Token::Semicolon | Token::Comment(_) => {
+            Token::Comment(_) => {
                 idx += 1;
             }
             token => return Some((token, idx)),
@@ -218,7 +218,10 @@ fn skip_whitespace_tokens(
                 idx += 1;
             }
             Token::Semicolon => {
-                consecutive_newlines = 0; // Semicolon doesn't contribute to blank lines
+                consecutive_newlines += 1; // Semicolon acts as newline alias for blank-line detection
+                if consecutive_newlines >= 2 {
+                    has_blank_line = true;
+                }
                 count += 1;
                 idx += 1;
             }
