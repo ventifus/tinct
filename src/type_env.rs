@@ -410,30 +410,81 @@ pub fn generalize_with_doc(
         // Filter constraints: keep only those on generalized variables
         let generalizable_vars: HashSet<String> = generalizable_type_vars.iter().cloned().collect();
 
-        let mut generalizable_constraints: Vec<Constraint> = state
-            .constraints
-            .iter()
-            .filter(|c| match c {
-                Constraint::Class { vars, .. } => {
-                    // Keep constraint if ALL vars are generalizable
-                    vars.iter().all(|v| generalizable_vars.contains(v))
+        // Snapshot the substitution map so the filter closure can look up TypeVar→TypeVar
+        // bindings without borrowing `state` during `state.constraints.iter()`.
+        //
+        // When a fresh var "_bt0" from `instantiate_scheme` is bound to "_label_0"
+        // (the actual label TypeVar from the function param) in `state.subst`, the HasField
+        // constraint records "_bt0" as the label var. But "_bt0" is not in `generalizable_vars`
+        // (it's a bound intermediate). We must resolve through one substitution level to find
+        // the effective free variable "_label_0" before checking generalizable membership.
+        let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
+
+        // Helper: resolve a type variable name through one level of substitution.
+        let resolve_var_name = |var_name: &str| -> String {
+            match subst_snapshot.get(var_name) {
+                Some(Type::TypeVar(resolved_name, _)) => resolved_name.clone(),
+                _ => var_name.to_string(),
+            }
+        };
+
+        // Build generalizable constraints. For each constraint, resolve TypeVar names through one
+        // level of substitution before checking generalizable membership AND before storing into
+        // the TypeScheme. This handles the case where instantiate_scheme generates fresh vars
+        // (e.g., "_bt0") that are immediately bound to the actual free vars (e.g., "_label_0");
+        // the raw constraint names "_bt0" would not match generalizable_vars, and would not be
+        // correctly renamed by instantiate_scheme at future call sites.
+        let mut generalizable_constraints: Vec<Constraint> = Vec::new();
+        for c in &state.constraints {
+            match c {
+                Constraint::Class { class, vars, fundeps } => {
+                    // Resolve all vars through one substitution level
+                    let resolved_vars: Vec<String> =
+                        vars.iter().map(|v| resolve_var_name(v)).collect();
+                    // Keep constraint if ALL resolved vars are generalizable
+                    if resolved_vars
+                        .iter()
+                        .all(|v| generalizable_vars.contains(v))
+                    {
+                        generalizable_constraints.push(Constraint::Class {
+                            class: class.clone(),
+                            vars: resolved_vars,
+                            fundeps: fundeps.clone(),
+                        });
+                    }
                 }
                 Constraint::HasField {
                     label,
                     dict_var,
                     field_var,
                 } => {
-                    let label_ok = match label {
-                        Label::Concrete(_) => true,
-                        Label::Var(var_name) => generalizable_vars.contains(var_name),
+                    let effective_dict = resolve_var_name(dict_var);
+                    let effective_field = resolve_var_name(field_var);
+                    let effective_label = match label {
+                        Label::Concrete(s) => Some(Label::Concrete(s.clone())),
+                        Label::Var(var_name) => {
+                            let resolved = resolve_var_name(var_name);
+                            if generalizable_vars.contains(&resolved) {
+                                Some(Label::Var(resolved))
+                            } else {
+                                None // label not generalizable
+                            }
+                        }
                     };
-                    label_ok
-                        && generalizable_vars.contains(dict_var)
-                        && generalizable_vars.contains(field_var)
+                    if let Some(eff_label) = effective_label {
+                        if generalizable_vars.contains(&effective_dict)
+                            && generalizable_vars.contains(&effective_field)
+                        {
+                            generalizable_constraints.push(Constraint::HasField {
+                                label: eff_label,
+                                dict_var: effective_dict,
+                                field_var: effective_field,
+                            });
+                        }
+                    }
                 }
-            })
-            .cloned()
-            .collect();
+            }
+        }
 
         // Simplify constraints: remove redundant constraints entailed by others
         // For example, if both `Comparable a` and `Equatable a` are present,
@@ -2702,6 +2753,17 @@ impl TypeEnv {
         // type), so it is absent from this env when the alias loop below runs. Registering
         // builtin-get here gives the type checker enough information to avoid false
         // "undefined variable" errors in stdlib/prelude.llt.
+        //
+        // NOTE: A Label-polymorphic scheme ∀(l:Label) d a. HasField l d a ⇒ l → d → a would be
+        // more precise, but causes O(N²) blowup in prelude type-checking: the prelude's private dict
+        // has ~35 direct `builtin-get` calls (for integer and string key access), each generating 3
+        // fresh TypeVars + 1 HasField constraint. With ~100 TypeVar entries added to state.subst and
+        // the O(N²) merge loop in typecheck_dict.rs, the prelude type-check hangs.
+        //
+        // Precision is preserved for `get` and `get?` via the `check_get` special-form dispatcher
+        // (typecheck.rs:1476-1488), which intercepts `name == "get"` or `"get?"` calls and handles
+        // label TypeVars directly via `resolve_has_field`. The `check_get` dispatcher is also applied
+        // to `builtin-get` calls (typecheck.rs) to handle label TypeVar keys in prelude wrappers.
         env.insert_scheme(
             "builtin-get".to_string(),
             TypeScheme {
