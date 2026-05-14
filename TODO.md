@@ -26,9 +26,11 @@ See DONE.md for the full history of completed sprints.
 
 ### infer-fn-typevar: Fix unannotated param TypeVar inference and gated prelude follow-ups
 
-These two items were gated out of `builtin-type-audit` because the `infer_fn` TypeVar fix is a significant behavior change that requires its own audit sprint; batch A prelude annotations depend on it landing first.
+**Root cause of prior failures (panel analysis 2026-05-13):** `check_constraints_on_var(α, TypeVar(β), ...)` calls `satisfies_constraint(TypeVar(β), class)` which returns `false` for all class names — TypeVar matches no concrete instance set. So any constrained TypeVar unifying with a fresh param TypeVar immediately fails. Fix: transfer Class constraints from α to β before binding.
 
-- [ ] `infer_fn` unannotated params: change `None => Ok(Type::Unknown)` (line 3074 `src/typecheck.rs`) to `None => Ok(state.new_type_var(span))` — unannotated params should get fresh TypeVars for proper HM inference, not Unknown (gradual opt-out). This enables constraint propagation (e.g. `[fn [a b] [= a b]]` infers `Equatable a => Fn@Bool [a a]`) and LSP hover shows `a` not `Unknown`. This is a significant behavior change — audit for test breakage.
+- [ ] **Prerequisite — constraint transfer in U-VAR-LEVEL:** In `src/type_unify.rs` U-VAR-LEVEL arm (~line 1145) and U-VAR-LEVEL-SYM arm (~line 1167): before `check_constraints_on_var`, when binding `TypeVar(α) ↦ TypeVar(β)`, transfer all `Constraint::Class` entries on `α` to `β` in `state.constraints` (deduplicated). ~10 lines per arm. This is monotone and safe — β inherits α's obligations; no cycles possible since it's a finite scan before the binding is made; `HasField` constraints are NOT transferred (they reference the dict variable, not the param) (`src/type_unify.rs:1145-1183`)
+- [ ] `infer_fn` unannotated params: change `None => Ok(Type::Unknown)` (current line `src/typecheck.rs`) to `None => Ok(state.new_type_var(span))` — unannotated params get fresh TypeVars for proper HM inference; gate on constraint transfer fix above (`src/typecheck.rs`)
+- [ ] Audit for test breakage: run full corpus after both changes; expect `[fn [a b] [= a b]]` to infer `Equatable a => Fn@Bool [a a]` and LSP hover to show `a` not `Unknown` (`tests/corpus/eval/`)
 - [ ] **Prelude follow-ups (batch A)** — gate on BOTH `error → Never` AND `infer_fn` TypeVar fix above landing first:
   - `fold` (prelude.llt:725): change `fn@Unknown` → `fn@a [f@Fn init@a xs]` — `a` in `fn@a` and `init@a` binds return type to the accumulator type (`stdlib/prelude.llt`)
   - `assert` (prelude.llt:1095): change `fn@Unknown` → `fn@Bool` — once `error` is typed `Never`, inference produces `Bool | Never = Bool`, making `@Bool` correct (`stdlib/prelude.llt`)
@@ -122,6 +124,14 @@ The inferred `[do steps...]` form (monad argument omitted, inferred from return 
 **Depends on:** `hkt-do-macro-explicit`, `macro-expansion-boundary`
 
 
+### infer-dict-class-preregistration: Pass 0c — pre-register class/instance declarations before SCC processing
+
+**Panel finding (2026-05-13):** `satisfies_constraint` at `src/type_unify.rs:14–50` uses hardcoded match arms. Removing them requires instances to be registered in `state.instance_env` before constrained functions are type-checked. But `infer_dict`'s SCC loop processes class/instance declarations after functions that use constraints (they're later in the file, independent SCCs emit in array index order). Identical to how type aliases are pre-registered in Pass 2 — class/instance declarations need their own pass.
+
+- [ ] Add Pass 0c to `infer_dict` in `src/typecheck_dict.rs`, between Pass 2 (type alias pre-registration, line ~262) and the SCC loop (line ~275): iterate all entries, call `infer_expr` on any `Expr::ClassDecl` or `Expr::InstanceDecl` to register them into `state.class_env`/`state.instance_env` before bodies are type-checked; ~10 lines modeled on Pass 2 (`src/typecheck_dict.rs`)
+- [ ] Add doc comment: "Pass 0c: pre-register class/instance declarations so all classes and instances are visible during body type-checking, regardless of declaration order in the file (Wadler & Blott 1989 — class/instance declarations are globally visible)" (`src/typecheck_dict.rs`)
+- [ ] Tests: class declaration appearing AFTER a function that uses its constraint in the same dict; confirm no error (`tests/corpus/eval/typecheck/`)
+
 ### hkt-mappable-appendable: Rewrite Mappable and Appendable from hardcoded to class-based
 
 See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, §Appendable. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §The Typeclass Hierarchy`.
@@ -129,23 +139,28 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 `hkt-kind-inference` delivers: (1) class param annotations parsed and wired to `kind_env` — `[Mappable: [class [f@Operator] ...]]` now works; (2) `@[f a]` in annotation position produces `Type::App(f, a)` — instance method type signatures like `[fn@[f b] [[f a]]]` are typeable. This sprint builds on those two foundations.
 
 **Phase 1 — resolve_instance freshening (enables parameterized instance heads):**
-- [x] Fix `resolve_instance` in `src/type_env.rs`: freshen all free type vars in `inst.instance_type` via `instantiate_at_level` before unification — current code does NOT do this, causing `b` in `AppendableSeq [Seq b]` to leak across call sites; capture `temp_subst` bindings after successful unification (currently discarded after `is_ok()` check); apply `temp_subst` to the instance's method implementations so the concrete element type `T` threads through `append`/`empty`; this fix is general — it enables any parameterized instance head, not only Operator-kinded (`src/type_env.rs`)
+- [x] Fix `resolve_instance` in `src/type_env.rs`: freshen all free type vars in `inst.instance_type` via `instantiate_at_level` before unification (`src/type_env.rs`)
 
-**Phase 2 — Mappable migration (Operator-kinded; needs kind_env wiring from hkt-kind-inference):**
-- [x] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt`; `f@Operator` on the class param now works after hkt-kind-inference (`stdlib/prelude.llt`)
-- [x] Remove hardcoded `Mappable` placeholder `ClassDecl` from `InferState::new()` in `src/types.rs` — the class is now declared in prelude and registered via normal class-loading; also remove `Mappable` from the `satisfies_constraint` hardcoded match in `src/typecheck.rs` only after end-to-end verification that `map` on a user-defined `Mappable` type works (`src/types.rs`, `src/typecheck.rs`)
+**Phase 2 — Mappable migration:**
+- [x] Write `Mappable` class + `MappableSeq`/`MappableRecord` instances in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
+- [ ] Remove hardcoded `Mappable` from `satisfies_constraint` match in `src/type_unify.rs` — **NOT YET DONE** (panel audit 2026-05-13: hardcoded arm still present at `src/type_unify.rs:43-47`); gate on `infer-dict-class-preregistration` landing first (`src/type_unify.rs`)
+- [ ] Remove `Mappable` placeholder pre-registration from `InferState::new()` in `src/types.rs` — gate on hardcoded arm removal above (`src/types.rs`)
 - [ ] Update `$map`/`$filter` type signatures in `src/type_env.rs` to use `Mappable f` constraint instead of hardcoded dual-dispatch (`src/type_env.rs`)
 
-**Phase 3 — Appendable migration (Kind::Type; simpler, no Operator dependency):**
-- [x] Write `Appendable` class (kind-`*`) + `AppendableStr`/`AppendableRecord` instances + parameterized `AppendableSeq [Seq b]` instance (relies on resolve_instance freshening) in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
-- [x] Remove `Appendable` from `satisfies_constraint` hardcoded match; update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/typecheck.rs`, `src/type_env.rs`)
+**Phase 3 — Appendable migration:**
+- [x] Write `Appendable` class + instances in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
+- [ ] Remove hardcoded `Appendable` from `satisfies_constraint` match in `src/type_unify.rs` — **NOT YET DONE** (same audit; hardcoded arm still present); gate on `infer-dict-class-preregistration` (`src/type_unify.rs`)
+- [ ] Remove `Appendable` placeholder pre-registration from `InferState::new()` (`src/types.rs`)
+- [ ] Update `$concat`/`$conj` type sigs in `src/type_env.rs` to use `Appendable a` (`src/type_env.rs`)
 
-**Phase 4 — Simple constraint migrations (Kind::Type; no HKT dependency beyond foundation):**
-- [ ] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float`; remove from `satisfies_constraint` in `src/typecheck.rs` and `src/type_unify.rs` (`stdlib/prelude.llt`, `src/typecheck.rs`)
-- [ ] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float`; remove from `satisfies_constraint` (`stdlib/prelude.llt`, `src/typecheck.rs`)
-- [ ] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null`; remove from `satisfies_constraint`; `Numeric` stays hardcoded (MPTCs out of scope) (`stdlib/prelude.llt`, `src/typecheck.rs`)
-- [ ] Verify prelude annotations from `builtin-type-audit` batch B still type-check after Mappable becomes a real class: `when`/`unless`, `cond`, `and`/`or`, `get-or`, `find-first`/`find-first-or`, `zip` (for both Seq×Seq and Dict×Dict); flag any annotation changes needed (`stdlib/prelude.llt`)
-- [ ] Tests: `map` on user-defined Mappable type (success), `map` on non-Mappable `Int` (E010 constraint error), `AppendableSeq [Seq Int]` and `[Seq Str]` (different element types), `AppendableStr`, Equatable/Comparable/Showable constraints on user types, `satisfies_constraint` no longer special-cases any of these (`tests/corpus/eval/typecheck/`)
+**Phase 4 — Equatable, Comparable, Showable migration (no chicken-and-egg — pre-registrations in `InferState::new()` at `src/types.rs:1619-1649` handle forward refs; `infer-dict-class-preregistration` handles ordering within `infer_dict`):**
+- [ ] Write `Equatable` class + instances for `Int`, `Str`, `Bool`, `Float`; remove from `satisfies_constraint` (`src/type_unify.rs:16-41`) and `InferState::new()` (`src/types.rs:1620-1635`) (`stdlib/prelude.llt`, `src/type_unify.rs`, `src/types.rs`)
+- [ ] Write `Comparable` class (extends Equatable) + instances for `Int`, `Str`, `Float`; remove from `satisfies_constraint` and `InferState::new()` (`stdlib/prelude.llt`, `src/type_unify.rs`, `src/types.rs`)
+- [ ] Write `Showable` class + instances for `Int`, `Str`, `Bool`, `Float`, `Null`; remove from `satisfies_constraint` and `InferState::new()`; `Numeric` stays hardcoded (`stdlib/prelude.llt`, `src/type_unify.rs`, `src/types.rs`)
+- [ ] Verify prelude annotations from `builtin-type-audit` batch B still type-check after migrations (`stdlib/prelude.llt`)
+- [ ] Tests: user-defined `Equatable`/`Comparable`/`Showable` instances; `=` on non-Equatable type errors; `satisfies_constraint` no longer special-cases any migrated class (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** `infer-dict-class-preregistration`
 
 
 ### hkt-stdlib: Functor/Applicative/Monad/Foldable/Traversable hierarchy, Maybe, generic functions
@@ -242,17 +257,4 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer)
 - [x] Add `narrow` overload for DirCap: `[narrow cap@[[all DirCap Flag1 ...]] FlagName...]` produces a new DirCap with the intersection of source permissions and requested flags; the return type is `Intersection([DirCap, requested-flags])` — a BAS intersection narrower than the input; runtime error if a requested flag is not held in the source `DirPerms`; `[narrow cap Subtree "path"]` restricts the directory root to a subdirectory and returns the same intersection type with an updated root path (`src/builtins_io.rs` or new `src/builtins_cap.rs`)
 - [x] Tests: `--cap-fs root=.:r` → `list-dir` succeeds, `open "w"` fails; `--cap-fs data='./d:[Readable Statable]'` → read succeeds, `list-dir` fails; `--cap-file cfg=Cargo.toml` (no mode) → read-write handle; extended syntax `--cap-file cfg='Cargo.toml:[Readable]'` → read-only handle; `narrow` reduces permissions; `narrow` to non-held flag errors (`tests/corpus/eval/`, `tests/corpus/cli/`)
 
----
-
-## Tooling
-
-### tinct-hosted-formatter: Implement stdlib/formatter/format.llt
-
-Accepted 2026-05-05. See `doc/whatif/completed/tinct-hosted-formatter.md` for the full design.
-The Rust formatter (`src/formatter.rs`) is retained for LSP use; this formatter receives the AST dict from `ast_to_dict` and returns formatted source as a tinct string.
-
-- [ ] Implement `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` as tinct programs that receive `%` as the AST dict (from `ast_to_dict(Some(src), Some(comments))`) and return formatted source; wire `tinct fmt --compact`/`--pretty` to invoke these via the evaluator
-- [ ] Implement `stdlib/formatter/format.llt` as the full formatter — layout algorithm, indentation, comment attachment, multi-line decisions per `doc/whatif/completed/tinct-hosted-formatter.md`; wire to `tinct fmt` (default mode)
-- [ ] The Rust formatter (`src/formatter.rs`) is retained for LSP use — add a `FormatterMode` enum to dispatch between Rust and tinct-hosted based on invocation context; LSP always uses Rust formatter
-- [ ] Tests: round-trip corpus tests (format → re-parse → compare AST); test compact/pretty/full modes; test comment preservation
 
