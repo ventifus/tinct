@@ -1,0 +1,7 @@
+# Variadic function with both named and variadic params.
+# The non-variadic param binds normally; the variadic rest collects remaining args as Dict.
+# The type checker infers the named param type from usage and assigns Seq(T) to the variadic.
+[f: [fn [x ...rest] [+ x 0]]
+ result: [f 10 20 30]]
+=== out
+Dict({"f": Function(x, rest), "result": Int(10)})

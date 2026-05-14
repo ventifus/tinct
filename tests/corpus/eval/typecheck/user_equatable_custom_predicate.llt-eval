@@ -1,0 +1,17 @@
+# User-defined structural equality predicate for a Point-like type.
+# Verifies that user code can implement custom equality semantics
+# using field-level Equatable dispatch (= on Int fields).
+[
+  p1: [x: 1  y: 2]
+  p2: [x: 1  y: 2]
+  p3: [x: 3  y: 4]
+  equal: [fn [a b] [and [= a.x b.x] [= a.y b.y]]]
+  same: [equal p1 p2]
+  diff: [equal p1 p3]
+]
+
+---
+
+%.same
+=== out
+Bool(true)

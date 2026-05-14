@@ -201,6 +201,7 @@ fn is_superclass_of(class_env: &ClassEnv, subclass: &str, superclass: &str) -> b
 fn check_constraints_on_var(
     var_name: &str,
     concrete_ty: &Type,
+    subst: &Substitution,
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
@@ -246,6 +247,7 @@ fn check_constraints_on_var(
                     fundeps,
                     var_name,
                     concrete_ty,
+                    subst,
                     state,
                     span,
                 )?;
@@ -273,7 +275,8 @@ fn improve_functional_dependency(
     vars: &[String],
     fundeps: &[(Vec<usize>, Vec<usize>)],
     bound_var: &str,
-    _bound_type: &Type,
+    bound_type: &Type,
+    subst: &Substitution,
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
@@ -292,14 +295,39 @@ fn improve_functional_dependency(
             continue;
         }
 
-        // Collect the current types for all determining positions
+        // Collect the current types for all determining positions.
+        //
+        // CRITICAL: Two sources of truth must be consulted in order:
+        //
+        // 1. `subst` — the active substitution being threaded through unification right now.
+        //    This contains bindings made during the current unify() call tree, including
+        //    bindings from earlier argument unifications. It is often separate from state.subst
+        //    because callers use mem::take to avoid borrow-checker conflicts.
+        //
+        // 2. `bound_type` — the concrete type being bound to `bound_var` RIGHT NOW.
+        //    check_constraints_on_var is called BEFORE the binding is written to subst
+        //    (see U-VAR arm: check_constraints_on_var → insert). So looking up `bound_var`
+        //    from subst would return the unbound TypeVar — not the value being bound.
+        //    We must use `bound_type` directly for the variable currently being bound.
+        //
+        // Lookup order: for `bound_var` → use `bound_type` (in-flight, not yet in subst).
+        //               for all other vars → apply subst first (has recent bindings from
+        //               this call tree), then fall back to state.subst (global accumulated).
         let mut det_types = Vec::new();
         for &pos in det_positions {
             if pos >= vars.len() {
                 continue;
             }
             let var = &vars[pos];
-            let ty = state.subst.apply(&Type::TypeVar(var.clone(), 0));
+            let ty = if var == bound_var {
+                // In-flight binding — not yet written to subst
+                subst.apply(bound_type)
+            } else {
+                // Look up from the active subst (most up-to-date within this call tree).
+                // apply() chains through bound TypeVars, so this handles the case where
+                // _t0 was bound in a prior argument unification in this call tree.
+                subst.apply(&Type::TypeVar(var.clone(), 0))
+            };
             det_types.push((pos, var, ty));
         }
 
@@ -1446,7 +1474,7 @@ pub fn unify(
                 subst.type_map.borrow_mut().insert(name.clone(), b);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &b, state, span)?;
+                check_constraints_on_var(name, &b, subst, state, span)?;
                 subst.type_map.borrow_mut().insert(name.clone(), b);
             }
             subst.check_size(span)?;
@@ -1475,7 +1503,7 @@ pub fn unify(
                 subst.type_map.borrow_mut().insert(name.clone(), a);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &a, state, span)?;
+                check_constraints_on_var(name, &a, subst, state, span)?;
                 subst.type_map.borrow_mut().insert(name.clone(), a);
             }
             subst.check_size(span)?;
@@ -1754,7 +1782,7 @@ pub fn unify(
                     }
                     let concrete_promoted =
                         promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
                     subst
                         .type_map
                         .borrow_mut()
@@ -1799,7 +1827,7 @@ pub fn unify(
                     }
                     let concrete_promoted =
                         promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
                     subst
                         .type_map
                         .borrow_mut()
@@ -1852,7 +1880,7 @@ pub fn unify(
                     }
                     let concrete_promoted =
                         promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
                     subst
                         .type_map
                         .borrow_mut()
@@ -1896,7 +1924,7 @@ pub fn unify(
                     }
                     let concrete_promoted =
                         promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, state, span)?;
+                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
                     subst
                         .type_map
                         .borrow_mut()

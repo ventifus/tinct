@@ -1,0 +1,6 @@
+# Variadic function called with zero extra args: xs collects into an empty Dict.
+# This is the zero-variadic-args case: no positional args are supplied.
+[f: [fn [...xs] xs]
+ result: [f]]
+=== out
+Dict({"f": Function(xs), "result": Dict({})})
