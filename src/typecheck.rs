@@ -3572,12 +3572,17 @@ fn infer_fn(
                 }
             };
 
+            // Set expected_return for inferred [do] macro support.
+            // Save the old value to restore after body inference (for nested fn defs).
+            let prev_expected_return = state.expected_return.take();
+            state.expected_return = Some(actual_ann.clone());
+
             // When declared return type contains type variables, switch to unification mode
             // (doc/06 §[CHECK-FN], Damas & Milner 1982, Pierce & Turner 2000 §3.2).
             // TypeVars in is_subtype only match via reflexive equality, so
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
-            if actual_ann.has_inference_vars() {
+            let result = if actual_ann.has_inference_vars() {
                 let body_ty = infer_expr(body, &fn_env, state, type_map)?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
@@ -3593,7 +3598,11 @@ fn infer_fn(
                 // Use checking mode for concrete return types (no type variables)
                 check_expr(body, &actual_ann, &fn_env, state, type_map)?;
                 actual_ann
-            }
+            };
+
+            // Restore previous expected_return
+            state.expected_return = prev_expected_return;
+            result
         }
         None => infer_expr(body, &fn_env, state, type_map)?,
     };

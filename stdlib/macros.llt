@@ -252,6 +252,20 @@ do-empty-dict-node: [fn []
 do-is-binding: [fn [step]
   [= [get "type" step] "dict"]]
 
+# Check if the first arg looks like an inferred-form step rather than an explicit monad.
+# Explicit monad args are usually VarRef ("var") or DotAccess ("dot-access").
+# Inferred form: the first arg is a binding dict ("dict") or any other expression.
+# Returns true if this is the inferred form (unsupported).
+do-is-inferred-form: [fn [first-arg]
+  [type: [get "type" first-arg]]
+  # Explicit monad types: "var" and "dot-access"
+  # Everything else is inferred form
+  [if [= type "var"]
+    false
+    [if [= type "dot-access"]
+      false
+      true]]]
+
 # Extract the binding name from a binding step.
 # step.entries[0].key is the key expr: {type: "literal", kind: "str", value: "name", bare: true}
 # We read the "value" field of that key literal to get the string name.
@@ -328,17 +342,30 @@ do: [fn [args]
      args: [0: [type: "literal" kind: "str" value: "do requires at least a monad argument" bare: false]]
      named-args: []
      implied: true]
-    [if [= n 1]
-      # [do monad] with no steps → [monad.pure []]
-      [do-call-1
-        [do-access-node [get 0 args] "pure"]
-        [do-empty-dict-node]]
-      # [do monad step1 ... final] → nested bind calls
-      [do-fold
-        [get 0 args]
-        args
-        1
-        n]]]]
+    # Check if args[0] is an inferred-form step (dict binding or other non-monad expression)
+    # vs an explicit monad argument (var reference).
+    # Explicit monad: args[0].type == "var" or "dot-access"
+    # Inferred form: args[0].type == "dict" (binding step) or anything else
+    [if [do-is-inferred-form [get 0 args]]
+      # Inferred [do] form detected - not yet supported
+      [type: "call"
+       fn: [type: "var" name: "error"]
+       args: [0: [type: "literal" kind: "str"
+                  value: "inferred [do] not yet supported — add an explicit monad argument (e.g., [do result ...])"
+                  bare: false]]
+       named-args: []
+       implied: true]
+      [if [= n 1]
+        # [do monad] with no steps → [monad.pure []]
+        [do-call-1
+          [do-access-node [get 0 args] "pure"]
+          [do-empty-dict-node]]
+        # [do monad step1 ... final] → nested bind calls
+        [do-fold
+          [get 0 args]
+          args
+          1
+          n]]]]]
 
 # begin macro transformer: sequential expression grouping
 begin: [fn [args]

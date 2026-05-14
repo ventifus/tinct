@@ -1928,6 +1928,48 @@ mod tests {
             "expected Ok in output, got: {output}"
         );
     }
+
+    /// `[do]` with zero args → error.
+    #[test]
+    fn test_do_macro_zero_args_error() {
+        let result = eval_source("[do]");
+        assert!(result.is_err(), "expected error, got Ok: {:?}", result);
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("do requires at least a monad argument"),
+            "expected 'do requires at least a monad argument' in error, got: {err}"
+        );
+    }
+
+    /// Inferred `[do]` form with binding step → error message.
+    /// `[do [x: [Ok 1]] [Ok x]]` should be rejected with a helpful message.
+    #[test]
+    fn test_do_macro_inferred_form_binding_error() {
+        let result = eval_source("[do [x: [Ok 1]] [Ok x]]");
+        assert!(result.is_err(), "expected error, got Ok: {:?}", result);
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("inferred [do] not yet supported"),
+            "expected 'inferred [do] not yet supported' in error, got: {err}"
+        );
+        assert!(
+            err.contains("add an explicit monad argument"),
+            "expected hint about explicit monad argument in error, got: {err}"
+        );
+    }
+
+    /// Inferred `[do]` form with expression step → error message.
+    /// `[do [Ok 1]]` should be rejected (first arg is an expression, not a monad var).
+    #[test]
+    fn test_do_macro_inferred_form_expr_error() {
+        let result = eval_source("[do [Ok 1]]");
+        assert!(result.is_err(), "expected error, got Ok: {:?}", result);
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("inferred [do] not yet supported"),
+            "expected 'inferred [do] not yet supported' in error, got: {err}"
+        );
+    }
 }
 
 /// Resolve the stdlib directory path from the binary location.
