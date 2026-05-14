@@ -91,6 +91,11 @@ impl Resolver {
                     self.walk_expr(&entry.node.value);
                 }
             }
+            Annotation::Annotated(_name, inner) => {
+                // Create a temporary Spanned wrapper for recursion
+                let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span);
+                self.walk_annotation(&inner_spanned);
+            }
         }
     }
 

@@ -367,6 +367,7 @@ pub enum LiteralPattern {
 pub enum Annotation {
     Simple(String),
     PropertyDict(Vec<Spanned<Entry>>),
+    Annotated(String, Box<Annotation>),  // e.g., Seq@Int = Annotated("Seq", Simple("Int"))
 }
 
 impl Annotation {
@@ -382,6 +383,7 @@ impl Annotation {
                 }
             }),
             Annotation::Simple(_) => None,
+            Annotation::Annotated(_, _) => None,
         }
     }
 }
@@ -587,6 +589,7 @@ impl fmt::Display for Annotation {
                 }
                 write!(f, "]")
             }
+            Annotation::Annotated(name, inner) => write!(f, "{name}@{inner}"),
         }
     }
 }

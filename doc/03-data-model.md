@@ -44,7 +44,7 @@ At the runtime level, all dicts are `Value::Dict`. At the type level, the type c
 
 **Record** — a dict whose field names are statically known. Annotated as `@[name: String  age: Int]`. The type checker tracks each field and its type precisely. `get` on a Record field with a known key returns the field type directly.
 
-**Map[K V]** — a homogeneous dict where all keys have type K and all values have type V. Annotated as `@Map@[K: V]` — the compact form reads as "map from K to V". Key type K must be `Int`, `Str`, or `Int | Str`. `get` on a `Map[K V]` returns `V | Null` (the key may be absent). Bare `@Map` means `Map[Any Any]`. The explicit named form `@Map@[key: K  value: V]` is also accepted when maximum clarity is needed.
+**Map@[K: V]** — a homogeneous dict where all keys have type K and all values have type V. Annotated as `@Map@[K: V]` — the compact form reads as "map from K to V". Key type K must be `Int`, `Str`, or `Int | Str`. `get` on a `Map@[K: V]` returns `V | Null` (the key may be absent). Bare `@Map` means `Map@[Any: Any]`. The explicit named form `@Map@[key: K  value: V]` is also accepted when maximum clarity is needed.
 
 **`Dict`** is the union of both — `@Dict` accepts either form.
 
@@ -73,7 +73,7 @@ lookup: [fn@Int [s@Scoreboard  key@String] [get-or s key 0]]
 hosts@Map@T1                                      # collection of T1 values
 index@Map@[String: Any]                           # string-keyed, untyped values
 transitions@Map@[key: Int  value: Seq@Int]        # explicit named form
-cache@Map                                         # bare: Map[Any Any]
+cache@Map                                         # bare: Map@[Any: Any]
 
 # Dict — either form accepted
 process: [fn@Null [d@Dict] ...]
@@ -352,7 +352,7 @@ The `Tls` capability value is a dict with the same fields as the `PeerCert` type
 
 ### Layers — Handle→Handle Protocol Upgrades
 
-A **Layer** is any function that takes a Handle and returns a Handle with augmented capabilities (`Handle[R] → Handle[R ∪ NewCaps]`). There is no Layer typeclass — the composition is structural. Any pure-tinct function with the right signature is a Layer.
+A **Layer** is any function that takes a Handle and returns a Handle with augmented capabilities (`Handle@R → Handle@[R ∪ NewCaps]`). There is no Layer typeclass — the composition is structural. Any pure-tinct function with the right signature is a Layer.
 
 Standard library Layers: `tls-layer` (TLS/STARTTLS upgrade, Rust builtin), `socks5-layer` (SOCKS5 tunnel, pure tinct in `protocols/socks5.llt`), `http-connect-layer` (HTTP CONNECT tunnel, pure tinct in `net.llt`).
 
@@ -379,7 +379,7 @@ Three Session types exist as runtime-only opaque values:
 [stream: [quic-open-stream quic]]    # → Handle{ Binary Readable Writable Stream }
 ```
 
-**`Value::Http2Session`** — HTTP/2 (RFC 7540), via reqwest/h2. Created from a `Handle[Stream Tls]` with h2 ALPN:
+**`Value::Http2Session`** — HTTP/2 (RFC 7540), via reqwest/h2. Created from a `Handle@[Stream Tls]` with h2 ALPN:
 
 ```tinct
 [h2: [http2-session tls-handle]]

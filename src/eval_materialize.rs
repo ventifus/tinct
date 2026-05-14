@@ -1534,6 +1534,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     Expr::Str(s) => Some(s.clone()),
                                     _ => None,
                                 }),
+                            Annotation::Annotated(name, _) => Some(name.clone()),
                         };
                         if let Some(expected) = expected_name {
                             let actual = value.type_name();
@@ -1687,6 +1688,7 @@ pub(crate) fn eval_step(
                     annotation.node.get_property("type").is_some()
                         || annotation_has_structural_fields(&annotation.node)
                 }
+                Annotation::Annotated(_, _) => true,
             };
             if resolved.is_none() && !has_type {
                 return wrap_thunk(Ok(inner_thunk));

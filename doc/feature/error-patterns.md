@@ -1,6 +1,6 @@
 # Consistent Error Handling
 
-Implemented 2026-05-09 (`result-nominal` sprint). Nominal `Ok[T] | Err[String]`
+Implemented 2026-05-09 (`result-nominal` sprint). Nominal `Ok@T | Err@String`
 Result type; `and-then` combinator; `[do monad ...]` macro.
 
 ## Overview
@@ -11,7 +11,7 @@ composable, and works cleanly with lazy evaluation.
 Tinct's lazy evaluation model makes inconsistent error handling particularly dangerous.
 A value that may crash is just a thunk until forced — the error surfaces at observation
 time, not at the call site. Capturing errors at the I/O boundary (where the failure
-actually occurs) and representing them as `Ok[T] | Err[String]` makes programs
+actually occurs) and representing them as `Ok@T | Err@String` makes programs
 predictable: callers inspect whether a field succeeded or failed before committing to
 output.
 
@@ -26,7 +26,7 @@ because one crates.io request timed out. Nominal Result enables this naturally.
 Three rules cover all cases:
 
 **Rule 1 — Fallible I/O returns Result.** Functions that perform network I/O, file
-I/O, or parse untrusted external input return `Ok[T] | Err[String]`. Failure is an
+I/O, or parse untrusted external input return `Ok@T | Err@String`. Failure is an
 expected outcome, not a bug. Callers use `match` or `[do]` to handle both cases.
 
 **Rule 2 — Pure functions propagate.** Functions that operate on values already in
@@ -72,8 +72,8 @@ caught error. This replaces the former structural dict `{ok: v}` / `{err: msg}` 
 Parameterized Result annotations use the type annotation form:
 
 ```tinct
-fetch@[Ok Dict]      # fetch returns Ok[Dict] | Err[String]
-parse-json@[Ok Any]  # parse-json returns Ok[Any] | Err[String]
+fetch@[Ok Dict]      # fetch returns Ok@Dict | Err@String
+parse-json@[Ok Any]  # parse-json returns Ok@Any | Err@String
 ```
 
 ### Combinators
@@ -194,7 +194,7 @@ short-circuits the chain.
 ### Stdlib Retrofit
 
 All stdlib I/O functions that previously propagated are updated to return
-`Ok[T] | Err[String]` (nominal Result):
+`Ok@T | Err@String` (nominal Result):
 
 - `stdlib/net.llt`: `fetch`, `http-get` — wrap connection/read errors as `Err msg`
 - `stdlib/io.llt`: `read-file`, `read-lines` — wrap file-not-found, permission errors as `Err msg`
@@ -223,15 +223,15 @@ the AST transformer.
 
 ### `stdlib/net.llt`, `stdlib/io.llt`, `stdlib/toml-lite.llt`
 
-All fallible operations return `Ok[T] | Err[String]`. This is a breaking change for
+All fallible operations return `Ok@T | Err@String`. This is a breaking change for
 callers that assume these functions return plain values. The fix at every call site is
 to add `[do result ...]` or an explicit `match`.
 
 ### Type System
 
-Nominal variants (`Ok[T]`, `Err[String]`) are supported via the typing cluster's C2/C3
+Nominal variants (`Ok@T`, `Err@String`) are supported via the typing cluster's C2/C3
 nominal variant sprints. `[Result: [type [Ok a] [Err String]]]` declares a valid nominal
-union type using existing machinery. With BAS, the union `Ok[T] | Err[String]` becomes
+union type using existing machinery. With BAS, the union `Ok@T | Err@String` becomes
 checkable via S-ClsBot (`#Ok & #Err ≤ Never` — nominal tags are disjoint), enabling
 `match` exhaustiveness checking and precise arm types.
 

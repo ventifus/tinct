@@ -427,7 +427,7 @@ internally; the type checker reads it to enforce flag constraints.
 
 #### Protocol Methods
 
-**`open fscap path Flags... → Handle[...]`**
+**`open fscap path Flags... → Handle@[...]`**
 
 The FsCap validates that all requested flags are in its `caps` set. If
 any flag is unsupported, `open` returns an error. The returned Handle
@@ -439,7 +439,7 @@ capabilities.
 Atomic write: on POSIX, temp file + rename. On S3, a single PUT
 request. On WebDAV, a PUT with `Content-Length`.
 
-**`list-dir fscap path → Seq[Dict]`**
+**`list-dir fscap path → Seq@Dict`**
 
 Returns a lazy `Seq` of entry dicts. Each entry contains at minimum:
 

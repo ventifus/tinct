@@ -315,7 +315,7 @@ re-escape-replacement: [fn@String [s@String]
 
 Use this whenever the replacement string comes from user input or config values.
 
-**`re-split pattern@[String|Pattern] s@String`** → `Seq[String]`
+**`re-split pattern@[String|Pattern] s@String`** → `Seq@String`
 
 Parts of `s` between matches. **Zero-length match policy:** if the
 pattern can match the empty string, zero-length matches at the boundary

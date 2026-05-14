@@ -476,13 +476,13 @@ The `sni` argument is the Server Name Indication hostname for the TLS handshake.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ca-bundle` | `Handle[Text Readable …]` | — | PEM file via `[open cap path Readable]`; added to system roots |
+| `ca-bundle` | `Handle@[Text Readable …]` | — | PEM file via `[open cap path Readable]`; added to system roots |
 | `no-system-roots` | `Bool` | `false` | Drop system roots; trust only `ca-bundle` (fully private PKI) |
 | `mozilla-roots` | `Bool` | `false` | Also load compiled-in Mozilla roots (`webpki-roots`) |
-| `client-cert` | `Handle[Text Readable …]` | — | PEM client certificate for mutual TLS |
-| `client-key` | `Handle[Text Readable …]` | — | PEM private key for the client certificate |
-| `pins` | `Seq[SpkiPin]` | — | SPKI fingerprints; leaf cert must match one (see §SPKI Pinning) |
-| `alpn` | `Seq[String]` | `["http/1.1"]` | ALPN protocol list for negotiation |
+| `client-cert` | `Handle@[Text Readable …]` | — | PEM client certificate for mutual TLS |
+| `client-key` | `Handle@[Text Readable …]` | — | PEM private key for the client certificate |
+| `pins` | `Seq@SpkiPin` | — | SPKI fingerprints; leaf cert must match one (see §SPKI Pinning) |
+| `alpn` | `Seq@String` | `["http/1.1"]` | ALPN protocol list for negotiation |
 
 All three trust sources (`ca-bundle`, system roots, Mozilla roots) union when combined. Set `no-system-roots: true` to trust only `ca-bundle` (required for fully private PKI where public CAs must be excluded).
 
@@ -564,7 +564,7 @@ Read capability data from the Handle's capability row.
 
 ### HTTP Requests — http-get, fetch
 
-Single-shot HTTP requests. `http-get` is implemented in pure-tinct (`stdlib/net.llt`) over a `Handle[Binary Readable Writable]`; it handles both `http://` and `https://` by dispatching on `url.scheme`. `https-get` does not exist as a separate function.
+Single-shot HTTP requests. `http-get` is implemented in pure-tinct (`stdlib/net.llt`) over a `Handle@[Binary Readable Writable]`; it handles both `http://` and `https://` by dispatching on `url.scheme`. `https-get` does not exist as a separate function.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|

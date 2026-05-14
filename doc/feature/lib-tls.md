@@ -17,8 +17,8 @@ supply-chain attacks. A TLS story that only covers the public web is
 insufficient. The configuration language that generates infrastructure is
 exactly where these edge cases matter most.
 
-`connect` returns a bidirectional `Handle[Binary Readable Writable Stream]`.
-`tls-connect` returns `Handle[Binary Readable Writable Stream Tls]`. The
+`connect` returns a bidirectional `Handle@[Binary Readable Writable Stream]`.
+`tls-connect` returns `Handle@[Binary Readable Writable Stream Tls]`. The
 Handle IS the authenticated channel: the TLS handshake completes at call
 time, so holding a `Tls`-capable Handle proves the connection was
 established against a trusted server.
@@ -35,7 +35,7 @@ substitute anywhere a `NetCap` is accepted.
 **Protocol method:**
 
 ```
-[connect connector Transport host port opts] → Handle[... Stream|Datagram ...]
+[connect connector Transport host port opts] → Handle@[... Stream|Datagram ...]
 ```
 
 `Transport` is a nominal unit variant specifying the transport
@@ -52,8 +52,8 @@ via OS sockets. `connect` (the existing builtin) becomes:
 
 ```tinct
 # Explicit transport:
-[connect net Tcp "api.example.com" 443]   # → Handle[Binary Readable Writable Stream]
-[connect net Udp "8.8.8.8" 53]            # → Handle[Binary Readable Writable Datagram]
+[connect net Tcp "api.example.com" 443]   # → Handle@[Binary Readable Writable Stream]
+[connect net Udp "8.8.8.8" 53]            # → Handle@[Binary Readable Writable Datagram]
 
 # Tcp is the default when Transport is omitted:
 [connect net "api.example.com" 443]       # same as Tcp form
@@ -79,10 +79,10 @@ WgConnector: [
 ### Handle Types for Network Connections
 
 ```
-connect     connector Tcp  host port      → Handle[Binary Readable Writable Stream]
-connect     connector Udp  host port      → Handle[Binary Readable Writable Datagram]
-tls-connect connector Tcp  host port opts → Handle[Binary Readable Writable Stream Tls]
-tls-connect h@Handle[...Stream RW...] sni opts → Handle[Binary Readable Writable Stream Tls]
+connect     connector Tcp  host port      → Handle@[Binary Readable Writable Stream]
+connect     connector Udp  host port      → Handle@[Binary Readable Writable Datagram]
+tls-connect connector Tcp  host port opts → Handle@[Binary Readable Writable Stream Tls]
+tls-connect h@Handle@[...Stream RW...] sni opts → Handle@[Binary Readable Writable Stream Tls]
 ```
 
 **Two forms for `tls-connect`:**
@@ -99,7 +99,7 @@ tls-connect h@Handle[...Stream RW...] sni opts → Handle[Binary Readable Writab
 The SNI hostname must always be provided explicitly (it may differ from
 the IP actually connected to, e.g. when bypassing DNS or using a proxy).
 
-With `Handle[Binary Readable Writable Stream]`, HTTP/1.0 is pure-tinct.
+With `Handle@[Binary Readable Writable Stream]`, HTTP/1.0 is pure-tinct.
 `http-get` handles both `http://` and `https://` by dispatching on
 `url.scheme`; `https-get` does not exist as a separate function:
 
@@ -220,13 +220,13 @@ The options dict keys:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ca-bundle` | `Handle[Text Readable ...]` | — | PEM file via `[open cap path Readable]`; added to system roots |
+| `ca-bundle` | `Handle@[Text Readable ...]` | — | PEM file via `[open cap path Readable]`; added to system roots |
 | `no-system-roots` | `Bool` | `false` | Drop system roots — use only `ca-bundle` (private PKI) |
 | `mozilla-roots` | `Bool` | `false` | Also load compiled-in Mozilla roots (`webpki-roots` opt-in) |
-| `client-cert` | `Handle[Text Readable ...]` | — | PEM client certificate (mTLS) |
-| `client-key` | `Handle[Text Readable ...]` | — | PEM private key for client cert |
+| `client-cert` | `Handle@[Text Readable ...]` | — | PEM client certificate (mTLS) |
+| `client-key` | `Handle@[Text Readable ...]` | — | PEM private key for client cert |
 | `pins` | `@Seq@SpkiPin` | — | SPKI fingerprints; leaf cert must match one. See §SPKI Pins. |
-| `alpn` | `Seq[String]` | `["http/1.1"]` | ALPN protocol list for negotiation |
+| `alpn` | `Seq@String` | `["http/1.1"]` | ALPN protocol list for negotiation |
 
 ### CA Root Selection
 
@@ -277,7 +277,7 @@ tinct's value space after that.
   client-cert: cert
   client-key:  key
 ]]]
-# conn : Handle[Binary Readable Writable Tls]
+# conn : Handle@[Binary Readable Writable Tls]
 [write conn [str-bytes "GET /config HTTP/1.0\r\nHost: api.internal\r\n\r\n"]]
 [response: [slurp conn]]
 ```
@@ -336,7 +336,7 @@ any pin in the list using the pin's specified algorithm;
 
 ### TLS Identity Introspection: `tls-peer-cert`
 
-`tls-peer-cert` requires `Handle[... Tls ...]` — the `Tls` capability
+`tls-peer-cert` requires `Handle@[... Tls ...]` — the `Tls` capability
 is only present on handles created by `tls-connect`. The type system
 prevents calling `tls-peer-cert` on a plain TCP handle.
 
@@ -381,7 +381,7 @@ high-level Rust `fetch`.
 | TLS | `tls-connect connector\|Handle host port opts` | Rust (rustls); two forms |
 | HTTP/1.0 | `http-get connector url headers tls-opts`, `fetch` | pure-tinct stdlib/net.llt; dispatches on `url.scheme` |
 | HTTP sessions | `http-connect connector\|Handle url opts` | Rust (reqwest); returns `HttpConn` |
-| Proxy tunnels | `socks5-connect`, `proxy-connect` | Rust; return `Handle[...Stream RW]` |
+| Proxy tunnels | `socks5-connect`, `proxy-connect` | Rust; return `Handle@[...Stream RW]` |
 
 `http-get` and `fetch` are pure-tinct. `http-connect` is Rust because
 HTTP/2 and HTTP/3 require protocol engines that can't be expressed as
@@ -394,23 +394,23 @@ Handle streams.
 **`connect connector Transport host port opts`** — generalised from
 `connect cap host port`. Accepts any Connector (not just `NetCap`) and
 an explicit `Transport` variant (`Tcp`, `Udp`, or user-defined).
-Returns `Handle[Binary Readable Writable Stream]` for `Tcp`,
-`Handle[Binary Readable Writable Datagram]` for `Udp`. `Tcp` is
+Returns `Handle@[Binary Readable Writable Stream]` for `Tcp`,
+`Handle@[Binary Readable Writable Datagram]` for `Udp`. `Tcp` is
 default when `Transport` is omitted.
 
 **`tls-connect`** — two forms:
 - Connector form: `tls-connect connector Transport host port opts`
   opens the connection via `connect connector Transport ...` then
   layers TLS. `Transport` must produce a `Stream` Handle.
-- Handle form: `tls-connect h@Handle[...Stream RW...] sni opts`
+- Handle form: `tls-connect h@Handle@[...Stream RW...] sni opts`
   layers TLS on an existing stream Handle.
 
-Returns `Handle[Binary Readable Writable Stream Tls]`. Default trust:
+Returns `Handle@[Binary Readable Writable Stream Tls]`. Default trust:
 system roots via `rustls-native-certs`. `mozilla-roots: true` opt-in
 loads `webpki-roots`. The `Tls` tag carries leaf cert metadata and
 negotiated ALPN for `tls-peer-cert`.
 
-**`tls-peer-cert handle`** — requires `Handle[... Tls ...]`. Returns
+**`tls-peer-cert handle`** — requires `Handle@[... Tls ...]`. Returns
 dict with `subject`, `issuer`, `sans`, `not-before`, `not-after`,
 `spki-sha256`. Type error on non-Tls handles.
 

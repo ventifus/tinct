@@ -21,7 +21,7 @@ definition of `∧` as the greatest lower bound. No row variable gymnastics.
 
 The key capabilities gained:
 
-- **Principal union types** for `if` and `[match]` — `[if cond [ok: v] [err: msg]]` infers `Ok[T] | Err[Str]`, not `Any`
+- **Principal union types** for `if` and `[match]` — `[if cond [ok: v] [err: msg]]` infers `Ok@T | Err@Str`, not `Any`
 - **False-branch narrowing** — after `[if [int? x] ...]`, the false branch knows `x : ~Int`
 - **Exhaustiveness without annotation** — pattern match arms checked without requiring `[@Result res]` TypeAssert
 - **Typed field removal** — `[remove dict "field"]` gets a precise return type
@@ -145,7 +145,7 @@ disjoint under the Boolean algebra via S-ClsBot:
 So `(#Ok & {v: a}) | (#Err & {msg: Str})` is a proper discriminated union — pattern
 matching refines each arm type via the nominal tag rather than the key set.
 
-`from-json '{"ok": 42}'` produces structural `{ok: Int}`, not `Ok[Int]`. Structural
+`from-json '{"ok": 42}'` produces structural `{ok: Int}`, not `Ok@Int`. Structural
 dicts from JSON must be explicitly lifted into nominal ADT values via constructor calls.
 `[match]` arm syntax unambiguously determines the dispatch mode: `[ok: v]` (lowercase,
 colon) is a structural field pattern; `[Ok v]` (uppercase, no colon) is a nominal
@@ -226,7 +226,7 @@ lazily and maintaining a cache of currently-processed subtyping relationships.
 # Before BAS: result type is Any
 result: [if cond [ok: v] [err: "failed"]]
 
-# With BAS: result type is Ok[T] | Err
+# With BAS: result type is Ok@T | Err@String
 result: [if cond [ok: v] [err: "failed"]]
 
 # Consequence: exhaustive match is type-checked without annotation
@@ -242,11 +242,11 @@ result: [if cond [ok: v] [err: "failed"]]
 result: [ok: computed-value]     # type: {ok: T}
 
 # Nominal ADT value (matches union arms):
-result: [Ok computed-value]      # type: Ok[T]  — carries #Ok tag
+result: [Ok computed-value]      # type: Ok@T  — carries #Ok tag
 
 # JSON input is always structural; must be lifted explicitly:
-raw: [from-json input]           # type: {ok: Int}  — structural, not Ok[Int]
-result: [Ok [get "ok" raw]]      # type: Ok[Int]  — explicit lift
+raw: [from-json input]           # type: {ok: Int}  — structural, not Ok@Int
+result: [Ok [get "ok" raw]]      # type: Ok@Int  — explicit lift
 ```
 
 ### Record Annotations Are Always Open

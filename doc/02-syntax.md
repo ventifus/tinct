@@ -513,7 +513,7 @@ fn@Seq@String [s@String]      # Function returning Seq of String
 scores@Map@[String: Int]      # compact: "map from String to Int" (lookup perspective)
 hosts@Map@T1                  # single-arg: "collection of T1 values" (key type: Any)
 index@Map@[String: Any]       # string-keyed, untyped values
-cache@Map                     # bare: Map[Any Any]
+cache@Map                     # bare: Map@[Any: Any]
 transitions@Map@[key: Int  value: Seq@Int]  # explicit named form
 
 # Record — explicit form (bypasses property-dict-key collision for fields named type/default/doc/repr)
@@ -535,7 +535,7 @@ process: [fn [hosts@T2] ...]  # alias resolves transitively
 
 **`@Record@[...]` for field-name collisions.** The shorthand `x@[field: Type ...]` already works when field names are unambiguous. Use `@Record@[...]` explicitly when field names collide with annotation property keys (`type`, `default`, `doc`, `repr`) — `x@[type: String]` is parsed as a property dict (setting the `type` property), not as a Record with a `type` field. `x@Record@[type: String]` is unambiguous.
 
-**Bare `@Map`, `@Seq`, `@Record`** are accepted and mean "any map / any sequence / any record" (equivalent to `Map[Any Any]`, `Seq[Any]`, `Record{...}`).
+**Bare `@Map`, `@Seq`, `@Record`** are accepted and mean "any map / any sequence / any record" (equivalent to `Map@[Any: Any]`, `Seq@Any`, `Record{...}`).
 
 **Annotations only.** These parameterized forms are for type annotations and `[type ...]` aliases — they describe types. They do not change how dicts are constructed or accessed at runtime.
 
@@ -558,8 +558,8 @@ The annotation value after `@` may be a single word or a full property dict. A s
 | `[@String $x]` | Type assertion expression |
 | `"a@b"` | Quoted string "a@b" |
 | `x@Seq@Int` | Annotation: x with type Seq(Int) |
-| `x@Map@[String: Int]` | Annotation: x with type Map[String Int] |
-| `x@Map@T1` | Annotation: x with type Map[Any T1] |
+| `x@Map@[String: Int]` | Annotation: x with type Map@[String: Int] |
+| `x@Map@T1` | Annotation: x with type Map@[Any: T1] |
 | `Config: [type Record@[host: String  port: Int]]` | Type alias Config = Record{host:String, port:Int} |
 
 ---

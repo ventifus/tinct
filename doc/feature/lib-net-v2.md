@@ -70,17 +70,17 @@ CONNECT tunnel. For HTTP/3, `quic-session` opens its own UDP socket directly:
 
 ```tinct
 # Stream transports (NetCap)
-[connect cap Tcp  host port]           # → Handle[Binary Readable Writable Stream]
-[connect cap Udp  host port]           # → Handle[Binary Readable Writable Datagram]
-[connect cap Icmp host]                # → Handle[Binary Readable Writable Datagram]
+[connect cap Tcp  host port]           # → Handle@[Binary Readable Writable Stream]
+[connect cap Udp  host port]           # → Handle@[Binary Readable Writable Datagram]
+[connect cap Icmp host]                # → Handle@[Binary Readable Writable Datagram]
 
 # Local transports (DirCap)
-[connect cap UnixStream    path]       # → Handle[Binary Readable Writable Stream]
-[connect cap UnixDatagram  path]       # → Handle[Binary Readable Writable Datagram]
-[connect cap NamedPipe     path]       # → Handle[Binary Readable Writable]
+[connect cap UnixStream    path]       # → Handle@[Binary Readable Writable Stream]
+[connect cap UnixDatagram  path]       # → Handle@[Binary Readable Writable Datagram]
+[connect cap NamedPipe     path]       # → Handle@[Binary Readable Writable]
 
 # User-defined: whatever the Connector's connect function expects
-[connect my-conn MyTransport ...args]  # → Handle[...]
+[connect my-conn MyTransport ...args]  # → Handle@[...]
 ```
 
 Port is absent for transports that have no port concept. A custom Transport tunneling
@@ -129,7 +129,7 @@ MyConnector: [
 A Layer is any function that takes a Handle and returns a Handle with augmented capabilities:
 
 ```
-Layer: Handle[R] → Handle[R ∪ NewCaps]
+Layer: Handle@R → Handle@[R ∪ NewCaps]
 ```
 
 Any pure-tinct function with this signature is a Layer. There is no Layer typeclass or interface — the composition is structural.
@@ -137,26 +137,26 @@ Any pure-tinct function with this signature is a Layer. There is no Layer typecl
 **Standard library Layers:**
 
 ```tinct
-# TLS upgrade — requires Handle[... Stream ...]; adds Tls capability
+# TLS upgrade — requires Handle@[... Stream ...]; adds Tls capability
 # Rust builtin — requires Handle refactor to expose raw stream
 [tls-layer    handle@Handle sni@String opts@Dict]
-  → Handle[... Stream Tls]
+  → Handle@[... Stream Tls]
 
-# DTLS upgrade — requires Handle[... Datagram ...]; adds Tls capability
+# DTLS upgrade — requires Handle@[... Datagram ...]; adds Tls capability
 # Architectural: deferred (requires dtls Rust dep + datagram-aware Handle I/O —
 # the BufRead/Write interface loses UDP message boundaries that DTLS requires)
 [dtls-layer   handle@Handle sni@String opts@Dict]
-  → Handle[... Datagram Tls]
+  → Handle@[... Datagram Tls]
 
 # SOCKS5 proxy tunnel — pure tinct in protocols/socks5.llt
 # cap@NetCap is re-validated against the tunnel target to prevent SSRF
 [socks5-layer handle@Handle cap@NetCap host@String port@Int creds@[Dict Null]]
-  → Handle[... Stream]
+  → Handle@[... Stream]
 
 # HTTP CONNECT tunnel — pure tinct in net.llt
 # cap@NetCap is re-validated against the tunnel target to prevent SSRF
 [http-connect-layer handle@Handle cap@NetCap host@String port@Int headers@Dict]
-  → Handle[... Stream]
+  → Handle@[... Stream]
 ```
 
 The **tls-layer Handle form** enables STARTTLS: connect to a server's plain port,
@@ -200,18 +200,18 @@ over an existing UDP Handle:
 
 # Open a reliable bidirectional stream
 [stream: [quic-open-stream quic]]
-  # → Handle[Binary Readable Writable Stream]
+  # → Handle@[Binary Readable Writable Stream]
 
 # Open a unreliable unidirectional datagram channel (RFC 9297)
 [dgram: [quic-open-datagram quic]]
-  # → Handle[Binary Readable Writable Datagram]
+  # → Handle@[Binary Readable Writable Datagram]
 ```
 
 `quic-opts` carries TLS configuration (CA roots, ALPN, client certs, SPKI pins) —
 QUIC's integrated TLS replaces a separate `tls-layer` step.
 
-**HTTP/2 Session** — via reqwest/h2. Requires a `Handle[Stream Tls]` with `h2` in
-the ALPN negotiation, or a cleartext `Handle[Stream]` for h2c:
+**HTTP/2 Session** — via reqwest/h2. Requires a `Handle@[Stream Tls]` with `h2` in
+the ALPN negotiation, or a cleartext `Handle@[Stream]` for h2c:
 
 ```tinct
 [tls:  [tls-layer [connect %nc Tcp "api.example.com" 443] "api.example.com" [alpn: ["h2"]]]]
@@ -380,7 +380,7 @@ builtins — always available without include.
 **New builtins:**
 - `tls-layer` — Handle form TLS upgrade; requires Handle refactor
 - `quic-session` — QUIC session via quinn; 4 args: cap host port opts
-- `http2-session` — HTTP/2 session via reqwest/h2; 1 arg: Handle[Stream Tls]
+- `http2-session` — HTTP/2 session via reqwest/h2; 1 arg: Handle@[Stream Tls]
 - `http3-session` — HTTP/3 session via h3/reqwest; 1 arg: QuicSession
 - `http-request` — unified request across Http2Session and Http3Session
 - `quic-open-stream` — open a reliable stream from QuicSession

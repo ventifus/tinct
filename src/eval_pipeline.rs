@@ -83,6 +83,7 @@ pub fn eval_document(
                     match annotation {
                         crate::ast::Annotation::Simple(type_name) => type_name.clone(),
                         crate::ast::Annotation::PropertyDict(_) => "Dict".to_string(),
+                        crate::ast::Annotation::Annotated(name, _) => name.clone(),
                     }
                 );
 

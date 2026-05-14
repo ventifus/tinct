@@ -2590,6 +2590,9 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                         doc_contract.insert("fields".into(), serde_json::Value::Object(fields));
                     }
                 }
+                tinct::Annotation::Annotated(name, _inner) => {
+                    doc_contract.insert("type".into(), serde_json::json!(name));
+                }
             }
         }
 

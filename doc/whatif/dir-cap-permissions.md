@@ -14,7 +14,7 @@ receives the same authority as a script that writes output. There is no way to
 express "read-only directory access" at the grant boundary.
 
 `--cap-file`, by contrast, already uses a `NAME=PATH:MODE` format with `r`, `rb`,
-`w`, `wb` modes that produce typed `Handle[Readable]` or `Handle[Writable]` values.
+`w`, `wb` modes that produce typed `Handle@[Readable]` or `Handle@[Writable]` values.
 `DirCap` should be consistent.
 
 ## Design
@@ -98,35 +98,35 @@ binary vs. text is a property of the opened `Handle`, not of the directory grant
 `DirCap` gains a capability row parameter, mirroring `Handle`:
 
 ```tinct
---- caps: [%root:  @DirCap[Readable Listable Statable]]        # :r
---- caps: [%out:   @DirCap[Writable Deletable Renameable]]     # :w
---- caps: [%log:   @DirCap[Appendable]]                        # :a
---- caps: [%data:  @DirCap[Readable Statable]]                 # :[Readable Statable]
+--- caps: [%root:  @DirCap@[Readable Listable Statable]]        # :r
+--- caps: [%out:   @DirCap@[Writable Deletable Renameable]]     # :w
+--- caps: [%log:   @DirCap@[Appendable]]                        # :a
+--- caps: [%data:  @DirCap@[Readable Statable]]                 # :[Readable Statable]
 ```
 
 `@DirCap` without flags in caps declarations is treated as
-`@DirCap[Readable Listable Statable Writable Deletable Renameable Appendable]`
+`@DirCap@[Readable Listable Statable Writable Deletable Renameable Appendable]`
 (full access) during a backward-compat transition period.
 
 **Row-polymorphic builtin signatures:**
 
 ```tinct
-open      [cap@DirCap[Readable ...]   path@String "r"] → Handle[Readable ...]
-open      [cap@DirCap[Writable ...]   path@String "w"] → Handle[Writable ...]
-open      [cap@DirCap[Appendable ...] path@String "a"] → Handle[Appendable ...]
-list-dir  [cap@DirCap[Listable ...]   path@String]     → Seq[Dict]
-stat-file [cap@DirCap[Statable ...]   path@String]     → Dict               # future builtin
-write-file        [cap@DirCap[Writable ...]   path@String content@String]
-write-file-atomic [cap@DirCap[Writable ...]   path@String content@String]
-delete-file        [cap@DirCap[Deletable ...]  path@String]
-rename-file        [cap@DirCap[Renameable ...] old@String  new@String]
+open      [cap@DirCap@[Readable ...]   path@String "r"] → Handle@[Readable ...]
+open      [cap@DirCap@[Writable ...]   path@String "w"] → Handle@[Writable ...]
+open      [cap@DirCap@[Appendable ...] path@String "a"] → Handle@[Appendable ...]
+list-dir  [cap@DirCap@[Listable ...]   path@String]     → Seq@Dict
+stat-file [cap@DirCap@[Statable ...]   path@String]     → Dict               # future builtin
+write-file        [cap@DirCap@[Writable ...]   path@String content@String]
+write-file-atomic [cap@DirCap@[Writable ...]   path@String content@String]
+delete-file        [cap@DirCap@[Deletable ...]  path@String]
+rename-file        [cap@DirCap@[Renameable ...] old@String  new@String]
 ```
 
 The `...` row tail (same as in record types — `[name: String ...]`) means "DirCap
 with at least this capability flag, plus possibly others." A caller passing
-`DirCap[Readable Listable Writable]` to `write-file` satisfies `DirCap[Writable ...]`
+`DirCap@[Readable Listable Writable]` to `write-file` satisfies `DirCap@[Writable ...]`
 because `Writable` is present and `...` absorbs `Readable Listable`. Without the
-tail, `DirCap[Writable]` would be an exact type that rejects any cap holding
+tail, `DirCap@[Writable]` would be an exact type that rejects any cap holding
 additional flags. The concrete syntax for named row tails (`...r`) follows the same
 convention as record row variables.
 
@@ -136,7 +136,7 @@ A script can further restrict a DirCap it receives before passing it to untruste
 code. `narrow` produces a DirCap with a subset of the original flags:
 
 ```tinct
-# Received: %dir@DirCap[Readable Listable Statable Writable Deletable Renameable]
+# Received: %dir@DirCap@[Readable Listable Statable Writable Deletable Renameable]
 # Pass read-only to untrusted helper
 [helper [narrow %dir Readable Listable Statable]]
 
@@ -153,7 +153,7 @@ path root without changing which operation flags are held.
 
 ### `%pwd` Default Permissions
 
-`%pwd` is injected as `DirCap[Readable Listable Statable Writable Deletable Renameable Appendable]`
+`%pwd` is injected as `DirCap@[Readable Listable Statable Writable Deletable Renameable Appendable]`
 — full access, same effective authority as today, now tracked in the type system.
 
 ## What Would Change
@@ -207,7 +207,7 @@ violation (`"DirCap: operation requires <Flag> permission"`):
 ### `src/type_env.rs` — type registration
 
 `%pwd`, `%libdir`, and all `--cap-fs` injections gain appropriate row types.
-Builtin signatures updated to use row-polymorphic `DirCap[Flag ...]` constraints.
+Builtin signatures updated to use row-polymorphic `DirCap@[Flag ...]` constraints.
 
 ## Prerequisites
 

@@ -3689,6 +3689,7 @@ pub fn scan_type_quality(
                     false
                 })
             }
+            Annotation::Annotated(_, _) => false,  // Parameterized annotations are never Unknown
         }
     }
 
@@ -3867,6 +3868,7 @@ fn check_overbroad_annotations(
                 _ => None, // Type variables, named types, etc.
             },
             Annotation::PropertyDict(_) => None, // Complex annotations not handled yet
+            Annotation::Annotated(_, _) => None, // Parameterized annotations not handled yet
         }
     }
 

@@ -13,11 +13,12 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
 | [Constraint Annotations and fn@[...] Metadata](constraint-annotations.md) | **Accepted 2026-05-11.** Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
-| [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
+| [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map@[K: V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
 | [Higher-Kinded Types, Monadic `[do]`, and Precise Field Access](completed/hkt-monads.md) | **Accepted 2026-05-11.** `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2`; `Kind::Label`; `HasField` constraint with `[HAS-FIELD-UNION]`/`[HAS-FIELD-INTER]`/`[HAS-FIELD-TOP]` BAS rules; label-polymorphic `get`/`get-in` |
 | [Inference Completeness](inference-completeness.md) | SCC-based binding group analysis (Tarjan) within DICT-GEN; independent generalization of non-mutually-recursive entries; polymorphic access through visible nested dicts; variadic params as `Seq(T)`; typeclass-based heterogeneous variadics (FormatResult pattern) |
 | [Advanced Typeclass Extensions](advanced-typeclasses.md) | 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
 | [Parameterized Type Annotations](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Seq@T`, `Map@[K: V]`, `Map@T`, `Record@[...]` chained `@` annotation forms; `@Map@[String: Int]` compact form; type alias composition (`T2: [type Map@T1]`); see `doc/feature/parameterized-types.md` |
+| [Type Annotations v2](type-annotations-v2.md) | Comprehensive revisit: explicit union (`\|`) and intersection (`&`) separators in `@[...]`; capability type annotation; property-dict collision fix; migration from positional-union convention; builds on `parameterized-annotations` sprint |
 
 ## Reflection and Metaprogramming
 
@@ -35,7 +36,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Consistent Error Handling](completed/error-patterns.md) | **Accepted 2026-05-09.** Nominal `Ok[T]\|Err[String]` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
+| [Consistent Error Handling](completed/error-patterns.md) | **Accepted 2026-05-09.** Nominal `Ok@T\|Err@String` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
 
 ## Syntax and Ergonomics
 
@@ -71,7 +72,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, `tls-layer`, SpkiPin, system CA roots, mTLS, ALPN, SPKI pinning |
 | [Composable Networking v2](completed/lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
-| [Directory Capability Permissions](dir-cap-permissions.md) | **Accepted 2026-05-11.** `--cap-fs name=path:r` permission flags on DirCap; `Readable`, `Statable`, `Listable`, `Writable`, `Appendable`, `Deletable`, `Renameable`; letter bundles (`r`=read+list+stat, `w`=write+append+delete+rename) + extended `:[Cap1 Cap2 ...]` syntax; row-polymorphic `DirCap[Writable ...]` type; `narrow` for in-script attenuation; extends `--cap-file` with same extended syntax; no mode = full access |
+| [Directory Capability Permissions](dir-cap-permissions.md) | **Accepted 2026-05-11.** `--cap-fs name=path:r` permission flags on DirCap; `Readable`, `Statable`, `Listable`, `Writable`, `Appendable`, `Deletable`, `Renameable`; letter bundles (`r`=read+list+stat, `w`=write+append+delete+rename) + extended `:[Cap1 Cap2 ...]` syntax; row-polymorphic `DirCap@[Writable ...]` type; `narrow` for in-script attenuation; extends `--cap-file` with same extended syntax; no mode = full access |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Syntax and Ergonomics
@@ -144,8 +145,8 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | Connector protocol, tls-connect, SpkiPin, HttpConn, system roots default, HTTP/1-3 | 2026-05-07 — `connector-tls` + `http-net` sprints |
 | [Composable Networking v2](completed/lib-net-v2.md) | Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory | 2026-05-09 — `connect-v2`, `http-sessions`, `stdlib-protocols` |
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference | 2026-05-09 — `bas-core` |
-| [Consistent Error Handling](completed/error-patterns.md) | Nominal `Ok[T]\|Err[String]` Result; `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate | 2026-05-09 — `result-nominal` |
-| [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | `Record` vs `Map[K V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality | 2026-05-09 — `record-map-split` |
+| [Consistent Error Handling](completed/error-patterns.md) | Nominal `Ok@T\|Err@String` Result; `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate | 2026-05-09 — `result-nominal` |
+| [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | `Record` vs `Map@[K: V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality | 2026-05-09 — `record-map-split` |
 
 ### Adopt Now
 
