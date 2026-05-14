@@ -22,7 +22,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Runtime Reflection — Annotations as Value Metadata](runtime-reflection.md) | `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime; `describe` inspects any value; `render` round-trips value → tinct source; `module-docs` replaces manual string parsing in docgen; enables REPL `:describe`, LSP doc hover, and metaprogramming |
+| [Runtime Reflection — Annotations as Value Metadata](runtime-reflection.md) | `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime via `FnAnnotation`; `ast-of` Rust primitive returns the AST dict for any value; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; enables REPL `:describe`, LSP doc hover, docgen, and metaprogramming |
 
 ## Internal Integrity
 

@@ -1110,6 +1110,187 @@ result-ok@[doc: "Wrap a value in Ok"]: [fn@Unknown [v] [Ok v]]
 result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: result-ok]
 
 # ============================================================================
+# Type Class Declarations: Functor, Applicative, Monad, Foldable, Traversable
+# ============================================================================
+#
+# Typeclass hierarchy for higher-kinded types (HKT). These classes enable
+# generic functions polymorphic over any type constructor (Result, Seq, Maybe).
+#
+# Functor: type constructors supporting fmap (structure-preserving map)
+# Applicative: Functors with pure (lift) and lift2 (combine two wrapped values)
+# Monad: Applicatives with bind (sequential composition)
+# Foldable: type constructors that can be folded/reduced to a single value
+# Traversable: structures that can be traversed with an effectful function
+#
+# See doc/whatif/completed/hkt-monads.md for the full design.
+
+Functor@[doc: "Type class for type constructors supporting fmap"]:
+  [class [Functor f]]
+
+FunctorResult@[doc: "Functor instance for Result"]:
+  [instance [Functor Result]
+    fmap: result-map]
+
+FunctorSeq@[doc: "Functor instance for Seq"]:
+  [instance [Functor Seq]
+    fmap: map]
+
+Applicative@[doc: "Type class for applicative functors"]:
+  [class [Applicative f]]
+
+ApplicativeResult@[doc: "Applicative instance for Result"]:
+  [instance [Applicative Result]
+    pure:  result-ok
+    lift2: [fn [f ra rb]
+      [and-then ra [fn [a]
+      [and-then rb [fn [b]
+        [result-ok [f a b]]]]]]]]
+
+ApplicativeSeq@[doc: "Applicative instance for Seq"]:
+  [instance [Applicative Seq]
+    pure:  [fn [x] [x]]
+    lift2: [fn [f sa sb]
+      [flat-map sa [fn [a]
+        [map [fn [b] [f a b]] sb]]]]]
+
+Monad@[doc: "Type class for monads"]:
+  [class [Monad m]]
+
+MonadResult@[doc: "Monad instance for Result"]:
+  [instance [Monad Result]
+    bind: and-then]
+
+MonadSeq@[doc: "Monad instance for Seq"]:
+  [instance [Monad Seq]
+    bind: flat-map]
+
+Foldable@[doc: "Type class for foldable structures"]:
+  [class [Foldable t]]
+
+FoldableSeq@[doc: "Foldable instance for Seq"]:
+  [instance [Foldable Seq]
+    fold:   reduce
+    to-seq: [fn [xs] xs]]
+
+FoldableRecord@[doc: "Foldable instance for Record"]:
+  [instance [Foldable Record]
+    fold:   reduce
+    to-seq: values]
+
+FoldableResult@[doc: "Foldable instance for Result"]:
+  [instance [Foldable Result]
+    fold:   [fn [f init r]
+      [match r
+        [Ok a]:  [f init a]
+        [Err _]: init]]
+    to-seq: [fn [r]
+      [match r
+        [Ok a]:  [a]
+        [Err _]: []]]]
+
+Traversable@[doc: "Type class for traversable structures"]:
+  [class [Traversable t]]
+
+TraversableSeq@[doc: "Traversable instance for Seq"]:
+  [instance [Traversable Seq]
+    # Primitive fold-based implementation — NOT via generic sequence/traverse
+    # (which would be circular: sequence calls traverse calls t.traverse calls sequence).
+    traverse: [fn [f xs]
+      [reduce
+        [fn [acc x]
+          [f.lift2 [fn [as a] [concat as [a]]] acc [f x]]]
+        [f.pure []]
+        xs]]]
+
+TraversableResult@[doc: "Traversable instance for Result"]:
+  [instance [Traversable Result]
+    traverse: [fn [f r]
+      [match r
+        [Ok a]:  [f.fmap Ok [f a]]
+        [Err e]: [f.pure [Err e]]]]]
+
+# ============================================================================
+# Maybe ADT and Instances
+# ============================================================================
+#
+# Maybe represents optional values: [Some value] or [None].
+# Simpler than Result (no error information), used for safe dict lookups.
+
+# Maybe type alias — defines nominal constructors Some and None
+Maybe@[doc: "Maybe type: [Some a] | [None]"]: [type [Some a] [None]]
+
+# Re-export Some constructor as a dict entry (already registered from TypeAlias)
+Some: Some
+
+# Re-export None constructor as a dict entry (already registered from TypeAlias)
+None: None
+
+# Functor instance for Maybe
+maybe-map@[doc: "Map over Maybe value"]: [fn [f ma]
+  [match ma
+    [Some a]: [Some [f a]]
+    None:     None]]
+
+FunctorMaybe@[doc: "Functor instance for Maybe"]:
+  [instance [Functor Maybe]
+    fmap: maybe-map]
+
+# Applicative instance for Maybe
+ApplicativeMaybe@[doc: "Applicative instance for Maybe"]:
+  [instance [Applicative Maybe]
+    pure:  Some
+    lift2: [fn [f ma mb]
+      [match ma
+        [Some a]: [match mb
+          [Some b]: [Some [f a b]]
+          None:     None]
+        None: None]]]
+
+# Monad instance for Maybe
+MonadMaybe@[doc: "Monad instance for Maybe"]:
+  [instance [Monad Maybe]
+    bind: [fn [ma f]
+      [match ma
+        [Some a]: [f a]
+        None:     None]]]
+
+# Traversable instance for Maybe
+TraversableMaybe@[doc: "Traversable instance for Maybe"]:
+  [instance [Traversable Maybe]
+    traverse: [fn [f ma]
+      [match ma
+        [Some a]: [f.fmap Some [f a]]
+        None:     [f.pure None]]]]
+
+# ============================================================================
+# Generic Functions for HKT
+# ============================================================================
+#
+# These generic functions are polymorphic over any Functor/Monad/Traversable.
+# They require HKT support (rank-1 kind polymorphism) to type-check correctly.
+
+# sequence: t (f a) → f (t a) — collect effects from any Traversable
+# Generic over any Traversable container (Seq, Result, Maybe, ...)
+sequence@[doc: "Collect effects: t (f a) → f (t a)"]: [fn [t xs]
+  [t.traverse [fn [x] x] xs]]
+
+# traverse: (a → f b) → t a → f (t b) — map with effects over any Traversable
+traverse@[doc: "Map with effects: (a → f b) → t a → f (t b)"]: [fn [f t xs]
+  [t.traverse f xs]]
+
+# forM: flip-arg traverse (collection before function)
+forM@[doc: "Traverse with flipped arguments"]: [fn [t xs f]
+  [traverse f t xs]]
+
+# liftM2: lift a two-argument function into the monad
+liftM2@[doc: "Lift binary function into monad"]: [fn [f ma mb]
+  [ma.lift2 f ma mb]]
+
+# whenM: conditionally execute a monadic action
+whenM@[doc: "Conditionally execute monadic action"]: [fn [cond action]
+  [if cond action [action.pure []]]]
+
+# ============================================================================
 # Type Class Declarations: Equatable
 # ============================================================================
 #

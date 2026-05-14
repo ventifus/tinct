@@ -1,0 +1,5 @@
+# Test: FunctorResult.fmap on Ok value
+[FunctorResult.fmap [fn [x] [+ x 1]] [Ok 42]]
+
+=== out
+Ok(43)

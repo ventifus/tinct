@@ -1,6 +1,6 @@
 # What If: Advanced Typeclass Extensions for tinct
 
-**State:** Proposal
+**State:** Proposal — `[CONSTRAIN-UNKNOWN]` fix already applied (`src/type_unify.rs:23`); remainder is proposed
 
 What would it take to make tinct's typeclass system fully expressive — letting
 user-defined types participate in primitive operators, express constraints over
@@ -213,6 +213,11 @@ two propagation rules to `check_constraints`:
 [CONSTRAIN-NEVER]   C(⊥) ⊢ satisfied                (⊥ is uninhabited — vacuously true)
 ```
 
+**[CONSTRAIN-NEVER]:** `Never` (⊥) is the uninhabited type — no value has type `Never`.
+Constraint satisfaction is vacuous: there is no value to violate the constraint.
+This is consistent with `S-BOT`: `⊥ <: τ` for all `τ`, so `⊥` is a member of every
+class's instance set by vacuity. No runtime check is ever needed.
+
 **[CONSTRAIN-FIELD] restriction:** `C({f: τ}) iff C(τ)` assumes the class has a
 compositional/structural interpretation — i.e., satisfaction of the field types
 implies satisfaction of the whole record. This holds for all built-in classes
@@ -243,7 +248,9 @@ lifting (Garcia, Clark & Tanter, POPL 2016): `C(A) = ∃t ∈ γ(A). C(t)`.
   `satisfies_constraint` returns `false` for `Unknown` by accident (it is not
   in any allowlist); an explicit `Type::Unknown => return true` pre-check is
   needed so that `[CONSTRAIN-FIELD]` propagation through `Unknown`-typed fields
-  gives the AGT-correct answer. This is implemented in `src/type_unify.rs`.
+  gives the AGT-correct answer. **This fix is already applied** in `src/type_unify.rs`
+  (the `if matches!(ty, Type::Unknown) { return true; }` pre-check at line 23)
+  and is independent of the rest of this proposal.
 
 References: Garcia, Clark & Tanter (POPL 2016); Castagna & Lanvin (ICFP 2017).
 
@@ -429,7 +436,15 @@ ensures dispatch is always deterministic (Sulzmann et al. 2007).
 
 ## Prerequisites
 
-- `hkt-mappable-appendable` — The `ClassEnv` and `[class ...]`/`[instance ...]` infrastructure must be complete before MPTC instances can be declared. The functional dependency mechanism is a new addition on top of the existing class infrastructure.
+**Independent of `hkt-mappable-appendable` (can sprint now):**
+- `[CONSTRAIN-UNKNOWN]` fix in `satisfies_constraint` — already applied (`src/type_unify.rs:23`)
+- `[CONSTRAIN-FIELD/INTER/UNION/TOP/NEVER]` row-level propagation rules — new match arms in `satisfies_constraint`; no HKT dependency
+
+**Requires `hkt-mappable-appendable`:**
+- MPTC `Constraint` enum extension (`vars: Vec<String>`, `fundeps`) — requires the `ClassEnv` and `[class ...]`/`[instance ...]` infrastructure to be complete before MPTC instances can be declared
+- Functional dependency improvement mechanism — builds on the multi-var Constraint form
+- `Add`/`Sub`/`Mul`/`Div` re-registration as MPTC — requires both the Constraint extension and class infrastructure
+- Runtime ClassEnv dispatch — requires instance registration infrastructure
 
 ## References
 

@@ -1,0 +1,5 @@
+# Test: MonadMaybe.bind on Some value
+[MonadMaybe.bind [Some 42] [fn [x] [Some [+ x 1]]]]
+
+=== out
+Some(43)
