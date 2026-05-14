@@ -292,6 +292,38 @@ pub(crate) fn infer_dict(
     let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
 
+    // Pass 0c: pre-register class/instance declarations so all classes and instances
+    // are visible during body type-checking, regardless of declaration order in the file.
+    // Modeled on Pass 2 (type alias pre-registration). (Wadler & Blott 1989 — class/instance
+    // declarations are globally visible within their scope.)
+    let dict_env_rc = Rc::new(dict_env.clone());
+    for (idx, entry) in entries.iter().enumerate() {
+        match &entry.node.value.node {
+            Expr::ClassDecl { .. } | Expr::InstanceDecl { .. } => {
+                // Infer the class/instance declaration, which registers it in state.class_env
+                // or state.instance_env. The result type is always an empty record.
+                match infer_expr(&entry.node.value, &dict_env_rc, state, type_map) {
+                    Ok(ty) => {
+                        // Store the type in field_types for this entry
+                        let (ref key_name, _) = key_entries[idx];
+                        if let Some(name) = key_name {
+                            field_types.insert(name.clone(), ty);
+                        }
+                    }
+                    Err(mut errs) => {
+                        errors.append(&mut errs);
+                        let (ref key_name, _) = key_entries[idx];
+                        if let Some(name) = key_name {
+                            field_types.insert(name.clone(), Type::Unknown);
+                            state.failed_bindings.insert(name.clone(), entry.span);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Process each SCC in topological order
     // Tarjan's algorithm produces SCCs in reverse topological order, so we process them as-is
     for scc in sccs.into_iter() {
@@ -316,7 +348,13 @@ pub(crate) fn infer_dict(
             let entry = &entries[idx];
             let (ref key_name, is_alias) = key_entries[idx];
 
-            if is_alias || matches!(&entry.node.value.node, Expr::Rest(_)) {
+            // Skip type aliases (already processed in Pass 2), Rest markers,
+            // and class/instance declarations (already processed in Pass 0c)
+            if is_alias
+                || matches!(&entry.node.value.node, Expr::Rest(_))
+                || matches!(&entry.node.value.node, Expr::ClassDecl { .. })
+                || matches!(&entry.node.value.node, Expr::InstanceDecl { .. })
+            {
                 continue;
             }
 
