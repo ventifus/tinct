@@ -15,6 +15,16 @@ use crate::types::Type;
 // Re-export ThunkId for use in other modules
 pub use crate::arena::ThunkId;
 
+/// Runtime metadata for user-defined functions — stored on `Value::Function`.
+/// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
+#[derive(Clone, Debug)]
+pub struct FnAnnotation {
+    /// Doc string extracted from function's annotation metadata dict.
+    pub doc: Option<String>,
+    /// Source file path where the function was defined (if available).
+    pub source_file: Option<String>,
+}
+
 /// Arguments passed to built-in functions.
 pub struct BuiltinArgs<'a> {
     pub args: &'a [Rc<Thunk>],
@@ -287,6 +297,7 @@ pub enum Value {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        annotation: Option<Box<FnAnnotation>>,
     },
     /// Rust-native built-in function
     Builtin(BuiltinDef),
@@ -1318,6 +1329,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
+            annotation: None,
         };
         assert_ne!(f.clone(), f);
     }
@@ -1609,7 +1621,12 @@ mod tests {
         ]);
         let body = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let func = Value::Function { params, body, env };
+        let func = Value::Function {
+            params,
+            body,
+            env,
+            annotation: None,
+        };
         assert_eq!(format!("{func}"), "[fn [x y] ...]");
     }
 
@@ -1688,7 +1705,12 @@ mod tests {
         ]);
         let body = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Rc::new(RefCell::new(Environment::new()));
-        let func = Value::Function { params, body, env };
+        let func = Value::Function {
+            params,
+            body,
+            env,
+            annotation: None,
+        };
         assert_eq!(format!("{func:?}"), "Function(a, b)");
     }
 
@@ -1848,6 +1870,7 @@ mod tests {
                     test_span(1, 1, 1, 1),
                 )),
                 env: Rc::new(RefCell::new(Environment::new())),
+                annotation: None,
             },
             span,
         ));

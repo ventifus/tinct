@@ -28,6 +28,7 @@ pub(crate) fn invoke_proxy_handler(
             params,
             body,
             env: closure_env,
+            ..
         } => invoke_function(&CallContext {
             params: &params,
             body: &body,

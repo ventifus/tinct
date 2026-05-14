@@ -60,17 +60,20 @@ validate: [fn [r] [@Record@[host: String  port: Int] r]]      # type assertion
 # Shorthand @[...] form also works for parameters (no collision with type/default/doc fields)
 process: [fn [config@[host: String  port: Int]] ...]
 
-# Named Map type alias
+# Map@T — "collection" perspective: key type irrelevant, you iterate over values
+T1: [type Record@[host: String  port: Int]]
+Hosts: [type Map@T1]                              # a bag of T1 values, any keys
+process-all: [fn [hosts@Hosts] [map do-work hosts]]
+
+# Map@[K: V] — "lookup" perspective: string-keyed lookup table
 Scoreboard: [type Map@[String: Int]]
-lookup: [fn@Int [s@Scoreboard  key@String] [get-or s key 0]]  # using the alias
+lookup: [fn@Int [s@Scoreboard  key@String] [get-or s key 0]]
 
-# Inline annotation
-lookup: [fn [s@Map@[String: Int]] [get-or s "default" 0]]     # parameter annotation
-index@Map@[String: Any]                                        # string-keyed, untyped values
-cache@Map                                                      # bare: Map[Any Any]
-
-# Explicit named form — same meaning, more readable for complex types
-transitions@Map@[key: Int  value: Seq@Int]
+# Inline forms
+hosts@Map@T1                                      # collection of T1 values
+index@Map@[String: Any]                           # string-keyed, untyped values
+transitions@Map@[key: Int  value: Seq@Int]        # explicit named form
+cache@Map                                         # bare: Map[Any Any]
 
 # Dict — either form accepted
 process: [fn@Null [d@Dict] ...]

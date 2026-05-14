@@ -717,7 +717,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
 
             match result.map_err(&decorate) {
                 Ok(func_value) => match func_value {
-                    Value::Function { params, body, env } => {
+                    Value::Function {
+                        params,
+                        body,
+                        env,
+                        ..
+                    } => {
                         // The block scopes borrows of args/named so the borrow checker
                         // allows args.take()/named.take() in the match arms below.
                         let invoke_result = {
@@ -1711,6 +1716,7 @@ pub(crate) fn eval_step(
                 params: Rc::new(fn_params),
                 body: Rc::new(body.as_ref().clone()),
                 env: Rc::clone(&env),
+                annotation: None,
             }))
         }
         Expr::Call {
@@ -1942,6 +1948,7 @@ mod tests {
                 params: Rc::new(vec![]),
                 body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
+                annotation: None,
             },
             span,
         ));
@@ -1999,6 +2006,7 @@ mod tests {
                 params: Rc::new(vec![]),
                 body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
+                annotation: None,
             },
             span,
         ));

@@ -506,6 +506,99 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(string_val(name), call_span)
 }
 
+/// `ast-of`: returns simple metadata about a value as a dict.
+/// For functions, returns {type: "function", params: [...], doc: ...}.
+/// For other values, returns {type: value.type_name()}.
+pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("ast-of", args, named, &ctx, call_span)?;
+
+    let dict_entries = match &val {
+        crate::value::Value::Function {
+            params,
+            annotation,
+            ..
+        } => {
+            let mut entries = IndexMap::new();
+
+            // Add type field
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("function"),
+                    call_span,
+                ))),
+            );
+
+            // Add params field as a list of param names
+            let param_names: Vec<ThunkId> = params
+                .iter()
+                .map(|p| {
+                    ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                        string_val(&p.name),
+                        call_span,
+                    )))
+                })
+                .collect();
+
+            if !param_names.is_empty() {
+                let params_seq = param_names
+                    .into_iter()
+                    .rev()
+                    .fold(
+                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            crate::value::Value::Dict(IndexMap::new()),
+                            call_span,
+                        ))),
+                        |tail, head| {
+                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                crate::value::Value::Seq { head, tail },
+                                call_span,
+                            )))
+                        },
+                    );
+                entries.insert(
+                    crate::value::Key::String("params".into()),
+                    params_seq,
+                );
+            }
+
+            // Add doc field if present
+            if let Some(ann) = annotation {
+                if let Some(ref doc_str) = ann.doc {
+                    entries.insert(
+                        crate::value::Key::String("doc".into()),
+                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            string_val(doc_str),
+                            call_span,
+                        ))),
+                    );
+                }
+            }
+
+            entries
+        }
+        other => {
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val(other.type_name()),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+    };
+
+    ok_val(crate::value::Value::Dict(dict_entries), call_span)
+}
+
 /// `llt-repr`: takes 1 arg, deep-materializes it, returns its LLT display string representation.
 /// This is the programmatic equivalent of the LLT display format (Int(42), Dict({...}), etc.).
 /// Used by the `-o llt` output formatter.

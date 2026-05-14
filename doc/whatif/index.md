@@ -17,6 +17,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Higher-Kinded Types, Monadic `[do]`, and Precise Field Access](completed/hkt-monads.md) | **Accepted 2026-05-11.** `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2`; `Kind::Label`; `HasField` constraint with `[HAS-FIELD-UNION]`/`[HAS-FIELD-INTER]`/`[HAS-FIELD-TOP]` BAS rules; label-polymorphic `get`/`get-in` |
 | [Inference Completeness](inference-completeness.md) | SCC-based binding group analysis (Tarjan) within DICT-GEN; independent generalization of non-mutually-recursive entries; polymorphic access through visible nested dicts; variadic params as `Seq(T)`; typeclass-based heterogeneous variadics (FormatResult pattern) |
 | [Advanced Typeclass Extensions](advanced-typeclasses.md) | 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
+| [Parameterized Type Annotations](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Seq@T`, `Map@[K: V]`, `Map@T`, `Record@[...]` chained `@` annotation forms; `@Map@[String: Int]` compact form; type alias composition (`T2: [type Map@T1]`); see `doc/feature/parameterized-types.md` |
 
 ## Reflection and Metaprogramming
 
