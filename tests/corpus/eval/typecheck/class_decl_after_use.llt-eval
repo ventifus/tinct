@@ -1,0 +1,15 @@
+# Class declaration appearing AFTER a function that uses its constraint in the same dict.
+# Pass 0c pre-registers class/instance declarations before the SCC loop, so MyClass
+# is visible when use-it's annotation is resolved even though MyClass is declared later.
+[
+  use-it: [fn@[return: a constraint: [a: MyClass]] [x@a] x]
+  MyClass: [class [MyClass a]]
+  MyClassInt: [instance [MyClass Int]]
+  result: [use-it 42]
+]
+
+---
+
+%.result
+=== out
+Int(42)
