@@ -697,7 +697,34 @@ pub(crate) fn resolve_annotation(
                 // Use normalize_union to flatten, deduplicate, and sort
                 Ok(Type::normalize_union(member_types))
             } else if let Some(type_val) = ann.get_property("type") {
-                resolve_type_expr(type_val, env, state, ann_mapping, row_ann_mapping)
+                // Check if this is a type expression shorthand (@[type: T default: V])
+                // or a record with a field named "type" (@[type: String id: Int]).
+                // Type expression shorthand only has keys: type, default, repr.
+                // If there are other keys, it's a record type.
+                const ANNOTATION_PROPERTIES: &[&str] = &["type", "default", "repr"];
+                let has_other_keys = entries.iter().any(|entry| {
+                    if let Some(key_expr) = &entry.node.key {
+                        if let Expr::Str(key_name) = &key_expr.node {
+                            return !ANNOTATION_PROPERTIES.contains(&key_name.as_str());
+                        }
+                    }
+                    false
+                });
+
+                if has_other_keys {
+                    // Has non-annotation keys → treat as record type
+                    resolve_property_dict_as_record(
+                        entries,
+                        env,
+                        span,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    )
+                } else {
+                    // Only annotation properties → treat as type expression shorthand
+                    resolve_type_expr(type_val, env, state, ann_mapping, row_ann_mapping)
+                }
             } else {
                 resolve_property_dict_as_record(
                     entries,

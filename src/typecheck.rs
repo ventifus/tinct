@@ -4767,6 +4767,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_type_alias_field_named_type() {
+        // Regression: type alias with a field named "type:" should not be
+        // confused with the @[type: T] annotation shorthand.
+        let ty = result_field(
+            "[Thing: [type [type: String  id: Int]]]\n[t: [@Thing [type: \"widget\"  id: 1]]]",
+            "t",
+        );
+        assert_has_field(&ty, "type", &Type::Str);
+        assert_has_field(&ty, "id", &Type::Int);
+    }
+
+    #[test]
+    fn test_annotation_record_with_type_field() {
+        // Test that @[type: String id: Int] as a direct annotation creates a record
+        // with two fields, not a type expression shorthand.
+        let ty = result_field(
+            "[f: [fn [data@[type: String id: Int]] $data]]",
+            "f",
+        );
+        if let Type::Function { params, .. } = ty {
+            assert_eq!(params.len(), 1);
+            assert_has_field(&params[0].1, "type", &Type::Str);
+            assert_has_field(&params[0].1, "id", &Type::Int);
+        } else {
+            panic!("expected Function type, got {:?}", ty);
+        }
+    }
+
     // -- Function inference --
 
     #[test]
