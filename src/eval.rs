@@ -1195,10 +1195,11 @@ pub(crate) fn eval_recursive(
             ));
 
             // Register the instance in the runtime registry
-            // Use a simple string representation of the instance type for now
-            let type_string = format!("{:?}", instance_type.node);
+            // Extract canonical type name from instance_type Expr (e.g., VarRef "Int" → "Int")
+            // This matches the runtime type names returned by Value::type_name()
+            let type_tag = extract_instance_type_name(&instance_type.node);
             ctx.state.borrow_mut().instance_registry.insert(
-                (class_name.clone(), type_string),
+                (class_name.clone(), type_tag),
                 Rc::clone(&instance_dict_thunk),
             );
 
@@ -1223,6 +1224,30 @@ pub(crate) fn eval_recursive(
             expr.span,
         )
         .into()),
+    }
+}
+
+/// Extract a canonical type name from an instance_type Expr for runtime dispatch.
+/// Maps instance type expressions to the runtime type names returned by Value::type_name().
+///
+/// Examples:
+/// - `Int` → "Int"
+/// - `Float` → "Float"
+/// - `String` → "String" (note: Expr name is "String", Value::type_name() is "String")
+/// - `Result` → "Result"
+/// - `[name: Str age: Int]` → "Dict" (structural types dispatch as their runtime tag)
+///
+/// For user-defined types (variants, nominal types), this returns the constructor name.
+/// For structural types (record literals), this returns the Value tag ("Dict").
+fn extract_instance_type_name(expr: &Expr) -> String {
+    match expr {
+        // Simple type name: Int, Float, String, Bool, Result, Seq, etc.
+        Expr::VarRef { name, .. } => name.clone(),
+        // Structural record type: [name: Str age: Int] → "Dict"
+        Expr::Dict { .. } => "Dict".to_string(),
+        // Fallback: use Debug representation for complex types
+        // This handles TypeApp and other complex type expressions
+        _ => format!("{:?}", expr),
     }
 }
 

@@ -1300,21 +1300,22 @@ whenM@[doc: "Conditionally execute monadic action"]: [fn [cond action]
 Equatable@[doc: "Type class for types that support equality comparison"]:
   [class [Equatable a]]
 
-EquatableInt@[doc: "Equatable instance for Int"]:
-  [instance [Equatable Int]
-    eq: [fn [a b] [builtin-eq a b]]]
-
-EquatableFloat@[doc: "Equatable instance for Float"]:
-  [instance [Equatable Float]
-    eq: [fn [a b] [builtin-eq a b]]]
-
-EquatableStr@[doc: "Equatable instance for Str"]:
-  [instance [Equatable String]
-    eq: [fn [a b] [builtin-eq a b]]]
-
-EquatableBool@[doc: "Equatable instance for Bool"]:
-  [instance [Equatable Bool]
-    eq: [fn [a b] [builtin-eq a b]]]
+# NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
+# EquatableInt@[doc: "Equatable instance for Int"]:
+#   [instance [Equatable Int]
+#     eq: [fn [a b] [builtin-eq a b]]]
+#
+# EquatableFloat@[doc: "Equatable instance for Float"]:
+#   [instance [Equatable Float]
+#     eq: [fn [a b] [builtin-eq a b]]]
+#
+# EquatableStr@[doc: "Equatable instance for Str"]:
+#   [instance [Equatable String]
+#     eq: [fn [a b] [builtin-eq a b]]]
+#
+# EquatableBool@[doc: "Equatable instance for Bool"]:
+#   [instance [Equatable Bool]
+#     eq: [fn [a b] [builtin-eq a b]]]
 
 # ============================================================================
 # Type Class Declarations: Comparable
@@ -1326,17 +1327,18 @@ EquatableBool@[doc: "Equatable instance for Bool"]:
 Comparable@[doc: "Type class for types that support ordering"]:
   [class [Comparable a]]
 
-ComparableInt@[doc: "Comparable instance for Int"]:
-  [instance [Comparable Int]
-    cmp: [fn [a b] [builtin-lt a b]]]
-
-ComparableFloat@[doc: "Comparable instance for Float"]:
-  [instance [Comparable Float]
-    cmp: [fn [a b] [builtin-lt a b]]]
-
-ComparableStr@[doc: "Comparable instance for Str"]:
-  [instance [Comparable String]
-    cmp: [fn [a b] [builtin-lt a b]]]
+# NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
+# ComparableInt@[doc: "Comparable instance for Int"]:
+#   [instance [Comparable Int]
+#     cmp: [fn [a b] [builtin-lt a b]]]
+#
+# ComparableFloat@[doc: "Comparable instance for Float"]:
+#   [instance [Comparable Float]
+#     cmp: [fn [a b] [builtin-lt a b]]]
+#
+# ComparableStr@[doc: "Comparable instance for Str"]:
+#   [instance [Comparable String]
+#     cmp: [fn [a b] [builtin-lt a b]]]
 
 # ============================================================================
 # Type Class Declarations: Showable
@@ -1347,21 +1349,22 @@ ComparableStr@[doc: "Comparable instance for Str"]:
 Showable@[doc: "Type class for types that can be converted to strings"]:
   [class [Showable a]]
 
-ShowableInt@[doc: "Showable instance for Int"]:
-  [instance [Showable Int]
-    show: str]
-
-ShowableFloat@[doc: "Showable instance for Float"]:
-  [instance [Showable Float]
-    show: str]
-
-ShowableStr@[doc: "Showable instance for Str"]:
-  [instance [Showable String]
-    show: str]
-
-ShowableBool@[doc: "Showable instance for Bool"]:
-  [instance [Showable Bool]
-    show: str]
+# NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
+# ShowableInt@[doc: "Showable instance for Int"]:
+#   [instance [Showable Int]
+#     show: str]
+#
+# ShowableFloat@[doc: "Showable instance for Float"]:
+#   [instance [Showable Float]
+#     show: str]
+#
+# ShowableStr@[doc: "Showable instance for Str"]:
+#   [instance [Showable String]
+#     show: str]
+#
+# ShowableBool@[doc: "Showable instance for Bool"]:
+#   [instance [Showable Bool]
+#     show: str]
 
 # ============================================================================
 # Type Class Declarations: Mappable

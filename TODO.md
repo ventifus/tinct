@@ -171,6 +171,47 @@ See `doc/whatif/runtime-reflection.md §include Return Type` and `§Stdlib Reorg
 
 - [ ] `builtin-repeat` in `src/type_env.rs:2255–2262`: currently registered as `Top → Seq(Top)`; should be `∀T. T → Seq(T)` — register as a `TypeScheme` with a fresh type var so `[repeat 42]` infers `Seq(Int)` rather than `Seq(Top)` (`src/type_env.rs`)
 
+### type-alias-record-context: Fix [type [...]] body to never apply property-dict disambiguation
+
+**Bug:** `resolve_type_dict` applies the same property-dict-key check (`type:`, `default:`, `doc:`, `repr:`) whether called from an annotation (`@[...]`) or a type alias body (`[type [...]]`). In type alias context, there are no property dicts — every keyed entry is a Record field. `[type [type: String  id: Int]]` silently misresolves: `type:` is treated as the field's type annotation rather than a field named `type`.
+
+- [ ] Add `in_type_alias: bool` context flag (or a separate `resolve_record_fields` function) so that `resolve_type_expr` for `Expr::Dict` in `[type ...]` body position always bypasses the property-dict-key check and resolves all keyed entries as Record fields (`src/typecheck_annot.rs`)
+- [ ] Test: `[type [type: String  id: Int]]` correctly produces `Record([type: String, id: Int])`; `[type [default: Int]]` correctly produces `Record([default: Int])`; existing `@[type: String  default: 0]` parameter annotation still works as property dict (`tests/corpus/eval/typecheck/`)
+
+### parameterized-annotations: Chained `@` for parameterized type annotations
+
+See `doc/03-data-model.md §Record and Map` and `doc/whatif/completed/parameterized-dict.md §Annotation Syntax`. **Spec chapters:** `doc/03-data-model.md §Record and Map`, `doc/05-type-annotations.md`.
+
+Introduces chained `@` in annotation position, enabling parameterized type forms:
+- `@Seq@Int` — Seq of Int
+- `@Map@[String: Int]` — Map from String to Int (compact form)
+- `@Map@[key: String  value: Int]` — explicit named form
+- `@Record@[host: String  port: Int]` — explicit Record (bypasses property-dict-key collision)
+- `@Record` — any record (bare)
+- `@Map` — any map (bare, `Map[Any Any]`)
+
+**Grammar extension** (`src/parser.rs`, `src/lexer.rs`):
+- [ ] Extend `annotation_value` to allow chained `@`: `annotated_bare_ann = annotation_word "@" annotation_value`. Currently `annotation_value = bracket_expr | annotation_word`; extend to `bracket_expr | annotated_bare_ann | annotation_word`. Ensures `Seq@Int`, `Map@[String: Int]`, `Record@[host: String  port: Int]` parse as single annotation values (`src/parser.rs`)
+
+**Seq parameterization** (`src/typecheck_annot.rs`):
+- [ ] In `resolve_type_name` / annotation resolver: when `Annotated("Seq", inner_ann)` is seen, resolve `inner_ann` as a type and produce `Type::Seq(inner_type)`. Currently bare `"Seq"` → `Seq(Unknown)` (line 976); extend to handle the parameterized `Seq@T` form (`src/typecheck_annot.rs`)
+
+**Map annotation** (`src/typecheck_annot.rs`):
+- [ ] Add `"Map"` arm to `resolve_type_name`: bare `@Map` → `Type::Map(Unknown, Unknown)` (`src/typecheck_annot.rs`)
+- [ ] Handle compact form `@Map@[K: V]`: when `Annotated("Map", PropertyDict([{key: Some(K_name), value: V_ann}]))` has exactly one named entry, resolve K_name as type and V_ann as type → `Type::Map(K, V)` (`src/typecheck_annot.rs`)
+- [ ] Handle explicit form `@Map@[key: K  value: V]`: when inner PropertyDict has `key:` and `value:` named entries, resolve both → `Type::Map(K, V)` (`src/typecheck_annot.rs`)
+- [ ] Kind check for K: at resolution time, verify K resolves to `Int`, `Str`, or a union of those; emit `TypeError` "Map key type must be Int, Str, or Int|Str" otherwise (`src/typecheck_annot.rs`)
+
+**Record annotation** (`src/typecheck_annot.rs`):
+- [ ] Add `"Record"` arm to `resolve_type_name`: bare `@Record` → `Type::Record(Row { fields: HashMap::new() })` (same as `@Dict` today) (`src/typecheck_annot.rs`)
+- [ ] Handle `@Record@[field: Type ...]`: when `Annotated("Record", PropertyDict(entries))` is seen, dispatch directly to Record type resolution — bypass the property-dict-key check (`type:`, `default:`, `doc:`, `repr:`) entirely. This solves the collision: `@Record@[type: String  id: Int]` correctly produces `Record([type: String, id: Int])` where `type` is a field name, not a property dict key (`src/typecheck_annot.rs`)
+
+**Tests**:
+- [ ] `xs@Seq@Int` infers `Seq(Int)`; `fn@Seq@String [s@String]` return type is `Seq(Str)`; `xs@Seq@a` introduces TypeVar (`tests/corpus/eval/typecheck/`)
+- [ ] `m@Map@[String: Int]` and `m@Map@[key: String  value: Int]` both produce `Map(Str, Int)`; `@Map` produces `Map(Unknown, Unknown)`; K kind error on `@Map@[Bool: Int]` (`tests/corpus/eval/typecheck/`)
+- [ ] `config@Record@[host: String  port: Int]` produces `Record([host: String, port: Int])`; `r@Record@[type: String  id: Int]` produces `Record([type: String, id: Int])` — not interpreted as property dict (`tests/corpus/eval/typecheck/`)
+- [ ] `@Record` bare produces open record accepting any dict; existing `@[host: String  port: Int]` form continues to work unchanged (`tests/corpus/eval/typecheck/`)
+
 ---
 
 ## Higher-Kinded Types

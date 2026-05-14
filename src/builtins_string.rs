@@ -45,6 +45,50 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("str", named, call_span)?;
+
+    // Runtime typeclass dispatch: check for Showable instance
+    // For multi-arg str, only check the first arg for an instance
+    if args.len() >= 1 {
+        let val = materialize(&args[0], Some(&call_span), &ctx)?;
+        let type_name = val.type_name();
+        if let Some(instance_thunk) = ctx.state.borrow().instance_registry.get(&("Showable".to_string(), type_name.to_string())).cloned() {
+            // Get the instance dict
+            let instance_val = materialize(&instance_thunk, Some(&call_span), &ctx)?;
+            if let Value::Dict(methods_map) = instance_val {
+                // Look up the "str" method
+                if let Some(str_method_id) = methods_map.get(&Key::String("str".to_string())) {
+                    let str_method_thunk = ctx.get_thunk(*str_method_id);
+                    // Materialize the method to get the function/builtin
+                    let str_method_val = materialize(&str_method_thunk, Some(&call_span), &ctx)?;
+                    // Dispatch based on value type
+                    match str_method_val {
+                        Value::Function { params, body, env: closure_env, .. } => {
+                            use crate::eval_call::{invoke_function, CallContext};
+                            return invoke_function(&CallContext {
+                                params: &params,
+                                body: &body,
+                                closure_env: &closure_env,
+                                positional: args,
+                                named: None,
+                                default_env: &closure_env,
+                                call_span,
+                                origin: Some(Rc::from("Showable.str")),
+                                ctx: &ctx,
+                            });
+                        }
+                        Value::Builtin(def) => {
+                            return (def.func)(BuiltinArgs { args, named, call_span, ctx: Rc::clone(&ctx) });
+                        }
+                        _ => {
+                            // Method is not callable - fall through to default impl
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall through to existing Rust dispatch
     // Estimate capacity: average string ~20 bytes, typical config keys ~10 bytes.
     // Conservative underestimate better than zero capacity.
     let estimated_capacity = args.len() * 10;
