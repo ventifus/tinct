@@ -5,3 +5,5 @@
   [Ok [+ x y]]]
 ---
 [Err "fail"]
+=== warn
+undefined variable: result at 1:5-1:11

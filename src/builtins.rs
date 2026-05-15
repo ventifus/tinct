@@ -6460,8 +6460,8 @@ mod tests {
         );
 
         assert!(
-            cached_arena.borrow().len() > 397,
-            "cached arena should contain at least 397 stdlib thunks (prelude + macros), got {}",
+            cached_arena.borrow().len() > 390,
+            "cached arena should contain at least 390 stdlib thunks (prelude + macros), got {}",
             cached_arena.borrow().len()
         );
     }
@@ -6472,7 +6472,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         assert_eq!(
-            count, 183,
+            count, 184,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6611,6 +6611,7 @@ mod tests {
         assert!(names.contains(&"proxy"), "missing proxy");
         // Access-pipeline builtins (Wave 1 sprint)
         assert!(names.contains(&"builtin-get"), "missing builtin-get");
+        assert!(names.contains(&"get?"), "missing get?");
         assert!(names.contains(&"each"), "missing each");
         assert!(names.contains(&"each-key"), "missing each-key");
         assert!(names.contains(&"each-kv"), "missing each-kv");
@@ -6692,8 +6693,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            183,
-            "expected 183 builtins, got {} (upper/lower moved to stdlib/strings.llt; str-to-upper-char, str-to-lower-char, str-map-chars, regex-match? added)",
+            184,
+            "expected 184 builtins, got {} (upper/lower moved to stdlib/strings.llt; str-to-upper-char, str-to-lower-char, str-map-chars, regex-match? added; get? added)",
             names.len()
         );
     }

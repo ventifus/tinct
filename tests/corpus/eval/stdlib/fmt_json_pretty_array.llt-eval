@@ -1,5 +1,5 @@
 # json-pretty: format array
-[include %libdir "out/json-pretty.llt"]
+[include %libdir "cli/out/json-pretty.llt"]
 ---
 [call %.json-pretty [1 2 3]]
 === out

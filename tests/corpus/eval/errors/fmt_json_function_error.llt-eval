@@ -1,5 +1,5 @@
 # json formatter: Function serialization produces error
-[include %libdir "out/json.llt"]
+[include %libdir "cli/out/json.llt"]
 ---
 [call %.json [fn [x] x]]
 === error

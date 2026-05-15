@@ -1,5 +1,5 @@
 # toml: format simple dict
-[include %libdir "out/toml.llt"]
+[include %libdir "cli/out/toml.llt"]
 ---
 [call %.toml [
   name: "Alice"
