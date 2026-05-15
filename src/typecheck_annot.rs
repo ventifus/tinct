@@ -790,6 +790,70 @@ pub(crate) fn resolve_annotation(
                     }
                 }
 
+                // Built-in type constructor application: @[Seq Int], @[Map String Int]
+                // Check BEFORE parameterized alias lookup so built-in constructors have priority.
+                if positional_entries.len() >= 1 {
+                    if let Expr::VarRef { name, .. } = &positional_entries[0].node.value.node {
+                        match name.as_str() {
+                            "Seq" => {
+                                if positional_entries.len() == 2 {
+                                    let elem_ty = resolve_type_expr(
+                                        &positional_entries[1].node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    return Ok(Type::Seq(Box::new(elem_ty)));
+                                } else {
+                                    return Err(TypeError::new(
+                                        "Seq requires 1 type argument",
+                                        span,
+                                    ));
+                                }
+                            }
+                            "Map" => {
+                                if positional_entries.len() == 3 {
+                                    let key_ty = resolve_type_expr(
+                                        &positional_entries[1].node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    let value_ty = resolve_type_expr(
+                                        &positional_entries[2].node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
+                                } else if positional_entries.len() == 2 {
+                                    // Single-arg form: @[Map Int] → Map(Unknown, Int)
+                                    let value_ty = resolve_type_expr(
+                                        &positional_entries[1].node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    return Ok(Type::Map(
+                                        Box::new(Type::Unknown),
+                                        Box::new(value_ty),
+                                    ));
+                                } else {
+                                    return Err(TypeError::new(
+                                        "Map requires 1 or 2 type arguments",
+                                        span,
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 // Check for parameterized type alias application: @[AliasName Arg1 Arg2]
                 // When the first positional entry is a VarRef referring to a parameterized
                 // type alias, treat remaining entries as type arguments rather than union members.
@@ -1758,6 +1822,62 @@ pub(crate) fn resolve_type_expr(
                 }
             }
 
+            // Built-in type constructor application in implied-call position.
+            // Check BEFORE parameterized alias lookup so built-in constructors have priority.
+            if let Expr::VarRef { name, .. } = &func.node {
+                match name.as_str() {
+                    "Seq" => {
+                        if args.len() == 1 {
+                            let elem_ty = resolve_type_expr(
+                                &args[0],
+                                env,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            return Ok(Type::Seq(Box::new(elem_ty)));
+                        } else {
+                            return Err(TypeError::new("Seq requires 1 type argument", expr.span));
+                        }
+                    }
+                    "Map" => {
+                        if args.len() == 2 {
+                            let key_ty = resolve_type_expr(
+                                &args[0],
+                                env,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            let value_ty = resolve_type_expr(
+                                &args[1],
+                                env,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
+                        } else if args.len() == 1 {
+                            // Single-arg form: [Map Int] → Map(Unknown, Int)
+                            let value_ty = resolve_type_expr(
+                                &args[0],
+                                env,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            return Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_ty)));
+                        } else {
+                            return Err(TypeError::new(
+                                "Map requires 1 or 2 type arguments",
+                                expr.span,
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
             if let Expr::VarRef { name, .. } = &func.node {
                 if let Some(alias) = env.get_type_alias(name) {
@@ -1815,6 +1935,75 @@ pub(crate) fn resolve_type_dict(
         try_resolve_fn_type_expr(entries, env, span, state, ann_mapping, row_ann_mapping)?
     {
         return Ok(fn_type);
+    }
+
+    // Built-in type constructor application: [Seq Int], [Map String Int]
+    // Check BEFORE parameterized alias lookup so built-in constructors have priority.
+    if entries.len() >= 1 {
+        if let Some(first) = entries.first() {
+            if first.node.key.is_none() {
+                if let Expr::VarRef { name, .. } = &first.node.value.node {
+                    match name.as_str() {
+                        "Seq" => {
+                            if entries.len() == 2 {
+                                let elem_ty = resolve_type_expr(
+                                    &entries[1].node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                return Ok(Type::Seq(Box::new(elem_ty)));
+                            } else if entries.len() == 1 {
+                                return Err(TypeError::new("Seq requires 1 type argument", span));
+                            } else {
+                                return Err(TypeError::new("Seq requires 1 type argument", span));
+                            }
+                        }
+                        "Map" => {
+                            if entries.len() == 3 {
+                                let key_ty = resolve_type_expr(
+                                    &entries[1].node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                let value_ty = resolve_type_expr(
+                                    &entries[2].node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
+                            } else if entries.len() == 2 {
+                                // Single-arg form: [Map Int] → Map(Unknown, Int)
+                                let value_ty = resolve_type_expr(
+                                    &entries[1].node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                return Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_ty)));
+                            } else if entries.len() == 1 {
+                                return Err(TypeError::new(
+                                    "Map requires 1 or 2 type arguments",
+                                    span,
+                                ));
+                            } else {
+                                return Err(TypeError::new(
+                                    "Map requires 1 or 2 type arguments",
+                                    span,
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     // Parameterized type alias application: [AliasName Arg1 Arg2 ...]
