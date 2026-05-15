@@ -366,6 +366,57 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 ## Standard Library Boundary
 
+## HKT Operator Soundness (Analysis #2, 2026-05-14)
+
+### hkt-operator-soundness: Kind-preserving instantiation and unification fixes
+
+Computer-scientist + type-theorist findings. Operator-kinded variables have correctness gaps in instantiation, renaming, and constraint checking.
+
+- [ ] **[Critical]** `instantiate_at_level` converts `Type::Operator` to `Type::TypeVar`, losing kind — when building renaming map, insert `Type::Operator(fresh_name)` for Operator-kinded vars and register in kind_env (`src/type_env.rs:82-91`)
+- [ ] **[Critical]** `rename_single_type_var` missing `App`, `Operator`, `Negation` match arms — TypeVars nested inside these types are not freshened in the single-var fast path (`src/type_env.rs:104-150`)
+- [ ] **[Major]** UNIFY-OPERATOR missing `check_constraints_on_var` before binding — Operator constraints (e.g., Mappable) are not verified at binding time (`src/type_unify.rs:1681-1708`)
+- [ ] **[Major]** UNIFY-OPERATOR missing `transfer_class_constraints` for Operator-to-Operator binding — constraints lost when `Operator("m")` binds to `Operator("n")` (`src/type_unify.rs:1681-1708`)
+- [ ] **[Major]** `check_kind_wellformed` does not reject bare `Type::Operator` in type positions — `Operator("f")` as a record field type passes silently (kind `*→*` in kind-`*` position) (`src/types.rs:1373-1419`)
+- [ ] **[Minor]** App normalization only handles Seq — `App(App(Operator("Map"), K), V)` remains un-normalized instead of becoming `Type::Map(K, V)` (`src/type_unify.rs:780-785`)
+
+---
+
+## Type System Precision (Analysis #2)
+
+### type-precision-fixes: HasField, TypeVar consistency, negation subtyping
+
+- [ ] **[Critical]** `resolve_has_field` returns `Type::Unknown` for `Type::Top` — should return `Type::Top` (correct type when dict is untyped); depth overflow should error, not degrade to Unknown (`src/type_unify.rs:494,551`)
+- [ ] **[Critical]** TypeVar consistency rule is unsound — `is_consistent(TypeVar(..), _) => true` bypasses static checking; should apply substitution before consistency check or restrict to `TypeVar-TypeVar` reflexivity (`src/types.rs:637`)
+- [ ] **[Major]** Negation subtyping uses incomplete disjointness check — `is_subtype(sub, Negation(a))` delegates to `types_are_disjoint` which returns `false` for most compounds; RDNF normalization needed or disable negation in annotations (`src/types.rs:355`)
+- [ ] **[Major]** IntLiteral/StringLiteral promotion too eager — applies to ALL class constraints, not just primitive classes; user-defined class with IntLiteral instance but no Int instance silently breaks (`src/type_unify.rs:450-472`)
+- [ ] **[Major]** FD improvement hardcoded for 2 determining positions — `lookup_arithmetic_instance` assumes `det_types.len() == 2`; 3+ param MPTCs error; generalize to query instance_env (`src/type_unify.rs:387`)
+
+---
+
+## LSP Security
+
+### lsp-security: Evaluation isolation and panic resilience
+
+- [ ] **[Critical]** LSP evaluates `$include` on document open — CWE-22 data exfiltration; opening malicious `.llt` with `[x: [include %pwd "../../.ssh/id_rsa"]]` reads arbitrary files; disable eval in LSP or set `no_fs=true` (`src/lsp/document.rs:79`)
+- [ ] **[Major]** LSP `.expect()` calls panic on filesystem errors — with `panic = "abort"`, crashes editor; replace with graceful fallback (`src/lsp/document.rs:499,546`)
+- [ ] **[Major]** TypeAssert.resolved_type uses `debug_assert!` instead of runtime `assert!` — double-writes silently ignored in release builds (`src/typecheck_annot.rs:140-147`)
+
+---
+
+## Doc/Stdlib Accuracy
+
+### doc-accuracy-c318: Stale counts, doc/04 variadic example, spec line references
+
+- [ ] **[Major]** doc/11-stdlib.md builtin count stale: "189 Rust-native builtins" should be "184" (2 locations: lines 326, 474) (`doc/11-stdlib.md`)
+- [ ] **[Major]** doc/04-functions.md variadic example shows Dict bracket notation post-Seq migration — update to prose describing Seq collection (`doc/04-functions.md:125`)
+- [ ] **[Major]** doc/02-syntax.md Complete Grammar missing interpolated string productions (`doc/02-syntax.md:948-951`)
+- [ ] **[Minor]** doc/06-type-inference.md stale line references for UNIFY-OPERATOR and App normalization (`doc/06-type-inference.md:1133,1135`)
+- [ ] **[Minor]** stdlib/prelude.llt:496 typo "Stringip" → "Strip" in unindent doc comment (`stdlib/prelude.llt`)
+
+---
+
+## Standard Library Boundary
+
 ### stdlib-boundary: stdlib Rust surface area reduction
 
 Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irreducible syscall/opaque-type primitives). These specific ones do not. Also adds missing Rust primitives that unlock tinct migrations, and verifies all stdlib modules use `%rust` groups cleanly after `primitive-privacy` Phase 3 lands.
