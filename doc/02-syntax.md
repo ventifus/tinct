@@ -950,6 +950,10 @@ quoted_string = "\"" ~ inner_string ~ "\""
 inner_string  = (escape_seq | !("\"" | "\\") ~ ANY)*
 escape_seq    = "\\" ~ ("\"" | "\\" | "n" | "t" | "r")
 
+interpolated_string = "i" ~ "\"" ~ interp_part* ~ "\""
+triple_interpolated = "i" ~ "\"\"\"" ~ interp_part* ~ "\"\"\""
+interp_part         = literal_text | "$" ~ identifier | "${" ~ expression ~ "}"
+
 identifier = ident_start ~ ident_cont*
 
 ident_start = !( "$" | "#" | "[" | "]" | ":" | ";" | "\"" | "@" | "|"
