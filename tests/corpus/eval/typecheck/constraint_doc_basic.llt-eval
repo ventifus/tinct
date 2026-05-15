@@ -1,0 +1,12 @@
+# Doc string test
+# Verifies doc string is present in the TypeScheme
+[
+  add: [fn@[doc: "Adds two numbers"] [x@Int y@Int] [+ x y]]
+  result: [add 2 3]
+]
+
+---
+
+%.result
+=== out
+Int(5)

@@ -1,0 +1,5 @@
+# Error test: unknown constraint class
+# Should emit a type error for unknown class name
+[fn@[constraint: [a: NonexistentClass]] [x@a] x]
+=== out
+NonexistentClass

@@ -6245,3 +6245,12 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer)
 - [x] doc/02-syntax.md: interpolated string grammar productions added
 - [x] doc/06-type-inference.md: stale line refs → function-name anchors
 - [x] stdlib/prelude.llt: "Stringip"→"Strip" typo fix
+
+## Type Annotation v2
+
+### constraint-annotations: fn@[return: T constraint: [a: Comparable] doc: "..."]
+
+All tasks already implemented in prior sprint. Added 3 verification tests:
+- [x] constraint_annotation_basic.llt-eval — Comparable constraint attached to TypeVar
+- [x] constraint_annotation_unknown_class.llt-eval (type_errors/) — error on unknown class
+- [x] constraint_doc_basic.llt-eval — doc string present in TypeScheme
