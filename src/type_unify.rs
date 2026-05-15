@@ -45,7 +45,10 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     if let Type::Record(row) = ty {
         match class_name {
             "Numeric" | "Comparable" => {
-                return row.fields.values().all(|field_ty| satisfies_constraint(field_ty, class_name));
+                return row
+                    .fields
+                    .values()
+                    .all(|field_ty| satisfies_constraint(field_ty, class_name));
             }
             _ => {} // Fall through to instance resolution
         }
@@ -55,12 +58,16 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     // A union-typed value could be either alternative at runtime, so both branches must
     // satisfy the constraint. Use all(), NOT any().
     if let Type::Union(members) = ty {
-        return members.iter().all(|member| satisfies_constraint(member, class_name));
+        return members
+            .iter()
+            .all(|member| satisfies_constraint(member, class_name));
     }
 
     // [CONSTRAIN-INTER]: C(τ₁ & τ₂) ⊢ satisfied iff C(τ₁) ∧ C(τ₂) (ALL members).
     if let Type::Intersection(members) = ty {
-        return members.iter().all(|member| satisfies_constraint(member, class_name));
+        return members
+            .iter()
+            .all(|member| satisfies_constraint(member, class_name));
     }
 
     match class_name {
@@ -304,7 +311,10 @@ fn improve_functional_dependency(
             .map(|(i, _)| i)
             .collect();
 
-        if !bound_var_positions.iter().any(|p| det_positions.contains(p)) {
+        if !bound_var_positions
+            .iter()
+            .any(|p| det_positions.contains(p))
+        {
             // This binding doesn't affect this FD
             continue;
         }
@@ -356,7 +366,10 @@ fn improve_functional_dependency(
         // All determining positions are ground - look up the instance
         let result_type = lookup_arithmetic_instance(
             class,
-            &det_types.iter().map(|(_, _, ty)| ty.clone()).collect::<Vec<_>>(),
+            &det_types
+                .iter()
+                .map(|(_, _, ty)| ty.clone())
+                .collect::<Vec<_>>(),
         )?;
 
         // Unify each determined position with the result type
@@ -386,7 +399,11 @@ fn improve_functional_dependency(
 fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, TypeError> {
     if det_types.len() != 2 {
         return Err(TypeError::new(
-            format!("arithmetic class {} expects 2 determining types, got {}", class, det_types.len()),
+            format!(
+                "arithmetic class {} expects 2 determining types, got {}",
+                class,
+                det_types.len()
+            ),
             Span::origin(),
         ));
     }
@@ -398,32 +415,34 @@ fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, T
     let key = (type_key(a), type_key(b));
 
     match class {
-        "Add" | "Sub" | "Mul" => {
-            match key {
-                ("Int", "Int") => Ok(Type::Int),
-                ("Float", "Float") => Ok(Type::Float),
-                ("Int", "Float") | ("Float", "Int") => Ok(Type::Float),
-                ("Number", "Number") | ("Number", "Int") | ("Int", "Number")
-                | ("Number", "Float") | ("Float", "Number") => Ok(Type::Number),
-                _ => Err(TypeError::new(
-                    format!("no instance for {} {} {}", class, a, b),
-                    Span::origin(),
-                )),
+        "Add" | "Sub" | "Mul" => match key {
+            ("Int", "Int") => Ok(Type::Int),
+            ("Float", "Float") => Ok(Type::Float),
+            ("Int", "Float") | ("Float", "Int") => Ok(Type::Float),
+            ("Number", "Number")
+            | ("Number", "Int")
+            | ("Int", "Number")
+            | ("Number", "Float")
+            | ("Float", "Number") => Ok(Type::Number),
+            _ => Err(TypeError::new(
+                format!("no instance for {} {} {}", class, a, b),
+                Span::origin(),
+            )),
+        },
+        "Div" => match key {
+            ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
+                Ok(Type::Float)
             }
-        }
-        "Div" => {
-            match key {
-                ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
-                    Ok(Type::Float)
-                }
-                ("Number", "Number") | ("Number", "Int") | ("Int", "Number")
-                | ("Number", "Float") | ("Float", "Number") => Ok(Type::Number),
-                _ => Err(TypeError::new(
-                    format!("no instance for Div {} {}", a, b),
-                    Span::origin(),
-                )),
-            }
-        }
+            ("Number", "Number")
+            | ("Number", "Int")
+            | ("Int", "Number")
+            | ("Number", "Float")
+            | ("Float", "Number") => Ok(Type::Number),
+            _ => Err(TypeError::new(
+                format!("no instance for Div {} {}", a, b),
+                Span::origin(),
+            )),
+        },
         _ => Err(TypeError::new(
             format!("unknown arithmetic class {}", class),
             Span::origin(),
@@ -437,7 +456,7 @@ fn type_key(ty: &Type) -> &'static str {
         Type::Int => "Int",
         Type::Float => "Float",
         Type::Number => "Number",
-        Type::IntLiteral(_) => "Int",  // Promoted
+        Type::IntLiteral(_) => "Int", // Promoted
         _ => "Unknown",
     }
 }
@@ -783,7 +802,16 @@ impl Substitution {
                         _ => {}
                     }
                 }
-                // App(App(Map, K), V) → Type::Map(K, V) handled separately if needed
+
+                // Normalize App(App(Operator("Map"), K), V) → Type::Map(K, V) (Task 6)
+                // Map has kind (* → * → *), so full application is App(App(Map, K), V)
+                if let Type::App(inner_f, k) = &f_applied {
+                    if let Type::Operator(ctor_name) = inner_f.as_ref() {
+                        if ctor_name == "Map" {
+                            return Cow::Owned(Type::Map(k.clone(), Box::new(a_applied)));
+                        }
+                    }
+                }
 
                 Cow::Owned(Type::App(Box::new(f_applied), Box::new(a_applied)))
             }
@@ -1689,6 +1717,12 @@ pub fn unify(
                     span,
                 ));
             }
+            // Check constraints on m before binding (Task 3)
+            check_constraints_on_var(m, &b, subst, state, span)?;
+            // Transfer constraints if binding to another Operator variable (Task 4)
+            if let Type::Operator(n_name) = &b {
+                transfer_class_constraints(m, n_name, state);
+            }
             subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             Ok(())
         }
@@ -1702,6 +1736,12 @@ pub fn unify(
                     format!("infinite type: operator variable {} occurs in {}", m, a),
                     span,
                 ));
+            }
+            // Check constraints on m before binding (Task 3)
+            check_constraints_on_var(m, &a, subst, state, span)?;
+            // Transfer constraints if binding to another Operator variable (Task 4)
+            if let Type::Operator(n_name) = &a {
+                transfer_class_constraints(m, n_name, state);
             }
             subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             Ok(())

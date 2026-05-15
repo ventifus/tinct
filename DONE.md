@@ -6206,3 +6206,14 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer)
 - [x] Register capability flag nominal unit types in `TypeEnv`: added `__cap_flag_X` marker field approach for Readable/Writable/etc. in `type_env.rs`; reverted to plain `DirCap` for builtin params (intersection type too strict — `%pwd` isn't annotated with flags); `dircap_with_flags` helper retained for future use (`src/type_env.rs`, `src/types.rs`)
 - [x] Add `narrow` overload for DirCap: `[narrow cap@[[all DirCap Flag1 ...]] FlagName...]` produces a new DirCap with the intersection of source permissions and requested flags; the return type is `Intersection([DirCap, requested-flags])` — a BAS intersection narrower than the input; runtime error if a requested flag is not held in the source `DirPerms`; `[narrow cap Subtree "path"]` restricts the directory root to a subdirectory and returns the same intersection type with an updated root path (`src/builtins_io.rs` or new `src/builtins_cap.rs`)
 - [x] Tests: `--cap-fs root=.:r` → `list-dir` succeeds, `open "w"` fails; `--cap-fs data='./d:[Readable Statable]'` → read succeeds, `list-dir` fails; `--cap-file cfg=Cargo.toml` (no mode) → read-write handle; extended syntax `--cap-file cfg='Cargo.toml:[Readable]'` → read-only handle; `narrow` reduces permissions; `narrow` to non-held flag errors (`tests/corpus/eval/`, `tests/corpus/cli/`)
+
+## HKT Operator Soundness (Analysis #2)
+
+### hkt-operator-soundness: Kind-preserving instantiation and unification fixes
+
+- [x] instantiate_at_level preserves Operator kind (src/type_env.rs)
+- [x] rename_single_type_var handles App/Operator/Negation (src/type_env.rs)
+- [x] UNIFY-OPERATOR calls check_constraints_on_var (src/type_unify.rs)
+- [x] UNIFY-OPERATOR transfers constraints Operator-to-Operator (src/type_unify.rs)
+- [x] check_kind_wellformed rejects bare Operator in kind-* positions (src/types.rs)
+- [x] App normalization for Map: App(App(Map, K), V) → Map(K, V) (src/type_unify.rs)

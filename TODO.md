@@ -366,19 +366,6 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 ## Standard Library Boundary
 
-## HKT Operator Soundness (Analysis #2, 2026-05-14)
-
-### hkt-operator-soundness: Kind-preserving instantiation and unification fixes
-
-Computer-scientist + type-theorist findings. Operator-kinded variables have correctness gaps in instantiation, renaming, and constraint checking.
-
-- [ ] **[Critical]** `instantiate_at_level` converts `Type::Operator` to `Type::TypeVar`, losing kind — when building renaming map, insert `Type::Operator(fresh_name)` for Operator-kinded vars and register in kind_env (`src/type_env.rs:82-91`)
-- [ ] **[Critical]** `rename_single_type_var` missing `App`, `Operator`, `Negation` match arms — TypeVars nested inside these types are not freshened in the single-var fast path (`src/type_env.rs:104-150`)
-- [ ] **[Major]** UNIFY-OPERATOR missing `check_constraints_on_var` before binding — Operator constraints (e.g., Mappable) are not verified at binding time (`src/type_unify.rs:1681-1708`)
-- [ ] **[Major]** UNIFY-OPERATOR missing `transfer_class_constraints` for Operator-to-Operator binding — constraints lost when `Operator("m")` binds to `Operator("n")` (`src/type_unify.rs:1681-1708`)
-- [ ] **[Major]** `check_kind_wellformed` does not reject bare `Type::Operator` in type positions — `Operator("f")` as a record field type passes silently (kind `*→*` in kind-`*` position) (`src/types.rs:1373-1419`)
-- [ ] **[Minor]** App normalization only handles Seq — `App(App(Operator("Map"), K), V)` remains un-normalized instead of becoming `Type::Map(K, V)` (`src/type_unify.rs:780-785`)
-
 ---
 
 ## Type System Precision (Analysis #2)
