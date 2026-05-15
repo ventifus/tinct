@@ -6260,3 +6260,9 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] try_resolve_fn_type_expr Dict arm: named entries produce (Some(name), param_ty)
 - [x] Expr::Call { implied: true } arm: same fix
 - [x] Tests: fn_type_named_params.llt-eval, fn_type_unnamed_params.llt-eval
+
+### ctor-app: Built-in type constructor application in dict form
+
+- [x] resolve_type_dict: Seq/Map built-in constructor matching before alias check
+- [x] resolve_type_expr + resolve_annotation Call arms: same fix
+- [x] Tests: ctor_app corpus tests

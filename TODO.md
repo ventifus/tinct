@@ -419,16 +419,6 @@ Design finalized 2026-05-15. See mempalace tinct/type-ann-v2 for full architectu
 [kind: "recvar"       name: "a"]                # Type::RecVar
 ```
 
-### ctor-app: Built-in type constructor application in dict form
-
-`[Seq Int]`, `[Map String Int]` in type annotation positions. Currently only user-defined parameterized aliases are handled; built-in constructors require the `@Seq@Int` chained annotation form.
-
-- [ ] In `resolve_type_dict()` at `src/typecheck_annot.rs:1805`: before the existing parameterized alias check, match built-in constructor names with their positional type args: `"Seq"` + 1 arg → `Type::Seq`; `"Map"` + 2 args → `Type::Map(K, V)`; `"Map"` + 1 arg → `Type::Map(Unknown, V)` (value-perspective); `"Result"` + 1 arg → `Type::Union([T, Record({})])`. (`src/typecheck_annot.rs`)
-- [ ] Apply same in `Expr::Call { implied: true }` arm of `resolve_type_expr()` at `src/typecheck_annot.rs:1746`: when `func` is `VarRef` matching a built-in constructor, expand inline before the alias lookup path. (`src/typecheck_annot.rs`)
-- [ ] Tests: `[Seq Int]` → `Seq(Int)`; `[Map String Int]` → `Map(Str, Int)`; `[Map Int]` → `Map(Unknown, Int)`; arity error for `[Seq Int Bool]`; `[Seq]` → error "Seq requires 1 type argument" (`tests/corpus/eval/typecheck/`)
-
-**Depends on:** none
-
 ### type-stage-infra: `--- stage: type` sections, `%rust "type-core"`, type dict schema
 
 See mempalace tinct/type-ann-v2. **Spec chapters:** `doc/05-type-annotations.md`, `doc/09-documents.md`.
