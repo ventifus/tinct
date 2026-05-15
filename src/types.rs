@@ -1300,6 +1300,49 @@ impl Type {
             _ => {}
         }
     }
+
+    /// Collect all Operator variable names from this type.
+    /// Used by instantiate_at_level to preserve Operator kind during instantiation.
+    pub fn collect_operator_names(&self, operator_names: &mut HashSet<String>) {
+        match self {
+            Type::Operator(name) => {
+                operator_names.insert(name.clone());
+            }
+            Type::Record(row) => {
+                for ty in row.fields.values() {
+                    ty.collect_operator_names(operator_names);
+                }
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                for (_name, p_ty) in params {
+                    p_ty.collect_operator_names(operator_names);
+                }
+                ret.collect_operator_names(operator_names);
+            }
+            Type::Seq(elem) => elem.collect_operator_names(operator_names),
+            Type::Map(key, val) => {
+                key.collect_operator_names(operator_names);
+                val.collect_operator_names(operator_names);
+            }
+            Type::Union(members) | Type::Intersection(members) => {
+                for member in members {
+                    member.collect_operator_names(operator_names);
+                }
+            }
+            Type::Negation(inner) => {
+                inner.collect_operator_names(operator_names);
+            }
+            Type::App(f, a) => {
+                f.collect_operator_names(operator_names);
+                a.collect_operator_names(operator_names);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Helper for normalize_union: assign a stable sort order to each Type variant.
@@ -1412,6 +1455,22 @@ pub fn check_kind_wellformed(
         Type::App(func, arg) => {
             check_kind_wellformed(func, kind_env, span)?;
             check_kind_wellformed(arg, kind_env, span)
+        }
+        Type::Operator(name) => {
+            // Bare Operator in a type position (kind *) is kind-incorrect.
+            // Operator variables have kind (* → *) and must be applied via Type::App.
+            if let Some(Kind::Operator) = kind_env.get(name.as_str()) {
+                return Err(TypeError::new(
+                    format!(
+                        "kind mismatch: {} has kind * → * but appears in a type (kind *) position",
+                        name
+                    ),
+                    span,
+                ));
+            }
+            // If the name is not in kind_env, let it pass (freshly introduced Operator
+            // that hasn't been kind-registered yet, or will be registered later)
+            Ok(())
         }
         // All other types (Int, Str, Bool, literals, capabilities, etc.) are always well-kinded
         _ => Ok(()),
@@ -6782,12 +6841,10 @@ mod tests {
         // Equatable/Showable/Mappable do NOT propagate structurally - they use instance resolution
         let mut fields_any = HashMap::new();
         fields_any.insert("x".to_string(), Type::Int);
-        let record_any = Type::Record(Row {
-            fields: fields_any,
-        });
+        let record_any = Type::Record(Row { fields: fields_any });
         assert!(!satisfies_constraint(&record_any, "Equatable")); // instance-based
-        assert!(!satisfies_constraint(&record_any, "Showable"));  // instance-based
-        assert!(!satisfies_constraint(&record_any, "Mappable"));  // instance-based
+        assert!(!satisfies_constraint(&record_any, "Showable")); // instance-based
+        assert!(!satisfies_constraint(&record_any, "Mappable")); // instance-based
     }
 
     #[test]

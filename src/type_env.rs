@@ -71,6 +71,10 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
         return ty.clone();
     }
 
+    // Collect all Operator names from the original type to preserve their kind
+    let mut operator_names = HashSet::new();
+    ty.collect_operator_names(&mut operator_names);
+
     // Use with_capacity so the HashMap internal array is allocated exactly once,
     // avoiding a resize when the type var count is known upfront (CALL-POLY hot path).
     // Note: capacity hint may be larger than actual unique count if there are duplicates,
@@ -84,10 +88,21 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
             let fresh_name = format!("_t{}", state.name_counter);
             state.name_counter = state.name_counter.saturating_add(1);
             state.levels.insert(fresh_name.clone(), state.level);
-            renaming
-                .type_map
-                .borrow_mut()
-                .insert(var, Type::TypeVar(fresh_name, state.level));
+
+            // If this var appears as Type::Operator in the original type, preserve the Operator kind
+            if operator_names.contains(&var) {
+                // Register the fresh name in kind_env as Kind::Operator
+                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
+                renaming
+                    .type_map
+                    .borrow_mut()
+                    .insert(var, Type::Operator(fresh_name));
+            } else {
+                renaming
+                    .type_map
+                    .borrow_mut()
+                    .insert(var, Type::TypeVar(fresh_name, state.level));
+            }
         }
     }
 
@@ -144,6 +159,15 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
                 .map(|m| rename_single_type_var(m, old_name, fresh_name, level))
                 .collect(),
         ),
+        Type::App(f, a) => Type::App(
+            Box::new(rename_single_type_var(f, old_name, fresh_name, level)),
+            Box::new(rename_single_type_var(a, old_name, fresh_name, level)),
+        ),
+        Type::Operator(name) if name == old_name => Type::Operator(fresh_name.to_owned()),
+        Type::Operator(_) => ty.clone(),
+        Type::Negation(inner) => Type::Negation(Box::new(rename_single_type_var(
+            inner, old_name, fresh_name, level,
+        ))),
         // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
     }
@@ -437,15 +461,16 @@ pub fn generalize_with_doc(
         let mut generalizable_constraints: Vec<Constraint> = Vec::new();
         for c in &state.constraints {
             match c {
-                Constraint::Class { class, vars, fundeps } => {
+                Constraint::Class {
+                    class,
+                    vars,
+                    fundeps,
+                } => {
                     // Resolve all vars through one substitution level
                     let resolved_vars: Vec<String> =
                         vars.iter().map(|v| resolve_var_name(v)).collect();
                     // Keep constraint if ALL resolved vars are generalizable
-                    if resolved_vars
-                        .iter()
-                        .all(|v| generalizable_vars.contains(v))
-                    {
+                    if resolved_vars.iter().all(|v| generalizable_vars.contains(v)) {
                         generalizable_constraints.push(Constraint::Class {
                             class: class.clone(),
                             vars: resolved_vars,
@@ -3598,6 +3623,124 @@ mod help_suggestion_tests {
             }
         } else {
             panic!("append should have Function type, got {:?}", append_ty);
+        }
+    }
+
+    #[test]
+    fn test_instantiate_at_level_preserves_operator_kind() {
+        use crate::types::{InferState, Kind, Type};
+
+        // Create a type containing an Operator variable: App(Operator("m"), Int)
+        let original_ty = Type::App(
+            Box::new(Type::Operator("m".to_string())),
+            Box::new(Type::Int),
+        );
+
+        let mut state = InferState::new();
+        state.kind_env.insert("m".to_string(), Kind::Operator);
+
+        // Instantiate at level 1
+        state.level = 1;
+        let instantiated = instantiate_at_level(&original_ty, &mut state);
+
+        // The result should be App(Operator(fresh_name), Int), not App(TypeVar(fresh_name), Int)
+        match instantiated {
+            Type::App(f, a) => {
+                // f should be Operator, not TypeVar
+                match f.as_ref() {
+                    Type::Operator(fresh_name) => {
+                        // Check that the fresh name was registered in kind_env with Kind::Operator
+                        assert_eq!(
+                            state.kind_env.get(fresh_name.as_str()),
+                            Some(&Kind::Operator)
+                        );
+                    }
+                    other => panic!("Expected Operator after instantiation, got {:?}", other),
+                }
+                // a should still be Int
+                assert_eq!(a.as_ref(), &Type::Int);
+            }
+            other => panic!("Expected App type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rename_single_type_var_handles_operator() {
+        use crate::types::Type;
+
+        // Test renaming an Operator variable
+        let original_ty = Type::App(
+            Box::new(Type::Operator("m".to_string())),
+            Box::new(Type::Int),
+        );
+
+        let renamed = rename_single_type_var(&original_ty, "m", "fresh_m", 1);
+
+        match renamed {
+            Type::App(f, a) => {
+                match f.as_ref() {
+                    Type::Operator(name) => {
+                        assert_eq!(name, "fresh_m");
+                    }
+                    other => panic!("Expected Operator(fresh_m), got {:?}", other),
+                }
+                assert_eq!(a.as_ref(), &Type::Int);
+            }
+            other => panic!("Expected App type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rename_single_type_var_handles_app() {
+        use crate::types::Type;
+
+        // Test that App recurses into both children
+        let original_ty = Type::App(
+            Box::new(Type::TypeVar("a".to_string(), 0)),
+            Box::new(Type::TypeVar("a".to_string(), 0)),
+        );
+
+        let renamed = rename_single_type_var(&original_ty, "a", "b", 1);
+
+        match renamed {
+            Type::App(f, arg) => {
+                match f.as_ref() {
+                    Type::TypeVar(name, level) => {
+                        assert_eq!(name, "b");
+                        assert_eq!(*level, 1);
+                    }
+                    other => panic!("Expected TypeVar(b, 1), got {:?}", other),
+                }
+                match arg.as_ref() {
+                    Type::TypeVar(name, level) => {
+                        assert_eq!(name, "b");
+                        assert_eq!(*level, 1);
+                    }
+                    other => panic!("Expected TypeVar(b, 1), got {:?}", other),
+                }
+            }
+            other => panic!("Expected App type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rename_single_type_var_handles_negation() {
+        use crate::types::Type;
+
+        // Test that Negation recurses into inner type
+        let original_ty = Type::Negation(Box::new(Type::TypeVar("a".to_string(), 0)));
+
+        let renamed = rename_single_type_var(&original_ty, "a", "b", 1);
+
+        match renamed {
+            Type::Negation(inner) => match inner.as_ref() {
+                Type::TypeVar(name, level) => {
+                    assert_eq!(name, "b");
+                    assert_eq!(*level, 1);
+                }
+                other => panic!("Expected TypeVar(b, 1), got {:?}", other),
+            },
+            other => panic!("Expected Negation type, got {:?}", other),
         }
     }
 }
