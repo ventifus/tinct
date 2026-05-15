@@ -497,6 +497,21 @@ impl Type {
                 members.iter().any(|m| Type::types_are_disjoint(m, t))
             }
 
+            // Two single-field records with DIFFERENT keys are disjoint (S-RcdTop).
+            // {x: T} and {y: U} where x ≠ y have no values in common — no record can
+            // satisfy both field requirements. This improves Negation subtyping precision
+            // without requiring full RDNF normalization.
+            (Type::Record(row1), Type::Record(row2)) => {
+                if row1.fields.len() == 1 && row2.fields.len() == 1 {
+                    let key1 = row1.fields.keys().next().unwrap();
+                    let key2 = row2.fields.keys().next().unwrap();
+                    key1 != key2
+                } else {
+                    // Multi-field records: conservative (might overlap)
+                    false
+                }
+            }
+
             // Conservative: assume all other combinations might overlap
             _ => false,
         }
@@ -623,17 +638,22 @@ impl Type {
             (Type::Top, _) | (_, Type::Top) => true,
             // Never is consistent with everything (like Unknown, for gradual typing)
             (Type::Never, _) | (_, Type::Never) => true,
-            // TypeVar is consistent with everything: an unresolved TypeVar represents an
-            // unknown type and is gradual-typing consistent with any other type. This mirrors
-            // Unknown's behavior in the consistency relation and prevents spurious inference
-            // failures when internal TypeVars — from annotated params, `instantiate_scheme`,
-            // or `fresh_type_var` in pass-1 positions — appear during prelude body checking
-            // before the substitution has fully resolved them. The is_consistent check here is
-            // only reached in subsumption contexts (expected_resolved.has_inference_vars() = false);
-            // when the expected type has TypeVars, check_expr uses unification instead.
+            // TypeVar consistency: UNSOUND but required for current implementation.
+            // IDEAL: (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2 (reflexivity only),
+            // with TypeVar vs concrete type => false (not consistent — should be substitution-applied).
             //
-            // Without this, `check_expr(TypeVar("xs"), Seq(⊤))` falls to `_ => false`,
-            // failing prelude inference for wrappers like `drop: [fn [n@Int xs] ...]`.
+            // REALITY: TypeVars reach is_consistent BEFORE substitution is fully applied in some
+            // code paths (particularly prelude body checking via check_expr subsumption). Making this
+            // rule strict causes widespread test failures because internal TypeVars from annotated
+            // params, `instantiate_scheme`, or `fresh_type_var` appear during checking.
+            //
+            // Current behavior: TypeVar is consistent with everything (mirrors Unknown). This is
+            // non-transitive consistency abuse — α ~ Int and α ~ Str both hold, allowing unsound
+            // type flow. The transitivity gap prevents total collapse (Int ~ Str still false), but
+            // this is a known precision loss.
+            //
+            // TODO(type-precision): restrict to reflexivity only, fix callers to apply substitution
+            // before calling is_consistent. See sprint type-precision-fixes Task 2 notes.
             (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => true,
             // Negation: structurally consistent
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),

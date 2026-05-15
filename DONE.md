@@ -6217,3 +6217,13 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer)
 - [x] UNIFY-OPERATOR transfers constraints Operator-to-Operator (src/type_unify.rs)
 - [x] check_kind_wellformed rejects bare Operator in kind-* positions (src/types.rs)
 - [x] App normalization for Map: App(App(Map, K), V) → Map(K, V) (src/type_unify.rs)
+
+## Type System Precision (Analysis #2)
+
+### type-precision-fixes: HasField, TypeVar consistency, negation subtyping
+
+- [x] resolve_has_field: Type::Top → Type::Top; depth overflow → TypeError (src/type_unify.rs)
+- [x] TypeVar consistency: documented unsoundness + TODO; liberal rule kept pending caller fix (src/types.rs)
+- [x] Negation disjointness: single-field records with different keys are now disjoint (src/types.rs)
+- [x] Literal promotion restricted to PROMOTABLE_CLASSES (src/type_unify.rs)
+- [x] FD improvement: generalization path documented; hardcoded table kept as fast path (src/type_unify.rs)
