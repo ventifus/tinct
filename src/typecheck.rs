@@ -46,6 +46,9 @@ pub use crate::types::SchemeMap;
 /// already call `desugar_file` first; see `eval_source_with_config` in `lib.rs` for
 /// the canonical call sequence.
 pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDiagnostic>) {
+    // Reset elaboration state to allow re-typechecking cached ASTs
+    reset_elaboration(file);
+
     let mut errors = Vec::new();
     let mut diagnostics = Vec::new();
     let mut env = crate::imports::build_prelude_env();
@@ -1487,7 +1490,9 @@ fn infer_expr(
             // TypeVars to state.subst per prelude type-check, triggering the merge-loop O(N²).
             // The special-form dispatch handles all cases precisely without creating TypeVar chains.
             if let Expr::VarRef { name, .. } = &func.node {
-                if (name == "get" || name == "get?" || name == "builtin-get") && named_args.is_empty() {
+                if (name == "get" || name == "get?" || name == "builtin-get")
+                    && named_args.is_empty()
+                {
                     let is_optional = name == "get?";
                     return check_get(
                         is_optional,
@@ -2871,8 +2876,11 @@ fn check_call_with_scheme(
                 } else {
                     params.len()
                 };
-                for (idx, ((_, param_ty), arg_ty)) in
-                    params.iter().take(non_variadic_param_count).zip(arg_types.iter()).enumerate()
+                for (idx, ((_, param_ty), arg_ty)) in params
+                    .iter()
+                    .take(non_variadic_param_count)
+                    .zip(arg_types.iter())
+                    .enumerate()
                 {
                     consumed_params.insert(idx);
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
@@ -2894,7 +2902,8 @@ fn check_call_with_scheme(
                                     Type::StringLiteral(_) => Type::Str,
                                     other => other.clone(),
                                 };
-                                if let Err(e) = unify(elem_ty, &widened_ty, &mut subst, state, span) {
+                                if let Err(e) = unify(elem_ty, &widened_ty, &mut subst, state, span)
+                                {
                                     arg_errors.get_or_insert_with(Vec::new).push(e);
                                 }
                             }
@@ -3134,8 +3143,10 @@ fn check_call(
                 } else {
                     params.len()
                 };
-                for (idx, (arg, (_param_name, param_ty))) in
-                    args.iter().zip(params.iter().take(non_variadic_param_count)).enumerate()
+                for (idx, (arg, (_param_name, param_ty))) in args
+                    .iter()
+                    .zip(params.iter().take(non_variadic_param_count))
+                    .enumerate()
                 {
                     consumed_params.insert(idx);
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
@@ -3160,7 +3171,9 @@ fn check_call(
                                             other => other,
                                         };
                                         let mut subst = std::mem::take(&mut state.subst);
-                                        if let Err(e) = unify(&widened_ty, elem_ty, &mut subst, state, arg.span) {
+                                        if let Err(e) =
+                                            unify(&widened_ty, elem_ty, &mut subst, state, arg.span)
+                                        {
                                             errors.push(e);
                                         }
                                         state.subst = subst;
@@ -3287,8 +3300,10 @@ fn check_call(
                 } else {
                     inst_params.len()
                 };
-                for (idx, (arg, (_param_name, param_ty))) in
-                    args.iter().zip(inst_params.iter().take(non_variadic_param_count)).enumerate()
+                for (idx, (arg, (_param_name, param_ty))) in args
+                    .iter()
+                    .zip(inst_params.iter().take(non_variadic_param_count))
+                    .enumerate()
                 {
                     consumed_params.insert(idx);
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
@@ -3312,7 +3327,9 @@ fn check_call(
                                             other => other,
                                         };
                                         let mut subst = std::mem::take(&mut state.subst);
-                                        if let Err(e) = unify(&widened_ty, elem_ty, &mut subst, state, arg.span) {
+                                        if let Err(e) =
+                                            unify(&widened_ty, elem_ty, &mut subst, state, arg.span)
+                                        {
                                             arg_errors.get_or_insert_with(Vec::new).push(e);
                                         }
                                         state.subst = subst;
@@ -3702,7 +3719,7 @@ pub fn scan_type_quality(
                     false
                 })
             }
-            Annotation::Annotated(_, _) => false,  // Parameterized annotations are never Unknown
+            Annotation::Annotated(_, _) => false, // Parameterized annotations are never Unknown
         }
     }
 
@@ -4798,10 +4815,7 @@ mod tests {
     fn test_annotation_record_with_type_field() {
         // Test that @[type: String id: Int] as a direct annotation creates a record
         // with two fields, not a type expression shorthand.
-        let ty = result_field(
-            "[f: [fn [data@[type: String id: Int]] $data]]",
-            "f",
-        );
+        let ty = result_field("[f: [fn [data@[type: String id: Int]] $data]]", "f");
         if let Type::Function { params, .. } = ty {
             assert_eq!(params.len(), 1);
             assert_has_field(&params[0].1, "type", &Type::Str);
@@ -11316,9 +11330,7 @@ mod tests {
         );
         match env.get("result").map(|s| &s.body) {
             Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
-            Some(other) => panic!(
-                "expected Str from [builtin-get \"host\" rec], got {other}"
-            ),
+            Some(other) => panic!("expected Str from [builtin-get \"host\" rec], got {other}"),
             None => panic!("field 'result' not found"),
         }
     }

@@ -210,20 +210,31 @@ impl DocumentState {
                                     Value::NetCap(Rc::new(vec![]))
                                 }
                                 Annotation::Simple(type_name) if type_name == "DirCap" => {
-                                    let stub_dir = cap_std::fs::Dir::open_ambient_dir(
+                                    // Try to open a stub directory for DirCap: "." first, then temp_dir.
+                                    // If both fail, fall back to an empty Dict stub. The LSP must never
+                                    // panic on filesystem errors — degraded service is preferable to
+                                    // crashing the editor.
+                                    match cap_std::fs::Dir::open_ambient_dir(
                                         ".",
                                         cap_std::ambient_authority(),
                                     )
-                                    .unwrap_or_else(|_| {
+                                    .or_else(|_| {
                                         cap_std::fs::Dir::open_ambient_dir(
                                             std::env::temp_dir(),
                                             cap_std::ambient_authority(),
                                         )
-                                        .expect("failed to open stub dir for LSP caps")
-                                    });
-                                    Value::DirCap {
-                                        dir: Rc::new(stub_dir),
-                                        perms: crate::value::DirPerms::full(),
+                                    }) {
+                                        Ok(stub_dir) => Value::DirCap {
+                                            dir: Rc::new(stub_dir),
+                                            perms: crate::value::DirPerms::full(),
+                                        },
+                                        Err(e) => {
+                                            eprintln!(
+                                                "LSP: warning: failed to open stub dir for DirCap (tried . and temp_dir): {}; using empty Dict stub",
+                                                e
+                                            );
+                                            Value::Dict(IndexMap::new())
+                                        }
                                     }
                                 }
                                 Annotation::Simple(type_name) if type_name == "Handle" => {
@@ -492,18 +503,42 @@ impl DocumentStore {
                     cap_std::ambient_authority(),
                 )
             })
-            .unwrap_or_else(|_| {
-                // Last resort: open root directory. This should always succeed on Unix-like systems.
-                // If this also fails, the LSP cannot start, but this is extremely unlikely.
+            .or_else(|_| {
+                // Last resort: try root directory.
                 cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
-                    .expect("failed to open any base_dir (tried ., temp_dir, /)")
+            })
+            .unwrap_or_else(|e| {
+                // All fallbacks failed. Try /tmp and /var/tmp as additional attempts.
+                eprintln!(
+                    "LSP: warning: failed to open /, trying /tmp: {}",
+                    e
+                );
+                cap_std::fs::Dir::open_ambient_dir("/tmp", cap_std::ambient_authority())
+                    .or_else(|_| {
+                        eprintln!("LSP: warning: /tmp failed, trying /var/tmp");
+                        cap_std::fs::Dir::open_ambient_dir("/var/tmp", cap_std::ambient_authority())
+                    })
+                    .unwrap_or_else(|final_err| {
+                        // Truly exhausted all options. Log error and exit gracefully
+                        // rather than panicking. The editor can restart the LSP.
+                        eprintln!(
+                            "LSP: FATAL: cannot open any base_dir (tried ., temp_dir, /, /tmp, /var/tmp): {}",
+                            final_err
+                        );
+                        eprintln!("LSP: filesystem appears inaccessible; cannot start");
+                        std::process::exit(1);
+                    })
             });
         // no_fs=false: the capability model (DirCap / RESOLVE_BENEATH in cap_std) provides
         // path-traversal protection. %libdir and %pwd are injected as real DirCaps in
         // DocumentState::new(), which limits access to the stdlib dir and document dir
         // respectively. Bare capless includes are rejected by builtin_include (see builtins_meta.rs).
-        let base_eval_ctx =
-            crate::eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&stdlib_env), false, stdlib_arena);
+        let base_eval_ctx = crate::eval::EvalContext::new_sharing_arena(
+            base_dir,
+            Rc::clone(&stdlib_env),
+            false,
+            stdlib_arena,
+        );
 
         // Parse the embedded prelude source once for go-to-definition support.
         // If parsing fails, store None — prelude go-to-definition will be unavailable
@@ -534,16 +569,46 @@ impl DocumentStore {
         // (e.g., unmounted network share, deleted directory).
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_path, cap_std::ambient_authority())
             .or_else(|_| cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()))
-            .unwrap_or_else(|_| {
-                // Last resort: reopen base_eval_ctx's Dir. cap_std::fs::Dir doesn't implement
+            .or_else(|_| {
+                // Fallback: reopen base_eval_ctx's Dir. cap_std::fs::Dir doesn't implement
                 // Clone, so we open "." relative to base_dir to get a duplicate handle.
-                // This should never fail since base_eval_ctx.base_dir was successfully opened
-                // during DocumentStore::new(), but if it does, we have no choice but to panic.
-                self.base_eval_ctx
-                    .config
-                    .base_dir
-                    .open_dir(".")
-                    .expect("failed to reopen base_eval_ctx.base_dir")
+                self.base_eval_ctx.config.base_dir.open_dir(".")
+            })
+            .unwrap_or_else(|e| {
+                // All three attempts failed (document dir, ".", and base_eval_ctx.base_dir).
+                // Log a warning and fall back to temp_dir as a last resort. The LSP will
+                // continue with degraded service rather than crashing the editor.
+                eprintln!(
+                    "LSP: warning: failed to open base_dir for {}: {}; falling back to temp_dir",
+                    uri.as_str(),
+                    e
+                );
+                cap_std::fs::Dir::open_ambient_dir(
+                    std::env::temp_dir(),
+                    cap_std::ambient_authority(),
+                )
+                .unwrap_or_else(|temp_err| {
+                    // Even temp_dir failed. Try "/" as absolute last resort.
+                    eprintln!(
+                        "LSP: warning: temp_dir fallback failed: {}; trying /",
+                        temp_err
+                    );
+                    cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
+                        .unwrap_or_else(|final_err| {
+                            // Everything failed. Log error and continue with a broken Dir by
+                            // re-attempting base_eval_ctx.base_dir.open_dir("."), which should
+                            // work since it succeeded in DocumentStore::new(). If it fails here,
+                            // something has changed mid-session (very rare). Log and exit.
+                            eprintln!(
+                                "LSP: CRITICAL: cannot open any base_dir for document: {}",
+                                final_err
+                            );
+                            eprintln!(
+                                "LSP: filesystem state changed mid-session; exiting to avoid crash"
+                            );
+                            std::process::exit(1);
+                        })
+                })
             });
         let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
 
