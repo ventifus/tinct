@@ -395,7 +395,16 @@ fn improve_functional_dependency(
 /// Hardcoded instance lookup for arithmetic type classes with functional dependencies.
 /// Given the determining types (a, b), returns the determined type (c).
 ///
-/// This is a closed lookup table for the 9 instances of Add/Sub/Mul/Div.
+/// This is a FAST PATH for the 9 builtin instances of Add/Sub/Mul/Div (all have FD (a,b) → c).
+/// For other MPTCs with functional dependencies, this function should be generalized to query
+/// `state.instance_env` for matching instances (future work: sprint type-precision-fixes Task 5).
+///
+/// GENERALIZATION PLAN:
+/// 1. Given class name and determining types, iterate `instance_env.iter_instances()`
+/// 2. For each instance of the class, extract the instance type (which for MPTCs is App-encoded)
+/// 3. Check if determining positions match the given types (via unification or syntactic equality)
+/// 4. Return the determined type(s) if a unique match is found
+/// 5. Keep this hardcoded table as the fast path for Add/Sub/Mul/Div (performance)
 fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, TypeError> {
     if det_types.len() != 2 {
         return Err(TypeError::new(
@@ -414,6 +423,7 @@ fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, T
     // Normalize types for comparison
     let key = (type_key(a), type_key(b));
 
+    // FAST PATH: hardcoded instances for Add/Sub/Mul/Div (performance)
     match class {
         "Add" | "Sub" | "Mul" => match key {
             ("Int", "Int") => Ok(Type::Int),
@@ -443,10 +453,14 @@ fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, T
                 Span::origin(),
             )),
         },
-        _ => Err(TypeError::new(
-            format!("unknown arithmetic class {}", class),
-            Span::origin(),
-        )),
+        _ => {
+            // FUTURE: general MPTC instance lookup would go here
+            // For now, return error for unknown classes (no other MPTCs with FDs exist yet)
+            Err(TypeError::new(
+                format!("unknown arithmetic class {}", class),
+                Span::origin(),
+            ))
+        }
     }
 }
 
@@ -466,6 +480,10 @@ fn type_key(ty: &Type) -> &'static str {
 /// to `IntLiteral(1)`, then unification of `IntLiteral(1)` with `IntLiteral(2)` would fail.
 /// With promotion, `_t0` binds to `Int`, and both `IntLiteral(1)` and `IntLiteral(2)` unify
 /// with `Int` via the literal-to-parent promotion rules.
+///
+/// Promotion is now restricted to known primitive classes where literal instances entail
+/// parent instances (Numeric, Comparable, Equatable, Showable, Add, Sub, Mul, Div).
+/// For other classes, preserve the literal type and let instance resolution handle it.
 fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferState) -> Type {
     // Label-kinded TypeVars must not be promoted regardless of constraint presence
     // (preserves StringLiteral identity for field access)
@@ -473,13 +491,28 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
         return ty;
     }
 
-    // Only promote if the variable has Class constraints
-    let has_class_constraints = state.constraints.iter().any(|c| match c {
-        Constraint::Class { vars, .. } => vars.contains(&var_name.to_string()),
+    // Only promote for known primitive classes where literal instances entail parent instances.
+    // These classes have the property that if IntLiteral(42) satisfies the class, then Int
+    // also satisfies it (and similarly for StringLiteral/Str).
+    const PROMOTABLE_CLASSES: &[&str] = &[
+        "Numeric",
+        "Comparable",
+        "Equatable",
+        "Showable",
+        "Add",
+        "Sub",
+        "Mul",
+        "Div",
+    ];
+
+    let has_promotable_constraint = state.constraints.iter().any(|c| match c {
+        Constraint::Class { class, vars, .. } => {
+            vars.contains(&var_name.to_string()) && PROMOTABLE_CLASSES.contains(&class.as_str())
+        }
         _ => false,
     });
 
-    if !has_class_constraints {
+    if !has_promotable_constraint {
         return ty;
     }
 
@@ -510,7 +543,7 @@ pub fn resolve_has_field(
 ) -> Result<Type, TypeError> {
     // Check recursion depth to prevent infinite loops on cyclic types
     if depth > MAX_RESOLVE_HAS_FIELD_DEPTH {
-        return Ok(Type::Unknown);
+        return Err(TypeError::new("HasField recursion depth exceeded", span));
     }
 
     // Resolve label to concrete string
@@ -566,8 +599,8 @@ pub fn resolve_has_field(
             Ok(Type::normalize_intersection(field_types))
         }
 
-        // [HAS-FIELD-TOP]: Top → Unknown
-        Type::Top => Ok(Type::Unknown),
+        // [HAS-FIELD-TOP]: Top → Top (accessing a field on an untyped dict yields Top)
+        Type::Top => Ok(Type::Top),
 
         // [HAS-FIELD-UNKNOWN]: Unknown → Unknown
         Type::Unknown => Ok(Type::Unknown),
@@ -2007,3 +2040,7 @@ pub fn unify(
         _ => Err(TypeError::type_mismatch(&a, &b, span)),
     }
 }
+
+#[cfg(test)]
+#[path = "type_unify_tests.rs"]
+mod type_unify_tests;

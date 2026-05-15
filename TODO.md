@@ -58,6 +58,12 @@ See `doc/whatif/union-find-substitution.md §Prerequisites` for the documented b
 
 - [x] Research advanced typeclass extensions — see `doc/whatif/advanced-typeclasses.md`. Design: 3-parameter `Add a b c | (a,b)→c` MPTC with functional dependencies for precise mixed-mode arithmetic; row-level constraint propagation via BAS intersection distribution ([CONSTRAIN-FIELD/INTER/UNION]); runtime ClassEnv dispatch extending primitive operator builtins to user-defined instances; all three extend the same Constraint infrastructure and share the ClassEnv registry. Three tightly-interlinked extensions to the typeclass system beyond the HKT baseline, all extending the same `Constraint` infrastructure: (1) **multi-parameter type classes for Numeric** — `[+ Int Float] → Float` requires MPTCs; `Numeric` stays hardcoded because single-parameter classes cannot express coercion typing (Jones 1995 functional dependencies, Peyton Jones et al. 1997 type improvement); (2) **row-level constraints** — `Equatable [name: a ...]` (all fields satisfy a constraint) requires row-level constraint propagation under BAS; what does `Homogeneous` look like over BAS intersections? (Gaster & Jones 1996, PureScript); (3) **runtime typeclass dispatch** — user-defined instances cannot intercept primitive operators (`=`, `<`, `str`) because builtins dispatch via Rust type inspection, not via instance dictionaries; what would dictionary translation (Wadler & Blott 1989, Jones 1995) look like for tinct?
 
+- [x] Decide variadic collection representation — **Option C (hybrid)**: `...xs@[Seq T]` (annotated) → Seq cons-list, positional only, typed; `...args` (unannotated) → mixed Dict, positional int-keyed + named string-keyed. BIND-VARIADIC checks `annotated(V)` at call time. Recorded in `doc/04-functions.md §Variadic Parameters` and `§[C-VARIADIC]`.
+
+- [x] Research CHR-unified type constraints — see `doc/whatif/chr-unification.md`. Design: FDs (propagation rules) and type families (simplification rules) unified as CHRs (Sulzmann et al. 2007); `[class ...]` gains `fundeps:` and `resolver:` keys; FD improvement calls same type-stage function as explicit `@[Resolver a b]` annotations; arithmetic classes migrate from hardcoded Rust to prelude.llt declarations. FDs (propagation rules) and type families (simplification rules) are both instances of Constraint Handling Rules (CHRs, Sulzmann et al. 2007). Tinct's `--- stage: type` functions already implement type families. The unified design: `[class ...]` declarations carry a `resolver:` pointing to a type-stage function; FD improvement calls the same function during inference that `@[Resolver a b]` calls at annotation time. Missing: (1) Type ↔ type dict conversion during inference, (2) `resolver:` key in ClassDecl, (3) generalized `improve_functional_dependency` calling type-stage fn instead of hardcoded table, (4) Paterson condition checking. BAS constraint: FD improvement must only fire when determining positions are atomic monotypes.
+
+- [x] Research isorecursive types (μ-types) — see `doc/whatif/isorecursive-types.md`. Design: equirecursive types via rational tree representation; `Type::Recursive { var, body }` + `Type::RecVar(String)`; cycle detection in alias expander produces μ-nodes instead of hitting depth limit; coinductive bisimulation for BAS subtype checking; `mu`/`recvar` combinators in type prelude; nominal variants remain the primary ADT mechanism.
+
 ---
 
 ## Inference Completeness
@@ -368,23 +374,11 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 ---
 
-## Type System Precision (Analysis #2)
-
-### type-precision-fixes: HasField, TypeVar consistency, negation subtyping
-
-- [ ] **[Critical]** `resolve_has_field` returns `Type::Unknown` for `Type::Top` — should return `Type::Top` (correct type when dict is untyped); depth overflow should error, not degrade to Unknown (`src/type_unify.rs:494,551`)
-- [ ] **[Critical]** TypeVar consistency rule is unsound — `is_consistent(TypeVar(..), _) => true` bypasses static checking; should apply substitution before consistency check or restrict to `TypeVar-TypeVar` reflexivity (`src/types.rs:637`)
-- [ ] **[Major]** Negation subtyping uses incomplete disjointness check — `is_subtype(sub, Negation(a))` delegates to `types_are_disjoint` which returns `false` for most compounds; RDNF normalization needed or disable negation in annotations (`src/types.rs:355`)
-- [ ] **[Major]** IntLiteral/StringLiteral promotion too eager — applies to ALL class constraints, not just primitive classes; user-defined class with IntLiteral instance but no Int instance silently breaks (`src/type_unify.rs:450-472`)
-- [ ] **[Major]** FD improvement hardcoded for 2 determining positions — `lookup_arithmetic_instance` assumes `det_types.len() == 2`; 3+ param MPTCs error; generalize to query instance_env (`src/type_unify.rs:387`)
-
----
-
 ## LSP Security
 
 ### lsp-security: Evaluation isolation and panic resilience
 
-- [ ] **[Critical]** LSP evaluates `$include` on document open — CWE-22 data exfiltration; opening malicious `.llt` with `[x: [include %pwd "../../.ssh/id_rsa"]]` reads arbitrary files; disable eval in LSP or set `no_fs=true` (`src/lsp/document.rs:79`)
+- [ ] **[Minor]** Verify LSP `$include` path traversal is mitigated by DirCap RESOLVE_BENEATH — cap-std should prevent `../../.ssh/id_rsa` traversal; add a corpus test confirming `$include` with `..` path produces E051 or access denied, not file content; downgraded from Critical (DirCaps are specifically designed to prevent this) (`src/builtins_meta.rs:1089`, `tests/corpus/eval/errors/`)
 - [ ] **[Major]** LSP `.expect()` calls panic on filesystem errors — with `panic = "abort"`, crashes editor; replace with graceful fallback (`src/lsp/document.rs:499,546`)
 - [ ] **[Major]** TypeAssert.resolved_type uses `debug_assert!` instead of runtime `assert!` — double-writes silently ignored in release builds (`src/typecheck_annot.rs:140-147`)
 
