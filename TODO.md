@@ -370,17 +370,123 @@ See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:**
 
 ---
 
-## Standard Library Boundary
+## Type Annotation v2
+
+Design finalized 2026-05-15. See mempalace tinct/type-ann-v2 for full architecture notes.
+
+**Architecture:** Types in the type stage are plain LLT dicts (canonical type dict schema) — no new `Value` variant. Same LLT evaluator, different environment. `%rust "type-core"` is a curated subset of existing builtins, no new Rust functions.
+
+**Type dict schema:**
+```
+[kind: "named"        name: "Int"]              # Type::Int/Str/Bool/Float
+[kind: "seq"          elem: <type-dict>]        # Type::Seq
+[kind: "map"          key: K  value: V]         # Type::Map
+[kind: "fn"           params: [...]  ret: R]    # Type::Function
+[kind: "record"       fields: {...}]            # Type::Record
+[kind: "union"        members: [...]]           # Type::Union
+[kind: "intersection" members: [...]]           # Type::Intersection
+[kind: "negation"     inner: T]                 # Type::Negation
+[kind: "top"]                                   # Type::Top / Any
+[kind: "never"]                                 # Type::Never
+[kind: "recursive"    var: "a"  body: T]        # Type::Recursive (isorecursive)
+[kind: "recvar"       name: "a"]                # Type::RecVar
+```
+
+### constraint-annotations: `fn@[return: T  constraint: [a: Comparable]  doc: "..."]`
+
+See `doc/whatif/constraint-annotations.md`. **Spec chapters:** `doc/05-type-annotations.md §fn@[...] Function Metadata Dict`. No dependency on type-stage-infra — pure static extension.
+
+`resolve_fn_metadata()` (`src/typecheck_annot.rs:213`) already handles `return:` and `doc:`. Gap: `constraint:` key processing.
+
+- [ ] In `resolve_fn_metadata()` at `src/typecheck_annot.rs:213`: add Step 1 — process `constraint:` entries before `return:`. For each entry with a lowercase key and uppercase class value, create a fresh TypeVar in `ann_mapping`, register level in `state.levels`, add `Constraint { class, vars: vec![fresh], fundeps: vec![] }` to `state.constraints`. List values `[a: [Comparable Showable]]` expand to one Constraint per class. Validate class name against `state.class_env`; emit `"unknown class 'X'"` on miss. (`src/typecheck_annot.rs`)
+- [ ] Add `pub doc: Option<String>` field to `TypeScheme` in `src/types.rs`; default `None` at all construction sites; populate from `resolve_fn_metadata` `doc:` extraction. (`src/types.rs`)
+- [ ] LSP hover in `src/lsp/analysis.rs`: when `TypeScheme.doc` is `Some(text)`, append below the type signature. (`src/lsp/analysis.rs`)
+- [ ] Tests: `[fn@[return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]` infers `Comparable a => Fn@a [Seq@a]`; `[fn@[doc: "hello"] [x@Int] x]` doc appears in TypeScheme and hover; unknown class → error; mixed named+positional in `fn@[...]` → error (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** none
+
+### fn-type-params: Named parameters in `[Fn@Return [name: Type ...]]` type expressions
+
+`[Fn@Int [x: String  y: Bool]]` should produce `Function { params: [(Some("x"), Str), (Some("y"), Bool)], ret: Int }`. Currently all param entries in `try_resolve_fn_type_expr` produce `(None, param_ty)`.
+
+- [ ] In `try_resolve_fn_type_expr()` at `src/typecheck_annot.rs:2061`, in the `Expr::Dict(param_entries)` arm: for each entry, check `entry.node.key`; if `Some(key_expr)` with `Expr::Str(name)`, produce `(Some(name.clone()), param_ty)`. (`src/typecheck_annot.rs`)
+- [ ] Apply same fix to the `Expr::Call { implied: true }` param-list arm at `src/typecheck_annot.rs:1654`. (`src/typecheck_annot.rs`)
+- [ ] Tests: `[Fn@Int [x: String  y: Bool]]` → named params; unnamed `[Fn@Int [String Bool]]` unchanged (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** none
+
+### ctor-app: Built-in type constructor application in dict form
+
+`[Seq Int]`, `[Map String Int]` in type annotation positions. Currently only user-defined parameterized aliases are handled; built-in constructors require the `@Seq@Int` chained annotation form.
+
+- [ ] In `resolve_type_dict()` at `src/typecheck_annot.rs:1805`: before the existing parameterized alias check, match built-in constructor names with their positional type args: `"Seq"` + 1 arg → `Type::Seq`; `"Map"` + 2 args → `Type::Map(K, V)`; `"Map"` + 1 arg → `Type::Map(Unknown, V)` (value-perspective); `"Result"` + 1 arg → `Type::Union([T, Record({})])`. (`src/typecheck_annot.rs`)
+- [ ] Apply same in `Expr::Call { implied: true }` arm of `resolve_type_expr()` at `src/typecheck_annot.rs:1746`: when `func` is `VarRef` matching a built-in constructor, expand inline before the alias lookup path. (`src/typecheck_annot.rs`)
+- [ ] Tests: `[Seq Int]` → `Seq(Int)`; `[Map String Int]` → `Map(Str, Int)`; `[Map Int]` → `Map(Unknown, Int)`; arity error for `[Seq Int Bool]`; `[Seq]` → error "Seq requires 1 type argument" (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** none
+
+### type-stage-infra: `--- stage: type` sections, `%rust "type-core"`, type dict schema
+
+See mempalace tinct/type-ann-v2. **Spec chapters:** `doc/05-type-annotations.md`, `doc/09-documents.md`.
+
+**`%rust "type-core"` contents:** From `core`: `if`, `=`, `null?`, `dict?`, `str?`, `int?`, `error`. From `collection`: `builtin-get`, `get?`, `keys`, `length`, `merge`, `append`, `each`, `map`, `filter`, `reduce`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `cons`, `builtin-concat`, `builtin-join`, `builtin-first`, `builtin-last`, `builtin-rest`. From `string`: `str`. No new Rust builtins — all selected from existing `standard_builtins()`.
+
+**Part 1 — Parser**
+- [ ] Add `pub enum Stage { Runtime, Type }` to `src/ast.rs`; add `pub stage: Option<Stage>` field to `Document`; update all `Document { .. }` construction sites in `src/parser.rs` (`src/ast.rs`, `src/parser.rs`)
+- [ ] In `parse2()` `Token::DocSeparator` arm at `src/parser.rs:3196`: after finalizing current document, scan tokens on the `---` line for `Identifier("stage")` + `Colon` + `Identifier("type")`; set `next_doc_stage = Some(Stage::Type)`. Mirror `%name` handling pattern. (`src/parser.rs`)
+
+**Part 2 — `%rust "type-core"` module**
+- [ ] Add `"type-core"` arm to `rust_module()` in `src/builtins.rs` selecting the items listed above from `standard_builtins()` via the existing `insert()` helper. ~30 lines. (`src/builtins.rs`)
+
+**Part 3 — Type dict conversion**
+- [ ] Add `src/type_dict.rs` with `pub fn type_to_dict(ty: &Type) -> Value` and `pub fn dict_to_type(val: &Value, span: Span) -> Result<Type, TypeError>`. Cover all current `Type` variants. `dict_to_type` errors on unknown `kind:` or missing fields. (`src/type_dict.rs`, `src/lib.rs`)
+
+**Part 4 — Type stage evaluator**
+- [ ] Add `pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, LltError>` in `src/builtins.rs`: bootstrap env with `include` only, evaluate all `--- stage: type` documents from `stdlib/prelude.llt` via the standard LLT evaluator. Parallel to `create_stdlib_env()`. (`src/builtins.rs`)
+- [ ] In `eval_file()` at `src/eval.rs`: when `doc.node.stage == Some(Stage::Type)`, evaluate in type-stage env and contribute to type-stage binding map; skip contribution to runtime env. (`src/eval.rs`)
+
+**Part 5 — Prelude `--- stage: type` section**
+- [ ] Add `--- stage: type` section to `stdlib/prelude.llt` with `[include %rust "type-core"]` and LLT definitions for ground types and type constructors:
+  ```tinct
+  --- stage: type
+  [include %rust "type-core"]
+  Int:     [kind: "named"  name: "Int"]
+  Str:     [kind: "named"  name: "String"]
+  Bool:    [kind: "named"  name: "Bool"]
+  Float:   [kind: "named"  name: "Float"]
+  Any:     [kind: "top"]
+  Never:   [kind: "never"]
+  Null:    [kind: "record"  fields: []]
+  Seq:     [fn [elem]     [kind: "seq"          elem: elem]]
+  Map:     [fn [key val]  [kind: "map"          key: key  value: val]]
+  union:   [fn [...types] [kind: "union"        members: types]]
+  all:     [fn [...types] [kind: "intersection" members: types]]
+  without: [fn [t]        [kind: "negation"     inner: t]]
+  ```
+  (`stdlib/prelude.llt`)
+- [ ] Tests: `--- stage: type` section evaluates; ground type dicts accessible; runtime env unaffected by type-stage declarations (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** none (self-contained infrastructure sprint)
 
 ---
 
-## LSP Security
+## Type Stage Features
 
-### lsp-security: Evaluation isolation and panic resilience
+*All sprints below depend on `type-stage-infra`.*
 
-- [ ] **[Minor]** Verify LSP `$include` path traversal is mitigated by DirCap RESOLVE_BENEATH — cap-std should prevent `../../.ssh/id_rsa` traversal; add a corpus test confirming `$include` with `..` path produces E051 or access denied, not file content; downgraded from Critical (DirCaps are specifically designed to prevent this) (`src/builtins_meta.rs:1089`, `tests/corpus/eval/errors/`)
-- [ ] **[Major]** LSP `.expect()` calls panic on filesystem errors — with `panic = "abort"`, crashes editor; replace with graceful fallback (`src/lsp/document.rs:499,546`)
-- [ ] **[Major]** TypeAssert.resolved_type uses `debug_assert!` instead of runtime `assert!` — double-writes silently ignored in release builds (`src/typecheck_annot.rs:140-147`)
+### chr-unification: CHR-unified type constraints — FDs and type families
+
+See `doc/whatif/chr-unification.md`. **State: Proposal** — design not yet approved; sprint tasks to be written after /rnd approval. `type-stage-infra` is the required groundwork (type dict schema + `type_to_dict`/`dict_to_type` are the FFI between inference and type-stage resolvers).
+
+**Depends on:** `type-stage-infra`, `typeclass-mptc-fundeps`
+
+### isorecursive-types: μ-types and coinductive subtype checking
+
+See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet approved; sprint tasks to be written after /rnd approval. `type-stage-infra` is the required groundwork (`mu`/`recvar` combinators live in the `--- stage: type` section; `dict_to_type()` will need `kind: "recursive"` and `kind: "recvar"` arms).
+
+**Depends on:** `type-stage-infra`
+
+---
 
 ---
 

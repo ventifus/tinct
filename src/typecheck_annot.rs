@@ -140,11 +140,16 @@ pub(crate) fn resolve_type_assert(
     // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once).
     // The type is stored AFTER substitution to ensure the runtime sees fully-resolved types.
     let prev = resolved_type.replace(Some(expected.clone()));
-    debug_assert!(
-        prev.is_none(),
-        "resolved_type written twice — elaboration invariant violated (span: {:?})",
-        annotation.span
-    );
+    if prev.is_some() {
+        return Err(vec![TypeError::new(
+            format!(
+                "internal error: resolved_type written twice — elaboration invariant violated \
+                 (previous value: {:?}). This indicates a bug in the type checker.",
+                prev
+            ),
+            annotation.span,
+        )]);
+    }
 
     Ok(expected)
 }
@@ -554,7 +559,8 @@ pub(crate) fn resolve_annotation(
             match name.as_str() {
                 "Seq" => {
                     // Resolve the inner type
-                    let elem_type = resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                    let elem_type =
+                        resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
                     Ok(Type::Seq(Box::new(elem_type)))
                 }
                 "Map" => {
@@ -562,7 +568,14 @@ pub(crate) fn resolve_annotation(
                     match inner.as_ref() {
                         Annotation::Simple(_) => {
                             // @Map@T (single type) → Map[Unknown: T]
-                            let value_type = resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                            let value_type = resolve_annotation(
+                                inner,
+                                env,
+                                span,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
                             Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
                         }
                         Annotation::PropertyDict(entries) => {
@@ -572,8 +585,20 @@ pub(crate) fn resolve_annotation(
                                 // Compact form: @Map@[String: Int]
                                 let key_expr = entries[0].node.key.as_ref().unwrap();
                                 let value_expr = &entries[0].node.value;
-                                let key_type = resolve_type_expr(key_expr, env, state, ann_mapping, row_ann_mapping)?;
-                                let value_type = resolve_type_expr(value_expr, env, state, ann_mapping, row_ann_mapping)?;
+                                let key_type = resolve_type_expr(
+                                    key_expr,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                let value_type = resolve_type_expr(
+                                    value_expr,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
                                 Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
                             } else {
                                 // Named form: @Map@[key: K value: V]
@@ -584,10 +609,22 @@ pub(crate) fn resolve_annotation(
                                         if let Expr::Str(key_name) = &key_expr.node {
                                             match key_name.as_str() {
                                                 "key" => {
-                                                    key_type = resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                                                    key_type = resolve_type_expr(
+                                                        &entry.node.value,
+                                                        env,
+                                                        state,
+                                                        ann_mapping,
+                                                        row_ann_mapping,
+                                                    )?;
                                                 }
                                                 "value" => {
-                                                    value_type = resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                                                    value_type = resolve_type_expr(
+                                                        &entry.node.value,
+                                                        env,
+                                                        state,
+                                                        ann_mapping,
+                                                        row_ann_mapping,
+                                                    )?;
                                                 }
                                                 _ => {}
                                             }
@@ -599,7 +636,14 @@ pub(crate) fn resolve_annotation(
                         }
                         _ => {
                             // Other forms like @Map@Annotated — treat as single value type
-                            let value_type = resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                            let value_type = resolve_annotation(
+                                inner,
+                                env,
+                                span,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
                             Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
                         }
                     }

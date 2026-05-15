@@ -6227,3 +6227,11 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer)
 - [x] Negation disjointness: single-field records with different keys are now disjoint (src/types.rs)
 - [x] Literal promotion restricted to PROMOTABLE_CLASSES (src/type_unify.rs)
 - [x] FD improvement: generalization path documented; hardcoded table kept as fast path (src/type_unify.rs)
+
+## LSP Security
+
+### lsp-security: Evaluation isolation and panic resilience
+
+- [x] Verified: DirCap RESOLVE_BENEATH blocks ../traversal; E051 confirmed; corpus test added
+- [x] LSP .expect() replaced with graceful fallbacks; process::exit(1) on total fs failure
+- [x] TypeAssert.resolved_type: debug_assert → runtime TypeError; reset_elaboration in typecheck_file
