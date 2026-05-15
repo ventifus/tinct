@@ -419,16 +419,6 @@ Design finalized 2026-05-15. See mempalace tinct/type-ann-v2 for full architectu
 [kind: "recvar"       name: "a"]                # Type::RecVar
 ```
 
-### fn-type-params: Named parameters in `[Fn@Return [name: Type ...]]` type expressions
-
-`[Fn@Int [x: String  y: Bool]]` should produce `Function { params: [(Some("x"), Str), (Some("y"), Bool)], ret: Int }`. Currently all param entries in `try_resolve_fn_type_expr` produce `(None, param_ty)`.
-
-- [ ] In `try_resolve_fn_type_expr()` at `src/typecheck_annot.rs:2061`, in the `Expr::Dict(param_entries)` arm: for each entry, check `entry.node.key`; if `Some(key_expr)` with `Expr::Str(name)`, produce `(Some(name.clone()), param_ty)`. (`src/typecheck_annot.rs`)
-- [ ] Apply same fix to the `Expr::Call { implied: true }` param-list arm at `src/typecheck_annot.rs:1654`. (`src/typecheck_annot.rs`)
-- [ ] Tests: `[Fn@Int [x: String  y: Bool]]` → named params; unnamed `[Fn@Int [String Bool]]` unchanged (`tests/corpus/eval/typecheck/`)
-
-**Depends on:** none
-
 ### ctor-app: Built-in type constructor application in dict form
 
 `[Seq Int]`, `[Map String Int]` in type annotation positions. Currently only user-defined parameterized aliases are handled; built-in constructors require the `@Seq@Int` chained annotation form.
