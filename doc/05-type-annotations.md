@@ -1,276 +1,267 @@
 # Type Annotations & Type Expressions
 
-## Overview
+**Mandatory, bottom-up type inference with annotation-driven polymorphism, inspired by Hindley-Milner.** Every value has a type. Type errors raised early — good for LLMs and LSP feedback. Annotations are optional but enforced: write one and the compiler verifies it.
 
-**Mandatory, bottom-up type inference with annotation-driven polymorphism, inspired by Hindley-Milner.** Every value has a type. Row polymorphism for dicts. Type errors raised early — good for LLMs and LSP feedback. Let-generalization uses levels-based approach (Kiselyov 2013) for polymorphic let-bindings — see [Type Inference](06-type-inference.md) §Let-Generalization. Polymorphism arises from type variable annotations (e.g., `x@a`); let-generalization makes these polymorphic across binding sites. See the [References](17-references.md) for details.
+---
 
-**Annotations are optional but enforced.** The compiler infers types when annotations are omitted. If you write an annotation, it's a contract — the compiler checks the actual type matches and raises an error on mismatch.
+## Part I: Foundations
 
-## `@` Property Annotations
+### 1. The `@` Concept
 
-**`@` attaches a property dict** to a parameter or function. Shorthand: bare word after `@` means `[type: BareWord]`.
-
-**`@` is always a structural separator.** It is not a valid bare word character. Wherever `@` appears immediately after a bare word (no whitespace), it separates the word from an annotation value. Strings containing `@` must be quoted: `"email@example.com"`.
+**`@` attaches a type or property dict** to a name, function, or expression. It is always a structural separator — not a valid identifier character. Wherever `@` appears immediately after a bare word (no whitespace), it separates the word from its annotation.
 
 ```tinct
-# Shorthand — type only
-x@Number                              # equivalent to x@[type: Number]
-
-# Full form — type + other properties
-timeout@[type: Number  default: 30]   # named param with default
-
-# On fn — return type
-[fn@Number [x@Number] ...]            # shorthand: returns Number
-[fn@[return: Number  doc: "Sum"] ...]   # full form
+x@Int                       # parameter x has type Int
+fn@String                   # function returns String
+[@Int expr]                 # type assertion: expr must be Int at runtime
 ```
 
-**Parameter properties:**
+Two forms:
+- **`name@Type`** — annotation on a binding or parameter
+- **`[@Type expr]`** — type assertion on an expression
 
-| Property | Meaning |
-|----------|---------|
-| `type` | Compile-time type (the common case, covered by shorthand) |
-| `default` | Default value — makes the parameter named/optional |
-| `doc` | Human-readable description — surfaced in LSP hover, ignored by the type checker |
-| `is` | Runtime predicate — `Fn@Bool [Any]`; value must return `true` for the annotation to pass. Used in match arm guards and structural contracts. |
-| `repr` | Numeric representation constraint — enforces integer bit width and signedness. Accepts `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`. Type checker verifies the annotated expression has a numeric type (Int, Float, or Number). |
+Strings containing `@` must be quoted: `"email@example.com"`.
 
-**Arbitrary keys are allowed.** The core system reads `type:`, `default:`, and `repr:` and ignores everything else. Programmers may add any metadata keys they find useful — `doc:`, `is:`, `example:`, `deprecated:`, etc. Tooling can read these at the AST or annotation level. Unknown keys are never an error.
+### 2. Simple Type Annotations
 
-**Any parameter is nameable at the call site** (Kotlin model). A parameter with `default:` is optional — it uses the default value when neither a positional nor named argument covers it. A parameter without `default:` is required — it must be covered by either a positional argument at its index or a named argument. Required and optional parameters may be freely interleaved in the parameter list.
+`x@Type` declares the compile-time type of parameter `x`. If the annotation is a bare name, it is a type reference (uppercase = concrete, lowercase = TypeVar). If it is a bracket expression, it is resolved as a type-stage expression.
+
+```tinct
+x@Int                       # x has type Int
+x@String                    # x has type String
+x@a                         # x has TypeVar type a (polymorphic)
+x@[or Int Null]             # x has union type Int | Null
+x@[host: String  port: Int] # x has record type
+```
+
+**Annotations are contracts.** The compiler infers types when omitted. If you write an annotation, the inferred type must match — a mismatch is a type error, not a coercion.
+
+**Any parameter is nameable at the call site** (Kotlin model). A parameter with `default:` is optional; without it, the parameter is required.
 
 ```tinct
 fetch: [fn@String [url@String
-                   timeout@[type: Number  default: 30]
-                   retries@[type: Number  default: 3]]
-    ...]
+                   timeout@[type: Int  default: 30]
+                   retries@[type: Int  default: 3]]
+  ...]
 
-# Call with bare key-value named args
 [fetch "https://example.com" timeout: 60]
-# url = "https://example.com", timeout = 60, retries = 3 (default)
+# url = "https://example.com", timeout = 60, retries = 3
 ```
 
-**Named args at the call site** are bare `key: value` pairs inside the call brackets. This is natural — the call expression is a dict, with integer-keyed entries for positional args and string-keyed entries for named args.
+**Type conventions:**
+- Uppercase first letter: concrete types (`Int`, `String`, `Bool`, `Null`, `Any`)
+- Lowercase first letter: type variables (`a`, `b`, `k`, `v`)
+- `String` / `Str`: `String` is the user-facing annotation name; `Str` is the internal `Type::Str` variant. Use `String` in annotations; `Str` appears in error messages.
+- `Null`: the empty record `[]` — closed record with no fields. Use `fn@Null` for functions returning no meaningful value.
+- `Any`: dynamic escape hatch — accepts any value, no static checking.
+- `Unknown`: gradual type (`?`) — like `Any` for inference but propagates through type checking. Unconstrained inference positions resolve to `Unknown`.
 
-### Formal Grammar
+### 3. Type Assertions
 
-**In parameter position** (inside a `param_list`):
-```ebnf
-param_annotation = ${ "@" ~ annotation_value }
-```
-`x@Number` splits into param `x` with annotation `Number`.
-
-**On `fn` keyword** (return type):
-```ebnf
-fn_annotation = ${ "@" ~ annotation_value }
-```
-`fn@Number` means the function returns `Number`.
-
-**In value position** (generalized annotation):
-```ebnf
-annotated_bare = ${ bare_word ~ "@" ~ annotation_value }
-```
-`Fn@Number` produces an `Annotated` node with name `"Fn"` and annotation `Number`. This is used for function type constructors (`Fn@Return [Params]`) and is available for future use on any bare word.
-
-## `@` on Expressions — Type Assertions
-
-**`[@Type expr]` is a type assertion expression.** Materializes the value, checks its type, throws on mismatch. No `as` keyword needed — `@` handles it.
+**`[@Type expr]` asserts the type of an expression at runtime.** Materializes the value, checks its type, and throws `TypeError` on mismatch.
 
 ```tinct
-data: [from-json input]        # type: Any
+data: [from-json input]           # type: Any
 
-# Type assertion — throws if wrong
-name: [@String data.name]
+name: [@String data.name]         # throws if data.name is not a String
+port: [@Int    data.port]         # throws if data.port is not an Int
 
-# Inline in a call
-[+ [@Number x] 1]
+# Inline
+[+ [@Int x] 1]
 
-# Complex type
-users: [@[Person] [from-json input]]
+# With fallback — safe cast
+port: [@[type: Int  default: 8080] config.port]
+# Returns 8080 if config.port is absent or not Int
 ```
 
-**With property dict — safe cast with fallback:**
-
-```tinct
-# Returns "anonymous" if type check fails (no exception)
-name: [@[type: String  default: "anonymous"] data.name]
-
-# Returns 8080 if not a valid number
-port: [@[type: Number  default: 8080] config.port]
-```
+`[@Type expr]` is unambiguous: inside `[...]`, if the first token is `@`, it is always a type assertion. `@` cannot start a bare word or variable reference.
 
 **`default:` meaning by context:**
 
 | Context | `default:` meaning |
 |---------|-------------------|
 | Function parameter | Value used when caller omits the argument |
-| `@` expression | Fallback if type assertion fails |
+| `[@...]` assertion | Fallback if type assertion fails — no exception thrown |
 
-Both are "fallback value when the expected thing isn't there."
+---
 
-**Parsing rule:** Inside `[...]`, if the first token is `@`, it's a type assertion expression. Unambiguous — `@` is not a valid start for a bare word or variable reference, so it can't appear as the first element of a `[]` in any other context.
+## Part II: Type Complexity
 
-### Formal Grammar
+### 4. Parameterized Types
 
-**As type assertion** (first token inside `[]`):
-```ebnf
-type_assert_body = { "@" ~ annotation_value ~ value }
-```
-`[@Number expr]` asserts `expr` has type `Number`. When a `default:` is provided (e.g., `[@[type: Number  default: 0] expr]`), the default value is evaluated in the same environment as the asserted expression.
-
-## Return Type on `fn@`
-
-**`fn@Type` declares the return type.** Optional — inferred if omitted. Enforced if specified.
+Type constructors take type arguments via chained `@`:
 
 ```tinct
-# Return type annotated — compiler checks body matches
-double: [fn@Number [x@Number] [* x 2]]
-
-# Return type omitted — compiler infers Number
-double: [fn [x@Number] [* x 2]]
-
-# Wrong return type — compile error
-double: [fn@String [x@Number] [* x 2]]    # Error: body returns Number, not String
+xs@Seq@Int               # Seq of Int
+scores@Map@[String: Int] # Map from String to Int
+nested@Seq@Seq@Int       # Seq of Seq of Int
+pair@[Pair Int String]   # Pair of Int and String (user-defined)
 ```
 
-**`Fn@Return [Params]` for function types.** Function type expressions mirror function definitions:
+**Bare type constructors** produce unconstrained versions:
+- `@Seq` → `Seq(Unknown)` — sequence with unconstrained element type
+- `@Map` → `Map(Unknown, Unknown)` — map with unconstrained key and value
+- `@Dict` → open record (fresh row variable) — any dict structure
+- `@Fn` → variadic function returning `Any` — any callable
 
 ```tinct
-# Definition:  fn@Return [params] body
-[fn@Number [x@Number y@Number] [+ x y]]
+# @Dict: each annotation creates an independent row variable
+process: [fn [x@Dict  y@Dict] ...]   # x and y may have different shapes
 
-# Type:        Fn@Return [ParamTypes]
-[Fn@Number [Number Number]]
+# @Seq@Int in assertion position
+items: [@Seq@Int [from-json input]]   # checks element type
 ```
 
-`Fn` is uppercase (concrete type constructor convention). The return type attaches via `@`, matching `fn@Type`. Parameter types go in brackets, matching the param list in definitions. All types must be specified — there is no body to infer from.
+Parameterized aliases use `[ConstructorName TypeArgs...]`:
 
 ```tinct
-[Fn@b [a]]              # function from a to b
-[Fn@Bool [a]]           # predicate: a to Bool
-[Fn@c [a b]]            # two-arg function: a, b to c
-[Fn@[Fn@c [b]] [a]]    # higher-order: a to (b to c)
+Either: [type [a b] [or a b]]
+
+x@[Either Int String]     # resolves to Int | String
+y@[Either a b]            # TypeVars — must be in bind: if in fn@[...]
 ```
 
-**`...` for open records** (row polymorphism):
+### 5. Union and Intersection Types
+
+**Union — `or` type-stage combinator:**
 
 ```tinct
-# Open — at least these keys, possibly more
-[name: String ...]
-
-# Closed — exactly these keys
-[name: String  age: Number]
-
-# Named row variable (advanced)
-[name: String ...rest]
+x@[or Int Null]           # Int | Null
+x@[or String Int Bool]    # String | Int | Bool
+fn@[return: [or Int Null]] [xs@Seq@Int  target@Int] ...]
 ```
 
-**Type aliases via `[type ...]`** — textual expansion with free variables connecting by name:
+`or` is a type-stage function in the prelude. It produces `[kind: "union" members: [...]]` → `Type::Union(Vec<Type>)`. Union members are normalized: deduplicated, sorted, and flattened (nested unions collapse).
+
+**Intersection — `each` type-stage combinator:**
 
 ```tinct
-[
-  Mapper: [type [Fn@b [a]]]
-  Predicate: [type [Fn@Bool [a]]]
-  Person: [type [name: String  age: Number]]
-
-  map: [fn@[b] [f@Mapper  xs@[a]] ...]
-  filter: [fn@[a] [pred@[Fn@Bool [a]]  xs@[a]] ...]
-  greet: [fn@String [p@Person] ...]
-]
+x@[each Comparable Showable]       # Comparable ∩ Showable
+constraint: [a: [each Comparable Showable]]
 ```
 
-**Type conventions:**
-- Uppercase: concrete types (`String`, `Number`, `Person`)
-- Lowercase: type variables (`a`, `b`, `k`, `v`)
-- `String` / `Str`: `String` is the user-facing type name used in annotations; `Str` is the internal `Type::Str` variant name in the implementation. Both refer to the same type. Use `String` in annotations and prose; `Str` appears in type inference output and error messages.
-- `Any`: escape hatch for dynamic data
-- `Null`: empty record `[]` — represents void/unit return type. `@Null` resolves to `Type::Record` with no fields (the closed empty-record type). Use `fn@Null` for functions that return no meaningful value.
-- `Seq`: lazy sequence type. `xs@Seq@Int` in parameter position annotates `xs` as a sequence of `Int`. `[@Seq expr]` in TypeAssert position checks that `expr` is a Seq with unconstrained element type; `[@Seq@Int expr]` constrains the element type. `Seq@T` resolves to `Type::Seq(T)`. See `doc/feature/parameterized-types.md` for full usage.
-- `[@Type expr]`: type assertion / runtime cast from `Any`
-- `[Fn@Return [ParamTypes]]`: function type (mirrors `fn@Return [params]`)
-- `@Dict`: open record type. Each `@Dict` annotation allocates a fresh open record (`Type::Record(Row { fields: {}, tail: RowVar(_t{n}) })`) per annotation site. Independent constraints: `x@Dict y@Dict` creates two distinct row variables, allowing each parameter to accept different record structures without unification coupling.
+`each` produces `[kind: "inter" members: [...]]` → `Type::Intersection(Vec<Type>)`. In `constraint:` position, each member becomes a separate `Constraint::Class`. In annotation position, it produces `Type::Intersection`.
 
-**Literal types.** Integer and string literals carry their value in the type: `42` has type `IntLiteral(42)`, `"hello"` has type `StringLiteral("hello")`. Literal types are subtypes of their base types: `IntLiteral(n)` <: `Int` <: `Number`, `StringLiteral(s)` <: `String`. All bindings in Tinct are immutable, so literal types never widen implicitly -- they widen only when an annotation demands the base type. Float and Bool literals do not need literal type variants: float equality is fragile (rounding) and NaN is not reflexively equal, so computed key resolution on float literals would be misleading; Bool only has two values and is trivially enumerable without a literal type.
+**Subtyping rules (BAS):**
+- `T <: Union(T, U)` — injection
+- `Union(T, U) <: V` iff `T <: V` and `U <: V` — elimination
+- `Intersection(T, U) <: T` and `Intersection(T, U) <: U` — projection
 
-**Literal types enable computed key resolution.** When a dict has a computed key like `[$k: 42]`, the type checker infers the type of `k` in the parent scope. If it resolves to a literal type (e.g., `StringLiteral("name")`), the type checker extracts the literal value and uses it as the field name. If the key expression resolves to a non-literal type (e.g., `String`) or `Any`, the type checker cannot determine the field name statically -- the entry's value is still type-checked, but the field is excluded from the Record type. This is the conservative correct behavior: the Record only contains fields whose names are statically known.
+### 6. Record Types
+
+A record type is a dict of field names to types. Records are **closed by default** in tinct's BAS model — width subtyping provides structural openness without row variables.
 
 ```tinct
-[k: "hello"  $k: 42]       # type: [k: StringLiteral("hello")  hello: IntLiteral(42)]
-                            # k resolves to StringLiteral("hello") → field name "hello"
-
-[k: "hello"]
-[$k: 42]                    # scope chain: k resolves from parent → field "hello"
-
-[k: dynamic  $k: 42]        # k has type String (not literal) → field excluded from Record
+x@[name: String  age: Int]    # closed record: exactly these fields
+x@[name: String]              # closed record: exactly {name: String}
 ```
 
-**Dict values are never type-annotated.** Always inferred from literals/expressions.
-
-**Type inference for letrec dicts:** Dict entries form a letrec scope where all keys are visible to all values. The type checker handles this in five passes (Pass 0–4): (0) resolve key names — literal keys extracted directly, computed keys resolved via type inference in parent scope, (1) bind all resolved non-alias key names to fresh type variables at the current level (`state.level`, not `Any`) to enable unification constraints during forward references, (2) register type aliases sequentially (each sees previously registered siblings), (3) infer actual value types and unify them with their bound type variables from Pass 1, (4) generalize field types into polymorphic schemes where applicable. Pass 1 fresh type variable binding (not `Any` binding) is load-bearing for let-generalization: forward references participate in unification constraints, allowing type information to flow bidirectionally. Polymorphic function calls use Hindley-Milner unification: each call site instantiates fresh type variables, unification binds them against argument types, and the substitution is applied to determine the return type. Computed keys whose type is not a literal are excluded from the Record's fields but their values are still type-checked.
-
-**Substitution idempotence invariant.** `Substitution::apply()` is idempotent: applying the same substitution twice yields the same result as applying it once. This is achieved by transitive chasing in `apply_inner()` — when resolving a type variable, the substitution follows the binding chain to a fixpoint rather than performing a single lookup. This guarantees that `apply(apply(ty, s), s) = apply(ty, s)` for all types `ty` and substitutions `s`, which is a standard requirement for unification-based type inference (Robinson, 1965).
-
-**Alpha-equivalence and variable naming.** Variable names are significant in tinct — `[fn [x] x]` and `[fn [y] y]` are not alpha-equivalent at the source level. The type checker uses string-based variable lookup, so type variables introduced by annotations bind by name. However, `instantiate()` performs alpha-renaming by generating fresh names (`_t0`, `_t1`, ...) for each call site, ensuring that polymorphic function types do not share type variables across independent call sites. This is a deliberate choice: source-level names matter for readability and error messages, while inference-time freshening prevents unintended unification between call sites.
-
-**Type alias entries are excluded from record fields.** A `[type ...]` entry registers an alias in the type environment but does not contribute a field to the enclosing record's type. This matches the evaluator, which returns an empty dict for type alias entries.
-
-**Function type param lists:** `[Fn@Return [ParamTypes]]` is the full function type syntax. The type checker resolves both the return type annotation and parameter type list, producing `Type::Function { params, ret }`. All types in the param list must be specified explicitly.
-
-## fn@[...] Function Metadata Dict
-
-`fn@[...]` accepts a named-key metadata dict with three optional keys:
-
-| Key | Value | Semantics |
-|-----|-------|-----------|
-| `return:` | any type annotation | The function's return type |
-| `constraint:` | `[typevar: ClassName ...]` | TypeVar constraints enforced at call sites |
-| `doc:` | string literal | Documentation string surfaced in LSP hover |
-
-All three keys are optional. `fn@[...]` with no `return:` key infers the return type from the body. The existing `fn@Type` shorthand is permanent and equivalent to `fn@[return: Type]`.
-
-**Disambiguation.** If any entry has a recognized metadata key (`return:`, `constraint:`, or `doc:`), the dict is treated as a metadata dict. If ALL entries are positional, the dict is a union return type (`fn@[Int Null]` → function returning `Int | Null`). Mixed recognized metadata keys with positional entries is a type error: "fn annotation must use either named keys or positional entries, not both." An unrecognized named key alongside a recognized key is a type error: "unknown function annotation key". A dict with only unrecognized named keys (e.g. `fn@[name: Str]`) is interpreted as a record return type annotation.
+**Width subtyping:** a function annotated `@[name: String]` accepts any record that has at least a `name: String` field — because any record with more fields is a subtype of one with fewer fields.
 
 ```tinct
-# Shorthand — unchanged, always valid
-min: [fn@a [xs@Seq@a] ...]
-
-# Full form — return type, constraint, and doc string
-min: [fn@[return: a  constraint: [a: Comparable]  doc: "Return smallest element"] [xs@Seq@a] ...]
-
-# Doc-only — return type inferred from body
-greet: [fn@[doc: "Format a greeting"] [name@String] [str "Hello " name]]
-
-# Constraint on TypeVar not used as return type
-check-all: [fn@[return: Bool  constraint: [a: Equatable]] [xs@Seq@a  target@a] ...]
-
-# Positional union (all-positional form — not a metadata dict)
-find: [fn@[Int Null] [xs@Seq@Int  target@Int] ...]
+# Accepts {name: String, age: Int, ...} and {name: String} alike
+greet: [fn@String [p@[name: String]] [str "Hello " p.name]]
 ```
 
-**Constraint syntax.** The `constraint:` value is a dict using the binding form `[typevar: ClassName]`. Lowercase keys name TypeVars; uppercase values name constraint classes.
+**`...` rest syntax** in record annotations is accepted and expresses openness intent, but produces the same closed record type — width subtyping handles it automatically.
+
+**`@Dict`** — open record with a fresh row variable per annotation site. Use when the function truly accepts any dict structure:
+
+```tinct
+count-keys: [fn@Int [d@Dict] [length [keys d]]]
+```
+
+**Records with reserved field names** (`type:`, `return:`, `default:`, `doc:`, `is:`, `repr:`, `constraint:`, `bind:`, `kinds:`) must use a type alias:
+
+```tinct
+TypedItem: [type [type: String  id: Int]]   # alias for the record type
+x@TypedItem
+```
+
+### 7. Function Types
+
+**`Fn@Return [ParamTypes]`** is the function type constructor. It mirrors function definitions:
+
+```tinct
+# Definition:   fn@Return [params] body
+[fn@Int [x@Int y@Int] [+ x y]]
+
+# Type:         Fn@Return [ParamTypes]
+[Fn@Int [Int Int]]
+```
+
+```tinct
+[Fn@b [a]]                    # function from a to b
+[Fn@Bool [a]]                 # predicate
+[Fn@c [a b]]                  # two-arg function
+[Fn@[return: [f b]] [[Fn@b [a]]  [f a]]]  # HKT: (a→b) → f a → f b
+```
+
+`Fn` is uppercase (type constructor convention). The annotation after `@` is the return type; the bracket is the list of parameter types. All types must be explicit — there is no body to infer from.
+
+**`@Fn`** (bare) — any callable: variadic function returning `Any`. Used for higher-order parameters where the specific signature is not constraining.
+
+**Subtyping:** named function types are subtypes of anonymous ones by dropping parameter names (Gaster & Jones 1996). `Fn@Int [x: Int  y: Int]` <: `Fn@Int [Int Int]`.
+
+---
+
+## Part III: Polymorphism
+
+### 8. TypeVars and `bind:`
+
+**`bind:` is the sole TypeVar declaration site** in `fn@[...]` annotations. It declares names as fresh TypeVars, processed before all other keys. Lowercase names in annotation position are always TypeVars — never value references.
+
+```tinct
+# Single TypeVar
+min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]]
+      [xs@Seq@a] ...]
+
+# Multiple TypeVars
+zip: [fn@[bind: [a b]  return: [Seq [record left: a  right: b]]]
+      [xs@Seq@a  ys@Seq@b] ...]
+```
+
+**TypeVar scoping rules:**
+1. `bind: [a b c]` registers `a`, `b`, `c` as fresh TypeVars in `ann_mapping`
+2. `return:`, `type:`, and parameter `@` annotations reference names from `ann_mapping`
+3. A name in `return:` or a parameter annotation that is not in `bind:` is a type error
+4. TypeVars are local to the function annotation — no outer-scope shadowing
+
+```tinct
+# a declared in bind:, referenced everywhere
+transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Showable]]
+             [xs@Seq@a  f@[Fn@b [a]]] ...]
+```
+
+**Without `bind:`:** TypeVars introduced solely through `constraint:` keyed entries are also valid for single-TypeVar cases (backward compatible):
+
+```tinct
+# Equivalent — a introduced via constraint:
+min: [fn@[return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]
+```
+
+But when TypeVars appear only in MPTC positional entries (like `c` in `[$Addable a b c]`), `bind:` is required to declare them before use.
+
+### 9. TypeVar Constraints
+
+`constraint:` declares class constraints on TypeVars. Values are type-stage expressions evaluated in the type-stage Env.
 
 ```tinct
 # Single constraint
 constraint: [a: Comparable]
 
-# Multiple TypeVars with different constraints
+# Multiple TypeVars
 constraint: [a: Comparable  b: Showable]
 
-# Multiple constraints on one TypeVar (list value)
-constraint: [a: [Comparable Showable]]
+# Multiple constraints on one TypeVar — each combinator
+constraint: [a: [each Comparable Showable]]
 ```
 
-**Processing order.** `fn@[...]` resolves keys in a fixed internal order: `constraint:` first (registers TypeVars in `ann_mapping` with constraint registration in `state.constraints`), then `return:` (which may reference those TypeVars), then `doc:`. Source key order does not matter — the resolver uses this canonical sequence.
+**Routing:** constraint values are type-stage expressions. `Comparable` resolves to `[kind: "named" name: "Comparable"]` → `Constraint::Class("Comparable", α)`. `[each Comparable Showable]` resolves to `[kind: "inter" members: [...]]` → two separate `Constraint::Class` entries.
 
-**TypeVar scoping.** Constraint TypeVars share the `ann_mapping` mechanism with parameter annotations. A TypeVar named in `constraint:` is the same TypeVar referenced by the same name in `return:` or in a parameter annotation:
+**Interaction with inference.** Explicit constraints compose with inferred constraints. If `constraint: [a: Comparable]` is declared and the body also uses `a` in an `Equatable` context, both register; constraint simplification removes `Equatable a` since `Comparable` entails it via the superclass relation.
 
-```tinct
-# `a` appears in constraint:, return:, and xs@Seq@a — all the same TypeVar
-min: [fn@[return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]
-```
-
-**Interaction with inference.** Explicit constraints compose with inferred constraints. If `constraint: [a: Comparable]` is declared and the body also uses `a` in an `Equatable` context, both are registered; constraint simplification removes `Equatable a` since `Comparable` entails it via the superclass relation. If the declared constraint is stronger than what the body uses, it is still enforced at call sites — allowing library authors to declare a stricter interface than the body exercises.
-
-**`doc:` and LSP hover.** The doc string is stored in `TypeScheme.doc` and displayed in LSP hover below the inferred type signature. It does not affect type checking or runtime behavior.
+**`doc:` and LSP hover.** The doc string is stored in `TypeScheme.doc` and displayed below the inferred signature in LSP hover:
 
 ```
 min: Comparable a => Fn@a [Seq@a]
@@ -280,117 +271,456 @@ Return smallest element
 **Examples:**
 
 ```tinct
-# Constraint on the return TypeVar
-min: [fn@[return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]
+min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: "Return smallest element"]
+      [xs@Seq@a] ...]
 # Inferred: Comparable a => Fn@a [Seq@a]
 
-# Multiple TypeVars with different constraints
-compare: [fn@[return: Bool  constraint: [a: Comparable  b: Showable]] 
+compare: [fn@[bind: [a b]  return: Bool  constraint: [a: Comparable  b: Showable]]
           [x@a  y@a  logger@b] ...]
 # Inferred: (Comparable a, Showable b) => Fn@Bool [a a b]
 
-# Multiple constraints on one TypeVar
-display-sorted: [fn@[return: String  constraint: [a: [Comparable Showable]]]
+display-sorted: [fn@[bind: [a]  return: String  constraint: [a: [each Comparable Showable]]]
                  [xs@Seq@a] ...]
 # Inferred: (Comparable a, Showable a) => Fn@String [Seq@a]
 
-# Constraint on TypeVar not used as return type
-check-all: [fn@[return: Bool  constraint: [a: Equatable]]
+check-all: [fn@[bind: [a]  return: Bool  constraint: [a: Equatable]]
             [xs@Seq@a  target@a] ...]
 # Inferred: Equatable a => Fn@Bool [Seq@a a]
 
-# Doc-only annotation — return type inferred from body
-greet: [fn@[doc: "Format a greeting string"] [name@String] [str "Hello " name]]
-# Hover: Fn@String [String]
-#        Format a greeting string
-
-# Constraint + doc + return
-between: [fn@[return: Fn@Bool [a]
+between: [fn@[bind: [a]
+              return: [Fn@Bool [a]]
               constraint: [a: Comparable]
-              doc: "Return a predicate testing whether a value lies in [lo, hi)"]
+              doc: "Return a predicate for [lo, hi)"]
           [lo@a  hi@a]
           [fn@Bool [x@a] [and [>= x lo] [< x hi]]]]
-# Hover: Comparable a => Fn@Fn@Bool [a] [a a]
-#        Return a predicate testing whether a value lies in [lo, hi)
 ```
 
-**Label TypeVar annotations.** Two forms introduce a label TypeVar of kind `Label`:
+### 10. Multi-Parameter Type Classes
 
-- `key@Label` — anonymous label TypeVar; the type checker generates a fresh name internally. Use when the label name is not referenced elsewhere in the type.
-- `key@[label: l]` — named label TypeVar `l`; use when the same label must appear in multiple type positions (e.g., two parameters that must access the same field).
+**MPTC constraints** relate multiple TypeVars via a class with functional dependencies. Written as positional entries in `constraint:`:
 
 ```tinct
-# Anonymous form — get/get-or use this
-[fn@[return: a] [key@Label  dict@d] [get key dict]]
+constraint: [a: Numeric  b: Numeric  [$Addable a b c]]
+```
+
+`[$Addable a b c]` — the `$` sigil looks up `Addable` in the ClassEnv (not the type-stage Env). All three TypeVars (`a`, `b`, `c`) must be declared in `bind:`. The class's functional dependency `(a, b) → c` means: when `a` and `b` are known, `c` is determined.
+
+```tinct
+scale: [fn@[bind: [a b c]
+             return: c
+             constraint: [a: Numeric  b: Numeric  [$Multipliable a b c]]]
+  [x@a  factor@b]
+  [* x factor]]
+
+[scale 10 2]        # a=Int, b=Int → c=Int via FD
+[scale 10 2.0]      # a=Int, b=Float → c=Float via FD
+```
+
+**`kinds:` for higher-kinded TypeVars.** When a TypeVar is a type constructor (kind `Operator`), declare it with `kinds:`:
+
+```tinct
+fmap-generic: [fn@[bind: [a b f]
+                   kinds: [f: Operator]
+                   constraint: [f: Functor]
+                   return: [f b]]
+               [[Fn@b [a]]  xs@[f a]] ...]
+```
+
+`kinds: [f: Operator]` registers `f` in `kind_env` as an Operator-kinded TypeVar. Kind names: `Operator` (type constructor `* → *`), `Label` (dict field key).
+
+### 11. Label TypeVars and Field Access
+
+`key@Label` annotates a parameter as a label (dict field key). The type checker generates a `HasField` constraint automatically:
+
+```tinct
+# Anonymous form
+get-field: [fn@[return: a] [key@Label  dict@d] [get key dict]]
 # inferred: ∀ (l : Label) d a. HasField l d a => Label(l) → d → a
 
 # Named form — when the same label appears twice
-[fn@[return: a] [key@[label: l]  default@a  dict@d] ...]
+get-or-default: [fn@[return: a] [key@[label: l]  default@a  dict@d] ...]
 ```
 
-`HasField` constraints are never written explicitly — the type checker generates them from the label annotation on `key`. See [Type Inference](06-type-inference.md) §Higher-Kinded Types and Type Classes §HasField.
+`HasField` constraints are never written explicitly — they arise from `key@Label` annotations. The type checker looks up the label type in the record type of `dict` and unifies with `a`.
 
-### Type Expressions
+---
 
-Type expressions appear in type annotations and `[type ...]` declarations. They use the same `[]` syntax as data but are distinguished by context (after `@`, inside `type` form).
+## Part IV: Type-Stage Programming
 
-**Function types** use `Fn@Return [ParamTypes]`, mirroring function definitions (`fn@Return [params] body`):
+### 12. `--- stage: type` Sections
+
+**`--- stage: type` sections define type-level functions** evaluated at type-check time. They are syntactically ordinary LLT code; the `stage: type` header routes the document to the type-stage evaluator instead of the runtime evaluator.
+
 ```tinct
-[Fn@b [a]]              # function from a to b
-[Fn@Bool [a]]           # predicate
-[Fn@c [a b]]            # two-arg function
+--- stage: type
+[
+  Nullable: [fn [t] [or t Null]]
+  Pair:     [fn [a b] [record first: a  second: b]]
+]
+---
+x@[Nullable Int]       # Int | Null
+p@[Pair String Bool]   # {first: String  second: Bool}
 ```
 
-The parser handles this via the `annotated_bare` rule -- `Fn@b` parses as `Annotated { name: "Fn", annotation: Simple("b") }`. The type checker interprets `Fn` as a function type constructor. All types in a type definition must be explicit -- there is no body to infer from.
+**Isolation.** The type-stage Env is separate from the runtime Env. Type-stage functions cannot reference runtime bindings. The type-stage Env is built from:
+1. Prelude `--- stage: type` section (including built-in type combinators)
+2. Program `--- stage: type` sections in source order
 
-**Note:** `Fn@Number` in a bare context (not inside `[]`) is also valid and parsed via the `annotated_bare` grammar rule, producing the same AST structure.
+The type-stage Env is discarded after type-checking; it does not exist at runtime.
 
-**Row polymorphism and width subtyping.** Under BAS (Boolean-Algebraic Subtyping), all records are closed — there are no row variables. Openness is expressed via width subtyping: a record with more fields is a subtype of one with fewer fields, so a function annotated `@[name: String]` accepts any record that has at least a `name: String` field. The `...` and `...name` rest entry forms are valid syntax and express user intent for openness, but they produce the same closed record type — width subtyping handles the structural openness automatically without row variables.
+**Available builtins in type-stage:** `builtin-get`, `get?`, `keys`, `length`, `=`, `if`, `match`. The higher-level `get` (which is a program-stage wrapper) is not available — use `builtin-get` instead.
 
-**Type conventions** (not enforced by parser, enforced by type checker):
-- Uppercase first letter = concrete type (`String`, `Number`, `Person`, `Fn`)
-- Lowercase first letter = type variable (`a`, `b`, `k`, `v`)
-- `Any` = dynamic escape hatch
+**Recursive type-stage functions are not supported.** The lazy evaluator defers self-calls as thunks; the annotation resolver forces thunks during traversal, causing infinite unrolling until the 256-layer depth limit fires. Use type aliases for recursive structures.
 
-**Type inference context.** The type system uses type schemes (`∀α₁...αₙ. τ`) for polymorphic bindings via levels-based let-generalization (Kiselyov 2013). Type variables carry an integer level for scope tracking (`TypeVar(String, u32)`). These are type checker internals — the parser produces bare type names as strings. See [Type Inference](06-type-inference.md) §Let-Generalization for details.
+### 13. Type Prelude and Type Constructors
 
-### Recursive Type Aliases
-
-**Equi-recursive type aliases are supported** via two-pass registration. A type alias may reference itself in its body, enabling recursive data structures:
+The prelude `--- stage: type` section defines all built-in type combinators:
 
 ```tinct
-# Linked list
+--- stage: type
+[
+  or:     [fn [...types] [kind: "union"  members: types]]
+  each:   [fn [...types] [kind: "inter"  members: types]]
+  record: [fn [...fields] [kind: "record"  fields: fields]]
+
+  Seq:    [fn [t]    [kind: "seq"    element: t]]
+  Map:    [fn [k v]  [kind: "map"    key: k  value: v]]
+  Fn:     [fn [ret ...params] [kind: "fn"  return: ret  params: params]]
+
+  # Ground types
+  Int:    [kind: "named"  name: "Int"]
+  String: [kind: "named"  name: "String"]
+  Bool:   [kind: "named"  name: "Bool"]
+  Null:   [kind: "named"  name: "Null"]
+  Any:    [kind: "named"  name: "Any"]
+  Unknown:[kind: "named"  name: "Unknown"]
+]
+```
+
+**Name resolution order** in type-stage Env:
+1. Type-stage bindings (`or`, `each`, user-defined)
+2. Type alias table (aliases declared with `[type ...]`)
+3. Primitive named types (`Int`, `String`, `Bool`, `Null`, `Any`, `Unknown`)
+
+### 14. Annotation Resolution
+
+Annotation brackets `@[...]` are resolved by evaluating their contents in the type-stage Env, then converting the resulting type dict to a `Type::*` via `dict_to_type()`.
+
+```tinct
+@[or Int Null]
+# eval("or Int Null", type_stage_env) → [kind: "union"  members: [Int-dict  Null-dict]]
+# dict_to_type → Type::Union([Type::Int, Type::Record(Empty)])
+
+@[Seq Int]
+# eval("Seq Int", type_stage_env) → [kind: "seq"  element: [kind: "named"  name: "Int"]]
+# dict_to_type → Type::Seq(Type::Int)
+```
+
+**Disambiguation of bracket annotation contents:**
+- Any keyed entry matching a metadata key (`bind:`, `return:`, `constraint:`, `kinds:`, `doc:`) → metadata dict (not a type expression)
+- All-keyed with unrecognized keys → record type
+- Mixed positional and keyed with recognized metadata keys → type error
+- `or:` (colon-suffixed) → always a dict key, always a record field name
+- `or` (bare in head position) → always a type-stage function call
+
+```tinct
+@[or: Int  port: Int]    # Record schema: fields "or" and "port"
+@[or Int Null]           # Union type: Int | Null
+```
+
+**`TypeStageApp`** — when annotation brackets contain TypeVar arguments that are not yet ground, the resolver produces a lazy `TypeStageApp` node instead of evaluating eagerly. It reduces to a concrete type when the TypeVars are resolved during inference.
+
+### 15. Type Alias Declarations
+
+`[type ...]` declares a named type alias. The body is evaluated using the full annotation resolver with type-stage Env access.
+
+```tinct
+# Simple alias
+NullableInt: [type [or Int Null]]
+Name:        [type String]
+
+# Parameterized alias
+Either:  [type [a b] [or a b]]
+Pair:    [type [a b] [record first: a  second: b]]
+Scores:  [type [Map String: Int]]
+
+# Use site
+x@NullableInt
+y@[Either Int String]    # a=Int, b=String substituted directly
+```
+
+**Parameterized alias use:** `x@[Either Int String]` substitutes `a=Int`, `b=String` directly — it is a substitution, not instantiation of fresh TypeVars. Using `x@Either` (bare) leaves `a`, `b` as fresh inference variables.
+
+**Nominal variants** use `[type [Tag1 body1] [Tag2 body2] ...]` multi-entry form — these are registered structurally by the type-checker, not evaluated as type-stage expressions.
+
+```tinct
+Result: [type [Ok a] [Err String]]     # nominal ADT — structural registration
+Shape:  [type [circle: [radius: Int]]
+              [rect:   [w: Int  h: Int]]]
+```
+
+**Type alias entries are excluded from record fields.** A `[type ...]` entry registers an alias in the type environment but contributes no field to the enclosing record's type. The evaluator returns an empty dict for type alias entries.
+
+**Recursive type aliases** use two-pass registration: all aliases in a dict pre-register with `Type::Unknown` placeholder bodies (Pass 1), then resolve their actual bodies (Pass 2). Self-references resolve to `Type::Unknown` at the cycle boundary, breaking infinite expansion while preserving shallow access (up to MAX_ALIAS_DEPTH = 256 layers).
+
+```tinct
+List: [type [head: Int  tail: List]]    # recursive — two-pass resolves self-reference
+```
+
+### 16. Type Dict Schema
+
+Type-stage functions return type dicts. The canonical schema:
+
+| `kind:` value | Fields | `Type::*` |
+|---------------|--------|-----------|
+| `"named"` | `name: String` | `Type::Int`, `Type::Str`, `Type::Bool`, `Type::Unknown`, named aliases |
+| `"union"` | `members: [<type-dict> ...]` | `Type::Union(Vec<Type>)` |
+| `"inter"` | `members: [<type-dict> ...]` | `Type::Intersection(Vec<Type>)` |
+| `"seq"` | `element: <type-dict>` | `Type::Seq(Box<Type>)` |
+| `"map"` | `key: <type-dict>  value: <type-dict>` | `Type::Map(Type, Type)` |
+| `"fn"` | `return: <type-dict>  params: [<type-dict> ...]` | `Type::Function { ret, params }` |
+| `"record"` | `fields: {name: <type-dict> ...}` | `Type::Record(Row)` |
+| `"recursive"` | `var: String  body: <type-dict>` | `Type::Recursive { var, body }` (μ-types) |
+| `"recvar"` | `name: String` | `Type::RecVar(String)` |
+| `"type-stage-app"` | `fn: String  args: [<type-dict> ...]` | `Type::TypeStageApp { fn_name, args }` |
+
+**Bare uppercase rule:** Unconstrained type positions use `Unknown`. Exception: `Fn` params use `Any` to express variadic-Any calling convention (any callable that accepts any argument types).
+
+`dict_to_type()` errors on unknown `kind:` values or missing required fields — never silently produces `Unknown` for malformed dicts.
+
+---
+
+## Part V: Runtime Contracts
+
+### 17. Default Values
+
+`default:` on a parameter makes it optional. The default value is a thunk — lazily evaluated per call where the argument is absent.
+
+```tinct
+# Optional named parameter
+fetch: [fn@String [url@String  timeout@[type: Int  default: 30]] ...]
+[fetch "https://example.com"]            # timeout = 30
+[fetch "https://example.com" timeout: 5] # timeout = 5
+
+# In type assertion — fallback on type mismatch
+port: [@[type: Int  default: 8080] config.port]  # 8080 if port absent or wrong type
+```
+
+**`default:` does not interact with `is:`.** `default:` substitutes when the argument is **absent**. `is:` validates when the argument **is present**. A caller providing a value that fails `is:` gets a runtime error — the default is never used as a fallback for failed predicates.
+
+`ast-of` on a parameter with `default:` returns the unevaluated AST expression for the default, not its evaluated value.
+
+### 18. Runtime Predicates (`is:`)
+
+`is:` attaches a runtime predicate to a parameter or assertion. The predicate receives the value and must return truthy for the annotation to pass.
+
+**In function parameters (hard guard):**
+
+```tinct
+positive: [fn@Int [x@[type: Int  is: positive?]] ...]
+# If caller passes x=(-1), predicate fails → runtime TypeError
+# The default: value is NEVER used as fallback for is: failure
+```
+
+**In match arms (soft guard):**
+
+```tinct
+[match value
+  n@[type: Int  is: positive?]: [str "positive: " n]   # falsy → skip to next arm
+  n@Int:                         [str "non-positive: " n]]
+```
+
+- `is:` in match arm: falsy → arm skipped, next arm tried (soft)
+- `is:` in function parameter: falsy → runtime error (hard)
+- `is:` throwing → always a hard runtime error, never a soft skip
+
+**Type narrowing.** Recognized type predicates narrow the TypeVar's type in the arm body: `int?` → `Int`, `string?` → `String`, `dict?` → open record. User-defined predicates produce no narrowing — the type in the body is the matched value's pre-guard type.
+
+**`is:` fires at materialization boundary** — when the value is first accessed, not at binding time.
+
+### 19. Numeric Representation (`repr:`)
+
+`repr:` constrains the integer bit width and signedness of a numeric parameter. Used for FFI, binary protocol parsing, and performance-sensitive numeric code.
+
+```tinct
+encode-byte: [fn@Null [value@[type: Int  repr: "u8"]] ...]
+# repr: "u8" — type checker verifies value has a numeric type (Int, Float, or Number)
+# runtime: no range checking — repr: is a static annotation, not a range validator
+```
+
+Accepted `repr:` values: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`.
+
+`repr:` fires at materialization boundary alongside `is:`.
+
+---
+
+## Part VI: Advanced Features
+
+### 20. Capability Types
+
+Tinct uses capability types to statically track I/O permissions. Three capability types:
+
+| Type | Meaning | Example binding |
+|------|---------|-----------------|
+| `DirCap` | Directory capability — filesystem access | `%pwd`, `%libdir`, user-declared |
+| `NetCap` | Network capability — outbound connection allowlist | User-declared |
+| `Handle` | File/stream handle — readable/writable I/O channel | Returned by `open`, `connect` |
+
+```tinct
+# Annotations
+read-file: [fn@String [cap@DirCap  path@String]
+  [slurp [open cap path "r"]]]
+
+connect: [fn@Handle [nc@NetCap  host@String  port@Int] ...]
+
+# caps: pragma on document header — declared required capabilities
+--- caps: [%nc: @NetCap  %data: @DirCap]
+[emit [connect %nc "api.example.com" 443]]
+```
+
+`DirCap`, `NetCap`, `Handle` are opaque base types — no parametric polymorphism. Subtyping is reflexive only (`DirCap <: DirCap`, all <: `Any`). `RevocableDirCap` matches `DirCap` at the type level (revocation is a runtime property).
+
+The `%pwd`, `%libdir`, and `%stdin` capability variables are injected into the TypeEnv automatically; they do not need `caps:` declarations.
+
+### 21. Recursive Type Aliases
+
+Type aliases support self-reference via two-pass registration. All aliases in a dict pre-register with `Type::Unknown` placeholder bodies (Pass 1), then resolve actual bodies (Pass 2). Self-references resolve to `Type::Unknown` at the cycle boundary.
+
+```tinct
 List: [type [head: Int  tail: List]]
-
-# Binary tree
 Tree: [type [value: Int  left: Tree  right: Tree]]
 
-# Mutually recursive types (must be in the same dict)
-A: [type [b_field: B]]  B: [type [a_field: A]]
+# Mutually recursive — must be in the same dict
+A: [type [b_field: B]]
+B: [type [a_field: A]]
 ```
 
-**Two-pass registration.** All type aliases in a dict are pre-registered with placeholder bodies before resolving actual bodies. This enables forward references and self-references:
+**Depth limit.** Alias expansion is bounded at 256 layers (`MAX_ALIAS_DEPTH`). Exceeding this limit produces: `recursive type alias 'Name' exceeds maximum unfolding depth (256)`.
 
-1. **Pass 1 (pre-registration):** All `[type ...]` entries are registered with `Type::Unknown` placeholder bodies.
-2. **Pass 2 (resolution):** Each alias body is resolved with the alias itself visible in the environment.
+**Semantics: equi-recursive, not iso-recursive.** Aliases are transparent — they unfold automatically during type checking. There is no explicit `fold`/`unfold` syntax.
 
-**Cycle detection.** When resolving an alias body, if the alias references itself (directly or indirectly), the recursive reference resolves to `Type::Unknown`. This breaks the cycle while allowing the structure to be defined. A recursion guard (`HashSet<String>`) tracks aliases currently being expanded.
+### 22. Literal Types
 
-**Depth limit.** Alias expansion is limited to 256 layers (MAX_ALIAS_DEPTH). Exceeding this limit produces the error: `recursive type alias 'Name' exceeds maximum unfolding depth (256)`.
+Integer and string literals carry their value in the type:
 
-**Semantics: equi-recursive, not iso-recursive.** Type aliases are transparent — they unfold automatically during type checking. There is no explicit `fold`/`unfold` syntax (iso-recursive semantics). This matches Amadio & Cardelli (1993) equi-recursive type equality with a depth guard for decidability.
+- `42` → `IntLiteral(42)` <: `Int` <: `Number`
+- `"hello"` → `StringLiteral("hello")` <: `String`
 
-**Recursive types:** Parameterized type aliases support recursive algebraic data types. A type alias can reference itself in its body, with the recursive reference resolved through the alias table. The recursion guard prevents infinite expansion, and the depth limit (256 layers) provides decidability. For configuration use cases, recursive types are uncommon — this feature primarily supports self-hosting stdlib functions that operate on tree-like structures.
+Float and Bool literals do not have literal types: float equality is fragile (rounding, NaN), and Bool is trivially enumerable.
 
-**Example:**
+**Literal types enable computed key resolution.** When a dict has a computed key `[$k: expr]`, the type checker infers the type of `k`. If it resolves to a literal type (`StringLiteral("name")`), the field name is statically known:
 
 ```tinct
-# Define a recursive list type
-List: [type [head: Int  tail: List]]
+[k: "hello"  $k: 42]
+# k : StringLiteral("hello") → field name "hello"
+# type: [k: StringLiteral("hello")  hello: IntLiteral(42)]
 
-# Use in annotation
-mylist@List: [head: 1  tail: [head: 2  tail: []]]
-
-# The tail field has type Unknown (recursive placeholder)
-# but the overall structure is recognized as a List
+[k: dynamic  $k: 42]
+# k : String (not literal) → field "hello" excluded from Record type
+# value 42 is still type-checked; field name is unknown statically
 ```
+
+Literal types widen only when an annotation demands the base type — they never widen implicitly.
+
+---
+
+## Part VII: Formal Specifications
+
+### 23. Formal Grammar
+
+```ebnf
+(* Annotation attachment *)
+param_annotation    = ${ "@" ~ annotation_value }
+fn_annotation       = ${ "@" ~ annotation_value }
+annotated_bare      = ${ bare_word ~ "@" ~ annotation_value }
+
+(* Annotation value *)
+annotation_value    = { simple_annotation | property_dict_annotation }
+simple_annotation   = { identifier }
+property_dict_annotation = { "[" ~ (annotation_entry ~ WHITESPACE*)* ~ "]" }
+annotation_entry    = { (key ~ ":" ~ annotation_value) | annotation_value }
+
+(* Type assertion expression *)
+type_assert_body    = { "@" ~ annotation_value ~ value }
+
+(* Chained parameterized annotation *)
+chained_annotation  = ${ identifier ~ ("@" ~ annotation_value)+ }
+```
+
+`@` is `ImmediateAt` — emitted only when it appears directly after an identifier with no whitespace. This distinguishes `x@Int` (annotation) from `x @ Int` (which would be parsed differently if `@` were a regular operator).
+
+### 24. Mixed-Stage Routing
+
+Processing order within a `fn@[...]` metadata bracket (fixed; source key order is irrelevant):
+
+| Step | Key | Action | Destination |
+|------|-----|--------|-------------|
+| 1 | `bind:` | Declare TypeVars as fresh vars | `ann_mapping` |
+| 2 | `kinds:` | Register kind constraints | `kind_env` |
+| 3 | `constraint:` keyed entries | Class constraints per entry | `state.constraints` |
+| 4 | `constraint:` MPTC positional | Relate TypeVars via ClassEnv | `state.constraints` |
+| 5 | `return:` / `type:` | Resolve as type-stage expression | Return type |
+| 6 | `doc:` | Store documentation string | `TypeScheme.doc` |
+| 7 | `default:`, `is:`, `repr:`, arbitrary | Deferred to runtime | Runtime metadata |
+
+Mixed-stage routing for annotation brackets in general:
+
+| Annotation form | Stage | Destination |
+|-----------------|-------|-------------|
+| `x@Int` | Type | `Type::Int` via `resolve_type_name` |
+| `x@[or Int Null]` | Type-stage eval | `Type::Union` via type-stage Env |
+| `x@[type: Int  default: 0]` | Split | `type:` → type-stage, `default:` → runtime |
+| `fn@[bind: [a]  return: a  constraint: ...]` | Split | Per step table above |
+| `[@Int expr]` | Type + runtime | Type assertion at materialization |
+| `x@[is: pred]` in match | Runtime | Soft guard at match time |
+| `x@[repr: "u8"]` | Runtime | Materialization boundary check |
+
+### 25. Type Inference and Let-Generalization
+
+Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-generalization (Kiselyov 2013).
+
+**TypeVar levels.** Each TypeVar carries an integer level (`TypeVar(String, u32)`) representing the nesting depth of its binding scope. Let-generalization generalizes TypeVars whose level exceeds the current enclosing level — preventing TypeVars from escaping their scope.
+
+**Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
+1. **Pass 0:** Resolve key names (literal keys extracted; computed keys resolved via type inference in parent scope)
+2. **Pass 1:** Bind all non-alias key names to fresh TypeVars at the current level
+3. **Pass 2:** Register type aliases sequentially (each alias sees previously registered siblings)
+4. **Pass 3:** Infer actual value types and unify with Pass 1 TypeVars
+5. **Pass 4:** Generalize field types into polymorphic schemes
+
+**Substitution idempotence invariant.** `Substitution::apply()` is idempotent — applying the same substitution twice yields the same result. Achieved by transitive chaining in `apply_inner()` (Robinson 1965).
+
+**Alpha-equivalence.** Variable names are significant at the source level but irrelevant for principal types. `instantiate()` performs alpha-renaming (generating fresh `_t0`, `_t1`, ...) at each call site to prevent unintended unification between independent uses of the same polymorphic function.
+
+**Constraint propagation.** When `bind(TypeVar(α), TypeVar(β))` occurs during unification, class constraints on `α` are transferred to `β` (deduplicated). This preserves the principal type property: the representative TypeVar accumulates all constraints from its equivalence class. `HasField` constraints are NOT transferred — they encode position-specific field structure.
+
+See [Type Inference](06-type-inference.md) for the full let-generalization algorithm and constraint solving details.
+
+### 26. Reflection and `ast-of`
+
+`ast-of` on an annotated expression returns the resolved type as a type dict (via `type_to_dict()`) alongside the expression's AST structure:
+
+```tinct
+ast-of: [fn@a  min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]]
+# → [kind: "fn"
+#    return: [kind: "named" name: "a"]
+#    params: [[kind: "seq" element: [kind: "named" name: "a"]]]
+#    constraints: [[class: "Comparable" var: "a"]]]
+```
+
+`ast-of` on a default: value returns the unevaluated AST expression dict — not the evaluated default value. This enables tooling to inspect the source expression of defaults without forcing evaluation.
+
+The type dict schema used by `ast-of` matches the §16 Type Dict Schema exactly — `type_to_dict()` and `dict_to_type()` are inverse operations for all `Type::*` variants.
+
+---
+
+## Reference
+
+- **Kiselyov, O. (2013).** "Efficient and Insightful Generalization." — [levels-based let-generalization; TypeVar level assignment]
+- **Robinson, J.A. (1965).** "A Machine-Oriented Logic Based on the Resolution Principle." *JACM*, 12(1), 23–41. — [unification; substitution idempotence]
+- **Gaster, B.R. & Jones, M.P. (1996).** "A Polymorphic Type System for Extensible Records and Variants." — [named parameters in calling convention; names not part of principal type]
+- **Amadio, R.M. & Cardelli, L. (1993).** "Subtyping Recursive Types." *ACM TOPLAS*, 15(4). — [equi-recursive type equality; depth guard for decidability]
+- **Jones, M.P. (1995).** *Qualified Types: Theory and Practice.* Cambridge. — [constraint schemes; processing order]
+- **Jones, M.P. (2000).** "Type Classes with Functional Dependencies." *ESOP 2000*. — [fundep improvement; MPTC constraint propagation]
+
+See [References](17-references.md) for complete citations.
