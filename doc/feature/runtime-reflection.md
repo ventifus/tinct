@@ -4,7 +4,7 @@
 > - `doc/08-evaluation.md §Runtime Reflection` — spec-level description; this document is the user-facing guide
 > - `doc/11a-builtins.md §Meta & Code Generation` — `ast-of` and `eval-ast` entries added there; `str` updated to note Showable dispatch
 
-Tinct functions carry their full annotation metadata at runtime. The `ast-of` primitive returns a structured dict describing any value, and the prelude provides helpers for inspection, signature display, and documentation generation.
+Tinct functions carry their full annotation metadata at runtime. The `ast-of` primitive returns a structured dict describing any value **without forcing it** — it peeks at the thunk's state and branches accordingly. The prelude provides helpers for inspection, signature display, and documentation generation.
 
 ## `ast-of` — Get the AST Dict for Any Value
 
@@ -57,6 +57,32 @@ The `return-ann` dict has two shapes depending on the annotation form:
 [ast-of "hello"]   # → [type: "str"]
 [ast-of [1 2 3]]   # → [type: "seq"]
 ```
+
+**For unevaluated thunks** (expressions not yet forced):
+
+```tinct
+# A binding whose value hasn't been accessed yet
+lazy-fn: [fn@[doc: "Compute something"] [x@Int] [+ x 1]]
+
+[ast-of lazy-fn]
+# → [type: "fn"  return-ann: ...  params: [...]  doc: "Compute something"]
+# The function body is NOT called — ast-of reads the expression tree directly.
+```
+
+This is the key non-materializing property: `ast-of` inspects the thunk's state without forcing it. For an unevaluated thunk wrapping a `fn` expression, the result contains the annotation (including `doc:`) from the expression tree. No side effects are triggered.
+
+**For pending thunks** (deferred calls like pipeline stage results):
+
+```tinct
+# [from-json [slurp %stdin]] is a PendingBuiltin — not yet evaluated
+stage-result: [include %libdir "cli/in/json.llt"]
+
+[ast-of stage-result]
+# → [type: "pending"]
+# %stdin is NOT read. The thunk is not forced.
+```
+
+This allows docgen and other introspection tools to detect pipeline stage files (non-module includes) without triggering their I/O.
 
 `ast-of` is dynamically typed — its return type is `Unknown`. Field access on the result is not statically checked.
 

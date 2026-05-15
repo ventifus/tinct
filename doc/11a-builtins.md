@@ -11,6 +11,7 @@ This chapter provides a complete reference for all 189 Rust-native builtins. For
 - `L` = Lazy — argument passes through as a thunk (never materialized by this builtin)
 - `Sc` = Selectively strict — materialization is conditional on another argument's value
 - `S*` = Variadic strict — all arguments are materialized
+- `I` = Inspect — peeks at thunk state without materializing; branches on Materialized/Unevaluated/Pending without forcing
 
 **Result type:**
 - `→ V` = Value result (Int, Float, String, Bool)
@@ -181,7 +182,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 |---------|-------|-----------|--------|-------------|
 | `gensym` | 0-1 | `() or S → V` | String | Generate a unique symbol string; optional prefix arg for debugging (e.g., `[gensym "tmp"]` → `"tmp_42"`) |
 | `llt-repr` | 1 | `S → V` | String | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
-| `ast-of` | 1 | `S → V` | Dict (Unknown) | Return the AST dict for any value — `[type: "fn" return-ann: ... params: [...] body: ...]` for functions, `[type: "builtin" name: ...]` for builtins, `[type: type-of(val)]` for others. See `doc/feature/runtime-reflection.md`. |
+| `ast-of` | 1 | `I → V` | Dict (Unknown) | Return the AST dict without forcing the argument. Branches on thunk state: Materialized → AST of the value (`Value::Function` → `[type: "fn" ...]`, `Value::Builtin` → `[type: "builtin" ...]`, other → `[type: type-of(val)]`); Unevaluated → AST of the expression without evaluating it (doc annotations visible); Pending → structural descriptor without forcing. See `doc/feature/runtime-reflection.md`. |
 | `eval-ast` | 1 | `S → V` | Any | Evaluate an AST dict in the stdlib environment and return the resulting value. |
 | `str` | variadic | `S... → V` | String | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
 

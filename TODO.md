@@ -451,16 +451,50 @@ See mempalace tinct/type-ann-v2. **Spec chapters:** `doc/05-type-annotations.md`
   Any:     [kind: "top"]
   Never:   [kind: "never"]
   Null:    [kind: "record"  fields: []]
-  Seq:     [fn [elem]     [kind: "seq"          elem: elem]]
+  Seq:     [fn [elem]     [kind: "seq"          element: elem]]
   Map:     [fn [key val]  [kind: "map"          key: key  value: val]]
-  union:   [fn [...types] [kind: "union"        members: types]]
-  all:     [fn [...types] [kind: "intersection" members: types]]
+  or:      [fn [...types] [kind: "union"        members: types]]
+  each:    [fn [...types] [kind: "intersection" members: types]]
   without: [fn [t]        [kind: "negation"     inner: t]]
   ```
   (`stdlib/prelude.llt`)
 - [ ] Tests: `--- stage: type` section evaluates; ground type dicts accessible; runtime env unaffected by type-stage declarations (`tests/corpus/eval/typecheck/`)
 
 **Depends on:** none (self-contained infrastructure sprint)
+
+### type-ann-v2-resolver: Annotation resolver — type-stage evaluation and fn@[...] keys
+
+See `doc/05-type-annotations.md` §§12–14 and `doc/whatif/type-annotations-v2.md`. Wires the type-stage Env into the annotation resolver so bracket annotations evaluate as type-stage expressions, and adds `bind:`, `kinds:` to the fn@[...] metadata dict.
+
+- [ ] In `resolve_annotation` (`src/typecheck_annot.rs`): when annotation is `PropertyDict` with no recognized metadata keys, evaluate the bracket contents via `eval(expr, type_stage_env)` → `dict_to_type(result)` instead of the current `resolve_type_dict` path. (`src/typecheck_annot.rs`)
+- [ ] In `resolve_fn_type` (`src/typecheck_annot.rs`): add `bind:` arm — positional entries are TypeVar names; register each as a fresh TypeVar in `ann_mapping` before processing any other keys. (`src/typecheck_annot.rs`)
+- [ ] In `resolve_fn_type`: add `kinds:` arm — keyed entries map TypeVar names to kind constraints; register in `kind_env` after `bind:` processing. (`src/typecheck_annot.rs`)
+- [ ] Update `resolve_fn_type` disambiguation: recognized metadata keys are now `bind:`, `return:`, `constraint:`, `kinds:`, `doc:`. Remove the all-positional → union-return-type path (retired). (`src/typecheck_annot.rs`)
+- [ ] In `[type ...]` body resolution (`src/typecheck_annot.rs`): route non-nominal-variant bodies through `eval(body, type_stage_env)` → `dict_to_type()` instead of the current bare-name + named-dict path. (`src/typecheck_annot.rs`)
+- [ ] Tests: `@[or Int Null]` → `Type::Union([Int, Null])`; `@[Seq Int]` → `Type::Seq(Int)`; `fn@[bind: [a] return: a]` → polymorphic; `fn@[kinds: [f: Operator]]` → kind constraint registered; `[type [or Int Null]]` alias resolves correctly. (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** `type-stage-infra`
+
+### type-ann-v2-constraints: Constraint resolver — type-stage routing and MPTC
+
+See `doc/05-type-annotations.md` §9–10 and `doc/whatif/type-annotations-v2.md`. Routes `constraint:` values through the type-stage Env; adds `each` for multi-class constraints; enforces that MPTC positional entries use only names declared in `bind:`.
+
+- [ ] In `resolve_fn_metadata` constraint: handler (`src/typecheck_annot.rs`): evaluate constraint values via `eval(val, type_stage_env)` → route by `kind:`: `"named"` → `Constraint::Class`; `"inter"` → one `Constraint::Class` per member (from `each`); `"union"` → `Constraint::Any` (from `or`, rare). (`src/typecheck_annot.rs`)
+- [ ] For MPTC positional entries `[$ClassName a b c]` in `constraint:`: look up class in `ClassEnv` (not type-stage Env); all var names must be in `ann_mapping` (declared by `bind:`); missing name → type error "TypeVar 'x' not declared in bind:". (`src/typecheck_annot.rs`)
+- [ ] Processing order enforcement: `bind:` → `kinds:` → `constraint:` keyed → `constraint:` MPTC positional → `return:`/`type:` → `doc:`/runtime. (`src/typecheck_annot.rs`)
+- [ ] Tests: `constraint: [a: Comparable]` → `Constraint::Class`; `constraint: [a: [each Comparable Showable]]` → two constraints; MPTC `[$Add a b c]` with undeclared `c` → type error; old `[a: [Comparable Showable]]` positional-list form → type error. (`tests/corpus/eval/typecheck/`)
+
+**Depends on:** `type-ann-v2-resolver`
+
+### type-ann-v2-match: `is:` soft guard in match arms
+
+See `doc/05-type-annotations.md` §18 and `doc/whatif/type-annotations-v2.md`. Implements `is:` in match arm patterns as a soft guard (arm skipped when predicate is falsy, hard error when predicate throws).
+
+- [ ] In match arm evaluation (`src/eval.rs`): when arm pattern contains `is:` annotation, evaluate the predicate on the matched value before entering the arm body. Falsy result → skip arm, try next. Truthy → proceed. Exception → propagate as hard error. (`src/eval.rs`)
+- [ ] Type narrowing for recognized type predicates in arm body: `int?` → `Type::Int`, `string?` → `Type::Str`, `dict?` → open record. (`src/typecheck.rs`)
+- [ ] Tests: `is:` falsy → next arm tried; `is:` truthy → body entered; `is:` throwing → error propagates; `int?` narrows type. (`tests/corpus/eval/builtins/`, `tests/corpus/eval/typecheck/`)
+
+**Depends on:** `type-stage-infra`
 
 ---
 
