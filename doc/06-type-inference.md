@@ -1130,9 +1130,9 @@ UNIFY-APP:
   unify(App(f₁, a₁), App(f₂, a₂)) = θ₂ ∘ θ₁
 ```
 
-**Implementation:** `src/type_unify.rs:1430-1470`. UNIFY-OPERATOR binds Operator variables in `subst.type_map` with occurs check (`m ∉ ftv(T)`). UNIFY-APP delegates to recursive `unify()` calls, relying on substitution application at the top of `unify()` to thread bindings from constructor unification into argument unification.
+**Implementation:** `src/type_unify.rs` — `unify()` UNIFY-OPERATOR and UNIFY-APP arms. UNIFY-OPERATOR binds Operator variables in `subst.type_map` with occurs check (`m ∉ ftv(T)`). UNIFY-APP delegates to recursive `unify()` calls, relying on substitution application at the top of `unify()` to thread bindings from constructor unification into argument unification.
 
-**Normalization:** After unification resolves `Operator("Seq")` or `Operator("Result")` to a builtin constructor, `apply_type` normalizes `App(Operator("Seq"), T)` → `Type::Seq(T)` to maintain the invariant that builtin constructors use dedicated Type variants (`src/type_unify.rs:535-550`).
+**Normalization:** After unification resolves `Operator("Seq")` or `Operator("Result")` to a builtin constructor, `apply_type` normalizes `App(Operator("Seq"), T)` → `Type::Seq(T)` to maintain the invariant that builtin constructors use dedicated Type variants (see `apply_type()` function in `src/type_unify.rs`).
 
 ### Constraint Generation
 
@@ -1163,14 +1163,14 @@ check_constraints_on_var(α, τ, state):
           error "type {τ} does not satisfy constraint {C}"
 ```
 
-**Implementation:** `src/type_unify.rs:156-198` (`check_constraints_on_var`). Called from U-VAR-LEVEL after binding `α` in `subst`.
+**Implementation:** `src/type_unify.rs` — `check_constraints_on_var()` function. Called from U-VAR-LEVEL after binding `α` in `subst`.
 
 **Primitive vs dynamic resolution:**
 
-- **Primitive classes** (`Numeric`, `Comparable`): hardcoded in `satisfies_constraint()` via allowlists (`src/type_unify.rs:19-54`). These are checked early, before prelude instances are loaded.
-- **User-defined classes** (`Mappable`, `Appendable`, `Functor`, etc.): resolved via `InstanceEnv::resolve_instance()` (`src/type_env.rs:931-997`). Requires prelude instances to be propagated into `InferState.instance_env`.
+- **Primitive classes** (`Numeric`, `Comparable`): hardcoded in `satisfies_constraint()` via allowlists (see `satisfies_constraint()` function in `src/type_unify.rs`). These are checked early, before prelude instances are loaded.
+- **User-defined classes** (`Mappable`, `Appendable`, `Functor`, etc.): resolved via `InstanceEnv::resolve_instance()` (see `resolve_instance()` method in `src/type_env.rs`). Requires prelude instances to be propagated into `InferState.instance_env`.
 
-**Entailment via superclass closure:** When simplifying constraints during generalization, `entails(class_env, context, target)` checks if `target` is directly present in `context` or implied via superclass relationships (`src/type_unify.rs:65-111`). For example, `Comparable a` entails `Equatable a` because Comparable has Equatable as a superclass.
+**Entailment via superclass closure:** When simplifying constraints during generalization, `entails(class_env, context, target)` checks if `target` is directly present in `context` or implied via superclass relationships (see `entails()` function in `src/type_unify.rs`). For example, `Comparable a` entails `Equatable a` because Comparable has Equatable as a superclass.
 
 ### Dictionary Elaboration
 

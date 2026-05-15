@@ -6235,3 +6235,13 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer)
 - [x] Verified: DirCap RESOLVE_BENEATH blocks ../traversal; E051 confirmed; corpus test added
 - [x] LSP .expect() replaced with graceful fallbacks; process::exit(1) on total fs failure
 - [x] TypeAssert.resolved_type: debug_assert → runtime TypeError; reset_elaboration in typecheck_file
+
+## Doc/Stdlib Accuracy
+
+### doc-accuracy-c318: Stale counts, variadic example, grammar productions, line refs, typo
+
+- [x] doc/11-stdlib.md: 189→184 builtin count
+- [x] doc/04-functions.md: variadic example updated for hybrid Seq/Dict
+- [x] doc/02-syntax.md: interpolated string grammar productions added
+- [x] doc/06-type-inference.md: stale line refs → function-name anchors
+- [x] stdlib/prelude.llt: "Stringip"→"Strip" typo fix

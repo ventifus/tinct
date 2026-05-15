@@ -490,18 +490,6 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 ---
 
-## Doc/Stdlib Accuracy
-
-### doc-accuracy-c318: Stale counts, doc/04 variadic example, spec line references
-
-- [ ] **[Major]** doc/11-stdlib.md builtin count stale: "189 Rust-native builtins" should be "184" (2 locations: lines 326, 474) (`doc/11-stdlib.md`)
-- [ ] **[Major]** doc/04-functions.md variadic example shows Dict bracket notation post-Seq migration — update to prose describing Seq collection (`doc/04-functions.md:125`)
-- [ ] **[Major]** doc/02-syntax.md Complete Grammar missing interpolated string productions (`doc/02-syntax.md:948-951`)
-- [ ] **[Minor]** doc/06-type-inference.md stale line references for UNIFY-OPERATOR and App normalization (`doc/06-type-inference.md:1133,1135`)
-- [ ] **[Minor]** stdlib/prelude.llt:496 typo "Stringip" → "Strip" in unindent doc comment (`stdlib/prelude.llt`)
-
----
-
 ## Standard Library Boundary
 
 ### stdlib-boundary: stdlib Rust surface area reduction

@@ -122,8 +122,15 @@ Examples:
 
 # Called as:
 [-> data step1 step2 step3]
-# data = ..., stages = [step1 step2 step3]
+# data = ..., stages = (cons-list of step1, step2, step3)
 ```
+
+**Collection representation:** Variadic arguments use a **hybrid Seq/Dict representation** depending on annotation:
+
+- **Annotated variadics** (`...xs@Seq` or `...xs@List`) → collected as a **Seq cons-list** for efficient lazy traversal
+- **Unannotated variadics** (`...args` with no type annotation) → collected as a **Dict** with integer keys `{0: arg1, 1: arg2, ...}` and named arguments merged in with string keys
+
+The Seq representation is preferred for performance (O(1) cons, lazy tail traversal). The Dict representation provides backward compatibility for unannotated variadics and supports mixed positional/named arguments in the same collection.
 
 ## Lambdas and `_` Shorthand
 
