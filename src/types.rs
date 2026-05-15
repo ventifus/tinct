@@ -6688,10 +6688,15 @@ mod tests {
     // --- Constraint checking tests ---
 
     #[test]
-    fn test_constraint_equatable_not_hardcoded() {
-        // Equatable is no longer hardcoded - it's resolved via instances in prelude.llt
-        assert!(!satisfies_constraint(&Type::Int, "Equatable"));
-        assert!(!satisfies_constraint(&Type::IntLiteral(42), "Equatable"));
+    fn test_constraint_equatable_hardcoded() {
+        // Equatable is hardcoded for primitive types (prelude instances are commented out;
+        // primitives use Rust fallback dispatch).
+        assert!(satisfies_constraint(&Type::Int, "Equatable"));
+        assert!(satisfies_constraint(&Type::IntLiteral(42), "Equatable"));
+        assert!(satisfies_constraint(&Type::Float, "Equatable"));
+        assert!(satisfies_constraint(&Type::Str, "Equatable"));
+        assert!(satisfies_constraint(&Type::Bool, "Equatable"));
+        // Function types do NOT satisfy Equatable
         let func_ty = Type::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Int),

@@ -64,6 +64,20 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     }
 
     match class_name {
+        // Equatable: base class for equality ([= $a $b]).
+        // Hardcoded because prelude instance declarations for primitives are commented
+        // out (primitives use Rust fallback dispatch). Without this, [= x 42] triggers
+        // "type Int does not satisfy constraint Equatable" in narrowing tests.
+        "Equatable" => matches!(
+            ty,
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Float
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Bool
+                | Type::Number
+        ),
         // Comparable subsumes Equatable via superclass relationship.
         // These are kept hardcoded because they are used in the early stages of type
         // checking (before prelude instances are loaded) and during operator type

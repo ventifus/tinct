@@ -1,5 +1,5 @@
 # json: format nested structures
-[include %libdir "out/json.llt"]
+[include %libdir "cli/out/json.llt"]
 ---
 [call %.json [
   users: [

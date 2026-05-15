@@ -1,6 +1,6 @@
 # json formatter: Seq serialization produces error
 # Seqs must be collected to dict first
-[include %libdir "out/json.llt"]
+[include %libdir "cli/out/json.llt"]
 ---
 [call %.json [seq 1 10]]
 === error

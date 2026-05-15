@@ -331,7 +331,8 @@ pub(crate) fn bind_args_thunks(
     // Empty variadic = Value::Dict({}) (the standard Seq nil sentinel).
     // Non-empty: build cons-list right-to-left so the first arg becomes the outermost head.
     if let Some(var_param) = variadic_param {
-        let variadic_args = &positional[max_positional..];
+        let start = max_positional.min(positional.len());
+        let variadic_args = &positional[start..];
         // Nil sentinel: empty dict is the standard end-of-Seq marker.
         let nil = Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), *call_span));
         let seq_thunk = variadic_args.iter().rev().fold(nil, |tail, head_arg| {
