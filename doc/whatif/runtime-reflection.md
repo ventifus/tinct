@@ -182,12 +182,9 @@ pub annotation: Option<Box<FnAnnotation>>,
 ]
 ```
 
-`body:` is eagerly serialized on each `ast-of` call. `Thunk::new_unevaluated`
-takes an `Expr` and cannot defer a Rust closure; a truly lazy body would
-require a `PendingBuiltin` thunk variant, which is not worth the complexity.
-In practice `describe`, `annotation-of`, and `sig-from-ast` never access
-`body`, so the eager cost is paid only when the caller explicitly reads it.
-`return-ann:` and `params:` are also materialized immediately.
+`body:` is serialized via `ast_to_dict_expr` when the thunk is Materialized. For Unevaluated thunks, `ast-of` returns the expression AST directly without forcing — the `body:` field comes from the stored `Expr`, not from evaluation. This makes `ast-of` non-materializing: it branches on thunk state (Materialized / Unevaluated / Pending) rather than forcing first.
+
+**Note:** An earlier version of this design specified eager serialization with the rationale that "a truly lazy body would require a `PendingBuiltin` thunk variant, which is not worth the complexity." That rationale was incorrect — the non-materializing design does not require new thunk variants; it instead branches on existing thunk states. The PendingCall/PendingBuiltin detection returns `[type: "pending"]` without any new infrastructure.
 
 For `Value::Builtin`: `ast-of` uses a shared static lookup table `builtin_type_for(name) → TypeScheme` extracted into a new module (e.g. `src/builtin_types.rs`). Both `standard_builtins()` and `TypeEnv::with_builtins()` currently register the same builtin names in parallel — the table de-duplicates this into a single source of truth. `ast-of` calls `builtin_type_for(def.name)` directly with no `EvalContext` change and no eval/typecheck boundary violation. The existing `TypeScheme.doc` field is already present and available for free.
 
