@@ -1646,6 +1646,16 @@ pub(crate) fn resolve_type_expr(
                         match &param_list.node {
                             Expr::Dict(param_entries) => {
                                 for entry in param_entries {
+                                    // Extract parameter name from key if present
+                                    let param_name = if let Some(ref key) = entry.node.key {
+                                        match &key.node {
+                                            Expr::VarRef { name, .. } => Some(name.clone()),
+                                            Expr::Str(s) => Some(s.clone()),
+                                            _ => None,
+                                        }
+                                    } else {
+                                        None
+                                    };
                                     let param_ty = resolve_type_expr(
                                         &entry.node.value,
                                         env,
@@ -1653,7 +1663,7 @@ pub(crate) fn resolve_type_expr(
                                         ann_mapping,
                                         row_ann_mapping,
                                     )?;
-                                    params.push((None, param_ty));
+                                    params.push((param_name, param_ty));
                                 }
                             }
                             Expr::Call {
@@ -2103,29 +2113,27 @@ fn try_resolve_fn_type_expr(
         resolve_annotation_as_type(ann_node, env, ann_span, state, ann_mapping, row_ann_mapping)?;
 
     // The parameter list can be:
-    // - Expr::Dict(entries) — old/standard syntax: `[$a $b]` or `[$Number]`
+    // - Expr::Dict(entries) — old/standard syntax: `[$a $b]` or `[$Number]` (unnamed params)
+    //   or new syntax: `[x: String  y: Bool]` (named params)
     // - Expr::Call { implied: true, func, args } — new syntax: bare identifiers like `[a b]`
     //   parse as implied calls. Extract func + args as the parameter type expressions.
     let mut params = Vec::new();
     match &second.node.value.node {
         Expr::Dict(param_entries) => {
-            for (pos, entry) in param_entries.iter().enumerate() {
-                if let Some(ref key) = entry.node.key {
-                    let key_name = match &key.node {
-                        Expr::Str(s) => format!("'{s}'"),
-                        _ => "unknown".to_string(),
-                    };
-                    return Err(TypeError::new(
-                        format!(
-                            "function type parameter at position {}: expected a type name, got key {key_name}",
-                            pos + 1
-                        ),
-                        entry.span,
-                    ));
-                }
+            for entry in param_entries.iter() {
+                // Extract parameter name from key if present
+                let param_name = if let Some(ref key) = entry.node.key {
+                    match &key.node {
+                        Expr::VarRef { name, .. } => Some(name.clone()),
+                        Expr::Str(s) => Some(s.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let param_ty =
                     resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
-                params.push((None, param_ty));
+                params.push((param_name, param_ty));
             }
         }
         Expr::Call {

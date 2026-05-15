@@ -1,0 +1,7 @@
+# Test unnamed parameter support in function type expressions (no regression)
+# Unnamed parameters: [String Bool] should work as before
+[@[Fn@Int [String Bool]] [fn [a b]
+  [if $b 1 0]
+]]
+=== out
+Function(a, b)

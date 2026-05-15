@@ -6254,3 +6254,9 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] constraint_annotation_basic.llt-eval — Comparable constraint attached to TypeVar
 - [x] constraint_annotation_unknown_class.llt-eval (type_errors/) — error on unknown class
 - [x] constraint_doc_basic.llt-eval — doc string present in TypeScheme
+
+### fn-type-params: Named parameters in [Fn@Return [name: Type ...]] type expressions
+
+- [x] try_resolve_fn_type_expr Dict arm: named entries produce (Some(name), param_ty)
+- [x] Expr::Call { implied: true } arm: same fix
+- [x] Tests: fn_type_named_params.llt-eval, fn_type_unnamed_params.llt-eval
