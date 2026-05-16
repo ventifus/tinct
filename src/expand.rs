@@ -330,12 +330,7 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
                 register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
                 // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
                 // remain valid when transformer functions access them during expansion.
-                let ctx = EvalContext::new_sharing_arena(
-                    base_dir,
-                    Rc::clone(&env),
-                    no_fs,
-                    arena,
-                );
+                let ctx = EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, arena);
                 Ok((env, ctx))
             }
             Err(e) => Err(EvalError::internal(
@@ -406,6 +401,7 @@ fn expand_document(
         output_type: doc.output_type,
         expects: doc.expects,
         caps: doc.caps,
+        stage: doc.stage,
     })
 }
 

@@ -6266,3 +6266,13 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] resolve_type_dict: Seq/Map built-in constructor matching before alias check
 - [x] resolve_type_expr + resolve_annotation Call arms: same fix
 - [x] Tests: ctor_app corpus tests
+
+### type-stage-infra: --- stage: type sections, %rust "type-core", type dict schema
+
+- [x] Stage enum + Document.stage field + parser stage: pragma
+- [x] %rust "type-core" module (28 builtins from core/collection/string)
+- [x] src/type_dict.rs: type_to_dict/dict_to_type with 6 round-trip tests
+- [x] create_type_stage_env() bootstraps type-stage from prelude
+- [x] eval_pipeline skips Stage::Type documents in runtime
+- [x] Prelude --- stage: type section with Int/Str/Bool/Float/Any/Never/Null + constructors
+- [x] Corpus test: type_stage_prelude.llt-eval

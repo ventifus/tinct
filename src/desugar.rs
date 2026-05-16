@@ -845,6 +845,7 @@ mod tests {
                 output_type: None,
                 expects: None,
                 caps: None,
+                stage: None,
             })],
         };
 
