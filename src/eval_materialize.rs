@@ -200,7 +200,8 @@ pub(crate) struct GuardedValidateData {
         Rc<RefCell<crate::value::Environment>>,
     )>,
     /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
-    pub(crate) restore: RestoreState,
+    /// Wrapped in Option to enable .take() when passing to default-fallback Memoize continuations.
+    pub(crate) restore: Option<RestoreState>,
 }
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -677,7 +678,7 @@ pub(crate) fn force_step(
             ctx: guard_ctx,
             blame_label,
             default: default_opt,
-            restore,
+            restore: Some(restore),
         })));
         Action::Materialize {
             thunk: Rc::clone(&inner),
@@ -992,7 +993,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 ctx: guard_ctx,
                 blame_label,
                 default,
-                restore,
+                mut restore,
             } = *data;
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
@@ -1063,7 +1064,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                             origin: Some(Rc::from("default fallback")),
                                             thunk_span,
                                             mat_span,
-                                            restore: None,
+                                            restore: restore.take(),
                                             ctx: Rc::clone(&ctx_for_default),
                                         })));
                                         return Action::Eval {
@@ -1188,8 +1189,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     let e = decorate(e);
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
-                    } else {
-                        restore.restore(&thunk);
+                    } else if let Some(r) = restore.take() {
+                        r.restore(&thunk);
                     }
                     Action::Continue(Err(e))
                 }
