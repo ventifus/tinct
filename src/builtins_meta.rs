@@ -506,9 +506,15 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(string_val(name), call_span)
 }
 
-/// `ast-of`: returns simple metadata about a value as a dict.
-/// For functions, returns {type: "function", params: [...], doc: ...}.
-/// For other values, returns {type: value.type_name()}.
+/// `ast-of`: returns metadata about a value's AST or thunk state.
+///
+/// This builtin does NOT materialize its argument, making it safe to use
+/// for introspection of unevaluated expressions.
+///
+/// - Materialized values → metadata dict based on value type
+/// - Unevaluated thunks → AST dict from stored expression
+/// - PendingCall/PendingBuiltin → descriptor dict
+/// - Other thunk states → descriptor dict with state name
 pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -516,79 +522,219 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("ast-of", args, named, &ctx, call_span)?;
 
-    let dict_entries = match &val {
-        crate::value::Value::Function {
-            params,
-            annotation,
-            ..
-        } => {
+    // Reject named args and ensure exactly 1 arg
+    crate::builtins::reject_named("ast-of", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    let thunk = &args[0];
+
+    // Inspect the thunk state WITHOUT forcing it
+    let state = thunk.state();
+
+    let dict_entries = match &*state {
+        crate::value::ThunkState::Materialized(val) => {
+            // Value is already materialized — inspect it
+            match val {
+                crate::value::Value::Function {
+                    params, annotation, ..
+                } => {
+                    let mut entries = IndexMap::new();
+
+                    // Add type field
+                    entries.insert(
+                        crate::value::Key::String("type".into()),
+                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            string_val("function"),
+                            call_span,
+                        ))),
+                    );
+
+                    // Add params field as a list of param names
+                    let param_names: Vec<ThunkId> = params
+                        .iter()
+                        .map(|p| {
+                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                string_val(&p.name),
+                                call_span,
+                            )))
+                        })
+                        .collect();
+
+                    if !param_names.is_empty() {
+                        let params_seq = param_names.into_iter().rev().fold(
+                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                crate::value::Value::Dict(IndexMap::new()),
+                                call_span,
+                            ))),
+                            |tail, head| {
+                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                    crate::value::Value::Seq { head, tail },
+                                    call_span,
+                                )))
+                            },
+                        );
+                        entries.insert(crate::value::Key::String("params".into()), params_seq);
+                    }
+
+                    // Add doc field if present
+                    if let Some(ann) = annotation {
+                        if let Some(ref doc_str) = ann.doc {
+                            entries.insert(
+                                crate::value::Key::String("doc".into()),
+                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                    string_val(doc_str),
+                                    call_span,
+                                ))),
+                            );
+                        }
+                    }
+
+                    entries
+                }
+                other => {
+                    let mut entries = IndexMap::new();
+                    entries.insert(
+                        crate::value::Key::String("type".into()),
+                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            string_val(other.type_name()),
+                            call_span,
+                        ))),
+                    );
+                    entries
+                }
+            }
+        }
+        crate::value::ThunkState::Unevaluated { expr, .. } => {
+            // Thunk contains an unevaluated expression — convert AST to dict WITHOUT evaluating
+            let opts = crate::ast_dict::AstToDictOpts::default();
+            let ast_thunk = crate::ast_dict::ast_to_dict_expr(expr, &opts, &ctx)?;
+            // The ast_to_dict_expr returns a thunk containing a dict, but we need
+            // to extract the dict. Since ast_to_dict_expr creates a Materialized thunk,
+            // this is safe (no evaluation happens).
+            match ast_thunk.try_get_materialized() {
+                Some(Value::Dict(d)) => d,
+                _ => {
+                    // This shouldn't happen — ast_to_dict_expr always returns Materialized(Dict)
+                    return Err(EvalError::internal(
+                        "ast_to_dict_expr did not return a materialized dict".to_string(),
+                        call_span,
+                    )
+                    .into());
+                }
+            }
+        }
+        crate::value::ThunkState::PendingBuiltin { def, .. } => {
+            // Pending builtin call — return descriptor
             let mut entries = IndexMap::new();
-
-            // Add type field
             entries.insert(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("function"),
+                    string_val("pending-builtin"),
                     call_span,
                 ))),
             );
-
-            // Add params field as a list of param names
-            let param_names: Vec<ThunkId> = params
-                .iter()
-                .map(|p| {
-                    ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                        string_val(&p.name),
-                        call_span,
-                    )))
-                })
-                .collect();
-
-            if !param_names.is_empty() {
-                let params_seq = param_names
-                    .into_iter()
-                    .rev()
-                    .fold(
-                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                            crate::value::Value::Dict(IndexMap::new()),
-                            call_span,
-                        ))),
-                        |tail, head| {
-                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                                crate::value::Value::Seq { head, tail },
-                                call_span,
-                            )))
-                        },
-                    );
-                entries.insert(
-                    crate::value::Key::String("params".into()),
-                    params_seq,
-                );
-            }
-
-            // Add doc field if present
-            if let Some(ann) = annotation {
-                if let Some(ref doc_str) = ann.doc {
-                    entries.insert(
-                        crate::value::Key::String("doc".into()),
-                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                            string_val(doc_str),
-                            call_span,
-                        ))),
-                    );
-                }
-            }
-
+            entries.insert(
+                crate::value::Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val(def.name),
+                    call_span,
+                ))),
+            );
             entries
         }
-        other => {
+        crate::value::ThunkState::PendingCall { .. } => {
+            // Pending function call — return descriptor
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val(other.type_name()),
+                    string_val("pending-call"),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::Guarded { .. } => {
+            // Type-guarded thunk — return descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("guarded"),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::InProgress => {
+            // Circular dependency detected — return descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("in-progress"),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::Failed(err) => {
+            // Failed evaluation — return error descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("failed"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("error".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val(&err.message()),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::Placeholder => {
+            // Placeholder state (should not be observable in user code)
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("placeholder"),
                     call_span,
                 ))),
             );

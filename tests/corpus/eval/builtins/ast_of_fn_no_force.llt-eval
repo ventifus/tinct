@@ -1,0 +1,7 @@
+# ast-of on fn expression returns AST dict without forcing the body
+# The error inside the fn should NOT be triggered
+[get "type" [ast-of [fn [] [error "should not run"]]]]
+=== out
+String("fn")
+=== warn
+undefined variable: ast-of at 2:14-2:20

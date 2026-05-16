@@ -1,0 +1,7 @@
+# ast-of on var reference returns AST dict of the variable expression
+[include %rust "meta"]
+[ast-of str]
+=== out
+Dict({"type": String("var"), "name": String("str"), "span": Dict({"start": Dict({"line": Int(2), "col": Int(9), "offset": Int(31)}), "end": Dict({"line": Int(2), "col": Int(12), "offset": Int(34)})})})
+=== warn
+undefined variable: ast-of at 2:2-2:8

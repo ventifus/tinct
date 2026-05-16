@@ -6276,3 +6276,11 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] eval_pipeline skips Stage::Type documents in runtime
 - [x] Prelude --- stage: type section with Int/Str/Bool/Float/Any/Never/Null + constructors
 - [x] Corpus test: type_stage_prelude.llt-eval
+
+### ast-of-lazy: Make ast-of non-materializing
+
+- [x] builtin_ast_of: ThunkState branching — Unevaluated→ast_to_dict_expr, Pending→descriptor
+- [x] ast-of strictness: Seq→Id (no auto-materialization)
+- [x] doc/11a-builtins.md: T→V strictness notation
+- [x] doc/08-evaluation.md, doc/feature/runtime-reflection.md, doc/whatif/runtime-reflection.md: updated
+- [x] Tests: ast_of_fn_no_force, ast_of_materialized, ast_of_builtin
