@@ -102,7 +102,7 @@ struct NormCtxt<'a> {
     subst: &'a Substitution,          // current substitution chain
     type_stage_env: Rc<Environment>,  // for calling resolver functions
     alias_env: &'a AliasTable,        // for expanding type aliases
-    class_env: &'a ClassEnv,          // for FD lookups
+    class_env: &'a TypeEnv,           // for FD lookups — scope-resident, not a global registry
     depth: usize,                     // current reduction depth (step limit analogous to GHC's -freduction-depth)
     max_depth: usize,                 // default: 256
 }
@@ -527,6 +527,66 @@ improve_functional_dependency conditions:
 This is the conservative, sound approach. Distribution over union types (e.g., `Add (Int|Float) Int c ⟹ c = Int|Float`) would require proving the resolver function is covariant on the subtype lattice — a proof obligation deferred to future work.
 
 **Future extension — `distributes-over-union:`**: for finite-domain resolvers (like arithmetic), distribution is verifiable by exhaustive case analysis. A future `distributes-over-union: true` flag on a class declaration permits the checker to distribute improvement over union members, eliminating deferral in those cases. For open-domain resolvers, the conservative deferral remains correct.
+
+### Automatic Boundary Guards
+
+The `normalize()` subsystem is the enabling infrastructure for automatic insertion of `ThunkState::Guarded` at every `Unknown → Concrete` boundary. This belongs here because it requires `normalize()` to produce concrete guard types — the evaluator has no `NormCtxt` and cannot reduce `TypeStageApp` nodes at runtime.
+
+`[@Type expr]` TypeAssert sites insert guards explicitly at annotation sites. The elaboration pass described here covers all remaining implicit boundaries: every point where a value of type `Unknown` flows into a context expecting a concrete type. Guard types must be concrete before emission, so guard insertion runs as a post-inference pass after all TypeVars are ground and normalization is complete.
+
+**Boundary catalog.**
+
+| Boundary | Example | Guard inserted on |
+|----------|---------|-------------------|
+| Function argument | `[f x]`, `f: Int→Int`, `x: Unknown` | `x` with expected type `Int` |
+| Builtin argument | `[+ n m]`, `m: Unknown` | `m` with expected numeric type |
+| Field access on `Unknown` | `data.port`, `data: Unknown` | result with field's declared type |
+| `---` pipeline crossing | downstream section expects typed input from untyped upstream | each crossing binding |
+
+**Post-inference elaboration pass.**
+
+Guard insertion is a post-inference elaboration pass, not an inline operation during type checking. It runs after `infer_dict` completes and all TypeVars are ground. The pass walks the type map produced by inference, finds every expression where the inferred type is `Unknown` and the contextual expected type is concrete, and emits a guard:
+
+```
+for each expression e in the type map:
+  τ_e   = inferred type of e
+  τ_ctx = contextual expected type of e (from call site, param annotation, etc.)
+  if τ_e = Unknown and τ_ctx ≠ Unknown:
+    expected = normalize(τ_ctx, NormCtxt::final(subst, type_stage_env, ...))
+    assert is_concrete(expected)  # TypeStageApp fully reduced; else prior TypeError
+    replace thunk(e) with Guarded(inner=thunk(e), expected, blame_label)
+```
+
+The `normalize()` call is the load-bearing step: it reduces any `TypeStageApp` nodes in the expected type to concrete types before the guard is emitted. An irreducible `TypeStageApp` at this point means a depth-limit hit or a TypeVar that escaped inference — both should have already produced a `TypeError` earlier.
+
+**Blame labels.** All guards — both TypeAssert and automatic — carry `BlameLabel { origin_span, boundary_span, polarity }`. Polarity is `Negative` (the untyped provider is responsible) for call arguments and `Positive` (the consuming context is responsible) for return-value uses. The co-natural strategy (Greenman et al. 2019) applies: when a guarded value crosses a second boundary, the outer label is discarded and the inner (most recent) label is kept — O(1) space overhead, most actionable provenance preserved.
+
+**`Unknown` in CHR determining positions — defer.**
+
+`Type::Unknown` is not an atomic named monotype. FD improvement must not fire when any determining position is `Unknown`. Add it to the deferral predicate alongside `Type::TypeVar(_)`:
+
+```
+improve_functional_dependency fires only when all determining positions are atomic:
+  type[p] is NOT Union(...) | Intersection(...) | Negation(...) | TypeVar(_) | Unknown
+```
+
+This is consistent with the gradual typing consistency rule `is_consistent(Unknown, τ) = true`: `Unknown` does not determine a concrete type at the type level — the determination defers to runtime and is caught by the guard if wrong.
+
+**`unify` call ordering.**
+
+The sequencing within `unify` must be: `normalize` first, then BAS-aware deferral check, then `is_consistent`. A `TypeStageApp` that normalizes to a union type must trigger deferral *before* the consistency check fires. Reversing the order would allow `TypeStageApp("AddResult", [Unknown, Int])` to pass consistency (`Unknown ~ anything`) before normalization reveals a union in the determining position — causing incorrect FD firing.
+
+```rust
+fn unify(a: Type, b: Type, subst: &mut Substitution, state: &mut InferState) -> Result<(), TypeError> {
+    let norm = NormCtxt::from(subst, state);
+    let a' = normalize(a, &norm);   // 1. normalize — reduces TypeStageApp, widens literals
+    let b' = normalize(b, &norm);
+    unify_normalized(a', b', subst, state)
+    // inside unify_normalized:
+    //   2. BAS-aware deferral check (union/intersection/Unknown in FD positions)
+    //   3. is_consistent check for Unknown ~ τ paths
+}
+```
 
 ### Generalization with FD Constraints
 
@@ -1114,7 +1174,7 @@ Traversable: [class [t]  [kinds: [t: Operator]  superclasses: [Functor  Foldable
 ### `src/types.rs` — `ClassDecl` (single source of truth for FDs)
 
 **Current:** `ClassDecl { name, params, superclasses, methods }` — no `fundeps` or `resolver` field. Separately, `Constraint::Class { class, vars, fundeps }` carries a copy of the FD structure per constraint site.  
-**Proposed:** Add `determines: Vec<(Vec<usize>, Vec<usize>)>` and `resolver: Option<String>` to `ClassDecl`. Change `superclasses: Vec<(String, String)>` to `superclasses: Vec<(String, Vec<String>)>` to correctly represent MPTC superclass relationships — the second element is the list of subclass params that map positionally to the superclass params. **Remove** `fundeps` from `Constraint::Class` — `ClassDecl` becomes the single source of truth. `improve_functional_dependency` looks up FDs from `ClassDecl` via `state.class_env.get(class_name)` instead of reading them from the constraint. `Constraint::Class` retains only `class: String` and `vars: Vec<String>`.  
+**Proposed:** Add `determines: Vec<(Vec<usize>, Vec<usize>)>` and `resolver: Option<String>` to `ClassDecl`. Change `superclasses: Vec<(String, String)>` to `superclasses: Vec<(String, Vec<String>)>` to correctly represent MPTC superclass relationships — the second element is the list of subclass params that map positionally to the superclass params. **Remove** `fundeps` from `Constraint::Class` — `ClassDecl` becomes the single source of truth. `improve_functional_dependency` reads FDs directly from the `ClassDecl` carried in `Constraint::Class` (no global ClassEnv lookup needed). `Constraint::Class` retains `class: ClassDecl` (the full decl, not just a name string) and `vars: Vec<String>`.  
 **Impact:** Minor struct extension + removal of FD duplication; reduces confusion about which source is authoritative.
 
 ### Module Restructuring — Breaking the `value.rs → types.rs` Circular Dependency
@@ -1234,8 +1294,22 @@ Used as the arm key in `Expr::InstanceDecl`. Also usable as arm key in `Expr::Ma
 ### `src/typecheck.rs` — `Expr::InstanceDecl` handler
 
 **Current:** No `[instance ...]` expression form; instances are not user-declarable.  
-**Proposed:** Validate and register instances from `Expr::InstanceDecl { class_name, arms }`. For each arm: (1) the type-parameter count must match the class's declared param count; (2) disjointness is checked against all previously registered arms for the same class (pairwise unification of type-parameter lists); (3) coverage and consistency conditions are checked for classes with FDs; (4) each method key must correspond to a method declared in the class body; (5) each method implementation is typechecked against the expected method signature with the arm's type parameters substituted. Passing validation, each arm is registered as an entry in `InstanceEnv` keyed by `(class_name, type_key_tuple)`.  
-**Impact:** Moderate — new AST node, new parser stack frame, new typecheck handler.
+**Proposed:** Validate and register instances from `Expr::InstanceDecl { class_name, arms }`. For each arm: (1) the type-parameter count must match the class's declared param count; (2) disjointness is checked against all previously registered arms for the same class (pairwise unification of type-parameter lists); (3) coverage and consistency conditions are checked for classes with FDs; (4) each method key must correspond to a method declared in the class body; (5) each method implementation is typechecked against the expected method signature with the arm's type parameters substituted.
+
+**Scope-aware class and instance registration** (design constraint from the unified-bindings whatif):
+
+Classes and instances are **values in scope**, not entries in global registries. `Addable: [class ...]` places the ClassDecl in the local TypeEnv as a value — the same scoping mechanism as any other dict entry. Two dicts defining independent `Addable` classes have independent class environments. `[instance Addable ...]` registers instance arms in the scope-local InstanceEnv, not a global one.
+
+When `[$Addable a b c]` is processed as a constraint, `$Addable` uses the `$`-sigil scope reference to resolve the Addable VALUE from the current scope. The resulting `Constraint::Class` stores the ClassDecl directly (not just a string name) — this is how `improve_functional_dependency` accesses the FD info without a global ClassEnv lookup.
+
+Concretely:
+- `ClassEnv` is **not** a global `HashMap<String, ClassDecl>`. It is scope-resident: classes are looked up via the TypeEnv, the same as type aliases and other type-environment entries.
+- `InstanceEnv` is similarly scope-local. Instances declared in one dict don't automatically apply in another dict's scope. To share instances across dicts, they are imported via normal scoping.
+- `Constraint::Class { class: ClassDecl, vars: Vec<String> }` — the constraint carries the ClassDecl directly, extracted from the scope-resident value at constraint-creation time. No string-keyed global lookup needed at resolution time.
+
+This design is consistent with the "no global registries" principle: everything follows scoping rules.
+
+**Impact:** Moderate — new AST node, new parser stack frame, new typecheck handler; ClassEnv and InstanceEnv are scope-resident structures (TypeEnv entries), not global HashMaps.
 
 ### `src/type_unify.rs` — `improve_functional_dependency`
 
@@ -1260,6 +1334,12 @@ Used as the arm key in `Expr::InstanceDecl`. Also usable as arm key in `Expr::Ma
 **Current:** `Add`, `Sub`, `Mul`, `Div` pre-registered in Rust (`src/types.rs:1686-1707`) with no methods and a hardcoded lookup table (`lookup_arithmetic_instance`).  
 **Proposed:** Declare in `stdlib/prelude.llt` with `determines:`, `resolver:`, and method declarations. Arithmetic instances declared as `[instance ...]` blocks using match-arm syntax. The 9 primitive instances become arms under `[instance Addable ...]`, `[instance Subtractable ...]`, etc., using `builtin-add`/`builtin-sub`/`builtin-mul`/`builtin-div` as implementations. The Rust lookup table (`lookup_arithmetic_instance`) is **retained as a performance fast path** — when the class is a known built-in arithmetic class, the O(1) match table is used instead of calling `eval()`. The resolver call path is used only for user-declared classes.  
 **Impact:** Major structurally (moves class/instance to tinct); Minor for runtime performance (fast path preserved for arithmetic).
+
+### `src/typecheck.rs` — Post-inference boundary guard elaboration pass
+
+**Current:** `ThunkState::Guarded` nodes are inserted only at explicit `[@Type expr]` TypeAssert sites, inline during `infer_expr`. `Unknown → Concrete` boundaries at call arguments, builtin args, field accesses, and `---` crossings produce no guards — mismatches surface only at the point of forced materialization with no blame provenance.  
+**Proposed:** After `infer_dict` completes (all TypeVars ground, full substitution available), run a second pass — `elaborate_boundary_guards` — over the type map. For each expression where the inferred type is `Unknown` and the contextual expected type is concrete: call `normalize(expected, NormCtxt::final(...))` to reduce any remaining `TypeStageApp` nodes, then replace the expression's thunk with `Guarded(inner, expected_concrete, BlameLabel { origin_span, boundary_span, polarity })`. Polarity is `Negative` for argument positions (untyped provider is blamed), `Positive` for return-value uses (consuming context is blamed). `---` boundary crossings are treated as implicit TypeAsserts — each binding that crosses a `---` with type `Unknown` on the upstream side and a concrete expected type on the downstream side receives a guard. The co-natural strategy (Greenman et al. 2019) applies: a value crossing a second boundary keeps only the inner (most recent) blame label.  
+**Impact:** New pass after inference; requires `NormCtxt` construction from the final substitution; adds `elaborate_boundary_guards(type_map, subst, type_stage_env) -> Result<(), TypeError>` to `src/typecheck.rs` or a new `src/typecheck_elaborate.rs`.
 
 ## Prerequisites
 
