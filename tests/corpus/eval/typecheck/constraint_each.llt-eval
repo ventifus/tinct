@@ -1,0 +1,24 @@
+# Constraint with [each ...] keyword for multi-class intersection
+# Tests that fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]
+# applies both Comparable and Showable constraints to TypeVar 'a'
+
+---
+--- stage: type
+or: [fn [a b] [kind: "union" members: [a b]]]
+---
+
+compare-and-show: [fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]
+  [x@a] x]
+
+# Call with Int (satisfies both Comparable and Showable)
+result: [compare-and-show 42]
+
+result
+---
+EVAL
+42
+---
+TYPE
+Int
+---
+TYPECHECK-ONLY

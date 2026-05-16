@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
 use crate::ast::{Annotation, Entry, Expr, Span, Spanned};
-use crate::types::{InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
+use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 pub(crate) fn expand_type_alias(
     inner: &Spanned<Expr>,
@@ -210,9 +210,12 @@ pub(crate) fn resolve_annotated(
 /// Resolve a function metadata dict `fn@[return: ... constraint: ... doc: ...]`.
 ///
 /// Processes keys in fixed order:
-/// 1. `constraint:` — creates TypeVars in ann_mapping, registers Constraints in state.constraints
-/// 2. `return:` — resolves via resolve_type_expr (may reference TypeVars from constraint:)
-/// 3. `doc:` — extracts string literal, returned as Option<String>
+/// 0. `bind:` — declares TypeVars in ann_mapping (processed before this function is called)
+/// 1. `kinds:` — registers kind constraints on declared TypeVars
+/// 2. `constraint:` keyed entries — single-param class constraints (e.g., `[a: Comparable]`)
+/// 3. `constraint:` MPTC positional entries — multi-param class constraints (e.g., `[$Add a b c]`)
+/// 4. `return:` — resolves via resolve_type_expr (may reference TypeVars from bind:/constraint:)
+/// 5. `doc:` — extracts string literal, returned as Option<String>
 ///
 /// Returns (return_type, doc_string).
 pub(crate) fn resolve_fn_metadata(
@@ -386,31 +389,32 @@ pub(crate) fn resolve_fn_metadata(
         }
     }
 
-    // Step 1: Process constraint: entries
+    // Step 1a: Process constraint: keyed entries (single-param class constraints)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
             if let Expr::Str(key_name) = &key_expr.node {
                 if key_name == "constraint" {
-                    // constraint: [a: Comparable] or [a: [Comparable Showable]]
+                    // constraint: [a: Comparable] or [a: [each Comparable Showable]]
                     match &entry.node.value.node {
                         Expr::Dict(constraint_entries) => {
                             for c_entry in constraint_entries {
-                                let typevar_name =
-                                    match &c_entry.node.key {
-                                        Some(k) => match &k.node {
-                                            Expr::Str(s) => s.clone(),
-                                            _ => return Err(TypeError::new(
-                                                "constraint key must be a bare word (TypeVar name)",
-                                                c_entry.span,
-                                            )),
-                                        },
-                                        None => {
+                                // Skip positional entries (MPTC) — handled in Step 1b
+                                if c_entry.node.key.is_none() {
+                                    continue;
+                                }
+
+                                let typevar_name = match &c_entry.node.key {
+                                    Some(k) => match &k.node {
+                                        Expr::Str(s) => s.clone(),
+                                        _ => {
                                             return Err(TypeError::new(
-                                                "constraint entries must be keyed: [a: Comparable]",
+                                                "constraint key must be a bare word (TypeVar name)",
                                                 c_entry.span,
                                             ))
                                         }
-                                    };
+                                    },
+                                    None => unreachable!(), // already checked above
+                                };
 
                                 // Create or get the TypeVar for this name
                                 let type_var = if let Some(ref mut mapping) = ann_mapping {
@@ -430,11 +434,10 @@ pub(crate) fn resolve_fn_metadata(
                                     ));
                                 };
 
-                                // Parse the class name(s) — can be a single name or a list
+                                // Parse the class name(s) — can be a single name, [each ...], or [...]
                                 match &c_entry.node.value.node {
                                     Expr::VarRef { name, .. } => {
                                         // Single class: [a: Comparable]
-                                        // Check both hardcoded VALID_CLASSES and dynamically registered classes in state.class_env
                                         if !VALID_CLASSES.contains(&name.as_str())
                                             && state.class_env.get(name).is_none()
                                         {
@@ -446,8 +449,29 @@ pub(crate) fn resolve_fn_metadata(
                                         state.add_constraint(name.clone(), type_var.clone());
                                     }
                                     Expr::Dict(class_list) => {
-                                        // Multiple classes: [a: [Comparable Showable]]
-                                        for class_entry in class_list {
+                                        // Check for [each ...] keyword form
+                                        let class_entries = if !class_list.is_empty()
+                                            && class_list[0].node.key.is_none()
+                                        {
+                                            if let Expr::VarRef { name, .. } =
+                                                &class_list[0].node.value.node
+                                            {
+                                                if name == "each" {
+                                                    // [a: [each Comparable Showable]] — skip the 'each' keyword
+                                                    &class_list[1..]
+                                                } else {
+                                                    // [a: [Comparable Showable]] — legacy positional form
+                                                    class_list.as_slice()
+                                                }
+                                            } else {
+                                                class_list.as_slice()
+                                            }
+                                        } else {
+                                            class_list.as_slice()
+                                        };
+
+                                        // Multiple classes: iterate and add each
+                                        for class_entry in class_entries {
                                             if class_entry.node.key.is_some() {
                                                 return Err(TypeError::new(
                                                     "constraint class list must contain only positional entries",
@@ -456,7 +480,6 @@ pub(crate) fn resolve_fn_metadata(
                                             }
                                             match &class_entry.node.value.node {
                                                 Expr::VarRef { name, .. } => {
-                                                    // Check both hardcoded VALID_CLASSES and dynamically registered classes in state.class_env
                                                     if !VALID_CLASSES.contains(&name.as_str())
                                                         && state.class_env.get(name).is_none()
                                                     {
@@ -496,6 +519,126 @@ pub(crate) fn resolve_fn_metadata(
                                 "constraint: value must be a dict [a: Comparable]",
                                 entry.node.value.span,
                             ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 1b: Process constraint: MPTC positional entries (multi-param class constraints)
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let Expr::Str(key_name) = &key_expr.node {
+                if key_name == "constraint" {
+                    match &entry.node.value.node {
+                        Expr::Dict(constraint_entries) => {
+                            let mut i = 0;
+                            while i < constraint_entries.len() {
+                                let c_entry = &constraint_entries[i];
+
+                                // Only process positional entries (MPTC)
+                                if c_entry.node.key.is_some() {
+                                    i += 1;
+                                    continue;
+                                }
+
+                                // MPTC: [$Add a b c] — first positional entry is escaped class name
+                                match &c_entry.node.value.node {
+                                    Expr::VarRef { escaped, name, .. } if *escaped => {
+                                        // Escaped reference like $Add — this is the class name
+                                        let class_name = name;
+
+                                        // Validate the class exists in ClassEnv
+                                        if state.class_env.get(class_name).is_none() {
+                                            return Err(TypeError::new(
+                                                format!(
+                                                    "unknown class '{}' in MPTC constraint",
+                                                    class_name
+                                                ),
+                                                c_entry.node.value.span,
+                                            ));
+                                        }
+
+                                        // TODO: Extract fundeps from ClassDecl when the field is added.
+                                        // For now, use empty fundeps for user-defined classes.
+                                        // Builtin Add class fundeps are hardcoded in TypeEnv::with_builtins.
+                                        let fundeps = vec![];
+
+                                        // Collect TypeVar names from subsequent positional entries
+                                        let mut typevar_names = Vec::new();
+                                        let mut j = i + 1;
+                                        while j < constraint_entries.len() {
+                                            let subsequent = &constraint_entries[j];
+                                            if subsequent.node.key.is_some() {
+                                                // Hit a keyed entry — stop collecting
+                                                break;
+                                            }
+                                            match &subsequent.node.value.node {
+                                                Expr::VarRef {
+                                                    name: var_name,
+                                                    escaped: false,
+                                                    ..
+                                                } => {
+                                                    // Validate that this TypeVar is declared in bind:
+                                                    if let Some(ref mapping) = ann_mapping {
+                                                        if !mapping.contains_key(var_name) {
+                                                            return Err(TypeError::new(
+                                                                format!(
+                                                                    "TypeVar '{}' not declared in bind: — add bind: [{}] before constraint:",
+                                                                    var_name, var_name
+                                                                ),
+                                                                subsequent.node.value.span,
+                                                            ));
+                                                        }
+                                                        // Map to the actual TypeVar name (e.g., _t0)
+                                                        let actual_var =
+                                                            mapping.get(var_name).unwrap().clone();
+                                                        typevar_names.push(actual_var);
+                                                    } else {
+                                                        return Err(TypeError::new(
+                                                            "constraint annotations require an annotation mapping context",
+                                                            span,
+                                                        ));
+                                                    }
+                                                }
+                                                Expr::VarRef { escaped: true, .. } => {
+                                                    // Another escaped ref — this is the start of the next MPTC
+                                                    break;
+                                                }
+                                                _ => {
+                                                    return Err(TypeError::new(
+                                                        "MPTC constraint entries after class name must be TypeVar names",
+                                                        subsequent.node.value.span,
+                                                    ));
+                                                }
+                                            }
+                                            j += 1;
+                                        }
+
+                                        // Create the MPTC constraint
+                                        state.constraints.push(Constraint::Class {
+                                            class: class_name.clone(),
+                                            vars: typevar_names,
+                                            fundeps,
+                                        });
+
+                                        // Skip the entries we just processed (the class name + TypeVars)
+                                        i = j;
+                                    }
+                                    _ => {
+                                        // Non-escaped positional entry that's not part of an MPTC
+                                        // This is probably an error - bare positional TypeVar names without a class
+                                        return Err(TypeError::new(
+                                            "positional constraint entries must start with escaped class name (e.g., $Add)",
+                                            c_entry.node.value.span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // Already handled in Step 1a
                         }
                     }
                 }

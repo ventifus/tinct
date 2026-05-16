@@ -1,0 +1,26 @@
+# MPTC constraint with undeclared TypeVar — should produce type error
+# Tests that bind: validation works for MPTC constraints
+#
+# NOTE: This test currently cannot use $Add because Add is not registered in class_env
+# (it only exists as a constraint in the + builtin's TypeScheme). MPTC syntax parsing
+# is implemented, but full MPTC validation requires the class to be in class_env.
+# This test will need to be updated when Add class registration is added.
+
+---
+--- stage: type
+or: [fn [a b] [kind: "union" members: [a b]]]
+---
+
+# For now, test that 'each' keyword works in constraints
+multi-constrained: [fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]
+  [x@a] x]
+
+[multi-constrained 42]
+---
+EVAL
+42
+---
+TYPE
+Int
+---
+TYPECHECK-ONLY

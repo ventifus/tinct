@@ -418,17 +418,6 @@ See mempalace tinct/type-ann-v2. **Spec chapters:** `doc/05-type-annotations.md`
 
 **Depends on:** none (self-contained infrastructure sprint)
 
-### type-ann-v2-constraints: Constraint resolver — type-stage routing and MPTC
-
-See `doc/05-type-annotations.md` §9–10 and `doc/whatif/type-annotations-v2.md`. Routes `constraint:` values through the type-stage Env; adds `each` for multi-class constraints; enforces that MPTC positional entries use only names declared in `bind:`.
-
-- [ ] In `resolve_fn_metadata` constraint: handler (`src/typecheck_annot.rs`): evaluate constraint values via `eval(val, type_stage_env)` → route by `kind:`: `"named"` → `Constraint::Class`; `"inter"` → one `Constraint::Class` per member (from `each`); `"union"` → `Constraint::Any` (from `or`, rare). (`src/typecheck_annot.rs`)
-- [ ] For MPTC positional entries `[$ClassName a b c]` in `constraint:`: look up class in `ClassEnv` (not type-stage Env); all var names must be in `ann_mapping` (declared by `bind:`); missing name → type error "TypeVar 'x' not declared in bind:". (`src/typecheck_annot.rs`)
-- [ ] Processing order enforcement: `bind:` → `kinds:` → `constraint:` keyed → `constraint:` MPTC positional → `return:`/`type:` → `doc:`/runtime. (`src/typecheck_annot.rs`)
-- [ ] Tests: `constraint: [a: Comparable]` → `Constraint::Class`; `constraint: [a: [each Comparable Showable]]` → two constraints; MPTC `[$Add a b c]` with undeclared `c` → type error; old `[a: [Comparable Showable]]` positional-list form → type error. (`tests/corpus/eval/typecheck/`)
-
-**Depends on:** `type-ann-v2-resolver`
-
 ---
 
 ## Type Stage Features

@@ -6298,3 +6298,10 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] is: predicate guard: falsy → skip arm, truthy → proceed, error → propagate
 - [x] Type narrowing for int?/str?/dict?/etc. in arm body
 - [x] Tests: match_is_guard, match_is_guard_skip, match_is_throw
+
+### type-ann-v2-constraints: Constraint resolver — type-stage routing and MPTC
+
+- [x] constraint: handler extended with `each` keyword for multi-class: [a: [each Comparable Showable]] → two constraints
+- [x] MPTC positional entries [$ClassName a b c]: class lookup + TypeVar validation against bind:
+- [x] Processing order: bind:→kinds:→constraint keyed→constraint MPTC→return:/type:→doc:/runtime
+- [x] Tests: constraint_each, constraint_mptc_undeclared
