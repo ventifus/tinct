@@ -42,6 +42,16 @@ thread_local! {
     /// an empty `instance_env`, so constraint checking for those classes always falls through
     /// to the hardcoded arms in `satisfies_constraint`.
     static PRELUDE_INSTANCE_CACHE: RefCell<Option<(ClassEnv, InstanceEnv)>> = const { RefCell::new(None) };
+
+    /// Thread-local cache of the type-stage evaluation environment.
+    ///
+    /// Contains type dicts (Int, Str, etc.) and type-level functions (Seq, Map, union, all).
+    /// Built once per thread on first access, then reused for annotation resolution.
+    static TYPE_STAGE_ENV_CACHE: RefCell<Option<Rc<RefCell<crate::value::Environment>>>> = const { RefCell::new(None) };
+
+    /// Recursion guard for type-stage env building (prevents infinite recursion when
+    /// type-checking the prelude's type-stage sections).
+    static BUILDING_TYPE_STAGE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Build or retrieve the prelude type environment.
@@ -190,6 +200,56 @@ pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
             }
         }
     });
+}
+
+/// Build or retrieve the type-stage evaluation environment.
+///
+/// This environment contains type dicts (Int, Str, etc.) and type-level functions
+/// (Seq, Map, union, all) extracted from the prelude's `--- stage: type` sections.
+/// Used by the annotation resolver for evaluating bracket annotations.
+///
+/// The environment is cached in thread-local storage to avoid re-parsing and
+/// re-evaluating the prelude on every type-checking run.
+///
+/// Returns None if:
+/// - We are currently building the type-stage env (recursion guard)
+/// - Type-stage env creation fails (graceful degradation)
+#[allow(dead_code)] // TODO: Enable when type-stage eval is fully wired
+pub fn build_type_stage_env() -> Option<Rc<RefCell<crate::value::Environment>>> {
+    // Check recursion guard first (before cache check, to avoid borrow conflicts)
+    let is_building = BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow());
+    if is_building {
+        // We're already building the type-stage env (recursive call from create_type_stage_env)
+        return None;
+    }
+
+    TYPE_STAGE_ENV_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(ref env) = *cache {
+            // Cache hit: return a clone of the cached environment
+            return Some(Rc::clone(env));
+        }
+
+        // Set recursion guard
+        BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow_mut() = true);
+
+        // Cache miss: build the type-stage environment from scratch
+        let result = match crate::builtins::create_type_stage_env() {
+            Ok(env) => {
+                *cache = Some(Rc::clone(&env));
+                Some(env)
+            }
+            Err(_) => {
+                // If type-stage env creation fails, return None (graceful degradation)
+                None
+            }
+        };
+
+        // Clear recursion guard
+        BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow_mut() = false);
+
+        result
+    })
 }
 
 /// Replace all TypeVar occurrences in a type with Unknown.
@@ -695,10 +755,7 @@ fn apply_include_type_to_spanned(
                                     .collect();
                                 let record_ty = Type::Record(Row { fields });
                                 // Store at the call expression's span
-                                let key = (
-                                    spanned.span.start.offset,
-                                    spanned.span.end.offset,
-                                );
+                                let key = (spanned.span.start.offset, spanned.span.end.offset);
                                 type_map.insert(key, record_ty);
                             }
                         }
@@ -716,7 +773,11 @@ fn apply_include_type_to_spanned(
                 if let Some(ref key) = entry.node.key {
                     apply_include_type_to_spanned(key, include_bindings, type_map);
                 }
-                apply_include_type_to_spanned(entry.node.value.as_ref(), include_bindings, type_map);
+                apply_include_type_to_spanned(
+                    entry.node.value.as_ref(),
+                    include_bindings,
+                    type_map,
+                );
             }
         }
         Expr::Fn { body, .. } => {
@@ -760,7 +821,11 @@ fn apply_include_type_to_spanned(
                 if let Some(ref key) = method.node.key {
                     apply_include_type_to_spanned(key, include_bindings, type_map);
                 }
-                apply_include_type_to_spanned(method.node.value.as_ref(), include_bindings, type_map);
+                apply_include_type_to_spanned(
+                    method.node.value.as_ref(),
+                    include_bindings,
+                    type_map,
+                );
             }
         }
         // Leaf nodes: no recursive traversal needed
@@ -1148,9 +1213,9 @@ mod tests {
         );
 
         // The injected value should be a Record with a "read" field.
-        let record_found = type_map.values().any(|ty| {
-            matches!(ty, Type::Record(Row { fields }) if fields.contains_key("read"))
-        });
+        let record_found = type_map
+            .values()
+            .any(|ty| matches!(ty, Type::Record(Row { fields }) if fields.contains_key("read")));
         assert!(
             record_found,
             "expected a Record with 'read' field in type_map; got: {:?}",

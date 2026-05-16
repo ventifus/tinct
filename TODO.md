@@ -422,12 +422,12 @@ See mempalace tinct/type-ann-v2. **Spec chapters:** `doc/05-type-annotations.md`
 
 See `doc/05-type-annotations.md` §§12–14 and `doc/whatif/type-annotations-v2.md`. Wires the type-stage Env into the annotation resolver so bracket annotations evaluate as type-stage expressions, and adds `bind:`, `kinds:` to the fn@[...] metadata dict.
 
-- [ ] In `resolve_annotation` (`src/typecheck_annot.rs`): when annotation is `PropertyDict` with no recognized metadata keys, evaluate the bracket contents via `eval(expr, type_stage_env)` → `dict_to_type(result)` instead of the current `resolve_type_dict` path. (`src/typecheck_annot.rs`)
-- [ ] In `resolve_fn_type` (`src/typecheck_annot.rs`): add `bind:` arm — positional entries are TypeVar names; register each as a fresh TypeVar in `ann_mapping` before processing any other keys. (`src/typecheck_annot.rs`)
-- [ ] In `resolve_fn_type`: add `kinds:` arm — keyed entries map TypeVar names to kind constraints; register in `kind_env` after `bind:` processing. (`src/typecheck_annot.rs`)
-- [ ] Update `resolve_fn_type` disambiguation: recognized metadata keys are now `bind:`, `return:`, `constraint:`, `kinds:`, `doc:`. Remove the all-positional → union-return-type path (retired). (`src/typecheck_annot.rs`)
-- [ ] In `[type ...]` body resolution (`src/typecheck_annot.rs`): route non-nominal-variant bodies through `eval(body, type_stage_env)` → `dict_to_type()` instead of the current bare-name + named-dict path. (`src/typecheck_annot.rs`)
-- [ ] Tests: `@[or Int Null]` → `Type::Union([Int, Null])`; `@[Seq Int]` → `Type::Seq(Int)`; `fn@[bind: [a] return: a]` → polymorphic; `fn@[kinds: [f: Operator]]` → kind constraint registered; `[type [or Int Null]]` alias resolves correctly. (`tests/corpus/eval/typecheck/`)
+- [ ] Wire type-stage lookup into `resolve_annotation`: use DICT LOOKUPS (not full eval) on the type-stage env for `@[or Int Null]`, `@[Seq Int]` etc. — look up function name + args, apply the function via Value::Function call, pass result to `dict_to_type()`. Avoids EvalContext-during-typecheck recursion. (`src/typecheck_annot.rs`, `src/imports.rs`)
+- [x] `resolve_fn_metadata`: `bind:` arm — creates fresh TypeVars, registers in `ann_mapping` BEFORE other keys (`src/typecheck_annot.rs`)
+- [x] `resolve_fn_metadata`: `kinds:` arm — maps TypeVar names to Kind::Operator/Label in `kind_env` (`src/typecheck_annot.rs`)
+- [x] Positional-union-as-return-type path removed; recognized keys: `bind:`, `return:`, `constraint:`, `kinds:`, `doc:` (`src/typecheck_annot.rs`)
+- [ ] Route `[type ...]` bodies through type-stage lookup (same dict-lookup approach as resolve_annotation) (`src/typecheck_annot.rs`)
+- [ ] Tests: `@[or Int Null]`, `@[Seq Int]`, `fn@[bind: [a] return: a]`, `fn@[kinds: [f: Operator]]`, `[type [or Int Null]]` (`tests/corpus/eval/typecheck/`)
 
 **Depends on:** `type-stage-infra`
 

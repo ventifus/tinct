@@ -55,6 +55,11 @@ pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDia
     let mut state = InferState::new();
     // Seed with prelude instances so constraint checking works for dynamically registered classes.
     crate::imports::seed_infer_state_from_prelude_cache(&mut state);
+
+    // TODO: Initialize type-stage env for annotation resolution
+    // Currently disabled due to initialization performance issues
+    // state.type_stage_env = crate::imports::build_type_stage_env();
+
     let mut type_map = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
@@ -335,6 +340,11 @@ pub(crate) fn typecheck_file_with_types_and_env_and_source_returning_state(
     // Seed with prelude instances so user code sees class instances registered by prelude.llt.
     // This call is a no-op when the cache is empty (i.e., when we ARE type-checking the prelude).
     crate::imports::seed_infer_state_from_prelude_cache(&mut state);
+
+    // TODO: Initialize type-stage env for annotation resolution
+    // Currently disabled due to initialization performance issues
+    // state.type_stage_env = crate::imports::build_type_stage_env();
+
     if enable_scheme_map {
         // Enable scheme collection for LSP hover (constraints display).
         state.scheme_map = Some(SchemeMap::new());
