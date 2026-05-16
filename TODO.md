@@ -438,27 +438,6 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 ---
 
-## Codebase Health
-
-### constraint-preservation-gap: Fix constraint loss between resolve_fn_metadata and generalize_with_doc
-
-Exposed by `#[ignore]`d test `test_constraint_dropped_when_typevar_not_in_return_type` in `src/typecheck.rs`. Tracked since health-diagnostic-followup (2026-05-16).
-
-**The gap:** When a dict-entry function carries an explicit `fn@[constraint: [a: Comparable] return: Int]` annotation, `resolve_fn_metadata()` (in `src/typecheck_annot.rs`) registers the Comparable constraint in `state.constraints`. However, by the time `generalize_with_doc` runs during Pass 4 of dict type-checking (`src/typecheck_dict.rs`), that constraint is absent from `state.constraints`. The T013 "ambiguous type variable" warning path in `generalize_with_doc` (`src/type_env.rs:480-600`) is therefore unreachable from user-facing `constraint:` annotations on dict-entry functions.
-
-**Symptoms:**
-- `test_constraint_dropped_when_typevar_not_in_return_type` is `#[ignore]`d — it expects a T013 diagnostic but receives none
-- Zero corpus test coverage for T013 is achievable without this fix (see comment block in that unit test)
-
-**Investigation tasks:**
-- [ ] Trace how `state.constraints` is populated and cleared across dict type-checking passes in `src/typecheck_dict.rs` — identify the pass boundary where the constraint is lost
-- [ ] Determine whether the constraint is discarded (cleared before Pass 4) or never threaded (registered in a sub-state that isn't merged back)
-- [ ] Fix the threading so constraints from `resolve_fn_metadata` survive to the `generalize_with_doc` call for their enclosing dict entry
-- [ ] Un-`#[ignore]` `test_constraint_dropped_when_typevar_not_in_return_type` and verify it passes
-- [ ] Add a corpus test in `tests/corpus/typecheck/warnings/` for T013 using a dict-entry function with an ambiguous explicit constraint annotation
-
----
-
 ## Standard Library Boundary
 
 ### stdlib-boundary: stdlib Rust surface area reduction

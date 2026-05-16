@@ -407,6 +407,7 @@ pub(crate) fn resolve_fn_metadata(
                                     match &c_entry.node.key {
                                         Some(k) => match &k.node {
                                             Expr::Str(s) => s.clone(),
+                                            Expr::VarRef { name, .. } => name.clone(),
                                             _ => return Err(TypeError::new(
                                                 "constraint key must be a bare word (TypeVar name)",
                                                 c_entry.span,
