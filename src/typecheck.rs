@@ -56,10 +56,6 @@ pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDia
     // Seed with prelude instances so constraint checking works for dynamically registered classes.
     crate::imports::seed_infer_state_from_prelude_cache(&mut state);
 
-    // TODO: Initialize type-stage env for annotation resolution
-    // Currently disabled due to initialization performance issues
-    // state.type_stage_env = crate::imports::build_type_stage_env();
-
     let mut type_map = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
@@ -340,10 +336,6 @@ pub(crate) fn typecheck_file_with_types_and_env_and_source_returning_state(
     // Seed with prelude instances so user code sees class instances registered by prelude.llt.
     // This call is a no-op when the cache is empty (i.e., when we ARE type-checking the prelude).
     crate::imports::seed_infer_state_from_prelude_cache(&mut state);
-
-    // TODO: Initialize type-stage env for annotation resolution
-    // Currently disabled due to initialization performance issues
-    // state.type_stage_env = crate::imports::build_type_stage_env();
 
     if enable_scheme_map {
         // Enable scheme collection for LSP hover (constraints display).
@@ -1729,9 +1721,23 @@ fn infer_expr(
                     }
                     Rc::new(child)
                 };
-                if let Some(guard) = &arm.guard {
+                // Type-check guard if present, and apply is: predicate narrowing.
+                // Guards synthesized from `x@[is: pred]` have the form `[pred x]`.
+                // For recognized type predicates (int?, str?, etc.), narrow the variable
+                // type in the arm body environment using the same extract_narrowings logic
+                // as $if narrowing (BAS narrowing, reused for is: guards).
+                let arm_env = if let Some(guard) = &arm.guard {
                     let _guard_ty = infer_expr(guard, &arm_env, state, type_map)?;
-                }
+                    // Extract narrowings from the guard expression (same logic as $if).
+                    let guard_narrowings = extract_narrowings(guard);
+                    if guard_narrowings.is_empty() {
+                        arm_env
+                    } else {
+                        apply_narrowings(&arm_env, &guard_narrowings, state)
+                    }
+                } else {
+                    arm_env
+                };
                 let arm_ty = infer_expr(&arm.body, &arm_env, state, type_map)?;
                 arm_result_types.push(arm_ty);
 
@@ -9657,6 +9663,151 @@ mod tests {
                 assert!(members.contains(&Type::Str));
             }
             other => panic!("Expected Union type, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_or_annotation_two_types() {
+        // @[or Int Null] → resolve_annotation produces Union(Int, Record({}))
+        // `or` is the type-stage keyword for union; `Null` is the empty record type.
+        // Use resolve_annotation directly (same pattern as test_union_annotation_basic).
+        let span = crate::test_util::test_span(1, 1, 1, 20);
+        let sp = |node: Expr| Spanned::new(node, span);
+        // Build [or Int Null] as positional entries: [or, Int, Null]
+        let ann = Annotation::PropertyDict(vec![
+            Spanned::new(
+                Entry {
+                    key: None,
+                    value: Rc::new(sp(Expr::VarRef {
+                        name: "or".into(),
+                        escaped: false,
+                        resolved: RefCell::new(None),
+                    })),
+                },
+                span,
+            ),
+            Spanned::new(
+                Entry {
+                    key: None,
+                    value: Rc::new(sp(Expr::VarRef {
+                        name: "Int".into(),
+                        escaped: false,
+                        resolved: RefCell::new(None),
+                    })),
+                },
+                span,
+            ),
+            Spanned::new(
+                Entry {
+                    key: None,
+                    value: Rc::new(sp(Expr::VarRef {
+                        name: "Null".into(),
+                        escaped: false,
+                        resolved: RefCell::new(None),
+                    })),
+                },
+                span,
+            ),
+        ]);
+        let env = Rc::new(TypeEnv::new());
+        let ty = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        match ty {
+            Type::Union(members) => {
+                assert_eq!(
+                    members.len(),
+                    2,
+                    "expected 2 union members, got {}",
+                    members.len()
+                );
+                assert!(members.contains(&Type::Int), "union should contain Int");
+            }
+            other => panic!("expected Union, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_or_annotation_three_types() {
+        // @[or Int Float Bool] → Union(Bool, Float, Int) (sorted by normalize_union)
+        let span = crate::test_util::test_span(1, 1, 1, 30);
+        let sp = |node: Expr| Spanned::new(node, span);
+        let ann = Annotation::PropertyDict(
+            ["or", "Int", "Float", "Bool"]
+                .iter()
+                .map(|name| {
+                    Spanned::new(
+                        Entry {
+                            key: None,
+                            value: Rc::new(sp(Expr::VarRef {
+                                name: (*name).into(),
+                                escaped: false,
+                                resolved: RefCell::new(None),
+                            })),
+                        },
+                        span,
+                    )
+                })
+                .collect(),
+        );
+        let env = Rc::new(TypeEnv::new());
+        let ty = resolve_annotation(
+            &ann,
+            &env,
+            span,
+            &mut InferState::new(),
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        match ty {
+            Type::Union(members) => {
+                assert_eq!(
+                    members.len(),
+                    3,
+                    "expected 3 union members, got {}",
+                    members.len()
+                );
+            }
+            other => panic!("expected Union, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_or_in_type_alias_body() {
+        // [MyUnion: [type [or Int Null]]] registers a type alias whose body is Union(Int, Null).
+        // Type aliases are dict entries whose value is a [type ...] form.
+        let env = doc_env("[MyUnion: [type [or Int Null]]  x: 42]");
+        let alias = env.get_type_alias("MyUnion");
+        assert!(
+            alias.is_some(),
+            "expected MyUnion type alias to be registered"
+        );
+        let body = &alias.unwrap().body;
+        assert!(
+            matches!(body, Type::Union(members) if members.len() == 2),
+            "expected Union(2) alias body, got {body}"
+        );
+    }
+
+    #[test]
+    fn test_or_annotation_in_fn_return() {
+        // fn@[return: [or Int Null]] — or in fn metadata return type
+        let ty = infer("[fn@[return: [or Int Null]] [] []]");
+        match ty {
+            Type::Function { ret, .. } => {
+                assert!(
+                    matches!(*ret, Type::Union(ref m) if m.len() == 2),
+                    "expected Union(2) return type, got {ret}"
+                );
+            }
+            other => panic!("expected Function, got {other}"),
         }
     }
 

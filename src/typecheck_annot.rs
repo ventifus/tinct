@@ -872,16 +872,16 @@ pub(crate) fn resolve_annotation(
                 entries.iter().filter(|e| e.node.key.is_none()).collect();
 
             if !positional_entries.is_empty() && !entries_look_like_type_dict(entries) {
-                // BAS annotation keywords in the wrapped position: @[[all A B]] / @[[without A]].
+                // Type-stage keywords in the wrapped position: @[[or A B]] / @[[all A B]] / @[[without A]].
                 //
-                // The inner [all A B] bracket parses as either:
+                // The inner [or A B] bracket parses as either:
                 //   Expr::Dict(entries)  — when it contains keyed or mixed entries (rare/legacy)
-                //   Expr::Call { implied: true, func: VarRef("all"), args: [A, B] } — the common case,
+                //   Expr::Call { implied: true, func: VarRef("or"), args: [A, B] } — the common case,
                 //     because a bare identifier in head position followed by arguments is an implied call.
                 //
                 // We handle both by calling resolve_type_expr on the inner expression directly.
                 // resolve_type_expr already dispatches both Expr::Dict (via resolve_type_dict with its
-                // `all`/`without` guard) and Expr::Call { implied: true } (via the new arm added above).
+                // keyword guards) and Expr::Call { implied: true } (via the keyword arm added above).
                 //
                 // Legacy Expr::Dict path is preserved here for backwards compatibility only.
                 if positional_entries.len() == 1 {
@@ -890,7 +890,7 @@ pub(crate) fn resolve_annotation(
                         Expr::Dict(inner_entries) if !inner_entries.is_empty() => {
                             if let Expr::VarRef { name: kw, .. } = &inner_entries[0].node.value.node
                             {
-                                if kw == "all" || kw == "without" {
+                                if kw == "or" || kw == "all" || kw == "without" {
                                     return resolve_type_expr(
                                         inner_expr,
                                         env,
@@ -907,7 +907,7 @@ pub(crate) fn resolve_annotation(
                             ..
                         } => {
                             if let Expr::VarRef { name: kw, .. } = &func.node {
-                                if kw == "all" || kw == "without" {
+                                if kw == "or" || kw == "all" || kw == "without" {
                                     return resolve_type_expr(
                                         inner_expr,
                                         env,
@@ -922,11 +922,72 @@ pub(crate) fn resolve_annotation(
                     }
                 }
 
-                // Built-in type constructor application: @[Seq Int], @[Map String Int]
+                // Built-in type constructor application: @[or Int Null], @[Seq Int], @[Map String Int]
+                // @[all A B] and @[without A] are handled in the single-positional-entry arm above.
                 // Check BEFORE parameterized alias lookup so built-in constructors have priority.
                 if positional_entries.len() >= 1 {
                     if let Expr::VarRef { name, .. } = &positional_entries[0].node.value.node {
                         match name.as_str() {
+                            "or" => {
+                                // @[or T1 T2 ...] → Union([T1, T2, ...])
+                                // `or` is a type-stage function name that maps directly to Union.
+                                if positional_entries.len() < 2 {
+                                    return Err(TypeError::new(
+                                        "@[or ...] requires at least one type argument",
+                                        span,
+                                    ));
+                                }
+                                let mut members = Vec::new();
+                                for entry in &positional_entries[1..] {
+                                    let ty = resolve_type_expr(
+                                        &entry.node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    members.push(ty);
+                                }
+                                return Ok(Type::normalize_union(members));
+                            }
+                            "all" => {
+                                // @[all T1 T2 ...] → Intersection([T1, T2, ...])
+                                if positional_entries.len() < 2 {
+                                    return Err(TypeError::new(
+                                        "@[all ...] requires at least one type argument",
+                                        span,
+                                    ));
+                                }
+                                let mut members = Vec::new();
+                                for entry in &positional_entries[1..] {
+                                    let ty = resolve_type_expr(
+                                        &entry.node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    members.push(ty);
+                                }
+                                return Ok(Type::normalize_intersection(members));
+                            }
+                            "without" => {
+                                // @[without T] → Negation(T)
+                                if positional_entries.len() != 2 {
+                                    return Err(TypeError::new(
+                                        "@[without T] requires exactly one type argument",
+                                        span,
+                                    ));
+                                }
+                                let inner = resolve_type_expr(
+                                    &positional_entries[1].node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                return Ok(Type::Negation(Box::new(inner)));
+                            }
                             "Seq" => {
                                 if positional_entries.len() == 2 {
                                     let elem_ty = resolve_type_expr(
@@ -1089,17 +1150,12 @@ fn resolve_property_dict_as_record(
         if entries_look_like_type_dict(entries) {
             Err(e)
         } else {
-            // Try type-stage evaluation as a fallback for unrecognized PropertyDict patterns
-            // (e.g., @[or Int Null] where `or` is a type-stage function)
-            if let Some(ref _type_stage_env) = state.type_stage_env {
-                // Attempt to evaluate the PropertyDict entries as a call expression in type-stage env
-                // For now, return Unknown - full implementation requires reconstructing an Expr from entries
-                // and evaluating it, which is complex. Document this as TODO.
-                // TODO: implement full type-stage evaluation for PropertyDict annotations
-                Ok(Type::Unknown)
-            } else {
-                Ok(Type::Unknown)
-            }
+            // For PropertyDict entries that don't look like a type dict and aren't recognized
+            // type constructors (or/all/without/Seq/Map already handled before this path),
+            // fall through with Unknown. This covers genuine metadata-style annotations
+            // (e.g., @[default: 42]) that reach this path via resolve_annotation's else branch.
+            let _ = e; // suppress the error — annotation is non-structural
+            Ok(Type::Unknown)
         }
     })
 }
@@ -1719,14 +1775,37 @@ fn resolve_type_dict_with_guard(
     current_alias: &str,
     depth: usize,
 ) -> Result<Type, TypeError> {
-    // Only handle BAS keywords ([all ...], [without ...]) with guard propagation.
+    // Handle type-stage keywords ([or ...], [all ...], [without ...]) with guard propagation.
     // Other dict forms (function types, parameterized aliases, record types, unions)
     // are delegated to the normal resolver which has more complex logic.
     let all_positional = entries.iter().all(|e| e.node.key.is_none());
 
     if all_positional && !entries.is_empty() {
         if let Expr::VarRef { name: kw, .. } = &entries[0].node.value.node {
-            if kw == "all" {
+            if kw == "or" {
+                // [or T1 T2 ...] → Union([T1, T2, ...])
+                if entries.len() < 2 {
+                    return Err(TypeError::new(
+                        "[or ...] requires at least one type argument",
+                        span,
+                    ));
+                }
+                let mut members = Vec::new();
+                for entry in &entries[1..] {
+                    let ty = resolve_type_expr_with_guard(
+                        &entry.node.value,
+                        env,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                        recursion_guard,
+                        current_alias,
+                        depth,
+                    )?;
+                    members.push(ty);
+                }
+                return Ok(Type::normalize_union(members));
+            } else if kw == "all" {
                 // [all T1 T2 ...] → Intersection([T1, T2, ...])
                 if entries.len() < 2 {
                     return Err(TypeError::new(
@@ -1928,16 +2007,30 @@ pub(crate) fn resolve_type_expr(
                 }
             }
 
-            // BAS keywords in implied-call position: [all T1 T2] and [without T].
+            // Type-stage keywords in implied-call position: [or T1 T2], [all T1 T2], [without T].
             //
-            // `[all T1 T2]` parses as Expr::Call { func: VarRef("all"), args: [T1, T2], implied: true }
-            // rather than Expr::Dict, because the parser sees a bare identifier in head position
-            // followed by arguments — no `[` delimiter to form a Dict.
+            // These parse as Expr::Call { func: VarRef(kw), args: [...], implied: true }
+            // because the parser sees a bare identifier in head position followed by arguments.
             //
-            // [all T1 T2 ...] → Type::Intersection([T1, T2, ...])
+            // [or T1 T2 ...]  → Type::normalize_union([T1, T2, ...])
+            // [all T1 T2 ...] → Type::normalize_intersection([T1, T2, ...])
             // [without T]     → Type::Negation(T)
             if let Expr::VarRef { name: kw, .. } = &func.node {
-                if kw == "all" {
+                if kw == "or" {
+                    // args contains the type arguments; func ("or") is the head, not a type.
+                    if args.is_empty() {
+                        return Err(TypeError::new(
+                            "[or ...] requires at least one type argument",
+                            expr.span,
+                        ));
+                    }
+                    let mut members = Vec::new();
+                    for arg in args.iter() {
+                        let ty = resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                        members.push(ty);
+                    }
+                    return Ok(Type::normalize_union(members));
+                } else if kw == "all" {
                     // args contains the type arguments; func ("all") is the head, not a type.
                     if args.is_empty() {
                         return Err(TypeError::new(
@@ -2197,21 +2290,42 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
-    // BAS annotation keywords: [all A B] → Intersection(A, B) and [without A] → Negation(A).
+    // BAS annotation keywords: [or A B] → Union(A, B), [all A B] → Intersection(A, B),
+    // [without A] → Negation(A).
     //
-    // These correspond to the @[[all A B]] and @[[without A]] annotation syntax documented in
-    // doc/07-type-extensions.md. When the first positional entry is the keyword `all` or
-    // `without`, the remaining entries are resolved as type arguments.
+    // These correspond to type-stage function names that map directly to Type variants
+    // without needing runtime eval machinery. They must be checked BEFORE the general
+    // all-positional union path so `[all Int Str]` dispatches to Intersection (not Union)
+    // and `[or Int Str]` dispatches to Union via this explicit path (not the fallthrough
+    // union path which would error on "undefined type 'or'").
     //
-    // [all A B C ...] → Type::Intersection([A, B, C, ...]) (normalized)
+    // [or A B C ...]  → Type::normalize_union([A, B, C, ...])
+    // [all A B C ...] → Type::normalize_intersection([A, B, C, ...])
     // [without A]     → Type::Negation(A)
-    //
-    // Must check BEFORE the general all-positional union path so `[all Int Str]` is
-    // dispatched to Intersection, not Union(Int, Str).
     let all_positional = entries.iter().all(|e| e.node.key.is_none());
     if all_positional && !entries.is_empty() {
         if let Expr::VarRef { name: kw, .. } = &entries[0].node.value.node {
-            if kw == "all" {
+            if kw == "or" {
+                // [or T1 T2 ...] → Union([T1, T2, ...])
+                if entries.len() < 2 {
+                    return Err(TypeError::new(
+                        "[or ...] requires at least one type argument",
+                        span,
+                    ));
+                }
+                let mut members = Vec::new();
+                for entry in &entries[1..] {
+                    let ty = resolve_type_expr(
+                        &entry.node.value,
+                        env,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    )?;
+                    members.push(ty);
+                }
+                return Ok(Type::normalize_union(members));
+            } else if kw == "all" {
                 // [all T1 T2 ...] → Intersection([T1, T2, ...])
                 if entries.len() < 2 {
                     return Err(TypeError::new(

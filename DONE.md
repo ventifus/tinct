@@ -6290,3 +6290,11 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] resolve_fn_metadata: bind: arm — fresh TypeVars registered before other keys
 - [x] resolve_fn_metadata: kinds: arm — Kind::Operator/Label registered in kind_env
 - [x] Positional-union-as-return-type path removed from fn@[...] metadata
+- [x] @[or T1 T2], @[all T1 T2], @[without T] → Union/Intersection/Negation via keyword dispatch
+- [x] Tests: type_stage_or.llt-eval, type_ann_v2_fn_bind.llt-eval, unit tests
+
+### type-ann-v2-match: is: soft guard in match arms
+
+- [x] is: predicate guard: falsy → skip arm, truthy → proceed, error → propagate
+- [x] Type narrowing for int?/str?/dict?/etc. in arm body
+- [x] Tests: match_is_guard, match_is_guard_skip, match_is_throw

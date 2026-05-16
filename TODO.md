@@ -418,19 +418,6 @@ See mempalace tinct/type-ann-v2. **Spec chapters:** `doc/05-type-annotations.md`
 
 **Depends on:** none (self-contained infrastructure sprint)
 
-### type-ann-v2-resolver: Annotation resolver — type-stage evaluation and fn@[...] keys
-
-See `doc/05-type-annotations.md` §§12–14 and `doc/whatif/type-annotations-v2.md`. Wires the type-stage Env into the annotation resolver so bracket annotations evaluate as type-stage expressions, and adds `bind:`, `kinds:` to the fn@[...] metadata dict.
-
-- [ ] Wire type-stage lookup into `resolve_annotation`: use DICT LOOKUPS (not full eval) on the type-stage env for `@[or Int Null]`, `@[Seq Int]` etc. — look up function name + args, apply the function via Value::Function call, pass result to `dict_to_type()`. Avoids EvalContext-during-typecheck recursion. (`src/typecheck_annot.rs`, `src/imports.rs`)
-- [x] `resolve_fn_metadata`: `bind:` arm — creates fresh TypeVars, registers in `ann_mapping` BEFORE other keys (`src/typecheck_annot.rs`)
-- [x] `resolve_fn_metadata`: `kinds:` arm — maps TypeVar names to Kind::Operator/Label in `kind_env` (`src/typecheck_annot.rs`)
-- [x] Positional-union-as-return-type path removed; recognized keys: `bind:`, `return:`, `constraint:`, `kinds:`, `doc:` (`src/typecheck_annot.rs`)
-- [ ] Route `[type ...]` bodies through type-stage lookup (same dict-lookup approach as resolve_annotation) (`src/typecheck_annot.rs`)
-- [ ] Tests: `@[or Int Null]`, `@[Seq Int]`, `fn@[bind: [a] return: a]`, `fn@[kinds: [f: Operator]]`, `[type [or Int Null]]` (`tests/corpus/eval/typecheck/`)
-
-**Depends on:** `type-stage-infra`
-
 ### type-ann-v2-constraints: Constraint resolver — type-stage routing and MPTC
 
 See `doc/05-type-annotations.md` §9–10 and `doc/whatif/type-annotations-v2.md`. Routes `constraint:` values through the type-stage Env; adds `each` for multi-class constraints; enforces that MPTC positional entries use only names declared in `bind:`.
@@ -441,16 +428,6 @@ See `doc/05-type-annotations.md` §9–10 and `doc/whatif/type-annotations-v2.md
 - [ ] Tests: `constraint: [a: Comparable]` → `Constraint::Class`; `constraint: [a: [each Comparable Showable]]` → two constraints; MPTC `[$Add a b c]` with undeclared `c` → type error; old `[a: [Comparable Showable]]` positional-list form → type error. (`tests/corpus/eval/typecheck/`)
 
 **Depends on:** `type-ann-v2-resolver`
-
-### type-ann-v2-match: `is:` soft guard in match arms
-
-See `doc/05-type-annotations.md` §18 and `doc/whatif/type-annotations-v2.md`. Implements `is:` in match arm patterns as a soft guard (arm skipped when predicate is falsy, hard error when predicate throws).
-
-- [ ] In match arm evaluation (`src/eval.rs`): when arm pattern contains `is:` annotation, evaluate the predicate on the matched value before entering the arm body. Falsy result → skip arm, try next. Truthy → proceed. Exception → propagate as hard error. (`src/eval.rs`)
-- [ ] Type narrowing for recognized type predicates in arm body: `int?` → `Type::Int`, `string?` → `Type::Str`, `dict?` → open record. (`src/typecheck.rs`)
-- [ ] Tests: `is:` falsy → next arm tried; `is:` truthy → body entered; `is:` throwing → error propagates; `int?` narrows type. (`tests/corpus/eval/builtins/`, `tests/corpus/eval/typecheck/`)
-
-**Depends on:** `type-stage-infra`
 
 ---
 

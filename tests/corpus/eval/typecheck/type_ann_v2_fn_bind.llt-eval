@@ -1,0 +1,7 @@
+# fn@[return: a] — return: references TypeVar `a` that is also used in param annotation.
+# When called with an Int argument, the function returns Int (identity function).
+# This tests that TypeVars in fn@ return: annotations thread correctly with param annotations.
+[identity: [fn@[return: a] [x@a] $x]
+ result: [identity 42]]
+=== out
+Dict({"identity": Function(x), "result": Int(42)})

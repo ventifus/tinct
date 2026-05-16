@@ -1108,9 +1108,20 @@ pub(crate) fn eval_recursive(
                     &scrutinee.span,
                     ctx,
                 )? {
-                    // Pattern matched — check guard if present
+                    // Pattern matched — check guard if present.
+                    //
+                    // Two styles of `is:` guard are supported:
+                    //
+                    // 1. Inline expression: `n@[is: [> n 0]]`
+                    //    The guard expression uses the bound variable directly.
+                    //    Evaluated as-is in bound_env → produces a truthy/falsy value.
+                    //
+                    // 2. Predicate function: `x@[is: positive?]`
+                    //    The guard expression evaluates to a Function or Builtin.
+                    //    At runtime, the predicate is called with the matched (scrutinee) value.
+                    //    Errors from the predicate propagate as hard errors (not a skip).
                     if let Some(guard_expr) = &arm.guard {
-                        // Evaluate the guard in the pattern-extended environment
+                        // Evaluate the guard expression in the pattern-extended environment
                         let guard_thunk = eval(
                             Rc::new(guard_expr.as_ref().clone()),
                             Rc::clone(&bound_env),
@@ -1118,9 +1129,55 @@ pub(crate) fn eval_recursive(
                         )?;
                         let guard_value = materialize(&guard_thunk, Some(&guard_expr.span), ctx)?;
 
+                        // Dispatch: if the guard evaluated to a callable, call it with the
+                        // matched value (predicate style). Otherwise use as a direct boolean.
+                        let final_guard_value = match &guard_value {
+                            Value::Function {
+                                params,
+                                body,
+                                env: fn_env,
+                                ..
+                            } => {
+                                // Predicate function style: call pred(scrutinee_value)
+                                let scrutinee_arg = Rc::new(Thunk::new_materialized(
+                                    scrutinee_value.clone(),
+                                    scrutinee.span,
+                                ));
+                                let call_ctx = crate::eval_call::CallContext {
+                                    params,
+                                    body,
+                                    closure_env: fn_env,
+                                    positional: &[scrutinee_arg],
+                                    named: None,
+                                    default_env: fn_env,
+                                    call_span: guard_expr.span,
+                                    origin: Some("is: guard predicate".into()),
+                                    ctx,
+                                };
+                                let result_thunk = crate::eval_call::invoke_function(&call_ctx)?;
+                                materialize(&result_thunk, Some(&guard_expr.span), ctx)?
+                            }
+                            Value::Builtin(def) => {
+                                // Builtin predicate style: call pred(scrutinee_value)
+                                let scrutinee_arg = Rc::new(Thunk::new_materialized(
+                                    scrutinee_value.clone(),
+                                    scrutinee.span,
+                                ));
+                                let builtin_args = crate::value::BuiltinArgs {
+                                    args: &[scrutinee_arg],
+                                    named: None,
+                                    call_span: guard_expr.span,
+                                    ctx: Rc::clone(ctx),
+                                };
+                                let result_thunk = (def.func)(builtin_args)?;
+                                materialize(&result_thunk, Some(&guard_expr.span), ctx)?
+                            }
+                            _ => guard_value,
+                        };
+
                         // Check if guard is truthy
-                        if !is_truthy(&guard_value) {
-                            // Guard failed — try next arm
+                        if !is_truthy(&final_guard_value) {
+                            // Guard failed — try next arm (soft skip)
                             continue;
                         }
                     }
@@ -2225,10 +2282,19 @@ pub fn materialize(
 // Re-export deep_materialize from eval_deep module
 pub use crate::eval_deep::deep_materialize;
 
-/// Check if a value is truthy (for guard evaluation).
-/// Only `false` is falsy; all other values (including empty dict `[]`) are truthy.
+/// Check if a value is truthy (for `is:` guard evaluation).
+///
+/// Falsy values: `false`, and empty dict `[]` (null in LLT convention).
+/// All other values are truthy, including non-empty dicts, integers, strings, and sequences.
+///
+/// This matches the LLT convention where predicates signal "no match" by returning
+/// either `false` or `[]` (null), and signal "match" by returning any truthy value.
 fn is_truthy(value: &Value) -> bool {
-    !matches!(value, Value::Bool(false))
+    match value {
+        Value::Bool(false) => false,
+        Value::Dict(entries) if entries.is_empty() => false,
+        _ => true,
+    }
 }
 
 /// Match a pattern against a value, returning the extended environment if the pattern matches.
