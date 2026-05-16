@@ -183,11 +183,7 @@ The `@Type` annotation in `name@Type: Constructor` is a **compile-time type cons
 [let [a _ c]: Triple]          # test Triple, bind first and third, discard second
 ```
 
-The degenerate case — multiple constructor entries in one binding list — reads cleanly because each entry is bounded by its `:`:
-```tinct
-[let ok: Ok  a  b  c: Something  de: SomethingElse]
-# ok from Ok; a and b plain; c from Something; de from SomethingElse
-```
+This example was originally used to argue that the `:` form reads better than juxtaposition — purely visual, not a special semantic case. The binding list `[let ok: Ok  a  b  c: Something  de: SomethingElse]` has five entries, which would match a five-component tuple scrutinee positionally (same rule as instance arms: N elements = N components, one-to-one). For a single-value scrutinee, five elements is an arity mismatch → type error.
 
 **Nested structural patterns** — the left-hand side of `:` is itself a binding pattern:
 ```tinct
@@ -265,6 +261,8 @@ When typing `[case [let v: Ok] body]` with scrutinee of type `Result String`:
 Constructor types are looked up from the local TypeEnv (scope-aware). `[let v: Ok]` fails with "undefined variable: Ok" if Ok is not in scope.
 
 **`Unknown ∩ T` normalizes to `T`** (AGT, Garcia et al. 2016): intersection with the gradual type is identity. When the scrutinee type is `Unknown`, `[let n@Int]` gives `n : Int` (not `n : Int & ?`). `normalize_intersection` must implement this case alongside the existing `Top`-as-identity rule.
+
+**Multi-element `[let ...]` in case arms** — N elements in `[let ...]` match N components of the scrutinee positionally (same rule as instance arms: N elements = N class params, one-to-one). For a single-value scrutinee, only 1 element is valid. For a tuple scrutinee `[x y z]`, N elements match N components. Arity mismatch → type error. The type checker enforces that the element count equals the component count of the scrutinee's type.
 
 **Arity mismatch in multi-payload destructuring** — `[let [a b c]: Pair]` when `Pair` has 2 registered components is a **type error** ("pattern has 3 bindings but Pair has 2 components"), not a silent `Unknown` fallback. The TypeEnv knows the arity of registered constructors.
 
@@ -347,7 +345,18 @@ z: [y y y]         # thunk — no error yet
 ```
 UnimplementedError at <file>:<line>:<col>: ... placeholder reached
 ```
-The source span points precisely to the `...` token. Tinct's existing materialization-span threading carries the call chain, so the full lazy evaluation path is visible in the error. **`UnimplementedError` is cacheable** — when a placeholder thunk is forced, the error is stored in `ThunkState::Failed` so subsequent forces return the memoized error without re-evaluation. **`UnimplementedError` is non-catchable** — `$try` does not intercept it; abstract method calls are programmer errors, not recoverable runtime conditions.
+The source span points precisely to the `...` token. Tinct's existing materialization-span threading carries the call chain, so the full lazy evaluation path is visible in the error. **`UnimplementedError` is cacheable** — when a placeholder thunk is forced, the error is stored in `ThunkState::Failed` so subsequent forces return the memoized error without re-evaluation. **`UnimplementedError` is catchable** — `$try` intercepts it, returning `[Err unimplemented-error]`. This enables `...` as a first-class "required but unset" mechanism for dict values:
+
+```tinct
+config: [host: "localhost"  port: ...]   # port is required, not yet set
+
+# get-or is a stdlib helper: use value if set, default if unimplemented
+port: [$get-or config.port 8080]
+```
+
+`get-or: [fn [let val default] [match [$try val] [case [let v: Ok] v] [case [let _: Err] default]]]`
+
+The error kind is `ErrorKind::Unimplemented` — callers can distinguish `...` placeholders from other errors (network failure, parse error, etc.) when needed.
 
 **Disambiguation from other `...` uses:**
 
