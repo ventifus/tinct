@@ -606,14 +606,16 @@ NamedHosts: [type Map@[String: Config]] # lookup: name → Config
 
 Type aliases are resolved at type-check time — they have no runtime cost.
 
-**Type constructor application.** The `Expr::TypeApp` AST node represents application of an Operator-kinded type constructor in annotation positions:
+**Type constructor application.** Type constructors like `Seq` and `Map` are applied in annotation positions using the syntax:
 
 ```tinct
 @[Seq Int]        # Apply Seq constructor to Int
 @[Map String]     # Apply Map constructor to String
 ```
 
-`Expr::TypeApp { func, arg }` is parsed from `@[...]` when the head `func` is a known Operator-kinded variable. The parser classifies `[...]` as `TypeApp` when the head is Operator-kinded (determined at parse time by looking up the name in the kind environment). This distinguishes type constructor application from record types (which have colons) and function calls (which are not in annotation position).
+The parser produces `Annotation::PropertyDict` for `@[...]` forms. During type checking, `resolve_type_expr` in `src/typecheck_annot.rs` resolves these by pattern-matching on the constructor name (`Seq`, `Map`, etc.) and creating the corresponding `Type::*` variant (`Type::Seq`, `Type::Map`). This happens after parsing completes, when annotations are resolved to concrete types.
+
+Note: The `Expr::TypeApp` AST variant exists for legacy reasons but is never constructed by the parser. Type constructor applications are resolved directly during type checking, not during parsing.
 
 **Row polymorphism.** `...` marks an open record type; `...name` introduces a named row variable:
 

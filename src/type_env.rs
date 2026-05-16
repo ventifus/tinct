@@ -448,6 +448,7 @@ pub fn generalize_with_doc(
         let resolve_var_name = |var_name: &str| -> String {
             match subst_snapshot.get(var_name) {
                 Some(Type::TypeVar(resolved_name, _)) => resolved_name.clone(),
+                Some(Type::Operator(resolved_name)) => resolved_name.clone(),
                 _ => var_name.to_string(),
             }
         };

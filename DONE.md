@@ -6320,3 +6320,12 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] doc/02-syntax.md: Expr::TypeApp
 - [x] doc/08-evaluation.md: Strictness::Id
 - [x] error.rs: ErrorKind exhaustive match helper
+
+### health-review3: Type system completeness, spec accuracy, structural safety
+
+- [x] resolve_var_name: Operator arm for constraint preservation
+- [x] U-VAR: Operator→TypeVar constraint transfer
+- [x] UNIFY-OPERATOR: check_size guard + constraint check ordering fix
+- [x] TypeApp spec drift in doc/02-syntax.md corrected
+- [x] satisfies_constraint: MAX_CONSTRAINT_DEPTH=256
+- [x] Type::Map alias substitution: verified already implemented

@@ -8,6 +8,10 @@ use crate::ast::Span;
 
 use super::*;
 
+/// Maximum recursion depth for constraint satisfaction checking.
+/// Prevents infinite loops when checking constraints on recursive types.
+const MAX_CONSTRAINT_DEPTH: usize = 256;
+
 /// Check if a type satisfies a type class constraint.
 /// Returns true if the type is an instance of the class.
 ///
@@ -18,6 +22,17 @@ use super::*;
 /// This requires prelude.llt instances to be propagated into the `InferState`
 /// (done by `imports::seed_infer_state_from_prelude_cache`).
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
+    satisfies_constraint_inner(ty, class_name, 0)
+}
+
+/// Internal implementation of constraint satisfaction with depth tracking.
+/// Conservative: returns false if depth limit exceeded (treat as constraint not satisfied).
+fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool {
+    // Depth guard: prevent unbounded recursion on pathological recursive types
+    if depth >= MAX_CONSTRAINT_DEPTH {
+        return false;
+    }
+
     // Unknown (the gradual dynamic type ?) satisfies all constraints vacuously.
     // AGT existential lifting: C(?) = ∃t ∈ γ(?). C(t) holds for any non-empty
     // class because γ(?) = STypes and every class has at least one instance
@@ -49,7 +64,7 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
                 return row
                     .fields
                     .values()
-                    .all(|field_ty| satisfies_constraint(field_ty, class_name));
+                    .all(|field_ty| satisfies_constraint_inner(field_ty, class_name, depth + 1));
             }
             _ => {} // Fall through to instance resolution
         }
@@ -61,14 +76,14 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     if let Type::Union(members) = ty {
         return members
             .iter()
-            .all(|member| satisfies_constraint(member, class_name));
+            .all(|member| satisfies_constraint_inner(member, class_name, depth + 1));
     }
 
     // [CONSTRAIN-INTER]: C(τ₁ & τ₂) ⊢ satisfied iff C(τ₁) ∧ C(τ₂) (ALL members).
     if let Type::Intersection(members) = ty {
         return members
             .iter()
-            .all(|member| satisfies_constraint(member, class_name));
+            .all(|member| satisfies_constraint_inner(member, class_name, depth + 1));
     }
 
     match class_name {
@@ -1554,11 +1569,15 @@ pub fn unify(
             // to unify IntLiteral(1) with IntLiteral(2) for the second argument.
             let b = promote_literal_for_constrained_var(name, b, state);
 
-            // CONSTRAINT TRANSFER: when binding α to β (both TypeVars), transfer Class constraints
-            // from α to β instead of checking. β inherits α's obligations and will be checked when
-            // β is bound to a concrete type. HasField constraints are NOT transferred (they reference
-            // the dict variable, not the param).
+            // CONSTRAINT TRANSFER: when binding α to β (both TypeVars or Operator), transfer Class
+            // constraints from α to β instead of checking. β inherits α's obligations and will be
+            // checked when β is bound to a concrete type. HasField constraints are NOT transferred
+            // (they reference the dict variable, not the param).
             if let Type::TypeVar(beta_name, _) = &b {
+                transfer_class_constraints(name, beta_name, state);
+                // After transferring constraints, bind α to β directly — no check_constraints_on_var
+                subst.type_map.borrow_mut().insert(name.clone(), b);
+            } else if let Type::Operator(beta_name) = &b {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 subst.type_map.borrow_mut().insert(name.clone(), b);
@@ -1583,11 +1602,15 @@ pub fn unify(
             // Promote literal types when binding a constrained type variable.
             let a = promote_literal_for_constrained_var(name, a, state);
 
-            // CONSTRAINT TRANSFER: when binding α to β (both TypeVars), transfer Class constraints
-            // from α to β instead of checking. β inherits α's obligations and will be checked when
-            // β is bound to a concrete type. HasField constraints are NOT transferred (they reference
-            // the dict variable, not the param).
+            // CONSTRAINT TRANSFER: when binding α to β (both TypeVars or Operator), transfer Class
+            // constraints from α to β instead of checking. β inherits α's obligations and will be
+            // checked when β is bound to a concrete type. HasField constraints are NOT transferred
+            // (they reference the dict variable, not the param).
             if let Type::TypeVar(beta_name, _) = &a {
+                transfer_class_constraints(name, beta_name, state);
+                // After transferring constraints, bind α to β directly — no check_constraints_on_var
+                subst.type_map.borrow_mut().insert(name.clone(), a);
+            } else if let Type::Operator(beta_name) = &a {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 subst.type_map.borrow_mut().insert(name.clone(), a);
@@ -1763,15 +1786,20 @@ pub fn unify(
                     span,
                 ));
             }
-            // Check constraints on m before binding (Task 3)
-            check_constraints_on_var(m, &b, subst, state, span)?;
-            // Transfer constraints: Operator→Operator OR Operator→TypeVar
+            // CONSTRAINT TRANSFER: when binding m to another Operator or TypeVar, transfer constraints
+            // instead of checking. When binding to a concrete type, check constraints normally.
             if let Type::Operator(n_name) = &b {
                 transfer_class_constraints(m, n_name, state);
+                subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             } else if let Type::TypeVar(beta_name, _) = &b {
                 transfer_class_constraints(m, beta_name, state);
+                subst.type_map.borrow_mut().insert(m.clone(), b.clone());
+            } else {
+                // Binding to concrete type — check constraints
+                check_constraints_on_var(m, &b, subst, state, span)?;
+                subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             }
-            subst.type_map.borrow_mut().insert(m.clone(), b.clone());
+            subst.check_size(span)?;
             Ok(())
         }
         // UNIFY-OPERATOR-SYM: symmetric case
@@ -1784,15 +1812,20 @@ pub fn unify(
                     span,
                 ));
             }
-            // Check constraints on m before binding (Task 3)
-            check_constraints_on_var(m, &a, subst, state, span)?;
-            // Transfer constraints: Operator→Operator OR Operator→TypeVar
+            // CONSTRAINT TRANSFER: when binding m to another Operator or TypeVar, transfer constraints
+            // instead of checking. When binding to a concrete type, check constraints normally.
             if let Type::Operator(n_name) = &a {
                 transfer_class_constraints(m, n_name, state);
+                subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             } else if let Type::TypeVar(beta_name, _) = &a {
                 transfer_class_constraints(m, beta_name, state);
+                subst.type_map.borrow_mut().insert(m.clone(), a.clone());
+            } else {
+                // Binding to concrete type — check constraints
+                check_constraints_on_var(m, &a, subst, state, span)?;
+                subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             }
-            subst.type_map.borrow_mut().insert(m.clone(), a.clone());
+            subst.check_size(span)?;
             Ok(())
         }
 

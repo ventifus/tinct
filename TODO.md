@@ -438,23 +438,6 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 ---
 
-## Codebase Health (Review #3, 2026-05-15)
-
-### health-review3: Type system completeness, spec accuracy, structural safety
-
-**Type system completeness (computer-scientist):**
-- [ ] **[Major]** `resolve_var_name` in `src/type_env.rs:448-452` missing `Type::Operator` arm — constraints on Operator-bound vars dropped during generalization, violating principal type theorem (`src/type_env.rs`)
-- [ ] **[Major]** U-VAR treats `Operator` as concrete — when `unify(TypeVar, Operator(m))`, should transfer constraints to `m` not check against Operator variant (`src/type_unify.rs:1561-1568`)
-- [ ] **[Major]** UNIFY-OPERATOR missing `subst.check_size(span)?` after insert — pathological programs with many Operator bindings bypass MAX_SUBST_SIZE safety (`src/type_unify.rs:1774,1795`)
-- [ ] **[Minor]** UNIFY-OPERATOR constraint check ordering: `check_constraints_on_var` fires before `transfer_class_constraints`; should guard with `!matches!(&b, TypeVar | Operator)` (`src/type_unify.rs:1767`)
-
-**Spec accuracy (grammar-architect):**
-- [ ] **[Critical]** `doc/02-syntax.md:609-616` TypeApp spec drift — describes parser-time TypeApp construction that doesn't exist; TypeApp is constructed during type checking, not parsing. Update spec to match implementation or implement parse-time construction. (`doc/02-syntax.md`)
-
-**Structural safety (performance-expert + integration-verifier):**
-- [ ] **[Major]** `satisfies_constraint` [CONSTRAIN-FIELD] recursion unbounded — add `MAX_CONSTRAINT_DEPTH=256` guard for deeply nested records (`src/type_unify.rs:46-55`)
-- [ ] **[Major]** `Type::Map` missing from `apply_type_alias_substitution` and `expand_alias_body_guarded` — alias composition `[type Map@T1]` silently fails substitution (`src/typecheck_annot.rs:800-860,1112-1229`)
-
 ---
 
 ## Standard Library Boundary
