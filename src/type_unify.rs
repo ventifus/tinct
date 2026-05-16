@@ -61,6 +61,9 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
     if let Type::Record(row) = ty {
         match class_name {
             "Numeric" | "Comparable" | "Equatable" | "Showable" => {
+                if row.fields.is_empty() {
+                    return matches!(class_name, "Equatable" | "Showable");
+                }
                 return row
                     .fields
                     .values()

@@ -3580,7 +3580,7 @@ fn infer_fn(
                     // as record return types by resolve_annotation.
                     let has_metadata_key = entries.iter().any(|e| {
                         e.node.key.as_ref().is_some_and(|k| {
-                            matches!(&k.node, Expr::Str(s) if s == "return" || s == "constraint" || s == "doc")
+                            matches!(&k.node, Expr::Str(s) if s == "return" || s == "constraint" || s == "doc" || s == "bind" || s == "kinds")
                         })
                     });
 
