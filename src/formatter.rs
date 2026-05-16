@@ -938,7 +938,7 @@ impl<'a> Formatter<'a> {
             Annotation::Simple(name) => name.len(),
             Annotation::PropertyDict(entries) => self.measure_dict_width(entries),
             Annotation::Annotated(name, inner) => {
-                name.len() + 1 + self.measure_annotation_width(inner)  // name + @ + inner
+                name.len() + 1 + self.measure_annotation_width(inner) // name + @ + inner
             }
         }
     }

@@ -2286,11 +2286,8 @@ pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::er
     for doc in &file.node.documents {
         if doc.node.stage == Some(crate::ast::Stage::Type) {
             // Evaluate this type-stage document
-            let result = crate::eval::eval_document(
-                doc,
-                Rc::clone(&type_stage_env),
-                &bootstrap_ctx,
-            )?;
+            let result =
+                crate::eval::eval_document(doc, Rc::clone(&type_stage_env), &bootstrap_ctx)?;
 
             // Materialize and extract bindings
             let val = crate::eval::materialize(&result, None, &bootstrap_ctx)?;

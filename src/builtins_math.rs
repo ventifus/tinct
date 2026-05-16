@@ -40,7 +40,9 @@ fn try_dispatch_method(
     let first_val = materialize(&args[0], Some(&call_span), ctx).ok()?;
     let type_name = first_val.type_name();
 
-    let instance_thunk = ctx.state.borrow()
+    let instance_thunk = ctx
+        .state
+        .borrow()
         .instance_registry
         .get(&(class_name.to_string(), type_name.to_string()))
         .cloned()?;
@@ -53,27 +55,28 @@ fn try_dispatch_method(
         let method_val = materialize(&method_thunk, Some(&call_span), ctx).ok()?;
 
         match method_val {
-            Value::Function { params, body, env: closure_env, .. } => {
-                Some(invoke_function(&CallContext {
-                    params: &params,
-                    body: &body,
-                    closure_env: &closure_env,
-                    positional: args,
-                    named: None,
-                    default_env: &closure_env,
-                    call_span,
-                    origin: Some(Rc::from(format!("{}.{}", class_name, method_name))),
-                    ctx,
-                }))
-            }
-            Value::Builtin(def) => {
-                Some((def.func)(BuiltinArgs {
-                    args,
-                    named,
-                    call_span,
-                    ctx: Rc::clone(ctx)
-                }))
-            }
+            Value::Function {
+                params,
+                body,
+                env: closure_env,
+                ..
+            } => Some(invoke_function(&CallContext {
+                params: &params,
+                body: &body,
+                closure_env: &closure_env,
+                positional: args,
+                named: None,
+                default_env: &closure_env,
+                call_span,
+                origin: Some(Rc::from(format!("{}.{}", class_name, method_name))),
+                ctx,
+            })),
+            Value::Builtin(def) => Some((def.func)(BuiltinArgs {
+                args,
+                named,
+                call_span,
+                ctx: Rc::clone(ctx),
+            })),
             _ => None,
         }
     } else {

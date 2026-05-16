@@ -114,10 +114,25 @@ parse: [fn@Result [input@Str]
 
 ### Type classes
 
-Constrained polymorphism for overloaded builtins. `Eq a => a → a → Bool` statically rejects `[= fn1 fn2]`. Full Haskell-style class and instance declarations.
+Constrained polymorphism. Full Haskell-style class and instance declarations with multi-parameter type classes, functional dependencies, and runtime dispatch. Equality, comparison, and arithmetic overload through the class system.
 
 ```tinct
 sorted: [sort items key: [fn [x] x.priority]]   # Comparable constraint enforced
+
+[class [Add a b c] method: +]
+[instance [Add Int Float Float] method: [fn [x y] [+ [float x] y]]]
+[+ 1 2.0]   # infers Float via functional dependency
+```
+
+### Higher-kinded types and monadic composition
+
+`Kind::Operator` (`* → *`) enables generic programming over type constructors. Functor, Applicative, Monad, Foldable, Traversable hierarchy with `Maybe` ADT. `[do]` macro desugars to `monad.bind` chains; the monad can be explicit or inferred from the return annotation.
+
+```tinct
+result: [do MonadResult
+    [x <- [fetch-user id]]
+    [y <- [fetch-posts x.id]]
+    [pure [merge x [posts: y]]]]
 ```
 
 ### Named arguments
@@ -182,6 +197,19 @@ Supplemental modules are available but must be loaded explicitly with `[include 
 `tinct fmt` — idempotent formatter that canonicalizes whitespace and layout. `--check` mode for CI, `--in-place` for editor integration.
 
 `tinct fmt --oneline` / `--nospaces` / `--minimize` — tinct-hosted compact formatter modes via `stdlib/formatter/compact.llt`. Produces minified output for diffing, embedding, and tooling pipelines.
+
+### Runtime reflection
+
+`[describe f]` returns a dict with the function's signature, doc string, annotation, and source AST. `[ast-of f]` returns the full body as a tinct dict using the canonical `[type: "..." span: [...] ...]` schema. Enables docgen, REPL `:describe`, and metaprogramming without a separate tooling layer.
+
+```tinct
+doc: [describe my-fn].doc   # "Computes the running total"
+sig: [sig-from-ast [ast-of my-fn]]
+```
+
+### Type stage
+
+`--- stage: type` document sections run at type-check time, not at runtime. They define type-level functions, aliases, and resolvers using a subset of tinct (`%rust "type-core"`). The type dict schema (`[kind: "named" name: "Int"]`, `[kind: "seq" elem: T]`, etc.) is the interchange format between the inference engine and type-stage code.
 
 ### AST dict schema
 

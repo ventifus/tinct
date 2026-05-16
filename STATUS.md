@@ -1,6 +1,6 @@
 # Implementation Status
 
-High-level guide to the current state of tinct. Updated 2026-05-10.
+High-level guide to the current state of tinct. Updated 2026-05-16.
 For completed sprint history see DONE.md. For future feature designs see `doc/whatif/`.
 
 **The core language, type system, and I/O stack are complete.** A small number of enhancement items (rich diagnostics, `cap-file` validation, stdlib reorganization) remain. See "What's Next" below.
@@ -34,7 +34,17 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 | Nominal Result type | ✓ Complete — `Ok[T] | Err[String]` via `[type [Ok a] [Err String]]`; `try` returns nominal variants; `and-then`/`result-or`/`result-map`/`result-ok` combinators; `[do result ...]` monad dict |
 | Record/Map type split | ✓ Complete — `Record` (known-field structural) vs `Map[K V]` (homogeneous); `Dict = Record ∨ Map` BAS union; `get?` (returns `V | Null`); `record?`/`map?` predicates; order-insensitive structural dict equality with cycle detection |
 | Macros | ✓ Complete — `[defmacro]`, quasiquoting `[quote]`/`[unquote]`, string interpolation `i"..."` via `[defmacro tmpl]`, macro hygiene |
+| Constraint annotations | ✓ Complete — `fn@[return: T  constraint: [a: Comparable]  doc: "..."  bind: [a]  kinds: [a: Operator]]` named-key metadata dict; `fn@Type` shorthand permanent |
+| Parameterized annotations | ✓ Complete — `@Seq@Int`, `@Map@[K: V]`, `@Map@[key: K  value: V]`, `@Record@[field: Type ...]`, `@Record` (bare); chained `@` via `Annotation::Annotated` AST node |
+| Inference completeness | ✓ Complete — SCC-based DICT-GEN (Tarjan + topo sort); nested dict polymorphism via `TypeScheme.inner_schemes`; variadic params typed as `Seq(T)` with call-site unification |
+| Row-level constraint propagation | ✓ Complete — `[CONSTRAIN-FIELD]`/`[CONSTRAIN-INTER]`/`[CONSTRAIN-UNION]`/`[CONSTRAIN-NEVER]`/`[CONSTRAIN-TOP]` in `satisfies_constraint`; `Unknown` already done |
+| Multi-parameter type classes | ✓ Complete — `Add a b c \| (a,b)→c` MPTCs with functional dependencies; `Add`/`Sub`/`Mul`/`Div` class hierarchy; arithmetic builtins re-typed; coherence check on duplicate instances |
+| Higher-Kinded Types + `[do]` | ✓ Complete — `Kind::Operator` (`* → *`), `Type::App`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable typeclass hierarchy; `Maybe` ADT; `[do monad ...]` explicit form; `[do ...]` inferred form from return annotation or first binding |
+| Runtime typeclass dispatch | ✓ Complete — `RuntimeInstanceRegistry` in `EvalState`; `builtin_eq`/`builtin_lt`/`builtin_str`/arithmetic dispatch through user-defined instances before Rust fallback |
+| Runtime reflection | ✓ Complete — `FnAnnotation { doc, return_ann, constraints, source_file, source_span }` on `Value::Function`; `ast-of` primitive; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude |
+| Type stage | ✓ Complete — `--- stage: type` sections; `%rust "type-core"` (28 builtins); type dict schema (`[kind: "named" name: "Int"]` etc.); `type_to_dict`/`dict_to_type` round-trip; prelude `--- stage: type` section with `Int`/`Str`/`Bool`/`Float`/`Seq`/`Map`/`union`/`all` constructors |
 | Supplemental stdlib | ✓ Complete — `strings.llt`, `math.llt`, `encoding.llt`, `datetime.llt`, `regex.llt`, `net.llt`, `toml-lite.llt`, `path.llt`, `io.llt`, `numeric.llt`, `macros.llt`, `protocols/`; require explicit `[include libdir "name.llt"]` |
+| Stdlib boundary | ✓ Complete — `str-index-of` (O(n) substring search), `str-map-chars`, `regex-match?`, `trim-start`/`trim-end` Rust primitives; `str-contains?`/`starts-with?`/`ends-with?`/`upper`/`lower`/`copy`/`has-cap?` migrated to tinct; `builtin-sort` accepts optional comparator |
 | Rich diagnostics | ✓ Partial — `T001`–`T004` error codes, Rust-style source snippets for type errors, `tinct explain T001`; parse error snippets and `= help:` suggestions still pending |
 | `$include` security hardening | ✓ Complete — cap-std fd-based open, BLAKE3/SHA3 hash verification, `--require-integrity`, `llt hash` |
 | Sandboxing | ✓ Complete — Landlock ACLs, seccomp-bpf, rlimit caps, `--allow-path`, `--allow-network` |
@@ -52,7 +62,7 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 
 | Item | Status |
 |------|--------|
-| `length-narrow-type` — `length` parameter type uses `Unknown` | Open — blocked on `unify()` gaining a `(Union, T)` arm |
+| `health-diagnostic-followup` — convert `eprintln!` ambiguous-constraint warnings to structured diagnostics; fix false-positive from discharged vars; aggregate multi-var HasField warning | Open (3 minor items, `src/type_env.rs`) |
 | `rich-diagnostics` — parse error snippets, `= help:` suggestions, output header update | Partial — type error snippets done; parse errors and `= help:` still pending |
 | `cap-file` — `--cap-file name=path:mode` single-file Handle injection | Partial — CLI parsing + Handle construction done; `--- caps:` `@Handle` validation pending |
 
@@ -63,13 +73,15 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 | Eval Semantics Verification Phase 1 (proptest suite) | [eval-semantics-verification.md](doc/whatif/eval-semantics-verification.md) | ~1 sprint |
 | Float Dict Keys (Phase 2: `Key::Decimal`) | [float-dict-keys.md](doc/whatif/float-dict-keys.md) | ~1 sprint |
 | Custom Call Aliases | [call-aliases.md](doc/whatif/call-aliases.md) | ~1 sprint |
+| CHR-unified type constraints | [chr-unification.md](doc/whatif/chr-unification.md) | ~2 sprints — requires `type-stage-infra` + `typeclass-mptc-fundeps` (both done) |
+| Isorecursive types (μ-types) | [isorecursive-types.md](doc/whatif/isorecursive-types.md) | ~2 sprints — requires `type-stage-infra` (done) |
 
 ### Wait for Trigger
 
 | Feature | Trigger |
 |---------|---------|
 | String Interning | Profiling confirms dict key allocation is top-5 hotspot |
-| Union-Find Substitution | Profiling confirms TypeVar chain depth ≥4 |
+| Union-Find Substitution | Profiling confirms TypeVar chain depth ≥4 — path compression already in place |
 | Value Serializer Visitor | A third output format (YAML, TOML) is needed |
 | Template-Polarity Embedding | Real 90%+ static foreign-format file use case |
 
@@ -77,8 +89,8 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 
 | Feature | Whatif doc | Notes |
 |---------|-----------|-------|
-| Higher-Kinded Types + `[do]` inference | [hkt-monads.md](doc/whatif/hkt-monads.md) | `[do monad ...]` works today; HKT adds inferred monad dispatch at kind `* → *` |
-| builtin-* privacy | [builtin-privacy.md](doc/whatif/builtin-privacy.md) | Restrict `builtin-*` aliases to prelude; type-checker warning for non-prelude callers |
+| `builtin-*` privacy | [builtin-privacy.md](doc/whatif/builtin-privacy.md) | Restrict `builtin-*` aliases to prelude; type-checker warning for non-prelude callers |
+| Stdlib reorganization | `doc/whatif/runtime-reflection.md §Stdlib Reorganization` | Move `stdlib/in/` → `stdlib/cli/in/`, `stdlib/out/` → `stdlib/cli/out/`; typed `[include]` return |
 
 ---
 

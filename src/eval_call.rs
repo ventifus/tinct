@@ -334,7 +334,10 @@ pub(crate) fn bind_args_thunks(
         let start = max_positional.min(positional.len());
         let variadic_args = &positional[start..];
         // Nil sentinel: empty dict is the standard end-of-Seq marker.
-        let nil = Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), *call_span));
+        let nil = Rc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            *call_span,
+        ));
         let seq_thunk = variadic_args.iter().rev().fold(nil, |tail, head_arg| {
             let head_id = ctx.alloc_thunk(Rc::clone(head_arg));
             let tail_id = ctx.alloc_thunk(Rc::clone(&tail));

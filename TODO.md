@@ -438,14 +438,15 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 ---
 
-## Codebase Health (Review #6, 2026-05-15)
+## Codebase Health
 
-### health-review6: GuardedValidate branches 2+3, LSP path traversal, ambiguous TypeVar
+### health-diagnostic-followup: Structured diagnostics for ambiguous constraint warnings
 
-- [x] `eval_materialize.rs:1092,1147` — GuardedValidate branches 2 and 3: `restore.take()` applied to all 3 branches
-- [x] `imports.rs:613` — `resolve_includes` path traversal: beneath-check added after canonicalize()
-- [ ] **[Minor]** `typecheck.rs:3594` — error message omits `bind:` and `kinds:` from valid key list (`src/typecheck.rs`)
-- [ ] **[Minor]** Ambiguous TypeVar constraint — `fn@[bind: [a] constraint: [a: Comparable] return: Int]` silently drops constraint on `a` during generalization (classical ambiguous type variable, no diagnostic); add warning or error for TypeVar that appears in constraint but not in return type (`src/type_env.rs`)
+Follow-up from health-review6 panel (2026-05-16). Three deferred items:
+
+- [ ] **[Minor]** `src/type_env.rs:457-463` — Convert `warn_ambiguous_typevar` from `eprintln!` to structured `TypeWarning` diagnostic visible in LSP and corpus `=== warn` sections; requires adding `Vec<TypeWarning>` output to `typecheck_file` (integration-verifier finding)
+- [ ] **[Minor]** `src/type_env.rs:527-539` — HasField constraint: when both `effective_dict` and `effective_field` are non-generalizable, emit one aggregated warning instead of two separate calls to `warn_ambiguous_typevar` (integration-verifier finding)
+- [ ] **[Minor]** `src/type_env.rs:480-491` — False-positive risk: dead constraints from already-discharged TypeVars trigger spurious warnings; before calling `warn_ambiguous_typevar`, check if the var is bound to a concrete type in `subst_snapshot` (indicating already-discharged) and skip the warning (computer-scientist finding; reference: HM(X) constraint lifecycle — Odersky, Sulzmann & Wehr 1999)
 
 ---
 
