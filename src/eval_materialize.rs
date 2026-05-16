@@ -81,6 +81,17 @@ pub(crate) enum RestoreState {
         caller_env: Rc<RefCell<Environment>>,
         ctx: Rc<EvalContext>,
     },
+    Guarded {
+        inner: Rc<Thunk>,
+        expected: Type,
+        field_path: Box<Vec<String>>,
+        guard_span: Span,
+        blame_label: Option<crate::error::BlameLabel>,
+        default: Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
+    },
 }
 
 impl RestoreState {
@@ -119,6 +130,23 @@ impl RestoreState {
                     call_span,
                     caller_env,
                     ctx,
+                });
+            }
+            RestoreState::Guarded {
+                inner,
+                expected,
+                field_path,
+                guard_span,
+                blame_label,
+                default,
+            } => {
+                thunk.set_state(ThunkState::Guarded {
+                    inner,
+                    expected,
+                    field_path,
+                    guard_span,
+                    blame_label,
+                    default,
                 });
             }
         }
@@ -171,6 +199,8 @@ pub(crate) struct GuardedValidateData {
         Rc<crate::ast::Spanned<crate::ast::Expr>>,
         Rc<RefCell<crate::value::Environment>>,
     )>,
+    /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
+    pub(crate) restore: RestoreState,
 }
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -625,6 +655,15 @@ pub(crate) fn force_step(
                 _ => None,
             }
         };
+        // Create RestoreState before pushing continuation (for non-cacheable error recovery)
+        let restore = RestoreState::Guarded {
+            inner: Rc::clone(&inner),
+            expected: expected.clone(),
+            field_path: Box::new(field_path.clone()),
+            guard_span,
+            blame_label: blame_label.clone(),
+            default: default_opt.clone(),
+        };
         stack.push(Cont::GuardedValidate(Box::new(GuardedValidateData {
             thunk: Rc::clone(thunk),
             inner: Rc::clone(&inner),
@@ -638,6 +677,7 @@ pub(crate) fn force_step(
             ctx: guard_ctx,
             blame_label,
             default: default_opt,
+            restore,
         })));
         Action::Materialize {
             thunk: Rc::clone(&inner),
@@ -718,10 +758,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
             match result.map_err(&decorate) {
                 Ok(func_value) => match func_value {
                     Value::Function {
-                        params,
-                        body,
-                        env,
-                        ..
+                        params, body, env, ..
                     } => {
                         // The block scopes borrows of args/named so the borrow checker
                         // allows args.take()/named.take() in the match arms below.
@@ -955,6 +992,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 ctx: guard_ctx,
                 blame_label,
                 default,
+                restore,
             } = *data;
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
@@ -1151,14 +1189,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
-                        thunk.set_state(ThunkState::Guarded {
-                            inner,
-                            expected,
-                            field_path,
-                            guard_span,
-                            blame_label,
-                            default,
-                        });
+                        restore.restore(&thunk);
                     }
                     Action::Continue(Err(e))
                 }

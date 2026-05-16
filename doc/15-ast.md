@@ -35,10 +35,23 @@ struct Document {
     /// Input contract from `--- expects: Type`.
     /// The type checker emits an advisory error if the incoming `%` type does not match.
     expects: Option<Spanned<Annotation>>,
+    /// Capability declarations from `--- caps: [...]`.
+    caps: Option<Spanned<Vec<(String, Annotation)>>>,
+    /// Document stage from `--- stage: type`.
+    /// Determines how the document is evaluated. Defaults to `Stage::Runtime` if `None`.
+    stage: Option<Stage>,
+}
+
+/// Document stage — determines how the document is evaluated
+enum Stage {
+    Runtime,  // Default: evaluated in the main pipeline
+    Type,     // Type-stage: evaluated for type aliases and class declarations
 }
 ```
 
-The three optional fields — `name`, `output_type`, `expects` — are populated by the section-header parser when a `---` line carries metadata (e.g. `--- %config@Config expects: InputType`). All three are `None` for anonymous documents (bare `---` or the implicit first document). The `name` string is the bare section name without the `%` sigil (`"config"`, not `"%config"`). Callers (the evaluator and type checker) add the `%` prefix when binding the value into scope (e.g. `format!("%{}", name)`). `output_type` and `expects` store the full source span of the annotation so the type checker can point to the right source location in advisory error messages.
+The optional fields — `name`, `output_type`, `expects`, `caps`, `stage` — are populated by the section-header parser when a `---` line carries metadata (e.g. `--- %config@Config expects: InputType caps: [%nc: @NetCap] stage: type`). All are `None` for anonymous documents (bare `---` or the implicit first document). The `name` string is the bare section name without the `%` sigil (`"config"`, not `"%config"`). Callers (the evaluator and type checker) add the `%` prefix when binding the value into scope (e.g. `format!("%{}", name)`). `output_type` and `expects` store the full source span of the annotation so the type checker can point to the right source location in advisory error messages.
+
+The `stage` field controls how the document is evaluated. `Stage::Type` documents are evaluated during type inference to populate the type-stage environment with type aliases and class declarations. `Stage::Runtime` documents (the default when `stage` is `None`) are evaluated in the main pipeline. The parser accepts `--- stage: type` as a section-header pragma; `type` is the only valid stage name. See `doc/09-documents.md` for section-header pragma syntax.
 
 The `parse()` function returns `Result<Spanned<File>, ParseError>`.
 

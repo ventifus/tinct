@@ -117,17 +117,45 @@ pub fn type_to_dict(ty: &Type, arena: &mut ThunkArena) -> Value {
                     Span::origin(),
                 ))),
             );
-            // Convert params to a sequence
+            // Convert params to a sequence, preserving parameter names
             let mut params_map = IndexMap::new();
-            for (i, (_param_name, param_ty)) in params.iter().enumerate() {
-                let param_ty_dict = type_to_dict(param_ty, arena);
-                params_map.insert(
-                    Key::Int(i as i64),
-                    arena.alloc(Rc::new(Thunk::new_materialized(
-                        param_ty_dict,
-                        Span::origin(),
-                    ))),
-                );
+            for (i, (param_name, param_ty)) in params.iter().enumerate() {
+                if let Some(name) = param_name {
+                    // Param with name: [type: <type_dict>  name: "param_name"]
+                    let mut param_dict = IndexMap::new();
+                    let param_ty_dict = type_to_dict(param_ty, arena);
+                    param_dict.insert(
+                        Key::String("type".to_string()),
+                        arena.alloc(Rc::new(Thunk::new_materialized(
+                            param_ty_dict,
+                            Span::origin(),
+                        ))),
+                    );
+                    param_dict.insert(
+                        Key::String("name".to_string()),
+                        arena.alloc(Rc::new(Thunk::new_materialized(
+                            string_val(name),
+                            Span::origin(),
+                        ))),
+                    );
+                    params_map.insert(
+                        Key::Int(i as i64),
+                        arena.alloc(Rc::new(Thunk::new_materialized(
+                            Value::Dict(param_dict),
+                            Span::origin(),
+                        ))),
+                    );
+                } else {
+                    // Param without name: just the type dict
+                    let param_ty_dict = type_to_dict(param_ty, arena);
+                    params_map.insert(
+                        Key::Int(i as i64),
+                        arena.alloc(Rc::new(Thunk::new_materialized(
+                            param_ty_dict,
+                            Span::origin(),
+                        ))),
+                    );
+                }
             }
             map.insert(
                 Key::String("params".to_string()),
@@ -572,8 +600,43 @@ pub fn dict_to_type(val: &Value, arena: &ThunkArena, span: Span) -> Result<Type,
                     TypeError::new(format!("fn params missing index {}", i), span)
                 })?;
                 let param_val = get_value_from_id(arena, *param_thunk_id, span)?;
-                let param_ty = dict_to_type(&param_val, arena, span)?;
-                params.push((None, param_ty));
+
+                // Check if param is a dict with type/name fields or just a type dict
+                let (param_name, param_ty) = match &param_val {
+                    Value::Dict(param_dict) => {
+                        // Check if it has both 'type' and 'name' fields (named param)
+                        if let (Some(type_thunk_id), Some(name_thunk_id)) = (
+                            param_dict.get(&Key::String("type".to_string())),
+                            param_dict.get(&Key::String("name".to_string())),
+                        ) {
+                            let type_val = get_value_from_id(arena, *type_thunk_id, span)?;
+                            let name_val = get_value_from_id(arena, *name_thunk_id, span)?;
+                            let name_str = match &name_val {
+                                Value::String { source, start, end } => {
+                                    Some(source[*start..*end].to_string())
+                                }
+                                _ => {
+                                    return Err(TypeError::new(
+                                        "param name must be a string".to_string(),
+                                        span,
+                                    ))
+                                }
+                            };
+                            let ty = dict_to_type(&type_val, arena, span)?;
+                            (name_str, ty)
+                        } else {
+                            // No name field, treat as unnamed param (whole dict is the type)
+                            let ty = dict_to_type(&param_val, arena, span)?;
+                            (None, ty)
+                        }
+                    }
+                    _ => {
+                        // Not a dict, shouldn't happen but handle gracefully
+                        let ty = dict_to_type(&param_val, arena, span)?;
+                        (None, ty)
+                    }
+                };
+                params.push((param_name, param_ty));
             }
 
             let ret_thunk_id = dict
@@ -710,7 +773,22 @@ pub fn dict_to_type(val: &Value, arena: &ThunkArena, span: Span) -> Result<Type,
 
             let func_ty = dict_to_type(&func_val, arena, span)?;
             let arg_ty = dict_to_type(&arg_val, arena, span)?;
-            Ok(Type::App(Box::new(func_ty), Box::new(arg_ty)))
+
+            // Normalize builtin constructors after construction
+            match (&func_ty, &arg_ty) {
+                // App(Operator("Seq"), T) → Type::Seq(Box::new(T))
+                (Type::Operator(name), _) if name == "Seq" => Ok(Type::Seq(Box::new(arg_ty))),
+                // App(App(Operator("Map"), K), V) → Type::Map(Box::new(K), Box::new(V))
+                (Type::App(inner_func, key_ty), _) => {
+                    if let Type::Operator(name) = &**inner_func {
+                        if name == "Map" {
+                            return Ok(Type::Map(Box::new((**key_ty).clone()), Box::new(arg_ty)));
+                        }
+                    }
+                    Ok(Type::App(Box::new(func_ty), Box::new(arg_ty)))
+                }
+                _ => Ok(Type::App(Box::new(func_ty), Box::new(arg_ty))),
+            }
         }
         "operator" => {
             let name_thunk_id = dict.get(&Key::String("name".to_string())).ok_or_else(|| {

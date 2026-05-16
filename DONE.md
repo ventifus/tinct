@@ -6305,3 +6305,18 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] MPTC positional entries [$ClassName a b c]: class lookup + TypeVar validation against bind:
 - [x] Processing order: bind:→kinds:→constraint keyed→constraint MPTC→return:/type:→doc:/runtime
 - [x] Tests: constraint_each, constraint_mptc_undeclared
+
+## Codebase Health (Post-Completion Review)
+
+### health-c320: Type soundness, dict fidelity, doc gaps
+
+- [x] UNIFY-OPERATOR: lower_levels_check_occurs for level lowering
+- [x] UNIFY-OPERATOR: constraint transfer Operator→TypeVar
+- [x] Equatable/Showable structural propagation for Record
+- [x] RestoreState: Guarded variant for non-cacheable error recovery
+- [x] dict_to_type: App normalization to Seq/Map
+- [x] type_to_dict/dict_to_type: Function param name fidelity
+- [x] doc/15-ast.md: Document.stage + Stage enum
+- [x] doc/02-syntax.md: Expr::TypeApp
+- [x] doc/08-evaluation.md: Strictness::Id
+- [x] error.rs: ErrorKind exhaustive match helper

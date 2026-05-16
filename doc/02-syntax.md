@@ -606,6 +606,15 @@ NamedHosts: [type Map@[String: Config]] # lookup: name → Config
 
 Type aliases are resolved at type-check time — they have no runtime cost.
 
+**Type constructor application.** The `Expr::TypeApp` AST node represents application of an Operator-kinded type constructor in annotation positions:
+
+```tinct
+@[Seq Int]        # Apply Seq constructor to Int
+@[Map String]     # Apply Map constructor to String
+```
+
+`Expr::TypeApp { func, arg }` is parsed from `@[...]` when the head `func` is a known Operator-kinded variable. The parser classifies `[...]` as `TypeApp` when the head is Operator-kinded (determined at parse time by looking up the name in the kind environment). This distinguishes type constructor application from record types (which have colons) and function calls (which are not in annotation position).
+
 **Row polymorphism.** `...` marks an open record type; `...name` introduces a named row variable:
 
 ```tinct
