@@ -515,6 +515,7 @@ Each builtin receives a per-argument strictness annotation and a result classifi
 
 | Symbol | Meaning | Implementation pattern |
 |--------|---------|----------------------|
+| `I` | Identity — argument passes as-is; builtin inspects thunk state without forcing | CEK machine does NOT auto-materialize; builtin receives the raw thunk |
 | `S` | Strict — argument is materialized before the builtin executes | `materialize(&args[i], None, ctx)` |
 | `L` | Lazy — argument passes through as a thunk; never materialized by this builtin | `Rc::clone(&args[i])` |
 | `Sc` | Selectively strict — materialization is conditional on another argument's value; delta rule required | Pattern-match on a previously materialized value to decide |
@@ -536,6 +537,8 @@ For dual-dispatch builtins, the result classification refers to the more interes
 - **Materializing** — all args are `S` and result contains no deferred computation from inputs
 - **Lazy-transforming** — result is `→ LT` (contains new PendingCall/PendingBuiltin thunks)
 - **Selective** — any arg is `Sc`
+
+**Identity strictness (`I`):** Used by `ast-of` (see §Runtime Reflection) to inspect thunk state without forcing. The CEK machine does not auto-materialize `I`-annotated arguments — the builtin receives the raw thunk and branches on its state (Materialized, Unevaluated, or Pending). This enables runtime reflection without triggering side effects.
 
 **eval_call strictness:** The function expression in `[call ...]` is materialized at the call-site to determine dispatch (Function vs Builtin). Arguments are wrapped as Unevaluated thunks (call-by-need per Launchbury 1993). This is eager function dispatch with lazy arguments.
 

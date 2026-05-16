@@ -6798,11 +6798,24 @@ mod tests {
     }
 
     #[test]
-    fn test_constraint_showable_not_hardcoded() {
-        // Showable is no longer hardcoded - it's resolved via instances in prelude.llt
-        assert!(!satisfies_constraint(&Type::Int, "Showable"));
-        assert!(!satisfies_constraint(&Type::Str, "Showable"));
-        assert!(!satisfies_constraint(&Type::Bool, "Showable"));
+    fn test_constraint_showable_hardcoded_primitives() {
+        // Showable is now hardcoded for primitives AND structural for Records (health-c320)
+        assert!(satisfies_constraint(&Type::Int, "Showable"));
+        assert!(satisfies_constraint(&Type::Str, "Showable"));
+        assert!(satisfies_constraint(&Type::Bool, "Showable"));
+        assert!(satisfies_constraint(&Type::Float, "Showable"));
+        assert!(satisfies_constraint(&Type::Number, "Showable"));
+
+        // Showable propagates structurally into Record fields
+        let record_showable = Type::Record(Row {
+            fields: [("x".to_string(), Type::Int), ("y".to_string(), Type::Str)]
+                .iter()
+                .cloned()
+                .collect(),
+        });
+        assert!(satisfies_constraint(&record_showable, "Showable"));
+
+        // Functions are NOT showable
         let func_ty = Type::Function {
             params: vec![],
             ret: Box::new(Type::Int),
@@ -6858,13 +6871,13 @@ mod tests {
         });
         assert!(satisfies_constraint(&record_comparable, "Comparable"));
 
-        // Equatable/Showable/Mappable do NOT propagate structurally - they use instance resolution
+        // Equatable/Showable now propagate structurally (health-c320)
         let mut fields_any = HashMap::new();
         fields_any.insert("x".to_string(), Type::Int);
         let record_any = Type::Record(Row { fields: fields_any });
-        assert!(!satisfies_constraint(&record_any, "Equatable")); // instance-based
-        assert!(!satisfies_constraint(&record_any, "Showable")); // instance-based
-        assert!(!satisfies_constraint(&record_any, "Mappable")); // instance-based
+        assert!(satisfies_constraint(&record_any, "Equatable")); // structural since health-c320
+        assert!(satisfies_constraint(&record_any, "Showable")); // structural since health-c320
+        assert!(!satisfies_constraint(&record_any, "Mappable")); // instance-based (not structural)
     }
 
     #[test]

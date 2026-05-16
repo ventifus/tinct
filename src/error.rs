@@ -1962,6 +1962,53 @@ mod tests {
         assert_eq!(err.stack[1].span, frame2_span);
     }
 
+    /// Helper to count ErrorKind variants via exhaustive match.
+    /// This function MUST be updated when ErrorKind variants change —
+    /// the compiler will force an update via exhaustive match requirement.
+    #[allow(dead_code)]
+    fn error_kind_variant_count() -> usize {
+        // Exhaustive match forces update when variants change
+        let _check = |kind: &ErrorKind| match kind {
+            ErrorKind::KeyNotFound { .. } => {}
+            ErrorKind::UndefinedVariable { .. } => {}
+            ErrorKind::TypeMismatch { .. } => {}
+            ErrorKind::TypeAssertFailed { .. } => {}
+            ErrorKind::ArityMismatch { .. } => {}
+            ErrorKind::MissingRequiredParam { .. } => {}
+            ErrorKind::NamedArgConflict { .. } => {}
+            ErrorKind::UnknownNamedArg { .. } => {}
+            ErrorKind::NamedArgRejected { .. } => {}
+            ErrorKind::DuplicateKey { .. } => {}
+            ErrorKind::DivisionByZero { .. } => {}
+            ErrorKind::IntegerOverflow { .. } => {}
+            ErrorKind::FloatNotFinite { .. } => {}
+            ErrorKind::EmptyCollection { .. } => {}
+            ErrorKind::ValueNotSerializable { .. } => {}
+            ErrorKind::FloatOutOfRange { .. } => {}
+            ErrorKind::DepthExceeded { .. } => {}
+            ErrorKind::JsonDepthExceeded { .. } => {}
+            ErrorKind::IncludeForbidden => {}
+            ErrorKind::ResourceLimitExceeded { .. } => {}
+            ErrorKind::IncludeNotAvailable => {}
+            ErrorKind::IncludeIoError { .. } => {}
+            ErrorKind::IncludeCycle { .. } => {}
+            ErrorKind::IncludeParseFailed { .. } => {}
+            ErrorKind::IncludeFileTooLarge { .. } => {}
+            ErrorKind::IncludeHashMismatch { .. } => {}
+            ErrorKind::IncludeHashRequired { .. } => {}
+            ErrorKind::IncludePathNotAllowed { .. } => {}
+            ErrorKind::ParseConversion { .. } => {}
+            ErrorKind::JsonParse { .. } => {}
+            ErrorKind::JsonRange => {}
+            ErrorKind::UriParseError { .. } => {}
+            ErrorKind::CircularDependency { .. } => {}
+            ErrorKind::UserError { .. } => {}
+            ErrorKind::SchemaViolation { .. } => {}
+            ErrorKind::Internal { .. } => {}
+        };
+        36
+    }
+
     #[test]
     fn test_is_catchable() {
         // DepthExceeded and ResourceLimitExceeded are NOT catchable
@@ -1971,7 +2018,7 @@ mod tests {
         }
         .is_catchable());
 
-        // All other 33 variants ARE catchable
+        // All other (error_kind_variant_count() - 2) variants ARE catchable
         assert!(ErrorKind::KeyNotFound {
             key: "foo".to_string(),
             available_keys: vec![],
@@ -2350,7 +2397,7 @@ mod tests {
         // DepthExceeded is NOT cacheable (must retry at different depth)
         assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_cacheable());
 
-        // All other 34 variants ARE cacheable (can be stored in Failed thunk state).
+        // All other (error_kind_variant_count() - 1) variants ARE cacheable (can be stored in Failed thunk state).
         // ResourceLimitExceeded IS cacheable (unlike DepthExceeded, resource limits
         // are not context-dependent on call depth — a failed resource limit check
         // will fail consistently regardless of when it's retried).

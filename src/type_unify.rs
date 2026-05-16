@@ -11,9 +11,10 @@ use super::*;
 /// Check if a type satisfies a type class constraint.
 /// Returns true if the type is an instance of the class.
 ///
-/// Only `Numeric` and `Comparable` are handled here via fixed instance sets —
-/// all other classes (Equatable, Showable, Mappable, Appendable) are resolved
-/// dynamically via `InstanceEnv::resolve_instance` in `check_constraints_on_var`.
+/// `Numeric`, `Comparable`, `Equatable`, and `Showable` are handled here via fixed
+/// instance sets for primitives, plus structural propagation for Record types.
+/// All other classes (Mappable, Appendable) are resolved dynamically via
+/// `InstanceEnv::resolve_instance` in `check_constraints_on_var`.
 /// This requires prelude.llt instances to be propagated into the `InferState`
 /// (done by `imports::seed_infer_state_from_prelude_cache`).
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
@@ -39,12 +40,12 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     }
 
     // [CONSTRAIN-FIELD]: C(Record({f: τ})) ⊢ satisfied iff C(τ) for all fields.
-    // Applies only to built-in STRUCTURAL/COMPOSITIONAL classes where constraint satisfaction
-    // is determined by field types (Numeric, Comparable). Does NOT apply to Equatable, Showable,
-    // Mappable, Appendable - those are resolved via instance declarations, not structural propagation.
+    // Applies to built-in STRUCTURAL/COMPOSITIONAL classes where constraint satisfaction
+    // is determined by field types: Numeric, Comparable, Equatable, Showable.
+    // Mappable and Appendable are NOT structural (they depend on collection semantics).
     if let Type::Record(row) = ty {
         match class_name {
-            "Numeric" | "Comparable" => {
+            "Numeric" | "Comparable" | "Equatable" | "Showable" => {
                 return row
                     .fields
                     .values()
@@ -76,6 +77,20 @@ pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
         // out (primitives use Rust fallback dispatch). Without this, [= x 42] triggers
         // "type Int does not satisfy constraint Equatable" in narrowing tests.
         "Equatable" => matches!(
+            ty,
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Float
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Bool
+                | Type::Number
+        ),
+        // Showable: base class for string conversion. Hardcoded for primitives that
+        // have built-in str conversion. Combined with structural propagation above,
+        // this means Record([x: Int, y: Str]) satisfies Showable because both Int
+        // and Str satisfy Showable and the constraint propagates through all fields.
+        "Showable" => matches!(
             ty,
             Type::Int
                 | Type::IntLiteral(_)
@@ -1740,11 +1755,9 @@ pub fn unify(
         // Occurs check prevents infinite kinds (m ∉ ftv(T)).
         // Kind check premise is deferred to hkt-kind-inference.
         (Type::Operator(m), _) => {
-            // Check if m appears in the other type (occurs check for kind soundness)
-            let mut type_vars = HashSet::new();
-            let mut row_vars = HashSet::new();
-            b.collect_all_vars(&mut type_vars, &mut row_vars);
-            if type_vars.contains(m) || matches!(&b, Type::Operator(n) if n == m) {
+            // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
+            let alpha_level = state.levels.get(m).copied().unwrap_or(0);
+            if lower_levels_check_occurs(&b, m, alpha_level, state) {
                 return Err(TypeError::new(
                     format!("infinite type: operator variable {} occurs in {}", m, b),
                     span,
@@ -1752,19 +1765,20 @@ pub fn unify(
             }
             // Check constraints on m before binding (Task 3)
             check_constraints_on_var(m, &b, subst, state, span)?;
-            // Transfer constraints if binding to another Operator variable (Task 4)
+            // Transfer constraints: Operator→Operator OR Operator→TypeVar
             if let Type::Operator(n_name) = &b {
                 transfer_class_constraints(m, n_name, state);
+            } else if let Type::TypeVar(beta_name, _) = &b {
+                transfer_class_constraints(m, beta_name, state);
             }
             subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             Ok(())
         }
         // UNIFY-OPERATOR-SYM: symmetric case
         (_, Type::Operator(m)) => {
-            let mut type_vars = HashSet::new();
-            let mut row_vars = HashSet::new();
-            a.collect_all_vars(&mut type_vars, &mut row_vars);
-            if type_vars.contains(m) || matches!(&a, Type::Operator(n) if n == m) {
+            // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
+            let alpha_level = state.levels.get(m).copied().unwrap_or(0);
+            if lower_levels_check_occurs(&a, m, alpha_level, state) {
                 return Err(TypeError::new(
                     format!("infinite type: operator variable {} occurs in {}", m, a),
                     span,
@@ -1772,9 +1786,11 @@ pub fn unify(
             }
             // Check constraints on m before binding (Task 3)
             check_constraints_on_var(m, &a, subst, state, span)?;
-            // Transfer constraints if binding to another Operator variable (Task 4)
+            // Transfer constraints: Operator→Operator OR Operator→TypeVar
             if let Type::Operator(n_name) = &a {
                 transfer_class_constraints(m, n_name, state);
+            } else if let Type::TypeVar(beta_name, _) = &a {
+                transfer_class_constraints(m, beta_name, state);
             }
             subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             Ok(())
