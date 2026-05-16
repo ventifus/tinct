@@ -1,0 +1,14 @@
+# Function with constraint using 'each' combinator
+# Verifies a TypeVar can have multiple constraints via [each Comparable Showable]
+[
+  display-sorted: [fn@[bind: [a]  constraint: [a: [each Comparable Showable]]  return: String]
+    [xs@[Seq a]]
+    "sorted"]
+  result: [display-sorted [seq 3 [seq 1 [seq 2 []]]]]
+]
+
+---
+
+%.result
+=== out
+String("sorted")

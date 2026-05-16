@@ -6329,3 +6329,15 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] TypeApp spec drift in doc/02-syntax.md corrected
 - [x] satisfies_constraint: MAX_CONSTRAINT_DEPTH=256
 - [x] Type::Map alias substitution: verified already implemented
+
+### health-review4: Missing tests, eval bug, type checker gap, empty-record soundness, doc accuracy
+
+- [x] ctor-app corpus tests (ctor_app_seq, ctor_app_map)
+- [x] constraint_each + constraint_mptc corpus tests
+- [x] GuardedValidate Memoize: RestoreState::Guarded via .take()
+- [x] Stage::Type skipped in both typecheck_file loops
+- [x] Empty-record guard for Numeric/Comparable
+- [x] infer_fn: bind:/kinds: in metadata dispatch
+- [x] sorted: dead constraint removed
+- [x] doc/15-ast.md: Fn.body Rc, DefMacro fields, Annotated variant, TypeApp/Error rows
+- [x] stage: pragma in doc/02-syntax.md + doc/09-documents.md
