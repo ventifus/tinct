@@ -438,6 +438,29 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 ---
 
+## Codebase Health (Post-Completion Review, 2026-05-15)
+
+### type-unify-soundness: UNIFY-OPERATOR level lowering, constraint transfer, structural Equatable
+
+Computer-scientist + integration-verifier findings from post-completion 9-agent review.
+
+- [ ] **[Major]** UNIFY-OPERATOR: replace `collect_all_vars` occurs check with `lower_levels_check_occurs` for proper level lowering (Kiselyov L3 invariant) (`src/type_unify.rs:1742-1781`)
+- [ ] **[Major]** UNIFY-OPERATOR: add constraint transfer for Operator→TypeVar binding (not just Operator→Operator) (`src/type_unify.rs:1756-1758`)
+- [ ] **[Major]** Add Equatable/Showable to STRUCTURAL_CONSTRAINT_CLASSES for Record field propagation — `[= dict1 dict2]` with Equatable fields should satisfy constraint (`src/type_unify.rs:46-55`)
+- [ ] **[Major]** RestoreState missing Guarded variant — non-cacheable errors (DepthExceeded) on Guarded thunks lose state (`src/eval_materialize.rs:63-84`)
+
+### type-dict-fidelity: Round-trip fidelity and normalization
+
+- [ ] **[Critical]** `dict_to_type()` does not normalize `Type::App` to `Type::Seq`/`Type::Map` — add normalization after App construction (`src/type_dict.rs:713`)
+- [ ] **[Major]** `type_to_dict`/`dict_to_type` erases Function param names — serialize as `[type: T name: "x"]` for round-trip fidelity (`src/type_dict.rs:122,576`)
+
+### doc-spec-gaps: Spec documentation for new features
+
+- [ ] **[Major]** Document `Document.stage` field and `Stage` enum in `doc/15-ast.md` (`doc/15-ast.md:86-93`)
+- [ ] **[Major]** Document `Expr::TypeApp` in `doc/02-syntax.md §Type Expressions` (`doc/02-syntax.md`)
+- [ ] **[Major]** Add `Strictness::Id` (Identity/thunk-aware) to strictness signature table in `doc/08-evaluation.md` (`doc/08-evaluation.md:516-523`)
+- [ ] **[Minor]** ErrorKind variant count test uses hardcoded number — replace with exhaustive match helper (`src/error.rs:3139-3180`)
+
 ---
 
 ## Standard Library Boundary
