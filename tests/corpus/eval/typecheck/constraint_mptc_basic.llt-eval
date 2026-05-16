@@ -1,0 +1,14 @@
+# Multi-parameter type class constraint annotation
+# Uses constraint: annotation with MPTC Add a b c
+[
+  add-mixed: [fn@[bind: [a b c]  constraint: [c: [Add a b]]  return: c]
+    [x@a  y@b]
+    [+ x y]]
+  result: [add-mixed 1 2.0]
+]
+
+---
+
+%.result
+=== out
+Float(3)

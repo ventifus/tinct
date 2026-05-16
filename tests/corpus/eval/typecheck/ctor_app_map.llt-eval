@@ -1,0 +1,5 @@
+# Type constructor application: Map with String and Int type parameters
+# [@[Map String Int] ...] performs a runtime type check
+[@[Map String Int] [a: 1]]
+=== out
+Dict({"a": Int(1)})
