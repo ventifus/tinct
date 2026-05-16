@@ -101,7 +101,8 @@ impl ReplSession {
     ///
     /// Returns an error if the stdlib fails to load (e.g., prelude parse error).
     pub fn new() -> Result<Self, String> {
-        let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        let (stdlib_env, stdlib_arena) =
+            create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
         Self::with_env_and_arena(stdlib_env, stdlib_arena)
     }
 

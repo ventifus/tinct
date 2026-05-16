@@ -377,14 +377,24 @@ pub(crate) fn infer_dict(
                 }
 
                 // Special case: if the value is a Dict, call infer_dict directly to capture schemes
-                let (value_ty, nested_schemes_opt) = if let Expr::Dict(nested_entries) = &entry.node.value.node {
-                    match infer_dict(nested_entries, &dict_env_rc, state, type_map, entry.node.value.span) {
-                        Ok((ty, schemes)) => (Ok(ty), Some(schemes)),
-                        Err(errs) => (Err(errs), None),
-                    }
-                } else {
-                    (infer_expr(&entry.node.value, &dict_env_rc, state, type_map), None)
-                };
+                let (value_ty, nested_schemes_opt) =
+                    if let Expr::Dict(nested_entries) = &entry.node.value.node {
+                        match infer_dict(
+                            nested_entries,
+                            &dict_env_rc,
+                            state,
+                            type_map,
+                            entry.node.value.span,
+                        ) {
+                            Ok((ty, schemes)) => (Ok(ty), Some(schemes)),
+                            Err(errs) => (Err(errs), None),
+                        }
+                    } else {
+                        (
+                            infer_expr(&entry.node.value, &dict_env_rc, state, type_map),
+                            None,
+                        )
+                    };
 
                 if should_check_recursion {
                     state.current_function = None;

@@ -453,6 +453,15 @@ pub fn generalize_with_doc(
             }
         };
 
+        // Helper: emit a diagnostic when an ambiguous type variable will be silently dropped.
+        let warn_ambiguous_typevar = |var_name: &str, constraint_context: &str| {
+            eprintln!(
+                "warning: ambiguous type variable '{}' in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                var_name,
+                constraint_context
+            );
+        };
+
         // Build generalizable constraints. For each constraint, resolve TypeVar names through one
         // level of substitution before checking generalizable membership AND before storing into
         // the TypeScheme. This handles the case where instantiate_scheme generates fresh vars
@@ -477,6 +486,14 @@ pub fn generalize_with_doc(
                             vars: resolved_vars,
                             fundeps: fundeps.clone(),
                         });
+                    } else {
+                        // Diagnostic: ambiguous type variable in constraint
+                        // (appears in constraint but not in the type — constraint will be silently dropped)
+                        for var in &resolved_vars {
+                            if !generalizable_vars.contains(var) {
+                                warn_ambiguous_typevar(var, class);
+                            }
+                        }
                     }
                 }
                 Constraint::HasField {
@@ -493,6 +510,8 @@ pub fn generalize_with_doc(
                             if generalizable_vars.contains(&resolved) {
                                 Some(Label::Var(resolved))
                             } else {
+                                // Diagnostic: ambiguous label variable
+                                warn_ambiguous_typevar(&resolved, "HasField");
                                 None // label not generalizable
                             }
                         }
@@ -506,6 +525,14 @@ pub fn generalize_with_doc(
                                 dict_var: effective_dict,
                                 field_var: effective_field,
                             });
+                        } else {
+                            // Diagnostic: ambiguous dict or field variable
+                            if !generalizable_vars.contains(&effective_dict) {
+                                warn_ambiguous_typevar(&effective_dict, "HasField");
+                            }
+                            if !generalizable_vars.contains(&effective_field) {
+                                warn_ambiguous_typevar(&effective_field, "HasField");
+                            }
                         }
                     }
                 }

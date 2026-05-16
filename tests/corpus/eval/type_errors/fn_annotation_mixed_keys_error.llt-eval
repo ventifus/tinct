@@ -1,0 +1,5 @@
+# Type error: fn@[...] annotation mixes named metadata keys and positional entries.
+# Verifies the error message mentions bind: and kinds: (keys added in health-review6).
+[fn@[return: Int 42] [] 0]
+=== out
+bind:

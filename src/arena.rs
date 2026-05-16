@@ -531,9 +531,18 @@ mod tests {
         assert_eq!(snapshot.len(), 3);
 
         // Verify snapshot contains the same ThunkIds
-        assert_eq!(snapshot.get(id1).try_get_materialized(), Some(Value::Int(1)));
-        assert_eq!(snapshot.get(id2).try_get_materialized(), Some(Value::Int(2)));
-        assert_eq!(snapshot.get(id3).try_get_materialized(), Some(Value::Int(3)));
+        assert_eq!(
+            snapshot.get(id1).try_get_materialized(),
+            Some(Value::Int(1))
+        );
+        assert_eq!(
+            snapshot.get(id2).try_get_materialized(),
+            Some(Value::Int(2))
+        );
+        assert_eq!(
+            snapshot.get(id3).try_get_materialized(),
+            Some(Value::Int(3))
+        );
     }
 
     #[test]
@@ -557,8 +566,14 @@ mod tests {
 
         // Snapshot should have 2 thunks (original + new allocation)
         assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot.get(id1).try_get_materialized(), Some(Value::Int(1)));
-        assert_eq!(snapshot.get(id3).try_get_materialized(), Some(Value::Int(3)));
+        assert_eq!(
+            snapshot.get(id1).try_get_materialized(),
+            Some(Value::Int(1))
+        );
+        assert_eq!(
+            snapshot.get(id3).try_get_materialized(),
+            Some(Value::Int(3))
+        );
     }
 
     #[test]
@@ -577,7 +592,10 @@ mod tests {
 
         // The mutation should be visible in both parent and snapshot (shared Rc)
         assert_eq!(parent.get(id).try_get_materialized(), Some(Value::Int(42)));
-        assert_eq!(snapshot.get(id).try_get_materialized(), Some(Value::Int(42)));
+        assert_eq!(
+            snapshot.get(id).try_get_materialized(),
+            Some(Value::Int(42))
+        );
 
         // Verify they point to the same underlying Thunk (Rc identity)
         assert!(Rc::ptr_eq(parent.get(id), snapshot.get(id)));

@@ -211,14 +211,14 @@ The unifying insight: both rules call the same type-stage function. The only dif
 
 ### Class Declaration with FDs and Resolver
 
-Instance declarations use **match-arm syntax**: the type-parameter list is the arm pattern, followed by `:` and the method dict. Multiple arms for different instance heads can be bundled under a single `[instance ClassName ...]` form.
+Instance declarations use **match-arm syntax**: each arm pairs a `[pattern [...]]` type-parameter pattern with a method dict. Multiple arms for different instance heads can be bundled under a single `[instance ClassName ...]` form.
 
 For readability with complex method bodies, the recommended style is to name the implementation functions first and reference them by name in the instance arms:
 
 ```tinct
 int-add: [fn@Int [x@Int y@Int] [builtin-add x y]]
 [instance Addable
-  [Int Int Int]: [+: int-add]]
+  [pattern [a@Int b@Int c@Int]]: [+: int-add]]
 ```
 
 A complete class + instance declaration:
@@ -242,11 +242,11 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
   +: [fn@c [a b]]]
 
 # Instance declarations: InstanceEnv + runtime method implementations
-# Each arm is a type-parameter pattern: method-dict pair.
+# Each arm is a [pattern [...]]: method-dict pair.
 # Multiple instances of the same class can be bundled in one [instance ...] form.
 [instance Addable
-  [Int Int Int]:   [+: [fn@Int   [x@Int   y@Int]   [builtin-add x y]]]
-  [Int Float Float]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]]
+  [pattern [a@Int b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int]   [builtin-add x y]]]
+  [pattern [a@Int b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]]
 ```
 
 ### `kinds:` — Explicit Kind Declarations
@@ -260,7 +260,6 @@ Kind constraints declare that a TypeVar has a specific kind (`Operator` for `* �
 # kinds:     maps TypeVar names to kind constraints (same structure, different level)
 
 Functor: [class [f]  [kinds: [f: Operator]]                # f is of kind * → * (type constructor)
-  constraint: [f: Functor]       # f must satisfy the Functor class
   fmap: [fn@[f b] [[f a]]]]
 
 # In function annotations — both keys appear in the same bracket
@@ -298,9 +297,9 @@ Functor: [class [f]  [kinds: [f: Operator]]
   fmap: [fn@[return: [f b]] [g@[Fn@b [a]]  xs@[f a]]]]
 
 [instance Functor
-  [Seq]:   [fmap: [fn@[return: [Seq b]] [g@[Fn@b [a]]  xs@[Seq a]]
+  [pattern [f@Seq  ]]: [fmap: [fn@[return: [Seq b]] [g@[Fn@b [a]]  xs@[Seq a]]
                   [map g xs]]]
-  [Maybe]: [fmap: [fn@[return: [Maybe b]] [g@[Fn@b [a]]  m@[Maybe a]]
+  [pattern [f@Maybe]]: [fmap: [fn@[return: [Maybe b]] [g@[Fn@b [a]]  m@[Maybe a]]
                   [match m
                     [Some v]: [Some [g v]]
                     None:     None]]]]
@@ -345,7 +344,7 @@ Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
 
 - **Constraint entailment**: `Comparable a` in the constraint context implies `Equatable a`. Functions constrained by `[a: Comparable]` can call `eq?` from `Equatable` without an additional `[a: Equatable]` constraint. The `entails()` function in `src/type_unify.rs` already implements transitive superclass lookup for constraint simplification.
 
-- **Instance requirement**: declaring `[instance Comparable [Int]: [...]]` requires that `[instance Equatable [Int]: [...]]` already exists. The instance checker verifies superclass instances are present at declaration time.
+- **Instance requirement**: declaring `[instance Comparable [pattern [a@Int]]: [...]]` requires that `[instance Equatable [pattern [a@Int]]: [...]]` already exists. The instance checker verifies superclass instances are present at declaration time.
 
 - **Dictionary passing**: at runtime, the instance dictionary for a subclass includes access to superclass method implementations via the superclass instance lookup.
 
@@ -370,7 +369,7 @@ GHC requires coercions — proof terms witnessing type reductions — because GH
 
 ### Multi-Output FD Resolver Convention
 
-For a class with multiple determined variables — `DivMod: [class [a b q r]  [determines: [[[a b] [q r]]]  resolver: DivModResult]]` — the resolver function receives the determining type dicts and must return a **record type dict** with the determined vars as named fields:
+For a class with multiple determined variables — `DivMod: [class [a b q r]  [determines: [[[a b] [q r]]]  resolver: DivModResult]]` — the resolver function receives the determining type dicts and must return a **keyed dict** `[q: <type-dict>  r: <type-dict>]` where the keys are exactly the names listed in the determined position of the `determines:` spec:
 
 ```tinct
 DivModResult: [fn [...args]
@@ -380,7 +379,7 @@ DivModResult: [fn [...args]
     ...]]
 ```
 
-The `dict_to_type` conversion, when it sees a dict without a `kind:` key, interprets it as a multi-output resolver result and destructures the fields by name, mapping `q → Type::Int` and `r → Type::Int`. The `determines:` list `[[q r]]` provides the field names and their ordering. Each determined TypeVar is unified with the corresponding field from the resolver's output record.
+The resolver returns a keyed dict whose keys match the determined-variable names from `determines: [[[a b] [q r]]]` — here `q` and `r`. The `dict_to_type` conversion, when it sees a dict without a `kind:` key, interprets it as a multi-output resolver result and destructures the fields by name: `q → Type::Int` and `r → Type::Int`. Each determined TypeVar is unified with the corresponding named field from the resolver's output. The key names in the resolver's return dict must match the declared determined-variable names exactly.
 
 ### Class Body Structure — Two-Bracket Form
 
@@ -435,49 +434,40 @@ The parser distinguishes the structural bracket from method declarations unambig
 
 ### Instance Syntax — Match-Arm Form
 
-Instance declarations use a **match-arm syntax** that pairs each type-parameter pattern with its method dictionary:
+Instance declarations use a **match-arm syntax** pairing each type-parameter pattern with its method dictionary. The arm pattern uses the `[pattern [...]]` form — the same keyword used in `[match ...]` arms — with one `paramName@TypePattern` entry per class parameter:
 
 ```tinct
 [instance ClassName
-  [Type1 Type2 ...]: [method-key: implementation ...]
-  [Type3 Type4 ...]: [method-key: implementation ...]]
+  [pattern [p1@Type1  p2@Type2  ...]]: [method-key: implementation ...]
+  [pattern [p1@Type3  p2@Type4  ...]]: [method-key: implementation ...]]
 ```
 
-The type-parameter list `[Type1 Type2 ...]` is the arm pattern. After `:`, the method dict `[method-key: impl ...]` supplies the implementations for that particular type combination. Multiple instances of the same class are bundled as additional arms under the same `[instance ClassName ...]` form.
+Each `paramName@TypePattern` declares a fresh TypeVar binding (`paramName`) constrained to match `TypePattern`. Uppercase names in `TypePattern` are type references; lowercase names are implicitly fresh TypeVars introduced in this arm's scope (available in method bodies).
 
-**Parsing rule for type-pattern brackets:** Instance arm brackets are parsed as a **flat positional list** of N type expressions, one per class parameter. This is NOT implied-call syntax — the outer bracket is never interpreted as a function call regardless of what name appears first. Each whitespace-delimited element is one type expression:
+Type applications use bracket syntax: `a@[Seq elem]` declares class param `a` must be `Seq` applied to fresh TypeVar `elem`. Simple concrete types need no inner brackets: `a@Int`, `f@Seq` (bare constructor for HKT params).
 
-- A bare uppercase name is a type constant: `Int`, `Float`, `Seq`, `Maybe`
-- A bare lowercase name is a type variable pattern: `a`, `t`
-- An inner bracket is a composite type: `[Seq Int]`, `[or Int Null]`, `[record head: Int]`
+After `:`, the method dict `[method-key: impl ...]` supplies the implementations for that particular type combination. Multiple instances of the same class are bundled as additional arms under the same `[instance ClassName ...]` form.
 
 ```tinct
-# Addable [a b c] — 3 class params:
+# Addable [a b c] — 3 class params, named a/b/c per class declaration:
 [instance Addable
-  [Int Int Int]:             [+: ...]   # three bare names — three types
-  [Int Float Float]:         [+: ...]
-  [Int Int [or Int Null]]:   [+: ...]]  # third element is a composite type
+  [pattern [a@Int   b@Int   c@Int  ]]: [+: ...]
+  [pattern [a@Int   b@Float c@Float]]: [+: ...]
+  [pattern [a@Int   b@Int   c@[or Int Null]]]: [+: ...]]  # composite type in TypePattern
 
-# Functor [f] — 1 class param:
+# Functor [f] — 1 HKT class param, named f per class declaration:
 [instance Functor
-  [Seq]:   [fmap: ...]   # one bare name — one type
-  [Maybe]: [fmap: ...]]
+  [pattern [f@Seq  ]]: [fmap: ...]
+  [pattern [f@Maybe]]: [fmap: ...]]
 
-# An arm matching Seq applied to Int — use an inner bracket:
-# [instance SomeClass [[Seq Int]]: [...]]  ← [[Seq Int]] is one type expression
+# Appendable [a] — concrete or parametric:
+[instance Appendable
+  [pattern [a@Str      ]]: [concat: ...  empty: ...]
+  [pattern [a@[Seq elem]]]: [concat: ...  empty: ...]   # a must be Seq of elem
+  [pattern [a@[Map k v]]]: [concat: ...  empty: ...]]   # a must be Map k v
 ```
 
-The arity check (exactly N elements for a class with N params) is performed at the semantic layer, not during parsing. The parser produces a flat list of whatever type expressions it finds; the instance checker validates the count.
-
-For readability, complex method bodies should be named and extracted before the instance declaration:
-
-```tinct
-int-add: [fn@Int [x@Int y@Int] [builtin-add x y]]
-[instance Addable
-  [Int Int Int]: [+: int-add]]
-```
-
-Instances are anonymous — they are never referenced by name. The instance dict is selected automatically by the constraint solver at every call site and passed as an implicit argument at runtime.
+Instances are anonymous — they register in the InstanceEnv and are selected automatically at call sites.
 
 ### Resolver Linking
 
@@ -511,11 +501,11 @@ At instance declaration time, every instance arm for a class must satisfy three 
 
 - **Disjointness condition**: no two arms of the same class may match the same ground type tuple. If two arms' type-parameter lists can be simultaneously unified under some substitution θ (i.e., they overlap), the instance declaration is rejected at declaration time with a "overlapping instance arms" error. Instance dispatch is therefore **always unambiguous** — for any ground type tuple at most one arm matches. There is no first-match semantics and no ordering among arms.
 
-  Examples: `[Int Int Int]` and `[Int Float Float]` are disjoint (no θ unifies them). `[Int a b]` and `[Int Int c]` overlap (θ = {a=Int}) and are rejected. `[Int a b]` and `[Float a b]` are disjoint.
+  Examples: `[pattern [a@Int b@Int c@Int]]` and `[pattern [a@Int b@Float c@Float]]` are disjoint (no θ unifies them). `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Int b@Int c@t3]]` overlap (θ = {t1=Int}) and are rejected. `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Float b@t1 c@t2]]` are disjoint.
 
-- **Coverage condition** (for classes with FDs): for each FD `(d) → (r)`, every type variable appearing in the determined positions of the instance arm must also appear in the determining positions. This prevents improvement from introducing fresh unknowns that cannot be resolved. Example: arm `[a b b]` with FD `(a,b)→c` — `c` binds to `b`, which appears in the determining positions, so coverage holds.
+- **Coverage condition** (for classes with FDs): for each FD `(d) → (r)`, every type variable appearing in the determined positions of the instance arm must also appear in the determining positions. This prevents improvement from introducing fresh unknowns that cannot be resolved. Example: arm `[pattern [a@t1 b@t2 c@t2]]` with FD `(a,b)→c` — `c` binds to the same TypeVar as `b` (both `t2`), which appears in the determining positions, so coverage holds.
 
-- **Consistency condition** (for classes with FDs, Jones 2000, Definitions 7–8): if two arms' determining positions unify under some substitution θ, their determined positions must also unify under θ. This guarantees improvement is confluent. Example: arms `[Int Int Int]` and `[Int Int Float]` violate consistency — both have determining positions `(Int, Int)` but different determined types `Int` vs `Float`. This is rejected at declaration time.
+- **Consistency condition** (for classes with FDs, Jones 2000, Definitions 7–8): if two arms' determining positions unify under some substitution θ, their determined positions must also unify under θ. This guarantees improvement is confluent. Example: arms `[pattern [a@Int b@Int c@Int]]` and `[pattern [a@Int b@Int c@Float]]` violate consistency — both have determining positions `(Int, Int)` but different determined types `Int` vs `Float`. This is rejected at declaration time.
 
   Note: the consistency condition is independent of the disjointness condition. Two arms can be disjoint on their determining positions but still require consistency checking when the FD spec allows the determining positions to overlap in theory. The disjointness condition applies to the **full** type-parameter list; consistency applies to the **determining** positions only.
 
@@ -549,7 +539,7 @@ Two cases at let-generalization:
 1. **FD has already fired** — `c` is unified with a concrete type and does not appear free in the scheme. Generalization produces `∀a b. Add a b Float ⇒ a → b → Float` (with concrete `c`).
 2. **FD has not fired** (determining positions are still free TypeVars) — `c` remains a TypeVar and is included in the generalized scheme with the constraint: `∀a b c. Add a b c ⇒ a → b → c`. FD fires at each call site.
 
-**Level management**: when a `[$Class a b c]` constraint is registered with FD `(a,b)→c`, the determined TypeVar `c`'s level must be lowered to `enclosing_level` at constraint-creation time. This ensures `c` cannot escape into an outer scope independently of the constraint — it can only be used where the constraint is visible.
+**Level management**: when a `[$Class a b c]` constraint is registered with FD `(a,b)→c`, the determined TypeVar `c`'s level must be lowered to `max(enclosing_level, max(l_a, l_b))` at constraint-creation time. This ensures `c` cannot escape into an outer scope independently of the constraint — it can only be used where the constraint is visible, and also prevents `c` from being generalized beyond the scope of its determining TypeVars.
 
 ## Worked Examples
 
@@ -572,14 +562,14 @@ Two cases at let-generalization:
 Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
   +: [fn@c [a b]]]
 
-# Instances bundled in one form; each arm is a type-pattern: method-dict pair.
+# Instances bundled in one form; each arm is a [pattern [...]]: method-dict pair.
 # For readability, name the implementation functions first:
 int-int-add:   [fn@Int   [x@Int   y@Int]   [builtin-add x y]]
 int-float-add: [fn@Float [x@Int   y@Float] [builtin-add x y]]
 
 [instance Addable
-  [Int Int Int]:     [+: int-int-add]
-  [Int Float Float]: [+: int-float-add]]
+  [pattern [a@Int b@Int   c@Int  ]]: [+: int-int-add]
+  [pattern [a@Int b@Float c@Float]]: [+: int-float-add]]
 
 # Instances are anonymous — they register in the InstanceEnv and are selected
 # automatically by the constraint solver at every call site. The instance dictionary
@@ -657,8 +647,8 @@ Convert: [class [a b]  [determines: [[[a] b]  [[b] a]]  resolver: [ToStringResul
   parse: [fn@a [b]]]
 
 [instance Convert
-  [Int String]: [show: [fn@String [x@Int] [int-to-str x]]
-                 parse: [fn@Int [s@String] [str-to-int s]]]]
+  [pattern [a@Int b@String]]: [show: [fn@String [x@Int] [int-to-str x]]
+                                parse: [fn@Int [s@String] [str-to-int s]]]]
 
 # Trivial: forward inference
 stringify: [fn@[bind: [a b]  return: b  constraint: [$Convert a b]]  [x@a]  [show x]]
@@ -680,16 +670,17 @@ roundtrip: [fn@[bind: [a b]  return: a  constraint: [$Convert a b]]
   DivModResult: [fn [...args]
     [match [[builtin-get 0 args]  [builtin-get 1 args]]
       [[kind: "named" name: "Int"]  [kind: "named" name: "Int"]]:
-        [quotient: [kind: "named" name: "Int"]
-         remainder: [kind: "named" name: "Int"]]]]
+        [q: [kind: "named" name: "Int"]
+         r: [kind: "named" name: "Int"]]]]
 ]
 ---
 # Trivial: multi-output — (a,b) jointly determines (q, r)
+# The resolver returns [q: <type-dict>  r: <type-dict>] — keys match the determined-var names in determines:
 DivMod: [class [a b q r]  [determines: [[[a b] [q r]]]  resolver: DivModResult]
-  divmod: [fn@[record quotient: q  remainder: r] [a b]]]
+  divmod: [fn@[record q: q  r: r] [a b]]]
 
-[instance DivisibleMod
-  [Int Int Int Int]: [divmod: [fn [x@Int y@Int]
+[instance DivMod
+  [pattern [a@Int b@Int q@Int r@Int]]: [divmod: [fn [x@Int y@Int]
                         [quotient: [/ x y]  remainder: [% x y]]]]]
 
 # Trivial: both q and r inferred simultaneously
@@ -754,7 +745,7 @@ ServerOpts: [type [timeout: Int  retries: Int]]
 ServerFull: [type [host: String  port: Int  timeout: Int  retries: Int]]
 
 [instance Merge
-  [ServerBase ServerOpts ServerFull]: [merge: [fn [base@ServerBase opts@ServerOpts]
+  [pattern [base@ServerBase opts@ServerOpts result@ServerFull]]: [merge: [fn [base@ServerBase opts@ServerOpts]
                                          [host: base.host  port: base.port
                                           timeout: opts.timeout  retries: opts.retries]]]]
 
@@ -829,7 +820,7 @@ SafeAdd: [class [a b c]  [determines: [[[a b] c]]  resolver: NullableAddResult] 
   +?: [fn@c [a b]]]
 
 [instance SafeAdd
-  [Int Int [or Int Null]]: [+?: [fn@[or Int Null] [x@Int y@Int]
+  [pattern [a@Int b@Int c@[or Int Null]]]: [+?: [fn@[or Int Null] [x@Int y@Int]
                               [if [> [+ x y] 1000000] [] [+ x y]]]]]
 
 result@[SafeAdd Int Int]   # → or(Int, Null)
@@ -848,7 +839,7 @@ Zip: [class [a b c]  [determines: [[[a b] c]]  resolver: ZipResult]
   zip: [fn@[Seq c] [[Seq a] [Seq b]]]]
 
 [instance Zip
-  [Int String [record left: Int  right: String]]:
+  [pattern [a@Int b@String c@[record left: Int  right: String]]]:
     [zip: [fn [xs@[Seq Int]  ys@[Seq String]]
             [map [fn [pair] [left: [first pair]  right: [second pair]]]
                  [zip-lists xs ys]]]]]
@@ -970,34 +961,34 @@ Equatable: [class [a]
   eq?: [fn@Bool [a a]]]
 
 [instance Equatable
-  [Int]:   [eq?: [fn@Bool [x@Int   y@Int  ] [builtin-eq x y]]]
-  [Float]: [eq?: [fn@Bool [x@Float y@Float] [builtin-eq x y]]]
-  [Str]:   [eq?: [fn@Bool [x@Str   y@Str  ] [builtin-eq x y]]]
-  [Bool]:  [eq?: [fn@Bool [x@Bool  y@Bool ] [builtin-eq x y]]]
-  [Null]:  [eq?: [fn@Bool [x@Null  y@Null ] true]]]
+  [pattern [a@Int  ]]: [eq?: [fn@Bool [x@Int   y@Int  ] [builtin-eq x y]]]
+  [pattern [a@Float]]: [eq?: [fn@Bool [x@Float y@Float] [builtin-eq x y]]]
+  [pattern [a@Str  ]]: [eq?: [fn@Bool [x@Str   y@Str  ] [builtin-eq x y]]]
+  [pattern [a@Bool ]]: [eq?: [fn@Bool [x@Bool  y@Bool ] [builtin-eq x y]]]
+  [pattern [a@Null ]]: [eq?: [fn@Bool [x@Null  y@Null ] true]]]
 
 Comparable: [class [a]  [superclasses: [Equatable]]
   lt?: [fn@Bool [a a]]]
 
 [instance Comparable
-  [Int]:   [lt?: [fn@Bool [x@Int   y@Int  ] [builtin-lt x y]]]
-  [Float]: [lt?: [fn@Bool [x@Float y@Float] [builtin-lt x y]]]
-  [Str]:   [lt?: [fn@Bool [x@Str   y@Str  ] [builtin-lt x y]]]]
+  [pattern [a@Int  ]]: [lt?: [fn@Bool [x@Int   y@Int  ] [builtin-lt x y]]]
+  [pattern [a@Float]]: [lt?: [fn@Bool [x@Float y@Float] [builtin-lt x y]]]
+  [pattern [a@Str  ]]: [lt?: [fn@Bool [x@Str   y@Str  ] [builtin-lt x y]]]]
 
 Showable: [class [a]
   str: [fn@String [a]]]
 
 [instance Showable
-  [Int]:   [str: [fn@String [x@Int  ] [builtin-int-to-str x]]]
-  [Float]: [str: [fn@String [x@Float] [builtin-float-to-str x]]]
-  [Str]:   [str: [fn@String [x@Str  ] x]]
-  [Bool]:  [str: [fn@String [x@Bool ] [if x "true" "false"]]]
-  [Null]:  [str: [fn@String [_      ] "null"]]]
+  [pattern [a@Int  ]]: [str: [fn@String [x@Int  ] [builtin-int-to-str x]]]
+  [pattern [a@Float]]: [str: [fn@String [x@Float] [builtin-float-to-str x]]]
+  [pattern [a@Str  ]]: [str: [fn@String [x@Str  ] x]]
+  [pattern [a@Bool ]]: [str: [fn@String [x@Bool ] [if x "true" "false"]]]
+  [pattern [a@Null ]]: [str: [fn@String [_      ] "null"]]]
 
 Numeric: [class [a]  [superclasses: [Comparable  Showable]]]
   # No additional methods — marks a type as numeric for arithmetic constraints
 
-[instance Numeric  [Int]: []  [Float]: []]
+[instance Numeric  [pattern [a@Int]]: []  [pattern [a@Float]]: []]
 # Number is a BAS union alias (Int | Float), not a concrete type.
 # Class instances are for concrete types — Number participates via BAS
 # width subtyping when Int or Float resolves at the call site.
@@ -1008,12 +999,12 @@ Appendable: [class [a]
   empty:  [fn@a []]]
 
 [instance Appendable
-  [Str]:     [concat: [fn@Str     [x@Str     y@Str    ] [builtin-str-concat x y]]
-              empty:  [fn@Str     []                     ""]]
-  [Seq a]:   [concat: [fn@[Seq a] [xs@[Seq a] ys@[Seq a]] [builtin-seq-concat xs ys]]
-              empty:  [fn@[Seq a] []                       []]]
-  [Map k v]: [concat: [fn@[Map k v] [a@[Map k v] b@[Map k v]] [merge a b]]
-              empty:  [fn@[Map k v] []                          []]]]
+  [pattern [a@Str      ]]: [concat: [fn@Str     [x@Str     y@Str    ] [builtin-str-concat x y]]
+                            empty:  [fn@Str     []                     ""]]
+  [pattern [a@[Seq elem]]]: [concat: [fn@[Seq elem] [xs@[Seq elem] ys@[Seq elem]] [builtin-seq-concat xs ys]]
+                             empty:  [fn@[Seq elem] []                             []]]
+  [pattern [a@[Map k v]]]: [concat: [fn@[Map k v] [x@[Map k v] y@[Map k v]] [merge x y]]
+                            empty:  [fn@[Map k v] []                          []]]]
 
 # ── MPTC classes with functional dependencies ─────────────────────────────
 
@@ -1021,37 +1012,37 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
   +: [fn@c [a b]]]
 
 [instance Addable
-  [Int   Int   Int  ]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
-  [Float Float Float]: [+: [fn@Float [x@Float y@Float] [builtin-add x y]]]
-  [Int   Float Float]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]
-  [Float Int   Float]: [+: [fn@Float [x@Float y@Int  ] [builtin-add x y]]]]
+  [pattern [a@Int   b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
+  [pattern [a@Float b@Float c@Float]]: [+: [fn@Float [x@Float y@Float] [builtin-add x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [+: [fn@Float [x@Float y@Int  ] [builtin-add x y]]]]
 
 Subtractable: [class [a b c]  [determines: [[[a b] c]]  resolver: SubResult]
   -: [fn@c [a b]]]
 
 [instance Subtractable
-  [Int   Int   Int  ]: [-: [fn@Int   [x@Int   y@Int  ] [builtin-sub x y]]]
-  [Float Float Float]: [-: [fn@Float [x@Float y@Float] [builtin-sub x y]]]
-  [Int   Float Float]: [-: [fn@Float [x@Int   y@Float] [builtin-sub x y]]]
-  [Float Int   Float]: [-: [fn@Float [x@Float y@Int  ] [builtin-sub x y]]]]
+  [pattern [a@Int   b@Int   c@Int  ]]: [-: [fn@Int   [x@Int   y@Int  ] [builtin-sub x y]]]
+  [pattern [a@Float b@Float c@Float]]: [-: [fn@Float [x@Float y@Float] [builtin-sub x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [-: [fn@Float [x@Int   y@Float] [builtin-sub x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [-: [fn@Float [x@Float y@Int  ] [builtin-sub x y]]]]
 
 Multipliable: [class [a b c]  [determines: [[[a b] c]]  resolver: MulResult]
   *: [fn@c [a b]]]
 
 [instance Multipliable
-  [Int   Int   Int  ]: [*: [fn@Int   [x@Int   y@Int  ] [builtin-mul x y]]]
-  [Float Float Float]: [*: [fn@Float [x@Float y@Float] [builtin-mul x y]]]
-  [Int   Float Float]: [*: [fn@Float [x@Int   y@Float] [builtin-mul x y]]]
-  [Float Int   Float]: [*: [fn@Float [x@Float y@Int  ] [builtin-mul x y]]]]
+  [pattern [a@Int   b@Int   c@Int  ]]: [*: [fn@Int   [x@Int   y@Int  ] [builtin-mul x y]]]
+  [pattern [a@Float b@Float c@Float]]: [*: [fn@Float [x@Float y@Float] [builtin-mul x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [*: [fn@Float [x@Int   y@Float] [builtin-mul x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [*: [fn@Float [x@Float y@Int  ] [builtin-mul x y]]]]
 
 Divisible: [class [a b c]  [determines: [[[a b] c]]  resolver: DivResult]
   /: [fn@c [a b]]]
 
 [instance Divisible
-  [Int   Int   Float]: [/: [fn@Float [x@Int   y@Int  ] [builtin-div x y]]]
-  [Float Float Float]: [/: [fn@Float [x@Float y@Float] [builtin-div x y]]]
-  [Int   Float Float]: [/: [fn@Float [x@Int   y@Float] [builtin-div x y]]]
-  [Float Int   Float]: [/: [fn@Float [x@Float y@Int  ] [builtin-div x y]]]]
+  [pattern [a@Int   b@Int   c@Float]]: [/: [fn@Float [x@Int   y@Int  ] [builtin-div x y]]]
+  [pattern [a@Float b@Float c@Float]]: [/: [fn@Float [x@Float y@Float] [builtin-div x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [/: [fn@Float [x@Int   y@Float] [builtin-div x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [/: [fn@Float [x@Float y@Int  ] [builtin-div x y]]]]
 
 # ── Higher-kinded classes (f@Operator) ────────────────────────────────────
 
@@ -1059,15 +1050,15 @@ Mappable: [class [f]  [kinds: [f: Operator]]
   map: [fn@[return: [f b]] [g@[Fn@b [a]]  xs@[f a]]]]
 
 [instance Mappable
-  [Seq]:    [map: [fn@[return: [Seq b]]    [g@[Fn@b [a]]  xs@[Seq a]   ] [builtin-map g xs]]]
-  [Dict]:   [map: [fn@[return: [Dict k b]] [g@[Fn@b [a]]  d@[Dict k a] ] [builtin-map-dict g d]]]]
+  [pattern [f@Seq ]]: [map: [fn@[return: [Seq b]]    [g@[Fn@b [a]]  xs@[Seq a]   ] [builtin-map g xs]]]
+  [pattern [f@Dict]]: [map: [fn@[return: [Dict k b]] [g@[Fn@b [a]]  d@[Dict k a] ] [builtin-map-dict g d]]]]
 
 Functor: [class [f]  [kinds: [f: Operator]]
   fmap: [fn@[return: [f b]] [g@[Fn@b [a]]  xs@[f a]]]]
 
 [instance Functor
-  [Seq]:   [fmap: [fn@[return: [Seq b]]   [g@[Fn@b [a]]  xs@[Seq a]   ] [map g xs]]]
-  [Maybe]: [fmap: [fn@[return: [Maybe b]] [g@[Fn@b [a]]  m@[Maybe a]  ]
+  [pattern [f@Seq  ]]: [fmap: [fn@[return: [Seq b]]   [g@[Fn@b [a]]  xs@[Seq a]   ] [map g xs]]]
+  [pattern [f@Maybe]]: [fmap: [fn@[return: [Maybe b]] [g@[Fn@b [a]]  m@[Maybe a]  ]
                  [match m  [Some v]: [Some [g v]]  None: None]]]]
 
 Applicative: [class [f]  [kinds: [f: Operator]  superclasses: [Functor]]
@@ -1075,17 +1066,17 @@ Applicative: [class [f]  [kinds: [f: Operator]  superclasses: [Functor]]
   lift2: [fn@[return: [f c]] [g@[Fn@c [a b]]  fa@[f a]  fb@[f b]]]]
 
 [instance Applicative
-  [Maybe]: [pure:  [fn@[return: [Maybe a]] [x@a] [Some x]]
-             lift2: [fn@[return: [Maybe c]] [g@[Fn@c [a b]]  ma@[Maybe a]  mb@[Maybe b]]
-                  [match [ma mb]
-                    [[Some a] [Some b]]: [Some [g a b]]
-                    _:                   None]]]]
+  [pattern [f@Maybe]]: [pure:  [fn@[return: [Maybe a]] [x@a] [Some x]]
+                        lift2: [fn@[return: [Maybe c]] [g@[Fn@c [a b]]  ma@[Maybe a]  mb@[Maybe b]]
+                                  [match [ma mb]
+                                    [[Some a] [Some b]]: [Some [g a b]]
+                                    _:                   None]]]]
 
 Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
   bind: [fn@[return: [m b]] [ma@[m a]  k@[Fn@[return: [m b]] [a]]]]]
 
 [instance Monad
-  [Maybe]: [bind: [fn@[return: [Maybe b]] [m@[Maybe a]  k@[Fn@[return: [Maybe b]] [a]]]
+  [pattern [m@Maybe]]: [bind: [fn@[return: [Maybe b]] [m@[Maybe a]  k@[Fn@[return: [Maybe b]] [a]]]
                  [match m  [Some v]: [k v]  None: None]]]]
 
 Foldable: [class [t]  [kinds: [t: Operator]]
@@ -1093,12 +1084,12 @@ Foldable: [class [t]  [kinds: [t: Operator]]
   to-seq: [fn@[return: [Seq a]] [xs@[t a]]]]
 
 [instance Foldable
-  [Seq]:   [fold:   [fn@b [f@[Fn@b [b a]]  init@b  xs@[Seq a]] [builtin-fold f init xs]]
-             to-seq: [fn@[return: [Seq a]] [xs@[Seq a]] xs]]
-  [Maybe]: [fold:   [fn@b [f@[Fn@b [b a]]  init@b  m@[Maybe a]]
-                [match m  [Some v]: [f init v]  None: init]]
-             to-seq: [fn@[return: [Seq a]] [m@[Maybe a]]
-                [match m  [Some v]: [v]  None: []]]]]
+  [pattern [t@Seq  ]]: [fold:   [fn@b [f@[Fn@b [b a]]  init@b  xs@[Seq a]] [builtin-fold f init xs]]
+                        to-seq: [fn@[return: [Seq a]] [xs@[Seq a]] xs]]
+  [pattern [t@Maybe]]: [fold:   [fn@b [f@[Fn@b [b a]]  init@b  m@[Maybe a]]
+                            [match m  [Some v]: [f init v]  None: init]]
+                        to-seq: [fn@[return: [Seq a]] [m@[Maybe a]]
+                            [match m  [Some v]: [v]  None: []]]]]
 
 Traversable: [class [t]  [kinds: [t: Operator]  superclasses: [Functor  Foldable]]
   traverse: [fn@[bind: [f]  kinds: [f: Operator]  constraint: [f: Applicative]
@@ -1182,30 +1173,63 @@ The chain `types.rs → type_normalize.rs → value.rs → type_def.rs` is acycl
 ### `src/parser.rs` — `StackFrame::InstanceDecl`
 
 **Current:** No `StackFrame::InstanceDecl` exists.  
-**Proposed:** A new parser stack frame that handles the `[instance ClassName arm1: dict1  arm2: dict2 ...]` form. The frame uses the same bracket-then-colon mechanism as `StackFrame::Match`:
+**Proposed:** A new parser stack frame that handles the `[instance ClassName [pattern [...]]: dict  ...]` form. It uses the same bracket-then-colon mechanism as `StackFrame::Match`, but the arm key is always an `Expr::PatternDecl` (produced by the `pattern` keyword frame — see §`src/parser.rs — StackFrame::PatternDecl` below):
 
 ```rust
 StackFrame::InstanceDecl {
-    class_name: String,               // captured from the first expression in the bracket
-    arms: Vec<(Vec<Spanned<Expr>>, Vec<Spanned<Entry>>)>,  // completed (pattern, methods) pairs
-    pending_arm_pattern: Option<Vec<Spanned<Expr>>>,        // bracket contents waiting for ':'
-    pending_arm_methods: Option<Vec<Spanned<Entry>>>,       // method dict waiting to close
+    class_name: String,                                    // from the first expression
+    arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>,       // (Expr::PatternDecl, method entries)
+    pending_key: Option<Spanned<Expr>>,                    // [pattern [...]] expr waiting for ':'
+    pending_methods: Option<Vec<Spanned<Entry>>>,          // method dict waiting to close
 }
 ```
 
 **Parsing sequence:**
-1. Parser opens `[instance` bracket → pushes `StackFrame::InstanceDecl { class_name: "", arms: [], ... }`
-2. First expression pushed is the class name (a `VarRef`) → stored in `class_name`
-3. Next bracket `[T1 T2 ...]` is pushed as a child frame in **type-pattern mode**: all expressions are parsed as type references (no implied-call), closing the bracket returns `Vec<Spanned<Expr>>`
-4. The returned Vec is stored in `pending_arm_pattern`
-5. Token `:` arrives → `pending_arm_pattern` transitions to the arm-pattern-captured state
-6. Next bracket `[method: impl ...]` is a keyed dict → parsed normally, returns `Vec<Spanned<Entry>>`
-7. When the method dict bracket closes, the `(pending_arm_pattern, method_entries)` pair is pushed to `arms`; state resets for the next arm
-8. When the outer `]` closes, the complete `arms` list becomes `Expr::InstanceDecl { class_name, arms }`
+1. `[instance` → push `StackFrame::InstanceDecl { class_name: "", arms: [], ... }`
+2. First expression is a `VarRef` (class name) → stored in `class_name`
+3. Each arm key `[pattern [...]]` is parsed by a nested `StackFrame::PatternDecl` frame (see below), which produces `Expr::PatternDecl { bindings: Vec<Spanned<Expr>> }` — a complete expression
+4. This expression lands in `push_expr_to_parent` for `StackFrame::InstanceDecl` → stored as `pending_key`
+5. Token `:` arrives → `pending_key` is confirmed as the arm key
+6. The method dict `[method: impl ...]` is parsed normally as a keyed Dict → `Vec<Spanned<Entry>>`
+7. When the method dict closes → `(pending_key, method_entries)` pair pushed to `arms`; state resets
+8. Outer `]` closes → `Expr::InstanceDecl { class_name, arms }`
 
-**Type-pattern mode** for step 3: the inner bracket `[T1 T2 ...]` is parsed as a flat list in type-expression position. All expressions in this bracket are parsed via `parse_type_expr()` (the same path used in annotation resolution), not as value expressions. This ensures that bare names are type constants, not callable heads. Inner brackets within the arm pattern (e.g., `[or Int Null]`) are parsed recursively as composite type expressions.
+### `src/parser.rs` — `StackFrame::PatternDecl`
 
-**Impact:** Moderate — new StackFrame variant + type-pattern parsing mode; mirrors existing Match arm handling.
+**Current:** No `StackFrame::PatternDecl` or `pattern` keyword exists.  
+**Proposed:** A new keyword `pattern` pushes `StackFrame::PatternDecl`, which works exactly like `StackFrame::Fn` but collects only a binding list — no body:
+
+```rust
+StackFrame::PatternDecl {
+    bindings: Vec<Spanned<Expr>>,   // the name@TypePattern entries
+}
+```
+
+**Parsing sequence:**
+1. `[pattern` → push `StackFrame::PatternDecl { bindings: [] }`
+2. The following `[...]` bracket is parsed as a standard **param list** (same path as `StackFrame::Fn` params): each `name@TypeExpr` entry is an `Expr::Annotated` node — `name` (lowercase identifier) plus annotation (type expression parsed via annotation resolution rules)
+3. Inner brackets within annotations (`a@[Seq elem]`, `c@[or Int Null]`) are parsed recursively as composite type expressions using the same annotation bracket rules already implemented
+4. No body expression is collected (unlike `Fn`)
+5. `]` closes → `Expr::PatternDecl { bindings }` — a complete expression that can serve as a dict key
+
+**No new parsing mechanisms required.** The `pattern` keyword is lexed as `Token::Identifier("pattern")` and recognized in the same dispatch table as `fn`, `match`, `class`, `instance`. The inner bracket is parsed using the existing fn-param-list path. `Expr::Annotated` nodes (from `name@TypeExpr`) are already produced by the parser.
+
+**Impact:** Minor — new keyword recognition + StackFrame variant that reuses existing fn-param machinery; no new token types or parsing modes.
+
+### `src/ast.rs` — `Expr::PatternDecl`
+
+**Current:** No `Expr::PatternDecl` variant.  
+**Proposed:**
+
+```rust
+Expr::PatternDecl {
+    bindings: Vec<Spanned<Expr>>,   // each is Expr::Annotated { name, annotation }
+}
+```
+
+Used as the arm key in `Expr::InstanceDecl`. Also usable as arm key in `Expr::Match` (optional, for the unified form). The existing `StackFrame::Match` arm handling (`pending_pattern_expr`) already accepts any expression as a key — `Expr::PatternDecl` slots in with zero match changes.
+
+**Impact:** Minor — one new AST variant; updates to the AST match arms in `src/typecheck.rs` and `src/formatter.rs` (mechanical).
 
 ### `src/typecheck.rs` — `Expr::InstanceDecl` handler
 
@@ -1228,7 +1252,7 @@ StackFrame::InstanceDecl {
 ### `src/types.rs` — Generalization with FD constraints
 
 **Current:** `generalize()` does not consider FD constraints. Determined TypeVars that remain free at generalization time are generalized independently (incorrect for FD semantics).  
-**Proposed:** No change to `generalize()` for the determined-var case — the Jones (1995) qualified types model generalizes `c` alongside `a` and `b`, with the constraint `Add a b c` included in the scheme. The one addition: at constraint-creation time for MPTC constraints, lower the determined TypeVar's level to `enclosing_level` so it cannot escape into an outer scope without the constraint. This is a small change to the MPTC constraint registration path.  
+**Proposed:** No change to `generalize()` for the determined-var case — the Jones (1995) qualified types model generalizes `c` alongside `a` and `b`, with the constraint `Add a b c` included in the scheme. The one addition: at constraint-creation time for MPTC constraints, lower the determined TypeVar's level to `max(enclosing_level, max(l_a, l_b))` so it cannot escape into an outer scope without the constraint, and cannot be generalized beyond the scope of its determining TypeVars. This is a small change to the MPTC constraint registration path.  
 **Impact:** Minor — level assignment at constraint creation; no changes to the generalization algorithm itself.
 
 ### `stdlib/prelude.llt` — Arithmetic class migration

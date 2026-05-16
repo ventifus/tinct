@@ -3591,7 +3591,7 @@ fn infer_fn(
                     if has_metadata_key && !all_keyed {
                         // Mixed named + positional in metadata dict context
                         return Err(vec![TypeError::new(
-                            "fn annotation must use either named keys (return:, constraint:, doc:) or positional entries (union return type), not both",
+                            "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
                             ann.span,
                         )]);
                     }
@@ -12025,5 +12025,32 @@ mod tests {
     fn test_div_int_int_returns_float() {
         // [/ 10 2] should infer Float via Div Int Int Float instance
         assert_eq!(infer_with_builtins("[/ 10 2]"), Type::Float);
+    }
+
+    // -- Ambiguous constraint dropping tests (src/type_env.rs:485-540) --
+
+    #[test]
+    fn test_constraint_dropped_when_typevar_not_in_return_type() {
+        // fn@[constraint: [a: Comparable] return: Int] [x] x
+        //
+        // TypeVar 'a' is declared in constraint: [a: Comparable] but never used in a parameter
+        // annotation and the return type is concrete Int.  When generalize_with_doc runs, 'a'
+        // (the fresh _tN TypeVar) is NOT in the set of generalizable_vars (those appearing in the
+        // function's body type), so the Comparable constraint is dropped and an eprintln! warning
+        // is emitted.  The resulting TypeScheme must have an empty constraints field.
+        //
+        // This is the semantic effect tested by this unit test: the constraint is silently dropped
+        // from the scheme rather than causing a type error.
+        let env =
+            doc_env_with_builtins("[my_fn: [fn@[constraint: [a: Comparable] return: Int] [x] x]]");
+        let scheme = env.get("my_fn").expect("my_fn must be in env");
+        // The Comparable constraint on 'a' must not appear in the scheme — 'a' is absent from
+        // the generalizable vars (Int has no free TypeVars), so generalize_with_doc drops it.
+        assert!(
+            scheme.constraints.is_empty(),
+            "Comparable constraint on ambiguous TypeVar 'a' should be dropped from scheme; \
+             got constraints: {:?}",
+            scheme.constraints
+        );
     }
 }
