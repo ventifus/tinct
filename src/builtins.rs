@@ -1226,7 +1226,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
-        builtin!("ast-of", builtin_ast_of, [Strictness::Seq]),
+        builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
         builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
         builtin!("variant", builtin_variant, [Strictness::Seq]),

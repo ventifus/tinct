@@ -1,0 +1,7 @@
+# ast-of on literal expression returns AST dict of the literal
+[include %rust "meta"]
+[ast-of 42]
+=== out
+Dict({"type": String("literal"), "kind": String("int"), "value": Int(42), "span": Dict({"start": Dict({"line": Int(2), "col": Int(9), "offset": Int(31)}), "end": Dict({"line": Int(2), "col": Int(11), "offset": Int(33)})})})
+=== warn
+undefined variable: ast-of at 2:2-2:8

@@ -147,33 +147,6 @@ Accepted 2026-05-14. See `doc/whatif/runtime-reflection.md` and `doc/08-evaluati
 
 - [x] Research runtime reflection — see `doc/whatif/runtime-reflection.md`. Accepted 2026-05-14.
 
-### ast-of-lazy: Make `ast-of` non-materializing
-
-**Motivation:** Introspecting a value should not force side effects. Currently `ast-of` is S-strict — it materializes its argument before inspecting it. This means `ast-of [include %libdir "cli/in/json.llt"]` would trigger `slurp %stdin`. The fix: operate at the thunk level without forcing.
-
-**Semantics:** Branch on thunk state rather than forcing first:
-- **Materialized** → current behavior: return AST dict of the `Value` (fn/builtin/other)
-- **Unevaluated** → return the AST dict of the *expression* (via `ast_to_dict_expr`) without evaluating it — doc annotations and type annotations are visible in the expression tree
-- **PendingCall / PendingBuiltin** → return a structural description of the deferred call without forcing it: `{type: "pending-call", ...}` or similar
-
-**Why this fixes docgen:** Module files (e.g., `strings.llt`) return a Materialized Dict — `ast-of (get k mod)` on each binding gives the fn expression AST including `@[doc:]` without forcing the function body. Pipeline stage files (e.g., `cli/in/json.llt`) return a PendingBuiltin — `ast-of mod` returns a call descriptor without forcing, so docgen can detect it's not a dict of exports and skip it. Stdin is never touched.
-
-**Doc updates required:**
-- `doc/11a-builtins.md` — change `S → V` to a new strictness category (e.g., `L → V` or a new `T` = "thunk-aware") in the `ast-of` row
-- `doc/08-evaluation.md §Runtime Reflection` — remove "eager body serialization" language; describe the thunk-state branching
-- `doc/feature/runtime-reflection.md` — update examples, note that `ast-of` on an unevaluated thunk returns the expression AST
-- `doc/whatif/runtime-reflection.md §ast-of` — update the design rationale (lines ~173-190) that justified eager serialization; the new justification is: lazy body is achievable because we return the Expr tree for unevaluated thunks
-
-- [ ] Change `builtin_ast_of` in `src/builtins_meta.rs` to not call `materialize()` first; branch on `thunk.state()` — Materialized path uses existing logic; Unevaluated path calls `ast_to_dict_expr` on the stored expression; Pending paths return a descriptor dict (`src/builtins_meta.rs`)
-- [ ] Change `ast-of` registration in `src/builtins.rs` from `[Strictness::Seq]` to `[]` (no auto-materialization) — or add a new `Strictness::Inspect` variant that peeks without forcing (`src/builtins.rs`)
-- [ ] Update `doc/11a-builtins.md`: change strictness notation for `ast-of` from `S → V` to a new category; update description to explain thunk-state branching (`doc/11a-builtins.md`)
-- [ ] Update `doc/08-evaluation.md §Runtime Reflection`: remove "eager body serialization" claim; document the three-way thunk-state branch (`doc/08-evaluation.md`)
-- [ ] Update `doc/feature/runtime-reflection.md`: add note that `ast-of` on an unevaluated thunk returns the expression AST without forcing; update examples accordingly (`doc/feature/runtime-reflection.md`)
-- [ ] Update `doc/whatif/runtime-reflection.md §ast-of`: revise the design rationale that justified eager serialization as "not worth the complexity" — the new approach avoids that complexity entirely by using the Expr tree for unevaluated thunks (`doc/whatif/runtime-reflection.md`)
-- [ ] Tests: `[ast-of [fn [] [slurp %stdin]]]` returns fn AST without reading stdin; `[ast-of unevaluated-dict-expr]` returns expression tree; existing materialized-value tests continue to pass (`tests/corpus/eval/builtins/`)
-
-**Depends on:** `runtime-reflection-core` (for the Materialized path, already landed)
-
 ### runtime-reflection-core: FnAnnotation, ast-of, and describe in prelude
 
 See `doc/08-evaluation.md §Runtime Reflection`. **Spec chapters:** `doc/08-evaluation.md §Runtime Reflection`.

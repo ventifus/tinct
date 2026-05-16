@@ -1273,14 +1273,14 @@ Wrapped as `Option<Box<FnAnnotation>>` — `None` for unannotated functions (zer
 
 ### `ast-of` Builtin
 
-`ast-of` is a Rust primitive in the `%rust "meta"` module. It is **non-materializing** — it peeks at the thunk's state without forcing it, branching on three cases:
+`ast-of` is a Rust primitive in the `%rust "meta"` module. It is **non-materializing** — it inspects its argument's thunk state without forcing evaluation, branching on three cases:
 
 - **Materialized thunk** — inspects the concrete `Value`:
-  - `Value::Function` → `[type: "fn" return-ann: <ann-dict> params: [...] body: <ast-dict>]`. `return-ann` and each param's annotation use the `annotation_to_thunk_id` schema. The body AST is serialized via `ast_to_dict_expr`.
+  - `Value::Function` → `[type: "fn" return-ann: <ann-dict> params: [...] body: <ast-dict>]`. `return-ann` and each param's annotation use the `annotation_to_thunk_id` schema. For Materialized values, it returns the value's AST dict. The body AST is serialized via `ast_to_dict_expr`.
   - `Value::Builtin` → `[type: "builtin" name: <name> module: <module>]` using a shared `builtin_type_for(name)` static table.
   - Other values → `[type: type-of(val)]` — a minimal structural description.
-- **Unevaluated thunk** — returns the AST of the stored `Expr` via `ast_to_dict_expr` without evaluating it. Doc annotations visible in the expression tree (e.g., `@[doc: "..."]` on a `fn` expression) appear in the result. This allows introspecting module bindings without triggering side effects.
-- **PendingCall / PendingBuiltin thunk** — returns `[type: "pending"]` without forcing. This allows detecting that a thunk wraps a deferred call (e.g., a pipeline stage file result) without materializing it.
+- **Unevaluated thunk** — returns the expression AST via `ast_to_dict_expr` without forcing. Doc annotations visible in the expression tree (e.g., `@[doc: "..."]` on a `fn` expression) appear in the result. This allows introspecting module bindings without triggering side effects.
+- **Pending thunk** — returns a state descriptor `[type: "pending"]` without forcing. This allows detecting that a thunk wraps a deferred call (e.g., a pipeline stage file result) without materializing it.
 
 `ast-of` returns `Unknown` from the type checker's perspective. Field accesses on the result are on an `Unknown`-typed value and are not statically verified. The reflection layer is inherently dynamically typed — consistent with Python `inspect`, Common Lisp `describe`, and Elixir `Module.docs/2`. Tinct's gradual typing allows this: `@Unknown` opts out of static checking for the reflection helpers.
 

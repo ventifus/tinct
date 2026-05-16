@@ -71,6 +71,8 @@ lazy-fn: [fn@[doc: "Compute something"] [x@Int] [+ x 1]]
 
 This is the key non-materializing property: `ast-of` inspects the thunk's state without forcing it. For an unevaluated thunk wrapping a `fn` expression, the result contains the annotation (including `doc:`) from the expression tree. No side effects are triggered.
 
+**Note:** `ast-of` on an unevaluated thunk returns the expression AST without forcing. This enables safe introspection of module bindings that may trigger side effects (e.g., stdin reading, network calls).
+
 **For pending thunks** (deferred calls like pipeline stage results):
 
 ```tinct
