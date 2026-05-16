@@ -465,6 +465,33 @@ Audit findings (2026-05-13): most I/O builtins genuinely require Rust (28 irredu
 
 ---
 
+## Codebase Health (Review #7, 2026-05-16)
+
+### health-review7: Type system soundness, test coverage, docs
+
+Findings from full-panel codebase review (Cycle #246, 2026-05-16).
+
+- [ ] **[Critical]** `src/types.rs:641-657` — `is_consistent` TypeVar unsoundness: `(Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => true` treats ALL TypeVars as consistent with everything, creating a non-transitive abuse where `α ~ Int` and `α ~ Str` both hold. Comment in code says "UNSOUND". Fix: restrict to reflexivity `(Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2`, fix all callers to apply substitution before calling `is_consistent` (type-theorist)
+- [ ] **[Critical]** `src/type_unify.rs:214-242` — `is_superclass_of` has no cycle guard: if user declares `[A: [class [...] extends [B]]]` and `[B: [class [...] extends [A]]]`, this function loops forever consuming stack. Fix: add `visited: &mut HashSet<String>` parameter OR validate DAG acyclicity at `ClassDecl` registration time (computer-scientist, Jones 1992)
+- [ ] **[Major]** `src/type_unify.rs:263` — `check_constraints_on_var` clones the entire `Vec<Constraint>` on every type variable binding (`state.constraints.clone()`). Makes every U-VAR binding O(c) where c = constraint count. Fix: index constraints by variable name via `HashMap<String, Vec<Constraint>>` for O(1) amortized lookup (computer-scientist)
+- [ ] **[Major]** `src/typecheck_dict.rs:143-222` — `collect_deps_recursive` is unbounded-recursive AST walk. Parser `MAX_PARSE_DEPTH=256` bounds bracket nesting, but `Sequential`/`Pipe` chains are not bracket-nested — thousands of pipe-desugared entries could overflow the call stack. Fix: convert to iterative worklist matching the iterative Tarjan pattern at lines 62-131 (computer-scientist)
+- [ ] **[Major]** `src/type_env.rs:1716-3344` — 80+ builtin signatures use `Type::Unknown` where precise types are possible: `builtin-get` returns Unknown (should be polymorphic), `from-json` returns Unknown, network builtins return Unknown dicts. Each Unknown disables type checking for downstream code. Fix: audit every Unknown — replace with TypeVars, unions, or concrete types where feasible (type-theorist)
+- [ ] **[Major]** `src/type_unify.rs:441-497` — MPTC improvement lookup `lookup_arithmetic_instance` is a hardcoded match for Add/Sub/Mul/Div only. User-defined MPTCs with fundeps silently fail improvement. Fix: generalize to `instance_env` lookup as documented in the TODO comment at line 433 (type-theorist)
+- [ ] **[Major]** `tests/corpus/eval/errors/` — E055/E056/E057 (`IncludeHashMismatch`, `IncludeHashRequired`, `IncludePathNotAllowed`) have zero corpus tests. Fix: add 3 corpus tests exercising include integrity error paths (test-crafter)
+- [ ] **[Major]** `tests/corpus/eval/errors/` — No corpus test for non-cacheable error restoration: `DepthExceeded` should NOT cache in `Failed` state but there is no end-to-end corpus validation. Fix: add test calling a builtin that raises DepthExceeded, verify error is not memoized (test-crafter)
+- [ ] **[Major]** `tests/test_helpers.rs:53` — `split_test_file()` core test infrastructure function has zero unit tests. Fix: add `tests/test_helpers_test.rs` with ~10 cases: bare `===` error, valid labeled sections, directive parsing, empty sections, unknown label (test-crafter)
+- [ ] **[Major]** `src/error.rs:629-850` — `ErrorKind` `PartialEq` is a 36-arm manual match. Adding a new variant compiles but produces wrong equality — the new arm silently falls through. Fix: replace with a compile-time exhaustiveness checker or use `#[derive(PartialEq)]` with structural equality (integration-verifier)
+- [ ] **[Major]** `doc/11-stdlib.md:326`, `doc/11a-builtins.md:4,725` — Stale builtin count: docs say 184 or 189, actual count from `src/builtins.rs` is ~215. Fix: update all three locations; add a CI check or comment with how to recount (stdlib-author)
+- [ ] **[Major]** `doc/11b-reference.md` — 10-line stub claiming to be "auto-generated from `@[doc]` annotations" but is hand-written with 3 entries. Fix: either implement actual auto-generation from `@[doc]` annotations in `stdlib/*.llt`, or delete and merge the 3 module links into `doc/11-stdlib.md` (stdlib-author)
+- [ ] **[Minor]** `src/eval.rs` (CEK `Vec<Cont>`) — Iterative CEK continuation stack has no explicit depth limit. Recommend `MAX_CONTINUATION_STACK=2048` guard for defense-in-depth against adversarial inputs (security-expert)
+- [ ] **[Minor]** `src/lsp/document.rs` — `load_doc_from_uri` (hover/goto-def on unopened files) reads file without checking size first. Fix: check file size against `MAX_FILE_SIZE` before reading, matching the existing guard on document updates (security-expert)
+- [ ] **[Minor]** `src/type_unify.rs:1042-1115` — `lower_levels_check_occurs` uses `_ => false` catch-all which will silently miss new compound `Type` variants, breaking level-lowering invariant (Kiselyov 2013). Fix: replace with exhaustive match listing all leaf types; Rust will emit a compile error when a new variant is added (computer-scientist)
+- [ ] **[Minor]** `src/type_unify.rs:1890-2077` — C-Var1/C-Var2 (Union/Intersection with one TypeVar) unification arms duplicated ~200 lines for left/right directions. Fix: extract `bind_single_type_var_from_compound(members, concrete, subst, state, span, is_union)` helper (computer-scientist)
+- [ ] **[Minor]** `tests/corpus/eval/cross_feature/` — Cross-feature interaction tests are sparse. Fix: add 6 tests minimum: TypeAssert+Proxy, TypeAssert+documents, `$_`+TypeAssert, access chains+Guarded thunks, Proxy+laziness, documents+scope+TypeAssert (test-crafter)
+- [ ] **[Minor]** `stdlib/prelude.llt:various` — `flatten`, `from-entries`, `group-by`, `deep-merge`, `walk`, `transpose`, `uniq` are O(n²) due to repeated `merge`/`concat` in `reduce` but have no performance warning in their `@[doc]` strings. Fix: add "O(n²) due to repeated merge/concat — use with care on large collections" to each (stdlib-author)
+
+---
+
 ## Prelude Annotation Modernization
 
 Modernize `stdlib/prelude.llt` to use the full annotation and typing infrastructure added in sprints up to 2026-05-16. Currently ~126 public functions use bare `fn@Type` return annotations and `name@[doc: "..."]` key annotations with comment blocks above them. The goal is a single `fn@[return: T  constraint: [...]  doc: "..."]` metadata dict per function that replaces both the `name@[doc: "..."]` key annotation and the `# Type:` / `# Example:` / `# NOTE:` comment block above it.
