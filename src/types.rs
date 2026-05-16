@@ -2,8 +2,10 @@
 //! substitutions/unification for Hindley-Milner polymorphism,
 //! and type error definitions for the type checker.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::rc::Rc;
 
 use crate::ast::Span;
 
@@ -1725,6 +1727,10 @@ pub struct InferState {
     /// Set by infer_fn when entering a function body with an explicit return annotation,
     /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
     pub expected_return: Option<Type>,
+    /// Type-stage evaluation environment. Populated by `typecheck_file` via `create_type_stage_env`.
+    /// Contains type dicts (Int, String, etc.) and type-level functions (Seq, Map, union, all).
+    /// Used by the annotation resolver to evaluate bracket annotations via dict_to_type.
+    pub type_stage_env: Option<Rc<RefCell<crate::value::Environment>>>,
 }
 
 impl InferState {
@@ -1853,6 +1859,7 @@ impl InferState {
             scheme_map: None,
             current_function: None,
             expected_return: None,
+            type_stage_env: None,
         }
     }
 

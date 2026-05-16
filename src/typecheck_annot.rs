@@ -237,6 +237,155 @@ pub(crate) fn resolve_fn_metadata(
     let mut return_type: Option<Type> = None;
     let mut doc_string: Option<String> = None;
 
+    // Step 0: Process bind: entries (must come first so TypeVars exist for return:/constraint:/kinds:)
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let Expr::Str(key_name) = &key_expr.node {
+                if key_name == "bind" {
+                    // bind: [a b c] — positional list of TypeVar names
+                    match &entry.node.value.node {
+                        Expr::Dict(bind_entries) => {
+                            for bind_entry in bind_entries {
+                                if bind_entry.node.key.is_some() {
+                                    return Err(TypeError::new(
+                                        "bind: list must contain only positional entries (bare names)",
+                                        bind_entry.span,
+                                    ));
+                                }
+                                match &bind_entry.node.value.node {
+                                    Expr::VarRef { name, .. } => {
+                                        // Check lowercase convention for TypeVar names
+                                        if !name.starts_with(|c: char| c.is_lowercase()) {
+                                            return Err(TypeError::new(
+                                                format!(
+                                                    "bind: TypeVar name '{}' must start with lowercase letter",
+                                                    name
+                                                ),
+                                                bind_entry.node.value.span,
+                                            ));
+                                        }
+                                        // Create fresh TypeVar and register in ann_mapping
+                                        let fresh = format!("_t{}", state.name_counter);
+                                        state.name_counter += 1;
+                                        state.levels.insert(fresh.clone(), state.level);
+                                        if let Some(ref mut mapping) = ann_mapping {
+                                            mapping.insert(name.clone(), fresh);
+                                        } else {
+                                            return Err(TypeError::new(
+                                                "bind: requires an annotation mapping context",
+                                                span,
+                                            ));
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(TypeError::new(
+                                            "bind: entries must be bare names (TypeVar names)",
+                                            bind_entry.node.value.span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err(TypeError::new(
+                                "bind: value must be a list [a b c]",
+                                entry.node.value.span,
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 0b: Process kinds: entries (after bind:, so we can validate names exist)
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let Expr::Str(key_name) = &key_expr.node {
+                if key_name == "kinds" {
+                    // kinds: [f: Operator key: Label] — dict mapping TypeVar names to kinds
+                    match &entry.node.value.node {
+                        Expr::Dict(kinds_entries) => {
+                            for kind_entry in kinds_entries {
+                                let typevar_name =
+                                    match &kind_entry.node.key {
+                                        Some(k) => match &k.node {
+                                            Expr::Str(s) => s.clone(),
+                                            _ => return Err(TypeError::new(
+                                                "kinds: keys must be bare words (TypeVar names)",
+                                                kind_entry.span,
+                                            )),
+                                        },
+                                        None => {
+                                            return Err(TypeError::new(
+                                                "kinds: entries must be keyed [name: kind]",
+                                                kind_entry.span,
+                                            ))
+                                        }
+                                    };
+
+                                // Validate that this name was declared in bind:
+                                let type_var = if let Some(ref mapping) = ann_mapping {
+                                    match mapping.get(&typevar_name) {
+                                        Some(var) => var.clone(),
+                                        None => {
+                                            return Err(TypeError::new(
+                                                format!(
+                                                    "kinds: TypeVar '{}' not found in bind: list",
+                                                    typevar_name
+                                                ),
+                                                kind_entry.span,
+                                            ))
+                                        }
+                                    }
+                                } else {
+                                    return Err(TypeError::new(
+                                        "kinds: requires an annotation mapping context",
+                                        span,
+                                    ));
+                                };
+
+                                // Parse the kind name
+                                match &kind_entry.node.value.node {
+                                    Expr::VarRef {
+                                        name: kind_name, ..
+                                    } => {
+                                        let kind = match kind_name.as_str() {
+                                            "Operator" => Kind::Operator,
+                                            "Label" => Kind::Label,
+                                            _ => {
+                                                return Err(TypeError::new(
+                                                    format!(
+                                                    "unknown kind '{}' (valid: Operator, Label)",
+                                                    kind_name
+                                                ),
+                                                    kind_entry.node.value.span,
+                                                ))
+                                            }
+                                        };
+                                        state.kind_env.insert(type_var, kind);
+                                    }
+                                    _ => {
+                                        return Err(TypeError::new(
+                                            "kinds: value must be a kind name (Operator or Label)",
+                                            kind_entry.node.value.span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err(TypeError::new(
+                                "kinds: value must be a dict [name: kind ...]",
+                                entry.node.value.span,
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Step 1: Process constraint: entries
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
@@ -394,14 +543,14 @@ pub(crate) fn resolve_fn_metadata(
     }
 
     // Step 4: Check for unknown keys
-    const VALID_KEYS: &[&str] = &["return", "constraint", "doc"];
+    const VALID_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
             if let Expr::Str(key_name) = &key_expr.node {
                 if !VALID_KEYS.contains(&key_name.as_str()) {
                     return Err(TypeError::new(
                         format!(
-                            "unknown function annotation key '{}' (valid keys: return, constraint, doc)",
+                            "unknown function annotation key '{}' (valid keys: return, constraint, doc, bind, kinds)",
                             key_name
                         ),
                         key_expr.span,
@@ -439,18 +588,18 @@ fn resolve_fn_type(
                 e.node.key.as_ref().is_some_and(|k| {
                     matches!(
                         &k.node,
-                        Expr::Str(s) if s == "return" || s == "constraint" || s == "doc"
+                        Expr::Str(s) if s == "return" || s == "constraint" || s == "doc" || s == "bind" || s == "kinds"
                     )
                 })
             });
 
-            let all_positional = entries.iter().all(|e| e.node.key.is_none());
+            let _all_positional = entries.iter().all(|e| e.node.key.is_none());
 
             if has_metadata_key {
                 // Check for mixed named+positional
                 if !entries.iter().all(|e| e.node.key.is_some()) {
                     return Err(TypeError::new(
-                        "fn annotation must use either named keys (return:, constraint:, doc:) or positional entries (union return type), not both",
+                        "fn annotation must use named keys (return:, constraint:, doc:, bind:, kinds:)",
                         span,
                     ));
                 }
@@ -466,28 +615,11 @@ fn resolve_fn_type(
                 };
                 crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
                 Ok(ty)
-            } else if all_positional {
-                // Union return type path: fn@[Int Null]
-                // Resolve as a union type via resolve_annotation_as_type
-                let ret = resolve_annotation_as_type(
-                    ann,
-                    env,
-                    span,
-                    state,
-                    ann_mapping,
-                    row_ann_mapping,
-                )?;
-                let ty = Type::Function {
-                    params: vec![],
-                    ret: Box::new(ret),
-                    variadic: false,
-                };
-                crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
-                Ok(ty)
             } else {
-                // Mixed or unknown pattern
+                // No metadata keys found — all positional entries are no longer supported
+                // (positional-union syntax was removed in type-ann-v2-resolver sprint)
                 Err(TypeError::new(
-                    "fn annotation must use either named keys (return:, constraint:, doc:) or positional entries (union return type), not both",
+                    "fn@[...] annotations must use named keys (return:, bind:, constraint:, doc:, kinds:). Use fn@[return: T] for return type.",
                     span,
                 ))
             }
@@ -957,7 +1089,17 @@ fn resolve_property_dict_as_record(
         if entries_look_like_type_dict(entries) {
             Err(e)
         } else {
-            Ok(Type::Unknown)
+            // Try type-stage evaluation as a fallback for unrecognized PropertyDict patterns
+            // (e.g., @[or Int Null] where `or` is a type-stage function)
+            if let Some(ref _type_stage_env) = state.type_stage_env {
+                // Attempt to evaluate the PropertyDict entries as a call expression in type-stage env
+                // For now, return Unknown - full implementation requires reconstructing an Expr from entries
+                // and evaluating it, which is complex. Document this as TODO.
+                // TODO: implement full type-stage evaluation for PropertyDict annotations
+                Ok(Type::Unknown)
+            } else {
+                Ok(Type::Unknown)
+            }
         }
     })
 }
