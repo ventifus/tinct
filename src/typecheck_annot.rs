@@ -403,18 +403,17 @@ pub(crate) fn resolve_fn_metadata(
                                     continue;
                                 }
 
-                                let typevar_name = match &c_entry.node.key {
-                                    Some(k) => match &k.node {
-                                        Expr::Str(s) => s.clone(),
-                                        _ => {
-                                            return Err(TypeError::new(
+                                let typevar_name =
+                                    match &c_entry.node.key {
+                                        Some(k) => match &k.node {
+                                            Expr::Str(s) => s.clone(),
+                                            _ => return Err(TypeError::new(
                                                 "constraint key must be a bare word (TypeVar name)",
                                                 c_entry.span,
-                                            ))
-                                        }
-                                    },
-                                    None => unreachable!(), // already checked above
-                                };
+                                            )),
+                                        },
+                                        None => unreachable!(), // already checked above
+                                    };
 
                                 // Create or get the TypeVar for this name
                                 let type_var = if let Some(ref mut mapping) = ann_mapping {
