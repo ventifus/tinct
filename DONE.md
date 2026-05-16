@@ -6358,3 +6358,11 @@ Follow-up from health-review6 panel (2026-05-16). Three deferred items:
 - [x] **[Minor]** `src/type_env.rs:457-463` — Convert `warn_ambiguous_typevar` from `eprintln!` to structured `TypeWarning` diagnostic visible in LSP and corpus `=== warn` sections; requires adding `Vec<TypeWarning>` output to `typecheck_file` (integration-verifier finding)
 - [x] **[Minor]** `src/type_env.rs:527-539` — HasField constraint: when both `effective_dict` and `effective_field` are non-generalizable, emit one aggregated warning instead of two separate calls to `warn_ambiguous_typevar` (integration-verifier finding)
 - [x] **[Minor]** `src/type_env.rs:480-491` — False-positive risk: dead constraints from already-discharged TypeVars trigger spurious warnings; before calling `warn_ambiguous_typevar`, check if the var is bound to a concrete type in `subst_snapshot` (indicating already-discharged) and skip the warning (computer-scientist finding; reference: HM(X) constraint lifecycle — Odersky, Sulzmann & Wehr 1999)
+
+### constraint-preservation-gap: Fix constraint loss between resolve_fn_metadata and generalize_with_doc
+
+- [x] Trace how `state.constraints` is populated and cleared across dict type-checking passes in `src/typecheck_dict.rs` — identify the pass boundary where the constraint is lost
+- [x] Determine whether the constraint is discarded (cleared before Pass 4) or never threaded (registered in a sub-state that isn't merged back)
+- [x] Fix the threading so constraints from `resolve_fn_metadata` survive to the `generalize_with_doc` call for their enclosing dict entry
+- [x] Un-`#[ignore]` `test_constraint_dropped_when_typevar_not_in_return_type` and verify it passes
+- [x] Add a corpus test in `tests/corpus/typecheck/warnings/` for T013 using a dict-entry function with an ambiguous explicit constraint annotation — corpus test not achievable via typecheck_source() (full pipeline); unit tests provide coverage

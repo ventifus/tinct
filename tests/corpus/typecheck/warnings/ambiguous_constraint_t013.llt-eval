@@ -1,0 +1,11 @@
+# T013 warning: ambiguous type variable in constraint.
+# TypeVar 'a' is declared in constraint: [a: Comparable] but never appears in
+# any parameter annotation or the return type (which is the concrete Int).
+# When generalize_with_doc runs there are no generalizable TypeVars, so 'a'
+# is ambiguous — the constraint will be silently dropped and T013 is emitted.
+# Eval succeeds because type errors/warnings are advisory only.
+[my_fn: [fn@[constraint: [a: Comparable] return: Int] [x@Int] x]]
+=== out
+Dict({"my_fn": Function(x)})
+=== warn
+ambiguous type variable

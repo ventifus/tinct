@@ -384,6 +384,12 @@ pub(crate) fn typecheck_file_with_types_and_env_and_source_returning_state(
     // Scan for type quality issues (Unknown types, over-broad annotations)
     scan_type_quality(&type_map, file, &mut diagnostics);
 
+    // Extract diagnostics accumulated during type inference (e.g., T013 ambiguous constraints).
+    // These are distinct from scan_type_quality diagnostics (T010/T011 Unknown type warnings).
+    // Without this, state.diagnostics are only visible to callers that inspect the returned
+    // state directly — typecheck_source (and the corpus test pipeline) would silently drop them.
+    diagnostics.append(&mut state.diagnostics);
+
     (errors, type_map, doc_map, scheme_map, diagnostics, state)
 }
 
@@ -12033,7 +12039,6 @@ mod tests {
     // -- Ambiguous constraint dropping tests (src/type_env.rs:485-540) --
 
     #[test]
-    #[ignore] // TODO: constraint annotations on dict entry functions aren't preserved in state.constraints when generalize_with_doc runs. Constraint is added via resolve_fn_metadata but not present at generalization time. Needs investigation of how InferState.constraints is managed across dict type-checking passes.
     fn test_constraint_dropped_when_typevar_not_in_return_type() {
         // fn@[constraint: [a: Comparable] return: Int] [x] x
         //
@@ -12041,44 +12046,10 @@ mod tests {
         // annotation and the return type is concrete Int.  When generalize_with_doc runs, 'a'
         // (the fresh _tN TypeVar) is NOT in the set of generalizable_vars (those appearing in the
         // function's body type), so the Comparable constraint is dropped and a TypeDiagnostic
-        // warning is emitted.  The resulting TypeScheme must have an empty constraints field.
+        // T013 warning is emitted.  The resulting TypeScheme must have an empty constraints field.
         //
-        // This is the semantic effect tested by this unit test: the constraint is silently dropped
-        // from the scheme rather than causing a type error.
-        //
-        // == WHY NO CORPUS TEST FOR T013 ==
-        //
-        // A corpus test in tests/corpus/typecheck/warnings/ for T013 is currently not achievable
-        // without first fixing the constraint-preservation gap tracked in TODO.md under
-        // ## Codebase Health § constraint-preservation-gap.
-        //
-        // The three T013 code paths in generalize_with_doc (src/type_env.rs:530-597) are:
-        //   (A) Label::Var in HasField is not in generalizable_vars
-        //   (B) Both dict+field vars in HasField are not in generalizable_vars
-        //   (C) Only dict or only field var in HasField is not in generalizable_vars
-        //
-        // All three require a HasField constraint (or a Comparable/etc. Class constraint) to be
-        // present in state.constraints at the moment generalize_with_doc runs.
-        //
-        // For Class constraints (this test): resolve_fn_metadata() adds the Comparable
-        // constraint to state.constraints when it processes `fn@[constraint: [a: Comparable] ...]`.
-        // However, state.constraints is cleared or scoped between dict-pass type-checking and the
-        // Pass 4 generalization call. By the time generalize_with_doc runs for the dict entry,
-        // the constraint is no longer in state.constraints and the T013 path is never reached.
-        //
-        // For HasField constraints (paths A/B/C): these arise from `get` calls with @Label
-        // parameters. To trigger "ambiguous" HasField, the label/dict/field TypeVar must appear in
-        // the constraint but NOT in the function body type. In practice, any function that calls
-        // `get k d` has the return type influenced by `a` in `HasField k d a`, making `a`
-        // generalizable. Constructing a top-level LLT expression where the HasField TypeVars are
-        // non-generalizable requires the constraint to survive a dict-entry generalization pass —
-        // which again depends on the constraint-preservation fix.
-        //
-        // UNIT TEST COVERAGE: The T013 warning logic in generalize_with_doc is covered by:
-        //   - This test (test_constraint_dropped_when_typevar_not_in_return_type) — Class path —
-        //     currently #[ignore]d pending the constraint-preservation fix
-        //   - test_no_false_positive_warning_for_discharged_constraints — verifies that already-
-        //     discharged constraints do NOT emit spurious T013 warnings (regression guard)
+        // This tests that ambiguous constraints (TypeVars in constraints but not in the type)
+        // are detected and reported as warnings rather than causing type errors.
         let mut file =
             crate::parse("[my_fn: [fn@[constraint: [a: Comparable] return: Int] [x] x]]").unwrap();
         crate::desugar::desugar_file(&mut file.node);

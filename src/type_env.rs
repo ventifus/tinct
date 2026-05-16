@@ -379,6 +379,95 @@ pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
     generalize_with_doc(level, ty, state, None, crate::ast::Span::origin())
 }
 
+/// Emit T013 diagnostics for constraints whose type variables are ambiguous (appear in
+/// the constraint but not in the surrounding type, so the constraint will be silently
+/// dropped at generalization time).
+///
+/// Only `Label::Var` label positions are checked — a `Label::Concrete` string like `"host"`
+/// is never present in the substitution map, so checking it would unconditionally return
+/// `false` and produce a spurious warning for every HasField constraint with a literal label.
+///
+/// `subst_snapshot` is a read-only clone of the substitution map taken before this call.
+/// A variable is considered "discharged" (already satisfied during unification) when it
+/// is bound in the snapshot to a non-TypeVar, non-Operator type.
+fn emit_ambiguous_constraint_diagnostics(
+    constraints: &[Constraint],
+    subst_snapshot: &HashMap<String, Type>,
+    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
+    span: crate::ast::Span,
+) {
+    let is_discharged = |var_name: &str| -> bool {
+        subst_snapshot
+            .get(var_name)
+            .map(|t| !matches!(t, Type::TypeVar(_, _) | Type::Operator(_)))
+            .unwrap_or(false)
+    };
+    for c in constraints {
+        match c {
+            Constraint::Class { class, vars, .. } => {
+                for var in vars {
+                    if !is_discharged(var) {
+                        diagnostics.push(crate::error::TypeDiagnostic {
+                            message: format!(
+                                "ambiguous type variable '{}' in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                                var, class
+                            ),
+                            span,
+                            code: "T013",
+                            level: crate::error::DiagnosticLevel::Warn,
+                        });
+                    }
+                }
+            }
+            Constraint::HasField {
+                dict_var,
+                label,
+                field_var,
+            } => {
+                if !is_discharged(dict_var) {
+                    diagnostics.push(crate::error::TypeDiagnostic {
+                        message: format!(
+                            "ambiguous type variable '{}' (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                            dict_var
+                        ),
+                        span,
+                        code: "T013",
+                        level: crate::error::DiagnosticLevel::Warn,
+                    });
+                }
+                // Only Label::Var positions can be ambiguous. Label::Concrete strings
+                // are never present in the substitution map, so checking them would
+                // unconditionally fire a spurious T013 for every HasField with a
+                // literal label (false-positive).
+                if let Label::Var(label_var) = label {
+                    if !is_discharged(label_var) {
+                        diagnostics.push(crate::error::TypeDiagnostic {
+                            message: format!(
+                                "ambiguous label variable '{}' in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                                label_var
+                            ),
+                            span,
+                            code: "T013",
+                            level: crate::error::DiagnosticLevel::Warn,
+                        });
+                    }
+                }
+                if !is_discharged(field_var) {
+                    diagnostics.push(crate::error::TypeDiagnostic {
+                        message: format!(
+                            "ambiguous type variable '{}' (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                            field_var
+                        ),
+                        span,
+                        code: "T013",
+                        level: crate::error::DiagnosticLevel::Warn,
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Generalize a type into a TypeScheme with optional documentation.
 ///
 /// This is the core generalization function used by the type inference engine.
@@ -402,6 +491,19 @@ pub fn generalize_with_doc(
 
     // Early exit for monomorphic types (common case: all-concrete config dicts)
     if !ty.has_inference_vars() {
+        // No type variables to generalize, but we may still have constraints.
+        // Any constraint when there are no TypeVars is ambiguous (constraint variable
+        // appears in constraint but not in the type).
+        // Guard: skip constraints already discharged (bound to concrete type) during unification.
+        if !state.constraints.is_empty() {
+            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
+            emit_ambiguous_constraint_diagnostics(
+                &state.constraints,
+                &subst_snapshot,
+                &mut state.diagnostics,
+                span,
+            );
+        }
         return TypeScheme {
             type_vars: Vec::new(),
             constraints: Vec::new(),
@@ -430,6 +532,20 @@ pub fn generalize_with_doc(
         .collect();
 
     if generalizable_type_vars.is_empty() {
+        // No type variables to generalize, but we may still have constraints.
+        // Any constraint on a TypeVar when there are no generalizable TypeVars is ambiguous
+        // (the TypeVar appears in the constraint but not in the type).
+        // Guard: skip constraints already discharged (bound to concrete type) during unification.
+        if !state.constraints.is_empty() {
+            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
+            emit_ambiguous_constraint_diagnostics(
+                &state.constraints,
+                &subst_snapshot,
+                &mut state.diagnostics,
+                span,
+            );
+        }
+
         TypeScheme {
             type_vars: Vec::new(),
             constraints: Vec::new(),

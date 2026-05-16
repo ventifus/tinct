@@ -295,6 +295,11 @@ pub(crate) fn infer_dict(
     // Track inner_schemes for nested dict values (DOT-POLY support)
     let mut entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>> = HashMap::new();
 
+    // Track constraints generated during each entry's inference (constraint-preservation fix).
+    // Constraints from fn@[constraint: ...] annotations should be scoped to the function being
+    // inferred, not leak across dict entries.
+    let mut entry_constraints: HashMap<String, Vec<crate::types::Constraint>> = HashMap::new();
+
     // Pass 0c: pre-register class/instance declarations so all classes and instances
     // are visible during body type-checking, regardless of declaration order in the file.
     // Modeled on Pass 2 (type alias pre-registration). (Wadler & Blott 1989 — class/instance
@@ -376,6 +381,11 @@ pub(crate) fn infer_dict(
                     state.current_function = Some(name.clone());
                 }
 
+                // Save constraints before inferring this entry's value.
+                // Function constraints (from fn@[constraint: ...] annotations) should be scoped
+                // to the function being inferred, not leak across dict entries.
+                let saved_constraints = std::mem::take(&mut state.constraints);
+
                 // Special case: if the value is a Dict, call infer_dict directly to capture schemes
                 let (value_ty, nested_schemes_opt) =
                     if let Expr::Dict(nested_entries) = &entry.node.value.node {
@@ -395,6 +405,17 @@ pub(crate) fn infer_dict(
                             None,
                         )
                     };
+
+                // Constraints generated during this entry's inference are now in state.constraints.
+                // We'll process them during generalization (Pass 4), then discard them.
+                // Restore the saved constraints so parent scope constraints are preserved.
+                let this_entry_constraints =
+                    std::mem::replace(&mut state.constraints, saved_constraints);
+
+                // Store this entry's constraints for use during generalization
+                if !this_entry_constraints.is_empty() {
+                    entry_constraints.insert(name.clone(), this_entry_constraints);
+                }
 
                 if should_check_recursion {
                     state.current_function = None;
@@ -526,8 +547,34 @@ pub(crate) fn infer_dict(
 
                     // Value doc takes precedence over key doc
                     let doc = value_doc.or(key_doc);
+
+                    // Skip constraint restore for entries that failed type inference.
+                    // Constraints accumulated before the failure (e.g., by resolve_fn_metadata)
+                    // were never discharged by unification, so restoring them would cause
+                    // generalize_with_doc to emit spurious T013 warnings alongside the real
+                    // type error already recorded in state.diagnostics.
+                    if state.failed_bindings.contains_key(name) {
+                        let mut scheme =
+                            generalize_with_doc(enclosing_level, ty, state, doc, entry.span);
+                        if let Some(inner) = entry_inner_schemes.get(name) {
+                            scheme.inner_schemes = Some(inner.clone());
+                        }
+                        dict_env.insert_scheme(name.clone(), scheme);
+                        continue;
+                    }
+
+                    // Restore this entry's constraints before generalization.
+                    // generalize_with_doc will check which constraints apply to the generalized vars.
+                    let saved_constraints = std::mem::replace(
+                        &mut state.constraints,
+                        entry_constraints.get(name).cloned().unwrap_or_default(),
+                    );
+
                     let mut scheme =
                         generalize_with_doc(enclosing_level, ty, state, doc, entry.span);
+
+                    // Restore parent scope constraints after generalization
+                    state.constraints = saved_constraints;
 
                     // Attach inner_schemes if this entry's value was a dict literal
                     if let Some(inner) = entry_inner_schemes.get(name) {
