@@ -1089,7 +1089,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     origin: Some(Rc::from("default fallback")),
                                     thunk_span,
                                     mat_span,
-                                    restore: None,
+                                    restore: restore.take(),
                                     ctx: Rc::clone(&ctx_for_default),
                                 })));
                                 return Action::Eval {
@@ -1144,7 +1144,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         origin: Some(Rc::from("default fallback")),
                                         thunk_span,
                                         mat_span,
-                                        restore: None,
+                                        restore: restore.take(),
                                         ctx: Rc::clone(&ctx_for_default),
                                     })));
                                     return Action::Eval {

@@ -438,6 +438,15 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 ---
 
+## Codebase Health (Review #6, 2026-05-15)
+
+### health-review6: GuardedValidate branches 2+3, LSP path traversal, ambiguous TypeVar
+
+- [x] `eval_materialize.rs:1092,1147` — GuardedValidate branches 2 and 3: `restore.take()` applied to all 3 branches
+- [x] `imports.rs:613` — `resolve_includes` path traversal: beneath-check added after canonicalize()
+- [ ] **[Minor]** `typecheck.rs:3594` — error message omits `bind:` and `kinds:` from valid key list (`src/typecheck.rs`)
+- [ ] **[Minor]** Ambiguous TypeVar constraint — `fn@[bind: [a] constraint: [a: Comparable] return: Int]` silently drops constraint on `a` during generalization (classical ambiguous type variable, no diagnostic); add warning or error for TypeVar that appears in constraint but not in return type (`src/type_env.rs`)
+
 ---
 
 ## Standard Library Boundary
