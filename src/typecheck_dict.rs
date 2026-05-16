@@ -526,7 +526,8 @@ pub(crate) fn infer_dict(
 
                     // Value doc takes precedence over key doc
                     let doc = value_doc.or(key_doc);
-                    let mut scheme = generalize_with_doc(enclosing_level, ty, state, doc);
+                    let mut scheme =
+                        generalize_with_doc(enclosing_level, ty, state, doc, entry.span);
 
                     // Attach inner_schemes if this entry's value was a dict literal
                     if let Some(inner) = entry_inner_schemes.get(name) {

@@ -1725,6 +1725,9 @@ pub struct InferState {
     /// Set by infer_fn when entering a function body with an explicit return annotation,
     /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
     pub expected_return: Option<Type>,
+    /// Accumulated type diagnostics (warnings, hints).
+    /// Populated during type inference and generalization, extracted by typecheck_file.
+    pub diagnostics: Vec<crate::error::TypeDiagnostic>,
 }
 
 impl InferState {
@@ -1853,6 +1856,7 @@ impl InferState {
             scheme_map: None,
             current_function: None,
             expected_return: None,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -4643,9 +4647,9 @@ mod tests {
 
     #[test]
     fn test_generalize_no_vars() {
-        let state = InferState::new();
+        let mut state = InferState::new();
         let ty = Type::Int;
-        let scheme = generalize(0, &ty, &state);
+        let scheme = generalize(0, &ty, &mut state);
         assert!(scheme.type_vars.is_empty());
         assert_eq!(scheme.body, Type::Int);
     }
@@ -4655,7 +4659,7 @@ mod tests {
         let mut state = InferState::new();
         state.levels.insert("a".into(), 2);
         let ty = Type::TypeVar("a".into(), 2);
-        let scheme = generalize(1, &ty, &state);
+        let scheme = generalize(1, &ty, &mut state);
         assert_eq!(scheme.type_vars, vec!["a"]);
         assert_eq!(scheme.body, ty);
     }
@@ -4665,7 +4669,7 @@ mod tests {
         let mut state = InferState::new();
         state.levels.insert("a".into(), 1);
         let ty = Type::TypeVar("a".into(), 1);
-        let scheme = generalize(1, &ty, &state);
+        let scheme = generalize(1, &ty, &mut state);
         // Level 1 is NOT > 1, so should not generalize
         assert!(scheme.type_vars.is_empty());
     }
@@ -4675,7 +4679,7 @@ mod tests {
         let mut state = InferState::new();
         state.levels.insert("a".into(), 0);
         let ty = Type::TypeVar("a".into(), 0);
-        let scheme = generalize(1, &ty, &state);
+        let scheme = generalize(1, &ty, &mut state);
         // Level 0 is NOT > 1, so should not generalize
         assert!(scheme.type_vars.is_empty());
     }
@@ -4694,7 +4698,7 @@ mod tests {
             ret: Box::new(Type::TypeVar("c".into(), 3)),
             variadic: false,
         };
-        let scheme = generalize(1, &ty, &state);
+        let scheme = generalize(1, &ty, &mut state);
         // Only a (level 2 > 1) and c (level 3 > 1) should be generalized
         // b is at level 1, not > 1
         assert_eq!(scheme.type_vars.len(), 2);
@@ -4708,11 +4712,11 @@ mod tests {
         // BAS: row_vars removed from TypeScheme. Under BAS all rows are closed;
         // generalize only quantifies type variables, not row variables.
         // A record with a concrete field and no TypeVar in it produces a monomorphic scheme.
-        let state = InferState::new();
+        let mut state = InferState::new();
         let mut fields = HashMap::new();
         fields.insert("x".into(), Type::Int);
         let ty = Type::Record(Row { fields });
-        let scheme = generalize(1, &ty, &state);
+        let scheme = generalize(1, &ty, &mut state);
         assert!(scheme.type_vars.is_empty());
         assert_eq!(scheme.body, ty);
     }
@@ -4737,7 +4741,7 @@ mod tests {
         let ty = Type::TypeVar("a".into(), 2);
 
         // Generalize at level 1
-        let scheme = generalize(1, &ty, &state);
+        let scheme = generalize(1, &ty, &mut state);
 
         // The variable should NOT be generalized because it's bound to Int.
         // After applying substitution, the type is Int (no free vars).
@@ -6081,7 +6085,7 @@ mod tests {
         );
 
         // Generalize at level 1 — t_inner is bound to Int (concrete), not in the scheme body
-        let scheme = generalize(1, &Type::Int, &state);
+        let scheme = generalize(1, &Type::Int, &mut state);
         assert!(
             !scheme.type_vars.contains(&"t_inner".to_string()),
             "t_inner should not be generalized (it's bound to a concrete type)"

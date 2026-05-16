@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// Arena API methods are used only in tests and future Phase 3 (arena-eval) — suppress until migration is complete
 //! Arena allocation for thunks and environments (Phase 2 of arena allocation strategy).
 //!
 //! This module provides index-based arenas for thunks and environments, replacing the

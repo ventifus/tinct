@@ -372,8 +372,11 @@ pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<C
 ///
 /// Defense-in-depth: applies the current substitution first, per Damas & Milner (1982).
 /// Generalization must operate over the image of the substitution, not the raw type.
-pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
-    generalize_with_doc(level, ty, state, None)
+///
+/// Diagnostics are pushed to `state.diagnostics`. Uses a synthetic span (0:0) for warnings.
+/// Prefer `generalize_with_doc` when a real span is available.
+pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
+    generalize_with_doc(level, ty, state, None, crate::ast::Span::origin())
 }
 
 /// Generalize a type into a TypeScheme with optional documentation.
@@ -381,11 +384,16 @@ pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme {
 /// This is the core generalization function used by the type inference engine.
 /// The `doc` parameter allows threading documentation strings from source annotations
 /// into the TypeScheme for LSP hover display.
+///
+/// Ambiguous type variables (appearing in constraints but not in the type) trigger
+/// diagnostic warnings pushed to `state.diagnostics`. The `span` parameter provides
+/// source location for these warnings.
 pub fn generalize_with_doc(
     level: u32,
     ty: &Type,
-    state: &InferState,
+    state: &mut InferState,
     doc: Option<String>,
+    span: crate::ast::Span,
 ) -> TypeScheme {
     // Apply substitution first -- defense-in-depth per Damas & Milner (1982).
     // Generalization must operate over the image of the substitution.
@@ -453,13 +461,13 @@ pub fn generalize_with_doc(
             }
         };
 
-        // Helper: emit a diagnostic when an ambiguous type variable will be silently dropped.
-        let warn_ambiguous_typevar = |var_name: &str, constraint_context: &str| {
-            eprintln!(
-                "warning: ambiguous type variable '{}' in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                var_name,
-                constraint_context
-            );
+        // Helper: check if a variable was already discharged (bound to concrete type).
+        // Returns true if the constraint was satisfied during unification.
+        let is_discharged = |var_name: &str| -> bool {
+            subst_snapshot
+                .get(var_name)
+                .map(|t| !matches!(t, Type::TypeVar(_, _) | Type::Operator(_)))
+                .unwrap_or(false)
         };
 
         // Build generalizable constraints. For each constraint, resolve TypeVar names through one
@@ -490,8 +498,17 @@ pub fn generalize_with_doc(
                         // Diagnostic: ambiguous type variable in constraint
                         // (appears in constraint but not in the type — constraint will be silently dropped)
                         for var in &resolved_vars {
-                            if !generalizable_vars.contains(var) {
-                                warn_ambiguous_typevar(var, class);
+                            if !generalizable_vars.contains(var) && !is_discharged(var) {
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "ambiguous type variable '{}' in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                                        var,
+                                        class
+                                    ),
+                                    span,
+                                    code: "T013",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
                             }
                         }
                     }
@@ -511,7 +528,17 @@ pub fn generalize_with_doc(
                                 Some(Label::Var(resolved))
                             } else {
                                 // Diagnostic: ambiguous label variable
-                                warn_ambiguous_typevar(&resolved, "HasField");
+                                if !is_discharged(&resolved) {
+                                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                                        message: format!(
+                                            "ambiguous type variable '{}' in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                            resolved
+                                        ),
+                                        span,
+                                        code: "T013",
+                                        level: crate::error::DiagnosticLevel::Warn,
+                                    });
+                                }
                                 None // label not generalizable
                             }
                         }
@@ -527,11 +554,46 @@ pub fn generalize_with_doc(
                             });
                         } else {
                             // Diagnostic: ambiguous dict or field variable
-                            if !generalizable_vars.contains(&effective_dict) {
-                                warn_ambiguous_typevar(&effective_dict, "HasField");
-                            }
-                            if !generalizable_vars.contains(&effective_field) {
-                                warn_ambiguous_typevar(&effective_field, "HasField");
+                            let dict_ambiguous = !generalizable_vars.contains(&effective_dict);
+                            let field_ambiguous = !generalizable_vars.contains(&effective_field);
+
+                            if dict_ambiguous && field_ambiguous {
+                                // Emit one aggregated warning for both vars if at least one is not discharged
+                                let dict_discharged = is_discharged(&effective_dict);
+                                let field_discharged = is_discharged(&effective_field);
+
+                                if !dict_discharged || !field_discharged {
+                                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                                        message: format!(
+                                            "ambiguous type variables '{}', '{}' in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
+                                            effective_dict,
+                                            effective_field
+                                        ),
+                                        span,
+                                        code: "T013",
+                                        level: crate::error::DiagnosticLevel::Warn,
+                                    });
+                                }
+                            } else if dict_ambiguous && !is_discharged(&effective_dict) {
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "ambiguous type variable '{}' in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                        effective_dict
+                                    ),
+                                    span,
+                                    code: "T013",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
+                            } else if field_ambiguous && !is_discharged(&effective_field) {
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "ambiguous type variable '{}' in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                        effective_field
+                                    ),
+                                    span,
+                                    code: "T013",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
                             }
                         }
                     }

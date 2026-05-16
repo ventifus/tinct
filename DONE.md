@@ -6350,3 +6350,11 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] `imports.rs:613` — `resolve_includes` path traversal: beneath-check added after canonicalize()
 - [x] **[Minor]** `typecheck.rs:3594` — error message omits `bind:` and `kinds:` from valid key list (`src/typecheck.rs`)
 - [x] **[Minor]** Ambiguous TypeVar constraint — `fn@[bind: [a] constraint: [a: Comparable] return: Int]` silently drops constraint on `a` during generalization (classical ambiguous type variable, no diagnostic); add warning or error for TypeVar that appears in constraint but not in return type (`src/type_env.rs`)
+
+### health-diagnostic-followup: Structured diagnostics for ambiguous constraint warnings
+
+Follow-up from health-review6 panel (2026-05-16). Three deferred items:
+
+- [x] **[Minor]** `src/type_env.rs:457-463` — Convert `warn_ambiguous_typevar` from `eprintln!` to structured `TypeWarning` diagnostic visible in LSP and corpus `=== warn` sections; requires adding `Vec<TypeWarning>` output to `typecheck_file` (integration-verifier finding)
+- [x] **[Minor]** `src/type_env.rs:527-539` — HasField constraint: when both `effective_dict` and `effective_field` are non-generalizable, emit one aggregated warning instead of two separate calls to `warn_ambiguous_typevar` (integration-verifier finding)
+- [x] **[Minor]** `src/type_env.rs:480-491` — False-positive risk: dead constraints from already-discharged TypeVars trigger spurious warnings; before calling `warn_ambiguous_typevar`, check if the var is bound to a concrete type in `subst_snapshot` (indicating already-discharged) and skip the warning (computer-scientist finding; reference: HM(X) constraint lifecycle — Odersky, Sulzmann & Wehr 1999)
