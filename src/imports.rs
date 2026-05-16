@@ -614,6 +614,19 @@ fn resolve_includes(
             Ok(p) => p,
             Err(_) => continue, // Skip unresolvable paths
         };
+
+        // SECURITY: Verify resolved path is beneath the declared base directory.
+        // Prevents path traversal via `../../` sequences in include arguments.
+        // The runtime $include uses cap-std RESOLVE_BENEATH; we replicate that
+        // protection here for the LSP type-env path.
+        if let Some(base) = resolve_base {
+            if let Ok(canonical_base) = base.canonicalize() {
+                if !normalized.starts_with(&canonical_base) {
+                    continue; // Path escapes base — reject silently
+                }
+            }
+        }
+
         let path_key = normalized.to_string_lossy().to_string();
 
         // Check for cycles
