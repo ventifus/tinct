@@ -165,85 +165,161 @@ All type patterns in instance arms are binding lists. There are no constructor p
 
 The `[pattern [...]]` form is retired entirely — `[let ...]` is its replacement.
 
-### Match Arms
+### Match Arms — `[case ...]`
 
-Match arm keys with constructor patterns are a **distinct syntactic category** from binding lists. A binding list (`[let ...]`) scopes its bindings to whatever body or value follows the position it occupies. A structural pattern (`[Ok v]`) scopes its bindings to the arm body — a scoping rule that belongs to the pattern system, not to the expression system.
-
-`[Ok [let v]]: body` does not work: `[let v]` is nested inside the `Ok` expression. In expression semantics, `v` would scope to `[Ok ...]` itself — not to `body` across the `:`. There is no natural "what follows" for the inner `[let ...]`.
-
-The invariant therefore covers **binding list positions** only. Match arm keys with constructor patterns remain in pattern context — a distinct category where the pattern system determines scoping, not the expression/binding-list system.
-
-**Binding-only match arm keys** use `[let ...]` — here the scoping is natural because `[let ...]` occupies the entire arm key position, and its bindings scope to the value after `:`:
+The scoping problem with constructor patterns (`[Ok [let v]]: body` — `v` inside `[Ok ...]` can't scope to `body`) is resolved by introducing a `case` keyword that makes `[let ...]` the **first argument** to the arm form. Scoping then works exactly as `[fn [let params] body]`: bindings in the first-arg `[let ...]` scope to everything that follows in the same form.
 
 ```tinct
-[match x
-  [let n@Int]:   [+ n 1]    # [let ...] is the entire key; n scopes to body ✓
-  [let _]:       0]         # wildcard
+[match scrutinee
+  [case binding-pattern  body]
+  ...]
 ```
 
-**Constructor patterns** remain as they are — `[Ok v]` in pattern position, `v` introduced as a new binding scoped to the arm body by the pattern system:
+`binding-pattern` is `[let ...]` when new names are introduced, or a bare expression for exact-value matching:
 
 ```tinct
 [match result
-  [Ok v]:  v                # pattern context: v is a new binding, scopes to body
-  [Err e]: [log e]
-  _:       0]
+  [case [let v: Ok]    v]          # structural test, bind payload to v
+  [case [let e: Err]   [log e]]    # structural test, bind payload to e
+  [case [let _]        0]]         # wildcard
+
+[match status
+  [case 200            "ok"]       # exact value — no binding, bare expression
+  [case [let n@Int]    [str n]]]   # typed binding, no structural test
 ```
 
-The two forms coexist cleanly: `[let ...]` for pure binding arms (no structural test), existing constructor patterns for structural arms. Both are arm keys used before `:`.
+### Binding Patterns: `name: Constructor` Inside `[let ...]`
 
-**What this means for the invariant:** The rule "any bracket used as a binding list must start with `[let ...]`" holds. Constructor patterns are **not binding lists** — they are structural patterns. The parser distinguishes them: `[let ...]` (binding list) vs `[Constructor ...]` (structural pattern, where Constructor is an uppercase name). No ambiguity arises because lowercase-only brackets used as arm keys require `[let ...]`, while uppercase-head brackets are structural patterns.
+Inside `[let ...]` in case position, the context is **binding patterns** — not expressions. The implied-call rule is suspended; every identifier is a binding name.
+
+**`name: Constructor`** — single-payload structural test. Binding name first (what you're naming), constructor after `:` (the structural condition):
+
+```tinct
+[let v: Ok]       # v gets Ok's payload
+[let _: Ok]       # test Ok, discard payload
+[let n@Int: Ok]   # Ok's payload must be Int, bind to n
+```
+
+**`[name₁ name₂ ...]: Constructor`** — multi-payload. Bracket groups the binding names; constructor after `:`:
+
+```tinct
+[let [a b]: Pair]              # Pair has two components, bind to a and b
+[let [x@Float y@Float]: Point]
+[let [h _]: Cons]              # bind head, discard tail
+```
+
+Single payload uses a bare name (no bracket needed). Multiple payloads use a bracket to group them.
+
+**Nested structural patterns** — the binding pattern before `:` can itself contain a structural test, enabling arbitrary nesting:
+
+```tinct
+[let [[a b]: Pair]: Ok]    # Ok wrapping a Pair; bind components to a, b
+[let [v: Ok]: Some]        # Some wrapping Ok; bind Ok's payload to v
+```
+
+Inside `[let ...]`, brackets are always binding patterns — never expressions. This is the single, explicitly-scoped exception to the expression rule.
+
+**Plain bindings** (no structural test):
+
+```tinct
+[let n]        # bind n to scrutinee
+[let n@Int]    # bind n, type constraint
+[let _]        # wildcard
+```
+
+### Full Match Examples
+
+```tinct
+# Simple Ok/Err
+[match result
+  [case [let v: Ok]    v]
+  [case [let e: Err]   [log e]]
+  [case [let _]        0]]
+
+# Nullary constructors — no payload, no [let ...] needed
+[match option
+  [case None             0]
+  [case [let v: Some]    v]]
+
+# Multi-payload
+[match point
+  [case [let [x y]: Point]   [sqrt [+ [* x x] [* y y]]]]]
+
+# Nested constructor
+[match wrapped
+  [case [let [[a b]: Pair]: Ok]   [+ a b]]
+  [case [let _: Err]               0]]
+
+# Exact-value match
+sentinel: [Ok "ping"]
+[match response
+  [case sentinel           "pong"]
+  [case [let msg: Ok]      [str "got: " msg]]
+  [case [let _: Err]       "error"]]
+```
 
 ### What `[let ...]` Does Not Do
 
 `[let ...]` is a binding DECLARATION — it introduces names into a scope. It is not:
 
 - A let-expression with values (there is no `[let x 5  x + 1]` form — dict entries `x: 5` handle that)
-- A structural pattern (constructor patterns `[Ok v]` have pattern-specific scoping that cannot be expressed as a binding list — `v` must scope to the arm body across the `:`, which the `[let ...]` expression model cannot express when nested inside another expression)
+- A standalone structural pattern test: the structural test (`Ok`, `Pair`, etc.) in a binding pattern only appears after `:` inside `[let ...]` in case position — never independently
 - A type-level expression (type dicts and type-stage expressions are distinct)
-
-Structural patterns in match arms are a different syntactic category from binding lists, with their own scoping rules managed by the pattern system. The `[let ...]` reform does not touch this category.
 
 ### Parsing Invariant
 
-After this change, the parser has one complete rule for brackets:
+After this change, the parser has two complete rules for brackets:
 
-> A bracket starting with `let` is always a binding declaration list (`Expr::LetDecl`). Every other bracket is always an expression — evaluated as an implied call if its first element is an identifier in call position, or as a positional/keyed dict otherwise.
+> 1. A bracket starting with `let` is always a binding declaration list (`Expr::LetDecl`). Inside `[let ...]`, brackets are binding patterns (not expressions), and `:` separates binding names from structural tests.
+> 2. Every other bracket is always an expression — evaluated as an implied call if its first element is an identifier in call position, or as a positional/keyed dict otherwise.
 
-No context-specific exceptions. No "binding mode" that activates for certain keywords.
+The single context-specific rule: inside `[let ...]`, the implied-call rule is suspended. This suspension is always explicitly established by the `let` keyword — it is never implicit.
+
+`[case ...]` arms use `[let ...]` as their first argument, making the scoping of bindings to the arm body explicit and unambiguous — the same mechanism as `[fn [let params] body]`.
 
 ## What Would Change
 
-### `src/lexer.rs` — `Token::Let` keyword
+### `src/lexer.rs` — `Token::Let` and `Token::Case` keywords
 
-**Current:** No `let` keyword. `let` would tokenize as `Token::Identifier("let")`.  
-**Proposed:** Add `let` to the keyword table. `Token::Let`. The identifier `let` is no longer available as a variable name.  
-**Impact:** Minor — one new token.
+**Current:** Neither `let` nor `case` exists as a keyword.  
+**Proposed:** Add both to the keyword table: `Token::Let` and `Token::Case`. Neither identifier is available as a variable name.  
+**Impact:** Minor — two new tokens.
 
 ### `src/ast.rs` — `Expr::LetDecl`
 
-**Current:** No `Expr::LetDecl` variant.  
+**Current:** No `Expr::LetDecl` or `Expr::CaseArm` variants.  
 **Proposed:**
 ```rust
 Expr::LetDecl {
-    bindings: Vec<Spanned<Expr>>,  // each: VarRef (bare name), Annotated (name@Type), or Wildcard (_)
+    // Each element: VarRef (name), Annotated (name@Type or name:Constructor),
+    // Wildcard (_), or LetDecl (nested bracket binding pattern)
+    bindings: Vec<Spanned<Expr>>,
+}
+
+Expr::CaseArm {
+    pattern: Box<Spanned<Expr>>,   // Expr::LetDecl or any expression (exact-value match)
+    body: Box<Spanned<Expr>>,
 }
 ```
-**Impact:** Minor — one new AST variant; all exhaustive match arms gain a `LetDecl` arm (mechanical).
+**Impact:** Minor — two new AST variants; all exhaustive match arms gain new arms (mechanical).
 
-### `src/parser.rs` — `StackFrame::LetDecl` and frame updates
+### `src/parser.rs` — `StackFrame::LetDecl`, `StackFrame::CaseDecl`, and frame updates
 
-**Current:** fn/class/type frames apply context-specific "binding mode" to their first bracket.  
-**Proposed:** New `StackFrame::LetDecl` collects binding entries and closes to `Expr::LetDecl`. The `[let ...]` form is parsed using the existing fn-param-list path. Enclosing frames (`Fn`, `ClassDecl`, `TypeAlias`, `InstanceDecl`, `Match`) receive `Expr::LetDecl` via `push_expr_to_parent` and treat it as their binding list.
+**Current:** fn/class/type frames apply context-specific "binding mode" to their first bracket. Match arms use `pending_pattern_expr` with `expr_to_pattern_with_guard` conversion.  
+**Proposed:**
 
-Per-keyword changes:
+`StackFrame::LetDecl` — collects binding entries in **binding-pattern mode**: inside this frame, brackets are binding patterns (not expressions), and `:` is a structural-test separator. Entries are `Expr::Annotated`, `VarRef`, `Wildcard`, or nested `Expr::LetDecl`. Closes to `Expr::LetDecl { bindings }`.
+
+`StackFrame::CaseDecl` — handles `[case pattern body]`. First expression received becomes the pattern (either `Expr::LetDecl` or a bare expression for exact-value match). Second expression becomes the body. Closes to `Expr::CaseArm { pattern, body }`.
+
+Per-frame changes:
 - `StackFrame::Fn`: first expression must be `Expr::LetDecl`; parse error otherwise
 - `StackFrame::ClassDecl`: first expression must be `Expr::LetDecl` (the TypeVar list)
-- `StackFrame::TypeAlias`: if first expression is `Expr::LetDecl`, it is the param list; otherwise it is the body (no-param alias)
+- `StackFrame::TypeAlias`: first `Expr::LetDecl` (if present) = param list; otherwise first expression = body
 - `StackFrame::InstanceDecl`: `Expr::LetDecl` followed by `:` = arm key
-- `StackFrame::Match`: `Expr::LetDecl` followed by `:` = binding arm key
+- `StackFrame::Match`: `Expr::CaseArm` = new-style arm; existing `pending_pattern_expr` path = legacy shorthands (both coexist)
 
-**Impact:** Moderate — removes three context-specific binding-mode bracket handlers; adds one new `StackFrame::LetDecl`; updates five enclosing frames.
+**Impact:** Moderate — two new StackFrame variants; removes three context-specific binding-mode handlers; updates five enclosing frames.
 
 ### `src/typecheck.rs` — binding extraction from `Expr::LetDecl`
 
