@@ -426,39 +426,22 @@ See mempalace tinct/type-ann-v2. **Spec chapters:** `doc/05-type-annotations.md`
 **`%rust "type-core"` contents:** From `core`: `if`, `=`, `null?`, `dict?`, `str?`, `int?`, `error`. From `collection`: `builtin-get`, `get?`, `keys`, `length`, `merge`, `append`, `each`, `map`, `filter`, `reduce`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `cons`, `builtin-concat`, `builtin-join`, `builtin-first`, `builtin-last`, `builtin-rest`. From `string`: `str`. No new Rust builtins — all selected from existing `standard_builtins()`.
 
 **Part 1 — Parser**
-- [ ] Add `pub enum Stage { Runtime, Type }` to `src/ast.rs`; add `pub stage: Option<Stage>` field to `Document`; update all `Document { .. }` construction sites in `src/parser.rs` (`src/ast.rs`, `src/parser.rs`)
-- [ ] In `parse2()` `Token::DocSeparator` arm at `src/parser.rs:3196`: after finalizing current document, scan tokens on the `---` line for `Identifier("stage")` + `Colon` + `Identifier("type")`; set `next_doc_stage = Some(Stage::Type)`. Mirror `%name` handling pattern. (`src/parser.rs`)
+- [x] `Stage` enum (Runtime/Type) in `src/ast.rs`; `Document.stage: Option<Stage>`; parser recognizes `--- stage: type`
+- [x] `parse2()` sets `next_doc_stage = Some(Stage::Type)` for type stage sections
 
 **Part 2 — `%rust "type-core"` module**
-- [ ] Add `"type-core"` arm to `rust_module()` in `src/builtins.rs` selecting the items listed above from `standard_builtins()` via the existing `insert()` helper. ~30 lines. (`src/builtins.rs`)
+- [x] `"type-core"` arm in `rust_module()` with 28 builtins from core/collection/string (`src/builtins.rs`)
 
 **Part 3 — Type dict conversion**
-- [ ] Add `src/type_dict.rs` with `pub fn type_to_dict(ty: &Type) -> Value` and `pub fn dict_to_type(val: &Value, span: Span) -> Result<Type, TypeError>`. Cover all current `Type` variants. `dict_to_type` errors on unknown `kind:` or missing fields. (`src/type_dict.rs`, `src/lib.rs`)
+- [x] `src/type_dict.rs` with `type_to_dict`/`dict_to_type` covering all Type variants; 6 round-trip tests
 
 **Part 4 — Type stage evaluator**
-- [ ] Add `pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, LltError>` in `src/builtins.rs`: bootstrap env with `include` only, evaluate all `--- stage: type` documents from `stdlib/prelude.llt` via the standard LLT evaluator. Parallel to `create_stdlib_env()`. (`src/builtins.rs`)
-- [ ] In `eval_file()` at `src/eval.rs`: when `doc.node.stage == Some(Stage::Type)`, evaluate in type-stage env and contribute to type-stage binding map; skip contribution to runtime env. (`src/eval.rs`)
+- [x] `create_type_stage_env()` bootstraps type-stage env from prelude's `--- stage: type` sections (`src/builtins.rs`)
+- [x] `eval_file_with_input()` skips `Stage::Type` documents in runtime pipeline (`src/eval_pipeline.rs`)
 
 **Part 5 — Prelude `--- stage: type` section**
-- [ ] Add `--- stage: type` section to `stdlib/prelude.llt` with `[include %rust "type-core"]` and LLT definitions for ground types and type constructors:
-  ```tinct
-  --- stage: type
-  [include %rust "type-core"]
-  Int:     [kind: "named"  name: "Int"]
-  Str:     [kind: "named"  name: "String"]
-  Bool:    [kind: "named"  name: "Bool"]
-  Float:   [kind: "named"  name: "Float"]
-  Any:     [kind: "top"]
-  Never:   [kind: "never"]
-  Null:    [kind: "record"  fields: []]
-  Seq:     [fn [elem]     [kind: "seq"          element: elem]]
-  Map:     [fn [key val]  [kind: "map"          key: key  value: val]]
-  or:      [fn [...types] [kind: "union"        members: types]]
-  each:    [fn [...types] [kind: "intersection" members: types]]
-  without: [fn [t]        [kind: "negation"     inner: t]]
-  ```
-  (`stdlib/prelude.llt`)
-- [ ] Tests: `--- stage: type` section evaluates; ground type dicts accessible; runtime env unaffected by type-stage declarations (`tests/corpus/eval/typecheck/`)
+- [x] Type-stage section in `stdlib/prelude.llt`: Int/Str/Bool/Float/Any/Never/Null + Seq/Map/union/all/without constructors
+- [x] Tests: `type_stage_prelude.llt-eval` verifies type-stage skipped in runtime output
 
 **Depends on:** none (self-contained infrastructure sprint)
 

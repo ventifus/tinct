@@ -1920,10 +1920,7 @@ pub fn materialize(
 
         match func_value {
             Value::Function {
-                params,
-                body,
-                env,
-                ..
+                params, body, env, ..
             } => {
                 // Build CallContext and invoke the function
                 let call_ctx = CallContext {
@@ -4317,6 +4314,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let ctx = test_ctx();
         let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
@@ -4356,6 +4354,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let ctx = test_ctx();
         let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
@@ -4394,6 +4393,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let ctx = test_ctx();
         let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
@@ -4421,6 +4421,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let err = eval_document(&doc, empty_env(), &test_ctx()).unwrap_err();
         assert!(
@@ -4444,6 +4445,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
@@ -4486,6 +4488,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let ctx = test_ctx();
         let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
@@ -4525,6 +4528,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let ctx = test_ctx();
         let thunk = eval_document(&doc, parent_env, &ctx).unwrap();
@@ -4548,6 +4552,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let thunk = eval_document(&doc, empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
@@ -4583,6 +4588,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let ctx = test_ctx();
         let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
@@ -4622,6 +4628,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let ctx = test_ctx();
         let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
@@ -4647,6 +4654,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc],
@@ -4679,6 +4687,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc],
@@ -4713,6 +4722,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4726,6 +4736,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4753,6 +4764,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4763,6 +4775,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4802,6 +4815,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4815,6 +4829,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4847,6 +4862,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![
@@ -4866,6 +4882,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc3 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4879,6 +4896,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc1, doc2, doc3],
@@ -4909,6 +4927,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -4919,6 +4938,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc1, doc2],
@@ -4975,6 +4995,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc],
@@ -5006,6 +5027,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -5016,6 +5038,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc3 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![
@@ -5038,6 +5061,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc1, doc2, doc3],
@@ -5079,6 +5103,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let doc2 = sp(Document {
             expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
@@ -5089,6 +5114,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         // Doc 3: references %early.x, which forces doc1's x thunk to materialise.
         // x = %late.value, but %late is not bound in doc1's scope, so this must fail.
@@ -5104,6 +5130,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         });
         let file = File {
             documents: vec![doc1, doc2, doc3],

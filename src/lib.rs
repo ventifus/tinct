@@ -34,6 +34,8 @@ pub mod parser;
 pub mod resolve;
 #[cfg(test)]
 pub(crate) mod test_util;
+#[allow(dead_code)]
+pub(crate) mod type_dict;
 pub mod typecheck;
 pub(crate) mod types;
 pub(crate) mod value;
@@ -91,7 +93,8 @@ pub use eval_deep::deep_materialize;
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
 pub use builtins::{
-    create_root_env, create_stdlib_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
+    create_root_env, create_stdlib_env, create_type_stage_env, json_to_value, MAX_COLLECT_SIZE,
+    MAX_FILE_SIZE,
 };
 
 /// Import resolution for the type checker.
@@ -295,8 +298,7 @@ pub fn eval_source_with_cap_net(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx =
-        eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
+    let ctx = eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
 
     if !no_fs {
         if let Ok(pwd_dir) =
@@ -1905,7 +1907,11 @@ mod tests {
     #[test]
     fn test_do_macro_err_propagation() {
         let result = eval_source("[do result [x: [Ok 1]] [y: [Err \"fail\"]] [Ok [+ x y]]]");
-        assert!(result.is_ok(), "expected Ok result from eval, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "expected Ok result from eval, got: {:?}",
+            result
+        );
         let output = result.unwrap();
         assert!(
             output.contains("fail"),

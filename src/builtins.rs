@@ -366,8 +366,7 @@ pub(crate) use crate::builtins_meta::{
     builtin_decimal, builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast,
     builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
     builtin_include, builtin_int_check, builtin_llt_repr, builtin_null_check, builtin_str_check,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
-    builtin_variant,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1839,6 +1838,40 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "eval-ast");
             insert(&env, "proxy");
         }
+        "type-core" => {
+            // Core primitives needed for type system implementation
+            // From core
+            insert(&env, "if");
+            insert(&env, "=");
+            insert(&env, "null?");
+            insert(&env, "dict?");
+            insert(&env, "str?");
+            insert(&env, "int?");
+            insert(&env, "error");
+            // From collection
+            insert(&env, "builtin-get");
+            insert(&env, "get?");
+            insert(&env, "keys");
+            insert(&env, "length");
+            insert(&env, "merge");
+            insert(&env, "append");
+            insert(&env, "each");
+            insert(&env, "map");
+            insert(&env, "filter");
+            insert(&env, "reduce");
+            insert(&env, "builtin-seq");
+            insert(&env, "builtin-head");
+            insert(&env, "builtin-tail");
+            insert(&env, "builtin-collect");
+            insert(&env, "builtin-cons");
+            insert(&env, "builtin-concat");
+            insert(&env, "builtin-join");
+            insert(&env, "builtin-first");
+            insert(&env, "builtin-last");
+            insert(&env, "builtin-rest");
+            // From string
+            insert(&env, "str");
+        }
         _ => return Err(format!("unknown Rust module: {}", name)),
     }
 
@@ -2057,9 +2090,9 @@ std::thread_local! {
 /// Returns None if create_stdlib_env has not yet been called on this thread.
 pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Rc<RefCell<crate::arena::ThunkArena>>> {
     STDLIB_ARENA_CACHE.with(|c| {
-        c.borrow().as_ref().map(|stdlib_arena| {
-            Rc::new(RefCell::new(stdlib_arena.borrow().clone_for_child()))
-        })
+        c.borrow()
+            .as_ref()
+            .map(|stdlib_arena| Rc::new(RefCell::new(stdlib_arena.borrow().clone_for_child())))
     })
 }
 
@@ -2206,6 +2239,94 @@ fn create_stdlib_env_inner() -> Result<
     Ok((stdlib_env, arena))
 }
 
+/// Create the type-stage environment used when evaluating type-stage documents.
+///
+/// This function parses the prelude, filters to only `--- stage: type` documents,
+/// and evaluates them with a minimal bootstrap context containing only `include`
+/// and `%rust "type-core"`.
+///
+/// The type-stage env is separate from the runtime stdlib env — it contains only
+/// the bindings defined in type-stage documents (e.g., `Int`, `Str`, `Seq`, `union`).
+///
+/// Returns the type-stage environment wrapped in `Rc<RefCell<Environment>>`.
+pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
+    // Parse the prelude source
+    let prelude_source = include_str!("../stdlib/prelude.llt");
+    let mut file = crate::parser::parse(prelude_source).map_err(|e| {
+        crate::error::EvalError::internal(
+            format!("type-stage prelude parse error: {e}"),
+            Span::origin(),
+        )
+    })?;
+
+    // Desugar and resolve
+    crate::desugar::desugar_file(&mut file.node);
+    crate::resolve::resolve_file(&file.node);
+
+    // Create minimal bootstrap env: include + %rust
+    let bootstrap_env = create_bootstrap_env();
+
+    // Create a bootstrap EvalContext
+    let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| {
+            Box::new(crate::error::EvalError::internal(
+                format!("cannot open type-stage bootstrap base_dir: {e}"),
+                Span::origin(),
+            ))
+        })?;
+    let bootstrap_ctx =
+        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
+
+    // Create type-stage env as a child of bootstrap_env
+    let type_stage_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+        &bootstrap_env,
+    ))));
+
+    // Filter to only stage: type documents and evaluate them
+    for doc in &file.node.documents {
+        if doc.node.stage == Some(crate::ast::Stage::Type) {
+            // Evaluate this type-stage document
+            let result = crate::eval::eval_document(
+                doc,
+                Rc::clone(&type_stage_env),
+                &bootstrap_ctx,
+            )?;
+
+            // Materialize and extract bindings
+            let val = crate::eval::materialize(&result, None, &bootstrap_ctx)?;
+
+            let dict = match val {
+                Value::Dict(map) => map,
+                Value::Overlay(l_id, r_id) => {
+                    flatten_overlay(&l_id, &r_id, "type-stage prelude", &bootstrap_ctx, doc.span)?
+                }
+                other => {
+                    return Err(crate::error::EvalError::internal(
+                        format!(
+                            "type-stage document must evaluate to a Dict, got {}",
+                            other.type_name()
+                        ),
+                        doc.span,
+                    )
+                    .into())
+                }
+            };
+
+            // Insert bindings into type-stage env
+            for (key, thunk_id) in dict {
+                let name = match key {
+                    Key::String(s) => s,
+                    Key::Int(n) => n.to_string(),
+                };
+                let thunk = bootstrap_ctx.get_thunk(thunk_id);
+                type_stage_env.borrow_mut().insert(name, thunk);
+            }
+        }
+    }
+
+    Ok(type_stage_env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2330,6 +2451,31 @@ mod tests {
             Value::Dict(IndexMap::new()),
             test_span(1, 1, 1, 5),
         ))
+    }
+
+    #[test]
+    fn test_create_type_stage_env_succeeds() {
+        // Test that create_type_stage_env() successfully creates an environment
+        // with the type-stage prelude bindings
+        let type_env = create_type_stage_env().expect("create_type_stage_env failed");
+
+        // Check that Int is defined
+        assert!(
+            type_env.borrow().get("Int").is_some(),
+            "Int should be defined in type-stage env"
+        );
+
+        // Check that Str is defined
+        assert!(
+            type_env.borrow().get("Str").is_some(),
+            "Str should be defined in type-stage env"
+        );
+
+        // Check that union is defined
+        assert!(
+            type_env.borrow().get("union").is_some(),
+            "union should be defined in type-stage env"
+        );
     }
 
     #[test]
@@ -6450,7 +6596,8 @@ mod tests {
         let (_env, arena) = create_stdlib_env_with_arena().expect("failed to create stdlib env");
 
         // Verify the cache is populated by create_stdlib_env_with_arena
-        let cached_arena = new_arena_with_stdlib_snapshot().expect("arena cache should be populated after create_stdlib_env_with_arena");
+        let cached_arena = new_arena_with_stdlib_snapshot()
+            .expect("arena cache should be populated after create_stdlib_env_with_arena");
 
         // The cached arena should be a snapshot of the stdlib arena
         assert_eq!(

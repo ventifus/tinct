@@ -1,6 +1,6 @@
 [assert false "user assertion failed"]
 === error
-[E080] user assertion failed (defined at 1432:106-1432:117)
-  in [error ...] at 1432:106-1432:117
-  in [builtin-if ...] at 1432:84-1432:118
+[E080] user assertion failed (defined at 1469:106-1469:117)
+  in [error ...] at 1469:106-1469:117
+  in [builtin-if ...] at 1469:84-1469:118
   in [assert ...] at 1:1-1:39

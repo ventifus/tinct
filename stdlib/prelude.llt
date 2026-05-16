@@ -1,3 +1,40 @@
+--- stage: type
+# ============================================================================
+# Type-Stage Prelude
+# ============================================================================
+#
+# This section is evaluated separately from the runtime prelude by
+# create_type_stage_env() in src/builtins.rs. It provides type constructors
+# and helpers used during type inference and annotation resolution.
+#
+# Available builtins (from %rust "type-core"):
+#   if, =, null?, dict?, str?, int?, error
+#   builtin-get, get?, keys, length, merge, append
+#   each, map, filter, reduce
+#   builtin-seq, builtin-head, builtin-tail, builtin-collect
+#   builtin-cons, builtin-concat, builtin-join
+#   builtin-first, builtin-last, builtin-rest
+#   str
+
+[include %rust "type-core"]
+
+[
+  Int:     [kind: "named"  name: "Int"]
+  Str:     [kind: "named"  name: "String"]
+  Bool:    [kind: "named"  name: "Bool"]
+  Float:   [kind: "named"  name: "Float"]
+  Any:     [kind: "top"]
+  Never:   [kind: "never"]
+  Null:    [kind: "record"  fields: []]
+  Seq:     [fn [elem]     [kind: "seq"          elem: elem]]
+  Map:     [fn [key val]  [kind: "map"          key: key  value: val]]
+  union:   [fn [...types] [kind: "union"        members: types]]
+  all:     [fn [...types] [kind: "intersection" members: types]]
+  without: [fn [t]        [kind: "negation"     inner: t]]
+]
+
+---
+
 # ============================================================================
 # LLT Standard Library (Prelude)
 # ============================================================================

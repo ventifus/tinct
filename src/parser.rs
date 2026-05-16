@@ -1417,6 +1417,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
     let mut next_doc_output_type: Option<Spanned<Annotation>> = None;
     let mut next_doc_expects: Option<Spanned<Annotation>> = None;
     let mut next_doc_caps: Option<Spanned<Vec<(String, Annotation)>>> = None;
+    let mut next_doc_stage: Option<Stage> = None;
 
     // Convert to index-based iteration for peeking
     let token_vec = tokens;
@@ -3221,6 +3222,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         output_type: next_doc_output_type.take(),
                         expects: next_doc_expects.take(),
                         caps: next_doc_caps.take(),
+                        stage: next_doc_stage.take(),
                     },
                     doc_span,
                 ));
@@ -3477,6 +3479,58 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             let caps_end = token_vec[i - 1].span.end;
                             next_doc_caps =
                                 Some(Spanned::new(caps_vec, Span::new(caps_start, caps_end)));
+                        }
+                        Token::Identifier(s) if s == "stage" => {
+                            // stage: pragma
+                            if next_doc_stage.is_some() {
+                                return Err(ParseError {
+                                    message: "duplicate stage: pragma in header".to_string(),
+                                    span: Some(token_vec[i].span),
+                                });
+                            }
+                            i += 1;
+                            // Expect colon
+                            if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
+                                return Err(ParseError {
+                                    message: "expected ':' after 'stage' pragma".to_string(),
+                                    span: Some(if i < token_vec.len() {
+                                        token_vec[i].span
+                                    } else {
+                                        token_vec[i - 1].span
+                                    }),
+                                });
+                            }
+                            i += 1;
+                            // Parse identifier (only "type" is valid for now)
+                            match &token_vec.get(i).map(|t| &t.node) {
+                                Some(Token::Identifier(stage_name))
+                                    if stage_name.as_str() == "type" =>
+                                {
+                                    next_doc_stage = Some(Stage::Type);
+                                    i += 1;
+                                }
+                                Some(Token::Identifier(stage_name)) => {
+                                    return Err(ParseError {
+                                        message: format!(
+                                            "unknown stage: '{}' (expected 'type')",
+                                            stage_name
+                                        ),
+                                        span: Some(token_vec[i].span),
+                                    });
+                                }
+                                _ => {
+                                    return Err(ParseError {
+                                        message:
+                                            "expected stage name after 'stage:' (expected 'type')"
+                                                .to_string(),
+                                        span: Some(if i < token_vec.len() {
+                                            token_vec[i].span
+                                        } else {
+                                            token_vec[i - 1].span
+                                        }),
+                                    });
+                                }
+                            }
                         }
                         Token::At | Token::ImmediateAt => {
                             // Standalone @Type annotation (no name)
@@ -3928,6 +3982,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             output_type: next_doc_output_type.take(),
             expects: next_doc_expects.take(),
             caps: next_doc_caps.take(),
+            stage: next_doc_stage.take(),
         };
         let doc_span = Span {
             start: Position {
@@ -3950,6 +4005,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             output_type: next_doc_output_type.take(),
             expects: next_doc_expects.take(),
             caps: next_doc_caps.take(),
+            stage: next_doc_stage.take(),
         };
         let doc_span = Span {
             start: Position {

@@ -1,0 +1,13 @@
+# Test that type-stage documents are skipped in runtime evaluation
+# The type-stage section should not contribute to the output
+
+--- stage: type
+[include %rust "type-core"]
+[
+  # Type-stage content
+  TypeHelper: [fn [x] [merge x [extra: "from-type-stage"]]]
+]
+
+---
+# Runtime section
+[result: "runtime-only"]

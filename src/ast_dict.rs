@@ -1224,7 +1224,10 @@ fn annotation_to_thunk_id(
         Annotation::Annotated(name, inner) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("annotated"), span))),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    string_val("annotated"),
+                    span,
+                ))),
             );
             dict.insert(
                 Key::String("name".into()),
@@ -2178,6 +2181,7 @@ mod tests {
                 output_type: None,
                 expects: None,
                 caps: None,
+                stage: None,
             })],
         };
         let opts = AstToDictOpts::default();

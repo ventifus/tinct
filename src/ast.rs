@@ -68,6 +68,13 @@ impl<T> Spanned<T> {
     }
 }
 
+/// Document stage — determines how the document is evaluated
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stage {
+    Runtime,
+    Type,
+}
+
 /// A complete LLT file -- one or more documents separated by ---
 #[derive(Debug, Clone, PartialEq)]
 pub struct File {
@@ -82,6 +89,7 @@ pub struct Document {
     pub output_type: Option<Spanned<Annotation>>,
     pub expects: Option<Spanned<Annotation>>,
     pub caps: Option<Spanned<Vec<(String, Annotation)>>>,
+    pub stage: Option<Stage>,
 }
 
 /// The central expression type
@@ -367,7 +375,7 @@ pub enum LiteralPattern {
 pub enum Annotation {
     Simple(String),
     PropertyDict(Vec<Spanned<Entry>>),
-    Annotated(String, Box<Annotation>),  // e.g., Seq@Int = Annotated("Seq", Simple("Int"))
+    Annotated(String, Box<Annotation>), // e.g., Seq@Int = Annotated("Seq", Simple("Int"))
 }
 
 impl Annotation {
@@ -944,6 +952,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         };
         assert_eq!(format!("{doc}"), "42");
     }
@@ -960,6 +969,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         };
         assert_eq!(format!("{doc}"), "x\n10\ntrue");
     }
@@ -972,6 +982,7 @@ mod tests {
             output_type: None,
             expects: None,
             caps: None,
+            stage: None,
         };
         assert_eq!(format!("{doc}"), "");
     }
@@ -985,6 +996,7 @@ mod tests {
                 output_type: None,
                 expects: None,
                 caps: None,
+                stage: None,
             })],
         };
         assert_eq!(format!("{file}"), "1");
@@ -1000,6 +1012,7 @@ mod tests {
                     output_type: None,
                     expects: None,
                     caps: None,
+                    stage: None,
                 }),
                 sp(Document {
                     expressions: vec![Rc::new(sp(Expr::Int(2)))],
@@ -1007,6 +1020,7 @@ mod tests {
                     output_type: None,
                     expects: None,
                     caps: None,
+                    stage: None,
                 }),
             ],
         };

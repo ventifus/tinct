@@ -266,6 +266,11 @@ pub fn eval_file_with_input(
     let mut named: IndexMap<String, Rc<Thunk>> = IndexMap::new();
 
     for doc in &file.documents {
+        // Skip type-stage documents — they are handled separately by create_type_stage_env()
+        if doc.node.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+
         // Each document gets a fresh scope with % and %name bindings
         let doc_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
 
