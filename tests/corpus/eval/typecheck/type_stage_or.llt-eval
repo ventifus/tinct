@@ -1,0 +1,8 @@
+# @[or Int Null] annotation syntax: type-stage `or` keyword maps to Union(Int, Null).
+# `or` is the type-stage function name for union — it maps directly to Type::Union
+# without needing runtime eval machinery. `Null` is the empty record type.
+# The value 42 satisfies Union(Int, Null) because Int is a member.
+# TypeAssert form: [@[or Int Null] 42] checks 42 against Union(Int, Null).
+[@[or Int Null] 42]
+=== out
+Int(42)
