@@ -438,6 +438,29 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 ---
 
+## Codebase Health (Review #4, 2026-05-15)
+
+### health-review4: Missing tests, eval bug, type checker gap, empty-record soundness, doc accuracy
+
+**Critical — missing corpus tests (test-crafter):**
+- [ ] **[Critical]** `ctor-app` feature has zero corpus tests — `resolve_type_dict`/`resolve_type_expr`/`resolve_annotation` ctor-app arms untested; add `ctor_app_seq.llt-eval`, `ctor_app_map_two_args.llt-eval`, `ctor_app_map_one_arg.llt-eval`, arity error tests (`tests/corpus/eval/typecheck/`, `tests/corpus/eval/type_errors/`)
+- [ ] **[Critical]** `constraint_each` and `constraint_mptc_undeclared` test files were never written to disk; add corpus tests for `fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]` and MPTC error path
+
+**Major — eval correctness (eval-engine):**
+- [ ] **[Major]** `Cont::Memoize { restore: None }` in GuardedValidate default-fallback branches — if default expr hits DepthExceeded, outer thunk stuck permanently in InProgress; pass `RestoreState::Guarded` into these Memoize continuations (`src/eval_materialize.rs:1061-1068,1086-1093,1141-1148`)
+
+**Major — type checker pipeline (integration-verifier):**
+- [ ] **[Major]** `Stage::Type` documents not skipped in type checker loops — type-check both entry points ignore `doc.node.stage`, causing spurious errors from type-stage code and corrupting `pipeline_type` threading through `---` boundaries; add `if doc.node.stage == Some(Stage::Type) { continue; }` to both loops (`src/typecheck.rs:65,351`)
+
+**Major — type soundness (type-theorist + stdlib-author):**
+- [ ] **[Major]** `satisfies_constraint` empty-record vacuous truth — `Numeric(Record({}))` returns true via vacuous `.all()` which is unsound; add `if row.fields.is_empty() { return !matches!(class_name, "Numeric" | "Comparable"); }` guard (`src/type_unify.rs:63`)
+- [ ] **[Major]** `infer_fn` metadata key dispatch missing `"bind"` and `"kinds"` — `fn@[bind: something]` without `return:`/`constraint:`/`doc:` silently skips `resolve_fn_metadata`; add `|| s == "bind" || s == "kinds"` to check (`src/typecheck.rs:3583`)
+- [ ] **[Major]** `sorted` has dead constraint — `constraint: [a: Comparable]` creates orphaned TypeVar not unified with `xs` element type; fix annotation or remove constraint
+
+**Major — doc accuracy (grammar-architect):**
+- [ ] **[Major]** `doc/15-ast.md` multiple inaccuracies: `Fn.body`/`Entry.value`/`NamedArg.value` show `Box`/`Spanned` but are `Rc`/`Rc<Spanned>`; `DefMacro` shows `{ name, transformer }` but is `{ name, params, body }`; `Annotation` enum missing `Annotated(String, Box<Annotation>)` variant; `TypeApp` and `Error` rows missing from node semantics table (`doc/15-ast.md`)
+- [ ] **[Major]** `stage:` pragma absent from `doc/02-syntax.md` section-header table and `doc/09-documents.md` (`doc/02-syntax.md`, `doc/09-documents.md`)
+
 ---
 
 ## Standard Library Boundary
