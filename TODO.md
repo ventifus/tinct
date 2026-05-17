@@ -8,19 +8,6 @@ See DONE.md for the full history of completed sprints.
 
 `chr-unification` accepted 2026-05-16 (commits 0886ef1, 7d15c36). See `doc/whatif/chr-unification.md` and `doc/feature/chr-unification.md`. Implementation order: chr-module-split → chr-normalization → chr-class-instance → chr-prelude.
 
-### chr-normalization: Add Type::TypeStageApp and the normalization subsystem
-
-Implements the central mechanism: `normalize()` unifies FD improvement, TypeStageApp reduction, literal widening, and alias expansion into one pass called before every unification step.
-
-- [ ] Add `Type::TypeStageApp { fn_name: String, args: Vec<Type> }` to `src/type_def.rs`; add stub `unreachable!()` arms at all exhaustive match sites (~40–60 sites in `type_def.rs`, `type_unify.rs`, `type_env.rs`, `typecheck.rs`, `typecheck_annot.rs`, `typecheck_dict.rs`); update `collect_type_vars`, `occurs_in`, `has_type_vars` to recurse into `TypeStageApp.args` (`src/type_def.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs`)
-- [ ] Add `[kind: "type-stage-app"  fn: String  args: [...]]` to `type_to_dict`/`dict_to_type` in `src/type_dict.rs` (`src/type_dict.rs`)
-- [ ] Implement `normalize()` in `src/type_normalize.rs`: 6 steps in order — substitution, TypeStageApp reduction (args', cycle detection, depth guard, eval resolver, convert result), BAS simplification, literal widening, alias expansion (rational-tree detection → Type::Recursive), recursive normalization (`src/type_normalize.rs`)
-- [ ] Thread `NormCtxt` through `unify()` and `unify_normalized()` in `src/type_unify.rs`: call `normalize(a)` and `normalize(b)` before every unification; replace scattered literal-widening (`promote_literal_for_constrained_var`, `widen_literal_for_constraint`) and alias-expansion calls with `normalize` (`src/type_unify.rs`)
-- [ ] Implement all 5 `TypeStageApp` cases in `unify_normalized()`: (1) same-fn injective → pairwise arg unification, (2) same-fn non-injective → add to `deferred_equalities`, (3) different-fn → TypeError, (4) stuck vs ConcreteType → TypeError, (5) vs TypeVar → bind with occurs-check traversing args (`src/type_unify.rs`)
-- [ ] Add `deferred_equalities: Vec<(Type, Type)>` to `InferState`; implement deferred-equality processing loop at end of `unify()`: normalize both sides; if neither contains TypeStageApp, unify; if still stuck, keep deferred (`src/type_infer.rs`, `src/type_unify.rs`)
-- [ ] Implement generalized `improve_functional_dependency` in `src/type_unify.rs`: look up `class_decl.resolver` name in type-stage Env (via `NormCtxt`); if present, `type_to_dict` each determining type (with literal widening), `eval(resolver_fn, dicts)`, `dict_to_type(result)`, unify; retain `lookup_arithmetic_instance` as O(1) fast path for built-in arithmetic resolver names (`src/type_unify.rs`)
-- [ ] Add `NormCtxt` param to `entails()` in `src/type_unify.rs`; call `normalize()` before constraint-type comparisons; for superclass chain traversal use empty type-stage env (no resolver calls needed) (`src/type_unify.rs`)
-- [ ] Tests: `[+ 1 2]` → `Int`; `[+ 1 2.0]` → `Float` via resolver path; `TypeStageApp("AddResult", [TypeVar, TypeVar])` defers then reduces when args ground; `[= [+ 1 2.0] [+ 1.5 2.5]]` passes (both Float via deferred equality) (`tests/corpus/eval/typecheck/`)
 
 ### chr-class-instance: AST redesign and parser/typecheck support for [class] and [instance]
 
@@ -39,6 +26,7 @@ Redesigns `Expr::ClassDecl` and `Expr::InstanceDecl` for the two-bracket class b
 
 Moves the hardcoded arithmetic instance table out of Rust and into tinct itself. Completes the CHR cycle by adding the post-inference boundary guard elaboration pass.
 
+- [ ] Add iteration cap (e.g. 100) to `process_deferred_equalities()` in `src/type_unify.rs` before resolver evaluation activates (safety against unbounded fixed-point iteration) (`src/type_unify.rs`)
 - [ ] Write `AddResult`, `SubResult`, `MulResult`, `DivResult` resolver functions in `--- stage: type` section of `stdlib/prelude.llt`; write `Addable`, `Subtractable`, `Multipliable`, `Divisible` class declarations with `determines:/resolver:` and all instance arms (Int×Int, Int×Float, Float×Int, Float×Float) (`stdlib/prelude.llt`)
 - [ ] Remove `lookup_arithmetic_instance` from `src/type_unify.rs`; pre-populate `NormCtxt` normalization cache with the 9 arithmetic results as the O(1) fast path (keyed by resolver name + type-dict args) (`src/type_unify.rs`)
 - [ ] Implement `elaborate_boundary_guards()` post-inference elaboration pass in `src/typecheck.rs` or new `src/typecheck_elaborate.rs`: walk type map after inference completes; for each expression where inferred type is `Unknown` and contextual expected type is concrete, call `normalize(τ_ctx, NormCtxt::final(...))` and annotate the expression with the concrete expected type; emit `TypeError` if expected type is still irreducible after normalization (`src/typecheck.rs` or `src/typecheck_elaborate.rs`)

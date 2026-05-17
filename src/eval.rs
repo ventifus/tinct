@@ -429,7 +429,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Negation(inner) => !value_matches_type(value, inner),
         // Type constructor application and variables: treat like TypeVar (accept any value)
         // The type checker validates these; at runtime they're polymorphic.
-        Type::App(_, _) | Type::Operator(_) => true,
+        Type::App(_, _) | Type::Operator(_) | Type::TypeStageApp { .. } => true,
         // Error is a type-inference sentinel that should never reach runtime validation.
         // Type::Error indicates type inference failed; treating it as a match would mask bugs.
         Type::Error => {

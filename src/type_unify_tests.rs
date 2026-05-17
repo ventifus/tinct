@@ -1,8 +1,10 @@
 //! Unit tests for type_precision_fixes sprint tasks
 
-use super::{promote_literal_for_constrained_var, resolve_has_field, MAX_RESOLVE_HAS_FIELD_DEPTH};
+use super::{
+    promote_literal_for_constrained_var, resolve_has_field, unify, MAX_RESOLVE_HAS_FIELD_DEPTH,
+};
 use crate::ast::Span;
-use crate::types::{Constraint, InferState, Kind, Label, Row, Type};
+use crate::types::{Constraint, InferState, Kind, Label, Row, Substitution, Type};
 use std::collections::HashMap;
 
 /// Task 1a: resolve_has_field on Type::Top should return Top (not Unknown)
@@ -185,4 +187,45 @@ fn test_promote_literal_label_kind_never_promotes() {
         Type::StringLiteral(s) if s == "x" => {} // Expected: Label kind prevents promotion
         other => panic!("Expected StringLiteral(\"x\"), got {:?}", other),
     }
+}
+
+/// chr-normalization: Occurs check for TypeStageApp args
+///
+/// unify(TypeVar("a"), TypeStageApp("F", [TypeVar("a")])) must fail with an
+/// infinite-type error — TypeVar "a" occurs in its own binding via TypeStageApp.
+/// This verifies lower_levels_check_occurs traverses TypeStageApp.args (line 1249-1255).
+#[test]
+fn test_unify_type_var_occurs_in_type_stage_app() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Register level for "a" so lower_levels_check_occurs can look it up
+    state.levels.insert("a".to_string(), 0);
+
+    let type_var_a = Type::TypeVar("a".to_string(), 0);
+    let type_stage_app_f_a = Type::TypeStageApp {
+        fn_name: "F".to_string(),
+        args: vec![Type::TypeVar("a".to_string(), 0)],
+    };
+
+    // unify(a, F(a)) should fail: "a" occurs in F(a)
+    let result = unify(
+        &type_var_a,
+        &type_stage_app_f_a,
+        &mut subst,
+        &mut state,
+        span,
+    );
+
+    assert!(
+        result.is_err(),
+        "Expected occurs-check failure, but unification succeeded"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.message.contains("infinite type"),
+        "Expected 'infinite type' in error message, got: {}",
+        err.message
+    );
 }

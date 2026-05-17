@@ -394,6 +394,39 @@ pub fn type_to_dict(ty: &Type, arena: &mut ThunkArena) -> Value {
             );
             Value::Dict(map)
         }
+        Type::TypeStageApp { fn_name, args } => {
+            let mut map = IndexMap::new();
+            map.insert(
+                Key::String("kind".to_string()),
+                arena.alloc(Rc::new(Thunk::new_materialized(
+                    string_val("type-stage-app"),
+                    Span::origin(),
+                ))),
+            );
+            map.insert(
+                Key::String("fn".to_string()),
+                arena.alloc(Rc::new(Thunk::new_materialized(
+                    string_val(fn_name),
+                    Span::origin(),
+                ))),
+            );
+            let mut args_map = IndexMap::new();
+            for (i, arg_ty) in args.iter().enumerate() {
+                let arg_dict = type_to_dict(arg_ty, arena);
+                args_map.insert(
+                    Key::Int(i as i64),
+                    arena.alloc(Rc::new(Thunk::new_materialized(arg_dict, Span::origin()))),
+                );
+            }
+            map.insert(
+                Key::String("args".to_string()),
+                arena.alloc(Rc::new(Thunk::new_materialized(
+                    Value::Dict(args_map),
+                    Span::origin(),
+                ))),
+            );
+            Value::Dict(map)
+        }
     }
 }
 
@@ -807,6 +840,49 @@ pub fn dict_to_type(val: &Value, arena: &ThunkArena, span: Span) -> Result<Type,
             };
 
             Ok(Type::Operator(name_str))
+        }
+        "type-stage-app" => {
+            let fn_thunk_id = dict.get(&Key::String("fn".to_string())).ok_or_else(|| {
+                TypeError::new("type-stage-app type missing 'fn' field".to_string(), span)
+            })?;
+            let fn_val = get_value_from_id(arena, *fn_thunk_id, span)?;
+
+            let fn_name = match &fn_val {
+                Value::String { source, start, end } => source[*start..*end].to_string(),
+                _ => {
+                    return Err(TypeError::new(
+                        "type-stage-app fn must be a string".to_string(),
+                        span,
+                    ))
+                }
+            };
+
+            let args_thunk_id = dict.get(&Key::String("args".to_string())).ok_or_else(|| {
+                TypeError::new("type-stage-app type missing 'args' field".to_string(), span)
+            })?;
+            let args_val = get_value_from_id(arena, *args_thunk_id, span)?;
+
+            let args_dict = match &args_val {
+                Value::Dict(map) => map,
+                _ => {
+                    return Err(TypeError::new(
+                        "type-stage-app args must be a dict".to_string(),
+                        span,
+                    ))
+                }
+            };
+
+            let mut args = Vec::new();
+            for i in 0..args_dict.len() {
+                let arg_thunk_id = args_dict.get(&Key::Int(i as i64)).ok_or_else(|| {
+                    TypeError::new(format!("type-stage-app args missing index {}", i), span)
+                })?;
+                let arg_val = get_value_from_id(arena, *arg_thunk_id, span)?;
+                let arg_ty = dict_to_type(&arg_val, arena, span)?;
+                args.push(arg_ty);
+            }
+
+            Ok(Type::TypeStageApp { fn_name, args })
         }
         _ => Err(TypeError::new(
             format!("unknown type kind: {}", kind_str),

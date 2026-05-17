@@ -209,6 +209,13 @@ pub enum Type {
     /// Type constructor variable — represents a type constructor like `m` in `Monad m`.
     /// Kind: `Operator` (i.e., `* → *`). Used in typeclass constraints and generic functions.
     Operator(String),
+    /// Type-stage function application — represents a pending type-level computation.
+    /// Created during constraint generation for FD classes; reduced by normalize().
+    /// Example: TypeStageApp { fn_name: "AddResult", args: vec![Int, Float] } reduces to Float.
+    TypeStageApp {
+        fn_name: String,
+        args: Vec<Type>,
+    },
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -267,6 +274,16 @@ impl PartialEq for Type {
             (Type::Never, Type::Never) => true,
             (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && a1 == a2,
             (Type::Operator(name1), Type::Operator(name2)) => name1 == name2,
+            (
+                Type::TypeStageApp {
+                    fn_name: fn1,
+                    args: args1,
+                },
+                Type::TypeStageApp {
+                    fn_name: fn2,
+                    args: args2,
+                },
+            ) => fn1 == fn2 && args1 == args2,
             _ => false,
         }
     }
@@ -337,6 +354,10 @@ impl std::hash::Hash for Type {
                 a.hash(state);
             }
             Type::Operator(name) => name.hash(state),
+            Type::TypeStageApp { fn_name, args } => {
+                fn_name.hash(state);
+                args.hash(state);
+            }
         }
     }
 }
@@ -478,6 +499,8 @@ impl Type {
             (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && Type::is_subtype(a1, a2),
             // Operator variables are treated like TypeVars for subtyping purposes.
             (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
+            // TypeStageApp is not a subtype of anything until reduced (conservative)
+            (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => false,
             _ => false,
         }
     }
@@ -582,6 +605,8 @@ impl Type {
                 }
             }
 
+            // TypeStageApp might overlap with anything (conservative)
+            (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => false,
             // Conservative: assume all other combinations might overlap
             _ => false,
         }
@@ -714,6 +739,8 @@ impl Type {
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             // Negation: structurally consistent
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),
+            // TypeStageApp is consistent with everything (pending computation)
+            (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => true,
             // Capability types, Proxy: consistent only if equal (handled by a == b above)
             // All other combinations are inconsistent
             _ => false,
@@ -826,6 +853,11 @@ impl Type {
                     member.collect_type_vars(vars);
                 }
             }
+            Type::TypeStageApp { fn_name: _, args } => {
+                for arg in args {
+                    arg.collect_type_vars(vars);
+                }
+            }
             _ => {}
         }
     }
@@ -851,7 +883,34 @@ impl Type {
             Type::Negation(inner) => inner.has_inference_vars(),
             Type::App(f, a) => f.has_inference_vars() || a.has_inference_vars(),
             Type::Operator(_) => true, // Operator variables ARE inference variables
+            Type::TypeStageApp { fn_name: _, args } => {
+                args.iter().any(|arg| arg.has_inference_vars())
+            }
             Type::Proxy => false,
+            _ => false,
+        }
+    }
+
+    /// Check if this type contains any TypeStageApp nodes.
+    /// Used to determine if deferred equalities can be resolved.
+    pub fn has_type_stage_app(&self) -> bool {
+        match self {
+            Type::TypeStageApp { .. } => true,
+            Type::Record(row) => row.fields.values().any(|ty| ty.has_type_stage_app()),
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                params.iter().any(|(_name, p_ty)| p_ty.has_type_stage_app())
+                    || ret.has_type_stage_app()
+            }
+            Type::Seq(elem) => elem.has_type_stage_app(),
+            Type::Map(key, val) => key.has_type_stage_app() || val.has_type_stage_app(),
+            Type::Union(members) => members.iter().any(|m| m.has_type_stage_app()),
+            Type::Intersection(members) => members.iter().any(|m| m.has_type_stage_app()),
+            Type::Negation(inner) => inner.has_type_stage_app(),
+            Type::App(f, a) => f.has_type_stage_app() || a.has_type_stage_app(),
             _ => false,
         }
     }
@@ -906,6 +965,11 @@ impl Type {
             }
             Type::Operator(name) => {
                 type_vars.insert(name.clone());
+            }
+            Type::TypeStageApp { fn_name: _, args } => {
+                for arg in args {
+                    arg.collect_all_vars(type_vars, row_vars);
+                }
             }
             _ => {}
         }
@@ -983,6 +1047,13 @@ impl Type {
                 type_vars.insert(name.clone());
                 found
             }
+            Type::TypeStageApp { fn_name: _, args } => {
+                let mut found = false;
+                for arg in args {
+                    found |= arg.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found
+            }
             _ => false,
         }
     }
@@ -1036,6 +1107,11 @@ impl Type {
             Type::Operator(name) => {
                 type_vars.push(name.clone());
             }
+            Type::TypeStageApp { fn_name: _, args } => {
+                for arg in args {
+                    arg.collect_all_vars_vec(type_vars, row_vars);
+                }
+            }
             _ => {}
         }
     }
@@ -1078,6 +1154,11 @@ impl Type {
             Type::App(f, a) => {
                 f.collect_operator_names(operator_names);
                 a.collect_operator_names(operator_names);
+            }
+            Type::TypeStageApp { fn_name: _, args } => {
+                for arg in args {
+                    arg.collect_operator_names(operator_names);
+                }
             }
             _ => {}
         }
@@ -1411,6 +1492,10 @@ impl Type {
                 Box::new(Type::simplify_type(*f)),
                 Box::new(Type::simplify_type(*a)),
             ),
+            Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+                fn_name,
+                args: args.into_iter().map(Type::simplify_type).collect(),
+            },
             _ => ty,
         }
     }
@@ -1455,6 +1540,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::Never => 33,
         Type::App(_, _) => 34,
         Type::Operator(_) => 35,
+        Type::TypeStageApp { .. } => 36,
     }
 }
 
@@ -1466,6 +1552,28 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
         (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1.cmp(s2),
         (Type::TypeVar(name1, _), Type::TypeVar(name2, _)) => name1.cmp(name2),
         (Type::Operator(name1), Type::Operator(name2)) => name1.cmp(name2),
+        (
+            Type::TypeStageApp {
+                fn_name: fn1,
+                args: args1,
+            },
+            Type::TypeStageApp {
+                fn_name: fn2,
+                args: args2,
+            },
+        ) => match fn1.cmp(fn2) {
+            Ordering::Equal => {
+                // Lexicographic comparison of args
+                for (a1, a2) in args1.iter().zip(args2.iter()) {
+                    match type_payload_cmp(a1, a2) {
+                        Ordering::Equal => continue,
+                        other => return other,
+                    }
+                }
+                args1.len().cmp(&args2.len())
+            }
+            other => other,
+        },
         // For complex types (Record, Function, Seq, Map, App), use Display representation
         // This is not ideal but ensures stability
         (Type::Record(_), Type::Record(_))
@@ -1541,6 +1649,12 @@ pub fn check_kind_wellformed(
             }
             // If the name is not in kind_env, let it pass (freshly introduced Operator
             // that hasn't been kind-registered yet, or will be registered later)
+            Ok(())
+        }
+        Type::TypeStageApp { fn_name: _, args } => {
+            for arg in args {
+                check_kind_wellformed(arg, kind_env, span)?;
+            }
             Ok(())
         }
         // All other types (Int, Str, Bool, literals, capabilities, etc.) are always well-kinded
