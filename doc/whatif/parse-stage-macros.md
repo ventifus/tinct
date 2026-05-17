@@ -146,31 +146,126 @@ Key identity (what counts as a duplicate key) is NOT a transformation — it's a
 
 Two `n@Int` entries are still a duplicate. Two `_` entries are still a duplicate. Only the annotation distinguishes them.
 
+### Hygiene — Macro-Introduced Bindings
+
+When a macro introduces a new name (e.g., wrapping a body in a `let` form that binds a helper variable), that name must not accidentally capture variables from the surrounding user code. This is the standard macro hygiene problem (Dybvig et al. 1993, Kohlbecker et al. 1986).
+
+**`gensym`** — generate a fresh, unique identifier guaranteed not to collide with any user-written name:
+
+```tinct
+[defparse-macro with-tmp [expr: expr  body: expr]
+  [let tmp [gensym "tmp"]    # fresh name: tmp_42, tmp_43, ...
+    [list 'let [list tmp expr] body]]]
+```
+
+Parse-stage macros inherit the `gensym` mechanism already present in `src/expand.rs` for `defmacro` Phase 1 expansion. The same counter and naming convention applies. Macro-introduced names are guaranteed distinct from user names by the `gensym` prefix convention.
+
+For macros that only reshape user-provided names (like the fn let-softening, which wraps user names in `[let ...]`), hygiene is not a concern — the names are the user's own.
+
+### Error Reporting from Macro Bodies
+
+Macros need to produce good compile errors when user code violates the macro's structural requirements — analogous to Rust's `compile_error!` or Racket's `raise-syntax-error`.
+
+**`[macro-error span message]`** — signal a compile-time error from within a macro body:
+
+```tinct
+[defparse-macro pragma [name: expr  value: expr]
+  [if [not [var-ref? name]]
+    [macro-error [span-of name] "pragma name must be a bare identifier"]
+    [if [not [literal? value]]
+      [macro-error [span-of value] "pragma value must be a literal"]
+      [list 'pragma name value]]]]
+```
+
+`span-of` extracts the source span from a parsed AST node. `macro-error` terminates the transformation pass with a type error at that span, surfaced to the user as a compilation error.
+
+### Multi-Form Splice — One Invocation, Multiple Output Forms
+
+Macros like `derive` need to produce multiple top-level definitions from one invocation. A macro returns `[splice form1 form2 ...]` to inject multiple forms into the surrounding context:
+
+```tinct
+[defparse-macro derive [targets: flat-list  ...body: expr]
+  # Generate instance declarations for each target class
+  [splice
+    ...[map [fn [let target]
+              [list 'instance target ...body]]
+           targets]]]
+
+# Usage:
+@[derive Equal Comparable]
+Point: [type [x: Float  y: Float]]
+# Generates: Point: [type ...]
+#            [instance Equal [Point]: ...]
+#            [instance Comparable [Point]: ...]
+```
+
+`[splice ...]` is recognized by the transformation pass: when a macro returns a splice value, its multiple forms are inserted into the parent context at the position the original form occupied. At dict top level, each form becomes a separate dict entry. In expression position, splice is a compile error (can't put multiple expressions where one is expected).
+
+### Tokens Mode — Manipulation Primitives
+
+`tokens` mode delivers a raw token sequence. Without manipulation primitives, the sequence is opaque. The macro body needs to inspect and process tokens:
+
+```tinct
+# Token inspection
+[token-type tok]         # → "ident", "int", "string", "colon", "open-bracket", ...
+[token-value tok]        # → the string/int/etc value
+[token-span tok]         # → source span
+
+# Token sequence operations  
+[tokens-join toks sep]   # join token values with separator: "SELECT * FROM t"
+[tokens-split-at type toks]  # split sequence at tokens of a given type
+[tokens-find type toks]  # find first token of given type
+```
+
+Example — SQL embedding:
+```tinct
+[declare-key-identity sql  full-expression]
+[defparse-macro sql [query: tokens]
+  [list 'builtin-sql [tokens-join query " "]]]
+
+[sql SELECT * FROM users WHERE id = 42]
+# → [builtin-sql "SELECT * FROM users WHERE id = 42"]
+```
+
 ### AST Construction Primitives
 
 The macro body uses tinct primitives to construct and inspect AST:
 
 ```tinct
 # Inspection
-[let-decl? expr]          # is this an Expr::LetDecl (a [let ...] form)?
-[var-ref? expr]            # is this a bare identifier?
-[annotated? expr]          # is this name@Type?
-[literal? expr]            # is this a literal value?
-[contains-structural-test? arm]  # does this arm contain a name: Constructor entry?
+[let-decl? expr]                    # is this an Expr::LetDecl?
+[var-ref? expr]                     # is this a bare identifier?
+[annotated? expr]                   # is this name@Type?
+[literal? expr]                     # is this a literal value?
+[contains-structural-test? arm]     # does this arm contain a name: Constructor entry?
+[span-of expr]                      # extract source span from AST node
 
 # Construction
-[list 'sym a b c]          # construct AST list/form: [sym a b c]
+[list 'sym a b c]          # construct AST form: [sym a b c]
 [cons x xs]               # prepend x to list xs
-[first xs]                # first element of list
+[first xs]                # first element
 [rest xs]                 # remaining elements
 [quote sym]               # quote a symbol: 'fn, 'let, etc.
+[splice form1 form2 ...]  # return multiple forms (at dict top level: multiple entries)
+[gensym prefix]           # fresh unique identifier
+
+# Error signaling
+[macro-error span message] # terminate with compile error at span
 
 # Wrapping helpers (stdlib, implemented in tinct)
 [wrap-in-let flat-list]   # produce [let ...flat-list]
 [make-let-decl elements]  # produce Expr::LetDecl from element list
 ```
 
-These are the same primitives available to post-parse macros, plus the parse-stage-specific ones (`let-decl?`, `make-let-decl`).
+### Explicitly Out of Scope
+
+These capabilities from other macro systems are **intentionally not included**:
+
+- **Infix operator registration** — requires parser hooks during tokenization, conflicting with the security model (lexer is Rust-only). Tinct's bracket syntax makes infix operators less necessary.
+- **Attribute-style invocation** (`@[derive ...]` on forms) — approximated by wrapping the form in a macro call; a dedicated attribute invocation mechanism is deferred.
+- **Typed quotation** (expression vs pattern vs type quasiquote, as in Template Haskell) — tinct's simpler type structure makes single-category `list`/`cons` adequate.
+- **Compile-time type access** — macros run before type-checking; accessing inferred types during expansion would require interleaving expansion with inference (Template Haskell's approach), which significantly complicates the pipeline.
+- **Character-level lexer hooks** — deliberate security decision; user code never touches the character stream.
 
 ### Transformation Pass
 
@@ -261,10 +356,14 @@ Expr::KeyIdentityDecl { ... }         // for declare-key-identity declarations
 [contains-structural-test?: [fn [let arm] ...]] # inspect arm for : entries
 ```
 
+### `src/expand.rs` — Splice Handling
+
+**Proposed:** The transformation pass recognizes `Expr::Splice(Vec<Spanned<Expr>>)` as a special return value from parse macros. When a macro returns a splice, the pass injects the multiple forms into the parent context. At dict top level: each form becomes a separate entry. In expression position: compile error ("splice not valid in expression position"). **Impact:** Minor — splice is a leaf-case in the substitution logic.
+
 ### `stdlib/prelude.llt` — New Parse-Stage Primitives
 
-Add to the stdlib the inspection and construction primitives used by parse macros:
-`let-decl?`, `var-ref?`, `annotated?`, `literal?`, `contains-structural-test?`, `wrap-in-let`, `make-let-decl`.
+Add to the stdlib the inspection, construction, and error primitives used by parse macros:
+`let-decl?`, `var-ref?`, `annotated?`, `literal?`, `contains-structural-test?`, `span-of`, `wrap-in-let`, `make-let-decl`, `gensym`, `macro-error`, `splice`, `token-type`, `token-value`, `token-span`, `tokens-join`, `tokens-split-at`, `tokens-find`.
 
 ## Prerequisites
 
@@ -280,3 +379,6 @@ Add to the stdlib the inspection and construction primitives used by parse macro
 - Graham, P. (1993). "On Lisp." Prentice Hall. — [defmacro and quasiquote as the canonical macro body tools; the principle that macro bodies are ordinary code]
 - Steele, G.L. (1990). "Common Lisp: The Language," 2nd ed. §7.2 "Macro Definitions." — [macros as functions from code to code; the transformation pass model]
 - Pratt, V.R. (1973). "Top down operator precedence." *POPL '73*, pp. 41–51. ACM. — [Pratt parsing; relevant if infix operator extension is added later]
+- Kohlbecker, E., Friedman, D.P., Felleisen, M. & Duba, B. (1986). "Hygienic Macro Expansion." *LFP '86*, pp. 151–161. ACM. — [original hygiene algorithm; basis for gensym and scope-ID approaches to preventing macro variable capture]
+- Dybvig, R.K., Hieb, R. & Bruggeman, C. (1993). "Syntactic Abstraction in Scheme." *Lisp and Symbolic Computation*, 5(4), 295–326. — [`syntax-rules` and the hygienic macro system; scope sets as the formal model for capture avoidance; foundation for gensym convention]
+- Krishnamurthi, S. (2001). "Linguistic Reuse." Ph.D. thesis, Rice University. — [syntactic abstraction and the role of parse-time hooks in language extensibility]
