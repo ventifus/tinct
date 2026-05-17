@@ -1,5 +1,3 @@
 [fn? [proxy [get: [fn [k] [+ k 10]]]]]
 === out
 Bool(false)
-=== warn
-cannot unify Fn@⊤ [String] with [get: Fn@Number

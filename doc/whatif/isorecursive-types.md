@@ -270,6 +270,15 @@ For the annotation resolver, mutual recursion is detected when the expansion sta
 **Proposed:** Visited-pairs set adds overhead proportional to the depth of mutual recursive unfolding. For typical config schemas (finite depth), this is bounded. For pathological mutual recursion, the visited set size grows. A cache keyed by structural type identity amortizes repeated checks.  
 **Impact:** Moderate — performance regression in subtype-heavy programs; acceptable for config-scale programs.
 
+## Downstream: validate-tinct-rewrite
+
+Once isorecursive types land, `validate_value` in `src/builtins_meta.rs` (~267 lines) can be rewritten as a tinct stdlib function. `regex-match?` is already available; the only missing piece is a recursive type alias to type the schema dict.
+
+- Define the schema dict type in `stdlib/prelude.llt` using a `mu`-type alias covering all schema keys: `type`, `min`, `max`, `min-length`, `max-length`, `pattern`, `required`, `default`, `items`, `fields`, `enum`
+- Rewrite `validate` as a tinct function: call `regex-match?` for `pattern`, recurse on `fields:` and `items:` entries, collect violations into a Seq; remove `validate_value` from `src/builtins_meta.rs`
+- Keep `validate` registered as a thin Rust stub that calls the tinct function and maps errors to `SchemaViolation` error kind
+- Tests: all existing `validate` corpus tests pass after rewrite; validate over 1000-entry dict completes in <100ms
+
 ## Prerequisites
 
 - `type-ann-v2-infra` sprint — establishes the `--- stage: type` environment where `mu` and `recvar` are defined; establishes the type dict schema that `[kind: "recursive" ...]` extends

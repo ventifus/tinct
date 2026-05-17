@@ -1938,8 +1938,17 @@ fn infer_expr(
                         (p.clone(), kind)
                     })
                     .collect(),
-                superclasses: superclasses.clone(),
+                // Convert superclasses from (String, String) to (String, Vec<String>)
+                // AST has single-param format, but ClassDecl supports MPTC
+                superclasses: superclasses
+                    .iter()
+                    .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
+                    .collect(),
                 methods: method_types,
+                // CHR fields (not yet populated from AST)
+                determines: vec![],
+                resolver: None,
+                resolver_injective: false,
             };
 
             // Register in ClassEnv (replaces any prior registration, preserving inherited kinds)

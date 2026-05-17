@@ -4,32 +4,47 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Type Stage Features
+## CHR Unification
 
-*`type-stage-infra` and `typeclass-mptc-fundeps` are complete (DONE.md). Sprints below require `/rnd` proposal approval before sprint tasks are written.*
+`chr-unification` accepted 2026-05-16 (commits 0886ef1, 7d15c36). See `doc/whatif/chr-unification.md` and `doc/feature/chr-unification.md`. Implementation order: chr-module-split → chr-normalization → chr-class-instance → chr-prelude.
 
-### chr-unification: CHR-unified type constraints — FDs and type families
+### chr-normalization: Add Type::TypeStageApp and the normalization subsystem
 
-See `doc/whatif/chr-unification.md`. **State: Proposal** — design not yet approved; sprint tasks to be written after /rnd approval. Groundwork (`type_to_dict`/`dict_to_type` FFI) is done.
+Implements the central mechanism: `normalize()` unifies FD improvement, TypeStageApp reduction, literal widening, and alias expansion into one pass called before every unification step.
 
-**Depends on:** (none — `typeclass-mptc-fundeps` complete)
+- [ ] Add `Type::TypeStageApp { fn_name: String, args: Vec<Type> }` to `src/type_def.rs`; add stub `unreachable!()` arms at all exhaustive match sites (~40–60 sites in `type_def.rs`, `type_unify.rs`, `type_env.rs`, `typecheck.rs`, `typecheck_annot.rs`, `typecheck_dict.rs`); update `collect_type_vars`, `occurs_in`, `has_type_vars` to recurse into `TypeStageApp.args` (`src/type_def.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs`)
+- [ ] Add `[kind: "type-stage-app"  fn: String  args: [...]]` to `type_to_dict`/`dict_to_type` in `src/type_dict.rs` (`src/type_dict.rs`)
+- [ ] Implement `normalize()` in `src/type_normalize.rs`: 6 steps in order — substitution, TypeStageApp reduction (args', cycle detection, depth guard, eval resolver, convert result), BAS simplification, literal widening, alias expansion (rational-tree detection → Type::Recursive), recursive normalization (`src/type_normalize.rs`)
+- [ ] Thread `NormCtxt` through `unify()` and `unify_normalized()` in `src/type_unify.rs`: call `normalize(a)` and `normalize(b)` before every unification; replace scattered literal-widening (`promote_literal_for_constrained_var`, `widen_literal_for_constraint`) and alias-expansion calls with `normalize` (`src/type_unify.rs`)
+- [ ] Implement all 5 `TypeStageApp` cases in `unify_normalized()`: (1) same-fn injective → pairwise arg unification, (2) same-fn non-injective → add to `deferred_equalities`, (3) different-fn → TypeError, (4) stuck vs ConcreteType → TypeError, (5) vs TypeVar → bind with occurs-check traversing args (`src/type_unify.rs`)
+- [ ] Add `deferred_equalities: Vec<(Type, Type)>` to `InferState`; implement deferred-equality processing loop at end of `unify()`: normalize both sides; if neither contains TypeStageApp, unify; if still stuck, keep deferred (`src/type_infer.rs`, `src/type_unify.rs`)
+- [ ] Implement generalized `improve_functional_dependency` in `src/type_unify.rs`: look up `class_decl.resolver` name in type-stage Env (via `NormCtxt`); if present, `type_to_dict` each determining type (with literal widening), `eval(resolver_fn, dicts)`, `dict_to_type(result)`, unify; retain `lookup_arithmetic_instance` as O(1) fast path for built-in arithmetic resolver names (`src/type_unify.rs`)
+- [ ] Add `NormCtxt` param to `entails()` in `src/type_unify.rs`; call `normalize()` before constraint-type comparisons; for superclass chain traversal use empty type-stage env (no resolver calls needed) (`src/type_unify.rs`)
+- [ ] Tests: `[+ 1 2]` → `Int`; `[+ 1 2.0]` → `Float` via resolver path; `TypeStageApp("AddResult", [TypeVar, TypeVar])` defers then reduces when args ground; `[= [+ 1 2.0] [+ 1.5 2.5]]` passes (both Float via deferred equality) (`tests/corpus/eval/typecheck/`)
 
+### chr-class-instance: AST redesign and parser/typecheck support for [class] and [instance]
 
-## Standard Library Boundary
+Redesigns `Expr::ClassDecl` and `Expr::InstanceDecl` for the two-bracket class body and match-arm instance syntax. New `[pattern [...]]` form reuses existing annotated-identifier machinery.
 
-### meta-primitives-wrapper: Tinct wrappers for meta/variant/numeric Rust primitives
+- [ ] Extend `Expr::ClassDecl` in `src/ast.rs`: add `determines: Vec<Spanned<Expr>>`, `resolver: Option<Spanned<Expr>>`; update all exhaustive match sites (`src/eval.rs`, `src/typecheck.rs`, `src/formatter.rs`, `src/desugar.rs`, `src/resolve.rs`, `src/lsp/analysis.rs`, `src/ast_dict.rs`, `src/expand.rs`) (`src/ast.rs` + ~8 files)
+- [ ] Update `StackFrame::ClassDecl` in `src/parser.rs`: add `structural_metadata: Option<Spanned<Expr>>`; route second positional `Expr::Dict` to `structural_metadata` (currently hard-errors at `parser.rs:~4819–4827`); extract `determines:`, `resolver:`, `kinds:`, `superclasses:` from structural metadata entries in `CloseBracket` ClassDecl handler; retire `f@Operator` form in class param lists (`src/parser.rs`)
+- [ ] Redesign `Expr::InstanceDecl` in `src/ast.rs`: from `{class_name, instance_type, methods}` to `{class_name, arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>}`; update all exhaustive match sites (~8 files); update `InstanceDecl` Display to render match-arm form (`src/ast.rs` + ~8 files)
+- [ ] Update `StackFrame::InstanceDecl` in `src/parser.rs`: replace `instance_type`/`methods` with `arms`/`pending_arm_key`; add `VarRef` branch for bare class name; handle `[pattern [...]]` arm key / `:` separator; require method bodies as bracket forms (inner `StackFrame::Dict` delivers completed `Expr::Dict`) (`src/parser.rs`)
+- [ ] Add `Expr::PatternDecl { bindings: Vec<Spanned<Expr>> }` to `src/ast.rs` + `StackFrame::PatternDecl` in `src/parser.rs`: `pattern` keyword recognition (with colon-ahead rejection guard `!matches!(peek_next_horizontal(...), Some((Token::Colon, _)))`); collects `Expr::Annotated` nodes from inner Dict frame into `bindings`; no body (`src/ast.rs`, `src/parser.rs`)
+- [ ] Implement `Expr::ClassDecl` typecheck handler in `src/typecheck.rs`: validate `determines:` 2-element list structure; resolve param names to positional indices; check `resolver` name exists in type-stage Env; validate coverage condition; compute `resolver_injective` during batch instance coherence check; validate consistency condition (`src/typecheck.rs`)
+- [ ] Implement `Expr::InstanceDecl` typecheck handler in `src/typecheck.rs`: validate arm type-parameter count matches class params; pairwise disjointness check across arms; coverage and consistency checks for FD classes; register arms in scope-local InstanceEnv (TypeEnv entry, not global HashMap); typecheck each method impl against class method signature with arm's type params substituted (`src/typecheck.rs`)
+- [ ] Tests: basic `[class [a b c] [determines: ...] +: [fn@c [a b]]]` + `[instance ...]` declaration; FD inference at call site; disjointness violation error message; coverage violation error; consistency violation error; method type mismatch error (`tests/corpus/eval/typecheck/`)
 
-Eight user-facing primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) currently leak from `standard_builtins()` directly into every user environment without tinct wrappers. Per the stdlib-boundary principle, Rust functions should not reach user contexts directly — each should be wrapped in tinct and the raw Rust names accessible only via `%rust "meta"` / `%rust "math"` for prelude-internal use.
+### chr-prelude: Migrate arithmetic classes to prelude.llt and implement boundary guard elaboration
 
-- [x] Remove `eval-ast`, `gensym`, `llt-repr` from `standard_builtins()` (176 builtins now); `builtin-*` aliases added (`src/builtins.rs`)
-- [x] Remove `tag-of`, `variant` from direct registration; `builtin-tag-of`, `builtin-variant` aliases added (`src/builtins.rs`)
-- [x] Remove `decimal`, `big-int` from direct registration; `builtin-decimal`, `builtin-big-int` aliases added (`src/builtins.rs`)
-- [x] Remove `proxy` from direct registration; `builtin-proxy` alias added (`src/builtins.rs`)
-- [x] Add 8 tinct wrapper functions in `stdlib/prelude.llt` delegating to `builtin-*` aliases (`stdlib/prelude.llt`)
-- [x] Verify `src/type_env.rs` type registrations and add `builtin-*` aliases to type checker (`src/type_env.rs`)
-- [x] Tests: all 2185 tests pass; corpus tests for `gensym` and `eval-ast` updated (`tests/corpus/eval/`)
+Moves the hardcoded arithmetic instance table out of Rust and into tinct itself. Completes the CHR cycle by adding the post-inference boundary guard elaboration pass.
 
----
+- [ ] Write `AddResult`, `SubResult`, `MulResult`, `DivResult` resolver functions in `--- stage: type` section of `stdlib/prelude.llt`; write `Addable`, `Subtractable`, `Multipliable`, `Divisible` class declarations with `determines:/resolver:` and all instance arms (Int×Int, Int×Float, Float×Int, Float×Float) (`stdlib/prelude.llt`)
+- [ ] Remove `lookup_arithmetic_instance` from `src/type_unify.rs`; pre-populate `NormCtxt` normalization cache with the 9 arithmetic results as the O(1) fast path (keyed by resolver name + type-dict args) (`src/type_unify.rs`)
+- [ ] Implement `elaborate_boundary_guards()` post-inference elaboration pass in `src/typecheck.rs` or new `src/typecheck_elaborate.rs`: walk type map after inference completes; for each expression where inferred type is `Unknown` and contextual expected type is concrete, call `normalize(τ_ctx, NormCtxt::final(...))` and annotate the expression with the concrete expected type; emit `TypeError` if expected type is still irreducible after normalization (`src/typecheck.rs` or `src/typecheck_elaborate.rs`)
+- [ ] Implement eval-side guard creation in `src/eval.rs`: when an expression has a concrete expected-type annotation (written by the elaboration pass), wrap its thunk in `ThunkState::Guarded`; `BlameLabel` carries `origin_span`, `boundary_span`, `polarity` (Negative for call args, Positive for return-value consumers) (`src/eval.rs`)
+- [ ] Tests: arithmetic FD inference for all 4 operations and all Int/Float combinations; user-defined `Decimal` class instance with `[+ dec1 dec2]` → `Decimal`; boundary guard inserted at Unknown→Int boundary; blame label carries correct origin span; `[from-json input].port` fires guard if `start` expects `Int` (`tests/corpus/eval/typecheck/`, `tests/corpus/eval/`)
+
 
 ## Codebase Health
 
@@ -76,67 +91,11 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 
 ## Prelude Annotation Modernization
 
-Modernize `stdlib/prelude.llt` to use the full annotation and typing infrastructure added in sprints up to 2026-05-16. Currently ~126 public functions use bare `fn@Type` return annotations and `name@[doc: "..."]` key annotations with comment blocks above them. The goal is a single `fn@[return: T  constraint: [...]  doc: "..."]` metadata dict per function that replaces both the `name@[doc: "..."]` key annotation and the `# Type:` / `# Example:` / `# NOTE:` comment block above it.
+### prelude-triple-quote: Migrate prelude doc: strings to triple-quoted form
 
-**Annotation conventions:**
-- `fn@[return: T  constraint: [a: Comparable]  doc: "One-line desc.\n\nExample: [fn arg] => result\n\nNote: edge case"]` — full form
-- `doc:` string: one-line summary, blank line, then `Example:` lines, then `Note:` lines (from existing comments); verbatim text from the existing comment block
-- Param annotations: upgrade `@Fn` → `@[return: R]` or `@[a b -> R]` where the param function's signature is known; upgrade `@Dict` → `@Seq@T` or `@Map@[K: V]` where the concrete collection type is known; use `@Label` for `get`/`get-or`/`get?`/`builtin-get` key params
-- Private helpers (`-impl`, `-step`, `-check` suffix): fix type annotations but skip doc migration (internal); no `doc:` string needed
-- Skip functions that already have `fn@[return: T  constraint: [...]]` form unless adding `doc:` improves them materially
+`"""..."""` is fully implemented (lexer `Token::TripleQuotedString`, parser desugars to `[unindent "..."]`). The `doc:` strings in `stdlib/prelude.llt` currently use `\n` escape sequences in regular double-quoted strings. Replace with `"""` for readability.
 
-**Sprint split:** This sprint is intentionally large. Split into 4 sub-sprints at planning time if > 30 non-nit tasks per sub-sprint:
-
-### prelude-annotations-a: Identity, Logic, Comparison, Arithmetic, Numeric conversion
-
-Public functions in prelude.llt lines ~357–550. ~25 functions:
-`identity`, `const`, `not`, `and`, `or`, `any?`, `all?`, `>`, `<=`, `>=`, `quot`, `mod`, `ceil`, `trunc`, `abs`, `sign`, `clamp`, `min`, `max`, `sum`, `product`, `average`, `gcd`, `lcm`, `between?`.
-
-- [x] Migrate `identity`, `const`: consolidate `name@[doc: "..."]` + bare `fn` into `fn@[return: a  doc: "..."]`; drop comment block (`stdlib/prelude.llt`)
-- [x] Migrate `not`: `fn@[return: Bool  doc: "Boolean negation.\n\nExample: [not true] => false"]`; drop comment block (`stdlib/prelude.llt`)
-- [x] Migrate `and`, `or`: full metadata dict with `doc:` including `# NOTE:` content about lazy evaluation semantics; drop comment blocks (`stdlib/prelude.llt`)
-- [x] Migrate `any?`, `all?`: add `doc:` with type, examples, and materialization note (`stdlib/prelude.llt`)
-- [x] Migrate `>`, `<=`, `>=`: added `doc:` to existing `fn@[return: Bool constraint: [a: Comparable]]` (`stdlib/prelude.llt`)
-- [x] Migrate `quot`, `mod`: `fn@[return: Int/Number  doc: "..."]`; includes semantics notes (`stdlib/prelude.llt`)
-- [x] Migrate `ceil`, `trunc`, `abs`, `sign`, `clamp`: `fn@[return: T  doc: "..."]`; includes examples (`stdlib/prelude.llt`)
-- [x] Migrate `min`, `max`: added `doc:` to existing `fn@[return: a  constraint: [a: Comparable]]` (`stdlib/prelude.llt`)
-- [x] Migrate `sum`, `product`: `fn@[return: Number  doc: "..."]`; includes empty-collection base-case notes (`stdlib/prelude.llt`)
-- [x] Migrate `between?`: full metadata dict with examples — `average`, `gcd`, `lcm` do not exist in prelude (skipped) (`stdlib/prelude.llt`)
-- [x] Verify `just test-lib` passes; all 2185 tests pass; 6 corpus test expectations updated (`stdlib/prelude.llt`)
-
-### prelude-annotations-b: Collection and Dict operations
-
-Public functions in prelude.llt, collection section. ~25 functions:
-`length`, `keys`, `values`, `entries`, `has?`, `get`, `get-or`, `get?`, `get-in`, `get-in-or`, `remove`, `remove-keys`, `keep-keys`, `reindex`, `merge-with`, `group-by`, `frequencies`, `index-by`, `map-entries`, `map-keys`, `map-values`, `flat-map`, `zip`, `unzip`, `partition`, `take-while`, `drop-while`, `sliding`, `chunks`.
-
-- [x] Migrate `get`, `get-or`, `get?`: `@Label` preserved on key param; `fn@[return: a  doc: "..."]` with HasField constraint; key-not-found behavior note (`stdlib/prelude.llt`)
-- [x] Migrate `get-in`, `get-in-or`: doc includes path-traversal semantics and Null-propagation note (`stdlib/prelude.llt`)
-- [x] Migrate `has?`, `remove`, `remove-keys`, `keep-keys`, `values`, `entries`, `from-entries`: full metadata dict with examples (`stdlib/prelude.llt`)
-- [x] Migrate `reindex`, `group-by`, `deep-merge`, `transpose`, `flatten`: full metadata dict with examples; O(n²) notes preserved (`stdlib/prelude.llt`)
-- [x] Migrate `map-entries`, `flat-map`, `zip`, `unzip`, `partition`, `take-while`, `drop-while`: full metadata dict with examples (`stdlib/prelude.llt`)
-- [x] Migrate `slice`, `find-deep`, `with-entries`, `walk`: full metadata dict (`stdlib/prelude.llt`)
-- [x] Verify `just test-lib` passes; all 2185 tests pass; line number expectations updated in 2 corpus tests (`stdlib/prelude.llt`)
-
-### prelude-annotations-c: Sequences, Strings, Control flow, Error handling
-
-Public functions: `range`, `repeat`, `iterate`, `cycle` (seq); `str-join`, `str-split`, `str-trim`, `str-pad-left`, `str-pad-right`, `str-replace`, `str-find`, `str-reverse`, `format`, `parse-int`, `parse-float` (string); `if`, `cond`, `when`, `unless`, `try`, `error`, `assert` (control); `->`, `|>`, `compose`, `flip`, `partial` (combinators).
-
-- [x] Migrate sequence generators/ops: range, repeat, iterate, cycle, seq, head, tail, collect, unfold, join, concat, first, last, rest, cons, reverse, sort (`stdlib/prelude.llt`)
-- [x] Migrate control flow: cond, when, unless (`stdlib/prelude.llt`)
-- [x] Migrate error handling: try-or, assert (`stdlib/prelude.llt`)
-- [x] Migrate combinators: ->, compose (`stdlib/prelude.llt`)
-- [x] Verify `just test-lib` passes; all 2185 tests pass (`stdlib/prelude.llt`)
-
-### prelude-annotations-d: Result monad, HKT hierarchy, Typeclass instances
-
-Public functions: `Ok`, `Err`, `ok?`, `err?`, `and-then`, `result-or`, `result-map`, `result-ok`; `Functor`/`Applicative`/`Monad`/`Foldable`/`Traversable` class declarations; `FunctorSeq`/`MonadResult`/etc. instance declarations; `Maybe`, `Some`, `None`; `sequence`, `traverse`, `forM`, `liftM2`, `whenM`; `Equatable`/`Comparable`/`Showable`/`Mappable`/`Appendable` class and instance declarations.
-
-- [x] Migrate `Ok`, `Err`, `ok?`, `err?`: doc comments added (constructors via `[type]` cannot use fn@[...]); predicates use `fn@[return: Bool  doc: "..."]` (`stdlib/prelude.llt`)
-- [x] Migrate `and-then`, `result-or`, `result-map`, `result-ok`: `fn@[return: T  doc: "..."]` with monad-law descriptions; `and-then` notes MonadResult.bind equivalence (`stdlib/prelude.llt`)
-- [x] Add preceding comments to class declarations (Functor, Applicative, Monad, Foldable, Traversable, Mappable, Appendable, Equatable, Comparable, Showable) — structural limitation prevents `doc:` key in `[class ...]` form (`stdlib/prelude.llt`)
-- [x] Add preceding comments to all 15 instance declarations (class/instance structural limitation) (`stdlib/prelude.llt`)
-- [x] Add preceding comments to `Maybe`, `Some`, `None`: optional value semantics, contrast with Null (`stdlib/prelude.llt`)
-- [x] Migrate `sequence`, `traverse`, `forM`, `liftM2`, `whenM`: `fn@[return: Unknown  doc: "..."]` with type description and examples (`stdlib/prelude.llt`)
-- [x] Verify `just test-lib` passes; all 2185 tests pass (`stdlib/prelude.llt`)
+- [ ] Replace all `doc: "...\n\n..."` multi-line strings in `stdlib/prelude.llt` with `doc: """..."""` triple-quoted form; use natural indentation for Example: and Note: sections (`stdlib/prelude.llt`)
+- [ ] Verify `just test-lib` passes; doc string content unchanged (`stdlib/prelude.llt`)
 
 ---

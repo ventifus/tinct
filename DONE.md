@@ -6811,3 +6811,75 @@ Findings from full-panel codebase review (Cycle #246, 2026-05-16).
 - [x] **[Minor]** `src/type_unify.rs:1890-2077` — C-Var1/C-Var2 `bind_single_type_var_from_compound` helper
 - [x] **[Minor]** `tests/corpus/eval/cross_feature/` — 3 cross-feature corpus tests added
 - [x] **[Minor]** `stdlib/prelude.llt` — O(n²) performance warnings added to 7 functions
+
+## Standard Library Boundary
+
+### meta-primitives-wrapper: Tinct wrappers for meta/variant/numeric Rust primitives
+
+Eight user-facing primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) removed from `standard_builtins()` and wrapped in tinct via `builtin-*` aliases.
+
+- [x] Remove `eval-ast`, `gensym`, `llt-repr` from `standard_builtins()` (176 builtins now); `builtin-*` aliases added (`src/builtins.rs`)
+- [x] Remove `tag-of`, `variant` from direct registration; `builtin-tag-of`, `builtin-variant` aliases added (`src/builtins.rs`)
+- [x] Remove `decimal`, `big-int` from direct registration; `builtin-decimal`, `builtin-big-int` aliases added (`src/builtins.rs`)
+- [x] Remove `proxy` from direct registration; `builtin-proxy` alias added (`src/builtins.rs`)
+- [x] Add 8 tinct wrapper functions in `stdlib/prelude.llt` delegating to `builtin-*` aliases (`stdlib/prelude.llt`)
+- [x] Verify `src/type_env.rs` type registrations and add `builtin-*` aliases to type checker (`src/type_env.rs`)
+- [x] Tests: all 2185 tests pass; corpus tests for `gensym` and `eval-ast` updated (`tests/corpus/eval/`)
+
+## Prelude Annotation Modernization
+
+### prelude-annotations-a: Identity, Logic, Comparison, Arithmetic, Numeric conversion
+
+- [x] Migrate `identity`, `const`: `fn@[return: a  doc: "..."]`; drop comment block (`stdlib/prelude.llt`)
+- [x] Migrate `not`: `fn@[return: Bool  doc: "..."]`; drop comment block (`stdlib/prelude.llt`)
+- [x] Migrate `and`, `or`: full metadata dict with `doc:` including lazy evaluation semantics (`stdlib/prelude.llt`)
+- [x] Migrate `any?`, `all?`: `doc:` with type, examples, and materialization note (`stdlib/prelude.llt`)
+- [x] Migrate `>`, `<=`, `>=`: added `doc:` to existing constraint annotations (`stdlib/prelude.llt`)
+- [x] Migrate `quot`, `mod`: `fn@[return: Int/Number  doc: "..."]` (`stdlib/prelude.llt`)
+- [x] Migrate `ceil`, `trunc`, `abs`, `sign`, `clamp`: `fn@[return: T  doc: "..."]` (`stdlib/prelude.llt`)
+- [x] Migrate `min`, `max`: added `doc:` to existing constraint annotations (`stdlib/prelude.llt`)
+- [x] Migrate `sum`, `product`: `fn@[return: Number  doc: "..."]` (`stdlib/prelude.llt`)
+- [x] Migrate `between?`: full metadata dict with examples (`stdlib/prelude.llt`)
+- [x] Verify all 2185 tests pass; 6 corpus test expectations updated (`stdlib/prelude.llt`)
+
+### prelude-annotations-b: Collection and Dict operations
+
+- [x] Migrate `get`, `get-or`, `get?`: `@Label` key param; `fn@[return: a  doc: "..."]` (`stdlib/prelude.llt`)
+- [x] Migrate `get-in`, `get-in-or`: doc with path-traversal semantics (`stdlib/prelude.llt`)
+- [x] Migrate `has?`, `remove`, `remove-keys`, `keep-keys`, `values`, `entries`, `from-entries` (`stdlib/prelude.llt`)
+- [x] Migrate `reindex`, `group-by`, `deep-merge`, `transpose`, `flatten` (`stdlib/prelude.llt`)
+- [x] Migrate `map-entries`, `flat-map`, `zip`, `unzip`, `partition`, `take-while`, `drop-while` (`stdlib/prelude.llt`)
+- [x] Migrate `slice`, `find-deep`, `with-entries`, `walk` (`stdlib/prelude.llt`)
+- [x] Verify all 2185 tests pass (`stdlib/prelude.llt`)
+
+### prelude-annotations-c: Sequences, Strings, Control flow, Error handling
+
+- [x] Migrate sequence generators/ops: range, repeat, iterate, cycle, seq, head, tail, collect, unfold, join, concat, first, last, rest, cons, reverse, sort (`stdlib/prelude.llt`)
+- [x] Migrate control flow: cond, when, unless (`stdlib/prelude.llt`)
+- [x] Migrate error handling: try-or, assert (`stdlib/prelude.llt`)
+- [x] Migrate combinators: ->, compose (`stdlib/prelude.llt`)
+- [x] Verify all 2185 tests pass (`stdlib/prelude.llt`)
+
+### prelude-annotations-d: Result monad, HKT hierarchy, Typeclass instances
+
+- [x] Migrate `Ok`, `Err`, `ok?`, `err?`: doc comments added (`stdlib/prelude.llt`)
+- [x] Migrate `and-then`, `result-or`, `result-map`, `result-ok`: monad-law descriptions (`stdlib/prelude.llt`)
+- [x] Add preceding comments to 10 class declarations (`stdlib/prelude.llt`)
+- [x] Add preceding comments to all 15 instance declarations (`stdlib/prelude.llt`)
+- [x] Add preceding comments to `Maybe`, `Some`, `None` (`stdlib/prelude.llt`)
+- [x] Migrate `sequence`, `traverse`, `forM`, `liftM2`, `whenM` (`stdlib/prelude.llt`)
+- [x] Verify all 2185 tests pass (`stdlib/prelude.llt`)
+
+## CHR Unification
+
+### chr-module-split: Restructure types.rs into focused modules
+
+Breaks the `value.rs → types.rs` circular dependency. `types.rs` → 4 new top-level modules + thin façade.
+
+- [x] Create `src/type_def.rs`: Type enum, Row, Kind, KindError, Label, all structural methods (`src/type_def.rs`, `src/types.rs`)
+- [x] Create `src/type_class.rs`: ClassDecl (with determines/resolver/resolver_injective), Constraint, ClassEnv, InstanceDecl, InstanceEnv; superclasses → Vec<(String, Vec<String>)> (`src/type_class.rs`, `src/type_env.rs`)
+- [x] Extract InferState, TypeScheme, KindState into `src/type_infer.rs` from `src/types.rs` (`src/type_infer.rs`, `src/types.rs`)
+- [x] Create `src/type_normalize.rs`: NormCtxt stub, normalize() stub, Display for Type (`src/type_normalize.rs`, `src/types.rs`)
+- [x] Make `src/types.rs` a thin façade with pub use re-exports (`src/types.rs`)
+- [x] Add norm_ctxt: NormCtxt to InferState (`src/type_infer.rs`)
+- [x] Tests: 1860 lib + 40 corpus + 136 CLI + 37 LSP all pass (`tests/`)
