@@ -139,13 +139,11 @@ Public functions in prelude.llt, collection section. ~25 functions:
 
 Public functions: `range`, `repeat`, `iterate`, `cycle` (seq); `str-join`, `str-split`, `str-trim`, `str-pad-left`, `str-pad-right`, `str-replace`, `str-find`, `str-reverse`, `format`, `parse-int`, `parse-float` (string); `if`, `cond`, `when`, `unless`, `try`, `error`, `assert` (control); `->`, `|>`, `compose`, `flip`, `partial` (combinators).
 
-- [ ] Migrate sequence generators `range`, `repeat`, `iterate`, `cycle`: `fn@[return: Seq@T  doc: "..."]`; include laziness note; `range` variadic upgrade from `@Unknown` to `@Seq@Int` already done — verify and add `doc:` (`stdlib/prelude.llt`)
-- [ ] Migrate string functions `str-join`, `str-split`, `str-trim`, `str-pad-left`, `str-pad-right`, `str-replace`, `str-find`, `str-reverse`: `fn@[return: Str  doc: "..."]`; include Unicode/codepoint behavior notes (`stdlib/prelude.llt`)
-- [ ] Migrate `format`, `parse-int`, `parse-float`: include failure behavior in `doc:` (parse returns `Null` or `Err` on failure) (`stdlib/prelude.llt`)
-- [ ] Migrate `cond`, `when`, `unless`: include lazy-branch note in `doc:` (`stdlib/prelude.llt`)
-- [ ] Migrate `try`, `error`, `assert`: include error propagation semantics in `doc:` (`stdlib/prelude.llt`)
-- [ ] Migrate combinators `->`, `|>`, `compose`, `flip`, `partial`: `fn@[return: Fn  doc: "..."]`; include arity notes (`stdlib/prelude.llt`)
-- [ ] Verify `just test-lib` passes; fix any regressions (`stdlib/prelude.llt`)
+- [x] Migrate sequence generators/ops: range, repeat, iterate, cycle, seq, head, tail, collect, unfold, join, concat, first, last, rest, cons, reverse, sort (`stdlib/prelude.llt`)
+- [x] Migrate control flow: cond, when, unless (`stdlib/prelude.llt`)
+- [x] Migrate error handling: try-or, assert (`stdlib/prelude.llt`)
+- [x] Migrate combinators: ->, compose (`stdlib/prelude.llt`)
+- [x] Verify `just test-lib` passes; all 2185 tests pass (`stdlib/prelude.llt`)
 
 ### prelude-annotations-d: Result monad, HKT hierarchy, Typeclass instances
 
