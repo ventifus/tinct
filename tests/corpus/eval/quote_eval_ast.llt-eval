@@ -1,6 +1,4 @@
-# Test eval-ast reconstructs and evaluates a quoted expression
+# Test eval-ast reconstructs and evaluates a quoted expression (available via prelude wrapper)
 [eval-ast [quote [+ 1 2]]]
 === out
 Int(3)
-=== warn
-undefined variable: eval-ast at 1:2-1:10

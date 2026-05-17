@@ -6,32 +6,14 @@ See DONE.md for the full history of completed sprints.
 
 ## Type Stage Features
 
-*All sprints below depend on `type-stage-infra`.*
+*`type-stage-infra` and `typeclass-mptc-fundeps` are complete (DONE.md). Sprints below require `/rnd` proposal approval before sprint tasks are written.*
 
 ### chr-unification: CHR-unified type constraints — FDs and type families
 
-See `doc/whatif/chr-unification.md`. **State: Proposal** — design not yet approved; sprint tasks to be written after /rnd approval. `type-stage-infra` is the required groundwork (type dict schema + `type_to_dict`/`dict_to_type` are the FFI between inference and type-stage resolvers).
+See `doc/whatif/chr-unification.md`. **State: Proposal** — design not yet approved; sprint tasks to be written after /rnd approval. Groundwork (`type_to_dict`/`dict_to_type` FFI) is done.
 
-**Depends on:** `type-stage-infra`, `typeclass-mptc-fundeps`
+**Depends on:** (none — `typeclass-mptc-fundeps` complete)
 
-### isorecursive-types: μ-types and coinductive subtype checking
-
-See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet approved; sprint tasks to be written after /rnd approval. `type-stage-infra` is the required groundwork (`mu`/`recvar` combinators live in the `--- stage: type` section; `dict_to_type()` will need `kind: "recursive"` and `kind: "recvar"` arms).
-
-**Depends on:** `type-stage-infra`
-
-### validate-tinct-rewrite: Rewrite validate's recursive schema walk in tinct
-
-`validate_value` in `src/builtins_meta.rs` (~267 lines) is the largest remaining Rust function that could be expressed in tinct. `regex-match?` is now available. Full rewrite of the recursive schema walk (the `fields:` and `items:` recursion) requires recursive dict schema support to type the schema dict.
-
-**Depends on:** `isorecursive-types`
-
-- [ ] Define the schema dict type in `stdlib/prelude.llt` using a recursive type alias (`mu`-type); covers all schema keys: `type`, `min`, `max`, `min-length`, `max-length`, `pattern`, `required`, `default`, `items`, `fields`, `enum` (`stdlib/prelude.llt`)
-- [ ] Rewrite `validate` as a tinct function: call `regex-match?` for `pattern`, recurse on `fields:` and `items:` entries, collect violations into a Seq; remove `validate_value` from `src/builtins_meta.rs` (`stdlib/prelude.llt`, `src/builtins_meta.rs`)
-- [ ] Keep `validate` registered as a thin Rust stub that calls the tinct function and maps errors to `SchemaViolation` error kind (`src/builtins_meta.rs`)
-- [ ] Tests: all existing `validate` corpus tests pass after rewrite; validate over 1000-entry dict completes in <100ms (`tests/corpus/eval/`)
-
----
 
 ## Standard Library Boundary
 
@@ -39,13 +21,13 @@ See `doc/whatif/isorecursive-types.md`. **State: Proposal** — design not yet a
 
 Eight user-facing primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `variant`, `decimal`, `big-int`, `proxy`) currently leak from `standard_builtins()` directly into every user environment without tinct wrappers. Per the stdlib-boundary principle, Rust functions should not reach user contexts directly — each should be wrapped in tinct and the raw Rust names accessible only via `%rust "meta"` / `%rust "math"` for prelude-internal use.
 
-- [ ] Remove `eval-ast`, `gensym`, `llt-repr` from direct `standard_builtins()` top-level registration; keep them accessible via `[include %rust "meta"]` only; update any Rust call-sites that depend on the global name (`src/builtins.rs`)
-- [ ] Remove `tag-of`, `variant` from direct top-level registration; keep in `%rust "meta"` module only (`src/builtins.rs`)
-- [ ] Remove `decimal`, `big-int` from direct top-level registration; keep accessible via `%rust "math"` or a new `%rust "numeric"` group (`src/builtins.rs`)
-- [ ] Remove `proxy` from direct top-level registration; keep in `%rust "meta"` only (`src/builtins.rs`)
-- [ ] Add one-line tinct wrapper functions in `stdlib/prelude.llt` for each of the 8 names, using the `%rust` module name after `[include %rust "meta"]` / `[include %rust "math"]` (`stdlib/prelude.llt`)
-- [ ] Verify `src/type_env.rs` type registrations: schemes for the 8 names must still resolve correctly after the wrapper indirection; update if they were keyed to the direct Rust registration (`src/type_env.rs`)
-- [ ] Tests: `[gensym]`, `[gensym "prefix"]`, `[eval-ast ...]`, `[llt-repr ...]`, `[tag-of ...]`, `[variant ...]`, `[decimal ...]`, `[big-int ...]`, `[proxy ...]` all work from user code via prelude wrappers; `%rust "meta"` include gives prelude access to underlying names; all existing corpus tests pass (`tests/corpus/eval/`)
+- [x] Remove `eval-ast`, `gensym`, `llt-repr` from `standard_builtins()` (176 builtins now); `builtin-*` aliases added (`src/builtins.rs`)
+- [x] Remove `tag-of`, `variant` from direct registration; `builtin-tag-of`, `builtin-variant` aliases added (`src/builtins.rs`)
+- [x] Remove `decimal`, `big-int` from direct registration; `builtin-decimal`, `builtin-big-int` aliases added (`src/builtins.rs`)
+- [x] Remove `proxy` from direct registration; `builtin-proxy` alias added (`src/builtins.rs`)
+- [x] Add 8 tinct wrapper functions in `stdlib/prelude.llt` delegating to `builtin-*` aliases (`stdlib/prelude.llt`)
+- [x] Verify `src/type_env.rs` type registrations and add `builtin-*` aliases to type checker (`src/type_env.rs`)
+- [x] Tests: all 2185 tests pass; corpus tests for `gensym` and `eval-ast` updated (`tests/corpus/eval/`)
 
 ---
 

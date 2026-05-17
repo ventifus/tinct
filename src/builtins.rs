@@ -1218,18 +1218,10 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("error", builtin_error, [Strictness::Seq]),
         builtin!("try", builtin_try, [Strictness::Id]),
         builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
-        builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
-        builtin!("gensym", builtin_gensym),
         builtin!("until", builtin_until),
-        // Decimal and BigInt
-        builtin!("decimal", builtin_decimal, [Strictness::Seq]),
-        builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
         builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
-        builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
-        builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!("variant", builtin_variant, [Strictness::Seq]),
         builtin!("int?", builtin_int_check, [Strictness::Seq]),
         builtin!("float?", builtin_float_check, [Strictness::Seq]),
         // num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
@@ -1385,8 +1377,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("builtin-reverse", builtin_reverse, [Strictness::Spine]),
         builtin!("builtin-sort", builtin_sort, [Strictness::Spine]),
-        // Proxy
-        builtin!("proxy", builtin_proxy),
         // Date-time: timestamps and durations
         builtin!(
             "parse-timestamp",
@@ -2010,6 +2000,14 @@ pub fn inject_prelude_aliases(env: &mut Environment) {
         builtin!("builtin-cons", builtin_cons),
         builtin!("builtin-reverse", builtin_reverse, [Strictness::Seq]),
         builtin!("builtin-sort", builtin_sort, [Strictness::Seq]),
+        builtin!("builtin-eval-ast", builtin_eval_ast, [Strictness::Seq]),
+        builtin!("builtin-gensym", builtin_gensym),
+        builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
+        builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
+        builtin!("builtin-variant", builtin_variant, [Strictness::Seq]),
+        builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
+        builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
+        builtin!("builtin-proxy", builtin_proxy),
     ];
 
     for def in aliases {
@@ -6615,8 +6613,10 @@ mod tests {
         let count = standard_builtins().len();
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
+        // 8 primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy)
+        // were moved to builtin-* aliases for prelude-only use, reducing count from 184 to 176.
         assert_eq!(
-            count, 184,
+            count, 176,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6669,7 +6669,7 @@ mod tests {
         assert!(names.contains(&"apply"), "missing apply");
         // Type introspection
         assert!(names.contains(&"type-of"), "missing type-of");
-        assert!(names.contains(&"llt-repr"), "missing llt-repr");
+        // llt-repr moved to builtin-llt-repr (prelude wrapper only)
         assert!(names.contains(&"int?"), "missing int?");
         assert!(names.contains(&"float?"), "missing float?");
         // num?, record?, map? are now LLT-implemented in stdlib/prelude.llt (not builtins)
@@ -6751,8 +6751,7 @@ mod tests {
             "missing builtin-reverse"
         );
         assert!(names.contains(&"builtin-sort"), "missing builtin-sort");
-        // Also assert proxy is present
-        assert!(names.contains(&"proxy"), "missing proxy");
+        // proxy moved to builtin-proxy (prelude wrapper only)
         // Access-pipeline builtins (Wave 1 sprint)
         assert!(names.contains(&"builtin-get"), "missing builtin-get");
         assert!(names.contains(&"get?"), "missing get?");
@@ -6761,8 +6760,8 @@ mod tests {
         assert!(names.contains(&"each-kv"), "missing each-kv");
         // Total count: Wave 1 sprint added 4 access-pipeline builtins (builtin-get, each, each-key, each-kv).
         // Update this count when standard_builtins() changes.
-        assert!(names.contains(&"eval-ast"), "missing eval-ast");
-        assert!(names.contains(&"gensym"), "missing gensym");
+        // eval-ast moved to builtin-eval-ast (prelude wrapper only)
+        // gensym moved to builtin-gensym (prelude wrapper only)
         assert!(names.contains(&"str-length"), "missing str-length");
         assert!(names.contains(&"str-slice"), "missing str-slice");
         assert!(names.contains(&"str-chars"), "missing str-chars");
@@ -6837,8 +6836,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            184,
-            "expected 184 builtins, got {} (upper/lower moved to stdlib/strings.llt; str-to-upper-char, str-to-lower-char, str-map-chars, regex-match? added; get? added)",
+            176,
+            "expected 176 builtins, got {} (8 primitives moved to builtin-* aliases: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy)",
             names.len()
         );
     }

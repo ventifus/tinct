@@ -2106,6 +2106,38 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        env.insert(
+            "eval-ast".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Top)],
+                ret: Box::new(Type::Top),
+                variadic: false,
+            },
+        );
+        env.insert(
+            "gensym".to_string(),
+            Type::Function {
+                params: vec![],
+                ret: Box::new(Type::Str),
+                variadic: true, // 0 or 1 args
+            },
+        );
+        env.insert(
+            "decimal".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Top)],
+                ret: Box::new(Type::Unknown), // Returns Decimal
+                variadic: false,
+            },
+        );
+        env.insert(
+            "big-int".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Top)],
+                ret: Box::new(Type::Unknown), // Returns BigInt
+                variadic: false,
+            },
+        );
         // Type predicates — accept any value (Top), return Bool
         env.insert(
             "int?".to_string(),
@@ -3451,6 +3483,14 @@ impl TypeEnv {
             ("builtin-reduce", "reduce"),
             ("builtin-take", "take"),
             ("builtin-drop", "drop"),
+            ("builtin-eval-ast", "eval-ast"),
+            ("builtin-gensym", "gensym"),
+            ("builtin-llt-repr", "llt-repr"),
+            ("builtin-tag-of", "tag-of"),
+            ("builtin-variant", "variant"),
+            ("builtin-decimal", "decimal"),
+            ("builtin-big-int", "big-int"),
+            ("builtin-proxy", "proxy"),
         ] {
             if let Some(scheme) = env.get(canonical).cloned() {
                 env.insert_scheme(alias.to_string(), scheme);

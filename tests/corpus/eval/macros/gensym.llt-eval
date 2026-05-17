@@ -1,5 +1,4 @@
-# gensym generates unique names for macro hygiene. Accessible from user code.
+# gensym generates unique names for macro hygiene. Accessible from user code via prelude wrapper.
 [a: [gensym] b: [gensym] c: [= a b]]
-=== warn
-undefined variable: gensym at 1:6-1:12
-undefined variable: gensym at 1:18-1:24
+=== out
+[a: "__g0"  b: "__g1"  c: false]

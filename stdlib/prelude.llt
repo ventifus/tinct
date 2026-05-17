@@ -1410,4 +1410,24 @@ reverse: [fn@[return: Dict  doc: "Reverse a collection (reindexed from 0).\n\nEx
 
 sort: [fn@[return: Dict  doc: "Sort collection in natural ascending order.\n\nExample: [sort [3 1 2]] => [0: 1  1: 2  2: 3]\nExample: [sort [\"c\" \"a\" \"b\"]] => [0: \"a\"  1: \"b\"  2: \"c\"]\n\nNote: Returns a new Dict with elements sorted, keys reindexed from 0. Uses natural ordering (<)."] [xs] [builtin-sort xs]]
 
+# ============================================================================
+# Meta Primitives (shadowable wrappers for meta introspection)
+# ============================================================================
+
+eval-ast: [fn@[return: Unknown  doc: "Evaluate an AST expression.\n\nExample: [eval-ast [quote [+ 1 2]]] => 3\n\nNote: Takes a quoted AST and evaluates it in the current environment."] [ast] [builtin-eval-ast ast]]
+
+gensym: [fn@[return: String  doc: "Generate a unique symbol name.\n\nExample: [gensym] => \"__g0\"\n\nNote: Used by macros to create hygienic bindings. Each call produces a unique identifier."] [] [builtin-gensym]]
+
+llt-repr: [fn@[return: String  doc: "Convert value to LLT source representation.\n\nExample: [llt-repr [1 2 3]] => \"[0: 1  1: 2  2: 3]\"\n\nNote: Produces valid LLT syntax that could be parsed back into the original structure."] [value] [builtin-llt-repr value]]
+
+tag-of: [fn@[return: String  doc: "Get the variant tag name.\n\nExample: [tag-of [variant \"Red\"]] => \"Red\"\n\nNote: Returns the tag string for a variant value. Errors on non-variant values."] [value] [builtin-tag-of value]]
+
+variant: [fn@[return: Variant  doc: "Construct a tagged variant value.\n\nExample: [variant \"Red\"] => Variant(Red, Null)\nExample: [variant \"Some\"] => Variant(Some, Null)\n\nNote: Creates a variant with the given tag. Payload is always Null. Used for ADT-style tag values."] [tag] [builtin-variant tag]]
+
+decimal: [fn@[return: Decimal  doc: "Convert to arbitrary-precision decimal.\n\nExample: [decimal \"0.1\"] => 0.1 (exact)\nExample: [decimal 123] => 123.0\n\nNote: Provides exact decimal arithmetic, avoiding floating-point rounding errors."] [value] [builtin-decimal value]]
+
+big-int: [fn@[return: BigInt  doc: "Convert to arbitrary-precision integer.\n\nExample: [big-int \"12345678901234567890\"] => 12345678901234567890\nExample: [big-int 42] => 42\n\nNote: Supports integers beyond the range of 64-bit Int."] [value] [builtin-big-int value]]
+
+proxy: [fn@[return: Proxy  doc: "Create a capability proxy.\n\nExample: [proxy handler-fn]\n\nNote: Wraps a function as a proxy. Field access calls the handler. Used for capability-based security patterns."] [handler] [builtin-proxy handler]]
+
 ]
