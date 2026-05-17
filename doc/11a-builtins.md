@@ -717,13 +717,21 @@ The following `builtin-*` aliases provide access to the raw Rust implementations
 | `builtin-reduce` | `reduce` | Escape hatch for raw reduce |
 | `builtin-take` | `take` | Escape hatch for raw take |
 | `builtin-drop` | `drop` | Escape hatch for raw drop |
+| `builtin-eval-ast` | `eval-ast` | Escape hatch for raw AST evaluation |
+| `builtin-gensym` | `gensym` | Escape hatch for raw symbol generation |
+| `builtin-llt-repr` | `llt-repr` | Escape hatch for raw LLT representation |
+| `builtin-tag-of` | `tag-of` | Escape hatch for raw variant tag extraction |
+| `builtin-variant` | `variant` | Escape hatch for raw variant construction |
+| `builtin-decimal` | `decimal` | Escape hatch for raw decimal conversion |
+| `builtin-big-int` | `big-int` | Escape hatch for raw big integer conversion |
+| `builtin-proxy` | `proxy` | Escape hatch for raw proxy construction |
 
 These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<` and `$not`) cannot shadow the underlying primitives. If a wrapper has a bug or performance issue, callers can always reach the Rust implementation.
 
 ## Summary
 
-**Total:** 184 Rust-native builtins + 29 stable aliases = 213 registered names.
+**Total:** 184 Rust-native builtins + 37 stable aliases = 221 registered names.
 
-Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation. The 29 stable aliases (prefixed `builtin-*`) provide access to raw Rust implementations bypassing LLT prelude wrappers.
+Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation. The 37 stable aliases (prefixed `builtin-*`) provide access to raw Rust implementations bypassing LLT prelude wrappers.
 
 **Design principle:** These builtins are the minimal set of primitives that **cannot be expressed in LLT itself**. Everything else (sorting, logic operators, dict utilities, composition functions) is implemented in the [Standard Library](11-stdlib.md) using only these primitives plus LLT's syntax and lazy evaluation.
