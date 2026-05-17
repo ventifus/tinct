@@ -41,7 +41,7 @@ Two structural gaps remain.
 
 **The language can take strong positions without losing extensibility.** Tinct takes strong syntactic positions — `[let ...]` required in all binding contexts, `[case ...]` required for match arms — to eliminate ambiguity and special cases in the core. These positions are correct. But without a sufficiently powerful macro system, they become immutable walls. A user who prefers writing `[fn [x y] body]` has no recourse. With parse-stage delivery, a user can write a macro that implements the softening. The language's correctness and the user's ergonomic preferences are no longer in conflict.
 
-**Structural macros become writable in tinct.** `derive`-style macros — one invocation produces multiple `instance` declarations — require multi-form output. Pattern-matching dispatch forms — `[dispatch result [n@Int: ...] [n@String: ...]]` — require annotated keys to be distinct. Neither is expressible today. Both fall out directly from this proposal.
+**Structural macros become writable in tinct.** `derive`-style macros — one invocation produces multiple `instance` declarations — require multi-form output. Macros that generate nested `[match ...]`/`[case ...]` forms, macros that introduce hygienically-named intermediate bindings, macros that validate argument structure and emit precise compile errors — none are expressible today. All fall out directly from this proposal.
 
 **Macro errors become precise.** Today, a macro that receives wrong-shaped arguments either crashes at runtime with a confusing index error or produces malformed AST that fails at type-check with no connection to the macro call. `macro-error` and `span-of` let macros produce errors that point at the exact source location of the problem.
 
@@ -114,14 +114,14 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 ```tinct
 [macro with-retry [let max-attempts body]
   [counter: [gensym "counter"]]
-  # unquote-name splices a string as an identifier node in the output AST
-  [quote [let [[[unquote-name counter]: 0]]
-    [while [< [unquote-name counter] [unquote max-attempts]]
+  # gensym returns a var-ref AST node — [unquote counter] splices it as an identifier
+  [quote [let [[[unquote counter]: 0]]
+    [while [< [unquote counter] [unquote max-attempts]]
       [unquote body]
-      [set! [unquote-name counter] [+ [unquote-name counter] 1]]]]]]
+      [set! [unquote counter] [+ [unquote counter] 1]]]]]]
 ```
 
-`counter` is gensym'd — macro-introduced. `max-attempts` and `body` are from the pattern — user-provided. `unquote-name` is the quasiquote primitive for splicing a string as an identifier; without it, the gensym'd string would be unquoted as a string literal rather than an identifier reference. The distinction is syntactically explicit. Scope set activation (Phase 2) becomes straightforward: pattern-bound names carry the caller's scope; gensym names carry the macro's scope.
+`counter` is gensym'd — macro-introduced. `max-attempts` and `body` are from the pattern — user-provided. `gensym` returns a `var-ref` AST node (`{type: "var-ref" name: "counter__42"}`), so `[unquote counter]` splices it as an identifier wherever it appears — binding position, reference position, anywhere. No special form needed. The distinction is syntactically explicit. Scope set activation (Phase 2) becomes straightforward: pattern-bound names carry the caller's scope; gensym names carry the macro's scope.
 
 ---
 
@@ -175,46 +175,11 @@ A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A us
 
 The resulting `Seq` is delivered to the macro body. The macro inspects and reshapes it, returning a new AST dict. The pass substitutes the original form with the result and continues.
 
-**Pre-scan for registration.** `macro` declarations with `:flat-list` parameters and `declare-key-identity` declarations are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Stdlib declarations in `stdlib/syntax.llt` are always pre-loaded.
+**Pre-scan for registration.** `macro` declarations with `:flat-list` parameters are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Stdlib declarations in `stdlib/syntax.llt` are always pre-loaded. Any form with a `macro` declaration automatically gets neutral key handling from the parser — no duplicate-key enforcement — since the macro body handles structural validation.
 
 **Transformation to fixpoint.** The pass runs until no registered form names appear unvisited in the AST. A macro's output is re-visited. Depth limit 100 per site; total node-count cap 100k.
 
 ---
-
-### `declare-key-identity` — Annotated Keys in Macro Forms
-
-Duplicate detection fires during parsing, before any macro runs. By default, `n@Int` and `n@String` both resolve to bare key `"n"` — a parse-time duplicate error, before the macro ever sees them.
-
-`declare-key-identity` is scanned before parsing begins and registers a form name with the parser to use full-expression equality for duplicate detection in that form's body:
-
-```tinct
-[declare-key-identity dispatch  full-expression]
-# n@Int ≠ n@String ≠ n — all three can coexist as distinct keys
-```
-
-| Identity | Behavior |
-|----------|----------|
-| `bare-name` (default) | `n@Int` and `n@String` → key `"n"` → duplicate |
-| `full-expression` | Structural comparison — `n@Int` and `n@String` are distinct |
-
-Two `n@Int` entries are still a duplicate. Two `_` entries are still a duplicate. Only the annotation distinguishes them.
-
-```tinct
-[declare-key-identity dispatch  full-expression]
-
-[macro dispatch [let scrutinee  ...arms]
-  [quote [match [unquote scrutinee]
-    [unquote-splice [map [fn [let arm]
-                           [quote [case [unquote [first arm]] [unquote [second arm]]]]]
-                         arms]]]]]
-
-# Usage — n@Int and n@String are distinct arms:
-[dispatch result
-  [Ok v]:    [process v]
-  [Err msg]: [log-error msg]
-  n@Int:     [str "int: " n]
-  n@String:  [str "str: " n]]
-```
 
 ---
 
@@ -274,7 +239,6 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 [quote expr]             # produce the AST dict for expr
 [unquote val]            # splice val as an AST node (val is already an AST dict)
 [unquote-splice seq]     # splice a sequence of AST nodes into the enclosing form
-[unquote-name str]       # splice a string as an identifier node — for gensym'd names
 
 # Sequence operations on flat-list deliveries
 [first xs] [rest xs]     # element access on Seq
@@ -282,7 +246,8 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 [get-or dict key default] # field access with fallback — used for node.type
 
 # Gensym and error
-[gensym prefix]          # fresh unique identifier string (e.g. "prefix__42")
+[gensym prefix]          # fresh unique identifier — returns {type: "var-ref" name: "prefix__N"}
+                         # [unquote (gensym "x")] splices an identifier node directly
 [macro-error span msg]   # terminate transformation with compile error at span
 
 # Stdlib helpers
@@ -372,8 +337,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 ```tinct
 [macro with-tmp [let expr body]
   [tmp: [gensym "tmp"]]
-  # unquote-name splices the gensym'd string as an identifier in the output
-  [quote [let [[[unquote-name tmp]: [unquote expr]]] [unquote body]]]]
+  # gensym returns a var-ref node — [unquote tmp] splices it as an identifier
+  [quote [let [[[unquote tmp]: [unquote expr]]] [unquote body]]]]
 ```
 
 ```tinct
@@ -381,9 +346,9 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 # → [let [[tmp__42: [expensive-computation]]] [+ tmp__42 1]]
 ```
 
-`unquote-name` is the quasiquote form for splicing a string as an identifier node — necessary whenever a gensym'd name appears in a binding position. Without it, `[unquote tmp]` would splice the string `"tmp__42"` as a string literal, not an identifier.
+`gensym` returns `{type: "var-ref" name: "tmp__42"}` — a `var-ref` AST node, not a string. `[unquote tmp]` splices it directly as an identifier wherever it appears: in binding position (`[let [[...`: ...]]]`), in reference position (`[+ tmp ...]`), anywhere. No special splicing primitive needed.
 
-**Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces `tmp__42` (a name containing `__` that cannot appear in user-written tinct), so the user's `tmp` is unaffected.
+**Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces a node whose name contains `__N` (a suffix that cannot appear in user-written tinct identifiers), so the user's `tmp` is unaffected.
 
 ```tinct
 [let [tmp: 99]
@@ -504,53 +469,48 @@ Point: [type [x@Float  y@Float]]
 
 ---
 
-### Complex 3: `dispatch` — Annotated Keys
+### Complex 3: `cond` — Multi-Arm Dispatch with Recursive Expansion
+
+`cond` accepts a sequence of `[test body]` clause pairs plus an optional `[else body]` fallback. It chains them into nested `[if ...]` expressions.
 
 ```tinct
-[declare-key-identity dispatch  full-expression]
-
-[macro dispatch [let scrutinee  ...arms]
-  [quote [match [unquote scrutinee]
-    [unquote-splice [map [fn [let arm]
-                           [quote [case [unquote [first arm]] [unquote [second arm]]]]]
-                         arms]]]]]
+[macro cond
+  [[case [let]]
+    [quote [error "cond: no matching clause"]]]
+  [[case [let clause]]
+    # single clause — must be [else body] or [test body]
+    [match [get-or [first-or clause {}] "type" null]
+      [[case "var-ref"]  [quote [unquote [second clause]]]]   # [else body]
+      [[case [let _]]    [quote [if [unquote [first clause]]  # [test body]
+                           [unquote [second clause]]
+                           [error "cond: no matching clause"]]]]]]
+  [[case [let clause ...rest]]
+    [quote [if [unquote [first clause]]
+      [unquote [second clause]]
+      [cond [unquote-splice rest]]]]]]
 ```
 
 ```tinct
-[dispatch result
-  [Ok v]:    [process v]
-  [Err msg]: [log-error msg]
-  n@Int:     [str "int: " n]
-  n@String:  [str "str: " n]]
+[cond
+  [[> x 10]  "big"]
+  [[> x 5]   "medium"]
+  [else       "small"]]
 ```
 
-Under `full-expression` identity, `n@Int` and `n@String` are structurally distinct keys — no duplicate error. Expands to:
+Expansion trace:
 
-```tinct
-[match result
-  [case [Ok v]    [process v]]
-  [case [Err msg] [log-error msg]]
-  [case n@Int     [str "int: " n]]
-  [case n@String  [str "str: " n]]]
+```
+[cond [[> x 10] "big"] [[> x 5] "medium"] [else "small"]]
+→ [if [> x 10] "big"     [cond [[> x 5] "medium"] [else "small"]]]
+→ [if [> x 10] "big"     [if [> x 5] "medium" [cond [else "small"]]]]
+→ [if [> x 10] "big"     [if [> x 5] "medium"  "small"]]
 ```
 
-**Edge case — two identical annotated keys:**
+**Edge case — empty `cond`:** The zero-arm case returns a guaranteed runtime error rather than silently producing `null`. Matches Racket's behaviour.
 
-```tinct
-[dispatch result
-  n@Int: "first"
-  n@Int: "second"]   # parse error: duplicate key n@Int
-```
+**Edge case — `else` detection:** `[else body]` is detected by checking if the first element of the clause is a `var-ref` named `"else"`. This uses `node.type` dispatch — consistent with how all macro bodies inspect AST structure. If `else` is not in scope, the type checker would flag it as an undefined variable; but `else` is imported from stdlib as a constant `true`, making `[else body]` equivalent to `[if true body (no-match)]`.
 
-Two `n@Int` entries are still a parse-time duplicate even under `full-expression` identity. Only the annotation distinguishes them; identical annotations still collide.
-
-**Edge case — bare name alongside annotated name:**
-
-```tinct
-[dispatch result
-  n@Int: [str "int: " n]
-  n:     "fallback"]   # valid — n@Int ≠ n under full-expression identity
-```
+**Edge case — the fixpoint:** Each expansion step produces exactly one more `[if ...]` and one recursive `[cond ...]` call. The depth limit (100) bounds this. A `cond` with 101 clauses exceeds the limit and produces a macro depth error.
 
 ---
 
@@ -595,11 +555,11 @@ Each error points at the exact source location of the violation: the macro uses 
 **Proposed:** Corrected to "type error." The parser accepts `[fn any-expr body]`; the type checker enforces `Expr::LetDecl` in param position. This removes hard enforcement from StackFrames for `fn`, `class`, `type` and places it in `check_fn_expr` in `src/typecheck.rs`.
 **Impact:** Minor in scope; architectural correctness improvement independent of macros.
 
-### `src/parser.rs` — Pre-Scan and Key Identity
+### `src/parser.rs` — Pre-Scan and Neutral Key Handling
 
 **Current:** Duplicate detection uses bare-name identity unconditionally. `fn`/`class`/`type` StackFrames enforce `Expr::LetDecl`.
-**Proposed:** (1) A pre-scan pass over the token stream collects `declare-key-identity` declarations and `macro` declarations with `:flat-list` parameters before the main parse begins. `declare-key-identity` registrations switch the named form's body to full-expression duplicate detection. (2) `fn`/`class`/`type` StackFrames accept any first sub-expression without error.
-**Impact:** Moderate — pre-scan and key-identity dispatch; StackFrame semantic checks removed.
+**Proposed:** (1) A pre-scan pass collects `macro` declarations with `:flat-list` parameters before the main parse begins. (2) Any form with a `macro` declaration in scope gets neutral key handling — the parser does not apply bare-name duplicate detection for that form's argument positions. (3) `fn`/`class`/`type` StackFrames accept any first sub-expression without error (semantic enforcement moved to type checker).
+**Impact:** Moderate — pre-scan; neutral-key flag per form; StackFrame semantic checks removed.
 
 ### `src/expand.rs` — Parse-Stage Transformation Pass
 
@@ -612,11 +572,9 @@ Each error points at the exact source location of the violation: the macro uses 
 ```rust
 Expr::MacroDecl {
     name: String,
-    params: Vec<(String, ReceiveMode)>,   // ReceiveMode::Expr (default) or Flat-list
+    params: Vec<(String, ReceiveMode)>,   // ReceiveMode::Expr (default) or FlatList
     body: Box<Spanned<Expr>>,
 }
-
-Expr::KeyIdentityDecl { form: String, identity: KeyIdentity }
 
 Expr::Splice(Vec<Spanned<Expr>>)
 ```
@@ -633,7 +591,7 @@ Expr::Splice(Vec<Spanned<Expr>>)
 
 Add: `let-decl?`, `var-ref?`, `annotated?`, `literal?`, `call?`, `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or`.
 Add: `macro-error` as a Rust builtin (`ErrorKind::MacroError` with span).
-Add: `unquote-name` — a quasiquote special form (handled in `src/expand.rs`, not a function) that splices a string value as an identifier (`Expr::VarRef`) in the output AST. Valid only inside `[quote ...]`; a type error outside quasiquote context. Necessary for any macro that produces bindings for gensym'd names.
+Update: `gensym` returns `{type: "var-ref" name: "prefix__N"}` — a `var-ref` AST node, not a string. `[unquote (gensym "x")]` splices a fresh identifier directly; no special splicing primitive needed.
 **Impact:** Minor — additive.
 
 ### `stdlib/syntax.llt` (new file)
