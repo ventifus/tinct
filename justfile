@@ -175,9 +175,10 @@ versions:
         {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --strict --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
-# Writes one file per module to doc/lib/<module>.md and an index to doc/11b-reference.md.
+# Writes one file per module to doc/lib/<module>.md.
+# The module index is now maintained manually in doc/11-stdlib.md §Supplemental Module Reference.
 docgen:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs root=. --cap-fs docdir=doc/lib scripts/docgen.llt > doc/11b-reference.md"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs root=. --cap-fs docdir=doc/lib scripts/docgen.llt"
 
 # Build documentation
 doc:

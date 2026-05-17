@@ -638,23 +638,10 @@ impl Type {
             (Type::Top, _) | (_, Type::Top) => true,
             // Never is consistent with everything (like Unknown, for gradual typing)
             (Type::Never, _) | (_, Type::Never) => true,
-            // TypeVar consistency: UNSOUND but required for current implementation.
-            // IDEAL: (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2 (reflexivity only),
-            // with TypeVar vs concrete type => false (not consistent — should be substitution-applied).
-            //
-            // REALITY: TypeVars reach is_consistent BEFORE substitution is fully applied in some
-            // code paths (particularly prelude body checking via check_expr subsumption). Making this
-            // rule strict causes widespread test failures because internal TypeVars from annotated
-            // params, `instantiate_scheme`, or `fresh_type_var` appear during checking.
-            //
-            // Current behavior: TypeVar is consistent with everything (mirrors Unknown). This is
-            // non-transitive consistency abuse — α ~ Int and α ~ Str both hold, allowing unsound
-            // type flow. The transitivity gap prevents total collapse (Int ~ Str still false), but
-            // this is a known precision loss.
-            //
-            // TODO(type-precision): restrict to reflexivity only, fix callers to apply substitution
-            // before calling is_consistent. See sprint type-precision-fixes Task 2 notes.
-            (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => true,
+            // TypeVar consistency: SOUND reflexivity check only.
+            // Two TypeVars are consistent if they have the same name (same variable).
+            // TypeVar vs concrete type is NOT consistent — callers must apply substitution first.
+            (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             // Negation: structurally consistent
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),
             // Capability types, Proxy: consistent only if equal (handled by a == b above)
@@ -7909,5 +7896,36 @@ mod tests {
         // Union(String, Int) <: ~Int should fail (Int member overlaps)
         let not_int = Type::Negation(Box::new(Type::Int));
         assert!(!Type::is_subtype(&union, &not_int));
+    }
+
+    #[test]
+    fn test_typevar_consistency_reflexivity_only() {
+        // Two TypeVars with the same name should be consistent
+        let tv1 = Type::TypeVar("a".to_string(), 0);
+        let tv2 = Type::TypeVar("a".to_string(), 1); // different level, same name
+        assert!(
+            Type::is_consistent(&tv1, &tv2),
+            "TypeVars with same name should be consistent"
+        );
+
+        // Two TypeVars with different names should NOT be consistent
+        let tv_a = Type::TypeVar("a".to_string(), 0);
+        let tv_b = Type::TypeVar("b".to_string(), 0);
+        assert!(
+            !Type::is_consistent(&tv_a, &tv_b),
+            "TypeVars with different names should NOT be consistent"
+        );
+
+        // TypeVar vs concrete type should NOT be consistent (callers must apply substitution first)
+        let tv = Type::TypeVar("a".to_string(), 0);
+        let int_ty = Type::Int;
+        assert!(
+            !Type::is_consistent(&tv, &int_ty),
+            "TypeVar vs Int should NOT be consistent without substitution"
+        );
+        assert!(
+            !Type::is_consistent(&int_ty, &tv),
+            "Int vs TypeVar should NOT be consistent without substitution"
+        );
     }
 }

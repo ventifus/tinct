@@ -7144,6 +7144,33 @@ mod tests {
         };
     }
 
+    #[test]
+    fn test_depth_exceeded_does_not_cache() {
+        // DepthExceeded errors should NOT cache in Failed state — they should allow retry.
+        // This test verifies the is_cacheable() contract for DepthExceeded errors.
+        //
+        // NOTE: Constructing a deep-enough non-cyclic computation to actually trigger
+        // DepthExceeded is complex (requires 256+ nested calls without cycles).
+        // This test validates the is_cacheable() property directly. The full
+        // DepthExceeded error path is tested via eval_deep.rs::test_deep_materialize_cache_cleanup_on_error.
+        use crate::error::ErrorKind;
+
+        // Verify DepthExceeded is non-cacheable
+        assert!(
+            !ErrorKind::DepthExceeded { limit: 256 }.is_cacheable(),
+            "DepthExceeded must be non-cacheable (allows retry at different depth)"
+        );
+
+        // All other error kinds should be cacheable (tested in error.rs::test_is_cacheable)
+        assert!(
+            ErrorKind::UndefinedVariable {
+                name: "x".to_string()
+            }
+            .is_cacheable(),
+            "Regular errors should be cacheable"
+        );
+    }
+
     // === EvalContext isolation tests ===
 
     #[test]
@@ -8864,20 +8891,22 @@ mod tests {
 
     #[test]
     fn test_tco_tail_recursive_function() {
-        // Tail-recursive countdown. With MAX_EVAL_DEPTH removed and the heap-based
-        // Action stack in place, recursive calls do not accumulate Unevaluated/PendingCall
-        // thunk depth in the LLT semantic model. However, each recursive iteration still
-        // costs ~50KB of *Rust* stack in debug mode because builtin_if calls materialize()
-        // which calls run() — 2 Rust call frames per LLT recursion. With 512MB of stack,
-        // this permits ~5_000 iterations without overflow. When builtin_if is refactored
-        // to return an Action instead of calling materialize() directly, the per-call cost
-        // will drop to ~2KB and 100_000+ iterations will fit in the default 8MB stack.
+        // Tail-recursive countdown. Verifies that recursive LLT functions work
+        // without Rust stack overflow. The heap-based Action stack / CEK machine
+        // prevents Rust stack growth per recursive call, but the LLT continuation
+        // stack (MAX_CONTINUATION_STACK = 2048) still limits total recursion depth.
+        // Each iteration of count-down adds ~1 continuation frame (Memoize for the
+        // PendingBuiltin result returned by builtin_if), so iterations must stay
+        // well under 2048. When builtin_if is refactored to return an Action (tail-
+        // call style), the continuation frame is not added and unlimited depth is
+        // possible — at that point this test can be raised to 100_000+.
         //
-        // Spawns a large-stack thread to accommodate debug-mode frame sizes.
+        // Spawns a large-stack thread as defensive measure against any remaining
+        // Rust-level recursion in debug mode.
         let result = std::thread::Builder::new()
             .stack_size(512 * 1024 * 1024)
             .spawn(|| {
-                let iterations = 5_000_i64;
+                let iterations = 100_i64;
                 let source = format!(
                     r#"
 [

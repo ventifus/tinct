@@ -644,7 +644,7 @@ values@[doc: "Get all dict values as list"]: [fn@Dict [xs@Dict] [values-impl xs 
 entries@[doc: "Get all entries as key-value pairs"]: [fn@Dict [xs@Dict] [entries-impl xs [keys xs] 0 []]]
 
 # Reconstruct a dict from a list of [key: k value: v] pairs. Inverse of entries.
-from-entries@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
+from-entries@[doc: "Reconstruct dict from key-value pairs. O(n²) due to repeated merge on accumulator."]: [fn@Dict [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
 
 # ============================================================================
 # List Operations (integer keys, dense 0..n output)
@@ -806,7 +806,7 @@ flatten-step@[doc: "Flatten step (internal helper)"]: [fn@Dict [xs@Dict ks i@Int
         [flatten-impl xs ks [builtin-add i 1]
             [append acc [get current-key xs]]]]]
 
-flatten@[doc: "Flatten nested lists one level deep"]: [fn@Dict [xs@Dict]
+flatten@[doc: "Flatten nested lists one level deep. O(n²) due to repeated concat on accumulator."]: [fn@Dict [xs@Dict]
     [builtin-if [seq? xs]
         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
         [flatten-impl xs [keys xs] 0 []]]]
@@ -885,7 +885,7 @@ group-by-step@[doc: "Group-by step (internal helper)"]: [fn@Dict [acc@Dict x k]
         [make-entry k
             [append [get-or acc k []] x]]]]
 
-group-by@[doc: "Group elements by function result"]: [fn@Dict [f@Fn xs]
+group-by@[doc: "Group elements by function result. O(n²) due to repeated merge and append on accumulator."]: [fn@Dict [f@Fn xs]
     [builtin-reduce
         [fn [acc x]
             [group-by-step acc x [f x]]]
@@ -908,7 +908,7 @@ deep-merge-step@[doc: "Deep-merge step (internal helper)"]: [fn@Dict [acc@Dict a
                 [deep-merge [get k a] [get k b]]
                 [get k b]]]]]
 
-deep-merge@[doc: "Merge dicts recursively"]: [fn@Dict [a@Dict b@Dict]
+deep-merge@[doc: "Merge dicts recursively. O(n²) due to repeated merge on accumulator at each level."]: [fn@Dict [a@Dict b@Dict]
     [builtin-reduce
         [fn [acc k]
             [deep-merge-step acc a b k]]
@@ -927,7 +927,7 @@ walk-dict@[doc: "Walk nested dict structure (internal helper)"]: [fn@Dict [f@Fn 
         []
         [keys xs]]]
 
-walk@[doc: "Apply function bottom-up to nested structure"]: [fn@Any [f@Fn xs]
+walk@[doc: "Apply function bottom-up to nested structure. O(n²) due to repeated merge in walk-dict."]: [fn@Any [f@Fn xs]
     [builtin-if [dict? xs]
         [f [walk-dict f xs]]
         [f xs]]]
@@ -943,7 +943,7 @@ unzip@[doc: "Unzip list of pairs into pair of lists"]: [fn@Dict [pairs]
 # Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]].
 # All inner dicts must have the same keys.
 # Inherently materializing: must iterate over all rows and columns.
-transpose@[doc: "Transpose 2D dict (flip rows and columns)"]: [fn@Dict [rows@Dict]
+transpose@[doc: "Transpose 2D dict (flip rows and columns). O(n²) due to repeated merge in transpose-impl."]: [fn@Dict [rows@Dict]
     [builtin-if [empty? rows]
         []
         [transpose-impl rows [keys [builtin-first [values rows]]]]]]
@@ -1023,7 +1023,7 @@ uniq-step@[doc: "Uniq step (internal helper)"]: [fn@Dict [ks xs@Dict acc@Dict se
         [uniq-impl ks xs acc seen [builtin-add i 1]]
         [uniq-impl ks xs [append acc v] [append seen v] [builtin-add i 1]]]]
 
-uniq@[doc: "Remove duplicates (keep first occurrence)"]: [fn@Dict [xs@Dict]
+uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to repeated O(n) contains? check per element."]: [fn@Dict [xs@Dict]
     [uniq-impl [keys xs] xs [] [] 0]]
 
 # Right fold: fold f over xs from the right, starting with acc.

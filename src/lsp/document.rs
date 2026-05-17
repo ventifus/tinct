@@ -725,8 +725,20 @@ impl Default for DocumentStore {
 /// Returns `None` if the URI cannot be converted to a file path or the file
 /// cannot be read.
 pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
+    use crate::lsp::MAX_DOCUMENT_SIZE;
+
     // Convert URI to file path
     let path = crate::lsp::convert::uri_to_file_path(uri)?;
+
+    // Check file size before reading (prevents resource exhaustion from large files)
+    let metadata = std::fs::metadata(&path).ok()?;
+    if metadata.len() > MAX_DOCUMENT_SIZE as u64 {
+        // File too large — return None to indicate load failure.
+        // The LSP client will handle this as a missing document (same as file-not-found).
+        // This matches the behavior of DidOpenTextDocument and DidChangeTextDocument handlers
+        // in server.rs, which reject oversized documents with diagnostic errors.
+        return None;
+    }
 
     // Read the file from disk
     let text = std::fs::read_to_string(&path).ok()?;

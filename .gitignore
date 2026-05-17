@@ -21,6 +21,10 @@ Cargo.lock
 *.profdata
 *.profraw
 
+# Development scratch files (use .tmp/ instead)
+test_*.llt
+test_float_bug.rs
+
 # Fuzzing (cargo-fuzz artifacts — corpus and crashes can be large)
 /fuzz/target/
 /fuzz/corpus/

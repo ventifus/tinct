@@ -733,3 +733,105 @@ fn test_has_error_code_prefix_invalid_letters_in_number() {
         "[E0A1] with letter in number should NOT be detected"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Additional split_test_file() unit tests for Task 9
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_split_test_file_out_section() {
+    let content = "[x: 1]\n=== out\n[\"x\": 1]";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expectations.out.as_deref(), Some("[\"x\": 1]"));
+    assert!(test.expectations.warn.is_none());
+    assert!(test.expectations.error.is_none());
+}
+
+#[test]
+fn test_split_test_file_warn_section_only() {
+    let content = "[x@UnknownType: 1]\n=== warn\n[W012] unknown type";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x@UnknownType: 1]\n");
+    assert!(test.expectations.out.is_none());
+    assert_eq!(
+        test.expectations.warn.as_deref(),
+        Some("[W012] unknown type")
+    );
+    assert!(test.expectations.error.is_none());
+}
+
+#[test]
+fn test_split_test_file_error_section_only() {
+    let content = "[call $error \"boom\"]\n=== error\n[E024] explicit error";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[call $error \"boom\"]\n");
+    assert!(test.expectations.out.is_none());
+    assert!(test.expectations.warn.is_none());
+    assert_eq!(
+        test.expectations.error.as_deref(),
+        Some("[E024] explicit error")
+    );
+}
+
+#[test]
+fn test_split_test_file_all_three_sections() {
+    let content = "[x: 1]\n=== out\n[\"x\": 1]\n=== warn\nwarning text\n=== error\nerror text";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expectations.out.as_deref(), Some("[\"x\": 1]"));
+    assert_eq!(test.expectations.warn.as_deref(), Some("warning text"));
+    assert_eq!(test.expectations.error.as_deref(), Some("error text"));
+}
+
+#[test]
+fn test_split_test_file_cap_net_directive() {
+    let content = "# cap_net nc=*.local nc2=*.example.com\n[x: 1]\n=== out\n[\"x\": 1]";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x: 1]\n");
+    assert_eq!(test.expectations.out.as_deref(), Some("[\"x\": 1]"));
+    assert!(!test.no_fs);
+    assert_eq!(test.cap_net.len(), 2);
+    assert_eq!(test.cap_net[0], ("nc".to_string(), "*.local".to_string()));
+    assert_eq!(
+        test.cap_net[1],
+        ("nc2".to_string(), "*.example.com".to_string())
+    );
+}
+
+#[test]
+fn test_split_test_file_no_fs_and_cap_net_combined() {
+    let content = "# no_fs cap_net nc=*.local\n[x: 1]\n=== out\n[\"x\": 1]";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x: 1]\n");
+    assert!(test.no_fs);
+    assert_eq!(test.cap_net.len(), 1);
+    assert_eq!(test.cap_net[0], ("nc".to_string(), "*.local".to_string()));
+}
+
+#[test]
+fn test_split_test_file_empty_out_section() {
+    let content = "[x: 1]\n=== out\n";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x: 1]\n");
+    // Empty section content becomes None (trimmed to empty string, then None)
+    assert!(test.expectations.out.is_none());
+}
+
+#[test]
+fn test_split_test_file_empty_warn_section() {
+    let content = "[x: 1]\n=== warn\n";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x: 1]\n");
+    // Empty section content becomes None
+    assert!(test.expectations.warn.is_none());
+}
+
+#[test]
+fn test_split_test_file_empty_error_section() {
+    let content = "[x: 1]\n=== error\n";
+    let test = split_test_file(content).unwrap();
+    assert_eq!(test.input, "[x: 1]\n");
+    // Empty section content becomes None
+    assert!(test.expectations.error.is_none());
+}

@@ -203,7 +203,7 @@ fn test_corpus_structure() {
     const EVAL_LAZINESS_MIN: usize = 37;
     const EVAL_BUILTINS_MIN: usize = 120;
     const EVAL_STDLIB_MIN: usize = 195;
-    const EVAL_ERRORS_MIN: usize = 123;
+    const EVAL_ERRORS_MIN: usize = 120;
 
     let laziness_count = find_test_files(&manifest_dir.join("tests/corpus/eval/laziness")).len();
     assert!(

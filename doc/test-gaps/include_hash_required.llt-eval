@@ -1,0 +1,11 @@
+# NOTE: E056 (IncludeHashRequired) requires --require-integrity flag which enforces that
+# every $include call must supply a hash argument. The current corpus test infrastructure
+# does not support passing the --require-integrity configuration flag.
+# This error is tested via unit tests in src/builtins.rs::include_require_integrity_rejects_hashless.
+#
+# To enable corpus testing, we would need either:
+# 1. A directive like `# require_integrity` in split_test_file()
+# 2. Extension of eval_source_with_config() to accept require_integrity parameter
+# 3. A separate corpus runner for integrity-mode tests
+#
+# This file exists as documentation of the gap and will be updated when infrastructure supports it.

@@ -571,15 +571,24 @@ fn typecheck_document(
             &mut None,
         ) {
             Ok(expected_type) => {
-                let passes = Type::is_subtype(pipeline_type, &expected_type)
-                    || ((contains_unknown_or_top(pipeline_type)
-                        || contains_unknown_or_top(&expected_type))
-                        && Type::is_consistent(pipeline_type, &expected_type));
+                // Apply substitution before consistency check
+                let (pipeline_type_resolved, expected_type_resolved) = if state.subst.is_empty() {
+                    (pipeline_type.clone(), expected_type.clone())
+                } else {
+                    (
+                        state.subst.apply(pipeline_type),
+                        state.subst.apply(&expected_type),
+                    )
+                };
+                let passes = Type::is_subtype(&pipeline_type_resolved, &expected_type_resolved)
+                    || ((contains_unknown_or_top(&pipeline_type_resolved)
+                        || contains_unknown_or_top(&expected_type_resolved))
+                        && Type::is_consistent(&pipeline_type_resolved, &expected_type_resolved));
                 if !passes {
                     advisory_errors.push(TypeError::new(
                         format!(
                             "Pipeline input type {} does not satisfy expects contract {}",
-                            pipeline_type, expected_type
+                            pipeline_type_resolved, expected_type_resolved
                         ),
                         expects_ann.span,
                     ));
@@ -628,15 +637,28 @@ fn typecheck_document(
                 &mut None,
             ) {
                 Ok(expected_output) => {
-                    let passes = Type::is_subtype(&result_type, &expected_output)
-                        || ((contains_unknown_or_top(&result_type)
-                            || contains_unknown_or_top(&expected_output))
-                            && Type::is_consistent(&result_type, &expected_output));
+                    // Apply substitution before consistency check
+                    let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty()
+                    {
+                        (result_type.clone(), expected_output.clone())
+                    } else {
+                        (
+                            state.subst.apply(&result_type),
+                            state.subst.apply(&expected_output),
+                        )
+                    };
+                    let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
+                        || ((contains_unknown_or_top(&result_type_resolved)
+                            || contains_unknown_or_top(&expected_output_resolved))
+                            && Type::is_consistent(
+                                &result_type_resolved,
+                                &expected_output_resolved,
+                            ));
                     if !passes {
                         advisory_errors.push(TypeError::new(
                             format!(
                                 "Document output type {} does not match annotation {}",
-                                result_type, expected_output
+                                result_type_resolved, expected_output_resolved
                             ),
                             output_ann.span,
                         ));
@@ -825,15 +847,24 @@ fn typecheck_document(
             &mut None,
         ) {
             Ok(expected_output) => {
-                let passes = Type::is_subtype(&result_type, &expected_output)
-                    || ((contains_unknown_or_top(&result_type)
-                        || contains_unknown_or_top(&expected_output))
-                        && Type::is_consistent(&result_type, &expected_output));
+                // Apply substitution before consistency check
+                let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty() {
+                    (result_type.clone(), expected_output.clone())
+                } else {
+                    (
+                        state.subst.apply(&result_type),
+                        state.subst.apply(&expected_output),
+                    )
+                };
+                let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
+                    || ((contains_unknown_or_top(&result_type_resolved)
+                        || contains_unknown_or_top(&expected_output_resolved))
+                        && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
                 if !passes {
                     advisory_errors.push(TypeError::new(
                         format!(
                             "Document output type {} does not match annotation {}",
-                            result_type, expected_output
+                            result_type_resolved, expected_output_resolved
                         ),
                         output_ann.span,
                     ));
@@ -2175,13 +2206,19 @@ fn check_expr(
                                         )
                                     })?;
                                 } else {
-                                    let sub_passes = Type::is_subtype(expected_ty, &resolved)
-                                        || ((contains_unknown_or_top(expected_ty)
-                                            || contains_unknown_or_top(&resolved))
-                                            && Type::is_consistent(expected_ty, &resolved));
+                                    // Apply substitution before consistency check
+                                    let (expected_ty_resolved, resolved_ty) = if state.subst.is_empty() {
+                                        (expected_ty.clone(), resolved.clone())
+                                    } else {
+                                        (state.subst.apply(expected_ty), state.subst.apply(&resolved))
+                                    };
+                                    let sub_passes = Type::is_subtype(&expected_ty_resolved, &resolved_ty)
+                                        || ((contains_unknown_or_top(&expected_ty_resolved)
+                                            || contains_unknown_or_top(&resolved_ty))
+                                            && Type::is_consistent(&expected_ty_resolved, &resolved_ty));
                                     if !sub_passes {
                                         return Err(TypeError::new(
-                                            format!("parameter annotation {resolved} is more restrictive than required type {expected_ty}"),
+                                            format!("parameter annotation {resolved_ty} is more restrictive than required type {expected_ty_resolved}"),
                                             ann.span
                                         ));
                                     }
@@ -2232,14 +2269,28 @@ fn check_expr(
                                     )]
                                 })?;
                             } else {
-                                let sub_passes = Type::is_subtype(&declared, expected_ret)
-                                    || ((contains_unknown_or_top(&declared)
-                                        || contains_unknown_or_top(expected_ret))
-                                        && Type::is_consistent(&declared, expected_ret));
+                                // Apply substitution before consistency check
+                                let (declared_resolved, expected_ret_resolved) =
+                                    if state.subst.is_empty() {
+                                        (declared.clone(), expected_ret.clone())
+                                    } else {
+                                        (
+                                            state.subst.apply(&declared),
+                                            Box::new(state.subst.apply(expected_ret)),
+                                        )
+                                    };
+                                let sub_passes =
+                                    Type::is_subtype(&declared_resolved, &expected_ret_resolved)
+                                        || ((contains_unknown_or_top(&declared_resolved)
+                                            || contains_unknown_or_top(&expected_ret_resolved))
+                                            && Type::is_consistent(
+                                                &declared_resolved,
+                                                &expected_ret_resolved,
+                                            ));
                                 if !sub_passes {
                                     return Err(vec![TypeError::type_mismatch(
-                                        expected_ret,
-                                        &declared,
+                                        &expected_ret_resolved,
+                                        &declared_resolved,
                                         expr.span,
                                     )]);
                                 }
@@ -2321,13 +2372,25 @@ fn check_expr(
         // causes new type errors (Siek & Taha 2006). We only use the consistency fallback
         // when Unknown is present, because is_consistent is symmetric (Number ~ Int) while
         // is_subtype is directional (Int <: Number but NOT Number <: Int).
-        let passes = Type::is_subtype(&actual, &expected_resolved)
-            || ((contains_unknown_or_top(&actual) || contains_unknown_or_top(&expected_resolved))
-                && Type::is_consistent(&actual, &expected_resolved));
+
+        // Apply substitution before consistency check
+        let (actual_resolved, expected_final) = if state.subst.is_empty() {
+            (actual.clone(), expected_resolved.clone())
+        } else {
+            (
+                state.subst.apply(&actual),
+                state.subst.apply(&expected_resolved),
+            )
+        };
+
+        let passes = Type::is_subtype(&actual_resolved, &expected_final)
+            || ((contains_unknown_or_top(&actual_resolved)
+                || contains_unknown_or_top(&expected_final))
+                && Type::is_consistent(&actual_resolved, &expected_final));
         if !passes {
             Err(vec![TypeError::type_mismatch(
-                &expected_resolved,
-                &actual,
+                &expected_final,
+                &actual_resolved,
                 expr.span,
             )])
         } else {

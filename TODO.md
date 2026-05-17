@@ -8,65 +8,11 @@ See DONE.md for the full history of completed sprints.
 
 *All sprints below depend on `type-stage-infra`.*
 
-### chr-module-split: Extract type_def.rs, type_infer.rs, type_normalize.rs, type_unify.rs
+### chr-unification: CHR-unified type constraints — FDs and type families
 
-See `doc/whatif/chr-unification.md §Module Restructuring`. **Spec chapters:** `doc/06-type-inference.md §Multi-Parameter Type Classes`. Breaks the `types.rs ↔ value.rs` circular dependency that would arise from `NormCtxt` carrying `Rc<Environment>`. All existing `use crate::types::...` call sites are unchanged via re-exports.
+See `doc/whatif/chr-unification.md`. **State: Proposal** — design not yet approved; sprint tasks to be written after /rnd approval. `type-stage-infra` is the required groundwork (type dict schema + `type_to_dict`/`dict_to_type` are the FFI between inference and type-stage resolvers).
 
-- [ ] Create `src/type_def.rs` — move `Type` enum, `Row`, `RowTail`, `TypeKey`, and purely structural methods (`collect_type_vars`, `has_type_vars`, `occurs_in`, `display helpers`) from `src/types.rs`; update `src/value.rs` to `use crate::type_def::Type` instead of `types::Type` (`src/type_def.rs`, `src/value.rs`, `src/types.rs`)
-- [ ] Create `src/type_class.rs` — move `ClassDecl`, `Constraint`, `ClassEnv`, `InstanceEnv` and their impls from `src/types.rs`; update all import sites (`src/type_class.rs`, `src/typecheck.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/imports.rs`)
-- [ ] Create `src/type_infer.rs` (top-level module, not submodule) — move `InferState`, `Substitution`, `Levels` and their impls from `src/types.rs`; update all import sites (`src/type_infer.rs`, `src/typecheck.rs`, `src/typecheck_dict.rs`, `src/type_unify.rs`)
-- [ ] Create `src/type_normalize.rs` — placeholder module with empty `NormCtxt` struct and stub `normalize()` signature (no impl yet); move `normalize_union()`, `normalize_intersection()`, and `Type::Display` here (`src/type_normalize.rs`, `src/types.rs`)
-- [ ] Promote `src/type_unify.rs` to top-level module — remove `#[path = "type_unify.rs"]` from `src/types.rs`; add `mod type_unify;` to `src/lib.rs`; verify import chain compiles (`src/type_unify.rs`, `src/lib.rs`, `src/types.rs`)
-- [ ] Update `src/types.rs` to be a thin façade: `pub use type_def::*; pub use type_class::*; pub use type_infer::*; pub use type_normalize::*;` — all existing `use crate::types::...` call sites continue working without changes (`src/types.rs`)
-- [ ] Tests: `cargo build` and full test suite pass with no functional changes (`tests/`)
-
-**Depends on:** `type-stage-infra`
-
-### chr-normalization: TypeStageApp, NormCtxt, normalize(), deferred equality
-
-See `doc/whatif/chr-unification.md §Normalization`, `§TypeStageApp`, `§FD Elaboration`. **Spec chapters:** `doc/06-type-inference.md §Multi-Parameter Type Classes`, `§TypeStageApp unification rules`.
-
-- [ ] Add `Type::TypeStageApp { fn_name: String, args: Vec<Type> }` to `src/type_def.rs`; add `unreachable!("TypeStageApp not yet handled")` stub arms to every exhaustive match in `src/types.rs`, `src/type_class.rs`, `src/type_infer.rs` — compile-error-driven discovery of all sites (`src/type_def.rs`, `src/types.rs`, `src/type_class.rs`, `src/type_infer.rs`)
-- [ ] Fill TypeStageApp match arms in `src/type_unify.rs` and `src/type_env.rs`: add `TypeStageApp` to `collect_type_vars`, `has_type_vars`, `occurs_in` (recurse into `args`); add display form `FnName(arg1, arg2)` in `Type::Display`; update `type_key()` to return a stable key for TypeStageApp (`src/type_unify.rs`, `src/type_env.rs`, `src/type_normalize.rs`)
-- [ ] Fill TypeStageApp match arms in `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs`: default to `normalize(TypeStageApp(...), ctx)` in inference rules; treat as concrete for is_subtype/is_consistent (`src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs`)
-- [ ] Implement `type_to_dict` (with literal widening: `IntLiteral→Int`, etc.) and `dict_to_type` (with `kind: "multi-output"` sentinel support) in `src/type_normalize.rs` (`src/type_normalize.rs`)
-- [ ] Implement `NormCtxt` in `src/type_normalize.rs`: fields `subst`, `type_stage_env: Rc<Environment>`, `alias_env`, `class_env: &ClassEnv`, `depth: usize`, `max_depth: usize = 256`, `call_stack: Vec<String>`, normalization cache `HashMap<(String, Vec<TypeKey>), Type>`; add `NormCtxt::from(subst, state)` and `NormCtxt::minimal()` constructors (`src/type_normalize.rs`)
-- [ ] Implement `normalize(ty: Type, ctx: &NormCtxt) -> Type`: step 1 substitution apply; step 2 TypeStageApp (Unknown-in-args→Unknown, call_stack cycle check, is_ground check, type_to_dict + eval + dict_to_type + recurse); step 3 BAS simplification; step 4 literal widening; step 5 alias expansion via `normalize(expand, ctx)`; step 6 recursive child normalization (`src/type_normalize.rs`)
-- [ ] Thread `NormCtxt` into `InferState`: add `norm_ctxt: NormCtxt<'_>` construction at the start of `unify()`; update `unify()` to call `normalize(a, &norm)` and `normalize(b, &norm)` before `unify_normalized()` (`src/type_infer.rs`, `src/type_unify.rs`)
-- [ ] Implement 5 `TypeStageApp` cases in `unify_normalized()`: CONGRUENCE (injective: pairwise arg unify), DEFER (non-injective: push to `deferred_equalities`), APART (different fn: TypeError), STUCK (vs ConcreteType non-TypeVar: TypeError with message), VAR (bind TypeVar, occurs check traverses args) (`src/type_unify.rs`)
-- [ ] Add `deferred_equalities: Vec<(Type, Type)>` to `InferState`; implement processing loop at end of `unify()`: normalize both sides; if both concrete, call `unify(lhs', rhs')`; discard entries containing only generalized TypeVars at let-generalization time; add `ClassDecl.resolver_injective: bool` field (defaults `false`) (`src/type_infer.rs`, `src/type_class.rs`, `src/type_unify.rs`)
-- [ ] Update `improve_functional_dependency`: look up `class_decl.resolver` in type-stage Env and call via `eval()` → `dict_to_type`; retain `lookup_arithmetic_instance` fast path for built-in classes; extend BAS deferral predicate to include `Type::Unknown` and `Type::TypeVar`; add Unknown-in-determining-positions → return `Type::Unknown` rule (`src/type_unify.rs`)
-- [ ] Add `NormCtxt` parameter to `entails()`; pass `NormCtxt::minimal()` at declaration-time call sites where type-stage Env may be absent (`src/type_unify.rs`)
-- [ ] Tests: `[fn [x y] [+ x y]]` infers `Add a b c => Fn@c [a b]`; `[fn [x@Int y@Float] [+ x y]]` infers `Float`; `[= [+ 1 2.0] [+ 1.5 2.5]]` passes without false error; depth-limit TypeError names the resolver; `TypeStageApp` appears in error display as `AddResult(a, b)`; corpus tests in `tests/corpus/eval/typecheck/` (`tests/`)
-
-**Depends on:** `chr-module-split`
-
-### chr-class-instance: [class ...] two-bracket form and [instance ...] match-arm syntax
-
-See `doc/whatif/chr-unification.md §Class Body Structure`, `§Instance Syntax`, `§Expr::ClassDecl`, `§Expr::InstanceDecl`. **Spec chapters:** `doc/06-type-inference.md §Typeclass Declarations and Instances`.
-
-- [ ] Extend `Expr::ClassDecl` in `src/ast.rs`: add `determines: Vec<Spanned<Expr>>`, `resolver: Option<Spanned<Expr>>`; change `superclasses: Vec<(String, String)>` → `Vec<(String, Vec<String>)>`; add `unreachable!()` stub arms in `src/eval.rs`, `src/formatter.rs`, `src/desugar.rs`, `src/resolve.rs`, `src/lsp/analysis.rs`, `src/ast_dict.rs` (compile-error-driven) (`src/ast.rs`, ~6 files)
-- [ ] Update parser for `[class ...]` two-bracket form: add `structural_metadata: Option<Spanned<Expr>>` to `StackFrame::ClassDecl`; route second positional `Expr::Dict` to `structural_metadata` in `push_expr_to_parent` (currently hard-errors); extract `determines:`, `resolver:`, `kinds:`, `superclasses:` from `structural_metadata.entries` in `CloseBracket` ClassDecl handler (`src/parser.rs`)
-- [ ] Redesign `Expr::InstanceDecl` AST: change `{ class_name, instance_type, methods }` → `{ class_name, arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)> }`; add stub arms to `src/eval.rs`, `src/formatter.rs`, `src/desugar.rs`, `src/resolve.rs`, `src/lsp/analysis.rs`, `src/ast_dict.rs` (`src/ast.rs`, ~6 files)
-- [ ] Update parser for `[instance ...]` match-arm form: redesign `StackFrame::InstanceDecl` with `pending_arm_key: Option<Spanned<Expr>>`, `span_start`; add `VarRef` branch in `push_expr_to_parent` InstanceDecl arm for bare class name; method dicts arrive as completed `Expr::Dict` nodes via `push_value` (bracket-form required); update `InstanceDecl` Display impl (`src/parser.rs`, `src/ast.rs`)
-- [ ] Add `Expr::PatternDecl { bindings: Vec<Spanned<Expr>> }` to `src/ast.rs`; add `StackFrame::PatternDecl` to `src/parser.rs`: dispatch `pattern` keyword with colon-ahead rejection rule (`!matches!(peek_next_horizontal(...), Colon)`); inner bracket uses iterative Dict frame producing `Expr::Annotated` nodes converted to bindings by `push_expr_to_parent` (`src/ast.rs`, `src/parser.rs`)
-- [ ] Update `Expr::ClassDecl` typecheck handler: validate `determines:` entries (2-element lists, known param names); resolve param names to positional indices; validate coverage and consistency conditions with error templates naming conflicting arms; retire `f@Operator` — annotation resolver routes `kinds:` in `fn@[...]` and class structural brackets to `kind_env`; add migration error for `f@Operator` outside these positions (`src/typecheck.rs`, `src/typecheck_annot.rs`)
-- [ ] Update `Expr::InstanceDecl` typecheck handler: validate arm param count matches class; run disjointness/coverage/consistency as a batch (after all `[instance ...]` for the class are processed and type-stage Env populated); compute and set `ClassDecl.resolver_injective`; register arms in scope-local InstanceEnv; typecheck each arm's method implementations against class method signatures (`src/typecheck.rs`)
-- [ ] Tests: `[class [a b c] [determines: [[[a b] c]] resolver: AddResult] +: [fn@c [a b]]]` parses and typechecks; `[instance ...]` with `[pattern [a@Int b@Int c@Int]]:` arm registered correctly; disjointness error names conflicting arms with spans; coverage error names offending variable; `kinds:` in class structural bracket routes correctly; corpus tests in `tests/corpus/eval/typecheck/` (`tests/`)
-
-**Depends on:** `chr-normalization`
-
-### chr-prelude: Arithmetic class migration and boundary guard elaboration
-
-See `doc/whatif/chr-unification.md §Prelude Class Declarations`, `§Post-inference boundary guard elaboration pass`. **Spec chapters:** `doc/06-type-inference.md §Multi-Parameter Type Classes`, `doc/feature/gradual-typing.md §Evaluator`.
-
-- [ ] Write `--- stage: type` resolver functions (`AddResult`, `SubResult`, `MulResult`, `DivResult`) in `stdlib/prelude.llt`; declare `Addable`, `Subtractable`, `Multipliable`, `Divisible` classes with two-bracket form; declare instances using `[pattern ...]` match-arm syntax (4 arms each: Int+Int, Float+Float, Int+Float, Float+Int) (`stdlib/prelude.llt`)
-- [ ] Remove pre-registered arithmetic class/instance Rust declarations in `src/type_env.rs` superseded by prelude; retain `lookup_arithmetic_instance` in `src/type_unify.rs` as O(1) fast path (built-in class check → table; user-defined classes → resolver eval path); keep builtin type signatures for `+`, `-`, `*`, `/` as `Add a b c => a → b → c` etc. (`src/type_env.rs`, `src/type_unify.rs`)
-- [ ] Implement `elaborate_boundary_guards` in `src/typecheck.rs` (or `src/typecheck_elaborate.rs`): post-inference pass over the type map; for each expression where inferred type is `Unknown` and contextual expected type is concrete, call `normalize(τ_ctx, NormCtxt::final(...))`, emit `TypeError` if not `is_concrete`, otherwise write normalized expected type to the expression's guard annotation `RefCell` field; handle `---` pipeline crossings with `Positive` polarity (`src/typecheck.rs`)
-- [ ] Update `src/eval.rs` to read guard annotations written by `elaborate_boundary_guards`: when `eval()` processes an expression with a guard annotation, wrap its result thunk in `ThunkState::Guarded(inner, expected_concrete, BlameLabel)`; nested guard collapsing — if inner is already `Guarded`, use `inner.inner` as the actual inner thunk (`src/eval.rs`)
-- [ ] Tests: `[+ 1 2]` infers `Int`; `[+ 1 2.0]` infers `Float`; `[fn [x y] [+ x y]]` infers `Add a b c => Fn@c [a b]`; user-defined `[class [a b c] [determines: [[[a b] c]] resolver: MyResult]]` with `[instance ...]` arms participates correctly; `[= [+ 1 2.0] [+ 1.5 2.5]]` passes; boundary guard fires on `Unknown → Int` boundary producing blamed error; corpus tests in `tests/corpus/eval/typecheck/` and `tests/corpus/eval/stdlib/` (`tests/`)
-
-**Depends on:** `chr-class-instance`
+**Depends on:** `type-stage-infra`, `typeclass-mptc-fundeps`
 
 ### isorecursive-types: μ-types and coinductive subtype checking
 
@@ -103,30 +49,7 @@ Eight user-facing primitives (`eval-ast`, `gensym`, `llt-repr`, `tag-of`, `varia
 
 ---
 
-## Codebase Health (Review #7, 2026-05-16)
-
-### health-review7: Type system soundness, test coverage, docs
-
-Findings from full-panel codebase review (Cycle #246, 2026-05-16).
-
-- [x] **[Critical]** `src/types.rs:641-657` — `is_consistent` TypeVar unsoundness: `(Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => true` treats ALL TypeVars as consistent with everything, creating a non-transitive abuse where `α ~ Int` and `α ~ Str` both hold. Comment in code says "UNSOUND". Fix: restrict to reflexivity `(Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2`, fix all callers to apply substitution before calling `is_consistent` (type-theorist)
-- [x] **[Critical]** `src/type_unify.rs:214-242` — `is_superclass_of` has no cycle guard: if user declares `[A: [class [...] extends [B]]]` and `[B: [class [...] extends [A]]]`, this function loops forever consuming stack. Fix: add `visited: &mut HashSet<String>` parameter OR validate DAG acyclicity at `ClassDecl` registration time (computer-scientist, Jones 1992)
-- [x] **[Major]** `src/type_unify.rs:263` — `check_constraints_on_var` clones the entire `Vec<Constraint>` on every type variable binding (`state.constraints.clone()`). Makes every U-VAR binding O(c) where c = constraint count. Fix: index constraints by variable name via `HashMap<String, Vec<Constraint>>` for O(1) amortized lookup (computer-scientist)
-- [x] **[Major]** `src/typecheck_dict.rs:143-222` — `collect_deps_recursive` converted to iterative worklist `collect_dependencies` matching the iterative Tarjan pattern (computer-scientist)
-- [x] **[Major]** `src/type_env.rs:1716-3344` — 80+ builtin signatures use `Type::Unknown` where precise types are possible. **AUDIT IN PROGRESS** (2026-05-16): Completed first pass — replaced Unknown with precise types for 20+ signatures. See `unknown-elimination` sprint below for remaining work.
-- [x] **[Major]** `src/type_unify.rs:441-497` — MPTC improvement lookup `lookup_arithmetic_instance` is a hardcoded match for Add/Sub/Mul/Div only. User-defined MPTCs with fundeps silently fail improvement. Fix: generalize to `instance_env` lookup as documented in the TODO comment at line 433 (type-theorist)
-- [x] **[Major]** `tests/corpus/eval/errors/` — E055/E056/E057 (`IncludeHashMismatch`, `IncludeHashRequired`, `IncludePathNotAllowed`) have zero corpus tests. Fix: add 3 corpus tests exercising include integrity error paths (test-crafter)
-- [x] **[Major]** `tests/corpus/eval/errors/` — No corpus test for non-cacheable error restoration: `DepthExceeded` should NOT cache in `Failed` state but there is no end-to-end corpus validation. Fix: add test calling a builtin that raises DepthExceeded, verify error is not memoized (test-crafter)
-- [x] **[Major]** `tests/test_helpers.rs:53` — `split_test_file()` core test infrastructure function has zero unit tests. Fix: add `tests/test_helpers_test.rs` with ~10 cases: bare `===` error, valid labeled sections, directive parsing, empty sections, unknown label (test-crafter)
-- [x] **[Major]** `src/error.rs:629-850` — `ErrorKind` `PartialEq` is a 36-arm manual match. Adding a new variant compiles but produces wrong equality — the new arm silently falls through. Fix: replace with a compile-time exhaustiveness checker or use `#[derive(PartialEq)]` with structural equality (integration-verifier)
-- [x] **[Major]** `doc/11-stdlib.md:326`, `doc/11a-builtins.md:4,725` — Stale builtin count: docs say 184 or 189, actual count from `src/builtins.rs` is ~215. Fix: update all three locations; add a CI check or comment with how to recount (stdlib-author)
-- [x] **[Major]** `doc/11b-reference.md` — 10-line stub claiming to be "auto-generated from `@[doc]` annotations" but is hand-written with 3 entries. Fix: either implement actual auto-generation from `@[doc]` annotations in `stdlib/*.llt`, or delete and merge the 3 module links into `doc/11-stdlib.md` (stdlib-author)
-- [x] **[Minor]** `src/eval.rs` (CEK `Vec<Cont>`) — Iterative CEK continuation stack has no explicit depth limit. Recommend `MAX_CONTINUATION_STACK=2048` guard for defense-in-depth against adversarial inputs (security-expert)
-- [x] **[Minor]** `src/lsp/document.rs` — `load_doc_from_uri` (hover/goto-def on unopened files) reads file without checking size first. Fix: check file size against `MAX_FILE_SIZE` before reading, matching the existing guard on document updates (security-expert)
-- [x] **[Minor]** `src/type_unify.rs:1042-1115` — `lower_levels_check_occurs` uses `_ => false` catch-all which will silently miss new compound `Type` variants, breaking level-lowering invariant (Kiselyov 2013). Fix: replace with exhaustive match listing all leaf types; Rust will emit a compile error when a new variant is added (computer-scientist)
-- [x] **[Minor]** `src/type_unify.rs:1890-2077` — C-Var1/C-Var2 (Union/Intersection with one TypeVar) unification arms duplicated ~200 lines for left/right directions. Fix: extract `bind_single_type_var_from_compound(members, concrete, subst, state, span, is_union)` helper (computer-scientist)
-- [x] **[Minor]** `tests/corpus/eval/cross_feature/` — Cross-feature interaction tests are sparse. Fix: add 6 tests minimum: TypeAssert+Proxy, TypeAssert+documents, `$_`+TypeAssert, access chains+Guarded thunks, Proxy+laziness, documents+scope+TypeAssert (test-crafter)
-- [x] **[Minor]** `stdlib/prelude.llt:various` — `flatten`, `from-entries`, `group-by`, `deep-merge`, `walk`, `transpose`, `uniq` are O(n²) due to repeated `merge`/`concat` in `reduce` but have no performance warning in their `@[doc]` strings. Fix: add "O(n²) due to repeated merge/concat — use with care on large collections" to each (stdlib-author)
+## Codebase Health
 
 ### unknown-elimination: Replace remaining `Type::Unknown` builtin signatures with precise types
 

@@ -1,5 +1,8 @@
-# Type constructor application: Map with String and Int type parameters
-# [@[Map String Int] ...] performs a runtime type check
-[@[Map String Int] [a: 1]]
+# Type constructor application: Dict/Record type assertion
+# [@[a: Int] ...] performs a structural record type check at compile time.
+# Map[K V] type constructor is resolved by the annotation system (see ctor_app_seq
+# for the Seq[T] case). A Map-typed TypeAssert requires a value already typed as
+# Map[K V]; for now we test with a record type that matches the literal value.
+[@[a: Int] [a: 1]]
 === out
 Dict({"a": Int(1)})

@@ -22,6 +22,16 @@ use crate::eval_call::{eval_call, invoke_function, CallContext};
 use crate::types::Type;
 use crate::value::{string_val, Environment, Thunk, ThunkState, Value};
 
+/// Maximum continuation stack depth. Prevents resource exhaustion from deeply
+/// nested evaluation chains that would otherwise exhaust heap memory.
+///
+/// This limit is separate from MAX_EVAL_DEPTH (256) and is set higher because:
+/// - Each continuation is ~96 bytes, so 2048 frames = ~192 KB stack allocation
+/// - Deep materialization chains (e.g., nested function calls, deeply nested
+///   record validation) can legitimately exceed parse depth
+/// - The CEK machine is iterative, so this limit protects heap, not Rust stack
+const MAX_CONTINUATION_STACK: usize = 2048;
+
 /// Attach materialization span and origin frame to an error.
 /// This function is called at every error site in the CEK machine to ensure
 /// errors carry full context (definition span, materialization span, stack trace).
@@ -285,6 +295,20 @@ pub(crate) enum Cont {
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
 const _: () = assert!(std::mem::size_of::<Cont>() <= 96);
 
+/// Check continuation stack depth before pushing. Returns `Err(DepthExceeded)` if
+/// the stack has reached MAX_CONTINUATION_STACK, otherwise returns `Ok(())`.
+///
+/// This guard prevents resource exhaustion from deeply nested evaluation chains.
+/// The error is non-cacheable (restores thunk state) to allow retry at lower depth.
+#[inline]
+fn check_stack_depth(stack: &[Cont], span: Span) -> EvalResult<()> {
+    if stack.len() >= MAX_CONTINUATION_STACK {
+        Err(EvalError::depth_exceeded(MAX_CONTINUATION_STACK, span).into())
+    } else {
+        Ok(())
+    }
+}
+
 /// Action to perform next in the iterative evaluation loop.
 pub(crate) enum Action {
     /// Result ready — pop top continuation and apply, or return if stack empty
@@ -313,6 +337,13 @@ pub(crate) fn force_step(
     ctx: &Rc<EvalContext>,
 ) -> Action {
     let thunk_span = thunk.span;
+
+    // Check continuation stack depth before processing. This prevents resource exhaustion
+    // from deeply nested evaluation chains. Checked here (before any continuations are
+    // pushed) rather than at every push site for simplicity and performance.
+    if let Err(depth_err) = check_stack_depth(stack, thunk_span) {
+        return Action::Continue(Err(depth_err));
+    }
 
     // Early returns for already-resolved states
     {
@@ -1641,6 +1672,11 @@ pub(crate) fn eval_step(
     ctx: &Rc<EvalContext>,
     stack: &mut Vec<Cont>,
 ) -> Action {
+    // Check continuation stack depth before processing
+    if let Err(depth_err) = check_stack_depth(stack, expr.span) {
+        return Action::Continue(Err(depth_err));
+    }
+
     // Helper: wrap a thunk result from helper functions
     let wrap_thunk = |result: EvalResult<Rc<Thunk>>| -> Action {
         match result {

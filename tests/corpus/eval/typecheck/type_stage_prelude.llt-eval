@@ -11,3 +11,8 @@
 ---
 # Runtime section
 [result: "runtime-only"]
+# Type-stage section (--- stage: type) is not evaluated at runtime.
+# The [include %rust "type-core"] call and TypeHelper fn are skipped entirely.
+# Only the second (runtime) document contributes to the output.
+=== out
+Dict({"result": String("runtime-only")})
