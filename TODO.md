@@ -178,20 +178,20 @@ output content: string.unquoted.output.corpus.llt       # dimmed, distinct from 
 tinct code portion: embedded source.llt (unchanged)
 ```
 
-- [ ] Create `integrations/vscode/syntaxes/tinct.corpus.tmLanguage.json` — TextMate
+- [x] Create `integrations/vscode/syntaxes/tinct.corpus.tmLanguage.json` — TextMate
   grammar with state machine: tinct code (embed `source.llt`) until first `^===` line;
   `=== (out|warn|error|info)` header with section-specific scope; content after header
   with `string.unquoted.output.corpus.llt` scope until next `===` or end-of-block
   (`integrations/vscode/syntaxes/`)
-- [ ] Register `.llt-eval` file type in `integrations/vscode/package.json` with the new
+- [x] Register `.llt-eval` file type in `integrations/vscode/package.json` with the new
   corpus grammar; associate with `llt-eval` language id (`integrations/vscode/package.json`)
-- [ ] Update `integrations/vscode/syntaxes/tinct.markdown-injection.json` — switch the
+- [x] Update `integrations/vscode/syntaxes/tinct.markdown-injection.json` — switch the
   content grammar from plain `source.llt` to `source.llt.corpus` (the new grammar) so
   that tinct markdown blocks with `===` sections are colored correctly in both the editor
   and markdown preview (`integrations/vscode/syntaxes/tinct.markdown-injection.json`)
-- [ ] Verify colorization in: `.llt-eval` file open, markdown source with `===` blocks,
+- [x] Verify colorization in: `.llt-eval` file open, markdown source with `===` blocks,
   markdown preview pane with `===` blocks (`integrations/vscode/`)
-- [ ] Add `vsce package` to `just ext` and confirm the `.vsix` includes the new grammar
+- [x] Add `vsce package` to `just ext` and confirm the `.vsix` includes the new grammar
   files (`justfile`, `integrations/vscode/`)
 
 ### vscode-markdown-lsp: LSP hover/completion/diagnostics inside ```tinct blocks in markdown
@@ -381,5 +381,57 @@ markdown file being processed from accidentally reading or writing local files.
   subcommand; wire to the same cap-grant machinery as `tinct run` (`src/main.rs`)
 - [x] Document in `doc/12-tooling.md` §Literate Mode: all flags, fixed-clock semantics,
   `--no-pwd` always-on, and `--errors-in-doc` use case (`doc/12-tooling.md`)
+
+---
+
+## Structured Logging
+
+### structured-logging: trace builtin and stdlib/log.llt
+
+Tinct currently has no mechanism for programs to emit diagnostic/trace output separate
+from the final result (`emit`). `log` is the natural logarithm (`ln x`). A structured
+logging system is needed for:
+- Documenting intermediate state in literate examples (`=== info` section)
+- Runtime diagnostics and tracing in application code
+- Distinguishing debug output from final program output
+
+**`trace` builtin** — the low-level building block. Writes to the info channel (stderr in
+normal mode, captured to `=== info` in literate weave). Accepts either a `Str` or a `Dict`
+(structured entry). Returns `Null` (side effect only). Does not affect the final result.
+
+```tinct
+[trace "server started"]
+[trace [level: "info"  msg: "connection"  peer: addr  port: p]]
+```
+
+**`stdlib/log.llt`** — higher-level structured logging API built on `trace`:
+
+```tinct
+log-info:  [fn [let msg] [trace [level: "info"  msg: msg]]]
+log-warn:  [fn [let msg] [trace [level: "warn"  msg: msg]]]
+log-debug: [fn [let msg] [trace [level: "debug" msg: msg]]]
+log-error: [fn [let msg] [trace [level: "error" msg: msg]]]
+
+# Structured entry variant
+log: [fn [let entry@Dict] [trace [merge [level: "info"] entry]]]
+```
+
+**Literate integration** — `=== info` in corpus/literate format captures `trace` output
+(all levels) in evaluation order, one entry per line. The `literate-flags` sprint
+must wire this: capture `trace` calls during block evaluation and populate `=== info`.
+Application-level `log-warn` calls are separate from type-checker `=== warn` entries.
+
+- [ ] Add `trace` builtin to `src/builtins_io.rs`; writes to the info channel (stderr
+  with structured formatting by default); accepts `Str` or `Dict`; returns `Null`;
+  register in `standard_builtins()` (`src/builtins_io.rs`, `src/builtins.rs`)
+- [ ] Add `stdlib/log.llt` with `log-info`, `log-warn`, `log-debug`, `log-error`, `log`
+  built on `trace` (`stdlib/log.llt`)
+- [ ] Wire `trace` output capture into `run_literate_weave`: collect `trace` calls during
+  block evaluation and include in `=== info` section output (coordinate with
+  `literate-flags` sprint) (`src/main.rs`, `src/literate.rs`)
+- [ ] Document `trace` and `stdlib/log.llt` in `doc/12-tooling.md` §Logging and in
+  prelude API reference (`doc/12-tooling.md`, `doc/11-stdlib.md`)
+- [ ] Update `just doc` and `just doc-verify` notes to reflect that `=== info` captures
+  `trace` output specifically (not `emit`, which goes to `=== out`) (`doc/09-documents.md`)
 
 ---

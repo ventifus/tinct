@@ -1,0 +1,71 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Tinct Corpus Test",
+  "scopeName": "source.llt.corpus",
+  "patterns": [
+    { "include": "#output-section" },
+    { "include": "#warning-section" },
+    { "include": "#error-section" },
+    { "include": "#info-section" },
+    { "include": "#tinct-code" }
+  ],
+  "repository": {
+    "tinct-code": {
+      "patterns": [
+        { "include": "source.llt" }
+      ]
+    },
+    "output-section": {
+      "begin": "^(=== out)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "markup.heading.output.corpus.llt" }
+      },
+      "end": "(?=^===\\s)",
+      "patterns": [
+        {
+          "name": "string.unquoted.output.corpus.llt",
+          "match": ".+"
+        }
+      ]
+    },
+    "warning-section": {
+      "begin": "^(=== warn)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.warning.corpus.llt" }
+      },
+      "end": "(?=^===\\s)",
+      "patterns": [
+        {
+          "name": "string.unquoted.output.corpus.llt",
+          "match": ".+"
+        }
+      ]
+    },
+    "error-section": {
+      "begin": "^(=== error)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "invalid.illegal.corpus.llt" }
+      },
+      "end": "(?=^===\\s)",
+      "patterns": [
+        {
+          "name": "string.unquoted.output.corpus.llt",
+          "match": ".+"
+        }
+      ]
+    },
+    "info-section": {
+      "begin": "^(=== info)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.info.corpus.llt" }
+      },
+      "end": "(?=^===\\s)",
+      "patterns": [
+        {
+          "name": "string.unquoted.output.corpus.llt",
+          "match": ".+"
+        }
+      ]
+    }
+  }
+}

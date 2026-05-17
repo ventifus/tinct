@@ -12,7 +12,7 @@
     "vscode": "^1.75.0"
   },
   "categories": ["Programming Languages"],
-  "activationEvents": ["onStartupFinished", "onLanguage:llt"],
+  "activationEvents": ["onStartupFinished", "onLanguage:llt", "onLanguage:llt-eval"],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
@@ -21,6 +21,12 @@
         "aliases": ["Tinct", "tinct", "llt"],
         "extensions": [".llt", ".tinct"],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "llt-eval",
+        "aliases": ["Tinct Corpus Test"],
+        "extensions": [".llt-eval"],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
@@ -28,6 +34,11 @@
         "language": "llt",
         "scopeName": "source.llt",
         "path": "./syntaxes/tinct.tmLanguage.json"
+      },
+      {
+        "language": "llt-eval",
+        "scopeName": "source.llt.corpus",
+        "path": "./syntaxes/tinct.corpus.tmLanguage.json"
       },
       {
         "scopeName": "markdown.llt.codeblock",

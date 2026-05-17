@@ -344,13 +344,13 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 ### Explicitly Out of Scope
 
-**`tokens` receive mode** — raw token sequences for embedded DSLs. No concrete tinct use case warrants the security exposure of raw token access. Excluded.
+**`tokens` receive mode** — raw token sequences for embedded DSLs. Not needed: the typed `Expr` system gives structured access to everything the parser produces. If tinct's grammar doesn't handle a construct, the right fix is to extend the grammar, not expose raw tokens to user code. Excluded for complexity and lack of use case.
 
-**Infix operator registration** — requires hooks into the tokenizer, which is Rust-only by design. Tinct's bracket syntax makes infix operators unnecessary.
+**Infix operator registration** — requires hooks into the tokenizer, which is Rust-only. Tinct's bracket syntax makes infix operators unnecessary.
 
-**Compile-time type access** — macros run before type-checking and do not see inferred types. Interleaving expansion with type inference (Template Haskell's `reify`) would fundamentally complicate the pipeline. Excluded.
+**Compile-time type access** — macros run before type-checking and do not see inferred types. Interleaving expansion with type inference (Template Haskell's `reify`) would fundamentally reorganize the pipeline. Excluded.
 
-**Character-level lexer hooks** — security exclusion. User code never touches the character stream.
+**Character-level lexer hooks** — excluded because they make programs unreadable: if arbitrary user code can redefine what characters mean, two readers looking at the same file may parse it differently depending on which hooks are loaded. This is a correctness and readability concern, not a capability-system concern. Tinct's security boundary is the capability system (`DirCap`, `NetCap`, `Handle`) — raw character access doesn't bypass it, but it does make programs impossible to reason about statically.
 
 **Meta-macros (macro-generating macros)** — a `[macro ...]` declaration produced by macro expansion is not registered by the pre-scan (which runs before any expansion). A macro that expands to a `[macro ...]` form would produce an unregistered declaration; the inner macro would not be expanded. This is excluded from this design. If needed, it requires a multi-phase pre-scan with re-registration after each expansion pass.
 
