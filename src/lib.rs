@@ -1984,6 +1984,31 @@ mod tests {
             "expected 'inferred [do] not yet supported' in error, got: {err}"
         );
     }
+
+    /// chr-class-instance: FD consistency check fires for conflicting instance arms.
+    /// Two arms with same determining positions (Int, Int) but different determined types
+    /// (Int vs Float) must produce a "consistency violation" type error.
+    #[test]
+    fn test_instance_fd_consistency_violation() {
+        let input = r#"[
+  TestAdd: [class [TestAdd a b c] [determines: [[[a b] c]]]
+    op: [Fn@c [a b]]]
+  TestAddInst: [instance TestAdd
+    [pattern [a@Int b@Int c@Int]]: [op: [fn [x y] [+ x y]]]
+    [pattern [a@Int b@Int c@Float]]: [op: [fn [x y] [+ x y]]]]
+  result: 42
+]"#;
+        let result = typecheck_source_errors_only(input);
+        assert!(
+            result.is_err(),
+            "expected consistency violation error, got Ok(())"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("consistency violation"),
+            "expected 'consistency violation' in error, got: {msg}"
+        );
+    }
 }
 
 /// Resolve the stdlib directory path from the binary location.

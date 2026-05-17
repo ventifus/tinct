@@ -5,7 +5,9 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ast::{Annotation, Document, Expr, File, NamedArg, Param, Pattern, Span, Spanned};
+use crate::ast::{
+    Annotation, Document, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
+};
 use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, resolve_has_field, unify, Constraint,
@@ -232,18 +234,23 @@ fn reset_expr(expr: &Spanned<Expr>) {
             }
         }
 
-        // InstanceDecl: recurse into instance type and method implementations
-        Expr::InstanceDecl {
-            instance_type,
-            methods,
-            ..
-        } => {
-            reset_expr(instance_type);
-            for method in methods {
-                if let Some(key) = &method.node.key {
-                    reset_expr(key);
+        // InstanceDecl: recurse into pattern expressions and method implementations
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                reset_expr(pattern_expr);
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        reset_expr(key);
+                    }
+                    reset_expr(&method.node.value);
                 }
-                reset_expr(&method.node.value);
+            }
+        }
+
+        // PatternDecl: recurse into bindings
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                reset_expr(binding);
             }
         }
     }
@@ -1402,6 +1409,253 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
     }
 }
 
+/// Extract type parameters from an instance pattern declaration.
+///
+/// The PatternDecl stores the inner bracket `[a@Int b@Float]` as a single `Expr::Dict`
+/// binding (auto-indexed entries). This function recursively extracts types from either:
+/// - `Expr::Dict(entries)` — inner binding bracket; extracts each auto-indexed entry
+/// - `Expr::Annotated { annotation, .. }` — `a@Type` form; resolves the annotation
+/// - `Expr::VarRef { .. }` — bare identifier; treated as `Type::Unknown`
+fn extract_pattern_types(
+    pattern_expr: &Spanned<Expr>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+) -> Result<Vec<Type>, Vec<TypeError>> {
+    match &pattern_expr.node {
+        Expr::PatternDecl { bindings } => {
+            let mut types = Vec::new();
+            for binding in bindings {
+                extract_binding_types(binding, env, state, &mut types)?;
+            }
+            Ok(types)
+        }
+        _ => Err(vec![TypeError::new(
+            "instance arm pattern must be a [pattern [...]] declaration",
+            pattern_expr.span,
+        )]),
+    }
+}
+
+/// Recursively extract type(s) from a single pattern binding expression.
+///
+/// - `Expr::Dict(entries)` — inner binding bracket `[a@Int b@Float]`; expands entries
+/// - `Expr::Annotated { annotation, .. }` — `a@Type` form
+/// - `Expr::VarRef { .. }` — bare identifier → `Type::Unknown`
+fn extract_binding_types(
+    binding: &Spanned<Expr>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    types: &mut Vec<Type>,
+) -> Result<(), Vec<TypeError>> {
+    match &binding.node {
+        // Inner binding bracket [a@Int b@Float] parsed as auto-indexed Dict
+        Expr::Dict(entries) => {
+            for entry in entries {
+                // Each entry should be auto-indexed (no key) with Annotated/VarRef value
+                extract_binding_types(&entry.node.value, env, state, types)?;
+            }
+        }
+        // a@Type form
+        Expr::Annotated { annotation, .. } => {
+            let ty = resolve_annotation(
+                &annotation.node,
+                env,
+                annotation.span,
+                state,
+                &mut None,
+                &mut None,
+            )
+            .map_err(|e| vec![e])?;
+            types.push(ty);
+        }
+        // Bare identifier (treated as Unknown for now)
+        Expr::VarRef { .. } => {
+            types.push(Type::Unknown);
+        }
+        _ => {
+            return Err(vec![TypeError::new(
+                "pattern binding must be in form 'a@Type' or bare identifier",
+                binding.span,
+            )]);
+        }
+    }
+    Ok(())
+}
+
+/// Check if two pattern type lists could overlap (unify).
+///
+/// This is a pure probe: it saves and restores all mutable fields of `state`
+/// that `unify` touches (levels, constraints, kind_env) so that overlap testing
+/// never leaks side-effects into the global inference state.
+fn patterns_overlap(
+    types_a: &[Type],
+    types_b: &[Type],
+    state: &mut InferState,
+) -> Result<bool, Vec<TypeError>> {
+    if types_a.len() != types_b.len() {
+        return Ok(false);
+    }
+
+    // Save every field that unify() may touch so this probe is side-effect-free.
+    let saved_levels = state.levels.clone();
+    let saved_constraints = state.constraints.clone();
+    let saved_kind_env = state.kind_env.clone();
+    let saved_deferred = state.deferred_equalities.clone();
+    // Also save subst and name_counter: improve_functional_dependency writes directly to
+    // state.subst (via std::mem::take/replace) rather than through temp_subst, and
+    // resolve_instance may call fresh_type_var() incrementing name_counter.
+    let saved_subst = state.subst.clone();
+    let saved_name_counter = state.name_counter;
+
+    // Use a temporary substitution so state.subst is also unaffected.
+    let mut temp_subst = state.subst.clone();
+    let overlaps = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
+        // Unknown is the gradual-typing wildcard for unannotated pattern bindings.
+        // Treat Unknown as distinct from any concrete type: a position with Unknown
+        // cannot be used to establish overlap (it carries no type information).
+        if matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown) {
+            return false; // non-overlapping at this position — Unknown is not concrete
+        }
+        unify(ty_a, ty_b, &mut temp_subst, state, Span::origin()).is_ok()
+    });
+
+    // Restore all mutated fields.
+    state.levels = saved_levels;
+    state.constraints = saved_constraints;
+    state.kind_env = saved_kind_env;
+    state.deferred_equalities = saved_deferred;
+    state.subst = saved_subst;
+    state.name_counter = saved_name_counter;
+
+    Ok(overlaps)
+}
+
+/// Check if two type lists are structurally equal.
+fn types_equal(types_a: &[Type], types_b: &[Type]) -> bool {
+    if types_a.len() != types_b.len() {
+        return false;
+    }
+
+    types_a.iter().zip(types_b.iter()).all(|(a, b)| a == b)
+}
+
+/// Extract parameter indices from a functional dependency variable list.
+/// Accepts a single param name (VarRef/Str), a Dict list [a b c], or an implied
+/// Call `[a b]` (which the parser produces when `a` is in head position).
+/// Returns Vec<usize> of indices into the class params list.
+fn extract_param_indices(
+    expr: &Spanned<Expr>,
+    params: &[String],
+    span: Span,
+) -> Result<Vec<usize>, Vec<TypeError>> {
+    let mut indices = Vec::new();
+
+    match &expr.node {
+        // Single param: a@Type or just "a"
+        Expr::VarRef { name, .. } | Expr::Str(name) => {
+            if let Some(idx) = params.iter().position(|p| p == name) {
+                indices.push(idx);
+            } else {
+                return Err(vec![TypeError::new(
+                    format!("functional dependency references unknown param '{}'", name),
+                    span,
+                )]);
+            }
+        }
+        // Multiple params as auto-indexed Dict: produced when bracket contains
+        // a literal/annotated head (e.g. `[a@Int b]` → Dict with auto-indexed entries)
+        Expr::Dict(entries) => {
+            for entry in entries {
+                let param_name = match &entry.node.value.node {
+                    Expr::VarRef { name, .. } => name,
+                    Expr::Str(s) => s,
+                    _ => {
+                        return Err(vec![TypeError::new(
+                            "functional dependency param must be an identifier or string",
+                            entry.span,
+                        )]);
+                    }
+                };
+
+                if let Some(idx) = params.iter().position(|p| p == param_name) {
+                    indices.push(idx);
+                } else {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "functional dependency references unknown param '{}'",
+                            param_name
+                        ),
+                        entry.span,
+                    )]);
+                }
+            }
+        }
+        // Multiple params as implied Call: produced when bracket has identifier in head
+        // position, e.g. `[a b]` → Call { func: VarRef("a"), args: [VarRef("b")] }
+        Expr::Call {
+            func,
+            args,
+            implied: true,
+            ..
+        } => {
+            // Extract the function (head param)
+            let head_name = match &func.node {
+                Expr::VarRef { name, .. } => name,
+                Expr::Str(s) => s,
+                _ => {
+                    return Err(vec![TypeError::new(
+                        "functional dependency param must be an identifier or string",
+                        func.span,
+                    )])
+                }
+            };
+            if let Some(idx) = params.iter().position(|p| p == head_name) {
+                indices.push(idx);
+            } else {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "functional dependency references unknown param '{}'",
+                        head_name
+                    ),
+                    func.span,
+                )]);
+            }
+            // Extract the remaining args
+            for arg in args {
+                let arg_name = match &arg.node {
+                    Expr::VarRef { name, .. } => name,
+                    Expr::Str(s) => s,
+                    _ => {
+                        return Err(vec![TypeError::new(
+                            "functional dependency param must be an identifier or string",
+                            arg.span,
+                        )])
+                    }
+                };
+                if let Some(idx) = params.iter().position(|p| p == arg_name) {
+                    indices.push(idx);
+                } else {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "functional dependency references unknown param '{}'",
+                            arg_name
+                        ),
+                        arg.span,
+                    )]);
+                }
+            }
+        }
+        _ => {
+            return Err(vec![TypeError::new(
+                "functional dependency variables must be an identifier or list",
+                span,
+            )]);
+        }
+    }
+
+    Ok(indices)
+}
+
 fn infer_expr(
     expr: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
@@ -1882,6 +2136,8 @@ fn infer_expr(
             params,
             superclasses,
             methods,
+            determines,
+            resolver,
         } => {
             use crate::types::{ClassDecl, Kind};
 
@@ -1929,6 +2185,50 @@ fn infer_expr(
                 .map(|existing| existing.params.iter().cloned().collect())
                 .unwrap_or_default();
 
+            // Process functional dependencies from `determines:` field (Task 6.1 & 6.2)
+            let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
+            for fd_expr in determines {
+                // Each FD should be a list: [[determining-vars] determined-var(s)]
+                match &fd_expr.node {
+                    Expr::Dict(entries) if entries.len() == 2 => {
+                        // Extract [determining-vars]
+                        let determining = &entries[0].node.value;
+                        let determining_indices =
+                            extract_param_indices(determining, params, fd_expr.span)?;
+
+                        // Extract determined-var(s)
+                        let determined = &entries[1].node.value;
+                        let determined_indices =
+                            extract_param_indices(determined, params, fd_expr.span)?;
+
+                        fd_indices.push((determining_indices, determined_indices));
+                    }
+                    _ => {
+                        return Err(vec![TypeError::new(
+                            "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]",
+                            fd_expr.span,
+                        )]);
+                    }
+                }
+            }
+
+            // Extract resolver name if present (Task 6.3)
+            let resolver_name = if let Some(resolver_expr) = resolver {
+                match &resolver_expr.node {
+                    Expr::VarRef { name, .. } => Some(name.clone()),
+                    Expr::Str(s) => Some(s.clone()),
+                    _ => {
+                        return Err(vec![TypeError::new(
+                            "resolver must be an identifier or string",
+                            resolver_expr.span,
+                        )]);
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Build ClassDecl with populated FD and resolver fields (Task 6.4)
             let class_decl = ClassDecl {
                 name: name.clone(),
                 params: params
@@ -1945,10 +2245,9 @@ fn infer_expr(
                     .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
                     .collect(),
                 methods: method_types,
-                // CHR fields (not yet populated from AST)
-                determines: vec![],
-                resolver: None,
-                resolver_injective: false,
+                determines: fd_indices,
+                resolver: resolver_name,
+                resolver_injective: false, // TODO: Parser support for injective annotation
             };
 
             // Register in ClassEnv (replaces any prior registration, preserving inherited kinds)
@@ -1967,63 +2266,228 @@ fn infer_expr(
             }))
         }
 
-        Expr::InstanceDecl {
-            class_name,
-            instance_type,
-            methods,
-        } => {
+        Expr::InstanceDecl { class_name, arms } => {
             use crate::types::InstanceDecl;
 
-            // Resolve the instance type from the type expression
-            let inst_type = resolve_type_expr(instance_type, env, state, &mut None, &mut None)
-                .map_err(|e| vec![e])?;
-
-            // Infer types for all method implementations
-            let mut method_types = HashMap::new();
-
-            for method in methods {
-                // Extract method name from key
-                let method_name = match &method.node.key {
-                    Some(key_expr) => match &key_expr.node {
-                        Expr::Str(s) => s.clone(),
-                        Expr::VarRef { name, .. } => name.clone(),
-                        _ => {
-                            return Err(vec![TypeError::new(
-                                "instance method name must be a string or identifier",
-                                key_expr.span,
-                            )]);
-                        }
-                    },
-                    None => {
-                        return Err(vec![TypeError::new(
-                            "instance method must have a name",
-                            method.span,
-                        )]);
-                    }
-                };
-
-                // Infer the type of the method implementation
-                let method_impl_type = infer_expr(&method.node.value, env, state, type_map)?;
-
-                method_types.insert(method_name, method_impl_type);
+            if arms.is_empty() {
+                // No arms — return empty record
+                return Ok(Type::Record(Row {
+                    fields: HashMap::new(),
+                }));
             }
 
-            // Build instance declaration
-            let instance_decl = InstanceDecl {
-                class_name: class_name.clone(),
-                instance_type: inst_type,
-                method_types,
+            // Look up the class declaration to get param count and FDs
+            // Clone the necessary data to avoid holding an immutable borrow on state.class_env
+            // while we mutably borrow state in the pattern extraction and unification helpers.
+            let (param_count, has_fds, fd_list) = {
+                let class_decl = state.class_env.get(class_name).ok_or_else(|| {
+                    vec![TypeError::new(
+                        format!("unknown class '{}'", class_name),
+                        expr.span,
+                    )]
+                })?;
+                (
+                    class_decl.params.len(),
+                    !class_decl.determines.is_empty(),
+                    class_decl.determines.clone(),
+                )
             };
 
-            // Register in InstanceEnv (check for overlapping instances)
-            if let Err(msg) = state.instance_env.insert(instance_decl) {
-                return Err(vec![TypeError::new(msg, expr.span)]);
+            // Process each arm: extract pattern types, check arity, collect for soundness checks
+            let mut arm_data: Vec<(Vec<Type>, Span, &Vec<Spanned<Entry>>)> = Vec::new();
+
+            for (pattern_expr, methods) in arms {
+                // Extract types from pattern (Task 7.1)
+                let pattern_types = extract_pattern_types(pattern_expr, env, state)?;
+
+                // Validate arity (Task 7.1)
+                if pattern_types.len() != param_count {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "instance pattern has {} type parameters but class '{}' expects {}",
+                            pattern_types.len(),
+                            class_name,
+                            param_count
+                        ),
+                        pattern_expr.span,
+                    )]);
+                }
+
+                arm_data.push((pattern_types, pattern_expr.span, methods));
+            }
+
+            // Pairwise disjointness check (Task 7.2)
+            for i in 0..arm_data.len() {
+                for j in (i + 1)..arm_data.len() {
+                    let (types_i, span_i, _) = &arm_data[i];
+                    let (types_j, span_j, _) = &arm_data[j];
+
+                    if patterns_overlap(types_i, types_j, state)? {
+                        return Err(vec![TypeError::new(
+                            format!(
+                                "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
+                                class_name,
+                                span_i.start.line,
+                                span_j.start.line
+                            ),
+                            *span_j,
+                        )]);
+                    }
+                }
+            }
+
+            // Coverage and consistency checks for FD classes (Tasks 7.3 & 7.4)
+            if has_fds {
+                for (determining_indices, determined_indices) in &fd_list {
+                    // Coverage check (Task 7.3): all determined vars must appear in determining vars
+                    for arm_idx in 0..arm_data.len() {
+                        let (pattern_types, span, _) = &arm_data[arm_idx];
+                        for &det_idx in determined_indices {
+                            if !determining_indices.contains(&det_idx) {
+                                // Check if this determined param appears in the pattern
+                                if let Type::TypeVar(det_name, _) = &pattern_types[det_idx] {
+                                    // Jones (2000) coverage condition: the *same* TypeVar that
+                                    // appears in the determined position must also appear at one
+                                    // or more determining positions.  Checking for any TypeVar
+                                    // in the determining positions is insufficient — a different
+                                    // TypeVar there does not establish a coverage relation.
+                                    let same_var_in_determining =
+                                        determining_indices.iter().any(|&det_pos| {
+                                            matches!(&pattern_types[det_pos], Type::TypeVar(n, _) if n == det_name)
+                                        });
+
+                                    if !same_var_in_determining {
+                                        return Err(vec![TypeError::new(
+                                            format!(
+                                                "coverage violation for class '{}': determined variable '{}' at position {} does not appear in any determining position",
+                                                class_name, det_name, det_idx
+                                            ),
+                                            *span,
+                                        )]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Consistency check (Task 7.4): if determining positions unify, determined types must agree
+                    for i in 0..arm_data.len() {
+                        for j in (i + 1)..arm_data.len() {
+                            let (types_i, span_i, _) = &arm_data[i];
+                            let (types_j, span_j, _) = &arm_data[j];
+
+                            // Check if determining positions could unify
+                            let determining_i: Vec<Type> = determining_indices
+                                .iter()
+                                .map(|&idx| types_i[idx].clone())
+                                .collect();
+                            let determining_j: Vec<Type> = determining_indices
+                                .iter()
+                                .map(|&idx| types_j[idx].clone())
+                                .collect();
+
+                            if patterns_overlap(&determining_i, &determining_j, state)? {
+                                // Determining positions could unify — check determined types agree
+                                let determined_i: Vec<Type> = determined_indices
+                                    .iter()
+                                    .map(|&idx| types_i[idx].clone())
+                                    .collect();
+                                let determined_j: Vec<Type> = determined_indices
+                                    .iter()
+                                    .map(|&idx| types_j[idx].clone())
+                                    .collect();
+
+                                if !types_equal(&determined_i, &determined_j) {
+                                    return Err(vec![TypeError::new(
+                                        format!(
+                                            "consistency violation for class '{}': arm at line {} and arm at line {} both match determining positions but disagree on determined types",
+                                            class_name,
+                                            span_i.start.line,
+                                            span_j.start.line
+                                        ),
+                                        *span_j,
+                                    )]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Register arms in InstanceEnv (Task 7.5)
+            for (pattern_types, _span, methods) in &arm_data {
+                // Build instance type from pattern types
+                // For single-param classes, use the first type directly
+                // For multi-param classes, use a tuple-like representation (Type::Record for now)
+                let inst_type = if pattern_types.len() == 1 {
+                    pattern_types[0].clone()
+                } else {
+                    // Multi-param: encode as record with numbered fields for now
+                    // TODO: Proper tuple type or Type::Tuple variant
+                    Type::Record(Row {
+                        fields: pattern_types
+                            .iter()
+                            .enumerate()
+                            .map(|(i, ty)| (i.to_string(), ty.clone()))
+                            .collect(),
+                    })
+                };
+
+                // Infer types for all method implementations (Task 7.6)
+                let mut method_types = HashMap::new();
+
+                for method in *methods {
+                    // Extract method name from key
+                    let method_name = match &method.node.key {
+                        Some(key_expr) => match &key_expr.node {
+                            Expr::Str(s) => s.clone(),
+                            Expr::VarRef { name, .. } => name.clone(),
+                            _ => {
+                                return Err(vec![TypeError::new(
+                                    "instance method name must be a string or identifier",
+                                    key_expr.span,
+                                )]);
+                            }
+                        },
+                        None => {
+                            return Err(vec![TypeError::new(
+                                "instance method must have a name",
+                                method.span,
+                            )]);
+                        }
+                    };
+
+                    // Infer the type of the method implementation
+                    let method_impl_type = infer_expr(&method.node.value, env, state, type_map)?;
+
+                    method_types.insert(method_name, method_impl_type);
+                }
+
+                // Build instance declaration
+                let instance_decl = InstanceDecl {
+                    class_name: class_name.clone(),
+                    instance_type: inst_type,
+                    method_types,
+                };
+
+                // Register in InstanceEnv
+                if let Err(msg) = state.instance_env.insert(instance_decl) {
+                    return Err(vec![TypeError::new(msg, expr.span)]);
+                }
             }
 
             // InstanceDecl expressions evaluate to empty record (see eval.rs)
             Ok(Type::Record(Row {
                 fields: HashMap::new(),
             }))
+        }
+
+        Expr::PatternDecl { .. } => {
+            // PatternDecl should never appear in value positions (only in instance arms)
+            Err(vec![TypeError::new(
+                "pattern declaration is only valid in instance match arms",
+                expr.span,
+            )])
         }
 
         Expr::Rest(_) => Err(vec![TypeError::new(
@@ -3896,12 +4360,28 @@ pub fn scan_type_quality(
                 Expr::DefMacro { body, .. } => {
                     walk_expr(body, spans);
                 }
-                Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+                Expr::ClassDecl { methods, .. } => {
                     for entry in methods {
                         if let Some(key) = &entry.node.key {
                             walk_expr(key, spans);
                         }
                         walk_expr(&entry.node.value, spans);
+                    }
+                }
+                Expr::InstanceDecl { arms, .. } => {
+                    for (pattern_expr, methods) in arms {
+                        walk_expr(pattern_expr, spans);
+                        for entry in methods {
+                            if let Some(key) = &entry.node.key {
+                                walk_expr(key, spans);
+                            }
+                            walk_expr(&entry.node.value, spans);
+                        }
+                    }
+                }
+                Expr::PatternDecl { bindings } => {
+                    for binding in bindings {
+                        walk_expr(binding, spans);
                     }
                 }
                 Expr::TypeApp { func, arg } => {
@@ -4094,12 +4574,28 @@ fn check_overbroad_annotations(
             Expr::DefMacro { body, .. } => {
                 walk_for_functions(body, type_map, diagnostics);
             }
-            Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+            Expr::ClassDecl { methods, .. } => {
                 for entry in methods {
                     if let Some(key) = &entry.node.key {
                         walk_for_functions(key, type_map, diagnostics);
                     }
                     walk_for_functions(&entry.node.value, type_map, diagnostics);
+                }
+            }
+            Expr::InstanceDecl { arms, .. } => {
+                for (pattern_expr, methods) in arms {
+                    walk_for_functions(pattern_expr, type_map, diagnostics);
+                    for entry in methods {
+                        if let Some(key) = &entry.node.key {
+                            walk_for_functions(key, type_map, diagnostics);
+                        }
+                        walk_for_functions(&entry.node.value, type_map, diagnostics);
+                    }
+                }
+            }
+            Expr::PatternDecl { bindings } => {
+                for binding in bindings {
+                    walk_for_functions(binding, type_map, diagnostics);
                 }
             }
             Expr::TypeApp { func, arg } => {

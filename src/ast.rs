@@ -239,6 +239,7 @@ pub enum Expr {
 
     /// Type class declaration, e.g. `[class [Equatable a] eq: [Fn@Bool [a a]]]`
     /// Declares a type class with type parameters and method signatures.
+    /// Extended form: `[class [a b c] [determines: [...] resolver: ...] methods...]`
     ClassDecl {
         /// Class name (e.g., "Equatable")
         name: String,
@@ -249,17 +250,25 @@ pub enum Expr {
         superclasses: Vec<(String, String)>,
         /// Method signatures as dict entries (method_name: Type)
         methods: Vec<Spanned<Entry>>,
+        /// Functional dependency declarations from `determines:` key in structural metadata bracket.
+        /// Each entry is a two-element list: `[[determining-vars] determined-var]`
+        /// Example: `[[[a b] c]]` means (a,b) determines c
+        determines: Vec<Spanned<Expr>>,
+        /// Resolver function name from `resolver:` key in structural metadata bracket.
+        /// Names the type-stage function that computes determined types from determining types.
+        resolver: Option<Box<Spanned<Expr>>>,
     },
 
-    /// Type class instance declaration, e.g. `[instance [Equatable Int] eq: [fn [x y] [= x y]]]`
-    /// Provides method implementations for a specific type.
+    /// Type class instance declaration with match-arm syntax.
+    /// New form: `[instance ClassName [pattern [...]]`: methods... ...]`
+    /// Each arm pairs a pattern expression with method implementations.
     InstanceDecl {
-        /// Class name (e.g., "Equatable")
+        /// Class name (e.g., "Addable")
         class_name: String,
-        /// Instance type (e.g., Int, [name: Str age: Int])
-        instance_type: Box<Spanned<Expr>>,
-        /// Method implementations as dict entries (method_name: impl)
-        methods: Vec<Spanned<Entry>>,
+        /// Match arms: each is (pattern_expr, method_entries).
+        /// Pattern expr is typically `Expr::PatternDecl` but can be any expr during parsing.
+        /// Method entries are the method dict for that pattern.
+        arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>,
     },
 
     /// Type constructor application in annotation positions, e.g. `@[m a]`
@@ -269,6 +278,14 @@ pub enum Expr {
     TypeApp {
         func: Box<Spanned<Expr>>,
         arg: Box<Spanned<Expr>>,
+    },
+
+    /// Pattern declaration for instance match arms, e.g. `[pattern [a@Int b@Float c@Float]]`
+    /// Bindings are typically `Expr::Annotated` nodes (var@Type).
+    /// Used in `[instance Class [pattern ...]: methods ...]` syntax.
+    PatternDecl {
+        /// Pattern bindings — each is typically `Expr::Annotated { name, annotation }`
+        bindings: Vec<Spanned<Expr>>,
     },
 
     /// Parse error — a section of source that couldn't be parsed.
@@ -560,20 +577,27 @@ impl fmt::Display for Expr {
                 }
                 write!(f, "]")
             }
-            Expr::InstanceDecl {
-                class_name,
-                instance_type,
-                methods,
-            } => {
-                write!(f, "[instance [{class_name} {}]", instance_type.node)?;
-                for entry in methods {
-                    if let Some(key) = &entry.node.key {
-                        write!(f, " {}: {}", key.node, entry.node.value.node)?;
+            Expr::InstanceDecl { class_name, arms } => {
+                write!(f, "[instance {class_name}")?;
+                for (pattern, methods) in arms {
+                    write!(f, " {}", pattern.node)?;
+                    write!(f, ":")?;
+                    for entry in methods {
+                        if let Some(key) = &entry.node.key {
+                            write!(f, " {}: {}", key.node, entry.node.value.node)?;
+                        }
                     }
                 }
                 write!(f, "]")
             }
             Expr::TypeApp { func, arg } => write!(f, "@[{} {}]", func.node, arg.node),
+            Expr::PatternDecl { bindings } => {
+                write!(f, "[pattern")?;
+                for binding in bindings {
+                    write!(f, " {}", binding.node)?;
+                }
+                write!(f, "]")
+            }
             Expr::Error(span) => write!(f, "<error at {span}>"),
         }
     }

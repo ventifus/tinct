@@ -1,0 +1,20 @@
+# Instance with FD coverage violation
+# A determined TypeVar must appear in the determining positions.
+# Here c@z has TypeVar "z" which does not appear in positions a or b.
+[
+  # Define a class with FD: (a, b) determines c
+  TestAdd: [class [TestAdd a b c] [determines: [[[a b] c]]]
+    op: [Fn@c [a b]]]
+
+  # Coverage violation: c@z uses TypeVar "z" which is absent from (a, b) positions
+  TestAddInst: [instance TestAdd
+    [pattern [a@x b@y c@z]]: [op: [fn [p q] p]]]
+
+  result: 42
+]
+
+---
+
+%.result
+=== out
+coverage violation

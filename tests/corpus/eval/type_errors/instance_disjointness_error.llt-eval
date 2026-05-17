@@ -1,0 +1,20 @@
+# Instance with overlapping patterns (disjointness violation)
+# Two arms with the same pattern [a@Int] should trigger an overlap error
+[
+  # Define a simple class
+  TestClass: [class [TestClass a]
+    m: [Fn@Bool [a]]]
+
+  # Define overlapping instances - both arms match Int
+  TestClassInst: [instance TestClass
+    [pattern [a@Int]]: [m: [fn [x] true]]
+    [pattern [a@Int]]: [m: [fn [x] false]]]
+
+  result: 42
+]
+
+---
+
+%.result
+=== out
+overlapping instance patterns

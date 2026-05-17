@@ -1,0 +1,20 @@
+# Class with functional-dependency metadata: [class [Name a b c] [determines:... resolver:...] method: Sig]
+# Verifies the two-bracket class body syntax with determines and resolver fields.
+# (class_with_fd.llt-eval tests a 3-param MPTC; this tests the single-param class body form.)
+[
+  # Single-param class with no FDs: minimal two-bracket form with empty structural metadata
+  Printable: [class [Printable a] []
+    to-str: [Fn@String [a]]]
+
+  # Two-param class with FD: (src) determines dst (a coercion class)
+  Coercible: [class [Coercible src dst] [determines: [[[src] dst]]  resolver: CoercibleResolver]
+    coerce: [Fn@dst [src]]]
+
+  result: 42
+]
+
+---
+
+%.result
+=== out
+Int(42)

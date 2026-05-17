@@ -275,18 +275,22 @@ impl Resolver {
                     self.walk_expr(&method.node.value);
                 }
             }
-            // InstanceDecl: resolve variables in instance type and method implementations
-            Expr::InstanceDecl {
-                instance_type,
-                methods,
-                ..
-            } => {
-                self.walk_expr(instance_type);
-                for method in methods {
-                    if let Some(key) = &method.node.key {
-                        self.walk_expr(key);
+            // InstanceDecl: resolve variables in pattern expressions and method implementations
+            Expr::InstanceDecl { arms, .. } => {
+                for (pattern_expr, methods) in arms {
+                    self.walk_expr(pattern_expr);
+                    for method in methods {
+                        if let Some(key) = &method.node.key {
+                            self.walk_expr(key);
+                        }
+                        self.walk_expr(&method.node.value);
                     }
-                    self.walk_expr(&method.node.value);
+                }
+            }
+            // PatternDecl: resolve variables in bindings
+            Expr::PatternDecl { bindings } => {
+                for binding in bindings {
+                    self.walk_expr(binding);
                 }
             }
             // Literals have no child expressions

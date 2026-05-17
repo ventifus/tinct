@@ -733,6 +733,8 @@ fn expr_to_thunk_id(
             params,
             superclasses: _,
             methods,
+            determines: _,
+            resolver: _,
         } => {
             dict.insert(
                 Key::String("type".into()),
@@ -791,11 +793,7 @@ fn expr_to_thunk_id(
             );
         }
 
-        Expr::InstanceDecl {
-            class_name,
-            instance_type,
-            methods,
-        } => {
+        Expr::InstanceDecl { class_name, arms } => {
             dict.insert(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
@@ -810,36 +808,86 @@ fn expr_to_thunk_id(
                     span,
                 ))),
             );
-            dict.insert(
-                Key::String("instance_type".into()),
-                expr_to_thunk_id(&instance_type.node, instance_type.span, opts, ctx)?,
-            );
-            // Serialize methods as a dict
-            let methods_dict: IndexMap<Key, ThunkId> = methods
+            // Serialize arms as a list
+            let arms_dict: IndexMap<Key, ThunkId> = arms
                 .iter()
-                .filter_map(|method| {
-                    method.node.key.as_ref().and_then(|key| {
-                        if let Expr::Str(key_str) = &key.node {
-                            Some((
-                                Key::String(key_str.clone()),
-                                expr_to_thunk_id(
-                                    &method.node.value.node,
-                                    method.node.value.span,
-                                    opts,
-                                    ctx,
-                                )
-                                .ok()?,
-                            ))
-                        } else {
-                            None
-                        }
-                    })
+                .enumerate()
+                .filter_map(|(i, (pattern_expr, methods))| {
+                    // Build arm dict with pattern and methods
+                    let mut arm_dict = IndexMap::new();
+                    arm_dict.insert(
+                        Key::String("pattern".into()),
+                        expr_to_thunk_id(&pattern_expr.node, pattern_expr.span, opts, ctx).ok()?,
+                    );
+                    let methods_dict: IndexMap<Key, ThunkId> = methods
+                        .iter()
+                        .filter_map(|method| {
+                            method.node.key.as_ref().and_then(|key| {
+                                if let Expr::Str(key_str) = &key.node {
+                                    Some((
+                                        Key::String(key_str.clone()),
+                                        expr_to_thunk_id(
+                                            &method.node.value.node,
+                                            method.node.value.span,
+                                            opts,
+                                            ctx,
+                                        )
+                                        .ok()?,
+                                    ))
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .collect();
+                    arm_dict.insert(
+                        Key::String("methods".into()),
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            Value::Dict(methods_dict),
+                            span,
+                        ))),
+                    );
+                    Some((
+                        Key::Int(i as i64),
+                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            Value::Dict(arm_dict),
+                            span,
+                        ))),
+                    ))
                 })
                 .collect();
             dict.insert(
-                Key::String("methods".into()),
+                Key::String("arms".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::Dict(methods_dict),
+                    Value::Dict(arms_dict),
+                    span,
+                ))),
+            );
+        }
+
+        Expr::PatternDecl { bindings } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    string_val("pattern"),
+                    span,
+                ))),
+            );
+            // Serialize bindings as a list
+            let bindings_dict: IndexMap<Key, ThunkId> = bindings
+                .iter()
+                .enumerate()
+                .filter_map(|(i, binding)| {
+                    Some((
+                        Key::Int(i as i64),
+                        expr_to_thunk_id(&binding.node, binding.span, opts, ctx).ok()?,
+                    ))
+                })
+                .collect();
+            dict.insert(
+                Key::String("bindings".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(bindings_dict),
                     span,
                 ))),
             );

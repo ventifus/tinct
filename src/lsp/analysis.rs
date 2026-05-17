@@ -539,27 +539,40 @@ fn hover_at_expr(
             None
         }
 
-        Expr::InstanceDecl {
-            instance_type,
-            methods,
-            ..
-        } => hover_at_expr(
-            &instance_type.node,
-            instance_type.span,
-            offset,
-            type_map,
-            scheme_map,
-            doc_map,
-            source,
-            include_graph,
-            doc_url,
-        )
-        .or_else(|| {
-            for method in methods {
-                if let Some(key) = &method.node.key {
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                if let Some(text) = hover_at_expr(
+                    &pattern_expr.node,
+                    pattern_expr.span,
+                    offset,
+                    type_map,
+                    scheme_map,
+                    doc_map,
+                    source,
+                    include_graph,
+                    doc_url,
+                ) {
+                    return Some(text);
+                }
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        if let Some(text) = hover_at_expr(
+                            &key.node,
+                            key.span,
+                            offset,
+                            type_map,
+                            scheme_map,
+                            doc_map,
+                            source,
+                            include_graph,
+                            doc_url,
+                        ) {
+                            return Some(text);
+                        }
+                    }
                     if let Some(text) = hover_at_expr(
-                        &key.node,
-                        key.span,
+                        &method.node.value.node,
+                        method.node.value.span,
                         offset,
                         type_map,
                         scheme_map,
@@ -571,9 +584,15 @@ fn hover_at_expr(
                         return Some(text);
                     }
                 }
+            }
+            None
+        }
+
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
                 if let Some(text) = hover_at_expr(
-                    &method.node.value.node,
-                    method.node.value.span,
+                    &binding.node,
+                    binding.span,
                     offset,
                     type_map,
                     scheme_map,
@@ -586,7 +605,7 @@ fn hover_at_expr(
                 }
             }
             None
-        }),
+        }
 
         Expr::TypeApp { .. } => Some(format!(
             "Type application{}",
@@ -1037,7 +1056,7 @@ fn collect_var_refs_spanned(
             }
         }
 
-        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+        Expr::ClassDecl { methods, .. } => {
             for method in methods {
                 if let Some(key) = &method.node.key {
                     collect_var_refs_spanned(&key.node, key.span, name, source, uri, out);
@@ -1050,6 +1069,38 @@ fn collect_var_refs_spanned(
                     uri,
                     out,
                 );
+            }
+        }
+
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                collect_var_refs_spanned(
+                    &pattern_expr.node,
+                    pattern_expr.span,
+                    name,
+                    source,
+                    uri,
+                    out,
+                );
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        collect_var_refs_spanned(&key.node, key.span, name, source, uri, out);
+                    }
+                    collect_var_refs_spanned(
+                        &method.node.value.node,
+                        method.node.value.span,
+                        name,
+                        source,
+                        uri,
+                        out,
+                    );
+                }
+            }
+        }
+
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                collect_var_refs_spanned(&binding.node, binding.span, name, source, uri, out);
             }
         }
 
@@ -2551,7 +2602,7 @@ fn collect_rename_edits_spanned(
             }
         }
 
-        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+        Expr::ClassDecl { methods, .. } => {
             for method in methods {
                 if let Some(key) = &method.node.key {
                     collect_rename_edits_spanned(&key.node, key.span, name, source, out);
@@ -2563,6 +2614,36 @@ fn collect_rename_edits_spanned(
                     source,
                     out,
                 );
+            }
+        }
+
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                collect_rename_edits_spanned(
+                    &pattern_expr.node,
+                    pattern_expr.span,
+                    name,
+                    source,
+                    out,
+                );
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        collect_rename_edits_spanned(&key.node, key.span, name, source, out);
+                    }
+                    collect_rename_edits_spanned(
+                        &method.node.value.node,
+                        method.node.value.span,
+                        name,
+                        source,
+                        out,
+                    );
+                }
+            }
+        }
+
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                collect_rename_edits_spanned(&binding.node, binding.span, name, source, out);
             }
         }
 
@@ -2682,12 +2763,30 @@ fn collect_definition_key_edits(expr: &Expr, name: &str, source: &str, out: &mut
             }
         }
 
-        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+        Expr::ClassDecl { methods, .. } => {
             for method in methods {
                 if let Some(key) = &method.node.key {
                     collect_definition_key_edits(&key.node, name, source, out);
                 }
                 collect_definition_key_edits(&method.node.value.node, name, source, out);
+            }
+        }
+
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                collect_definition_key_edits(&pattern_expr.node, name, source, out);
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        collect_definition_key_edits(&key.node, name, source, out);
+                    }
+                    collect_definition_key_edits(&method.node.value.node, name, source, out);
+                }
+            }
+        }
+
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                collect_definition_key_edits(&binding.node, name, source, out);
             }
         }
 
@@ -2926,29 +3025,32 @@ fn collect_dict_keys_in_scope(
                 );
             }
         }
-        Expr::InstanceDecl {
-            instance_type,
-            methods,
-            ..
-        } => {
-            collect_dict_keys_in_scope(
-                &instance_type.node,
-                instance_type.span,
-                offset,
-                items,
-                seen,
-            );
-            for method in methods {
-                if let Some(key) = &method.node.key {
-                    collect_dict_keys_in_scope(&key.node, key.span, offset, items, seen);
-                }
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
                 collect_dict_keys_in_scope(
-                    &method.node.value.node,
-                    method.node.value.span,
+                    &pattern_expr.node,
+                    pattern_expr.span,
                     offset,
                     items,
                     seen,
                 );
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        collect_dict_keys_in_scope(&key.node, key.span, offset, items, seen);
+                    }
+                    collect_dict_keys_in_scope(
+                        &method.node.value.node,
+                        method.node.value.span,
+                        offset,
+                        items,
+                        seen,
+                    );
+                }
+            }
+        }
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                collect_dict_keys_in_scope(&binding.node, binding.span, offset, items, seen);
             }
         }
         Expr::DefMacro { body, .. } => {
@@ -3135,18 +3237,39 @@ fn find_enclosing_call(expr: &Expr, span: Span, offset: usize) -> Option<((usize
             })
         }
 
-        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
-            methods.iter().find_map(|method| {
-                method
-                    .node
-                    .key
-                    .as_ref()
-                    .and_then(|k| find_enclosing_call(&k.node, k.span, offset))
-                    .or_else(|| {
-                        find_enclosing_call(&method.node.value.node, method.node.value.span, offset)
-                    })
+        Expr::ClassDecl { methods, .. } => methods.iter().find_map(|method| {
+            method
+                .node
+                .key
+                .as_ref()
+                .and_then(|k| find_enclosing_call(&k.node, k.span, offset))
+                .or_else(|| {
+                    find_enclosing_call(&method.node.value.node, method.node.value.span, offset)
+                })
+        }),
+
+        Expr::InstanceDecl { arms, .. } => arms.iter().find_map(|(pattern_expr, methods)| {
+            find_enclosing_call(&pattern_expr.node, pattern_expr.span, offset).or_else(|| {
+                methods.iter().find_map(|method| {
+                    method
+                        .node
+                        .key
+                        .as_ref()
+                        .and_then(|k| find_enclosing_call(&k.node, k.span, offset))
+                        .or_else(|| {
+                            find_enclosing_call(
+                                &method.node.value.node,
+                                method.node.value.span,
+                                offset,
+                            )
+                        })
+                })
             })
-        }
+        }),
+
+        Expr::PatternDecl { bindings } => bindings
+            .iter()
+            .find_map(|binding| find_enclosing_call(&binding.node, binding.span, offset)),
 
         Expr::DefMacro { body, .. } => find_enclosing_call(&body.node, body.span, offset),
 

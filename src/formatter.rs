@@ -498,6 +498,8 @@ impl<'a> Formatter<'a> {
                 params,
                 superclasses,
                 methods,
+                determines: _,
+                resolver: _,
             } => {
                 self.output.push('[');
                 self.output.push_str("class");
@@ -508,6 +510,7 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(param);
                 }
                 self.output.push(']');
+                // TODO: emit structural metadata bracket if determines/resolver present
                 // Emit extends clauses
                 for (super_class, super_param) in superclasses {
                     self.output.push_str(" extends [");
@@ -526,27 +529,40 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push(']');
             }
-            Expr::InstanceDecl {
-                class_name,
-                instance_type,
-                methods,
-            } => {
+            Expr::InstanceDecl { class_name, arms } => {
                 self.output.push('[');
                 self.output.push_str("instance");
-                self.output.push_str(" [");
-                self.output.push_str(class_name);
                 self.output.push(' ');
-                self.format_expr(instance_type, true);
-                self.output.push(']');
-                for method in methods {
+                self.output.push_str(class_name);
+                for (pattern, methods) in arms {
                     self.output.push(' ');
-                    if let Some(key) = &method.node.key {
-                        self.format_expr(key, false);
-                        self.output.push_str(": ");
+                    self.format_expr(pattern, false);
+                    self.output.push_str(": [");
+                    for (i, method) in methods.iter().enumerate() {
+                        if i > 0 {
+                            self.output.push(' ');
+                        }
+                        if let Some(key) = &method.node.key {
+                            self.format_expr(key, false);
+                            self.output.push_str(": ");
+                        }
+                        self.format_expr(&method.node.value, true);
                     }
-                    self.format_expr(&method.node.value, true);
+                    self.output.push(']');
                 }
                 self.output.push(']');
+            }
+            Expr::PatternDecl { bindings } => {
+                self.output.push('[');
+                self.output.push_str("pattern");
+                self.output.push_str(" [");
+                for (i, binding) in bindings.iter().enumerate() {
+                    if i > 0 {
+                        self.output.push(' ');
+                    }
+                    self.format_expr(binding, false);
+                }
+                self.output.push_str("]]");
             }
             Expr::Rest(name) => {
                 self.output.push_str("...");
@@ -850,22 +866,31 @@ impl<'a> Formatter<'a> {
                 }
                 width + 1 // closing ]
             }
-            Expr::InstanceDecl {
-                class_name,
-                instance_type,
-                methods,
-                ..
-            } => {
-                let mut width = 1 + 8 + 2 + class_name.len() + 1; // [instance [<name>
-                width += self.measure_expr_width(instance_type) + 1; // <type>]
-                for method in methods {
-                    width += 1;
-                    if let Some(key) = &method.node.key {
-                        width += self.measure_expr_width(key) + 2; // key:
+            Expr::InstanceDecl { class_name, arms } => {
+                let mut width = 1 + 8 + 1 + class_name.len(); // [instance <name>
+                for (pattern, methods) in arms {
+                    width += 1 + self.measure_expr_width(pattern) + 2; // <space><pattern>:
+                    width += 1; // opening [
+                    for method in methods {
+                        width += 1;
+                        if let Some(key) = &method.node.key {
+                            width += self.measure_expr_width(key) + 2; // key:
+                        }
+                        width += self.measure_expr_width(&method.node.value);
                     }
-                    width += self.measure_expr_width(&method.node.value);
+                    width += 1; // closing ]
                 }
                 width + 1 // closing ]
+            }
+            Expr::PatternDecl { bindings } => {
+                let mut width = 1 + 7 + 2; // [pattern [
+                for (i, binding) in bindings.iter().enumerate() {
+                    if i > 0 {
+                        width += 1;
+                    }
+                    width += self.measure_expr_width(binding);
+                }
+                width + 2 // ]]
             }
             Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
             Expr::TypeApp { func, arg } => {
@@ -1349,7 +1374,8 @@ impl<'a> Formatter<'a> {
             | Expr::DefMacro { .. }
             | Expr::Match { .. }
             | Expr::ClassDecl { .. }
-            | Expr::InstanceDecl { .. } => Some('['),
+            | Expr::InstanceDecl { .. }
+            | Expr::PatternDecl { .. } => Some('['),
             Expr::TypeApp { .. } => Some('@'), // starts with @[
             Expr::Annotated { name, .. } => name.chars().next(),
             Expr::Rest(_) => Some('.'),

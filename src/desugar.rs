@@ -337,20 +337,23 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             }
         }
 
-        // InstanceDecl: recurse into instance type and method implementations
-        Expr::InstanceDecl {
-            instance_type,
-            methods,
-            ..
-        } => {
-            desugar(instance_type, depth);
-            for method_spanned in methods {
-                desugar_entry(&mut method_spanned.node, depth);
+        // InstanceDecl: recurse into pattern expressions and method implementations
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                desugar(pattern_expr, depth);
+                for method_spanned in methods {
+                    desugar_entry(&mut method_spanned.node, depth);
+                }
             }
         }
         Expr::TypeApp { func, arg } => {
             desugar(func, depth);
             desugar(arg, depth);
+        }
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                desugar(binding, depth);
+            }
         }
     }
 }

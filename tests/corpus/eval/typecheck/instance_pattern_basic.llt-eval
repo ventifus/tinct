@@ -1,0 +1,20 @@
+# Instance declaration with new pattern syntax
+# Verifies the match-arm instance syntax: [instance ClassName [pattern [...]]: methods...]
+[
+  # Define a simple class
+  TestEq: [class [TestEq a]
+    test-eq: [Fn@Bool [a a]]]
+
+  # Define an instance using the new pattern syntax
+  TestEqInt: [instance TestEq
+    [pattern [a@Int]]: [test-eq: [fn [x y] [= x y]]]]
+
+  # Use the instance
+  result: true
+]
+
+---
+
+%.result
+=== out
+Bool(true)
