@@ -12,12 +12,12 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
-| [Constraint Annotations and fn@[...] Metadata](constraint-annotations.md) | **Accepted 2026-05-11.** Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
+| [Constraint Annotations and fn@[...] Metadata](completed/constraint-annotations.md) | **Accepted 2026-05-11.** Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map@[K: V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
 | [Higher-Kinded Types, Monadic `[do]`, and Precise Field Access](completed/hkt-monads.md) | **Accepted 2026-05-11.** `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2`; `Kind::Label`; `HasField` constraint with `[HAS-FIELD-UNION]`/`[HAS-FIELD-INTER]`/`[HAS-FIELD-TOP]` BAS rules; label-polymorphic `get`/`get-in` |
-| [Inference Completeness](inference-completeness.md) | SCC-based binding group analysis (Tarjan) within DICT-GEN; independent generalization of non-mutually-recursive entries; polymorphic access through visible nested dicts; variadic params as `Seq(T)`; typeclass-based heterogeneous variadics (FormatResult pattern) |
+| [Inference Completeness](completed/inference-completeness.md) | **Accepted 2026-05-14.** SCC-based binding group analysis (Tarjan) within DICT-GEN; independent generalization of non-mutually-recursive entries; polymorphic access through visible nested dicts; variadic params as `Seq(T)`; typeclass-based heterogeneous variadics (FormatResult pattern) |
 | [CHR-Unified Type Constraints](chr-unification.md) | **Accepted 2026-05-16.** `normalize()` unified type simplification; `TypeStageApp` lazy FD elaboration; deferred equality for non-injective resolvers; user-declared `[class ...]` and `[instance ...]`; scope-resident ClassEnv; arithmetic classes in prelude; automatic boundary guards |
-| [Advanced Typeclass Extensions](advanced-typeclasses.md) | 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
+| [Advanced Typeclass Extensions](completed/advanced-typeclasses.md) | **Accepted 2026-05-14.** 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
 | [Parameterized Type Annotations](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Seq@T`, `Map@[K: V]`, `Map@T`, `Record@[...]` chained `@` annotation forms; `@Map@[String: Int]` compact form; type alias composition (`T2: [type Map@T1]`); see `doc/feature/parameterized-types.md` |
 | [Type Annotations v2](type-annotations-v2.md) | Comprehensive revisit: explicit union (`\|`) and intersection (`&`) separators in `@[...]`; capability type annotation; property-dict collision fix; migration from positional-union convention; builds on `parameterized-annotations` sprint |
 
@@ -25,13 +25,13 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Runtime Reflection — Annotations as Value Metadata](runtime-reflection.md) | `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime via `FnAnnotation`; `ast-of` Rust primitive returns the AST dict for any value; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; enables REPL `:describe`, LSP doc hover, docgen, and metaprogramming |
+| [Runtime Reflection — Annotations as Value Metadata](completed/runtime-reflection.md) | **Accepted 2026-05-14.** `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime via `FnAnnotation`; `ast-of` Rust primitive returns the AST dict for any value; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; enables REPL `:describe`, LSP doc hover, docgen, and metaprogramming |
 
 ## Internal Integrity
 
 | Proposal | Summary |
 |----------|---------|
-| [builtin-* Privacy](builtin-privacy.md) | **Accepted 2026-05-11.** Restrict `builtin-*` stable aliases to prelude evaluation context; env-layer isolation + T009 type-checker warning; migrate macros.llt, path.llt, toml-lite.llt to public wrappers |
+| [builtin-* Privacy](completed/builtin-privacy.md) | **Accepted 2026-05-11.** Restrict `builtin-*` stable aliases to prelude evaluation context; env-layer isolation + T009 type-checker warning; migrate macros.llt, path.llt, toml-lite.llt to public wrappers |
 
 ## Error Handling
 
@@ -81,14 +81,14 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | **Accepted 2026-05-07.** Connector protocol, `tls-layer`, SpkiPin, system CA roots, mTLS, ALPN, SPKI pinning |
 | [Composable Networking v2](completed/lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
-| [Directory Capability Permissions](dir-cap-permissions.md) | **Accepted 2026-05-11.** `--cap-fs name=path:r` permission flags on DirCap; `Readable`, `Statable`, `Listable`, `Writable`, `Appendable`, `Deletable`, `Renameable`; letter bundles (`r`=read+list+stat, `w`=write+append+delete+rename) + extended `:[Cap1 Cap2 ...]` syntax; row-polymorphic `DirCap@[Writable ...]` type; `narrow` for in-script attenuation; extends `--cap-file` with same extended syntax; no mode = full access |
+| [Directory Capability Permissions](completed/dir-cap-permissions.md) | **Accepted 2026-05-11.** `--cap-fs name=path:r` permission flags on DirCap; `Readable`, `Statable`, `Listable`, `Writable`, `Appendable`, `Deletable`, `Renameable`; letter bundles (`r`=read+list+stat, `w`=write+append+delete+rename) + extended `:[Cap1 Cap2 ...]` syntax; row-polymorphic `DirCap@[Writable ...]` type; `narrow` for in-script attenuation; extends `--cap-file` with same extended syntax; no mode = full access |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
 
 ## Syntax and Ergonomics
 
 | Proposal | Summary |
 |----------|---------|
-| [Multi-Line Strings](multi-line-strings.md) | **Accepted 2026-05-11.** `unindent` stdlib function strips indentation using last-line baseline; `"""..."""` is a parse-stage macro wrapping `[unindent "..."]`; `i"""..."""` for interpolation; no lexer changes needed |
+| [Multi-Line Strings](completed/multi-line-strings.md) | **Accepted 2026-05-11.** `unindent` stdlib function strips indentation using last-line baseline; `"""..."""` is a parse-stage macro wrapping `[unindent "..."]`; `i"""..."""` for interpolation; no lexer changes needed |
 | [Unified Binding Declarations](unified-bindings.md) | **Accepted 2026-05-17.** `[let ...]` universal binding form for fn/class/type/instance/case; `[case ...]` explicit match arms; `...` placeholder expression; constructor payload registry; parsing invariant: `[let ...]` = binding, everything else = expression |
 | [Template-Polarity Embedding](template-polarity.md) | `tinct template` subcommand — `{{ expr }}` / `{% block %}` Jinja-style preprocessing of foreign-format files (nginx.conf, Dockerfile, Makefile) |
 
@@ -114,9 +114,6 @@ Accepted proposals with sprints in TODO.md. Not yet fully implemented.
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
 | [CHR-Unified Type Constraints](chr-unification.md) | `Type::TypeStageApp`; `normalize()` unified simplification pass; FD elaboration into equality goals; deferred equality for non-injective resolvers; `[class ...]` two-bracket form; `[instance ...]` match-arm syntax; scope-resident ClassEnv; arithmetic class migration to prelude; boundary guard elaboration | 2026-05-16 |
-| [Advanced Typeclass Extensions](advanced-typeclasses.md) | MPTC `Add a b c \| (a,b)→c` for precise arithmetic; `[CONSTRAIN-FIELD/INTER/UNION/TOP/UNKNOWN/NEVER]` row-level propagation; ClassEnv runtime dispatch | 2026-05-14 |
-| [Inference Completeness](inference-completeness.md) | SCC DICT-GEN (done); variadic `Seq(T)`; nested dict polymorphism via `TypeScheme.inner_schemes` | 2026-05-14 |
-| [Runtime Reflection — Annotations as Value Metadata](runtime-reflection.md) | `FnAnnotation` on `Value::Function`; `ast-of` Rust primitive; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude | 2026-05-14 |
 | [Unified Binding Declarations](unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; `Expr::LetDecl`/`CaseArm`/`Placeholder` | 2026-05-17 |
 
 ### Completed
@@ -159,6 +156,13 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference | 2026-05-09 — `bas-core` |
 | [Consistent Error Handling](completed/error-patterns.md) | Nominal `Ok@T\|Err@String` Result; `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate | 2026-05-09 — `result-nominal` |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | `Record` vs `Map@[K: V]` type split; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality | 2026-05-09 — `record-map-split` |
+| [Constraint Annotations and fn@[...] Metadata](completed/constraint-annotations.md) | `fn@[return: T constraint: [a: Comparable] doc: "..."]`; TypeVar constraint binding syntax; `fn@Type` shorthand permanent; `TypeScheme.doc` for LSP hover | 2026-05-11 — `constraint-annotations` |
+| [builtin-* Privacy](completed/builtin-privacy.md) | Restrict `builtin-*` aliases to prelude evaluation context; env-layer isolation + T009 warning; migrate macros.llt, path.llt, toml-lite.llt to public wrappers | 2026-05-11 — `builtin-privacy` |
+| [Multi-Line Strings](completed/multi-line-strings.md) | `"""..."""` triple-quoted strings; `unindent` stdlib strips indentation via last-line baseline; `i"""..."""` interpolation; parse-stage macro desugaring | 2026-05-11 — `prelude-triple-quote` (ongoing); lexer + parser complete |
+| [Directory Capability Permissions](completed/dir-cap-permissions.md) | `DirPerms` struct with 7 flags; `--cap-fs name=path:mode` CLI parsing; `from_letter` bundles (`r`/`w`/`a`/`s`/`l`); row-polymorphic `DirCap@[Readable ...]` type | 2026-05-11 — `dir-cap-permissions` |
+| [Inference Completeness](completed/inference-completeness.md) | SCC-based DICT-GEN; variadic `Seq(T)` typed params; nested dict polymorphism via `TypeScheme.inner_schemes`; typeclass-based heterogeneous variadics | 2026-05-14 — `inference-completeness-variadic`, `inference-completeness-nested-dict` |
+| [Advanced Typeclass Extensions](completed/advanced-typeclasses.md) | MPTC `Add a b c \| (a,b)→c` for mixed-mode arithmetic; `[CONSTRAIN-FIELD/INTER/UNION/TOP/UNKNOWN/NEVER]` propagation; ClassEnv runtime dispatch for user-defined `=`, `<`, `str` | 2026-05-14 — `typeclass-constraint-propagation`, `typeclass-mptc-fundeps`, `typeclass-runtime-dispatch` |
+| [Runtime Reflection — Annotations as Value Metadata](completed/runtime-reflection.md) | `FnAnnotation` on `Value::Function`; `ast-of` Rust primitive; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; LSP hover + docgen | 2026-05-14 — `runtime-reflection-core`, `runtime-reflection-include` |
 
 ### Adopt Now
 
