@@ -509,6 +509,14 @@ The source span (carried in `Spanned<Expr::Placeholder>`) is stored in the thunk
 **Proposed:** Migrate all `[fn [params]]`, `[class [tvars]]`, `[type [params]]` to `[let ...]` form.  
 **Impact:** Moderate in scope, minor in complexity.
 
+## Future: Parse-Stage Macro Softening
+
+This proposal requires `[let ...]` uniformly at all binding positions. A future parse-stage macro system could introduce syntactic elision where it is safe and unambiguous — for example, `[fn [x@Int y@Float] body]` expanding to `[fn [let x@Int y@Float] body]` when the binding bracket contains no structural tests.
+
+Note that `[case [v: Ok] body]` and `[case [let v: Ok] body]` are semantically distinct (the former is an exact-value dict match; the latter is a structural constructor match), so any parse-stage elision for case arms must be semantics-aware. Parse-stage macros (which operate before AST construction) are the right mechanism for this, as they can inspect token streams and apply context-sensitive transformations before the parser assigns meaning to `:`.
+
+The hard `[let ...]` requirement here is intentional and load-bearing — it establishes the clean semantic model that parse-stage macros will later soften in specific, well-defined ways.
+
 ## Prerequisites
 
 None — this is a self-contained change. All semantic behaviors are defined within this proposal. No deferred items.
