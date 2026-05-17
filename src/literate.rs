@@ -113,6 +113,24 @@ pub fn tangle(blocks: Vec<String>) -> String {
     blocks.join("\n---\n")
 }
 
+/// A tinct code block extracted from markdown with byte offset information.
+///
+/// Used by the LSP server to map positions between markdown coordinates and
+/// block-local tinct source coordinates.
+#[derive(Debug, Clone)]
+pub struct LiterateBlock {
+    /// The tinct code portion (everything before first === line).
+    pub code: String,
+    /// Expected output sections from === markers.
+    pub expectations: BlockExpectations,
+    /// Byte offset of opening ``` fence in markdown.
+    pub md_start: usize,
+    /// Byte offset of first code line (after ``` and language tag) in markdown.
+    pub md_code_start: usize,
+    /// Byte offset of closing ``` fence in markdown.
+    pub md_code_end: usize,
+}
+
 /// Expected output sections from a code block.
 #[derive(Debug, Clone)]
 pub struct BlockExpectations {
@@ -246,6 +264,109 @@ pub fn split_block_sections(block: &str) -> BlockWithExpectations {
             error,
             info,
         },
+    }
+}
+
+/// Extract tinct code blocks from markdown with byte offset information.
+///
+/// Returns a `Vec<LiterateBlock>` with byte offsets for each block's fence
+/// positions in the original markdown. Used by the LSP server to map positions
+/// between markdown coordinates and block-local tinct source.
+///
+/// Unclosed blocks (no closing fence) are silently discarded.
+pub fn extract_blocks(markdown: &str) -> Vec<LiterateBlock> {
+    let mut blocks = Vec::new();
+    let mut current_block: Option<(String, usize, usize)> = None; // (content, fence_start, code_start)
+    let mut byte_offset = 0;
+
+    for line in markdown.lines() {
+        let line_len = line.len();
+        let trimmed = line.trim();
+
+        match current_block {
+            None => {
+                // Look for opening fence
+                if trimmed == "```tinct" || trimmed == "```llt" {
+                    let fence_start = byte_offset;
+                    // Code starts after this line's newline
+                    let code_start = byte_offset + line_len + 1; // +1 for the newline
+                    current_block = Some((String::new(), fence_start, code_start));
+                }
+            }
+            Some((ref mut buf, fence_start, code_start)) => {
+                // Inside a tinct/llt block
+                if trimmed == "```" {
+                    // Closing fence found
+                    let code_end = byte_offset; // Closing fence starts here
+                    let full_code = current_block.take().unwrap().0;
+
+                    // Split into code and expectations
+                    let BlockWithExpectations { code, expectations } =
+                        split_block_sections(&full_code);
+
+                    blocks.push(LiterateBlock {
+                        code,
+                        expectations,
+                        md_start: fence_start,
+                        md_code_start: code_start,
+                        md_code_end: code_end,
+                    });
+                } else {
+                    // Content line: append verbatim
+                    buf.push_str(line);
+                    buf.push('\n');
+                }
+            }
+        }
+
+        byte_offset += line_len + 1; // +1 for the newline stripped by lines()
+    }
+
+    // Unclosed blocks are silently discarded
+    blocks
+}
+
+/// Map a markdown byte offset to (block_index, block_relative_offset).
+///
+/// Returns `None` if the offset is not inside any tinct block.
+pub fn md_offset_to_block(blocks: &[LiterateBlock], md_offset: usize) -> Option<(usize, usize)> {
+    for (idx, block) in blocks.iter().enumerate() {
+        // Check if offset is within this block's code region
+        if md_offset >= block.md_code_start && md_offset < block.md_code_end {
+            let block_relative = md_offset - block.md_code_start;
+            return Some((idx, block_relative));
+        }
+    }
+    None
+}
+
+/// Map a tinct span (from block-local source) to markdown coordinates.
+///
+/// Returns a `Span` with byte offsets adjusted to markdown coordinates.
+pub fn block_span_to_md(
+    blocks: &[LiterateBlock],
+    block_idx: usize,
+    span: crate::ast::Span,
+) -> crate::ast::Span {
+    use crate::ast::{Position, Span};
+
+    if let Some(block) = blocks.get(block_idx) {
+        let offset_delta = block.md_code_start;
+        Span::new(
+            Position {
+                offset: span.start.offset + offset_delta,
+                line: span.start.line, // Line/column not adjusted — LSP recomputes from offset
+                column: span.start.column,
+            },
+            Position {
+                offset: span.end.offset + offset_delta,
+                line: span.end.line,
+                column: span.end.column,
+            },
+        )
+    } else {
+        // Block index out of bounds — return original span unchanged
+        span
     }
 }
 
@@ -415,5 +536,109 @@ mod tests {
         assert!(tangled.contains("base-url"));
         assert!(tangled.contains("\n---\n"));
         assert!(tangled.contains("[filter"));
+    }
+
+    // ------------------------------------------------------------------
+    // extract_blocks (with byte offsets)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn extract_blocks_single() {
+        let md = "```tinct\n[x: 1]\n```";
+        let blocks = extract_blocks(md);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].code, "[x: 1]\n");
+        assert_eq!(blocks[0].md_start, 0); // ``` starts at offset 0
+        assert_eq!(blocks[0].md_code_start, 9); // after "```tinct\n"
+        assert_eq!(blocks[0].md_code_end, 16); // before closing ```
+    }
+
+    #[test]
+    fn extract_blocks_with_prose() {
+        let md = "# Header\n\n```tinct\n[x: 1]\n```\n";
+        let blocks = extract_blocks(md);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].code, "[x: 1]\n");
+        // "# Header\n\n" = 10 bytes
+        assert_eq!(blocks[0].md_start, 10);
+        assert_eq!(blocks[0].md_code_start, 19); // 10 + len("```tinct\n")
+    }
+
+    #[test]
+    fn extract_blocks_multiple() {
+        let md = "```tinct\n[a: 1]\n```\n\n```tinct\n[b: 2]\n```";
+        let blocks = extract_blocks(md);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].code, "[a: 1]\n");
+        assert_eq!(blocks[1].code, "[b: 2]\n");
+    }
+
+    #[test]
+    fn extract_blocks_with_expectations() {
+        let md = "```tinct\n[x: 1]\n=== out\n42\n```";
+        let blocks = extract_blocks(md);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].code, "[x: 1]\n");
+        assert_eq!(blocks[0].expectations.out, Some("42".to_string()));
+    }
+
+    // ------------------------------------------------------------------
+    // md_offset_to_block
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn md_offset_to_block_inside_first() {
+        let md = "```tinct\n[x: 1]\n```";
+        let blocks = extract_blocks(md);
+        // Offset 10 is inside "[x: 1]\n" (code starts at 9)
+        let result = md_offset_to_block(&blocks, 10);
+        assert_eq!(result, Some((0, 1))); // block 0, offset 1 within block
+    }
+
+    #[test]
+    fn md_offset_to_block_outside() {
+        let md = "prose\n```tinct\n[x: 1]\n```\nmore";
+        let blocks = extract_blocks(md);
+        // Offset 0 is in prose before any block
+        assert_eq!(md_offset_to_block(&blocks, 0), None);
+    }
+
+    #[test]
+    fn md_offset_to_block_second_block() {
+        let md = "```tinct\n[a: 1]\n```\n\n```tinct\n[b: 2]\n```";
+        let blocks = extract_blocks(md);
+        // Find offset of second block's code
+        let second_code_start = blocks[1].md_code_start;
+        let result = md_offset_to_block(&blocks, second_code_start + 1);
+        assert_eq!(result, Some((1, 1))); // block 1, offset 1
+    }
+
+    // ------------------------------------------------------------------
+    // block_span_to_md
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn block_span_to_md_simple() {
+        use crate::ast::{Position, Span};
+
+        let md = "```tinct\n[x: 1]\n```";
+        let blocks = extract_blocks(md);
+        // Block-local span: offset 1..2 (the "x" in "[x: 1]")
+        let block_span = Span::new(
+            Position {
+                offset: 1,
+                line: 1,
+                column: 2,
+            },
+            Position {
+                offset: 2,
+                line: 1,
+                column: 3,
+            },
+        );
+        let md_span = block_span_to_md(&blocks, 0, block_span);
+        // Code starts at md offset 9, so offset 1 → 10
+        assert_eq!(md_span.start.offset, 10);
+        assert_eq!(md_span.end.offset, 11);
     }
 }

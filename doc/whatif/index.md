@@ -83,6 +83,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Composable Networking v2](completed/lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
 | [Directory Capability Permissions](completed/dir-cap-permissions.md) | **Accepted 2026-05-11.** `--cap-fs name=path:r` permission flags on DirCap; `Readable`, `Statable`, `Listable`, `Writable`, `Appendable`, `Deletable`, `Renameable`; letter bundles (`r`=read+list+stat, `w`=write+append+delete+rename) + extended `:[Cap1 Cap2 ...]` syntax; row-polymorphic `[DirCap [Writable ...]]` type; `narrow` for in-script attenuation; extends `--cap-file` with same extended syntax; no mode = full access |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
+| [Structured Logging](structured-logging.md) | `trace` builtin + `stdlib/log.llt`; output model (default to `=== out` vs `=== info`); redirect mechanism; literate/corpus integration |
 
 ## Syntax and Ergonomics
 

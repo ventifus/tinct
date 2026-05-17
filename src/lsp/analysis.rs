@@ -29,6 +29,37 @@ pub fn hover_at(
     offset: usize,
     include_graph: &crate::lsp::document::IncludeGraph,
 ) -> Option<String> {
+    // For markdown documents, map offset to block-local coordinates
+    if !doc.literate_blocks.is_empty() {
+        let (block_idx, block_offset) =
+            crate::literate::md_offset_to_block(&doc.literate_blocks, offset)?;
+        let block = &doc.literate_blocks[block_idx];
+
+        // Parse the block's code to get an AST for hover analysis
+        let block_file = crate::parser::parse(&block.code).ok()?;
+
+        // Walk the block's AST with block-local offset
+        for document in &block_file.node.documents {
+            for expr in &document.node.expressions {
+                if let Some(text) = hover_at_expr(
+                    &expr.node,
+                    expr.span,
+                    block_offset,
+                    &doc.type_map,
+                    &doc.scheme_map,
+                    &doc.doc_map,
+                    &block.code,
+                    include_graph,
+                    doc_url,
+                ) {
+                    return Some(text);
+                }
+            }
+        }
+        return None;
+    }
+
+    // Regular .llt file path
     let file = match &doc.ast {
         Ok(f) => f,
         Err(_) => return None,
@@ -1191,6 +1222,76 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
     let source = &doc.text;
     let mut diagnostics = Vec::new();
 
+    // For markdown documents, analyze each block and map spans to markdown coordinates
+    if !doc.literate_blocks.is_empty() {
+        for (block_idx, block) in doc.literate_blocks.iter().enumerate() {
+            // Parse and analyze this block
+            let block_parse_result = crate::parser::parse2(&block.code);
+
+            match block_parse_result {
+                Ok(output) => {
+                    // Recovered parse errors
+                    for err in output.errors {
+                        let mut diag = parse_error_to_diagnostic(&err, &block.code);
+                        // Map span from block-local to markdown coordinates
+                        if let Some(span) = err.span {
+                            let md_span = crate::literate::block_span_to_md(
+                                &doc.literate_blocks,
+                                block_idx,
+                                span,
+                            );
+                            diag.range = llt_span_to_lsp_range(&md_span, source);
+                        }
+                        diagnostics.push(diag);
+                    }
+
+                    // Type errors
+                    let file = output.file;
+                    // Desugar (pipeline invariant)
+                    let mut file_mut = file.clone();
+                    crate::desugar::desugar_file(&mut file_mut.node);
+                    crate::resolve::resolve_file(&file_mut.node);
+
+                    // Type check
+                    let (seeded_env, _) = crate::imports::build_type_env(&file_mut.node, None);
+                    let (type_errors, _, _, _, _) =
+                        crate::typecheck::typecheck_file_with_types_and_env(
+                            &file_mut.node,
+                            seeded_env,
+                        );
+
+                    for err in type_errors {
+                        let mut diag = type_error_to_diagnostic(&err, &block.code);
+                        // Map span from block-local to markdown coordinates
+                        let md_span = crate::literate::block_span_to_md(
+                            &doc.literate_blocks,
+                            block_idx,
+                            err.span,
+                        );
+                        diag.range = llt_span_to_lsp_range(&md_span, source);
+                        diagnostics.push(diag);
+                    }
+                }
+                Err(err) => {
+                    // Fatal parse error
+                    let mut diag = parse_error_to_diagnostic(&err, &block.code);
+                    // Map span from block-local to markdown coordinates
+                    if let Some(span) = err.span {
+                        let md_span = crate::literate::block_span_to_md(
+                            &doc.literate_blocks,
+                            block_idx,
+                            span,
+                        );
+                        diag.range = llt_span_to_lsp_range(&md_span, source);
+                    }
+                    diagnostics.push(diag);
+                }
+            }
+        }
+        return diagnostics;
+    }
+
+    // Regular .llt file path
     // Fatal parse error (lexer failure or unclosed brackets) -> Error severity
     if let Err(ref err) = doc.ast {
         diagnostics.push(parse_error_to_diagnostic(err, source));
@@ -2484,6 +2585,74 @@ mod tests {
             panic!("expected OneOf::Left(Location), got workspace-only location");
         }
     }
+
+    #[test]
+    fn test_hover_markdown_simple() {
+        let env = test_env();
+        let markdown = r#"# Test
+
+```tinct
+[x: 42]
+```"#;
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
+
+        assert_eq!(doc.literate_blocks.len(), 1, "should have 1 block");
+        let block = &doc.literate_blocks[0];
+
+        // Test offset inside the code block (after first [)
+        let test_offset = block.md_code_start + 1;
+        let hover = hover_at(&doc, &test_uri(), test_offset, &test_include_graph());
+        assert!(
+            hover.is_some(),
+            "hover should work inside markdown code blocks"
+        );
+    }
+
+    #[test]
+    fn test_hover_markdown_outside_block() {
+        let env = test_env();
+        let markdown = r#"# Test
+
+```tinct
+[x: 42]
+```"#;
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
+
+        // Offset 0 is in the prose before the code block
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
+        assert!(
+            hover.is_none(),
+            "hover should return None outside code blocks"
+        );
+    }
+
+    #[test]
+    fn test_diagnostics_markdown_parse_error() {
+        let env = test_env();
+        let markdown = r#"```tinct
+[unterminated
+```"#;
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
+        let diags = diagnostics_for(&doc, &test_uri());
+        assert!(!diags.is_empty(), "should have parse error diagnostics");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diags[0].source, Some("tinct-parser".to_string()));
+    }
+
+    #[test]
+    fn test_diagnostics_markdown_type_error() {
+        let env = test_env();
+        let markdown = r#"```tinct
+[@Number "not a number"]
+```"#;
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
+        let diags = diagnostics_for(&doc, &test_uri());
+        assert!(!diags.is_empty(), "should have type error diagnostics");
+        // Type errors are warnings in tinct
+        assert!(diags
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::WARNING)));
+    }
 }
 
 /// Validate that a string is a legal tinct identifier suitable for rename.
@@ -2979,11 +3148,38 @@ pub fn completion_at(
     let mut seen = HashSet::new();
     let mut items = Vec::new();
 
-    // Add dict entry keys from all visible scopes
-    if let Ok(ref file) = doc.ast {
-        for document in &file.node.documents {
-            for expr in &document.node.expressions {
-                collect_dict_keys_in_scope(&expr.node, expr.span, offset, &mut items, &mut seen);
+    // For markdown documents, check if we're in a tinct block
+    if !doc.literate_blocks.is_empty() {
+        let (block_idx, block_offset) =
+            match crate::literate::md_offset_to_block(&doc.literate_blocks, offset) {
+                Some(result) => result,
+                None => return items, // Outside tinct blocks — return empty
+            };
+        let block = &doc.literate_blocks[block_idx];
+
+        // Parse the block to get an AST
+        if let Ok(block_file) = crate::parser::parse(&block.code) {
+            for document in &block_file.node.documents {
+                for expr in &document.node.expressions {
+                    collect_dict_keys_in_scope(
+                        &expr.node,
+                        expr.span,
+                        block_offset,
+                        &mut items,
+                        &mut seen,
+                    );
+                }
+            }
+        }
+    } else {
+        // Regular .llt file path
+        if let Ok(ref file) = doc.ast {
+            for document in &file.node.documents {
+                for expr in &document.node.expressions {
+                    collect_dict_keys_in_scope(
+                        &expr.node, expr.span, offset, &mut items, &mut seen,
+                    );
+                }
             }
         }
     }

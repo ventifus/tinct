@@ -17,9 +17,12 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'llt' }],
+    documentSelector: [
+      { scheme: 'file', language: 'llt' },
+      { scheme: 'file', language: 'markdown' }
+    ],
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.llt'),
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{llt,md}'),
     },
   };
 
