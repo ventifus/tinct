@@ -6883,3 +6883,14 @@ Breaks the `value.rs → types.rs` circular dependency. `types.rs` → 4 new top
 - [x] Make `src/types.rs` a thin façade with pub use re-exports (`src/types.rs`)
 - [x] Add norm_ctxt: NormCtxt to InferState (`src/type_infer.rs`)
 - [x] Tests: 1860 lib + 40 corpus + 136 CLI + 37 LSP all pass (`tests/`)
+
+### chr-normalization: Add Type::TypeStageApp and the normalization subsystem
+
+- [x] Add `Type::TypeStageApp { fn_name: String, args: Vec<Type> }` to `src/type_def.rs`; conservative fallbacks at exhaustive match sites (is_subtype→false, is_consistent→true); recursive traversal in collect_type_vars, has_inference_vars, etc. (`src/type_def.rs`, `src/eval.rs`, `src/type_dict.rs`)
+- [x] Add `[kind: "type-stage-app" fn: String args: [...]]` to `type_to_dict`/`dict_to_type` (`src/type_dict.rs`)
+- [x] Implement `normalize(ty, subst, ctx)` in `src/type_normalize.rs`: apply substitution, TypeStageApp stub reduction, cycle detection, depth guard (max=64), cache (`src/type_normalize.rs`)
+- [x] Thread NormCtxt through `unify()`: normalize(a) and normalize(b) before match arms; NormCtxt::new() takes no args; subst passed explicitly (`src/type_unify.rs`)
+- [x] TypeStageApp unification: same-fn → pairwise args, different-fn → TypeError, vs concrete → defer to deferred_equalities, vs TypeVar → occurs-check through args (`src/type_unify.rs`)
+- [x] Add `deferred_equalities: Vec<(Type, Type)>` to InferState; `process_deferred_equalities()` fixed-point loop — returns (), uses .is_ok() to preserve invariant (`src/type_infer.rs`, `src/type_unify.rs`)
+- [x] Additive resolver path in `improve_functional_dependency`: check ClassDecl.resolver stub alongside existing `lookup_arithmetic_instance` fast path (`src/type_unify.rs`)
+- [x] 23 unit tests: normalize() identity/subst/cache/cycle/depth, has_type_stage_app, TypeStageApp PartialEq/Display, occurs-check test in type_unify_tests.rs (`src/type_normalize.rs`, `src/type_unify_tests.rs`)

@@ -445,16 +445,44 @@ fn improve_functional_dependency(
             continue;
         }
 
-        // All determining positions are ground - look up the instance
-        let result_type = lookup_arithmetic_instance(
-            class,
-            &det_types
-                .iter()
-                .map(|(_, _, ty)| ty.clone())
-                .collect::<Vec<_>>(),
-            state,
-            span,
-        )?;
+        // All determining positions are ground - look up the instance.
+        // Two paths:
+        // 1. EXISTING PATH: hardcoded lookup_arithmetic_instance for Add/Sub/Mul/Div
+        // 2. NEW PATH (additive): resolver-based lookup for classes with resolver names
+
+        // Check if this is a hardcoded arithmetic class (Add, Sub, Mul, Div)
+        let result_type = if matches!(class, "Add" | "Sub" | "Mul" | "Div") {
+            // Hardcoded arithmetic path — propagate errors
+            lookup_arithmetic_instance(
+                class,
+                &det_types
+                    .iter()
+                    .map(|(_, _, ty)| ty.clone())
+                    .collect::<Vec<_>>(),
+                state,
+                span,
+            )?
+        } else if let Some(class_decl) = state.class_env.get(class) {
+            // Not an arithmetic class — check for resolver
+            if class_decl.resolver.is_some() {
+                // STUB: Resolver evaluation will be implemented in chr-prelude sprint.
+                // For now, we can't improve via resolver, so skip this FD.
+                // The deferred_equalities mechanism handles this gracefully.
+                continue;
+            } else {
+                // No hardcoded instance and no resolver — this is an error
+                return Err(TypeError::new(
+                    format!(
+                        "no instance for {} (class not supported by MPTC lookup)",
+                        class
+                    ),
+                    span,
+                ));
+            }
+        } else {
+            // Class not found in class_env — should not happen
+            return Err(TypeError::new(format!("unknown class {}", class), span));
+        };
 
         // Unify each determined position with the result type
         for &ded_pos in ded_positions {
@@ -954,6 +982,13 @@ impl Substitution {
 
                 Cow::Owned(Type::App(Box::new(f_applied), Box::new(a_applied)))
             }
+            Type::TypeStageApp { fn_name, args } => Cow::Owned(Type::TypeStageApp {
+                fn_name: fn_name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.apply_type(arg, depth + 1, visited_types).into_owned())
+                    .collect(),
+            }),
             Type::Operator(name) => {
                 // Look up Operator variable in substitution map
                 if visited_types.contains(name) {
@@ -1211,6 +1246,13 @@ fn lower_levels_check_occurs(
         | Type::QuicDatagramHandle
         | Type::DatagramHandle
         | Type::Never => false,
+        Type::TypeStageApp { fn_name: _, args } => {
+            let mut found = false;
+            for arg in args {
+                found |= lower_levels_check_occurs(arg, occurs_name, cap_level, state);
+            }
+            found
+        }
     }
 }
 
@@ -1673,9 +1715,17 @@ pub fn unify(
     // Shared visited set avoids redundant allocation across both apply() calls.
     let mut visited_types = HashSet::new();
     let mut visited_rows = HashSet::new(); // kept for apply_with_visited API compatibility
-    let a = subst.apply_with_visited(a, &mut visited_types, &mut visited_rows);
+    let a_substituted = subst.apply_with_visited(a, &mut visited_types, &mut visited_rows);
     visited_types.clear();
-    let b = subst.apply_with_visited(b, &mut visited_types, &mut visited_rows);
+    let b_substituted = subst.apply_with_visited(b, &mut visited_types, &mut visited_rows);
+
+    // Normalize both types (for TypeStageApp reduction)
+    // subst is passed explicitly — NormCtxt no longer holds a reference to it, so there is
+    // no immutable borrow conflict with the mutable reference used in the match arms below.
+    let mut norm_ctx = crate::type_normalize::NormCtxt::new();
+    let a = crate::type_normalize::normalize(&a_substituted, subst, &mut norm_ctx);
+    let b = crate::type_normalize::normalize(&b_substituted, subst, &mut norm_ctx);
+    drop(norm_ctx);
 
     if a == b {
         return Ok(());
@@ -2102,6 +2152,54 @@ pub fn unify(
             bind_single_type_var_from_compound(&members, concrete, false, subst, state, span)
         }
 
+        // TypeStageApp unification cases (after normalization in chr-normalization sprint).
+        // Case 1: same function name -> pairwise unify args
+        (
+            Type::TypeStageApp {
+                fn_name: f1,
+                args: a1,
+            },
+            Type::TypeStageApp {
+                fn_name: f2,
+                args: a2,
+            },
+        ) if f1 == f2 => {
+            if a1.len() != a2.len() {
+                return Err(TypeError::new(
+                    format!(
+                        "TypeStageApp arity mismatch: {} expects {} args, got {}",
+                        f1,
+                        a1.len(),
+                        a2.len()
+                    ),
+                    span,
+                ));
+            }
+            for (arg1, arg2) in a1.iter().zip(a2.iter()) {
+                unify(arg1, arg2, subst, state, span)?;
+            }
+            Ok(())
+        }
+        // Case 2: different function names -> error
+        (Type::TypeStageApp { fn_name: f1, .. }, Type::TypeStageApp { fn_name: f2, .. }) => {
+            Err(TypeError::new(
+                format!(
+                    "cannot unify TypeStageApp with different resolvers: {} vs {}",
+                    f1, f2
+                ),
+                span,
+            ))
+        }
+        // Case 3: TypeStageApp vs concrete (non-TypeVar, non-Unknown, non-Top)
+        // Defer to process_deferred_equalities (no resolvers available yet in chr-normalization)
+        // In chr-prelude, this will attempt resolver evaluation before deferring
+        (Type::TypeStageApp { .. }, concrete) | (concrete, Type::TypeStageApp { .. })
+            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown | Type::Top) =>
+        {
+            state.deferred_equalities.push((a.clone(), b.clone()));
+            Ok(())
+        }
+
         // [U-SUBSUME]: concrete type subsumption fallback (Pierce & Turner 2000)
         // When both sides are ground types (no type variables), check the subtype
         // relation in both directions. Bidirectional because unification is symmetric --
@@ -2116,6 +2214,55 @@ pub fn unify(
         }
 
         _ => Err(TypeError::type_mismatch(&a, &b, span)),
+    }
+}
+
+/// Process deferred equality constraints for stuck TypeStageApp applications.
+///
+/// After a round of unification, try to resolve deferred equalities using a fixed-point loop:
+/// - Take all deferred equalities
+/// - Normalize both sides of each
+/// - If both sides are fully reduced (no TypeStageApp nodes), attempt unification
+/// - Otherwise, keep them deferred for the next round
+/// - Repeat until a full iteration produces no progress
+///
+/// Unification failures during an iteration are silently dropped (not propagated with `?`):
+/// if unification of a fully-reduced pair fails, that equality is discarded and the error
+/// will surface later when the affected type variable is used in a context that requires it.
+/// This preserves the fixed-point invariant — a single failure mid-iteration must not
+/// abort processing of remaining equalities that might still make progress.
+///
+/// (Unused until chr-prelude sprint implements resolvers that produce TypeStageApp)
+#[allow(dead_code)]
+pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitution, span: Span) {
+    let mut progress = true;
+    while progress {
+        progress = false;
+        let deferred = std::mem::take(&mut state.deferred_equalities);
+        if deferred.is_empty() {
+            break;
+        }
+        for (a, b) in deferred {
+            // Normalize both sides
+            let mut norm_ctx = crate::type_normalize::NormCtxt::new();
+            let a_norm = crate::type_normalize::normalize(&a, subst, &mut norm_ctx);
+            let b_norm = crate::type_normalize::normalize(&b, subst, &mut norm_ctx);
+            drop(norm_ctx);
+
+            if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
+                // Both sides fully reduced — attempt unification.
+                // Ignore failures: errors will surface later when the type variable is used.
+                // Crucially, do NOT use `?` here — a failure on one equality must not abort
+                // processing of the remaining equalities in this iteration.
+                if unify(&a_norm, &b_norm, subst, state, span).is_ok() {
+                    progress = true;
+                }
+                // If unification failed, discard this equality (don't re-defer it).
+            } else {
+                // Still stuck — keep deferred for the next iteration
+                state.deferred_equalities.push((a_norm, b_norm));
+            }
+        }
     }
 }
 

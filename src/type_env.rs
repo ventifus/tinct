@@ -169,6 +169,13 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
         Type::Negation(inner) => Type::Negation(Box::new(rename_single_type_var(
             inner, old_name, fresh_name, level,
         ))),
+        Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+            fn_name: fn_name.clone(),
+            args: args
+                .iter()
+                .map(|arg| rename_single_type_var(arg, old_name, fresh_name, level))
+                .collect(),
+        },
         // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
     }
@@ -789,6 +796,11 @@ fn collect_pretty_type_vars(ty: &Type, seen: &mut Vec<String>) {
             }
         }
         Type::Negation(inner) => collect_pretty_type_vars(inner, seen),
+        Type::TypeStageApp { fn_name: _, args } => {
+            for arg in args {
+                collect_pretty_type_vars(arg, seen);
+            }
+        }
         _ => {}
     }
 }
@@ -852,6 +864,14 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
             .collect::<Vec<_>>()
             .join(" & "),
         Type::Negation(inner) => format!("!{}", format_type_pretty(inner, rename)),
+        Type::TypeStageApp { fn_name, args } => {
+            let args_str = args
+                .iter()
+                .map(|arg| format_type_pretty(arg, rename))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}({})", fn_name, args_str)
+        }
         // All other types: fall back to Display (concrete types have no TypeVars to rename)
         other => other.to_string(),
     }

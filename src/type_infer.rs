@@ -152,6 +152,13 @@ pub struct InferState {
     /// Accumulated type diagnostics (warnings, hints).
     /// Populated during type inference and generalization, extracted by typecheck_file.
     pub diagnostics: Vec<crate::error::TypeDiagnostic>,
+    /// Deferred equality constraints for stuck TypeStageApp applications.
+    /// When a TypeStageApp has non-ground arguments or cannot be reduced, equality
+    /// constraints involving it are deferred here. After each round of unification,
+    /// process_deferred_equalities attempts to resolve them.
+    /// (Unused until chr-prelude sprint implements resolvers that produce TypeStageApp)
+    #[allow(dead_code)]
+    pub deferred_equalities: Vec<(Type, Type)>,
 }
 
 impl InferState {
@@ -311,6 +318,7 @@ impl InferState {
             current_function: None,
             expected_return: None,
             diagnostics: Vec::new(),
+            deferred_equalities: Vec::new(),
         }
     }
 
