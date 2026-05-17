@@ -57,7 +57,7 @@ source → [parse: syntactic only] → [transformation pass: user macros] → [t
 
 **The parser** handles syntax: bracket nesting, token classification, form recognition. It does not enforce semantic rules — that a `fn` parameter list must be `Expr::Let`, that `[let ...]` must appear in binding positions. The parser accepts `[fn anything body]` and produces `FnExpr { params: <whatever>, body: ... }`. It never hard-errors on semantic mismatches.
 
-**The transformation pass** runs next. User macros see the parser's output and reshape it. A `macro fn [let params:flat-list body]` macro intercepts `FnExpr` nodes whose params are not `Expr::Let` and wraps them. The type checker then sees conforming code.
+**The transformation pass** runs next. User macros see the parser's output and reshape it. A `macro fn [let params@Expr body@Expr]` macro (using `flatten-args`) intercepts `FnExpr` nodes whose params are not `Expr::Let` and wraps them. The type checker then sees conforming code.
 
 **The type checker** enforces semantic rules. `FnExpr` with non-`Let` params → type error. `[let ...]` absent from a binding position → type error. Semantic enforcement belongs here, not in the parser.
 
@@ -74,6 +74,10 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
 ```tinct
 # stdlib/ast.llt
 
+[type Entry
+  [KeyedEntry   key: Str  value: Expr]
+  [UnkeyedEntry value: Expr]]
+
 [type Annotation
   [Simple   name: Str]           # @Int, @Bool
   [PropDict entries: Seq@Entry]  # @[return: T  constraint: ...]
@@ -85,15 +89,15 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
   [VarRef     name: Str]
   [Call       func: Expr  args: Seq@Expr]
   [Annotated  expr: Expr  ann: Annotation]
-  [Literal    value: Any]                     # Int, Float, Str, Bool, Null scalars
+  [Literal    value: Top]                     # Top: any scalar (Int, Float, Str, Bool, Null)
   [Dict       entries: Seq@Entry]             # keyed dict
   [Seq        elements: Seq@Expr]             # positional sequence
-  [Fn         ann: Annotation  params: Expr  body: Expr]
+  [Fn         ann: Annotation  params: Expr  body: Expr]  # params is semantically a Let
+  [Macro      name: Str  params: Expr  body: Expr]        # params is semantically a Let
   [Quote      expr: Expr]
   [Unquote    expr: Expr]
   [UnquoteSplice expr: Seq@Expr]
   [Splice     forms: Seq@Expr]
-  [Macro      name: Str  params: Expr  body: Expr]   # params is a Let node
   [Placeholder]]
 
 # flatten-args: re-extract the flat element sequence from a bracket that the
@@ -101,27 +105,42 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
 # Used by let-softening macros and any macro that needs bracket elements.
 flatten-args: [fn [let node@Expr] -> Seq@Expr
   [match node
-    [case [let p: Call]   [prepend p.func p.args]]  # [x y z] → Call(x,[y,z]) → [x,y,z]
-    [case [let p: Let]    p.bindings]                # [let x y] → already flat
-    [case [let p: Seq]    p.elements]                # [$x $y] → positional seq
-    [case [let p: Dict]   [map [fn [let e] e.value] p.entries]]  # keyed dict → values
-    [case [let _]         [list node]]]]             # scalar → one-element seq
+    [case [let p: Call]   [cons p.func p.args]]   # [x y z] → Call(x,[y,z]) → [x,y,z]
+    [case [let p: Let]    p.bindings]              # [let x y] → already flat
+    [case [let p: Seq]    p.elements]              # [$x $y] → positional seq
+    [case [let p: Dict]   [map [fn [let e] e.value] p.entries]]  # empty [] or keyed dict → values
+    [case [let _]         [list node]]]]           # scalar → one-element seq
+
+# Note: the Dict arm is primarily for the empty bracket [] (an empty Dict in the parser).
+# A non-empty keyed dict [x: 1 y: 2] extracts only values, losing keys — but keyed dicts
+# are not valid parameter lists anyway; the type checker will reject them.
 ```
 
-Variant names match their keywords: `Fn` for `fn`, `Let` for `let`, `Case` for `case`, `Macro` for `macro`. No `Decl` suffix — there is only one `Let` and one `Macro` in the type.
+Variant names match their keywords. `Macro.params` and `Fn.params` are both typed as `Expr` in the AST, constrained semantically to `Let` by the type checker after macro expansion — the parser is permissive, the type checker enforces.
 
-`flatten-args` is the key helper for let-softening macros. It belongs in `stdlib/ast.llt` because it depends on the `Expr` type, but it is ordinary tinct code — not Rust infrastructure. Any user can write their own version or import it directly.
+`flatten-args` belongs in `stdlib/ast.llt` because it depends on the `Expr` type. It is ordinary tinct code — not Rust infrastructure. Any user can write their own version.
 
-`gensym` returns `VarRef(name: "prefix__N")` — a genuine `Expr` variant, not a string. `[unquote (gensym "x")]` in a quasiquote splices a `VarRef` node directly, in both binding and reference positions.
+**`gensym`** takes a prefix string and returns a `VarRef` — a genuine `Expr` identifier variant. The generated name uses `:` as the separator (a character in the lexer's denylist that cannot appear in user-written identifiers), guaranteeing structural impossibility of collision (Kohlbecker 1986):
 
-Macro bodies that annotate their parameters benefit from full type checking:
+```tinct
+[gensym "counter"]   # → VarRef(name: ":counter:42")
+[gensym "tmp"]       # → VarRef(name: ":tmp:43")
+```
+
+`[unquote (gensym "x")]` in a quasiquote splices a fresh `VarRef` identifier directly in any AST position — binding or reference. No special primitive needed.
+
+**`[quote expr]`** returns `Expr` — the AST node for `expr`. **`[unquote val]`** requires `val : Expr`; the type checker enforces this at each `[unquote ...]` site. A macro body must return `Expr`; returning any other type is a type error detected at macro definition time.
+
+**Materialization boundary.** Macro bodies run in the tinct evaluator, but the expander deep-materializes both the input AST (before calling the macro body) and the output (before passing to `dict_to_ast`). This means: (1) all Expr fields delivered to the macro body are already forced — no laziness at the input boundary; (2) the macro body's return value must be fully materializable — non-terminating thunks will hang the compiler. Lazy sequences (`Seq` from `$range` etc.) cannot be returned from a macro body.
+
+Macro bodies that annotate their parameters get full type checking:
 
 ```tinct
 [macro my-if [let cond@Expr  then@Expr  else@Expr]
   [quote [if [unquote cond] [unquote then] [unquote else]]]]
 ```
 
-Unannotated macro parameters are `Unknown` — gradual typing means they still compile; you just opt out of structural checking.
+Unannotated macro parameters receive a fresh `TypeVar` — same as unannotated `fn` parameters in HM inference. The type checker unifies the TypeVar against how the parameter is used in the body. Annotating with `@Expr` is equivalent to stating the constraint explicitly and enables structural match validation.
 
 ---
 
@@ -145,7 +164,9 @@ Unannotated macro parameters are `Unknown` — gradual typing means they still c
 Typed patterns constrain expected shapes:
 
 ```tinct
-[macro my-assert [let condition@Expr  message@Str]
+[macro my-assert [let condition@Expr  message@Literal]
+  # message@Literal: the argument must be a string literal AST node, not a runtime Str value.
+  # Macro params always receive Expr nodes; @Literal constrains which Expr variant is valid.
   [quote [if [unquote condition] true [error [unquote message]]]]]
 ```
 
@@ -176,16 +197,27 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 - Names introduced by `gensym` in the body are *macro-introduced* — they must not capture caller-scope variables.
 
 ```tinct
-[macro with-retry [let max-attempts body]
-  [counter: [gensym "counter"]]
-  # gensym returns a var-ref AST node — [unquote counter] splices it as an identifier
-  [quote [let [[[unquote counter]: 0]]
-    [while [< [unquote counter] [unquote max-attempts]]
-      [unquote body]
-      [set! [unquote counter] [+ [unquote counter] 1]]]]]]
+# swap: exchange two values, evaluating each exactly once.
+# gensym is necessary to avoid capturing the caller's `tmp` variable.
+[macro swap [let a@Expr  b@Expr]
+  [tmp: [gensym "tmp"]]
+  [quote [let [[[unquote tmp]: [unquote a]]]
+    [pair [unquote b] [unquote tmp]]]]]
 ```
 
-`counter` is gensym'd — macro-introduced. `max-attempts` and `body` are from the pattern — user-provided. `gensym` returns a `var-ref` AST node (`{type: "var-ref" name: "counter__42"}`), so `[unquote counter]` splices it as an identifier wherever it appears — binding position, reference position, anywhere. No special form needed. The distinction is syntactically explicit. Scope set activation (Phase 2) becomes straightforward: pattern-bound names carry the caller's scope; gensym names carry the macro's scope.
+```tinct
+# Without gensym — wrong if caller has a variable named "tmp":
+[let [tmp: 99]
+  [swap tmp [+ tmp 1]]]
+# Bad expansion: [let [[tmp: tmp]] [pair [+ tmp 1] tmp]]
+# "tmp" in the let binding captures the caller's 99 — shadowing
+
+# With gensym — safe:
+# Expansion: [let [[:tmp:42: tmp]] [pair [+ tmp 1] :tmp:42]]
+# :tmp:42 can never be written by the user (: is in the denylist)
+```
+
+`tmp` is gensym'd — macro-introduced, named `:tmp:42`. `a` and `b` are from the `[let ...]` pattern — user-provided. `gensym` returns `VarRef(name: ":tmp:42")`, so `[unquote tmp]` splices the fresh identifier directly in binding position and reference position. Scope set activation (Phase 2) becomes straightforward: pattern-bound names carry the caller's scope; gensym names carry the macro's scope.
 
 ---
 
@@ -226,7 +258,7 @@ A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A us
 
 **Pre-scan for registration.** `macro` declarations are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Any form with a `macro` declaration automatically gets neutral key handling from the parser — no duplicate-key enforcement — since the macro body handles structural validation.
 
-**Transformation to fixpoint.** The pass runs until no registered form names appear unvisited in the AST. A macro's output is re-visited. Depth limit 100 per site; total node-count cap 100k.
+**Transformation to fixpoint.** The expander walks the AST depth-first, re-expanding macro call outputs immediately. Expansion is bounded by a **total expansion depth limit of 100** (not per-site — the counter is shared across all expansion in a file) and a total node-count cap of 100k. These limits are practical bounds against infinite recursion; expansion termination is undecidable for procedural macros (Dybvig 1993). Both limits are configurable. The `Splice` variant is an expansion-time error if it appears in expression position — the expander checks this before continuing the walk.
 
 ---
 
@@ -247,7 +279,7 @@ Point: [type [x@Float  y@Float]]
 # Expands to: [instance Equal ...]  [instance Comparable ...]  Point: [type ...]
 ```
 
-At dict top level, each spliced form becomes a separate dict entry. In expression position, `splice` is a type error — multiple expressions where one is expected.
+At dict top level, each spliced form becomes a separate dict entry, each participating in the enclosing dict's letrec scope. In expression position, `splice` is an **expansion-time error** raised by the expander — `Splice` is an `Expr` variant and therefore invisible to the type checker, so enforcement must happen during the transformation pass before type-checking begins.
 
 ---
 
@@ -261,15 +293,21 @@ Macro bodies signal structured compile-time errors that point at source location
 ```
 
 ```tinct
-[macro pragma [let name:flat-list  value]
-  [if [not [= 1 [length name]]]
-    [macro-error [span-of name] "pragma name must be a single bare identifier"]
-    [if [not [literal? value]]
-      [macro-error [span-of value] "pragma value must be a literal"]
-      [list 'pragma [first name] value]]]]
+[macro pragma [let name@Expr  value@Expr]
+  [name-seq: [flatten-args name]]
+  [match [length name-seq]
+    [case 0  [macro-error [span-of name] "pragma name must be a single bare identifier"]]
+    [case 1
+      [match [first name-seq]
+        [case [let _ : VarRef]
+          [match value
+            [case [let _ : Literal]  [quote [pragma [unquote [first name-seq]] [unquote value]]]]
+            [case [let _]            [macro-error [span-of value] "pragma value must be a literal"]]]]
+        [case [let _]  [macro-error [span-of name] "pragma name must be a bare identifier"]]]]
+    [case [let _]  [macro-error [span-of name] "pragma: exactly one name allowed"]]]]
 ```
 
-`macro-error` raises a `CompileError` at the given span before type-checking. It is surfaced to the user with the same formatting as any other compile error.
+`macro-error` raises a `MacroError` (a new `ErrorKind` variant) at the given span. It is surfaced before type-checking with the same formatting as other compile errors. When a macro body throws a runtime error (not via `macro-error`), the expander wraps it with `macro_expansion` provenance — the error includes both the definition-site location and the call-site span, so the user sees where in the macro body the failure occurred.
 
 ---
 
@@ -294,8 +332,8 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 [first-or xs default]    # first element, or default if empty
 
 # Gensym and error
-[gensym prefix]          # returns VarRef(name: "prefix__N") — a fresh Expr identifier
-[macro-error span msg]   # terminate transformation with compile error at span
+[gensym prefix@Str]      # returns VarRef(name: ":prefix:N") — structurally unforgeable fresh identifier
+[macro-error span msg]   # terminate transformation with MacroError at span (expansion-time, not type-check-time)
 
 # Stdlib helpers
 [wrap-in-let elems]      # produce Let(bindings: elems) AST node
@@ -306,13 +344,19 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 ### Explicitly Out of Scope
 
-**`tokens` receive mode** — raw token sequences for embedded DSLs. No concrete tinct use case warrants the security exposure of raw token access. Deferred indefinitely.
+**`tokens` receive mode** — raw token sequences for embedded DSLs. No concrete tinct use case warrants the security exposure of raw token access. Excluded.
 
 **Infix operator registration** — requires hooks into the tokenizer, which is Rust-only by design. Tinct's bracket syntax makes infix operators unnecessary.
 
 **Compile-time type access** — macros run before type-checking and do not see inferred types. Interleaving expansion with type inference (Template Haskell's `reify`) would fundamentally complicate the pipeline. Excluded.
 
 **Character-level lexer hooks** — security exclusion. User code never touches the character stream.
+
+**Meta-macros (macro-generating macros)** — a `[macro ...]` declaration produced by macro expansion is not registered by the pre-scan (which runs before any expansion). A macro that expands to a `[macro ...]` form would produce an unregistered declaration; the inner macro would not be expanded. This is excluded from this design. If needed, it requires a multi-phase pre-scan with re-registration after each expansion pass.
+
+**Syntax classes** — Racket's `syntax-parse` provides declarative validation of argument shapes (e.g., `condition:expr` asserts "this must be a valid expression, not a binding list"). Tinct's `[match [length args] ...]` + `[match node ...]` in the body provides equivalent power with standard tinct code, at the cost of more macro body lines. Tinct's `Expr` nominal type and variant pattern matching cover the same cases; no separate syntax-class mechanism is needed.
+
+**Expansion order and confluence** — the expander uses top-down, left-to-right expansion order (standard for Racket/Scheme procedural macros). Procedural macros are inherently non-confluent: different expansion orders can produce different results. Top-down left-to-right is the canonical choice. Users relying on expansion-order-dependent behavior write non-portable macros.
 
 ---
 
@@ -362,7 +406,7 @@ Multi-arity is handled with `...args` variadic and `[match [length args] ...]` i
       [quote [if [unquote a] [unquote a] [my-or [unquote-splice rest]]]]]]]
 ```
 
-The zero-arg case returns `[quote false]` — the AST for literal `false`. The one-arg case returns `[first args]` directly — it's already an AST node. The many-arg case builds new AST and recurses.
+The zero-arg case returns `[quote false]` — the AST for literal `false`. The one-arg case returns `[first args]` directly — it's already an `Expr` AST node (the macro's return value is `Expr`). The many-arg case produces `[if a a ...]` — `a` appears twice, but in tinct's pure lazy evaluation, a thunk is materialized at most once regardless of reference count, so double-evaluation is semantically safe and carries no performance cost beyond the second lookup.
 
 ```tinct
 [my-or]              # → false
@@ -563,7 +607,12 @@ Point: [type [x@Float  y@Float]]
     [case 1
       [clause: [first clauses]]
       [match [first clause]
-        [case [let _ : VarRef]  [quote [unquote [second clause]]]]   # [else body]
+        [case [let [name: n] : VarRef]
+          [if [= n "else"]
+            [quote [unquote [second clause]]]          # [else body] — matches name "else" exactly
+            [quote [if [unquote [first clause]]        # [test body] where test happens to be a VarRef
+              [unquote [second clause]]
+              [error "cond: no matching clause"]]]]]
         [case [let _]
           [quote [if [unquote [first clause]]
             [unquote [second clause]]
@@ -593,32 +642,33 @@ Expansion trace:
 
 **Edge case — empty `cond`:** The zero-arm case returns a guaranteed runtime error rather than silently producing `null`. Matches Racket's behaviour.
 
-**Edge case — `else` detection:** `[else body]` is detected by checking if the first element of the clause is a `var-ref` named `"else"`. This uses `node.type` dispatch — consistent with how all macro bodies inspect AST structure. If `else` is not in scope, the type checker would flag it as an undefined variable; but `else` is imported from stdlib as a constant `true`, making `[else body]` equivalent to `[if true body (no-match)]`.
+**Edge case — `else` detection:** `[else body]` is detected by extracting the VarRef's `name` field and comparing to the string `"else"` — not by matching any VarRef (which would wrongly treat `[x body]` as an else clause). `else` is imported from stdlib as a constant `true`, making `[else body]` semantically equivalent to `[if true body ...]`.
 
-**Edge case — the fixpoint:** Each expansion step produces exactly one more `[if ...]` and one recursive `[cond ...]` call. The depth limit (100) bounds this. A `cond` with 101 clauses exceeds the limit and produces a macro depth error.
+**Edge case — the fixpoint:** Each expansion step produces one more `[if ...]` and one recursive `[cond ...]`. The total expansion depth limit (100 shared across all macros in the file) bounds this. A `cond` with many clauses may approach the limit; use `[match ...]` directly for very large dispatch tables.
 
 ---
 
 ### Complex 4: `pragma` — `macro-error` for Structural Validation
 
 ```tinct
-[macro pragma [let name:flat-list  value]
-  [match [length name]
+[macro pragma [let name@Expr  value@Expr]
+  [name-seq: [flatten-args name]]
+  [match [length name-seq]
     [case 0
       [macro-error [span-of name] "pragma: name required"]]
     [case 1
-      [match [get-or [first name] "type" null]
+      [match [first name-seq]
         [case [let _ : VarRef]
           [match value
-            [case [let _ : Literal]  [quote [pragma [unquote [first name]] [unquote value]]]]
+            [case [let _ : Literal]  [quote [pragma [unquote [first name-seq]] [unquote value]]]]
             [case [let _]            [macro-error [span-of value] "pragma value must be a literal"]]]]
         [case [let _]
-          [macro-error [span-of [first name]] "pragma name must be a bare identifier"]]]]
+          [macro-error [span-of [first name-seq]] "pragma name must be a bare identifier"]]]]
     [case [let _]
       [macro-error [span-of name] "pragma: exactly one name allowed"]]]]
 ```
 
-Each level of dispatch is a `[match ...]`: length (integer value), node type (string value), literalness (boolean). No `[if [not ...]]` chains — every branch is a case arm with its own arm body.
+Each level of dispatch is a `[match ...]` on `Expr` variants — no string field access. `name-seq` is the flattened name bracket; `value` is matched structurally to confirm it is a `Literal` variant.
 
 ```tinct
 [pragma optimize true]       # → [pragma optimize true]  ✓
@@ -648,43 +698,61 @@ Each error points at the exact source location of the violation: the macro uses 
 
 ### `src/expand.rs` — Parse-Stage Transformation Pass
 
-**Current:** Expansion pass handles `defmacro` post-parse.
-**Proposed:** Rename `defmacro` → `macro`. Add `splice` handling: when a macro returns `Expr::Splice(forms)`, inject into parent context. Update argument binding to use `[let ...]` pattern matching. No flat-list delivery mode — bracket unpacking is handled by `flatten-args` in the macro body itself.
-**Impact:** Moderate — splice handling and `[let ...]` pattern binding; simpler than previously designed (no delivery mode infrastructure).
+**Current:** Expansion pass handles `defmacro` post-parse, with lazy macro registration during the walk.
+**Proposed:** (1) Rename `defmacro` → `macro`. (2) Move macro registration to a pre-scan pass before the main expansion walk — all `Expr::MacroDecl` nodes in the parsed AST are evaluated and registered before any expansion begins. This changes scoping: macros are available throughout the file regardless of lexical position. (3) Add `splice` handling in `expand_document`: when a macro returns `Expr::Splice(forms)`, inject each form into the surrounding dict and re-expand. Splice in expression position is an expansion-time error (not a type error). (4) Update argument binding to use `[let ...]` pattern matching. (5) Deep-materialize both the input AST dict and the output before/after calling the macro body — macro bodies must return fully-groundable values (no lazy infinite sequences). (6) When macro bodies throw runtime errors (not `macro-error`), re-raise with `macro_expansion` provenance attached, preserving the definition-site span and stack frame. No flat-list delivery mode.
+**Impact:** Moderate — pre-scan registration, splice handling, `[let ...]` pattern binding, provenance propagation.
 
 ### `src/ast.rs` — New Variants
 
 ```rust
 Expr::MacroDecl {
     name: String,
-    params: Box<Spanned<Expr>>,   // Expr::LetDecl — same structure as fn params
+    params: Box<Spanned<Expr>>,   // same structure as Fn.params — a LetDecl node
     body: Box<Spanned<Expr>>,
 }
 
 Expr::Splice(Vec<Spanned<Expr>>)
 ```
 
-**Impact:** Minor — three new variants; exhaustive match arms updated mechanically.
+`Expr::MacroDecl` nodes are filtered from the post-expansion AST (same as `Expr::DefMacro` today) — they must not reach `typecheck.rs` or `eval.rs`. Every new `Expr` variant requires an arm in `eval.rs`, `typecheck.rs`, and `expand.rs`; `MacroDecl` and `Splice` should `panic!` or return an error in eval (expansion guarantees their removal).
+**Impact:** Minor — two new variants; exhaustive match arms updated mechanically; eval/typecheck arms for new variants reject unreachable cases.
 
 ### `src/typecheck.rs` — Semantic Enforcement for Binding Positions
 
 **Current:** `fn`/`class`/`type` param checking happens in the parser.
-**Proposed:** Move to `check_fn_expr`, `check_class_decl`, `check_type_alias`: if the first sub-expression is not `Expr::Let`, emit type error "parameter list must be a `[let ...]` binding declaration."
-**Impact:** Minor — enforcement moved, semantics unchanged.
+**Proposed:** Move to `check_fn_expr`, `check_class_decl`, `check_type_alias`: if the first sub-expression is not `Expr::Let`, emit type error "parameter list must be a `[let ...]` binding declaration." Also enforce: `[unquote val]` inside `[quote ...]` requires `val : Expr`; a macro body's inferred return type must be consistent with `Expr`.
+**Impact:** Minor — enforcement moved, plus quote/unquote type checking.
 
-### `stdlib/prelude.llt` — New AST Primitives
+### `src/error.rs` — `ErrorKind::MacroError`
 
-Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or`, `prepend` (sequence helpers).
-Add: `macro-error` as a Rust builtin (`ErrorKind::MacroError` with span).
-Add: `stdlib/ast.llt` — defines `Expr`, `Annotation`, `Entry` nominal types plus `flatten-args`. No `ReceiveMode` or `MacroParam` (no delivery modes — the macro system is uniform). No predicate functions — variant pattern matching replaces them.
-Update: `gensym` returns `VarRef(name: "prefix__N")` — a genuine `Expr` variant.
-Update: `ast_to_dict` produces typed `Expr` variant values. All existing AST consumers migrate to variant pattern matching.
-**Impact:** Minor — additive; simpler than prior design (no delivery mode infrastructure).
+Add `ErrorKind::MacroError { span: Span, message: String }` — distinct from `EvalError::user_error`. A `MacroError` surfaces before type-checking with the span pointing at the offending source location (from `[span-of ...]`). The existing `macro_expansion` provenance field on `EvalError` is used for runtime errors inside macro bodies: when a macro body throws an unexpected runtime error, the expander attaches the call-site span as `macro_expansion` provenance before propagating, so the user sees both where the macro was called and where in the body it failed.
+**Impact:** Minor — one new ErrorKind variant; integration with existing `macro_expansion` provenance field.
+
+### `stdlib/prelude.llt` — New Primitives and Breaking Changes
+
+Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or` (sequence helpers).
+Add: `macro-error` as a Rust builtin.
+**Breaking change — `gensym`:** The existing zero-arg `gensym` (returns a plain string like `:gensym:0`) is replaced by a one-arg `gensym prefix` that returns `VarRef(name: ":prefix:N")` — a genuine `Expr` variant. The `:` separator is in the lexer's denylist (structurally unforgeble). All call sites of `[gensym]` must migrate to `[gensym "name"]`. The existing corpus tests for `gensym` need migration.
+**Breaking change — `macro` keyword:** `macro` becomes a reserved keyword. Any existing code using `macro` as a variable name or dict key breaks. The existing 27 corpus test files in `tests/corpus/eval/macros/` using `defmacro` must migrate to `macro`.
+
+### `stdlib/ast.llt` (new file)
+
+Defines `Entry`, `Annotation`, and `Expr` nominal types plus the `flatten-args` helper. This file must be explicitly imported by macro-writing code: `[include %libdir "ast.llt"]`. Macro bodies that use `Expr` variant names (`Let`, `VarRef`, `Call`, etc.) without importing this file will get undefined-variable errors.
+**Impact:** New file, ~60 lines.
+
+### `ast_to_dict` — Typed Expr Variant Migration
+
+**Current:** `ast_to_dict` produces plain dicts with string `type:` fields: `{type: "var-ref" name: "x"}`.
+**Proposed:** Produces typed `Expr` variant values: `VarRef(name: "x")`, `Call(func: ..., args: [...])`, etc.
+**Impact: Major** — every existing AST consumer must migrate from string-type dispatch to variant pattern matching:
+- `stdlib/macros.llt` — `tmpl`, `do`, `begin` macros use `[get "type" node]` string equality (~15 node-building sites)
+- `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` — both dispatch on `{type: "..."}` string fields with wildcard fallbacks; all arms need migration; new arms needed for `Splice` and `MacroDecl`
+- `src/builtins_meta.rs` — `ast-of` constructs output in the old schema
 
 ### `stdlib/syntax.llt` (new file)
 
-`macro` declarations for fn/class/type let-softening, using `flatten-args` from `stdlib/ast.llt`. Available to any program that opts in via `[include %libdir "syntax.llt"]`. Not loaded by default — the core language remains strict without it. Mechanically identical to any user-written macro that imports `flatten-args` — `stdlib/syntax.llt` is not privileged.
-**Impact:** New file, ~30 lines.
+`macro` declarations for fn/class/type let-softening, using `flatten-args` from `stdlib/ast.llt`. Loading mechanism: the expander's pre-scan must execute `include %libdir "syntax.llt"` at file-load time (before parsing user code), not at runtime. This requires the pre-scan to resolve includes and evaluate their macro declarations. When a user's file starts with `[include %libdir "syntax.llt"]`, that include fires the pre-scan registration of the fn/class/type macros before any other form in the file is expanded.
+**Impact:** New file, ~30 lines; include-at-pre-scan mechanism is the non-trivial part.
 
 ---
 
@@ -701,5 +769,6 @@ Update: `ast_to_dict` produces typed `Expr` variant values. All existing AST con
 - Flatt, M. & PLT (2010). "Reference: Racket." §Syntax Classes (`syntax-parse`). — [declarative pattern declarations for macro arguments as the ergonomic foundation of the macro system; model for `[let ...]` patterns in `macro`]
 - Graham, P. (1993). *On Lisp.* Prentice Hall. — [macros as functions from code to code; macro body as ordinary program; the principle that all macro logic should live in the macro, not the infrastructure]
 - Kohlbecker, E., Friedman, D.P., Felleisen, M. & Duba, B. (1986). "Hygienic Macro Expansion." *LFP '86*, pp. 151–161. ACM. — [first formal definition of hygiene; gensym as minimal hygiene guarantee; structural impossibility of collision]
-- Dybvig, R.K., Hieb, R. & Bruggeman, C. (1993). "Syntactic Abstraction in Scheme." *Lisp and Symbolic Computation*, 5(4), 295–326. — [`syntax-case`: procedural macros with automatic hygiene via syntax objects; the model for scope-annotated binding]
+- Dybvig, R.K., Hieb, R. & Bruggeman, C. (1993). "Syntactic Abstraction in Scheme." *Lisp and Symbolic Computation*, 5(4), 295–326. — [`syntax-case`: procedural macros with automatic hygiene via syntax objects; expansion termination bounds; non-confluence of procedural macros]
+- Culpepper, R. & Felleisen, M. (2010). "Fortifying Macros." *Journal of Functional Programming*, 20(5-6), 517–549. — [syntax classes as the declarative validation layer over procedural macros; the ergonomic gap that tinct's `[match [length args] ...]` fills procedurally]
 - Krishnamurthi, S. (2001). "Linguistic Reuse." Ph.D. thesis, Rice University. — [syntactic abstraction and parse-time hooks as the mechanism for language extensibility from user code]
