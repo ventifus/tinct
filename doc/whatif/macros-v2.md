@@ -79,8 +79,6 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
   [PropDict entries: Seq@Entry]  # @[return: T  constraint: ...]
   Null]                          # no annotation
 
-[type ReceiveMode  Expr  FlatList]
-
 [type Expr
   [Let        bindings: Seq@Expr]
   [Case       pattern: Expr  body: Expr]
@@ -95,11 +93,24 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
   [Unquote    expr: Expr]
   [UnquoteSplice expr: Seq@Expr]
   [Splice     forms: Seq@Expr]
-  [Macro      name: Str  params: Seq@MacroParam  body: Expr]
+  [Macro      name: Str  params: Expr  body: Expr]   # params is a Let node
   [Placeholder]]
+
+# flatten-args: re-extract the flat element sequence from a bracket that the
+# parser has already interpreted (as a Call, Seq, Dict, or Let).
+# Used by let-softening macros and any macro that needs bracket elements.
+flatten-args: [fn [let node@Expr] -> Seq@Expr
+  [match node
+    [[case [let p: Call]]   [prepend p.func p.args]]  # [x y z] → Call(x,[y,z]) → [x,y,z]
+    [[case [let p: Let]]    p.bindings]                # [let x y] → already flat
+    [[case [let p: Seq]]    p.elements]                # [$x $y] → positional seq
+    [[case [let p: Dict]]   [map [fn [let e] e.value] p.entries]]  # keyed dict → values
+    [[case [let _]]         [list node]]]]             # scalar → one-element seq
 ```
 
-Variant names match their keywords: `Fn` for `fn`, `Let` for `let`, `Case` for `case`, `Macro` for `macro`. No `Decl` suffix needed — there is only one `Let` and one `Macro` in the type.
+Variant names match their keywords: `Fn` for `fn`, `Let` for `let`, `Case` for `case`, `Macro` for `macro`. No `Decl` suffix — there is only one `Let` and one `Macro` in the type.
+
+`flatten-args` is the key helper for let-softening macros. It belongs in `stdlib/ast.llt` because it depends on the `Expr` type, but it is ordinary tinct code — not Rust infrastructure. Any user can write their own version or import it directly.
 
 `gensym` returns `VarRef(name: "prefix__N")` — a genuine `Expr` variant, not a string. `[unquote (gensym "x")]` in a quasiquote splices a `VarRef` node directly, in both binding and reference positions.
 
@@ -172,61 +183,44 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 
 ---
 
-### Receive Modes — `param:flat-list`
+### Let-Softening via `flatten-args`
 
-All macro arguments default to `expr` mode: the argument is delivered as the fully-parsed AST node. For cases where the parser's call-semantics interpretation loses structure the macro needs, a parameter can declare a receive mode using `:mode` after the binding name — the same `:` position used for receive mode in the `[let ...]` binding (not a structural test, which is only valid in case arms):
+When the parser processes `[fn [x y] body]`, the inner bracket `[x y]` becomes `Call(VarRef("x"), [VarRef("y")])` — implied-call semantics applied at parse time. A macro that wants to treat `[x y]` as a parameter list needs the flat element sequence back.
 
-```tinct
-[macro name [let arg:receive-mode  ...] body]
-```
-
-Both `macro` and `macro` with receive modes are the **same form at the same pipeline stage** — both run in the transformation pass, post-parse and pre-typecheck. Receive modes only affect how specific arguments are re-processed before being handed to the macro body.
-
-**Receive modes:**
-
-| Mode | What the macro receives | When to use |
-|------|------------------------|-------------|
-| `expr` | Fully parsed expression (default — omit the annotation) | All ordinary cases |
-| `flat-list` | Bracket elements as a sequence, before call-semantics | When element structure matters more than call interpretation |
-
-`flat-list` is the key mode. `[x@Int y@Float]` parses as `Call(Annotated("x", Int), [Annotated("y", Float)])` in `expr` mode — the flat element sequence is gone. In `flat-list` mode, the transformation pass extracts the bracket's entries and delivers `[Annotated("x", Int), Annotated("y", Float)]` as a tinct `Seq`, regardless of how the parser interpreted the bracket form.
-
-**The fn let-softening macro:**
+`flatten-args` (defined in `stdlib/ast.llt`) recovers it. The fn-softening macro is then ordinary tinct code — no special delivery mode, no parser hooks:
 
 ```tinct
-# stdlib/syntax.llt — available to any program that opts in
-[macro fn [let params:flat-list@Seq@Expr  body@Expr]
-  [match [first-or params Null]
-    [[case [let _ : Let]]  [quote [fn [unquote params] [unquote body]]]]
-    [[case [let _]]            [quote [fn [let [unquote-splice params]] [unquote body]]]]]]
+# stdlib/syntax.llt — available to any program that opts in via [include %libdir "syntax.llt"]
 
-[macro class [let tvars:flat-list@Seq@Expr  ...body@Expr]
-  [match [first-or tvars Null]
-    [[case [let _ : Let]]  [quote [class [unquote tvars] [unquote-splice body]]]]
-    [[case [let _]]            [quote [class [let [unquote-splice tvars]] [unquote-splice body]]]]]]
+[macro fn [let params@Expr  body@Expr]
+  [match params
+    [[case [let _ : Let]]   [quote [fn [unquote params] [unquote body]]]]
+    [[case [let _]]
+      [flat: [flatten-args params]]
+      [quote [fn [let [unquote-splice flat]] [unquote body]]]]]]
 
-[macro type [let params:flat-list@Seq@Expr  body@Expr]
-  [match [first-or params Null]
-    [[case [let _ : Let]]  [quote [type [unquote params] [unquote body]]]]
-    [[case [let _]]            [quote [type [let [unquote-splice params]] [unquote body]]]]]]
+[macro class [let tvars@Expr  ...body@Expr]
+  [match tvars
+    [[case [let _ : Let]]   [quote [class [unquote tvars] [unquote-splice body]]]]
+    [[case [let _]]
+      [flat: [flatten-args tvars]]
+      [quote [class [let [unquote-splice flat]] [unquote-splice body]]]]]]
+
+[macro type [let params@Expr  body@Expr]
+  [match params
+    [[case [let _ : Let]]   [quote [type [unquote params] [unquote body]]]]
+    [[case [let _]]
+      [flat: [flatten-args params]]
+      [quote [type [let [unquote-splice flat]] [unquote body]]]]]]
 ```
 
-Each macro body is pure tinct. No Rust flags. No hardcoded transformation logic. The infrastructure provides delivery; all logic lives in the macro.
+`stdlib/syntax.llt` is not a privileged file. It is ordinary tinct code that happens to ship with the language. A user's own macro that does the same thing is indistinguishable from the stdlib version — `flatten-args` is available to everyone from `stdlib/ast.llt`. A user who wants softer syntax for their own DSL form writes exactly the same pattern, right in their own file.
 
-A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A user who does not gets a type error from the type checker. The language's position is strict; the macro system makes it extensible. The user — not the language designer — controls which ergonomic forms are available in their codebase.
+A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A user who does not gets a type error from the type checker. The language's position is strict; the macro system makes it extensible.
 
-**How the pass delivers `flat-list`.** For a registered form name, the transformation pass extracts the bracket's entries from whatever AST node the parser produced:
-- From a `Call` node: `[func, arg0, arg1, ...]` (func + all args as elements)
-- From a `Dict` node: the dict entries
-- From an `Expr::Let` node: the bindings (already flat — pass through unchanged)
-
-The resulting `Seq` is delivered to the macro body. The macro inspects and reshapes it, returning a new AST dict. The pass substitutes the original form with the result and continues.
-
-**Pre-scan for registration.** `macro` declarations with `:flat-list` parameters are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Stdlib declarations in `stdlib/syntax.llt` are always pre-loaded. Any form with a `macro` declaration automatically gets neutral key handling from the parser — no duplicate-key enforcement — since the macro body handles structural validation.
+**Pre-scan for registration.** `macro` declarations are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Any form with a `macro` declaration automatically gets neutral key handling from the parser — no duplicate-key enforcement — since the macro body handles structural validation.
 
 **Transformation to fixpoint.** The pass runs until no registered form names appear unvisited in the AST. A macro's output is re-visited. Depth limit 100 per site; total node-count cap 100k.
-
----
 
 ---
 
@@ -235,10 +229,10 @@ The resulting `Seq` is delivered to the macro body. The macro inspects and resha
 A macro returns `[splice form1 form2 ...]` to inject multiple forms into the surrounding context:
 
 ```tinct
-[macro derive [let targets:flat-list  ...body]
+[macro derive [let ...targets@Seq@Expr  body@Expr]
   [splice
     ...[map [fn [let target]
-              [quote [instance [unquote target] [unquote-splice body]]]]
+              [quote [instance [unquote target] [unquote body]]]]
            targets]]]
 
 # Usage:
@@ -414,20 +408,51 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 `stdlib/syntax.llt` (opt-in):
 
 ```tinct
-[macro fn [let params:flat-list@Seq@Expr  body@Expr]
-  [match [first-or params Null]
+[macro fn [let params@Expr  body@Expr]
+  [flat: [flatten-args params]]          # re-extract bracket elements
+  [match [first-or flat Null]
     [[case [let _ : Let]]  [quote [fn [unquote params] [unquote body]]]]
-    [[case [let _]]        [quote [fn [let [unquote-splice params]] [unquote body]]]]]]
+    [[case [let _]]        [quote [fn [let [unquote-splice flat]] [unquote body]]]]]]
 ```
 
-`first-or params Null` returns the first element, or `Null` if empty. The `[case [let _ : Let]]` arm matches if the first element is a `Let` variant (already has `[let ...]`). The wildcard catches `VarRef`, `Annotated`, `Null` (empty params), and anything else — all get wrapped.
+`flatten-args params` re-extracts the bracket elements — `Call(VarRef("x"), [VarRef("y")])` becomes `[VarRef("x"), VarRef("y")]`. `first-or flat Null` gets the first element. The `[case [let _ : Let]]` arm matches if params was already a `[let ...]` form. The wildcard catches everything else — `VarRef`, `Annotated`, `Null` (empty) — and wraps.
 
 **Case 1 — already has `[let ...]`:** Idempotent; pass through unchanged.
 
 ```tinct
 [fn [let x@Int y@Float] [+ x y]]
-# params flat-list: [Let(bindings: [Annotated(x, Int) Annotated(y, Float)])]
-# first → Let(...) → [case [let _ : Let]] matches → pass through
+# params = Let(bindings: [Annotated(x,Int)  Annotated(y,Float)])
+# flatten-args(Let(...)) → Let's bindings → [Annotated(x,Int) Annotated(y,Float)]
+# first → Annotated → but wait: params itself is a Let → first-or flat = Annotated(x,Int)
+# Hmm — actually: params IS the Let node; flatten-args returns its .bindings
+# first of bindings → Annotated(x,Int) → wildcard... no. Let's re-read.
+#
+# Actually: params = Let(...) → flatten-args → returns p.bindings (a Seq@Expr)
+# flat = [Annotated(x,Int)  Annotated(y,Float)]
+# first-or flat Null → Annotated(x,Int) → wildcard arm fires → wrap?
+#
+# That would be wrong. The check should be: is params ITSELF a Let?
+```
+
+The `flatten-args` design above has a subtlety: for the pass-through case, we need to detect that `params` is already a `Let` node, not just that its first element is a `Let`. The match should be on `params` directly before calling `flatten-args`:
+
+```tinct
+[macro fn [let params@Expr  body@Expr]
+  [match params
+    [[case [let _ : Let]]                          # params itself is [let ...] — pass through
+      [quote [fn [unquote params] [unquote body]]]]
+    [[case [let _]]                                # params is Call/Seq/etc — unpack and wrap
+      [flat: [flatten-args params]]
+      [quote [fn [let [unquote-splice flat]] [unquote body]]]]]]
+```
+
+This is the correct form. Match on `params` first; call `flatten-args` only in the wrapping branch.
+
+**Case 1 — already has `[let ...]`:** Idempotent; pass through unchanged.
+
+```tinct
+[fn [let x@Int y@Float] [+ x y]]
+# params = Let(bindings: [...])  →  [case [let _ : Let]] matches  →  pass through
 # → [fn [let x@Int y@Float] [+ x y]]  (unchanged)
 ```
 
@@ -435,8 +460,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [x y] [+ x y]]
-# params flat-list: [VarRef("x")  VarRef("y")]
-# first → VarRef("x") → wildcard arm → wrap
+# params = Call(VarRef("x"), [VarRef("y")])  →  wildcard arm
+# flatten-args(Call) → [VarRef("x")  VarRef("y")]
 # → [fn [let x y] [+ x y]]
 ```
 
@@ -444,8 +469,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [x@Int y@Float] [+ x y]]
-# params flat-list: [Annotated(VarRef("x"), Int)  Annotated(VarRef("y"), Float)]
-# first → Annotated(...) → wildcard arm → wrap
+# params = Call(Annotated(x,Int), [Annotated(y,Float)])  →  wildcard arm
+# flatten-args(Call) → [Annotated(x,Int)  Annotated(y,Float)]
 # → [fn [let x@Int y@Float] [+ x y]]
 ```
 
@@ -453,7 +478,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [] body]
-# params flat-list: []  →  first-or [] Null  →  Null → wildcard arm
+# params = Seq(elements: []) or Dict(entries: [])  →  wildcard arm
+# flatten-args(Seq/Dict) → []  →  [unquote-splice []] splices nothing
 # → [fn [let] body]
 ```
 
@@ -482,10 +508,10 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 ### Complex 2: `derive` — `splice` for Multi-Form Output
 
 ```tinct
-[macro derive [let targets:flat-list  ...body]
+[macro derive [let ...targets@Seq@Expr  body@Expr]
   [splice
     ...[map [fn [let target]
-              [quote [instance [unquote target] [unquote-splice body]]]]
+              [quote [instance [unquote target] [unquote body]]]]
            targets]]]
 ```
 
@@ -604,21 +630,21 @@ Each error points at the exact source location of the violation: the macro uses 
 ### `src/parser.rs` — Pre-Scan and Neutral Key Handling
 
 **Current:** Duplicate detection uses bare-name identity unconditionally. `fn`/`class`/`type` StackFrames enforce `Expr::Let`.
-**Proposed:** (1) A pre-scan pass collects `macro` declarations with `:flat-list` parameters before the main parse begins. (2) Any form with a `macro` declaration in scope gets neutral key handling — the parser does not apply bare-name duplicate detection for that form's argument positions. (3) `fn`/`class`/`type` StackFrames accept any first sub-expression without error (semantic enforcement moved to type checker).
+**Proposed:** (1) A pre-scan pass collects `macro` declarations before the main parse begins, building a registry of form names. (2) Any form with a `macro` declaration in scope gets neutral key handling — the parser does not apply bare-name duplicate detection for that form's argument positions. (3) `fn`/`class`/`type` StackFrames accept any first sub-expression without error (semantic enforcement moved to type checker).
 **Impact:** Moderate — pre-scan; neutral-key flag per form; StackFrame semantic checks removed.
 
 ### `src/expand.rs` — Parse-Stage Transformation Pass
 
 **Current:** Expansion pass handles `defmacro` post-parse.
-**Proposed:** Rename `defmacro` → `macro`. Extend the pass with receive mode support: when a `macro` declaration has parameters with `:flat-list` mode, re-deliver those arguments as flat element sequences before calling the macro body. Add `flat-list` delivery: extract bracket entries from the parsed AST node (Call args, Dict entries, Let bindings). Add `splice` handling: when a macro returns `Expr::Splice(forms)`, inject into parent context. Update argument binding to use `[let ...]` pattern matching.
-**Impact:** Moderate — new delivery logic and splice handling; integrates with existing expansion infrastructure.
+**Proposed:** Rename `defmacro` → `macro`. Add `splice` handling: when a macro returns `Expr::Splice(forms)`, inject into parent context. Update argument binding to use `[let ...]` pattern matching. No flat-list delivery mode — bracket unpacking is handled by `flatten-args` in the macro body itself.
+**Impact:** Moderate — splice handling and `[let ...]` pattern binding; simpler than previously designed (no delivery mode infrastructure).
 
 ### `src/ast.rs` — New Variants
 
 ```rust
 Expr::MacroDecl {
     name: String,
-    params: Vec<(String, ReceiveMode)>,   // ReceiveMode::Expr (default) or FlatList
+    params: Box<Spanned<Expr>>,   // Expr::LetDecl — same structure as fn params
     body: Box<Spanned<Expr>>,
 }
 
@@ -635,17 +661,17 @@ Expr::Splice(Vec<Spanned<Expr>>)
 
 ### `stdlib/prelude.llt` — New AST Primitives
 
-Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or` (sequence helpers).
+Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or`, `prepend` (sequence helpers).
 Add: `macro-error` as a Rust builtin (`ErrorKind::MacroError` with span).
-Add: `stdlib/ast.llt` — defines `Expr`, `Annotation`, `ReceiveMode`, `MacroParam`, `Entry` nominal types. Imported automatically in macro-writing contexts. No predicate functions (`literal?`, `var-ref?`, etc.) — variant pattern matching replaces them all.
-Update: `gensym` returns `VarRef(name: "prefix__N")` — a genuine `Expr` variant. `[unquote (gensym "x")]` splices a fresh identifier node directly; no special splicing primitive needed.
-Update: `ast_to_dict` produces typed `Expr` variant values rather than plain dicts with string `type:` fields. All existing code consuming AST dicts (`formatter/compact.llt`, `formatter/pretty.llt`, `ast-of`, macro bodies) migrates to variant pattern matching.
-**Impact:** Minor — additive.
+Add: `stdlib/ast.llt` — defines `Expr`, `Annotation`, `Entry` nominal types plus `flatten-args`. No `ReceiveMode` or `MacroParam` (no delivery modes — the macro system is uniform). No predicate functions — variant pattern matching replaces them.
+Update: `gensym` returns `VarRef(name: "prefix__N")` — a genuine `Expr` variant.
+Update: `ast_to_dict` produces typed `Expr` variant values. All existing AST consumers migrate to variant pattern matching.
+**Impact:** Minor — additive; simpler than prior design (no delivery mode infrastructure).
 
 ### `stdlib/syntax.llt` (new file)
 
-`macro` declarations for fn/class/type let-softening (using `:flat-list` receive mode), available to any program that opts in via `[include %libdir "syntax.llt"]`. Not loaded by default — the core language remains strict without it.
-**Impact:** New file, ~50 lines.
+`macro` declarations for fn/class/type let-softening, using `flatten-args` from `stdlib/ast.llt`. Available to any program that opts in via `[include %libdir "syntax.llt"]`. Not loaded by default — the core language remains strict without it. Mechanically identical to any user-written macro that imports `flatten-args` — `stdlib/syntax.llt` is not privileged.
+**Impact:** New file, ~30 lines.
 
 ---
 
