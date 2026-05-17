@@ -439,7 +439,7 @@ capabilities.
 Atomic write: on POSIX, temp file + rename. On S3, a single PUT
 request. On WebDAV, a PUT with `Content-Length`.
 
-**`list-dir fscap path → Seq@Dict`**
+**`list-dir fscap path → [Seq Dict]`**
 
 Returns a lazy `Seq` of entry dicts. Each entry contains at minimum:
 
@@ -836,10 +836,10 @@ explicitly). `stdlib/in/toml-lite.llt` is available as `-i toml-lite`.
   ]]
 
   FsCap: [type [
-    caps:       @Seq@Any
+    caps:       @[Seq Any]
     open:       [fn@Handle       [path@String]]
     write-file: [fn@Null         [path@String  content@[String Bytes]]]
-    list-dir:   [fn@Seq@DirEntry [path@String]]
+    list-dir:   [fn@[Seq DirEntry] [path@String]]
     stat:       [fn@StatResult   [path@String]]
     make-dir:   [fn@Null         [path@String]]
     remove:     [fn@Null         [path@String]]

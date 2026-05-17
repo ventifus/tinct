@@ -63,14 +63,14 @@ The `:` separator reads as "from" or "extracted via": `v: Ok` = "v from Ok's pay
 ```tinct
 [fn [let x@Int y@Float] [+ x y]]
 
-[fn [let xs@Seq@a  f@[Fn@b [a]]]
+[fn [let xs@[Seq a]  f@[Fn@b [a]]]
   [map f xs]]
 
 # Zero params — empty [let]
 [fn [let] 42]
 
 # Variadic
-[fn [let x@Int  ...rest@Seq@Int]
+[fn [let x@Int  ...rest@[Seq Int]]
   [+ x [sum rest]]]
 ```
 

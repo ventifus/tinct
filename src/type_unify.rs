@@ -268,6 +268,9 @@ fn is_superclass_of_impl(
 ///
 /// If no instance is found and the type is not in the fixed instance set,
 /// a type error is returned.
+///
+/// FD improvement recursion depth is tracked in `state.fd_depth` to prevent
+/// infinite loops through the improve_functional_dependency → unify cycle.
 fn check_constraints_on_var(
     var_name: &str,
     concrete_ty: &Type,
@@ -373,7 +376,34 @@ fn check_constraints_on_var(
 /// the determined positions with the instance's result types.
 ///
 /// For Add a b c with FD (a,b) → c: when both a and b are ground, resolve c from the instance table.
+/// Depth limit for functional dependency improvement recursion.
+/// Prevents infinite loops through the improve_functional_dependency → unify →
+/// check_constraints_on_var → improve_functional_dependency cycle.
+const MAX_FD_DEPTH: usize = 16;
+
 fn improve_functional_dependency(
+    class: &str,
+    vars: &[String],
+    fundeps: &[(Vec<usize>, Vec<usize>)],
+    bound_var: &str,
+    bound_type: &Type,
+    subst: &Substitution,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
+    // Depth guard: prevent infinite recursion through the FD improvement cycle.
+    if state.fd_depth >= MAX_FD_DEPTH {
+        return Ok(());
+    }
+    state.fd_depth += 1;
+    let result = improve_functional_dependency_inner(
+        class, vars, fundeps, bound_var, bound_type, subst, state, span,
+    );
+    state.fd_depth -= 1;
+    result
+}
+
+fn improve_functional_dependency_inner(
     class: &str,
     vars: &[String],
     fundeps: &[(Vec<usize>, Vec<usize>)],
@@ -505,6 +535,7 @@ fn improve_functional_dependency(
 }
 
 /// Instance lookup for multi-parameter type classes with functional dependencies.
+///
 /// Given the class name and the determining types, returns the determined type.
 ///
 /// Two-tier lookup:
@@ -598,7 +629,7 @@ fn lookup_arithmetic_instance(
     }
 }
 
-/// Helper to extract a type key for instance lookup
+/// Helper to extract a type key for instance lookup.
 fn type_key(ty: &Type) -> &'static str {
     match ty {
         Type::Int => "Int",
@@ -2235,19 +2266,23 @@ pub fn unify(
 /// (Unused until chr-prelude sprint implements resolvers that produce TypeStageApp)
 #[allow(dead_code)]
 pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitution, span: Span) {
+    let max_iterations = 100;
+    let mut iteration = 0;
     let mut progress = true;
-    while progress {
+    while progress && iteration < max_iterations {
+        iteration += 1;
         progress = false;
         let deferred = std::mem::take(&mut state.deferred_equalities);
         if deferred.is_empty() {
             break;
         }
+        // One NormCtxt per outer iteration: the resolver cache is shared across all
+        // equality pairs in this pass, amortizing the HashMap allocation cost.
+        let mut norm_ctx = crate::type_normalize::NormCtxt::new();
         for (a, b) in deferred {
             // Normalize both sides
-            let mut norm_ctx = crate::type_normalize::NormCtxt::new();
             let a_norm = crate::type_normalize::normalize(&a, subst, &mut norm_ctx);
             let b_norm = crate::type_normalize::normalize(&b, subst, &mut norm_ctx);
-            drop(norm_ctx);
 
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.

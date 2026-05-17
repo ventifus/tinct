@@ -49,21 +49,19 @@ annotation on `key`.
 ### Type Constructor Application in Annotation Positions
 
 In annotation positions, `[f a]` (square brackets without colons) denotes type
-constructor application when `f` is an Operator-kinded type variable or a user-defined
-parameterized type alias. Built-in type constructors (`Seq`, `Map`) keep their existing
-`@Seq@T`, `@Map@K@V` syntax:
+constructor application. All parameterized types use this form — including builtins:
 
 | Syntax | When valid | Meaning |
 |--------|-----------|---------|
 | `@[m a]` | `m` is an Operator type variable | Apply type constructor `m` to type `a` |
-| `@[m [Seq a]]` | `m` is an Operator type variable | `m` applied to `Seq a` (nested) |
+| `@[m [Seq a]]` | `m` is an Operator type variable | `m` applied to `[Seq a]` (nested) |
 | `@[MyAlias Int]` | `MyAlias` is a user parameterized type alias | Alias instantiation |
-| `@Seq@Int` | always | Builtin sequence of `Int` (existing syntax) |
+| `@[Seq Int]` | always | Sequence of `Int` |
+| `@[Map [String: Int]]` | always | Map from String to Int |
 | `@[key: T]` | always | Record type (has colon — not application) |
 
 The disambiguation rule: square brackets with at least one colon form a record type.
-Square brackets without colons are type application — valid only for Operator variables
-and user aliases, not for bare builtin names.
+Square brackets without colons are type application.
 
 ### Class and Instance Declarations
 

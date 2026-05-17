@@ -44,35 +44,35 @@ At the runtime level, all dicts are `Value::Dict`. At the type level, the type c
 
 **Record** — a dict whose field names are statically known. Annotated as `@[name: String  age: Int]`. The type checker tracks each field and its type precisely. `get` on a Record field with a known key returns the field type directly.
 
-**Map@[K: V]** — a homogeneous dict where all keys have type K and all values have type V. Annotated as `@Map@[K: V]` — the compact form reads as "map from K to V". Key type K must be `Int`, `Str`, or `Int | Str`. `get` on a `Map@[K: V]` returns `V | Null` (the key may be absent). Bare `@Map` means `Map@[Any: Any]`. The explicit named form `@Map@[key: K  value: V]` is also accepted when maximum clarity is needed.
+**Map@[K: V]** — a homogeneous dict where all keys have type K and all values have type V. Annotated as `@[Map [K: V]]` — the compact form reads as "map from K to V". Key type K must be `Int`, `Str`, or `Int | Str`. `get` on a `Map@[K: V]` returns `V | Null` (the key may be absent). Bare `@Map` means `Map@[Any: Any]`. The explicit named form `@[Map [key: K  value: V]]` is also accepted when maximum clarity is needed.
 
 **`Dict`** is the union of both — `@Dict` accepts either form.
 
 ```tinct
 # Named Record type alias — define once, use everywhere
-Config: [type Record@[host: String  port: Int]]
+Config: [type [record host: String  port: Int]]
 process: [fn [config@Config] ...]                              # using the alias
 
 # Inline annotation at the parameter or type-assertion site
-process: [fn [config@Record@[host: String  port: Int]] ...]   # parameter annotation
-validate: [fn [r] [@Record@[host: String  port: Int] r]]      # type assertion
+process: [fn [config@[host: String  port: Int]] ...]          # parameter annotation
+validate: [fn [r] [@[host: String  port: Int] r]]             # type assertion
 
 # Shorthand @[...] form also works for parameters (no collision with type/default/doc fields)
 process: [fn [config@[host: String  port: Int]] ...]
 
 # Map@T — "collection" perspective: key type irrelevant, you iterate over values
-T1: [type Record@[host: String  port: Int]]
-Hosts: [type Map@T1]                              # a bag of T1 values, any keys
+T1: [type [record host: String  port: Int]]
+Hosts: [type [Map T1]]                            # a bag of T1 values, any keys
 process-all: [fn [hosts@Hosts] [map do-work hosts]]
 
 # Map@[K: V] — "lookup" perspective: string-keyed lookup table
-Scoreboard: [type Map@[String: Int]]
+Scoreboard: [type [Map [String: Int]]]
 lookup: [fn@Int [s@Scoreboard  key@String] [get-or s key 0]]
 
 # Inline forms
-hosts@Map@T1                                      # collection of T1 values
-index@Map@[String: Any]                           # string-keyed, untyped values
-transitions@Map@[key: Int  value: Seq@Int]        # explicit named form
+hosts@[Map T1]                                    # collection of T1 values
+index@[Map [String: Any]]                         # string-keyed, untyped values
+transitions@[Map [key: Int  value: [Seq Int]]]    # explicit named form
 cache@Map                                         # bare: Map@[Any: Any]
 
 # Dict — either form accepted
