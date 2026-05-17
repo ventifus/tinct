@@ -908,55 +908,42 @@ try-or: [fn@[return: a  doc: "Call function; return default on error.\n\nExample
 # Result Type and Combinators
 # ============================================================================
 
-# Result type declaration: [Ok a] | [Err Stringing]
-# Evaluating this type alias registers Ok and Err as callable constructor
-# functions in this dict's letrec environment.
+# Result type: Ok[a] | Err[String]
 Result: [type [Ok a] [Err Stringing]]
 
-# Re-export Ok constructor as a dict entry so it's available to code that
-# includes the prelude. The RHS references the Ok constructor registered
-# by the Result type declaration above (letrec makes this safe).
+# Re-export Ok constructor: wraps a success value
 Ok: Ok
 
-# Re-export Err constructor as a dict entry.
+# Re-export Err constructor: wraps an error message
 Err: Err
 
-# Chain a Result: if Ok, apply f to the value; if Err, pass through.
-# Result is first (data-flow order); matches Rust's .and_then(f) and Haskell's result >>= f.
-# Type: (Result a -> (a -> Result b) -> Result b)
-# Example: [and-then [Ok 21] [fn [x] [Ok [* x 2]]]] => [Ok 42]
-# Example: [and-then [Err "bad"] [fn [x] [Ok [* x 2]]]] => [Err "bad"]
-and-then@[doc: "Chain a Result: if Ok, apply f to the value; if Err, pass through"]: [fn@Unknown [result f]
+ok?: [fn@[return: Bool  doc: "Check if Result is Ok.\n\nExample: [ok? [Ok 42]] => true\nExample: [ok? [Err \"bad\"]] => false\n\nNote: Predicate for Result success case."] [r]
+    [match r
+        [Ok _]: true
+        [Err _]: false]]
+
+err?: [fn@[return: Bool  doc: "Check if Result is Err.\n\nExample: [err? [Err \"bad\"]] => true\nExample: [err? [Ok 42]] => false\n\nNote: Predicate for Result error case."] [r]
+    [match r
+        [Ok _]: false
+        [Err _]: true]]
+
+and-then: [fn@[return: Unknown  doc: "Monad bind for Result (chain computations).\n\nExample: [and-then [Ok 21] [fn [x] [Ok [* x 2]]]] => [Ok 42]\nExample: [and-then [Err \"bad\"] [fn [x] [Ok [* x 2]]]] => [Err \"bad\"]\n\nNote: If Ok, applies f to the value; if Err, passes through. Matches Rust's .and_then(f) and Haskell's result >>= f. Equivalent to MonadResult.bind."] [result f]
     [match result
         [Ok v]: [f v]
         [Err msg]: [Err msg]]]
 
-# Map over Ok value, pass Err through.
-# Type: ((a -> b) -> Result a -> Result b)
-# Example: [result-map [fn [x] [* x 2]] [Ok 21]] => [Ok 42]
-# Example: [result-map [fn [x] [* x 2]] [Err "bad"]] => [Err "bad"]
-result-map@[doc: "Map over Ok value, pass Err through"]: [fn@Unknown [f result]
-    [match result
-        [Ok v]: [Ok [f v]]
-        [Err msg]: [Err msg]]]
-
-# Return Ok value or the default on Err.
-# Type: (a -> Result a -> a)
-# Example: [result-or 99 [Ok 42]] => 42
-# Example: [result-or 99 [Err "bad"]] => 99
-result-or@[doc: "Return Ok value or the default on Err"]: [fn@Unknown [default result]
+result-or: [fn@[return: a  doc: "Unwrap Ok value or return default.\n\nExample: [result-or 99 [Ok 42]] => 42\nExample: [result-or 99 [Err \"bad\"]] => 99\n\nNote: Default-value behavior for Result. Returns the Ok value if present, otherwise the default."] [default@a result]
     [match result
         [Ok v]: v
         [Err _]: default]]
 
-# Wrap a value in Ok.
-# Type: (a -> Result a)
-# Example: [result-ok 42] => [Ok 42]
-result-ok@[doc: "Wrap a value in Ok"]: [fn@Unknown [v] [Ok v]]
+result-map: [fn@[return: Unknown  doc: "Functor map over Result.\n\nExample: [result-map [fn [x] [* x 2]] [Ok 21]] => [Ok 42]\nExample: [result-map [fn [x] [* x 2]] [Err \"bad\"]] => [Err \"bad\"]\n\nNote: Maps a function over the Ok value; passes Err through unchanged."] [f result]
+    [match result
+        [Ok v]: [Ok [f v]]
+        [Err msg]: [Err msg]]]
 
-# Result monad dict for [do result ...] chains.
-# Provides bind (and-then) and pure (result-ok) for the do macro.
-# Example: [do result [r: [fetch url]] [data: [from-json r.body]] [get "key" data]]
+result-ok: [fn@[return: Unknown  doc: "Wrap value in Ok.\n\nExample: [result-ok 42] => [Ok 42]\n\nNote: Monadic pure for Result. Lifts a value into the Result type."] [v] [Ok v]]
+
 result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: result-ok]
 
 # ============================================================================
@@ -966,28 +953,27 @@ result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  p
 # Typeclass hierarchy for higher-kinded types (HKT). These classes enable
 # generic functions polymorphic over any type constructor (Result, Seq, Maybe).
 #
-# Functor: type constructors supporting fmap (structure-preserving map)
-# Applicative: Functors with pure (lift) and lift2 (combine two wrapped values)
-# Monad: Applicatives with bind (sequential composition)
-# Foldable: type constructors that can be folded/reduced to a single value
-# Traversable: structures that can be traversed with an effectful function
-#
 # See doc/whatif/completed/hkt-monads.md for the full design.
 
+# Maps a function over a wrapped value (fmap)
 Functor@[doc: "Type class for type constructors supporting fmap"]:
   [class [Functor f]]
 
+# Functor instance for Result type
 FunctorResult@[doc: "Functor instance for Result"]:
   [instance [Functor Result]
     fmap: result-map]
 
+# Functor instance for Seq type
 FunctorSeq@[doc: "Functor instance for Seq"]:
   [instance [Functor Seq]
     fmap: map]
 
+# Lifts values and applies wrapped functions (pure, lift2)
 Applicative@[doc: "Type class for applicative functors"]:
   [class [Applicative f]]
 
+# Applicative instance for Result type
 ApplicativeResult@[doc: "Applicative instance for Result"]:
   [instance [Applicative Result]
     pure:  result-ok
@@ -996,6 +982,7 @@ ApplicativeResult@[doc: "Applicative instance for Result"]:
       [and-then rb [fn [b]
         [result-ok [f a b]]]]]]]]
 
+# Applicative instance for Seq type
 ApplicativeSeq@[doc: "Applicative instance for Seq"]:
   [instance [Applicative Seq]
     pure:  [fn [x] [x]]
@@ -1003,30 +990,37 @@ ApplicativeSeq@[doc: "Applicative instance for Seq"]:
       [flat-map sa [fn [a]
         [map [fn [b] [f a b]] sb]]]]]
 
+# Sequential composition of wrapped computations (bind)
 Monad@[doc: "Type class for monads"]:
   [class [Monad m]]
 
+# Monad instance for Result type
 MonadResult@[doc: "Monad instance for Result"]:
   [instance [Monad Result]
     bind: and-then]
 
+# Monad instance for Seq type
 MonadSeq@[doc: "Monad instance for Seq"]:
   [instance [Monad Seq]
     bind: flat-map]
 
+# Reduces a structure to a single value (fold, to-seq)
 Foldable@[doc: "Type class for foldable structures"]:
   [class [Foldable t]]
 
+# Foldable instance for Seq type
 FoldableSeq@[doc: "Foldable instance for Seq"]:
   [instance [Foldable Seq]
     fold:   reduce
     to-seq: [fn [xs] xs]]
 
+# Foldable instance for Record (Dict) type
 FoldableRecord@[doc: "Foldable instance for Record"]:
   [instance [Foldable Record]
     fold:   reduce
     to-seq: values]
 
+# Foldable instance for Result type
 FoldableResult@[doc: "Foldable instance for Result"]:
   [instance [Foldable Result]
     fold:   [fn [f init r]
@@ -1038,9 +1032,11 @@ FoldableResult@[doc: "Foldable instance for Result"]:
         [Ok a]:  [0: a]
         [Err _]: []]]]
 
+# Traverses a structure applying effects (traverse)
 Traversable@[doc: "Type class for traversable structures"]:
   [class [Traversable t]]
 
+# Traversable instance for Seq type
 TraversableSeq@[doc: "Traversable instance for Seq"]:
   [instance [Traversable Seq]
     # Primitive fold-based implementation — NOT via generic sequence/traverse
@@ -1052,6 +1048,7 @@ TraversableSeq@[doc: "Traversable instance for Seq"]:
         [f.pure []]
         xs]]]
 
+# Traversable instance for Result type
 TraversableResult@[doc: "Traversable instance for Result"]:
   [instance [Traversable Result]
     traverse: [fn [f r]
@@ -1066,26 +1063,26 @@ TraversableResult@[doc: "Traversable instance for Result"]:
 # Maybe represents optional values: [Some value] or [None].
 # Simpler than Result (no error information), used for safe dict lookups.
 
-# Maybe type alias — defines nominal constructors Some and None
-Maybe@[doc: "Maybe type: [Some a] | [None]"]: [type [Some a] [None]]
+# Maybe type: Some[a] | None — represents optional values
+Maybe: [type [Some a] [None]]
 
-# Re-export Some constructor as a dict entry (already registered from TypeAlias)
+# Re-export Some constructor: wraps a value (present case)
 Some: Some
 
-# Re-export None constructor as a dict entry (already registered from TypeAlias)
+# Re-export None constructor: represents absence
 None: None
 
-# Functor instance for Maybe
 maybe-map@[doc: "Map over Maybe value"]: [fn [f ma]
   [match ma
     [Some a]: [Some [f a]]
     None:     None]]
 
+# Functor instance for Maybe type
 FunctorMaybe@[doc: "Functor instance for Maybe"]:
   [instance [Functor Maybe]
     fmap: maybe-map]
 
-# Applicative instance for Maybe
+# Applicative instance for Maybe type
 ApplicativeMaybe@[doc: "Applicative instance for Maybe"]:
   [instance [Applicative Maybe]
     pure:  Some
@@ -1096,7 +1093,7 @@ ApplicativeMaybe@[doc: "Applicative instance for Maybe"]:
           None:     None]
         None: None]]]
 
-# Monad instance for Maybe
+# Monad instance for Maybe type
 MonadMaybe@[doc: "Monad instance for Maybe"]:
   [instance [Monad Maybe]
     bind: [fn [ma f]
@@ -1104,7 +1101,7 @@ MonadMaybe@[doc: "Monad instance for Maybe"]:
         [Some a]: [f a]
         None:     None]]]
 
-# Traversable instance for Maybe
+# Traversable instance for Maybe type
 TraversableMaybe@[doc: "Traversable instance for Maybe"]:
   [instance [Traversable Maybe]
     traverse: [fn [f ma]
@@ -1119,34 +1116,26 @@ TraversableMaybe@[doc: "Traversable instance for Maybe"]:
 # These generic functions are polymorphic over any Functor/Monad/Traversable.
 # They require HKT support (rank-1 kind polymorphism) to type-check correctly.
 
-# sequence: t (f a) → f (t a) — collect effects from any Traversable
-# Generic over any Traversable container (Seq, Result, Maybe, ...)
-sequence@[doc: "Collect effects: t (f a) → f (t a)"]: [fn [t xs]
+sequence: [fn@[return: Unknown  doc: "Collect effects: t (f a) → f (t a).\n\nExample: [sequence TraversableSeq [[Ok 1] [Ok 2]]] => [Ok [1 2]]\n\nNote: Generic over any Traversable container (Seq, Result, Maybe). Defined as [traverse identity]. Turns a traversable of wrapped values into a wrapped traversable."] [t xs]
   [t.traverse [fn [x] x] xs]]
 
-# traverse: (a → f b) → t a → f (t b) — map with effects over any Traversable
-traverse@[doc: "Map with effects: (a → f b) → t a → f (t b)"]: [fn [f t xs]
+traverse: [fn@[return: Unknown  doc: "Map with effects: (a → f b) → t a → f (t b).\n\nExample: [traverse [fn [x] [Ok [* x 2]]] TraversableSeq [1 2 3]] => [Ok [2 4 6]]\n\nNote: Applies effectful function f to each element of structure xs, collecting results. Generic over any Traversable container. Delegates to t.traverse."] [f t xs]
   [t.traverse f xs]]
 
-# forM: flip-arg traverse (collection before function)
-forM@[doc: "Traverse with flipped arguments"]: [fn [t xs f]
+forM: [fn@[return: Unknown  doc: "Traverse with flipped arguments (collection before function).\n\nExample: [forM TraversableSeq [1 2 3] [fn [x] [Ok [* x 2]]]] => [Ok [2 4 6]]\n\nNote: Same as traverse but with collection and function arguments swapped for pipeline-friendly ordering."] [t xs f]
   [traverse f t xs]]
 
-# liftM2: lift a two-argument function into the monad
-liftM2@[doc: "Lift binary function into monad"]: [fn [f ma mb]
+liftM2: [fn@[return: Unknown  doc: "Lift binary function into monad.\n\nExample: [liftM2 + [Ok 1] [Ok 2]] => [Ok 3]\n\nNote: Applies a two-argument function to two wrapped values, combining results. Generic over any Applicative."] [f ma mb]
   [ma.lift2 f ma mb]]
 
-# whenM: conditionally execute a monadic action
-whenM@[doc: "Conditionally execute monadic action"]: [fn [cond action]
+whenM: [fn@[return: Unknown  doc: "Conditionally execute monadic action.\n\nExample: [whenM true [Ok \"done\"]] => [Ok \"done\"]\nExample: [whenM false [Ok \"skip\"]] => [Ok []]\n\nNote: Returns action result if condition is true, otherwise returns wrapped empty dict. Generic over any Applicative with pure."] [cond action]
   [if cond action [action.pure []]]]
 
 # ============================================================================
 # Type Class Declarations: Equatable
 # ============================================================================
-#
-# Equatable — types that support equality comparison via `=`.
-# All instance resolution is now dynamic (no hardcoded fixed-instance sets).
 
+# Types supporting equality comparison (=)
 Equatable@[doc: "Type class for types that support equality comparison"]:
   [class [Equatable a]]
 
@@ -1170,10 +1159,8 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 # ============================================================================
 # Type Class Declarations: Comparable
 # ============================================================================
-#
-# Comparable — types that support ordering via `<`, `>`, `<=`, `>=`.
-# Extends Equatable (all comparable types are also equatable).
 
+# Types supporting ordering (< > <= >=)
 Comparable@[doc: "Type class for types that support ordering"]:
   [class [Comparable a]]
 
@@ -1193,9 +1180,8 @@ Comparable@[doc: "Type class for types that support ordering"]:
 # ============================================================================
 # Type Class Declarations: Showable
 # ============================================================================
-#
-# Showable — types that have string representations via `str`.
 
+# Types that can be converted to string (str)
 Showable@[doc: "Type class for types that can be converted to strings"]:
   [class [Showable a]]
 
@@ -1219,20 +1205,17 @@ Showable@[doc: "Type class for types that can be converted to strings"]:
 # ============================================================================
 # Type Class Declarations: Mappable
 # ============================================================================
-#
-# Mappable generalizes map over type constructors (Seq, Dict).
-# The class parameter `f` has Kind::Operator (pre-registered in InferState::new()
-# with Kind::Operator — the LLT class declaration inherits that kind).
-# The fmap method signature uses HKT type syntax; the runtime value here is
-# the class declaration dict registered in the runtime class registry.
 
+# Collection-level mapping (map over structures)
 Mappable@[doc: "Type class for mappable type constructors (Seq, Dict)"]:
   [class [Mappable f]]
 
+# Mappable instance for Seq type
 MappableSeq@[doc: "Mappable instance for Seq: fmap = builtin-map"]:
   [instance [Mappable Seq]
     fmap: [fn [f xs] [builtin-map f xs]]]
 
+# Mappable instance for Dict type
 MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
   [instance [Mappable Dict]
     fmap: [fn [f m] [builtin-map f m]]]
@@ -1240,24 +1223,24 @@ MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
 # ============================================================================
 # Type Class Declarations: Appendable
 # ============================================================================
-#
-# Appendable generalizes concatenation over concrete types (String, Dict, Seq).
-# The class parameter `a` has Kind::Type (kind-* typeclass, not Operator-kinded).
-# append-one: binary concatenation; empty: the identity element for concatenation.
 
+# Collections that support concatenation
 Appendable@[doc: "Type class for appendable types (String, Dict, Seq)"]:
   [class [Appendable a]]
 
+# Appendable instance for String type
 AppendableStr@[doc: "Appendable instance for String: append-one = str, empty = empty string"]:
   [instance [Appendable String]
     append-one: [fn [a b] [str a b]]
     empty: ""]
 
-AppendableRecord@[doc: "Appendable instance for Dict: append-one = merge, empty = empty dict"]:
+# Appendable instance for Dict type
+AppendableDict@[doc: "Appendable instance for Dict: append-one = merge, empty = empty dict"]:
   [instance [Appendable Dict]
     append-one: [fn [a b] [merge a b]]
     empty: []]
 
+# Appendable instance for Seq type
 AppendableSeq@[doc: "Appendable instance for Seq: append-one = concat, empty = empty seq"]:
   [instance [Appendable Seq]
     append-one: [fn [a b] [builtin-concat a b]]

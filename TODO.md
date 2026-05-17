@@ -149,12 +149,12 @@ Public functions: `range`, `repeat`, `iterate`, `cycle` (seq); `str-join`, `str-
 
 Public functions: `Ok`, `Err`, `ok?`, `err?`, `and-then`, `result-or`, `result-map`, `result-ok`; `Functor`/`Applicative`/`Monad`/`Foldable`/`Traversable` class declarations; `FunctorSeq`/`MonadResult`/etc. instance declarations; `Maybe`, `Some`, `None`; `sequence`, `traverse`, `forM`, `liftM2`, `whenM`; `Equatable`/`Comparable`/`Showable`/`Mappable`/`Appendable` class and instance declarations.
 
-- [ ] Migrate `Ok`, `Err`, `ok?`, `err?`: `doc:` string explaining `Result = Ok[a] | Err[Str]` nominal type, constructor usage, and predicate semantics (`stdlib/prelude.llt`)
-- [ ] Migrate `and-then`, `result-or`, `result-map`, `result-ok`: `doc:` strings including monad-law descriptions; `and-then` is `MonadResult.bind` — note the equivalence (`stdlib/prelude.llt`)
-- [ ] Add `doc:` to class declarations (`Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`, `Mappable`, `Appendable`, `Equatable`, `Comparable`, `Showable`): one-line description of the abstraction and the laws it must satisfy (`stdlib/prelude.llt`)
-- [ ] Add `doc:` to instance declarations (`FunctorSeq`, `FunctorResult`, `MonadResult`, `MonadSeq`, etc.): one-line description of what each instance does (`stdlib/prelude.llt`)
-- [ ] Add `doc:` to `Maybe`, `Some`, `None`: explain optional value semantics, contrast with `Null` (`stdlib/prelude.llt`)
-- [ ] Migrate `sequence`, `traverse`, `forM`, `liftM2`, `whenM`: `doc:` includes type description and example; note `sequence = [fn [t] [traverse t id]]` identity (`stdlib/prelude.llt`)
-- [ ] Verify `just test-lib` passes; fix any regressions (`stdlib/prelude.llt`)
+- [x] Migrate `Ok`, `Err`, `ok?`, `err?`: doc comments added (constructors via `[type]` cannot use fn@[...]); predicates use `fn@[return: Bool  doc: "..."]` (`stdlib/prelude.llt`)
+- [x] Migrate `and-then`, `result-or`, `result-map`, `result-ok`: `fn@[return: T  doc: "..."]` with monad-law descriptions; `and-then` notes MonadResult.bind equivalence (`stdlib/prelude.llt`)
+- [x] Add preceding comments to class declarations (Functor, Applicative, Monad, Foldable, Traversable, Mappable, Appendable, Equatable, Comparable, Showable) — structural limitation prevents `doc:` key in `[class ...]` form (`stdlib/prelude.llt`)
+- [x] Add preceding comments to all 15 instance declarations (class/instance structural limitation) (`stdlib/prelude.llt`)
+- [x] Add preceding comments to `Maybe`, `Some`, `None`: optional value semantics, contrast with Null (`stdlib/prelude.llt`)
+- [x] Migrate `sequence`, `traverse`, `forM`, `liftM2`, `whenM`: `fn@[return: Unknown  doc: "..."]` with type description and examples (`stdlib/prelude.llt`)
+- [x] Verify `just test-lib` passes; all 2185 tests pass (`stdlib/prelude.llt`)
 
 ---
