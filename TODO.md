@@ -194,6 +194,70 @@ tinct code portion: embedded source.llt (unchanged)
 - [ ] Add `vsce package` to `just ext` and confirm the `.vsix` includes the new grammar
   files (`justfile`, `integrations/vscode/`)
 
+### vscode-markdown-lsp: LSP hover/completion/diagnostics inside ```tinct blocks in markdown
+
+**Depends on:** `literate-flags` — adds `=== info` label and corpus-in-markdown format.
+
+Implementation: **Option B — server-side markdown support** in `tinct lsp`. This is the
+correct approach because `tinct lsp` and `tinct literate` are siblings in the same binary,
+sharing `src/literate.rs`. The LSP server reuses `extract_code_blocks` directly rather
+than duplicating position-mapping logic in TypeScript.
+
+In VS Code, multiple LSP servers for the same file type are additive, not exclusive —
+the built-in markdown support (link completion, preview, header folding) is unaffected.
+`tinct lsp` returns `null` for positions outside tinct blocks (files with no tinct content
+cost a few microseconds). The extension simply adds `.md` to its `DocumentSelector`.
+
+The `===` section markers are handled naturally: the server already parses blocks by
+splitting on `===` (via literate mode), so the code portion is extracted correctly before
+any LSP analysis.
+
+**Shared infrastructure first** — before adding LSP support, factor the literate
+machinery out of `src/main.rs` into `src/literate.rs` as a proper library API. Both
+`tinct literate` (CLI) and `tinct lsp` consume this API; neither reimplements it.
+
+Core types and functions to expose from `src/literate.rs`:
+
+```rust
+pub struct LiterateBlock {
+    pub code: String,               // tinct source (before first === line)
+    pub expectations: Expectations, // === out/warn/info/error sections
+    pub md_start: usize,            // byte offset of ``` fence in markdown
+    pub md_code_start: usize,       // byte offset of first code line
+    pub md_code_end: usize,         // byte offset of closing ``` fence
+}
+
+pub fn extract_blocks(markdown: &str) -> Vec<LiterateBlock>;
+
+// Position mapping — shared by CLI (weave span annotation) and LSP (hover/diagnostics)
+pub fn md_offset_to_block(blocks: &[LiterateBlock], md_offset: usize)
+    -> Option<(usize, usize)>;  // (block_index, block_relative_offset)
+pub fn block_span_to_md(blocks: &[LiterateBlock], block_idx: usize, span: Span) -> Span;
+```
+
+Evaluation stays in `src/main.rs` (CLI path). LSP analysis stays in `src/lsp/`. Only the
+block extraction and position mapping live in `src/literate.rs` — the shared kernel.
+
+- [ ] Refactor `src/literate.rs`: define `LiterateBlock`, `extract_blocks`,
+  `md_offset_to_block`, `block_span_to_md`; move block extraction logic out of
+  `run_literate_weave`/`run_literate_eval` in `src/main.rs` (`src/literate.rs`,
+  `src/main.rs`)
+- [ ] Add `===` section parsing to `LiterateBlock.expectations` — reuse
+  `TestExpectations` or factor a shared `Expectations` type; both corpus tests and
+  literate mode use the same parser (`src/literate.rs`, `tests/corpus_tests.rs`)
+- [ ] Extend `tinct lsp` to accept `textDocument/didOpen`/`didChange` for `.md` files;
+  call `literate::extract_blocks` and cache `Vec<LiterateBlock>` per document
+  (`src/lsp/`, `src/literate.rs`)
+- [ ] Handle `textDocument/hover` for `.md`: `md_offset_to_block` → run existing hover
+  analysis on `block.code` at block-relative position → `block_span_to_md` for response
+  span (`src/lsp/analysis.rs`, `src/literate.rs`)
+- [ ] Handle `textDocument/publishDiagnostics` for `.md`: collect diagnostics from block
+  typecheck, `block_span_to_md` each span to markdown coordinates (`src/lsp/`)
+- [ ] Add `{ language: 'markdown' }` to the extension's `DocumentSelector`; no other
+  extension changes needed (`integrations/vscode/package.json`)
+- [ ] Handle completion for `.md` (lower priority); preview hover requires webview bridge
+  (lower priority) (`src/lsp/`, `integrations/vscode/`)
+
 ---
 
 ## Prelude Annotation Modernization
@@ -218,18 +282,18 @@ parse error diagnostics via `format_parse_error`. Currently literate mode uses b
 formatting and type errors are non-fatal. Needed for `git diff --exit-code` CI gate to
 catch type regressions in doc examples, not just parse failures.
 
-- [ ] Add `--strict` flag to `tinct literate` subcommand; wire to the same `strict: bool`
+- [x] Add `--strict` flag to `tinct literate` subcommand; wire to the same `strict: bool`
   path used by `run_eval` (`src/main.rs`)
-- [ ] Use `format_parse_error` for parse errors in literate strict mode (`src/main.rs`,
+- [x] Use `format_parse_error` for parse errors in literate strict mode (`src/main.rs`,
   `src/parser.rs`)
-- [ ] Update `just doc` justfile target to pass `--strict` (`justfile`)
+- [x] Update `just doc` justfile target to pass `--strict` (`justfile`)
 
 **`-i` / `--in-place`** — write weaved output back to the source file atomically instead
 of stdout. Replaces the fragile `> tmp && mv` shell idiom in `just doc`.
 
-- [ ] Add `-i` / `--in-place` flag to `tinct literate weave`; write to `.tmp` then rename
+- [x] Add `-i` / `--in-place` flag to `tinct literate weave`; write to `.tmp` then rename
   (`src/main.rs`)
-- [ ] Update `just doc` justfile target to use `tinct literate weave --strict -i doc/*.md`
+- [x] Update `just doc` justfile target to use `tinct literate weave --strict -i doc/*.md`
   (`justfile`)
 
 **Corpus-test format inside code blocks** — use the same `=== out` / `=== warn` /
@@ -263,19 +327,19 @@ Replaces the previous `<!-- tinct-result: ... -->` HTML comment approach.
 `===` sections pass vacuously (allows incremental annotation). Exits 0 if all annotated
 blocks match, exits 1 with a diff-style report if any mismatch.
 
-- [ ] Extend `literate::extract_code_blocks` (or add a new extractor) to split each block
+- [x] Extend `literate::extract_code_blocks` (or add a new extractor) to split each block
   on `===` markers, returning `(code: &str, expectations: TestExpectations)` — reuse
   `TestExpectations` from `tests/corpus_tests.rs` or factor into `src/literate.rs`
   (`src/literate.rs`, `tests/corpus_tests.rs`)
-- [ ] Update `run_literate_weave --in-place` to evaluate code portion and update/insert
+- [x] Update `run_literate_weave --in-place` to evaluate code portion and update/insert
   `=== out`, `=== warn`, `=== info` sections in-place; remove the old
   `<!-- tinct-result: ... -->` HTML comment output (`src/main.rs`)
-- [ ] Add `--verify` flag to `tinct literate weave`; compare actual against expected
+- [x] Add `--verify` flag to `tinct literate weave`; compare actual against expected
   sections; exit 1 with diff-style details on mismatch; blocks without `===` pass
   vacuously (`src/main.rs`)
-- [ ] Add `=== info` as a new section label alongside `=== out`/`=== warn`/`=== error`
+- [x] Add `=== info` as a new section label alongside `=== out`/`=== warn`/`=== error`
   in the corpus test parsing infrastructure (`tests/corpus_tests.rs`, `src/literate.rs`)
-- [ ] Update `doc/09-documents.md` §Weave Mode with the new block format and `--verify`
+- [x] Update `doc/09-documents.md` §Weave Mode with the new block format and `--verify`
   flag; update §Corpus Test Format to note `=== info` (`doc/09-documents.md`,
   `doc/12-tooling.md`)
 
@@ -288,11 +352,11 @@ output even when examples break.
 Orthogonal to `--strict` (typecheck phase) and `--verify` (comparison phase). `just doc-verify`
 uses both `--strict` and `--fail-on-errors`.
 
-- [ ] Make embedding errors the default in `run_literate_weave`; on block evaluation error,
+- [x] Make embedding errors the default in `run_literate_weave`; on block evaluation error,
   write error text to `=== error` section and continue; return exit 0 (`src/main.rs`)
-- [ ] Add `--fail-on-errors` flag; when set, any evaluation error exits 1 immediately
+- [x] Add `--fail-on-errors` flag; when set, any evaluation error exits 1 immediately
   instead of embedding (`src/main.rs`)
-- [ ] Update `just doc-verify` in justfile to use `--strict --fail-on-errors --verify`
+- [x] Update `just doc-verify` in justfile to use `--strict --fail-on-errors --verify`
   (`justfile`)
 
 **Fixed ClockCap from file mtime** — `%clock` is always available in literate programs,
@@ -300,7 +364,7 @@ set to a fixed ClockCap derived from the source markdown file's mtime. This make
 output deterministic: the same file always produces the same output regardless of when
 `just doc` runs, which is essential for `git diff --exit-code` to be stable.
 
-- [ ] In `tinct literate`, read the source file's mtime at startup; inject it as a fixed
+- [x] In `tinct literate`, read the source file's mtime at startup; inject it as a fixed
   ClockCap (`--cap-clock-fixed`) rather than the live system clock (`src/main.rs`)
 
 **Capability flags and `--no-pwd`** — `--cap-fs` and `--cap-net` work identically to
@@ -310,12 +374,12 @@ current working directory is granted. Code blocks cannot access CWD-relative fil
 all filesystem access must be through explicit `--cap-fs` grants. This prevents a
 markdown file being processed from accidentally reading or writing local files.
 
-- [ ] Hard-code `--no-pwd` and `--no-env` into `tinct literate`: never inject an implicit
+- [x] Hard-code `--no-pwd` and `--no-env` into `tinct literate`: never inject an implicit
   CWD-based DirCap, and `env-var` always returns `Err` (no environment variable access)
   regardless of flags (`src/main.rs`)
-- [ ] Expose `--cap-fs name=path:mode` and `--cap-net name=host:port` on `tinct literate`
+- [x] Expose `--cap-fs name=path:mode` and `--cap-net name=host:port` on `tinct literate`
   subcommand; wire to the same cap-grant machinery as `tinct run` (`src/main.rs`)
-- [ ] Document in `doc/12-tooling.md` §Literate Mode: all flags, fixed-clock semantics,
+- [x] Document in `doc/12-tooling.md` §Literate Mode: all flags, fixed-clock semantics,
   `--no-pwd` always-on, and `--errors-in-doc` use case (`doc/12-tooling.md`)
 
 ---

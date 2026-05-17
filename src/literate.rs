@@ -113,6 +113,142 @@ pub fn tangle(blocks: Vec<String>) -> String {
     blocks.join("\n---\n")
 }
 
+/// Expected output sections from a code block.
+#[derive(Debug, Clone)]
+pub struct BlockExpectations {
+    /// Expected standard output (from `=== out` section).
+    pub out: Option<String>,
+    /// Expected warnings (from `=== warn` section).
+    pub warn: Option<String>,
+    /// Expected error substring (from `=== error` section).
+    pub error: Option<String>,
+    /// Expected info/log output (from `=== info` section).
+    pub info: Option<String>,
+}
+
+/// A code block with its code portion and optional expected output sections.
+#[derive(Debug)]
+pub struct BlockWithExpectations {
+    /// The tinct code to execute (everything before the first `===` marker).
+    pub code: String,
+    /// Expected outputs from `=== out`, `=== warn`, `=== error`, `=== info` sections.
+    pub expectations: BlockExpectations,
+}
+
+/// Split a code block into code portion and expected output sections.
+///
+/// The code portion is everything before the first `===` marker.
+/// Expected sections are `=== out`, `=== warn`, `=== error`, `=== info`.
+///
+/// If no `===` markers are present, the entire block is code with no expectations.
+pub fn split_block_sections(block: &str) -> BlockWithExpectations {
+    // Find all section delimiters
+    let mut sections = Vec::new();
+    let mut search_start = 0;
+
+    while let Some(pos) = block[search_start..].find("\n===") {
+        let abs_pos = search_start + pos;
+        // Check what comes after "==="
+        let after_delim = &block[abs_pos + 4..]; // skip "\n==="
+
+        // Extract the label (text between === and the next newline)
+        let label_end = after_delim.find('\n').unwrap_or(after_delim.len());
+        let label = after_delim[..label_end].trim();
+
+        sections.push((abs_pos, label));
+        search_start = abs_pos + 4 + label_end;
+    }
+
+    // If no sections found, the entire block is code
+    if sections.is_empty() {
+        return BlockWithExpectations {
+            code: block.to_string(),
+            expectations: BlockExpectations {
+                out: None,
+                warn: None,
+                error: None,
+                info: None,
+            },
+        };
+    }
+
+    // Code portion is everything before the first delimiter
+    let code = &block[..sections[0].0 + 1]; // include trailing newline before ===
+
+    // Parse sections
+    let mut out = None;
+    let mut warn = None;
+    let mut error = None;
+    let mut info = None;
+
+    for (i, (pos, label)) in sections.iter().enumerate() {
+        // Content starts after "\n=== label\n"
+        let label_line_start = pos + 4; // skip "\n==="
+        let label_line_end = block[label_line_start..]
+            .find('\n')
+            .map(|p| label_line_start + p)
+            .unwrap_or(block.len());
+        let content_start = if label_line_end < block.len() {
+            label_line_end + 1 // skip the newline after label
+        } else {
+            label_line_end
+        };
+
+        // Content ends at next section or EOF
+        let content_end = sections
+            .get(i + 1)
+            .map(|(next_pos, _)| *next_pos + 1) // include trailing newline
+            .unwrap_or(block.len());
+
+        let section_content = &block[content_start..content_end];
+        let trimmed = section_content.trim();
+
+        match *label {
+            "out" => {
+                out = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+            }
+            "warn" => {
+                warn = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+            }
+            "error" => {
+                error = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+            }
+            "info" => {
+                info = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+            }
+            _ => {
+                // Unknown section label — ignore (allows for future extensions)
+            }
+        }
+    }
+
+    BlockWithExpectations {
+        code: code.to_string(),
+        expectations: BlockExpectations {
+            out,
+            warn,
+            error,
+            info,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

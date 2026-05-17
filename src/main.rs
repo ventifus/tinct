@@ -238,6 +238,37 @@ enum Commands {
         /// Skip inline marker substitution in weave mode (preserve <!-- tinct-result: ... --> markers).
         #[arg(long)]
         no_substitute: bool,
+
+        /// Type errors are fatal (exit with code 1). Without --strict, type checking is advisory.
+        #[arg(long)]
+        strict: bool,
+
+        /// Write weaved output back to the source file atomically (weave mode only).
+        /// Writes to a .tmp file then renames to the source path.
+        #[arg(short, long)]
+        in_place: bool,
+
+        /// Compare actual output against expected === sections; exit 1 on mismatch (weave mode only).
+        /// Blocks without === sections pass vacuously.
+        #[arg(long)]
+        verify: bool,
+
+        /// Any evaluation error exits 1 immediately instead of embedding in === error section (weave mode only).
+        #[arg(long)]
+        fail_on_errors: bool,
+
+        /// Inject a named DirCap into the root environment (may be repeated).
+        /// Format: NAME=PATH:MODE — binds %NAME to a DirCap.
+        /// MODE: r (read-only), w (read-write), rw (read-write). Default: r.
+        /// Example: --cap-fs data=/var/data:r injects %data as a read-only DirCap.
+        #[arg(long, value_name = "NAME=PATH:MODE")]
+        cap_fs: Vec<String>,
+
+        /// Inject a named NetCap into the root environment (may be repeated).
+        /// Format: NAME=HOST:PORT — binds %NAME to a NetCap.
+        /// Example: --cap-net api=api.internal:443
+        #[arg(long, value_name = "NAME=HOST:PORT")]
+        cap_net: Vec<String>,
     },
 }
 
@@ -250,6 +281,13 @@ enum LiterateMode {
     Eval,
     /// Evaluate blocks and output the Markdown with JSON results as comments after each block.
     Weave,
+}
+
+/// Structure to hold actual output for each block in literate mode.
+#[derive(Debug)]
+struct BlockOutput {
+    out: Option<String>,   // JSON result or (emit)
+    error: Option<String>, // Error message if evaluation failed
 }
 
 fn main() {
@@ -356,7 +394,23 @@ fn main() {
             mode,
             file,
             no_substitute,
-        } => run_literate(&file, &mode, no_substitute),
+            strict,
+            in_place,
+            verify,
+            fail_on_errors,
+            cap_fs,
+            cap_net,
+        } => run_literate(
+            &file,
+            &mode,
+            no_substitute,
+            strict,
+            in_place,
+            verify,
+            fail_on_errors,
+            &cap_fs,
+            &cap_net,
+        ),
     };
 
     match result {
@@ -2071,7 +2125,18 @@ fn read_stdin_json() -> Result<Option<serde_json::Value>, String> {
 /// - **`eval`** — join the blocks, evaluate the resulting pipeline, print JSON.
 /// - **`weave`** — evaluate each block in pipeline order; output the original
 ///   Markdown with the JSON result appended as a comment after each tinct block.
-fn run_literate(file_path: &str, mode: &LiterateMode, no_substitute: bool) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn run_literate(
+    file_path: &str,
+    mode: &LiterateMode,
+    no_substitute: bool,
+    strict: bool,
+    in_place: bool,
+    verify: bool,
+    fail_on_errors: bool,
+    cap_fs: &[String],
+    cap_net: &[String],
+) -> Result<(), String> {
     let markdown = read_source(file_path)?;
     let blocks = literate::extract_code_blocks(&markdown);
 
@@ -2101,21 +2166,49 @@ fn run_literate(file_path: &str, mode: &LiterateMode, no_substitute: bool) -> Re
 
         LiterateMode::Eval => {
             let tangled = literate::tangle(blocks);
-            run_literate_eval(&tangled, file_path)
+            run_literate_eval(&tangled, file_path, strict, cap_fs, cap_net)
         }
 
-        LiterateMode::Weave => run_literate_weave(&markdown, &blocks, file_path, no_substitute),
+        LiterateMode::Weave => run_literate_weave(
+            &markdown,
+            &blocks,
+            file_path,
+            no_substitute,
+            strict,
+            in_place,
+            verify,
+            fail_on_errors,
+            cap_fs,
+            cap_net,
+        ),
     }
 }
 
 /// Evaluate a tangled tinct source string and print the result as JSON.
 ///
 /// Reuses the same pipeline as `run_eval` (parse → desugar → resolve →
-/// typecheck → eval → materialize → JSON), with no sandbox flags applied.
+/// typecheck → eval → materialize → JSON).
 /// The base directory is derived from the Markdown file's parent directory.
-fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
+///
+/// Literate mode always runs with --no-pwd and --no-env (hard-coded).
+/// Capabilities are injected via cap_fs and cap_net. %libdir is always available.
+/// %clock is set to a fixed ClockCap from the markdown file's mtime.
+#[allow(clippy::too_many_arguments)]
+fn run_literate_eval(
+    tangled: &str,
+    markdown_path: &str,
+    strict: bool,
+    cap_fs: &[String],
+    cap_net: &[String],
+) -> Result<(), String> {
     // Parse the tangled source.
-    let ast = parse(tangled).map_err(|e| format!("parse error in tangled tinct source: {e}"))?;
+    let ast = parse(tangled).map_err(|e| {
+        if strict {
+            tinct::format_parse_error(&e, tangled, markdown_path)
+        } else {
+            format!("parse error in tangled tinct source: {e}")
+        }
+    })?;
 
     // Expand macros (pre-desugar AST transformation).
     let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
@@ -2123,7 +2216,16 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
 
     tinct::desugar::desugar_file(&mut ast.node);
     tinct::resolve::resolve_file(&ast.node);
-    let (_type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
+    let (type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
+
+    // In strict mode, type errors are fatal
+    if strict && !type_errors.is_empty() {
+        let mut msg = String::from("type errors:\n");
+        for err in &type_errors {
+            msg.push_str(&format!("  {err}\n"));
+        }
+        return Err(msg);
+    }
 
     // Determine base directory from the Markdown file's location.
     let base_dir_path = if markdown_path == "-" {
@@ -2143,6 +2245,197 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
         .map_err(|e| format!("cannot open base directory: {e}"))?;
 
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+
+    // E1: Inject fixed ClockCap from file mtime for deterministic output
+    {
+        use tinct::{ClockCapInner, Value};
+
+        // Get the markdown file's mtime
+        let mtime = if markdown_path == "-" {
+            // For stdin, use Unix epoch as a stable default
+            jiff::Timestamp::from_second(0)
+                .map_err(|e| format!("failed to create epoch timestamp: {e}"))?
+        } else {
+            let metadata = std::fs::metadata(markdown_path)
+                .map_err(|e| format!("cannot read file metadata: {e}"))?;
+            let system_time = metadata
+                .modified()
+                .map_err(|e| format!("cannot read file mtime: {e}"))?;
+
+            // Convert SystemTime to jiff::Timestamp
+            let duration_since_epoch = system_time
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| format!("file mtime is before Unix epoch: {e}"))?;
+            let nanos = i128::try_from(duration_since_epoch.as_nanos())
+                .map_err(|_| "mtime nanoseconds out of i128 range".to_string())?;
+            jiff::Timestamp::from_nanosecond(nanos)
+                .map_err(|e| format!("failed to convert mtime to timestamp: {e}"))?
+        };
+
+        let nanos = i64::try_from(mtime.as_nanosecond())
+            .map_err(|_| format!("mtime is out of i64 range"))?;
+        let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
+        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+        env.borrow_mut()
+            .insert("%clock".to_string(), Rc::new(cap_thunk));
+    }
+
+    // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
+    {
+        use tinct::{DirPerms, Value};
+        for cap_fs_entry in cap_fs {
+            let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
+                    cap_fs_entry
+                )
+            })?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "--cap-fs: NAME must not be empty in {:?}",
+                    cap_fs_entry
+                ));
+            }
+
+            // Split PATH:MODE on the last colon
+            let (path_str, mode_str) = match path_and_mode.rsplit_once(':') {
+                Some((path, mode)) => (path, Some(mode)),
+                None => (path_and_mode, None),
+            };
+
+            let cap_path = std::path::Path::new(path_str.trim());
+            let cap_dir =
+                cap_std::fs::Dir::open_ambient_dir(cap_path, cap_std::ambient_authority())
+                    .map_err(|e| {
+                        format!(
+                            "--cap-fs: cannot open directory {:?}: {e}",
+                            cap_path.display()
+                        )
+                    })?;
+
+            // Parse mode into DirPerms (letter mode: r/w/a/s/l or extended [Cap1 ...])
+            let perms = if let Some(mode) = mode_str {
+                let mode = mode.trim();
+                if mode.starts_with('[') {
+                    // Extended syntax: [Readable Writable ...]
+                    if !mode.ends_with(']') {
+                        return Err(format!(
+                            "--cap-fs: extended mode must end with ']', got {:?}",
+                            mode
+                        ));
+                    }
+                    let caps_str = &mode[1..mode.len() - 1];
+                    let mut perms = DirPerms {
+                        readable: false,
+                        statable: false,
+                        listable: false,
+                        writable: false,
+                        appendable: false,
+                        deletable: false,
+                        renameable: false,
+                    };
+                    for cap_name in caps_str.split_whitespace() {
+                        match cap_name {
+                            "Readable" => perms.readable = true,
+                            "Statable" => perms.statable = true,
+                            "Listable" => perms.listable = true,
+                            "Writable" => perms.writable = true,
+                            "Appendable" => perms.appendable = true,
+                            "Deletable" => perms.deletable = true,
+                            "Renameable" => perms.renameable = true,
+                            _ => {
+                                return Err(format!(
+                                    "--cap-fs: unknown capability {:?} in extended mode",
+                                    cap_name
+                                ))
+                            }
+                        }
+                    }
+                    perms
+                } else {
+                    // Letter mode: r/w/a/s/l
+                    let mut perms = DirPerms {
+                        readable: false,
+                        statable: false,
+                        listable: false,
+                        writable: false,
+                        appendable: false,
+                        deletable: false,
+                        renameable: false,
+                    };
+                    for c in mode.chars() {
+                        if let Some(letter_perms) = DirPerms::from_letter(c) {
+                            perms = perms.union(&letter_perms);
+                        } else {
+                            return Err(format!(
+                                "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
+                                c
+                            ));
+                        }
+                    }
+                    perms
+                }
+            } else {
+                // No mode specified → full access
+                DirPerms::full()
+            };
+
+            let cap_value = Value::DirCap {
+                dir: Rc::new(cap_dir),
+                perms,
+            };
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            // Inject as `%NAME` (auto-prefix %).
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
+            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
+        }
+    }
+
+    // E3: Inject --cap-net NAME=ENTRY entries (same as run_eval)
+    {
+        use std::collections::HashMap;
+        use tinct::NetCapEntry;
+        use tinct::Value;
+
+        let mut net_caps: HashMap<String, Vec<NetCapEntry>> = HashMap::new();
+
+        for cap_net_entry in cap_net {
+            let (name, entry_str) = cap_net_entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "--cap-net: expected NAME=ENTRY format, got {:?}",
+                    cap_net_entry
+                )
+            })?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "--cap-net: NAME must not be empty in {:?}",
+                    cap_net_entry
+                ));
+            }
+            let entry_str = entry_str.trim();
+
+            let entry = parse_cli_net_cap_entry(entry_str)?;
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
+            net_caps.entry(scoped_name).or_default().push(entry);
+        }
+
+        // Now bind each accumulated NetCap.
+        for (name, entries) in net_caps {
+            let cap_value = Value::NetCap(Rc::new(entries));
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            env.borrow_mut().insert(name, Rc::new(cap_thunk));
+        }
+    }
 
     let eval_ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
 
@@ -2200,21 +2493,33 @@ fn run_literate_eval(tangled: &str, markdown_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Weave mode: output the Markdown with JSON results appended after each tinct block.
+/// Weave mode: evaluate blocks and update/verify === sections in code blocks.
 ///
-/// For Phase 4, weave is a simplified implementation: it evaluates the tinct pipeline
-/// formed by all blocks in order and appends the final JSON result as a comment
-/// (`` <!-- tinct-result: ... --> ``) immediately after each closing `` ``` `` fence.
-/// Each block is evaluated in pipeline order — `%` from block N becomes the input
-/// to block N+1 — matching the tangle/eval semantics exactly.
+/// Evaluates each block in pipeline order, threading `%` between blocks.
 ///
-/// Full result substitution (replacing inline markers like `<!-- tinct-result: expr -->`)
-/// happens by default unless `no_substitute` is true.
+/// **Modes:**
+/// - Default (no flags): embed errors in `=== error` section, continue to next block, exit 0
+/// - `--fail-on-errors`: any evaluation error exits 1 immediately
+/// - `--verify`: compare actual output against expected === sections; exit 1 on mismatch
+/// - `--in-place`: write output to .tmp then rename to source file (instead of stdout)
+///
+/// **Literate-specific behavior:**
+/// - Always runs with --no-pwd and --no-env (hard-coded)
+/// - %clock is set to a fixed ClockCap from markdown file mtime
+/// - %libdir is always available
+/// - Capabilities injected via cap_fs and cap_net
+#[allow(clippy::too_many_arguments)]
 fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
     markdown_path: &str,
     no_substitute: bool,
+    strict: bool,
+    in_place: bool,
+    verify: bool,
+    fail_on_errors: bool,
+    cap_fs: &[String],
+    cap_net: &[String],
 ) -> Result<(), String> {
     // Evaluate the pipeline incrementally: process one block at a time, threading
     // % between them. This lets us annotate each block with the result at that point.
@@ -2233,6 +2538,197 @@ fn run_literate_weave(
 
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
 
+    // E1: Inject fixed ClockCap from file mtime for deterministic weave output
+    {
+        use tinct::{ClockCapInner, Value};
+
+        // Get the markdown file's mtime
+        let mtime = if markdown_path == "-" {
+            // For stdin, use Unix epoch as a stable default
+            jiff::Timestamp::from_second(0)
+                .map_err(|e| format!("failed to create epoch timestamp: {e}"))?
+        } else {
+            let metadata = std::fs::metadata(markdown_path)
+                .map_err(|e| format!("cannot read file metadata: {e}"))?;
+            let system_time = metadata
+                .modified()
+                .map_err(|e| format!("cannot read file mtime: {e}"))?;
+
+            // Convert SystemTime to jiff::Timestamp
+            let duration_since_epoch = system_time
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| format!("file mtime is before Unix epoch: {e}"))?;
+            let nanos = i128::try_from(duration_since_epoch.as_nanos())
+                .map_err(|_| "mtime nanoseconds out of i128 range".to_string())?;
+            jiff::Timestamp::from_nanosecond(nanos)
+                .map_err(|e| format!("failed to convert mtime to timestamp: {e}"))?
+        };
+
+        let nanos = i64::try_from(mtime.as_nanosecond())
+            .map_err(|_| format!("mtime is out of i64 range"))?;
+        let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
+        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+        env.borrow_mut()
+            .insert("%clock".to_string(), Rc::new(cap_thunk));
+    }
+
+    // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
+    {
+        use tinct::{DirPerms, Value};
+        for cap_fs_entry in cap_fs {
+            let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
+                    cap_fs_entry
+                )
+            })?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "--cap-fs: NAME must not be empty in {:?}",
+                    cap_fs_entry
+                ));
+            }
+
+            // Split PATH:MODE on the last colon
+            let (path_str, mode_str) = match path_and_mode.rsplit_once(':') {
+                Some((path, mode)) => (path, Some(mode)),
+                None => (path_and_mode, None),
+            };
+
+            let cap_path = std::path::Path::new(path_str.trim());
+            let cap_dir =
+                cap_std::fs::Dir::open_ambient_dir(cap_path, cap_std::ambient_authority())
+                    .map_err(|e| {
+                        format!(
+                            "--cap-fs: cannot open directory {:?}: {e}",
+                            cap_path.display()
+                        )
+                    })?;
+
+            // Parse mode into DirPerms (letter mode: r/w/a/s/l or extended [Cap1 ...])
+            let perms = if let Some(mode) = mode_str {
+                let mode = mode.trim();
+                if mode.starts_with('[') {
+                    // Extended syntax: [Readable Writable ...]
+                    if !mode.ends_with(']') {
+                        return Err(format!(
+                            "--cap-fs: extended mode must end with ']', got {:?}",
+                            mode
+                        ));
+                    }
+                    let caps_str = &mode[1..mode.len() - 1];
+                    let mut perms = DirPerms {
+                        readable: false,
+                        statable: false,
+                        listable: false,
+                        writable: false,
+                        appendable: false,
+                        deletable: false,
+                        renameable: false,
+                    };
+                    for cap_name in caps_str.split_whitespace() {
+                        match cap_name {
+                            "Readable" => perms.readable = true,
+                            "Statable" => perms.statable = true,
+                            "Listable" => perms.listable = true,
+                            "Writable" => perms.writable = true,
+                            "Appendable" => perms.appendable = true,
+                            "Deletable" => perms.deletable = true,
+                            "Renameable" => perms.renameable = true,
+                            _ => {
+                                return Err(format!(
+                                    "--cap-fs: unknown capability {:?} in extended mode",
+                                    cap_name
+                                ))
+                            }
+                        }
+                    }
+                    perms
+                } else {
+                    // Letter mode: r/w/a/s/l
+                    let mut perms = DirPerms {
+                        readable: false,
+                        statable: false,
+                        listable: false,
+                        writable: false,
+                        appendable: false,
+                        deletable: false,
+                        renameable: false,
+                    };
+                    for c in mode.chars() {
+                        if let Some(letter_perms) = DirPerms::from_letter(c) {
+                            perms = perms.union(&letter_perms);
+                        } else {
+                            return Err(format!(
+                                "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
+                                c
+                            ));
+                        }
+                    }
+                    perms
+                }
+            } else {
+                // No mode specified → full access
+                DirPerms::full()
+            };
+
+            let cap_value = Value::DirCap {
+                dir: Rc::new(cap_dir),
+                perms,
+            };
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            // Inject as `%NAME` (auto-prefix %).
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
+            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
+        }
+    }
+
+    // E3: Inject --cap-net NAME=ENTRY entries (same as run_eval)
+    {
+        use std::collections::HashMap;
+        use tinct::NetCapEntry;
+        use tinct::Value;
+
+        let mut net_caps: HashMap<String, Vec<NetCapEntry>> = HashMap::new();
+
+        for cap_net_entry in cap_net {
+            let (name, entry_str) = cap_net_entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "--cap-net: expected NAME=ENTRY format, got {:?}",
+                    cap_net_entry
+                )
+            })?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "--cap-net: NAME must not be empty in {:?}",
+                    cap_net_entry
+                ));
+            }
+            let entry_str = entry_str.trim();
+
+            let entry = parse_cli_net_cap_entry(entry_str)?;
+            let scoped_name = if name.starts_with('%') {
+                name.to_string()
+            } else {
+                format!("%{name}")
+            };
+            net_caps.entry(scoped_name).or_default().push(entry);
+        }
+
+        // Now bind each accumulated NetCap.
+        for (name, entries) in net_caps {
+            let cap_value = Value::NetCap(Rc::new(entries));
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            env.borrow_mut().insert(name, Rc::new(cap_thunk));
+        }
+    }
+
     // Create one base EvalContext that owns the shared ThunkArena.
     // All blocks derive from this context via with_base_dir_and_path so that
     // ThunkIds allocated by block N remain valid when block N+1 references them
@@ -2244,20 +2740,82 @@ fn run_literate_weave(
     let base_eval_ctx = EvalContext::new(base_dir_initial, Rc::clone(&env), false);
 
     // Evaluate each block in turn, passing the previous result as pipeline input.
-    // Collect (block_index -> JSON result) for annotation.
+    // Collect (block_index -> actual output sections) for weaving/verification.
     let mut pipeline_input: Option<Rc<Thunk>> = None;
-    let mut block_results: Vec<String> = Vec::with_capacity(blocks.len());
 
-    for (i, block) in blocks.iter().enumerate() {
-        let ast = parse(block).map_err(|e| format!("parse error in code block {}: {e}", i + 1))?;
+    // Split blocks into code + expectations
+    let blocks_with_exp: Vec<_> = blocks
+        .iter()
+        .map(|b| literate::split_block_sections(b))
+        .collect();
+
+    let mut block_outputs: Vec<BlockOutput> = Vec::with_capacity(blocks_with_exp.len());
+
+    for (i, block_with_exp) in blocks_with_exp.iter().enumerate() {
+        let code = &block_with_exp.code;
+
+        let parse_result = parse(code);
+        let ast = match parse_result {
+            Ok(a) => a,
+            Err(e) => {
+                let error_msg = if strict {
+                    tinct::format_parse_error(&e, code, &format!("block {}", i + 1))
+                } else {
+                    format!("{e}")
+                };
+
+                if fail_on_errors {
+                    return Err(format!("parse error in code block {}: {error_msg}", i + 1));
+                }
+
+                // Embed error and continue
+                block_outputs.push(BlockOutput {
+                    out: None,
+                    error: Some(error_msg),
+                });
+                continue;
+            }
+        };
 
         // Expand macros (pre-desugar AST transformation).
-        let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+        let expand_result = match tinct::expand::expand_macros(ast, false) {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("{e}");
+                if fail_on_errors {
+                    return Err(format!(
+                        "macro expansion error in code block {}: {msg}",
+                        i + 1
+                    ));
+                }
+                block_outputs.push(BlockOutput {
+                    out: None,
+                    error: Some(msg),
+                });
+                continue;
+            }
+        };
         let mut ast = expand_result.file;
 
         tinct::desugar::desugar_file(&mut ast.node);
         tinct::resolve::resolve_file(&ast.node);
-        let (_type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
+        let (type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
+
+        // In strict mode, type errors are fatal
+        if strict && !type_errors.is_empty() {
+            let mut msg = String::from("type errors:\n");
+            for err in &type_errors {
+                msg.push_str(&format!("  {err}\n"));
+            }
+            if fail_on_errors {
+                return Err(format!("type errors in code block {}: {msg}", i + 1));
+            }
+            block_outputs.push(BlockOutput {
+                out: None,
+                error: Some(msg),
+            });
+            continue;
+        }
 
         // Derive per-block context from the base context (shares the ThunkArena).
         let base_dir =
@@ -2266,19 +2824,48 @@ fn run_literate_weave(
 
         let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
 
-        let thunk = eval_file_with_input(
+        let thunk_result = eval_file_with_input(
             &ast.node,
             Rc::clone(&env),
             &eval_ctx,
             pipeline_input.clone(),
-        )
-        .map_err(|e| format!("error in code block {}: {e}", i + 1))?;
+        );
+        let thunk = match thunk_result {
+            Ok(t) => t,
+            Err(e) => {
+                let error_msg = format!("{e}");
+                if fail_on_errors {
+                    return Err(format!("eval error in code block {}: {error_msg}", i + 1));
+                }
+                block_outputs.push(BlockOutput {
+                    out: None,
+                    error: Some(error_msg),
+                });
+                continue;
+            }
+        };
 
-        let val = materialize(&thunk, None, &eval_ctx)
-            .map_err(|e| format!("error materializing code block {}: {e}", i + 1))?;
+        let val_result = materialize(&thunk, None, &eval_ctx);
+        let val = match val_result {
+            Ok(v) => v,
+            Err(e) => {
+                let error_msg = format!("{e}");
+                if fail_on_errors {
+                    return Err(format!(
+                        "materialize error in code block {}: {error_msg}",
+                        i + 1
+                    ));
+                }
+                block_outputs.push(BlockOutput {
+                    out: None,
+                    error: Some(error_msg),
+                });
+                continue;
+            }
+        };
 
-        let json_str = if eval_ctx.emitted.get() {
-            // Block called emit — note this in the annotation.
+        let output_str = if eval_ctx.emitted.get() {
+            // Block called emit — note this in the output section.
             "(emit)".to_string()
         } else {
             let json = value_to_json(&val, &eval_ctx)
@@ -2287,69 +2874,166 @@ fn run_literate_weave(
                 .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?
         };
 
-        block_results.push(json_str);
+        block_outputs.push(BlockOutput {
+            out: Some(output_str),
+            error: None,
+        });
         // Thread the result as pipeline input to the next block.
         pipeline_input = Some(Rc::clone(&thunk));
     }
 
-    // Now walk the Markdown and insert/update result comments after each tinct/llt block.
+    // C3: Verify mode — compare actual output against expected === sections
+    if verify {
+        let mut mismatches = Vec::new();
+        for (i, (block_with_exp, block_output)) in
+            blocks_with_exp.iter().zip(block_outputs.iter()).enumerate()
+        {
+            let expected = &block_with_exp.expectations;
+
+            // Check output section
+            if let Some(ref expected_out) = expected.out {
+                match &block_output.out {
+                    Some(actual_out) => {
+                        if actual_out.trim() != expected_out.trim() {
+                            mismatches.push(format!(
+                                "Block {}: output mismatch\nExpected:\n{}\nActual:\n{}",
+                                i + 1,
+                                expected_out,
+                                actual_out
+                            ));
+                        }
+                    }
+                    None => {
+                        mismatches.push(format!(
+                            "Block {}: expected output but got error\nExpected:\n{}\nActual error:\n{}",
+                            i + 1, expected_out, block_output.error.as_ref().unwrap_or(&"(no error message)".to_string())
+                        ));
+                    }
+                }
+            }
+
+            // Check error section
+            if let Some(ref expected_error) = expected.error {
+                match &block_output.error {
+                    Some(actual_error) => {
+                        if !actual_error.contains(expected_error.trim()) {
+                            mismatches.push(format!(
+                                "Block {}: error mismatch\nExpected substring:\n{}\nActual:\n{}",
+                                i + 1,
+                                expected_error,
+                                actual_error
+                            ));
+                        }
+                    }
+                    None => {
+                        mismatches.push(format!(
+                            "Block {}: expected error but got success\nExpected error:\n{}",
+                            i + 1,
+                            expected_error
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !mismatches.is_empty() {
+            eprintln!(
+                "Verification failed with {} mismatche(s):\n",
+                mismatches.len()
+            );
+            for mismatch in &mismatches {
+                eprintln!("{}\n", mismatch);
+            }
+            return Err("verification failed".to_string());
+        }
+
+        // Verification passed
+        return Ok(());
+    }
+
+    // C2: Weave mode — reconstruct blocks with === sections inline
     let mut block_idx = 0;
     let mut in_tinct_block = false;
-    let mut output = String::with_capacity(markdown.len() + block_results.len() * 80);
+    let mut in_code_portion = false;
+    let mut output = String::with_capacity(markdown.len() + block_outputs.len() * 80);
     let lines: Vec<&str> = markdown.lines().collect();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim();
-        output.push_str(line);
-        output.push('\n');
 
         if !in_tinct_block {
+            output.push_str(line);
+            output.push('\n');
             if trimmed == "```tinct" || trimmed == "```llt" {
                 in_tinct_block = true;
+                in_code_portion = true;
             }
         } else if trimmed == "```" {
-            // Closing fence: check if the next line is a result marker, or insert one.
+            // Closing fence for tinct block
             in_tinct_block = false;
-            if block_idx < block_results.len() {
-                // Look ahead to see if there's already a result marker
-                let next_idx = i + 1;
-                let marker_pattern = "<!-- tinct-result:";
-                let has_existing_marker = if next_idx < lines.len() {
-                    lines[next_idx].trim().starts_with(marker_pattern)
-                } else {
-                    false
-                };
+            in_code_portion = false;
 
-                if has_existing_marker {
-                    // Skip the existing marker line - we'll replace it with the new result
-                    i += 1;
+            // C2: Insert === sections before closing fence
+            if block_idx < block_outputs.len() {
+                let block_output = &block_outputs[block_idx];
+
+                // Add === out section if there's output
+                if let Some(ref out) = block_output.out {
+                    output.push_str("=== out\n");
+                    output.push_str(out);
+                    output.push('\n');
                 }
 
-                // Insert/replace the result marker
-                output.push_str(&format!(
-                    "<!-- tinct-result: {} -->\n",
-                    block_results[block_idx]
-                ));
+                // Add === error section if there's an error
+                if let Some(ref error) = block_output.error {
+                    output.push_str("=== error\n");
+                    output.push_str(error);
+                    output.push('\n');
+                }
+
                 block_idx += 1;
             }
+
+            output.push_str(line);
+            output.push('\n');
+        } else if in_code_portion && trimmed.starts_with("===") {
+            // Skip existing === sections and everything after them in this block
+            in_code_portion = false;
+            // Don't write this line or any subsequent lines until closing fence
+        } else if in_code_portion {
+            // Still in code portion — keep the line
+            output.push_str(line);
+            output.push('\n');
         }
+        // else: skip lines in old === sections
+
         i += 1;
     }
 
     // If no_substitute is false, perform inline marker substitution.
+    // Note: With === sections, inline marker substitution is deprecated.
+    // The old HTML comment format (<!-- tinct-result: ... -->) is no longer emitted.
+    // We keep this for backward compatibility with old markdown files that still have
+    // inline markers, but it won't interact with the new === section format.
     if !no_substitute {
         output = substitute_inline_markers(
             &output,
-            &block_results,
+            &block_outputs,
             &base_eval_ctx,
             &env,
             &base_dir_path,
         )?;
     }
 
-    print!("{output}");
+    // Write output
+    if in_place {
+        write_file_atomic(markdown_path, &output)?;
+    } else {
+        print!("{output}");
+    }
+
     Ok(())
 }
 
@@ -2360,9 +3044,12 @@ fn run_literate_weave(
 /// (just `<!-- tinct-result -->`) are replaced with the most recent block result.
 ///
 /// This function scans the output for markers and replaces them with evaluated results.
+///
+/// Note: With === sections, this is only used for backward compatibility with old markdown files.
+/// The new format does not emit HTML comments.
 fn substitute_inline_markers(
     output: &str,
-    _block_results: &[String],
+    block_outputs: &[BlockOutput],
     base_eval_ctx: &EvalContext,
     env: &Rc<std::cell::RefCell<tinct::Environment>>,
     base_dir_path: &std::path::PathBuf,
@@ -2375,10 +3062,8 @@ fn substitute_inline_markers(
 
     let mut result = String::with_capacity(output.len());
     let mut last_pos = 0;
-    let mut most_recent_result: Option<&str> = None;
 
-    // Track which block result we're seeing as we scan through the output
-    // by counting <!-- tinct-result: JSON --> comments (the ones after code blocks)
+    // Now perform substitution on inline markers
     for cap in marker_re.captures_iter(output) {
         let full_match = cap.get(0).unwrap();
         let expr_opt = cap.get(1).map(|m| m.as_str().trim());
@@ -2386,71 +3071,58 @@ fn substitute_inline_markers(
         // Append everything before this marker
         result.push_str(&output[last_pos..full_match.start()]);
 
-        // Check if this is a block result comment (contains JSON) or an inline marker
-        let is_block_comment = if let Some(expr) = expr_opt {
-            // If it starts with { or [ or ", it's likely JSON from a block result
-            // Otherwise it's an inline marker expression
-            let trimmed = expr.trim();
-            if trimmed.is_empty() {
-                // Empty expression: <!-- tinct-result: -->
-                // Treat as inline marker requesting most recent result
-                false
-            } else if trimmed.starts_with('{')
-                || trimmed.starts_with('[')
-                || trimmed.starts_with('"')
-                || trimmed == "(emit)"
-            {
-                // This is a block result comment, not an inline marker
-                true
-            } else {
-                // This is an inline marker with an expression
-                false
-            }
-        } else {
-            // No expression at all - this shouldn't match our regex, but handle it
-            false
-        };
-
-        if is_block_comment {
-            // This is a block result comment - track it and preserve it
-            if let Some(expr) = expr_opt {
-                most_recent_result = Some(expr);
-            }
-            // Preserve the block result comment as-is
-            result.push_str(full_match.as_str());
-        } else {
-            // This is an inline marker - substitute it
-            let substitution = if let Some(expr) = expr_opt {
-                if expr.is_empty() {
-                    // Empty expression: use most recent result
-                    if let Some(recent) = most_recent_result {
-                        recent.to_string()
-                    } else {
-                        // No block evaluated yet - leave marker as-is
-                        full_match.as_str().to_string()
+        // Determine most_recent_result by checking position in output
+        // For inline markers, we use the most recent successful block output
+        let marker_pos = full_match.start();
+        let mut temp_block_idx = 0;
+        let mut temp_in_block = false;
+        let mut most_recent_result: Option<&str> = None;
+        for line in output[..marker_pos].lines() {
+            let trimmed = line.trim();
+            if trimmed == "```tinct" || trimmed == "```llt" {
+                temp_in_block = true;
+            } else if temp_in_block && trimmed == "```" {
+                temp_in_block = false;
+                if temp_block_idx < block_outputs.len() {
+                    if let Some(ref out) = block_outputs[temp_block_idx].out {
+                        most_recent_result = Some(out.as_str());
                     }
-                } else {
-                    // Evaluate the expression with % bound to the most recent result
-                    evaluate_marker_expression(
-                        expr,
-                        most_recent_result,
-                        base_eval_ctx,
-                        env,
-                        base_dir_path,
-                    )?
+                    temp_block_idx += 1;
                 }
-            } else {
-                // No expression: use most recent result
+            }
+        }
+
+        // This is an inline marker - substitute it
+        let substitution = if let Some(expr) = expr_opt {
+            if expr.is_empty() {
+                // Empty expression: use most recent result
                 if let Some(recent) = most_recent_result {
                     recent.to_string()
                 } else {
                     // No block evaluated yet - leave marker as-is
                     full_match.as_str().to_string()
                 }
-            };
+            } else {
+                // Evaluate the expression with % bound to the most recent result
+                evaluate_marker_expression(
+                    expr,
+                    most_recent_result,
+                    base_eval_ctx,
+                    env,
+                    base_dir_path,
+                )?
+            }
+        } else {
+            // No expression: use most recent result
+            if let Some(recent) = most_recent_result {
+                recent.to_string()
+            } else {
+                // No block evaluated yet - leave marker as-is
+                full_match.as_str().to_string()
+            }
+        };
 
-            result.push_str(&substitution);
-        }
+        result.push_str(&substitution);
 
         last_pos = full_match.end();
     }
@@ -2549,6 +3221,26 @@ const SCHEMA_KEYS: &[&str] = &[
 /// Parses the file, extracts `%@Type` / `expects:` annotations from each document,
 /// and detects schema dicts by heuristic. Outputs a human-readable summary (default)
 /// or machine-readable JSON (`--json`).
+/// Write content to a file atomically using a .tmp file then rename.
+fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let tmp_path = format!("{}.tmp", path);
+    let mut file = std::fs::File::create(&tmp_path)
+        .map_err(|e| format!("cannot create temporary file {}: {e}", tmp_path))?;
+
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("cannot write to temporary file {}: {e}", tmp_path))?;
+
+    file.sync_all()
+        .map_err(|e| format!("cannot sync temporary file {}: {e}", tmp_path))?;
+
+    std::fs::rename(&tmp_path, path)
+        .map_err(|e| format!("cannot rename {} to {}: {e}", tmp_path, path))?;
+
+    Ok(())
+}
+
 fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let source = read_source(file_path)?;
     let ast = parse(&source).map_err(|e| format!("{e}"))?;
