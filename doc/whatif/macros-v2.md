@@ -156,13 +156,19 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
   [quote [list [unquote-splice items]]]]
 ```
 
-**Multi-arm dispatch.** When a macro needs to handle different argument shapes, `[case ...]` arms dispatch on argument count and structure — the same match syntax:
+**Multi-arity dispatch.** When a macro needs to handle different argument counts, use `...args` variadic and `[match [length args] ...]` in the body. `[case ...]` appears inside `[match ...]` exactly as unified-bindings defines it — never at the outer macro declaration level:
 
 ```tinct
-[macro my-and
-  [[case [let a]]          a]
-  [[case [let a b]]        [quote [if [unquote a] [unquote b] false]]]
-  [[case [let a ...rest]]  [quote [if [unquote a] [my-and [unquote-splice rest]] false]]]]
+[macro my-and [let ...args@Seq@Expr]
+  [match [length args]
+    [[case 0]       [quote true]]
+    [[case 1]       [first args]]
+    [[case 2]
+      [a: [first args]  b: [second args]]
+      [quote [if [unquote a] [unquote b] false]]]
+    [[case [let _]]
+      [a: [first args]  rest: [rest args]]
+      [quote [if [unquote a] [my-and [unquote-splice rest]] false]]]]]
 ```
 
 **Hygiene.** With `[let ...]` patterns, the template/user-code distinction is structural:
@@ -342,17 +348,21 @@ Macro bodies are ordinary tinct code. AST nodes are `Expr` variants — dispatch
 
 ---
 
-### Simple 2: `my-or` — Multi-Arm Dispatch
+### Simple 2: `my-or` — Multi-Arity Dispatch
+
+Multi-arity is handled with `...args` variadic and `[match [length args] ...]` in the body. `[case ...]` appears inside `[match ...]` — the standard unified-bindings match arm form.
 
 ```tinct
-[macro my-or
-  [[case [let]]            [quote false]]
-  [[case [let a]]          a]
-  [[case [let a b]]        [quote [if [unquote a] [unquote a] [unquote b]]]]
-  [[case [let a ...rest]]  [quote [if [unquote a] [unquote a] [my-or [unquote-splice rest]]]]]]
+[macro my-or [let ...args@Seq@Expr]
+  [match [length args]
+    [[case 0]       [quote false]]
+    [[case 1]       [first args]]
+    [[case [let _]]
+      [a: [first args]  rest: [rest args]]
+      [quote [if [unquote a] [unquote a] [my-or [unquote-splice rest]]]]]]]
 ```
 
-The zero-arg arm returns `[quote false]` — the AST for the literal `false`, not a raw boolean. The one-arg arm returns `a` directly — `a` is already an AST dict (the argument's parsed form), so no quoting needed. The two- and many-arg arms build new AST using quasiquote.
+The zero-arg case returns `[quote false]` — the AST for literal `false`. The one-arg case returns `[first args]` directly — it's already an AST node. The many-arg case builds new AST and recurses.
 
 ```tinct
 [my-or]              # → false
@@ -546,20 +556,23 @@ Point: [type [x@Float  y@Float]]
 `cond` accepts a sequence of `[test body]` clause pairs plus an optional `[else body]` fallback. It chains them into nested `[if ...]` expressions.
 
 ```tinct
-[macro cond
-  [[case [let]]
-    [quote [error "cond: no matching clause"]]]
-  [[case [let clause]]
-    # single clause — must be [else body] or [test body]
-    [match [get-or [first-or clause {}] "type" null]
-      [[case [let _ : VarRef]]  [quote [unquote [second clause]]]]   # [else body] — VarRef("else")
-      [[case [let _]]           [quote [if [unquote [first clause]]  # [test body]
-                           [unquote [second clause]]
-                           [error "cond: no matching clause"]]]]]]
-  [[case [let clause ...rest]]
-    [quote [if [unquote [first clause]]
-      [unquote [second clause]]
-      [cond [unquote-splice rest]]]]]]
+[macro cond [let ...clauses@Seq@Expr]
+  [match [length clauses]
+    [[case 0]
+      [quote [error "cond: no matching clause"]]]
+    [[case 1]
+      [clause: [first clauses]]
+      [match [first clause]
+        [[case [let _ : VarRef]]  [quote [unquote [second clause]]]]   # [else body]
+        [[case [let _]]
+          [quote [if [unquote [first clause]]
+            [unquote [second clause]]
+            [error "cond: no matching clause"]]]]]]
+    [[case [let _]]
+      [clause: [first clauses]  rest: [rest clauses]]
+      [quote [if [unquote [first clause]]
+        [unquote [second clause]]
+        [cond [unquote-splice rest]]]]]]]
 ```
 
 ```tinct
