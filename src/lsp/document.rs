@@ -35,6 +35,9 @@ pub struct DocumentState {
     pub doc_map: DocMap,
     /// Map from VarRef spans to their TypeScheme (for hover constraint display).
     pub scheme_map: SchemeMap,
+    /// Extracted literate blocks (for .md files only).
+    /// Empty for .llt files.
+    pub literate_blocks: Vec<crate::literate::LiterateBlock>,
 }
 
 impl DocumentState {
@@ -95,6 +98,7 @@ impl DocumentState {
                         type_map: TypeMap::new(),
                         doc_map: DocMap::new(),
                         scheme_map: SchemeMap::new(),
+                        literate_blocks: vec![],
                     };
                 }
             };
@@ -287,6 +291,39 @@ impl DocumentState {
             type_map,
             doc_map,
             scheme_map,
+            literate_blocks: vec![],
+        }
+    }
+
+    /// Create a new document state from markdown source.
+    ///
+    /// Extracts all tinct code blocks and stores them for per-block LSP analysis.
+    /// Diagnostics are generated on-demand in `diagnostics_for` rather than
+    /// pre-aggregated here, so spans can be correctly mapped to markdown coordinates.
+    pub fn new_markdown(
+        text: String,
+        _stdlib_env: &Rc<RefCell<Environment>>,
+        _eval_ctx: &Rc<crate::eval::EvalContext>,
+        _base_dir: Option<&std::path::Path>,
+    ) -> Self {
+        // Extract literate blocks
+        let blocks = crate::literate::extract_blocks(&text);
+
+        // Return a DocumentState with no top-level AST (markdown has no single AST)
+        // LSP features (hover, diagnostics) will analyze blocks on-demand
+        Self {
+            text,
+            ast: Err(ParseError {
+                message: "markdown file (no single AST)".to_string(),
+                span: None,
+            }),
+            parse_errors: vec![],
+            type_errors: vec![],
+            eval_errors: vec![],
+            type_map: TypeMap::new(),
+            doc_map: DocMap::new(),
+            scheme_map: SchemeMap::new(),
+            literate_blocks: blocks,
         }
     }
 }
@@ -612,8 +649,13 @@ impl DocumentStore {
             });
         let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
 
-        // Create document state with base_path as base_dir for include resolution
-        let state = DocumentState::new(text, &self.stdlib_env, &eval_ctx, Some(&base_path));
+        // Detect .md files and use markdown extraction
+        let is_markdown = uri.as_str().ends_with(".md");
+        let state = if is_markdown {
+            DocumentState::new_markdown(text, &self.stdlib_env, &eval_ctx, Some(&base_path))
+        } else {
+            DocumentState::new(text, &self.stdlib_env, &eval_ctx, Some(&base_path))
+        };
 
         // Collect include paths from the new AST using the shared imports module
         let new_includes = if let Ok(ref file) = state.ast {
@@ -755,12 +797,12 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
 
     // Create document state with the file's directory as base_dir for include resolution
     let base_path = path.parent().map(|p| p.to_path_buf());
-    Some(DocumentState::new(
-        text,
-        &stdlib_env,
-        &eval_ctx,
-        base_path.as_deref(),
-    ))
+    let is_markdown = uri.as_str().ends_with(".md");
+    Some(if is_markdown {
+        DocumentState::new_markdown(text, &stdlib_env, &eval_ctx, base_path.as_deref())
+    } else {
+        DocumentState::new(text, &stdlib_env, &eval_ctx, base_path.as_deref())
+    })
 }
 
 #[cfg(test)]
@@ -996,5 +1038,36 @@ mod tests {
         let include_path = "lib/utils.llt";
         let result = resolve_include_uri(&base_url, include_path);
         assert!(result.is_none(), "should return None for non-file:// URLs");
+    }
+
+    #[test]
+    fn test_document_state_markdown_extraction() {
+        let env = test_env();
+        let ctx = test_ctx();
+        let markdown = r#"# Test
+
+```tinct
+[x: 1]
+```
+
+Some prose.
+
+```tinct
+[y: 2]
+```"#;
+        let state = DocumentState::new_markdown(markdown.to_string(), &env, &ctx, None);
+        assert_eq!(state.literate_blocks.len(), 2);
+        assert_eq!(state.literate_blocks[0].code, "[x: 1]\n");
+        assert_eq!(state.literate_blocks[1].code, "[y: 2]\n");
+    }
+
+    #[test]
+    fn test_document_state_markdown_no_ast() {
+        let env = test_env();
+        let ctx = test_ctx();
+        let markdown = "# Just prose, no code blocks";
+        let state = DocumentState::new_markdown(markdown.to_string(), &env, &ctx, None);
+        assert!(state.ast.is_err());
+        assert_eq!(state.literate_blocks.len(), 0);
     }
 }

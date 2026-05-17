@@ -149,6 +149,39 @@ The corpus test suite has grown to hundreds of fine-grained single-feature tests
 
 ---
 
+## Codebase Cleanup
+
+### remove-emitted-flag: Remove EvalContext.emitted and make emit additive
+
+`EvalContext.emitted` was added before the tinct-native output formatter (`-o` flag /
+`json.llt`). It currently serves two purposes:
+
+1. **JSON suppression** — when `emit` is called, final JSON serialization is skipped.
+   This is the obsolete behaviour: now that `-o` handles output formatting through the
+   tinct pipeline, `emit` can be additive (write to stdout without suppressing the
+   final result).
+
+2. **Seq drain gating** — when the final value is a `Seq` and `emitted=true`, the Seq
+   is drained to completion to fire all emit side-effects in generator elements. This
+   behaviour should be preserved by a different mechanism (always drain Seq if it is the
+   final value, regardless of emit calls).
+
+After this change, `emit` is purely additive: calling it one or more times writes strings
+to stdout AND the final expression is still serialized. This makes `emit` usable as the
+logging/print primitive and unblocks `stdlib/log.llt`.
+
+- [ ] Remove `emitted: Cell<bool>` from `EvalContext` (`src/eval.rs`, `src/lib.rs`)
+- [ ] Remove all `eval_ctx.emitted.get()` / `emitted.set(true)` sites; update
+  `run_eval`, `run_literate_eval`, `run_literate_weave` accordingly (`src/main.rs`)
+- [ ] Preserve Seq drain: always drain a Seq final value to completion (remove the
+  `emitted.get()` gate, make drain unconditional) (`src/main.rs`)
+- [ ] Update `doc/09-documents.md` §Interaction with `emit` — remove language about
+  JSON suppression (`doc/09-documents.md`)
+- [ ] Update corpus tests that rely on emit-suppression behaviour (`tests/corpus/`)
+- [ ] Verify `just test` passes (`tests/`)
+
+---
+
 ## VS Code Extension
 
 ### vscode-corpus-grammar: Colorize corpus/literate format in source and markdown preview
@@ -238,24 +271,24 @@ pub fn block_span_to_md(blocks: &[LiterateBlock], block_idx: usize, span: Span) 
 Evaluation stays in `src/main.rs` (CLI path). LSP analysis stays in `src/lsp/`. Only the
 block extraction and position mapping live in `src/literate.rs` — the shared kernel.
 
-- [ ] Refactor `src/literate.rs`: define `LiterateBlock`, `extract_blocks`,
+- [x] Refactor `src/literate.rs`: define `LiterateBlock`, `extract_blocks`,
   `md_offset_to_block`, `block_span_to_md`; move block extraction logic out of
   `run_literate_weave`/`run_literate_eval` in `src/main.rs` (`src/literate.rs`,
   `src/main.rs`)
-- [ ] Add `===` section parsing to `LiterateBlock.expectations` — reuse
+- [x] Add `===` section parsing to `LiterateBlock.expectations` — reuse
   `TestExpectations` or factor a shared `Expectations` type; both corpus tests and
   literate mode use the same parser (`src/literate.rs`, `tests/corpus_tests.rs`)
-- [ ] Extend `tinct lsp` to accept `textDocument/didOpen`/`didChange` for `.md` files;
+- [x] Extend `tinct lsp` to accept `textDocument/didOpen`/`didChange` for `.md` files;
   call `literate::extract_blocks` and cache `Vec<LiterateBlock>` per document
   (`src/lsp/`, `src/literate.rs`)
-- [ ] Handle `textDocument/hover` for `.md`: `md_offset_to_block` → run existing hover
+- [x] Handle `textDocument/hover` for `.md`: `md_offset_to_block` → run existing hover
   analysis on `block.code` at block-relative position → `block_span_to_md` for response
   span (`src/lsp/analysis.rs`, `src/literate.rs`)
-- [ ] Handle `textDocument/publishDiagnostics` for `.md`: collect diagnostics from block
+- [x] Handle `textDocument/publishDiagnostics` for `.md`: collect diagnostics from block
   typecheck, `block_span_to_md` each span to markdown coordinates (`src/lsp/`)
-- [ ] Add `{ language: 'markdown' }` to the extension's `DocumentSelector`; no other
+- [x] Add `{ language: 'markdown' }` to the extension's `DocumentSelector`; no other
   extension changes needed (`integrations/vscode/package.json`)
-- [ ] Handle completion for `.md` (lower priority); preview hover requires webview bridge
+- [x] Handle completion for `.md` (lower priority); preview hover requires webview bridge
   (lower priority) (`src/lsp/`, `integrations/vscode/`)
 
 ---
@@ -381,57 +414,5 @@ markdown file being processed from accidentally reading or writing local files.
   subcommand; wire to the same cap-grant machinery as `tinct run` (`src/main.rs`)
 - [x] Document in `doc/12-tooling.md` §Literate Mode: all flags, fixed-clock semantics,
   `--no-pwd` always-on, and `--errors-in-doc` use case (`doc/12-tooling.md`)
-
----
-
-## Structured Logging
-
-### structured-logging: trace builtin and stdlib/log.llt
-
-Tinct currently has no mechanism for programs to emit diagnostic/trace output separate
-from the final result (`emit`). `log` is the natural logarithm (`ln x`). A structured
-logging system is needed for:
-- Documenting intermediate state in literate examples (`=== info` section)
-- Runtime diagnostics and tracing in application code
-- Distinguishing debug output from final program output
-
-**`trace` builtin** — the low-level building block. Writes to the info channel (stderr in
-normal mode, captured to `=== info` in literate weave). Accepts either a `Str` or a `Dict`
-(structured entry). Returns `Null` (side effect only). Does not affect the final result.
-
-```tinct
-[trace "server started"]
-[trace [level: "info"  msg: "connection"  peer: addr  port: p]]
-```
-
-**`stdlib/log.llt`** — higher-level structured logging API built on `trace`:
-
-```tinct
-log-info:  [fn [let msg] [trace [level: "info"  msg: msg]]]
-log-warn:  [fn [let msg] [trace [level: "warn"  msg: msg]]]
-log-debug: [fn [let msg] [trace [level: "debug" msg: msg]]]
-log-error: [fn [let msg] [trace [level: "error" msg: msg]]]
-
-# Structured entry variant
-log: [fn [let entry@Dict] [trace [merge [level: "info"] entry]]]
-```
-
-**Literate integration** — `=== info` in corpus/literate format captures `trace` output
-(all levels) in evaluation order, one entry per line. The `literate-flags` sprint
-must wire this: capture `trace` calls during block evaluation and populate `=== info`.
-Application-level `log-warn` calls are separate from type-checker `=== warn` entries.
-
-- [ ] Add `trace` builtin to `src/builtins_io.rs`; writes to the info channel (stderr
-  with structured formatting by default); accepts `Str` or `Dict`; returns `Null`;
-  register in `standard_builtins()` (`src/builtins_io.rs`, `src/builtins.rs`)
-- [ ] Add `stdlib/log.llt` with `log-info`, `log-warn`, `log-debug`, `log-error`, `log`
-  built on `trace` (`stdlib/log.llt`)
-- [ ] Wire `trace` output capture into `run_literate_weave`: collect `trace` calls during
-  block evaluation and include in `=== info` section output (coordinate with
-  `literate-flags` sprint) (`src/main.rs`, `src/literate.rs`)
-- [ ] Document `trace` and `stdlib/log.llt` in `doc/12-tooling.md` §Logging and in
-  prelude API reference (`doc/12-tooling.md`, `doc/11-stdlib.md`)
-- [ ] Update `just doc` and `just doc-verify` notes to reflect that `=== info` captures
-  `trace` output specifically (not `emit`, which goes to `=== out`) (`doc/09-documents.md`)
 
 ---

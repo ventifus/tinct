@@ -12,7 +12,7 @@
     "vscode": "^1.75.0"
   },
   "categories": ["Programming Languages"],
-  "activationEvents": ["onStartupFinished", "onLanguage:llt", "onLanguage:llt-eval"],
+  "activationEvents": ["onStartupFinished", "onLanguage:llt", "onLanguage:llt-eval", "onLanguage:markdown"],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
