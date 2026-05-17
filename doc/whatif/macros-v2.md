@@ -338,7 +338,92 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 # Stdlib helpers
 [wrap-in-let elems]      # produce Let(bindings: elems) AST node
 [let-decl-elems decl]    # extract bindings Seq@Expr from a Let node
+[ident str@Str]          # construct VarRef(name: str) from a string — the counterpart to
+                         # gensym for EXISTING names (str must already be a valid identifier)
 ```
+
+---
+
+### Syntax Classes — Structural Validation at the Call Site
+
+When a macro parameter is annotated with a specific `Expr` variant (e.g., `name@VarRef`), the expander validates the argument before calling the macro body. If validation fails, the error is reported at the call site with a structural description — not as a runtime failure deep inside the macro body.
+
+```tinct
+# @VarRef on a param: expander validates arg is a VarRef before body runs
+[macro pragma [let name@VarRef  value@Literal]
+  [quote [pragma [unquote name] [unquote value]]]]
+
+[pragma optimize true]    # ✓ — optimize is VarRef, true is Literal
+[pragma [+ 1 2] true]     # expansion error at call site:
+                          #   "pragma: argument 'name' expected VarRef, got Call"
+[pragma optimize x]       # expansion error:
+                          #   "pragma: argument 'value' expected Literal, got VarRef"
+```
+
+`name@VarRef` binds the full `VarRef` node (not just its payload) to `name`. `[unquote name]` splices the VarRef identifier directly. To access the name string: `name.name : Str`. To reconstruct a VarRef from a computed string: `[ident computed-str]`.
+
+**Named syntax classes** provide custom error messages. A `syntax-class` declaration combines a pattern with a human-readable description:
+
+```tinct
+[syntax-class pragma-name
+  pattern: [let _ : VarRef]
+  message: "bare identifier (e.g., optimize, debug)"]
+
+[syntax-class pragma-value
+  pattern: [let _ : Literal]
+  message: "literal value (e.g., true, 42, \"fast\")"]
+
+[macro pragma [let name@pragma-name  value@pragma-value]
+  [quote [pragma [unquote name] [unquote value]]]]
+
+[pragma [+ 1 2] true]
+# "pragma: argument 'name' — expected bare identifier (e.g., optimize, debug), got Call"
+```
+
+Named syntax classes can be reused across multiple macros. The `pattern:` field is a `[let ...]` binding pattern — the same syntax used everywhere in tinct. The `message:` field is the user-facing description of what the validator expects.
+
+**Syntax class attributes.** When a syntax class pattern extracts fields, those fields are available in the macro body as named bindings:
+
+```tinct
+[syntax-class var-with-type
+  pattern: [let [expr: e  ann: a] : Annotated]]
+  # attributes: e (the inner expr), a (the annotation)
+
+[macro log-type [let arg@var-with-type]
+  # arg.e is the expression, arg.a is its annotation
+  [quote [log [str "type of " [unquote [ident arg.e.name]] " is " [unquote [to-str arg.a]]]]]]
+```
+
+`[ident str]` constructs a `VarRef` for an existing name — here, `arg.e.name` is a string from the VarRef payload, and `[ident arg.e.name]` recreates the VarRef node for that identifier. This is distinct from `gensym` (which generates a fresh unforgeable name): `ident` is for reconstructing identifiers the user wrote.
+
+---
+
+### Meta-Macros — Macros Generating Macros
+
+A macro can produce `[macro ...]` declarations in its output (via `splice`). When the expander encounters a `MacroDecl` node in expansion output, it registers the new macro immediately and continues expanding. Subsequent forms in the same dict can use the newly registered macro.
+
+```tinct
+# A meta-macro that generates one accessor macro per field
+[macro define-accessors [let type-name@VarRef  ...fields@Seq@Expr]
+  [splice
+    ...[map [fn [let field@VarRef]
+              [quote [macro [unquote field] [let obj@Expr]
+                [quote [get [unquote obj] [unquote [ident field.name]]]]]]]
+           fields]]]
+
+# Usage:
+[define-accessors Point  x  y  z]
+# Expander generates and registers: macro x, macro y, macro z
+# Each is available immediately after the splice:
+point: [Point 1.0 2.0 3.0]
+px: [x point]   # → [get point "x"] — uses the just-registered macro
+```
+
+**Registration timing.** The expander registers each `MacroDecl` from splice output before processing the next entry in the same dict. Macros generated in entry `k` are available for entries `k+1` onward — same semantics as regular macro registration.
+
+**Depth limit applies.** A meta-macro that generates a meta-macro that generates another... is bounded by the total expansion depth limit. Infinite meta-macro chains hit the limit and produce an expansion error.
+
+**Ordering constraint.** A generated macro is only available AFTER the meta-macro call that produced it. A form that appears BEFORE `[define-accessors Point x y z]` in the same dict cannot use `x`, `y`, or `z` as macros. This matches the general rule that macros are available to later forms in the same file.
 
 ---
 
@@ -350,11 +435,7 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 **Compile-time type access** — macros run before type-checking and do not see inferred types. Interleaving expansion with type inference (Template Haskell's `reify`) would fundamentally reorganize the pipeline. Excluded.
 
-**Character-level lexer hooks** — excluded because they make programs unreadable: if arbitrary user code can redefine what characters mean, two readers looking at the same file may parse it differently depending on which hooks are loaded. This is a correctness and readability concern, not a capability-system concern. Tinct's security boundary is the capability system (`DirCap`, `NetCap`, `Handle`) — raw character access doesn't bypass it, but it does make programs impossible to reason about statically.
-
-**Meta-macros (macro-generating macros)** — a `[macro ...]` declaration produced by macro expansion is not registered by the pre-scan (which runs before any expansion). A macro that expands to a `[macro ...]` form would produce an unregistered declaration; the inner macro would not be expanded. This is excluded from this design. If needed, it requires a multi-phase pre-scan with re-registration after each expansion pass.
-
-**Syntax classes** — Racket's `syntax-parse` provides declarative validation of argument shapes (e.g., `condition:expr` asserts "this must be a valid expression, not a binding list"). Tinct's `[match [length args] ...]` + `[match node ...]` in the body provides equivalent power with standard tinct code, at the cost of more macro body lines. Tinct's `Expr` nominal type and variant pattern matching cover the same cases; no separate syntax-class mechanism is needed.
+**Character-level lexer hooks** — excluded because they make programs unreadable: if arbitrary user code can redefine what characters mean, two readers looking at the same file may parse it differently depending on which hooks are loaded. Tinct's security boundary is the capability system (`DirCap`, `NetCap`, `Handle`) — raw character access doesn't bypass it, but it does make programs impossible to reason about statically.
 
 **Expansion order and confluence** — the expander uses top-down, left-to-right expansion order (standard for Racket/Scheme procedural macros). Procedural macros are inherently non-confluent: different expansion orders can produce different results. Top-down left-to-right is the canonical choice. Users relying on expansion-order-dependent behavior write non-portable macros.
 
@@ -699,7 +780,7 @@ Each error points at the exact source location of the violation: the macro uses 
 ### `src/expand.rs` — Parse-Stage Transformation Pass
 
 **Current:** Expansion pass handles `defmacro` post-parse, with lazy macro registration during the walk.
-**Proposed:** (1) Rename `defmacro` → `macro`. (2) Move macro registration to a pre-scan pass before the main expansion walk — all `Expr::MacroDecl` nodes in the parsed AST are evaluated and registered before any expansion begins. This changes scoping: macros are available throughout the file regardless of lexical position. (3) Add `splice` handling in `expand_document`: when a macro returns `Expr::Splice(forms)`, inject each form into the surrounding dict and re-expand. Splice in expression position is an expansion-time error (not a type error). (4) Update argument binding to use `[let ...]` pattern matching. (5) Deep-materialize both the input AST dict and the output before/after calling the macro body — macro bodies must return fully-groundable values (no lazy infinite sequences). (6) When macro bodies throw runtime errors (not `macro-error`), re-raise with `macro_expansion` provenance attached, preserving the definition-site span and stack frame. No flat-list delivery mode.
+**Proposed:** (1) Rename `defmacro` → `macro`. (2) Pre-scan pass evaluates and registers all `Expr::MacroDecl` and `Expr::SyntaxClass` nodes before the main expansion walk. (3) Add splice handling in `expand_document`: when a macro returns `Expr::Splice(forms)`, inject each form. Any `MacroDecl` or `SyntaxClass` in the splice output is **registered immediately** before processing the next splice form — this enables meta-macros (macros generating macros available to subsequent forms). Splice in expression position is an expansion-time error. (4) Validate macro arguments annotated with `@VariantName` or `@syntax-class-name` before calling the macro body; raise `MacroError` on failure. (5) Update argument binding to use `[let ...]` pattern matching. (6) Deep-materialize both input and output. (7) Preserve provenance for runtime errors in macro bodies.
 **Impact:** Moderate — pre-scan registration, splice handling, `[let ...]` pattern binding, provenance propagation.
 
 ### `src/ast.rs` — New Variants
@@ -735,10 +816,26 @@ Add: `macro-error` as a Rust builtin.
 **`gensym` API change:** The existing zero-arg `gensym` (returns a plain string like `:gensym:0`) is replaced by a one-arg `gensym prefix` that returns `VarRef(name: ":prefix:N")` — a genuine `Expr` variant. The `:` separator is in the lexer's denylist (structurally unforgeable). All call sites of `[gensym]` migrate to `[gensym "name"]`. The existing corpus tests for `gensym` migrate accordingly.
 **`macro` keyword:** `macro` becomes a reserved keyword. The existing 27 corpus test files in `tests/corpus/eval/macros/` using `defmacro` migrate to `macro`.
 
+### `src/ast.rs` — `Expr::SyntaxClass`
+
+```rust
+Expr::SyntaxClass {
+    name: String,
+    pattern: Box<Spanned<Expr>>,   // a [let ...] binding pattern
+    message: String,               // user-facing description
+}
+```
+
+Syntax class declarations are pre-scanned and registered alongside `MacroDecl` nodes. When a macro parameter is annotated with a syntax class name (e.g., `name@pragma-name`), the expander validates the argument against the pattern before calling the macro body. Validation failure raises `MacroError` with the `message` string.
+
+For built-in `Expr` variant annotations (`name@VarRef`, `value@Literal`, etc.), the expander generates a default message: "argument 'name' expected VarRef, got [ActualType]."
+
 ### `stdlib/ast.llt` (new file)
 
-Defines `Entry`, `Annotation`, and `Expr` nominal types plus the `flatten-args` helper. This file must be explicitly imported by macro-writing code: `[include %libdir "ast.llt"]`. Macro bodies that use `Expr` variant names (`Let`, `VarRef`, `Call`, etc.) without importing this file will get undefined-variable errors.
-**Impact:** New file, ~60 lines.
+Defines `Entry`, `Annotation`, and `Expr` nominal types plus `flatten-args`, `ident`. This file must be explicitly imported by macro-writing code: `[include %libdir "ast.llt"]`. Macro bodies that use `Expr` variant names (`Let`, `VarRef`, `Call`, etc.) without importing this file will get undefined-variable errors.
+
+`[ident str@Str] -> VarRef` — constructs `VarRef(name: str)` from any string. For reconstructing existing identifiers from extracted name fields; not for generating fresh names (use `gensym` for that).
+**Impact:** New file, ~70 lines.
 
 ### `ast_to_dict` — Typed Expr Variant Migration
 
