@@ -106,11 +106,13 @@ fn typecheck_and_merge_stdlib_module(
 
     // Type-check with the parent environment (builtins + prelude), capturing InferState.
     // `enable_scheme_map: false` — no LSP hover needed for stdlib modules.
+    // `in_prelude_load: true` — skip instance method body inference (optimization).
     let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, state) =
         typecheck_file_with_types_and_env_and_source_returning_state(
             &file.node,
             Rc::clone(parent_env),
             false,
+            true,
         );
 
     // Silently ignore type errors

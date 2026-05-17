@@ -297,7 +297,7 @@ traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
   [t.traverse f xs]]
 
 # forM: traverse with arguments flipped (collection before function)
-forM: [fn@[m [Seq b]] [m@Monad  xs@[Seq a]  f@fn@[m b] [a]]
+forM: [fn@[m [Seq b]] [m@Monad  xs@[Seq a]  f@[Fn@[m b] [a]]]
   [traverse m f xs]]
 
 # when: conditionally execute a monadic action
@@ -305,7 +305,7 @@ when: [fn@[m []] [m@Monad  cond@Bool  action@[m []]]
   [if cond action [m.pure []]]]
 
 # liftM2: lift a two-argument function into the monad
-liftM2: [fn@[m c] [m@Monad  f@fn@c [a b]  ma@[m a]  mb@[m b]]
+liftM2: [fn@[m c] [m@Monad  f@[Fn@c [a b]]  ma@[m a]  mb@[m b]]
   [m.bind ma [fn [a]
   [m.bind mb [fn [b]
     [m.pure [f a b]]]]]]]

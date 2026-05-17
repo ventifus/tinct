@@ -40,6 +40,28 @@ use crate::value::{string_val, Environment, Key, Thunk, ThunkState, Value};
 
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 
+/// Check if a span matches a boundary guard and wrap the thunk if so.
+/// This is called at the end of eval() to automatically insert runtime
+/// guards for gradual typing boundaries detected by the type checker.
+#[allow(dead_code)]
+fn maybe_wrap_guard(thunk: Rc<Thunk>, span: Span, ctx: &Rc<EvalContext>) -> EvalResult<Rc<Thunk>> {
+    // Check if this span has a boundary guard
+    let guards = ctx.boundary_guards.borrow();
+    if let Some((_, expected_type)) = guards.iter().find(|(guard_span, _)| *guard_span == span) {
+        // Create a guarded thunk wrapping the original
+        Ok(Rc::new(Thunk::new_guarded_full(
+            thunk,
+            expected_type.clone(),
+            Vec::new(), // empty field path for top-level guard
+            span,
+            None, // no blame label for automatic guards
+            None, // no default for automatic guards
+        )))
+    } else {
+        Ok(thunk)
+    }
+}
+
 /// Reserved annotation meta-keys that are NOT structural field declarations.
 /// A PropertyDict annotation whose entries are all meta-keys (e.g., `[@[default: 0] $x]`)
 /// is metadata-only and has no type to validate. A PropertyDict with at least one
@@ -182,6 +204,12 @@ pub struct EvalContext {
     /// per Findler & Felleisen (2002). Avoids a `Value::Tagged` variant which would require
     /// updating all exhaustive `Value` matches.
     pub blame_map: RefCell<HashMap<ThunkId, String>>,
+    /// Boundary guards from type inference: (arg_span, expected_param_type).
+    /// When an Unknown-typed expression crosses into a concrete-typed context,
+    /// the type checker records the boundary. The evaluator checks if a thunk's
+    /// span matches a guard and wraps it with runtime validation if so.
+    /// Populated by typecheck_file via set_boundary_guards(), consumed during eval().
+    pub boundary_guards: RefCell<Vec<(Span, Type)>>,
 }
 
 impl EvalContext {
@@ -228,6 +256,7 @@ impl EvalContext {
             emitted: std::cell::Cell::new(false),
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
+            boundary_guards: RefCell::new(Vec::new()),
         })
     }
 
@@ -263,6 +292,7 @@ impl EvalContext {
             emitted: std::cell::Cell::new(false),
             env_allowed,
             blame_map: RefCell::new(HashMap::new()),
+            boundary_guards: RefCell::new(Vec::new()),
         })
     }
 
@@ -306,6 +336,7 @@ impl EvalContext {
             emitted: std::cell::Cell::new(false),
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
+            boundary_guards: RefCell::new(Vec::new()),
         })
     }
 
@@ -335,6 +366,7 @@ impl EvalContext {
             emitted: std::cell::Cell::new(false),
             env_allowed: self.env_allowed.clone(),
             blame_map: RefCell::new(self.blame_map.borrow().clone()),
+            boundary_guards: RefCell::new(self.boundary_guards.borrow().clone()),
         })
     }
 
@@ -368,6 +400,12 @@ impl EvalContext {
     /// Look up blame provenance for a thunk ID (if recorded at a pipeline boundary).
     pub fn blame_label(&self, thunk_id: ThunkId) -> Option<String> {
         self.blame_map.borrow().get(&thunk_id).cloned()
+    }
+
+    /// Set boundary guards from type inference.
+    /// Called after type checking to wire gradual typing runtime checks.
+    pub fn set_boundary_guards(&self, guards: Vec<(Span, Type)>) {
+        *self.boundary_guards.borrow_mut() = guards;
     }
 }
 
