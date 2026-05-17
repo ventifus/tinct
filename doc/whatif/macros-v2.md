@@ -732,8 +732,8 @@ Add `ErrorKind::MacroError { span: Span, message: String }` — distinct from `E
 
 Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or` (sequence helpers).
 Add: `macro-error` as a Rust builtin.
-**Breaking change — `gensym`:** The existing zero-arg `gensym` (returns a plain string like `:gensym:0`) is replaced by a one-arg `gensym prefix` that returns `VarRef(name: ":prefix:N")` — a genuine `Expr` variant. The `:` separator is in the lexer's denylist (structurally unforgeble). All call sites of `[gensym]` must migrate to `[gensym "name"]`. The existing corpus tests for `gensym` need migration.
-**Breaking change — `macro` keyword:** `macro` becomes a reserved keyword. Any existing code using `macro` as a variable name or dict key breaks. The existing 27 corpus test files in `tests/corpus/eval/macros/` using `defmacro` must migrate to `macro`.
+**`gensym` API change:** The existing zero-arg `gensym` (returns a plain string like `:gensym:0`) is replaced by a one-arg `gensym prefix` that returns `VarRef(name: ":prefix:N")` — a genuine `Expr` variant. The `:` separator is in the lexer's denylist (structurally unforgeable). All call sites of `[gensym]` migrate to `[gensym "name"]`. The existing corpus tests for `gensym` migrate accordingly.
+**`macro` keyword:** `macro` becomes a reserved keyword. The existing 27 corpus test files in `tests/corpus/eval/macros/` using `defmacro` migrate to `macro`.
 
 ### `stdlib/ast.llt` (new file)
 
