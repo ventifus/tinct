@@ -54,6 +54,10 @@ pub enum Token {
     TripleQuotedString(String),
     /// Triple-quoted interpolated string `i"""..."""` with parts
     TripleInterpolatedString(Vec<InterpolatedPart>),
+    /// Reserved keyword `let` — binding declaration
+    Let,
+    /// Reserved keyword `case` — match arm with explicit scoping
+    Case,
 }
 
 /// Parts of an interpolated string.
@@ -114,6 +118,8 @@ impl fmt::Display for Token {
                 }
                 write!(f, "\"\"\"")
             }
+            Token::Let => write!(f, "let"),
+            Token::Case => write!(f, "case"),
         }
     }
 }
@@ -1098,7 +1104,7 @@ impl<'a> Lexer<'a> {
         let word = self.input[word_start..word_end].to_string();
         let end = self.current_position();
 
-        // Check for boolean literals
+        // Check for reserved keywords and boolean literals
         if word == "true" {
             self.tokens
                 .push(Spanned::new(Token::BoolLit(true), Span::new(start, end)));
@@ -1107,6 +1113,14 @@ impl<'a> Lexer<'a> {
             self.tokens
                 .push(Spanned::new(Token::BoolLit(false), Span::new(start, end)));
             self.last_was_identifier = false; // BoolLit does not trigger ImmediateAt
+        } else if word == "let" {
+            self.tokens
+                .push(Spanned::new(Token::Let, Span::new(start, end)));
+            self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
+        } else if word == "case" {
+            self.tokens
+                .push(Spanned::new(Token::Case, Span::new(start, end)));
+            self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
         } else {
             self.tokens
                 .push(Spanned::new(Token::Identifier(word), Span::new(start, end)));
