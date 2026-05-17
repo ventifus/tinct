@@ -1,0 +1,7 @@
+# Test [fn [let x@Int y] body] syntax works correctly
+
+[fn [let x@Int y] [+ $x $y]]
+
+=== out
+
+[fn [x@Int y] [+ x y]]
