@@ -1,6 +1,6 @@
 # What If: CHR-Unified Type Constraints for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-16
 
 What would it take to unify functional dependencies and type-level computation into a single, coherent constraint system grounded in Constraint Handling Rules?
 
@@ -105,6 +105,7 @@ struct NormCtxt<'a> {
     class_env: &'a TypeEnv,           // for FD lookups — scope-resident, not a global registry
     depth: usize,                     // current reduction depth (step limit analogous to GHC's -freduction-depth)
     max_depth: usize,                 // default: 256
+    call_stack: Vec<String>,          // in-progress resolver names for cycle detection
 }
 ```
 
@@ -118,9 +119,19 @@ normalize(ty, ctx):
   2. TypeStageApp reduction:
      if ty = TypeStageApp(fn, args):
        args' = args.map(|a| normalize(a, ctx))
+       if args'.any(|a| a == Unknown):
+         # If any determining position is permanently Unknown, the result is Unknown.
+         # Deferring indefinitely would leave the determined TypeVar free forever.
+         if args'.all(|a| a == Unknown or is_ground(a)):
+           return Unknown
+         else:
+           return TypeStageApp(fn, args')   # some args still TypeVars — defer
+       if fn in ctx.call_stack:
+         # Cycle detected: F → ... → F. Return unreduced and let depth limit handle it.
+         return TypeStageApp(fn, args')
        if args'.all(is_ground) and ctx.depth < ctx.max_depth:
-         type_dicts = args'.map(type_to_dict)
-         result = eval(ctx.type_stage_env.get(fn), type_dicts)
+         type_dicts = args'.map(type_to_dict)  # applies literal widening: IntLiteral→Int etc.
+         result = eval(ctx.type_stage_env.get(fn), type_dicts, ctx.with_call(fn))
          return normalize(dict_to_type(result), ctx.with_depth(ctx.depth + 1))
        else:
          return TypeStageApp(fn, args')
@@ -142,17 +153,23 @@ normalize(ty, ctx):
   6. Recursive normalization: normalize all child types
 ```
 
-Normalization is idempotent with respect to a fixed `NormCtxt`: `normalize(normalize(ty, ctx), ctx) = normalize(ty, ctx)` provided `ctx` (including `subst` and depth budget) is unchanged between calls. Across unification steps where `subst` grows, re-normalization is necessary and correct — this is why normalization is called before every `unify` step rather than once. It terminates because: TypeStageApp reduction is depth-limited; alias expansion uses rational tree detection; BAS simplification strictly reduces the type structure.
+**Invariant:** every step that produces a new type containing `TypeStageApp` must re-enter `normalize()` on the result. Step 2 satisfies this (normalizes args and recursively normalizes the resolver's result). Step 5 satisfies this (`normalize(expand_alias(...), ctx)`). Steps 3, 4, 6 never produce `TypeStageApp` nodes. Any future extension adding a new type producer must re-enter.
 
-**Cache invariant:** cache entries are only written when `args'.all(is_ground)` is true after substitution application. Deferred cases (non-ground args) do not write to the cache. Ground type keys are permanently stable — once `Type::Int`, always `Type::Int` — so no cache invalidation is needed when the substitution grows. Partial results for unevaluated `TypeStageApp` nodes are never cached.
+**Termination:** normalization terminates within each call: TypeStageApp reduction is depth-limited; the Unknown-in-args rule terminates immediately; alias expansion uses rational-tree detection; BAS simplification strictly reduces type structure. Normalization is **not** idempotent across `unify` calls — each call constructs a fresh `NormCtxt` with depth reset to 0, so an irreducible `TypeStageApp` (due to depth limit or non-ground args) may reduce on the next call as more substitution bindings accumulate. This is correct: the substitution grows monotonically, so re-attempts only succeed as new information arrives.
+
+**Cache invariant:** entries are written only when `args'.all(is_ground)` and the result is fully reduced. Deferred cases (non-ground args, Unknown args, depth-limit hits) do not write to the cache. Ground type keys are permanently stable — once `Type::Int`, always `Type::Int` — so no cache invalidation is needed when the substitution grows. The cache is monotonically growing and deterministic (same ground-arg key always maps to the same reduced type), both guaranteed by the purity of type-stage functions.
 
 **`TypeStageApp` unification rules in `unify_normalized`:**
 
 After normalization, `unify_normalized` may still encounter irreducible `TypeStageApp` nodes (non-ground args). Four cases:
 
-1. `unify(TypeStageApp("F", args₁), TypeStageApp("F", args₂))` — same function: unify args pairwise (congruence). Sound because `F` is functional: equal inputs imply equal outputs.
+1. `unify(TypeStageApp("F", args₁), TypeStageApp("F", args₂))` — same function, both irreducible after normalization. Two sub-cases based on `F`'s injectivity (recorded in `ClassDecl.resolver_injective`):
+   - **Injective F:** unify args pairwise (congruence). Sound because equal outputs imply equal inputs.
+   - **Non-injective F** (e.g., `AddResult(Int, Float) = Float = AddResult(Float, Float)`): add `(TypeStageApp("F", args₁), TypeStageApp("F", args₂))` to `state.deferred_equalities`. Do NOT unify args — different arg tuples may legally produce the same result. After each `unify` call, process the queue: normalize both sides; if both reduce to concrete types, unify the concrete types (success or TypeError); if still irreducible, keep deferred. Arithmetic classes (`AddResult`, `SubResult`, `MulResult`, `DivResult`) are all non-injective and always use deferred equality.
+
+   **Why deferred equality is correct:** `[= [+ 1 2.0] [+ 1.5 2.5]]` — both sums produce `Float`. When `a=Int,b=Float` and `e=Float,f=Float` are resolved, normalization gives `Float ~ Float` → ✓. If `a=Int,b=Int` (sum is `Int`) vs `e=Float,f=Float` (sum is `Float`): deferred equality fires `Int ~ Float` → TypeError, correctly identifying the mismatch.
 2. `unify(TypeStageApp("F", _), TypeStageApp("G", _))` where `F ≠ G` — different functions: `TypeError`. Distinct type families are "apart" (Eisenberg et al. 2014) — they cannot be assumed equal.
-3. `unify(TypeStageApp("F", args), ConcreteType)` where `args` is non-ground — stuck application. The `TypeStageApp` is retained in the substitution as a deferred equality goal. When its args later become ground through other unifications, the next normalization step reduces it and the equality is resolved.
+3. `unify(TypeStageApp("F", args), ConcreteType)` where `args` is non-ground — stuck application: `TypeError("cannot unify: type-stage application has unresolved arguments — add type annotations to help inference")`. This is the GHC behavior for stuck type family applications. The FD elaboration case (`c ~ TypeStageApp("AddResult", [a, b])`) avoids this because `c` is a TypeVar mediating the equality — it falls into Case 4, not Case 3.
 4. `unify(TypeStageApp("F", args), TypeVar(α))` — bind `α` to `TypeStageApp("F", args)` (standard TypeVar binding), subject to occurs-check: `occurs_in(α, arg)` must traverse `TypeStageApp.args`.
 
 Case 3 is the key case: the FD elaboration `c ~ TypeStageApp("AddResult", [a, b])` puts a TypeStageApp in the substitution. When the user annotates a return type and triggers `unify(TypeStageApp("AddResult", [a, b]), SomeType)` before `a`, `b` are ground, this is a stuck equality that defers automatically via the substitution chain.
@@ -233,7 +250,7 @@ A complete class + instance declaration:
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Number"]]]
+      _:                                                               [kind: "named" name: "Unknown"]]]
 ]
 ---
 # Class declaration: ClassEnv (persistent — needed at type-check time AND runtime for dispatch)
@@ -375,11 +392,13 @@ For a class with multiple determined variables — `DivMod: [class [a b q r]  [d
 DivModResult: [fn [...args]
   [match [[builtin-get 0 args]  [builtin-get 1 args]]
     [[kind: "named" name: "Int"]  [kind: "named" name: "Int"]]:
-      [q: [kind: "named" name: "Int"]  r: [kind: "named" name: "Int"]]
+      [kind: "multi-output"  q: [kind: "named" name: "Int"]  r: [kind: "named" name: "Int"]]
     ...]]
 ```
 
-The resolver returns a keyed dict whose keys match the determined-variable names from `determines: [[[a b] [q r]]]` — here `q` and `r`. The `dict_to_type` conversion, when it sees a dict without a `kind:` key, interprets it as a multi-output resolver result and destructures the fields by name: `q → Type::Int` and `r → Type::Int`. Each determined TypeVar is unified with the corresponding named field from the resolver's output. The key names in the resolver's return dict must match the declared determined-variable names exactly.
+Multi-output resolvers must return `[kind: "multi-output"  q: <type-dict>  r: <type-dict>]` — an explicit `kind: "multi-output"` sentinel distinguishes them from single-output resolvers. Without this sentinel, a buggy single-output resolver that returns a dict missing its `kind:` key would be silently misread as a multi-output result. The `dict_to_type` conversion, when it sees `kind: "multi-output"`, destructures the remaining fields by the determined-variable names from `determines:` — here `q` and `r`. Each determined TypeVar is unified with the corresponding named field. The key names must match the declared determined-variable names exactly.
+
+When a resolver returns `[kind: "named" name: "Unknown"]` (open-domain fallback), `dict_to_type` produces `Type::Unknown`. The implementation binds the determined TypeVar directly to `Type::Unknown` in the substitution (not via `is_consistent`) so the Unknown-ness propagates concretely. A **warning-level diagnostic** is emitted: `"FD for class {ClassName} returned Unknown for inputs ({T1}, {T2}) — this may indicate a missing instance arm"`. This is not a `TypeError`; the program continues with the determined TypeVar bound to `Unknown`.
 
 ### Class Body Structure — Two-Bracket Form
 
@@ -474,9 +493,9 @@ Instances are anonymous — they register in the InstanceEnv and are selected au
 The `resolver:` key names the type-stage function(s) used by the normalization pass when reducing `TypeStageApp(class_name, ground_args)`. For a class with one FD, `resolver:` takes a single name. For a class with N FDs, `resolver:` takes a list of N names in the same order as the `determines:` list — the Kth resolver is called when the Kth FD's determining positions become ground.
 
 Each resolver is called via:
-1. Convert `Type::*` to type dicts: `Type::Int → [kind: "named" name: "Int"]`
+1. Convert `Type::*` to type dicts with **literal widening**: `IntLiteral(_) → [kind: "named" name: "Int"]`, `FloatLiteral(_) → [kind: "named" name: "Float"]`, `StringLiteral(_) → [kind: "named" name: "Str"]`, then all other types by their kind tag. Widening happens before conversion so that call sites `[+ 1 2]` (where args are `IntLiteral(1)`, `IntLiteral(2)`) produce the same resolver inputs as explicitly-annotated `Int` args.
 2. Look up the resolver by name in the type-stage Env (carried by `NormCtxt`)
-3. Call `eval(resolver_fn, type_dicts, type_stage_env)` — returns a type dict for the determined position(s)
+3. Call `eval(resolver_fn, type_dicts, type_stage_env)` — returns a type dict for the determined position(s). If `eval()` encounters an `InProgress` thunk (resolver cycle not caught by `call_stack`), the resulting `EvalError` is caught at the `normalize()` call site and converted to `TypeError("type-stage evaluation failed: {message}")`. This is not catchable by user `$try` — TypeErrors are static diagnostics, not runtime errors.
 4. Convert result back to `Type::*` via the type dict → Type mapping
 
 **Normalization cache:** `NormCtxt` carries a `HashMap<(String, Vec<TypeKey>), Type>` keyed on `(fn_name, type_keys_of_args)`. Arithmetic class results are pre-populated from the existing `lookup_arithmetic_instance` table (O(1) cache hits). User-declared classes warm the cache on first reduction.
@@ -487,11 +506,11 @@ Each resolver is called via:
 
 Calling `eval(resolver_fn, ...)` during unification requires the resolver to satisfy four obligations:
 
-1. **Totality**: the resolver must terminate. If a user writes a divergent resolver (e.g., mutual recursion in type-stage), normalization diverges. The depth counter in `NormCtxt` (default 256) limits reduction depth. When `ctx.depth >= ctx.max_depth`, normalization returns the unreduced `TypeStageApp` unchanged — it does NOT produce a type error inline. Instead, if an unreduced `TypeStageApp` node reaches a position where a concrete type is required (e.g., as a function return type at a call site that has ground args), the unification at that point produces a `TypeError` with a "type-stage reduction depth exceeded" note.
+1. **Totality**: the resolver must terminate. Mutual recursion is caught by `call_stack` in `NormCtxt` and returns the unreduced `TypeStageApp` (the depth counter then handles the termination). When `ctx.depth >= ctx.max_depth`, normalization returns the unreduced `TypeStageApp` unchanged. If that node later reaches a position where a concrete type is required, unification produces `TypeError("type-stage reduction depth exceeded while computing {fn_name}({arg_types})")` — the error includes the resolver name and argument types from the `TypeStageApp` node so the user can identify which resolver hit the limit.
 
 2. **Determinism**: the resolver must return the same output for the same inputs across all call sites. This is guaranteed by the purity of type-stage functions — they are evaluated in an isolated environment with no mutable state or I/O. Builtins that would break this (e.g., `$include`, `$emit`) are not in scope in `--- stage: type` sections.
 
-3. **Well-formedness**: if the resolver returns a malformed type dict (missing `kind:` key, unrecognized `kind:` value, structurally invalid), the type-dict-to-`Type::*` conversion produces a `TypeError` with a "resolver returned invalid type dict" message — not a crash.
+3. **Well-formedness**: if the resolver returns a malformed type dict (missing `kind:` key, unrecognized `kind:` value, structurally invalid), the type-dict-to-`Type::*` conversion produces `TypeError("resolver {fn_name} returned invalid type dict at call site {span}")` carrying the call-site span (the expression that triggered normalization). This error is not catchable by `$try`.
 
 4. **Confluence**: Sulzmann et al. (2007, Theorem 4.2) prove that CHR improvement is confluent under the consistency condition. FD improvement is deterministic when instances satisfy coverage and consistency (see §Instance Soundness Conditions below). Non-coherent resolvers (where improvement could derive conflicting bindings) are caught by unification conflict — a standard `TypeError` fires, not silent unsoundness.
 
@@ -501,15 +520,23 @@ At instance declaration time, every instance arm for a class must satisfy three 
 
 - **Disjointness condition**: no two arms of the same class may match the same ground type tuple. If two arms' type-parameter lists can be simultaneously unified under some substitution θ (i.e., they overlap), the instance declaration is rejected at declaration time with a "overlapping instance arms" error. Instance dispatch is therefore **always unambiguous** — for any ground type tuple at most one arm matches. There is no first-match semantics and no ordering among arms.
 
-  Examples: `[pattern [a@Int b@Int c@Int]]` and `[pattern [a@Int b@Float c@Float]]` are disjoint (no θ unifies them). `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Int b@Int c@t3]]` overlap (θ = {t1=Int}) and are rejected. `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Float b@t1 c@t2]]` are disjoint.
+  Examples: `[pattern [a@Int b@Int c@Int]]` and `[pattern [a@Int b@Float c@Float]]` are disjoint (no θ unifies them). `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Int b@Int c@t3]]` overlap (`θ = {t1=Int, t2=t3}`) and are rejected. `[pattern [a@Int b@t1 c@t2]]` and `[pattern [a@Float b@t1 c@t2]]` are disjoint.
+
+  **Error message:** `"overlapping instance arms for class {ClassName}: arm [pattern [...]] at line {N} overlaps with arm [pattern [...]] at line {M} under substitution {θ}"` — the second arm's `[pattern ...]` span is primary; the first arm is secondary context.
 
 - **Coverage condition** (for classes with FDs): for each FD `(d) → (r)`, every type variable appearing in the determined positions of the instance arm must also appear in the determining positions. This prevents improvement from introducing fresh unknowns that cannot be resolved. Example: arm `[pattern [a@t1 b@t2 c@t2]]` with FD `(a,b)→c` — `c` binds to the same TypeVar as `b` (both `t2`), which appears in the determining positions, so coverage holds.
 
+  **Error message:** `"coverage violation in instance arm for class {ClassName}: variable {v} appears in determined position of FD ({determining}→{determined}) but not in any determining position"` — span on the offending arm's `[pattern ...]`.
+
 - **Consistency condition** (for classes with FDs, Jones 2000, Definitions 7–8): if two arms' determining positions unify under some substitution θ, their determined positions must also unify under θ. This guarantees improvement is confluent. Example: arms `[pattern [a@Int b@Int c@Int]]` and `[pattern [a@Int b@Int c@Float]]` violate consistency — both have determining positions `(Int, Int)` but different determined types `Int` vs `Float`. This is rejected at declaration time.
 
-  Note: the consistency condition is independent of the disjointness condition. Two arms can be disjoint on their determining positions but still require consistency checking when the FD spec allows the determining positions to overlap in theory. The disjointness condition applies to the **full** type-parameter list; consistency applies to the **determining** positions only.
+  Note: the consistency condition is independent of the disjointness condition. Two arms can be disjoint on their full type-parameter lists but their **determining** positions may still be unifiable — consistency checks only the determining positions.
 
-**Acyclic dependency graphs**: instances with cyclic determination (A determines B, B determines A) require a confluence check beyond pairwise consistency. The `determines:` syntax allows bidirectional specs (as shown above) but the implementation validates the critical-pair condition (Sulzmann et al. 2007) at class declaration time and rejects cycles that cannot be proven confluent.
+  **Error message:** `"consistency violation for class {ClassName}: arms at lines {N} and {M} both match determining positions ({T1}, {T2}) but disagree on determined type: {TypeA} vs {TypeB}"` — second arm is primary span, first arm is secondary context.
+
+**Acyclic dependency graphs and cross-FD consistency**: for classes with multiple FDs sharing variables, if FDs `D₁` and `D₂` both fire simultaneously when all their determining positions are ground, their results must be mutually consistent. The critical-pair condition (Sulzmann et al. 2007): for each pair of FDs `(d₁ → r₁)` and `(d₂ → r₂)` where `r₁` overlaps with `d₂`, verify that composing the resolvers is consistent — for every ground type tuple in the instance domain, applying resolver₁ and then resolver₂ must return the original input. For finite-domain resolvers this is checked at declaration time by exhaustive enumeration. For open-domain resolvers the check is deferred and the depth limit serves as the termination guard.
+
+**Instance world assumption**: instances are **closed within a compilation unit**. All `[instance ClassName ...]` forms for a class, including those contributed by `[include ...]`'d files, are resolved at type-check time for the including file. The full accumulated arm set is checked for disjointness, coverage, and consistency as a batch before the first constrained expression in the file is type-checked. This avoids orphan-instance and cross-module coherence complexity.
 
 Instances violating any of these conditions are rejected with a type error at instance declaration time.
 
@@ -541,7 +568,10 @@ The `normalize()` subsystem is the enabling infrastructure for automatic inserti
 | Function argument | `[f x]`, `f: Int→Int`, `x: Unknown` | `x` with expected type `Int` |
 | Builtin argument | `[+ n m]`, `m: Unknown` | `m` with expected numeric type |
 | Field access on `Unknown` | `data.port`, `data: Unknown` | result with field's declared type |
+| `$match` scrutinee | `[match x [Int n]: ...]`, `x: Unknown` | `x` with the inferred union of arm types |
 | `---` pipeline crossing | downstream section expects typed input from untyped upstream | each crossing binding |
+
+**Note on `$apply`:** `[apply f args]` where `f: Unknown` — the argument types expected by `f` are not statically known, so guards cannot be inserted on the argument positions. `$apply` with an `Unknown` function is a limitation: blame fires only if the function itself is not callable, not if arguments don't match parameter types. This is documented as a known limitation of the automatic guard system.
 
 **Post-inference elaboration pass.**
 
@@ -553,8 +583,11 @@ for each expression e in the type map:
   τ_ctx = contextual expected type of e (from call site, param annotation, etc.)
   if τ_e = Unknown and τ_ctx ≠ Unknown:
     expected = normalize(τ_ctx, NormCtxt::final(subst, type_stage_env, ...))
-    assert is_concrete(expected)  # TypeStageApp fully reduced; else prior TypeError
-    replace thunk(e) with Guarded(inner=thunk(e), expected, blame_label)
+    if not is_concrete(expected):  # is_concrete: not TypeVar, not TypeStageApp, not Unknown
+      return TypeError("type-stage application could not be reduced at boundary — \
+        add type annotations or check resolver depth limit")
+    annotate expression e with expected concrete type (write to RefCell field)
+    # eval() reads this annotation during its normal AST walk and creates Guarded thunk
 ```
 
 The `normalize()` call is the load-bearing step: it reduces any `TypeStageApp` nodes in the expected type to concrete types before the guard is emitted. An irreducible `TypeStageApp` at this point means a depth-limit hit or a TypeVar that escaped inference — both should have already produced a `TypeError` earlier.
@@ -599,7 +632,27 @@ Two cases at let-generalization:
 1. **FD has already fired** — `c` is unified with a concrete type and does not appear free in the scheme. Generalization produces `∀a b. Add a b Float ⇒ a → b → Float` (with concrete `c`).
 2. **FD has not fired** (determining positions are still free TypeVars) — `c` remains a TypeVar and is included in the generalized scheme with the constraint: `∀a b c. Add a b c ⇒ a → b → c`. FD fires at each call site.
 
-**Level management**: when a `[$Class a b c]` constraint is registered with FD `(a,b)→c`, the determined TypeVar `c`'s level must be lowered to `max(enclosing_level, max(l_a, l_b))` at constraint-creation time. This ensures `c` cannot escape into an outer scope independently of the constraint — it can only be used where the constraint is visible, and also prevents `c` from being generalized beyond the scope of its determining TypeVars.
+**Level management**: when a `[$Class a b c]` constraint is registered with FD `(a,b)→c`, the determined TypeVar `c`'s level must be set to `max(enclosing_level, max(l_a, l_b))` at constraint-creation time. This ensures `c` cannot escape into an outer scope independently of the constraint — it can only be used where the constraint is visible, and also prevents `c` from being generalized beyond the scope of its determining TypeVars.
+
+## Open Design Questions
+
+### ~~Congruence Rule for Non-Injective Resolvers~~ — Resolved
+
+**Resolution:** Deferred equality for non-injective resolvers. Case 1 of `unify_normalized` now splits on `ClassDecl.resolver_injective`:
+- Injective F: pairwise congruence (sound — equal outputs imply equal inputs)
+- Non-injective F: add to `state.deferred_equalities`; process after each `unify` call when args become ground
+
+See §`src/type_infer.rs — Deferred equality queue` in What Would Change for the implementation. All arithmetic classes are non-injective and use deferred equality. Injective classes (e.g., `Convert [a b]` where each `a` maps to a unique `b`) use congruence.
+
+### ~~Level Propagation for Late Unifications~~ — Resolved (not a soundness issue)
+
+**Finding:** One-shot level assignment — `c`'s level is set to `max(enclosing_level, max(ℓ_a, ℓ_b))` once and not recomputed if `a` or `b` are later lowered by [U-VAR-LEVEL].
+
+**Analysis:** This is a **precision concern, not a soundness bug.** The Jones (1995) qualified-types model guarantees that the FD constraint `Add a b c` is always carried in the type scheme alongside `c`. At every call site, the constraint fires FD improvement and correctly determines `c` from the instantiated `a` and `b`. Level-propagation issues can cause `c` to be generalized at a deeper scope than strictly necessary (the scheme's `∀` quantifier includes `c` when it need not), making the scheme slightly over-general — but the FD constraint in the scheme prevents any incorrect type from being inferred.
+
+**Concrete example:** `[fn [x] [fn [y] [+ x y]]]` — without level propagation, the inner function's scheme is `∀b c. Add α b c ⇒ Fn(b → c)` rather than the tighter `∀b. Add α b (AddResult α b) ⇒ Fn(b → AddResult α b)`. Both are correct. The FD fires at each call site and produces the same concrete types either way.
+
+**The `level_deps` fix** (`HashMap<TypeVarName, Vec<TypeVarName>>` in `InferState` to propagate level lowering) would produce tighter schemes with fewer universally-quantified variables, but provides no correctness benefit. Track as a follow-on improvement if scheme precision matters for LSP hover display or error messages.
 
 ## Worked Examples
 
@@ -615,7 +668,7 @@ Two cases at let-generalization:
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Number"]]]
+      _:                                                               [kind: "named" name: "Unknown"]]]
 ]
 ---
 # Trivial: class + instances
@@ -719,7 +772,12 @@ roundtrip: [fn@[bind: [a b]  return: a  constraint: [$Convert a b]]
   [x@a]
   [parse [show x]]]  # show: a→b, parse: b→a; return type is a
 
-[roundtrip 42]       # a=Int, b=String → parse(show(42)) = parse("42") = 42
+[roundtrip 42]       # a=Int, b=String → parse(show(42)) = parse("42")
+                     # Return type is Unknown (not Int): FromStringResult(String) = Unknown,
+                     # so parse's return type is Unknown. The call succeeds statically
+                     # but a boundary guard is inserted at the call site if a concrete
+                     # type is expected. Use a concrete FromStringResult (e.g. → Maybe Int)
+                     # to get a precise return type.
 ```
 
 ### D: Multi-Output FDs
@@ -730,7 +788,8 @@ roundtrip: [fn@[bind: [a b]  return: a  constraint: [$Convert a b]]
   DivModResult: [fn [...args]
     [match [[builtin-get 0 args]  [builtin-get 1 args]]
       [[kind: "named" name: "Int"]  [kind: "named" name: "Int"]]:
-        [q: [kind: "named" name: "Int"]
+        [kind: "multi-output"
+         q: [kind: "named" name: "Int"]
          r: [kind: "named" name: "Int"]]]]
 ]
 ---
@@ -850,11 +909,11 @@ safe-add: [fn@[bind: [a b c]  return: [or c Null]  constraint: [a: Numeric  b: N
 Result: [type [Ok a] [Err String]]
 
 safe-divide: [fn@[bind: [a b c]  return: [or [Ok c] [Err String]]
-                    constraint: [a: Numeric  b: Numeric  [$Addable a b c]]]
+                    constraint: [a: Numeric  b: Numeric  [$Divisible a b c]]]
   [x@a  y@b]
   [if [= y 0]
     [Err "division by zero"]
-    [Ok [/ x y]]]]   # return type: Ok(c) where c = AddResult(a,b)
+    [Ok [/ x y]]]]   # return type: Ok(c) where c = DivResult(a,b) = Float
 
 [match [safe-divide 10 3]
   [Ok result]: [str "result: " result]   # result: Float
@@ -1007,7 +1066,7 @@ All tinct typeclass infrastructure in final form. Resolver functions in `--- sta
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
-      _:                                                               [kind: "named" name: "Number"]]]
+      _:                                                               [kind: "named" name: "Unknown"]]]
 
   SubResult:  [fn [...args] ...]    # same dispatch as AddResult
   MulResult:  [fn [...args] ...]    # same dispatch as AddResult
@@ -1162,7 +1221,7 @@ Traversable: [class [t]  [kinds: [t: Operator]  superclasses: [Functor  Foldable
 ### `src/types.rs` — New `Type::TypeStageApp` variant
 
 **Current:** No lazy type-stage application node. Type-stage functions are always called eagerly at annotation resolution time.  
-**Proposed:** Add `Type::TypeStageApp { fn_name: String, args: Vec<Type> }`. Update all exhaustive `match` arms across `src/types.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs` (~40–60 sites). Add `[kind: "type-stage-app"  fn: String  args: [<type-dict> ...]]` to the **type dict schema** used by the annotation resolver — this is distinct from `ast-of` output (which serializes `Value` nodes, not `Type::*` nodes). Types stored in runtime structs (`FnAnnotation`, etc.) are always post-normalization — no live `TypeStageApp` nodes survive into runtime representations. `ast-of` on a function returns pre-computed type dicts from `FnAnnotation`; it does not need a `NormCtxt` at call time.  
+**Proposed:** Add `Type::TypeStageApp { fn_name: String, args: Vec<Type> }`. Update all exhaustive `match` arms across `src/types.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs` (~40–60 sites). Add `[kind: "type-stage-app"  fn: String  args: [<type-dict> ...]]` to the **type dict schema** used by the annotation resolver — this is distinct from `ast-of` output (which serializes `Value` nodes, not `Type::*` nodes). `collect_type_vars`, `has_type_vars`, `occurs_in` in `src/type_def.rs` must recurse into `TypeStageApp.args` — without this, TypeVars inside TypeStageApp nodes escape occurs-check and let-generalization, enabling infinite types and monomorphic FD-dependent bindings. `generalize()` in `src/type_infer.rs` must also collect TypeVars from `TypeStageApp.args` as candidates for quantification. `entails()` in `src/type_unify.rs` must call `normalize()` before comparing constraint types when those types may contain `TypeStageApp` nodes — it currently runs during inference where `NormCtxt` is available, so the function signature must accept a `NormCtxt` reference. Exception: for superclass chain traversal (reading `ClassDecl.superclasses` without touching type-stage functions), a minimal `NormCtxt` with an empty type-stage env is acceptable since no resolver calls are needed — superclass entailment is structural ClassDecl traversal, not type-family reduction. Types stored in runtime structs (`FnAnnotation`, etc.) are always post-normalization for ground TypeVars — no `TypeStageApp` nodes with fully-ground args survive into runtime representations. However, `FnAnnotation` for polymorphic functions stores scheme bodies that may contain `TypeStageApp` nodes with generalized TypeVar args (e.g., `TypeStageApp("AddResult", [TypeVar("a"), TypeVar("b")])`). `ast-of` on such a function returns these as `[kind: "type-stage-app"  fn: "AddResult"  args: [...]]` in the output. At each call site, `normalize()` reduces the TypeStageApp when args become ground. Add a `debug_assert!(!ty.contains_ground_type_stage_app())` at guard-creation time (in the boundary guard elaboration pass) to enforce that no fully-reducible TypeStageApp escapes into a `Guarded.expected` field.  
 **Impact:** Major — touches every type operation, but each arm is mechanical (normalize before proceeding).
 
 ### `src/types.rs` — `NormCtxt` and normalization subsystem
@@ -1174,7 +1233,10 @@ Traversable: [class [t]  [kinds: [t: Operator]  superclasses: [Functor  Foldable
 ### `src/types.rs` — `ClassDecl` (single source of truth for FDs)
 
 **Current:** `ClassDecl { name, params, superclasses, methods }` — no `fundeps` or `resolver` field. Separately, `Constraint::Class { class, vars, fundeps }` carries a copy of the FD structure per constraint site.  
-**Proposed:** Add `determines: Vec<(Vec<usize>, Vec<usize>)>` and `resolver: Option<String>` to `ClassDecl`. Change `superclasses: Vec<(String, String)>` to `superclasses: Vec<(String, Vec<String>)>` to correctly represent MPTC superclass relationships — the second element is the list of subclass params that map positionally to the superclass params. **Remove** `fundeps` from `Constraint::Class` — `ClassDecl` becomes the single source of truth. `improve_functional_dependency` reads FDs directly from the `ClassDecl` carried in `Constraint::Class` (no global ClassEnv lookup needed). `Constraint::Class` retains `class: ClassDecl` (the full decl, not just a name string) and `vars: Vec<String>`.  
+**Proposed:** Add `determines: Vec<(Vec<usize>, Vec<usize>)>`, `resolver: Option<String>`, and `resolver_injective: bool` to `ClassDecl`. `resolver_injective` defaults to `false` and is **not** computed at class declaration time — instance arms do not exist yet (they follow `[class ...]` in source order) and the type-stage Env may not be fully populated. It is computed during the **batch instance coherence check** (see `src/typecheck.rs — Expr::ClassDecl handler` §Batch coherence phase) after all `[instance ...]` forms for the class have been processed and the type-stage Env is available. At that point: for finite-domain (closed instance set) classes, exhaustively call the resolver for each pair of distinct determining-position type tuples across declared instance arms — if any two arms produce the same determined type for different inputs, `resolver_injective = false`; otherwise `true`. For open-domain resolvers (wildcard arm can return anything): `resolver_injective = false` conservatively. All arithmetic classes (`AddResult`, `SubResult`, `MulResult`, `DivResult`) are non-injective. Change `superclasses: Vec<(String, String)>` to `superclasses: Vec<(String, Vec<String>)>` to correctly represent MPTC superclass relationships — the second element is the list of subclass params that map positionally to the superclass params. **Remove** `fundeps` from `Constraint::Class` — `ClassDecl` becomes the single source of truth. `improve_functional_dependency` reads FDs directly from the `ClassDecl` carried in `Constraint::Class` (no global ClassEnv lookup needed). `Constraint::Class` retains `class: ClassDecl` (the full decl, not just a name string) and `vars: Vec<String>`.
+
+Note: this change also requires updating the superclass extraction in `push_expr_to_parent` ClassDecl — currently superclasses are extracted inline from the header bracket (lines `parser.rs:4730–4828`); after the structural-bracket redesign, they are extracted from the structural metadata bracket in the `CloseBracket` handler.
+
 **Impact:** Minor struct extension + removal of FD duplication; reduces confusion about which source is authoritative.
 
 ### Module Restructuring — Breaking the `value.rs → types.rs` Circular Dependency
@@ -1185,25 +1247,31 @@ Traversable: [class [t]  [kinds: [t: Operator]  superclasses: [Functor  Foldable
 
 ```
 type_def.rs       →  [nothing internal]
-value.rs          →  type_def.rs           (no longer imports types.rs)
-types.rs          →  type_def.rs           (re-exports Type for back-compat)
-type_normalize.rs →  type_def.rs, value.rs, types.rs
-types.rs          →  type_normalize.rs     (NormCtxt in InferState — no cycle)
+value.rs          →  type_def.rs
+type_infer.rs     →  type_def.rs           (InferState, Substitution, Levels — top-level module)
+type_normalize.rs →  type_def.rs, value.rs, type_infer.rs
+type_class.rs     →  type_def.rs, type_infer.rs
+type_unify.rs     →  type_def.rs, type_infer.rs, type_normalize.rs, type_class.rs
+type_scheme.rs    →  type_def.rs, type_infer.rs
+types.rs          →  [re-exports from all above — thin façade, no circular imports]
 ```
 
-The chain `types.rs → type_normalize.rs → value.rs → type_def.rs` is acyclic. All existing call sites using `use crate::types::Type` continue to work because `types.rs` re-exports: `pub use type_def::*;`.
+`InferState` and `Substitution` must live in a **top-level** `src/type_infer.rs`, not as a submodule of `types.rs`. The previous design had `types.rs → type_normalize.rs` (for `NormCtxt` in `InferState`) AND `type_normalize.rs → types.rs` (for `InferState` and `unify()`) — a circular import Rust rejects. Making `type_infer.rs` top-level breaks this: `type_normalize.rs` imports `type_infer.rs` directly, not `types.rs`. `type_unify.rs` (currently a submodule of `types.rs`) must also become top-level, as it is the integration point for FD improvement and imports from multiple layers. `normalize_union()` and `normalize_intersection()` move to `type_normalize.rs`; `Type::Display` calls them via a function exported from `type_normalize.rs` rather than implementing display in `type_def.rs` directly.
 
-**What moves to `src/type_def.rs`:** the `Type` enum, `Row`, `RowTail`, `TypeKey`, and the purely structural type methods (`collect_type_vars`, `has_type_vars`, `occurs_in`, `Display`). Everything touching `InferState`, `Substitution`, `TypeScheme`, `ClassDecl`, `Constraint` remains in `types.rs`.
+All existing call sites using `use crate::types::Type` continue to work because `types.rs` re-exports everything: `pub use type_def::*;` etc.
+
+**What moves to `src/type_def.rs`:** the `Type` enum, `Row`, `RowTail`, `TypeKey`, and purely structural type methods (excluding `Display`, which moves to `type_normalize.rs`).
 
 **Further splitting opportunity:** since `types.rs` is large, this restructuring is a natural moment to split it into focused modules:
 
 | File | Content |
 |------|---------|
-| `src/type_def.rs` | `Type`, `Row`, `RowTail`, `TypeKey` — the data model |
+| `src/type_def.rs` | `Type`, `Row`, `RowTail`, `TypeKey`, structural type methods except `Display` |
 | `src/type_scheme.rs` | `TypeScheme`, let-generalization support |
 | `src/type_class.rs` | `ClassDecl`, `Constraint`, `ClassEnv`, `InstanceEnv` |
-| `src/type_infer.rs` | `InferState`, `Substitution`, `Levels` |
-| `src/type_normalize.rs` | `NormCtxt`, `normalize()` |
+| `src/type_infer.rs` | `InferState`, `Substitution`, `Levels` (top-level module) |
+| `src/type_normalize.rs` | `NormCtxt`, `normalize()`, `normalize_union()`, `normalize_intersection()`, `Type::Display` — Display normalizes before printing when a NormCtxt is available: shows the reduced type if ground (e.g., `Float`), or `FnName(arg1, arg2, ...)` in lowercase-functional notation if irreducible (e.g., `AddResult(a, b)`) |
+| `src/type_unify.rs` | `unify()`, `unify_normalized()`, `improve_functional_dependency()`, `satisfies_constraint()` (top-level module) |
 | `src/types.rs` | thin `mod` + re-exports of all the above |
 
 `types.rs` becomes a façade — all existing `use crate::types::...` call sites are unchanged. Smaller files are easier to navigate and the logical groupings (data vs inference vs class system vs normalization) are clearer.
@@ -1215,13 +1283,15 @@ The chain `types.rs → type_normalize.rs → value.rs → type_def.rs` is acycl
 ### `src/types.rs` / `src/typecheck_annot.rs` — `kinds:` key
 
 **Current:** Kind constraints are populated by `f@Operator` annotation in class param lists and function annotations. `KindEnv` is the only environment populated implicitly (via annotation) rather than by an explicit declaration form.  
-**Proposed:** Add `kinds:` as a recognised metadata bracket key alongside `constraint:`. In `[class ...]` bodies and `fn@[...]` annotation brackets, `kinds: [f: Operator  key: Label]` registers kind constraints in `kind_env` for each named TypeVar. Processing order: after `bind:`, before `constraint:`. The existing `f@Operator` annotation form is retired; `kinds:` is the canonical form.  
+**Proposed:** Add `kinds:` as a recognised metadata bracket key alongside `constraint:`. In `[class ...]` bodies and `fn@[...]` annotation brackets, `kinds: [f: Operator  key: Label]` registers kind constraints in `kind_env` for each named TypeVar. Processing order: after `bind:`, before `constraint:`. The existing `f@Operator` form is retired in **class param lists and `fn@[...]` annotation brackets**. Two distinct routing mechanisms apply: in `[class ...]` structural brackets, `kinds:` is extracted post-hoc from the structural metadata bracket entries in the `CloseBracket` ClassDecl handler; in `fn@[...]` annotation brackets, `kinds:` is a new recognised key in the annotation resolver's property-dict dispatch (`src/typecheck_annot.rs`), routed to `kind_env`. Any existing code using `f@Operator` outside these two positions (e.g., in type alias bodies) requires a migration error: when the annotation resolver sees a SimpleAnnotation named `"Operator"` that is not in the type alias table, emit `"did you mean \`kinds: [f: Operator]\`?"` rather than an undefined-type error.  
 **Impact:** Minor — new key recognised in existing annotation bracket parsing paths; routing to `kind_env` already exists.
 
 ### `src/ast.rs` — `Expr::ClassDecl` fields
 
 **Current:** `Expr::ClassDecl { name, params, superclasses, methods: Vec<Spanned<Entry>> }` — no separate fields for `determines:` or `resolver:`.  
-**Proposed:** Add `determines: Vec<Spanned<Expr>>` and `resolver: Option<Spanned<Expr>>` to `Expr::ClassDecl`. These hold raw parsed values before semantic validation. `StackFrame::ClassDecl` in `src/parser.rs` gains matching accumulators; the `push_value` arm detects `determines:` and `resolver:` by **string comparison on the pending key** (consistent with how other special dict keys like `type:`, `default:`, `doc:` are recognized — none of those are parser keywords either). `determines` and `resolver` are NOT added as lexer keywords: they are reserved only in `[class ...]` body position, not globally. A method named `determines` or `resolver` is simply impossible in `[class ...]` bodies — the keys are always routed to the dedicated AST fields.  
+**Proposed:** Add `determines: Vec<Spanned<Expr>>` and `resolver: Option<Spanned<Expr>>` to `Expr::ClassDecl`. These hold raw parsed values before semantic validation. `StackFrame::ClassDecl` in `src/parser.rs` gains matching accumulators; `determines:` and `resolver:` are NOT routed by `push_value` key-string comparison (unlike `type:`/`default:`/`doc:` which live inside annotation property dicts processed by `parse_annotation()`). Instead, they are keyed entries inside the **structural metadata bracket** (the second positional argument to `[class ...]`). The `CloseBracket` ClassDecl handler extracts them post-hoc by inspecting `structural_metadata.entries` for entries whose key string is `"determines"` or `"resolver"`. This is a structural-bracket semantic extraction step, not an inline parse-loop routing step.
+
+Add `structural_metadata: Option<Spanned<Expr>>` to `StackFrame::ClassDecl`. In the `push_expr_to_parent` ClassDecl arm, after `name` is set, route the next positional `Expr::Dict` to `structural_metadata` rather than erroring. The current arm at `parser.rs:~4819–4827` hard-errors on any second positional expression — this must be changed. Extract `determines:`, `resolver:`, `kinds:`, `superclasses:` from `structural_metadata.entries` in the `CloseBracket` ClassDecl handler.  
 **Impact:** Moderate — AST extension + parser routing change.
 
 ### `src/typecheck.rs` — `Expr::ClassDecl` handler
@@ -1230,29 +1300,40 @@ The chain `types.rs → type_normalize.rs → value.rs → type_def.rs` is acycl
 **Proposed:** After extracting `determines` and `resolver` from the AST: (1) validate `determines:` entries — each must be a 2-element list, first is a list of known param names, second is a name or list of names; (2) resolve param names to positional indices; (3) validate coverage and consistency conditions; (4) validate that `resolver` name exists in the type-stage Env and is callable (if the type-stage env is not yet populated at class declaration time, defer this check to first use — but emit a warning). A misspelled resolver name must produce a type error at class declaration time, not a silent runtime failure.  
 **Impact:** Moderate — semantic validation + resolver name lookup.
 
-### `src/parser.rs` — `StackFrame::InstanceDecl`
+### `src/ast.rs` / `src/parser.rs` — `Expr::InstanceDecl` redesign
 
-**Current:** No `StackFrame::InstanceDecl` exists.  
-**Proposed:** A new parser stack frame that handles the `[instance ClassName [pattern [...]]: dict  ...]` form. It uses the same bracket-then-colon mechanism as `StackFrame::Match`, but the arm key is always an `Expr::PatternDecl` (produced by the `pattern` keyword frame — see §`src/parser.rs — StackFrame::PatternDecl` below):
+**Current:** `Expr::InstanceDecl { class_name: String, instance_type: Box<Spanned<Expr>>, methods: Vec<Spanned<Entry>> }` — the class name and instance type are bundled in a bracket header; all methods are flat at the top level. `StackFrame::InstanceDecl` in `parser.rs` requires the first expression to be an `Expr::Dict(len>=2)` or `Expr::Call` (the header bracket); bare `VarRef` class names cause a parse error.
 
+**Proposed — `Expr::InstanceDecl`:**
 ```rust
-StackFrame::InstanceDecl {
-    class_name: String,                                    // from the first expression
-    arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>,       // (Expr::PatternDecl, method entries)
-    pending_key: Option<Spanned<Expr>>,                    // [pattern [...]] expr waiting for ':'
-    pending_methods: Option<Vec<Spanned<Entry>>>,          // method dict waiting to close
+Expr::InstanceDecl {
+    class_name: String,
+    arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>,  // (Expr::PatternDecl, method entries)
 }
 ```
+`instance_type` is removed (patterns carry type info); `methods` becomes per-arm. All exhaustive-match sites must be updated: `eval.rs`, `typecheck.rs`, `formatter.rs`, `desugar.rs`, `resolve.rs`, `lsp/analysis.rs`, `ast_dict.rs`, `expand.rs` (~8 files, mechanical arm addition).
 
-**Parsing sequence:**
-1. `[instance` → push `StackFrame::InstanceDecl { class_name: "", arms: [], ... }`
-2. First expression is a `VarRef` (class name) → stored in `class_name`
-3. Each arm key `[pattern [...]]` is parsed by a nested `StackFrame::PatternDecl` frame (see below), which produces `Expr::PatternDecl { bindings: Vec<Spanned<Expr>> }` — a complete expression
-4. This expression lands in `push_expr_to_parent` for `StackFrame::InstanceDecl` → stored as `pending_key`
-5. Token `:` arrives → `pending_key` is confirmed as the arm key
-6. The method dict `[method: impl ...]` is parsed normally as a keyed Dict → `Vec<Spanned<Entry>>`
-7. When the method dict closes → `(pending_key, method_entries)` pair pushed to `arms`; state resets
-8. Outer `]` closes → `Expr::InstanceDecl { class_name, arms }`
+**Proposed — `StackFrame::InstanceDecl`:** Replace `instance_type`/`methods`/`pending_key` fields with:
+```rust
+StackFrame::InstanceDecl {
+    class_name: String,
+    arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>,
+    pending_arm_key: Option<Spanned<Expr>>,   // [pattern [...]] waiting for ':'
+    current_arm_methods: Vec<Entry>,            // accumulates method entries for current arm
+    span_start: Position,
+}
+```
+`pending_methods` (as previously sketched) is architecturally wrong — method dicts arrive as completed `Expr::Dict` nodes via `push_value`, not entry-by-entry. The `push_value` InstanceDecl arm must handle two distinct sub-cases:
+1. `pending_arm_key.is_some()` AND the incoming value is an `Expr::Dict` — this is the **arm's method dict** (the bracket `[method-key: impl ...]` that follows `:`). Pair it with `pending_arm_key`, push `(key, entries)` to `arms`, clear `pending_arm_key` and `current_arm_methods`.
+2. `pending_arm_key.is_some()` AND the incoming value is a scalar (a method implementation expression for an already-open method key in `current_arm_methods`) — accumulate into `current_arm_methods` via the normal pending-key mechanism. Note: `StackFrame::InstanceDecl` needs its own `pending_method_key: Option<Spanned<Expr>>` for individual method-key/value pairs within the arm's method dict, distinct from `pending_arm_key` (the pattern-arm level separator). Alternatively, the design simplifies by requiring method dicts to always be written as bracket forms `[+: impl  *: impl]` — the inner `StackFrame::Dict` handles key/value accumulation and delivers a completed `Expr::Dict` to the InstanceDecl frame. This is the recommended approach: no `current_arm_methods` accumulation needed; the `push_value` arm simply receives `Expr::Dict` and treats it as the arm's method dict.
+
+**`push_expr_to_parent` InstanceDecl arm:** Add a `VarRef` branch that sets `class_name` (the proposed syntax has a bare class name, not a bracket-header).
+
+**Colon handler for InstanceDecl:** The `:` in `[pattern [...]]:` is an arm separator. Update the error message from `"':' without a method name"` to `"':' without a pattern arm key or method name"` and handle both `Expr::PatternDecl` (arm key) and other expressions (method key) as distinct sub-cases.
+
+**`InstanceDecl` Display impl** (`ast.rs:~563–575`): Note it uses the old bracket-header syntax and must be updated to render the match-arm form.
+
+**Impact:** Breaking AST change; ~8 exhaustive-match sites; two StackFrame fields removed, three added.
 
 ### `src/parser.rs` — `StackFrame::PatternDecl`
 
@@ -1267,12 +1348,12 @@ StackFrame::PatternDecl {
 
 **Parsing sequence:**
 1. `[pattern` → push `StackFrame::PatternDecl { bindings: [] }`
-2. The following `[...]` bracket is parsed as a standard **param list** (same path as `StackFrame::Fn` params): each `name@TypeExpr` entry is an `Expr::Annotated` node — `name` (lowercase identifier) plus annotation (type expression parsed via annotation resolution rules)
+2. The following `[...]` bracket opens a standard Dict frame producing `Expr::Annotated` nodes (via the existing `ImmediateAt` mechanism — `a@Int`, `a@[Seq elem]`, etc. are parsed as annotated identifiers). This is NOT the same path as `StackFrame::Fn` params, which uses the eager synchronous `parse_param_list()` function before the frame is pushed. `PatternDecl` uses the iterative frame protocol; `push_expr_to_parent` for the frame converts the `Expr::Annotated` nodes into `bindings: Vec<Spanned<Expr>>`.
 3. Inner brackets within annotations (`a@[Seq elem]`, `c@[or Int Null]`) are parsed recursively as composite type expressions using the same annotation bracket rules already implemented
 4. No body expression is collected (unlike `Fn`)
 5. `]` closes → `Expr::PatternDecl { bindings }` — a complete expression that can serve as a dict key
 
-**No new parsing mechanisms required.** The `pattern` keyword is lexed as `Token::Identifier("pattern")` and recognized in the same dispatch table as `fn`, `match`, `class`, `instance`. The inner bracket is parsed using the existing fn-param-list path. `Expr::Annotated` nodes (from `name@TypeExpr`) are already produced by the parser.
+**No new parsing mechanisms required.** The `pattern` keyword is lexed as `Token::Identifier("pattern")` and recognized in the same dispatch table as `fn`, `match`, `class`, `instance`. **Colon-ahead rejection rule:** Like all keyword dispatch arms, the `pattern` keyword dispatch must include the guard `!matches!(peek_next_horizontal(...), Some((Token::Colon, _)))` so that `[pattern: x]` remains a valid dict entry rather than being parsed as a malformed `PatternDecl` frame. `Expr::Annotated` nodes (from `name@TypeExpr`) are already produced by the parser.
 
 **Impact:** Minor — new keyword recognition + StackFrame variant that reuses existing fn-param machinery; no new token types or parsing modes.
 
@@ -1314,8 +1395,42 @@ This design is consistent with the "no global registries" principle: everything 
 ### `src/type_unify.rs` — `improve_functional_dependency`
 
 **Current:** Calls `lookup_arithmetic_instance()` — hardcoded 9-entry match on `(type_key(a), type_key(b))`.  
-**Proposed:** Look up `class_decl.resolver` in the type-stage Env; if present, convert determining `Type::*` values to type dicts, call `eval(resolver_fn, dicts, type_stage_env)`, convert result back to `Type::*`, unify. Fall back to `lookup_arithmetic_instance` when resolver is absent (arithmetic built-ins).  
+**Proposed:** Look up `class_decl.resolver` in the type-stage Env; if present, convert determining `Type::*` values to type dicts (with literal widening), call `eval(resolver_fn, dicts, type_stage_env)`, convert result back to `Type::*`, unify. Fall back to `lookup_arithmetic_instance` when resolver is absent (arithmetic built-ins).  
 **Impact:** Moderate — requires Type ↔ type dict conversion at unification time; access to type-stage Env from unifier.
+
+### `src/type_infer.rs` — Deferred equality queue
+
+**Current:** No deferred equality mechanism.  
+**Proposed:** Add `deferred_equalities: Vec<(Type, Type)>` to `InferState`. Populated by Case 1 of `unify_normalized` for non-injective resolvers (where `ClassDecl.resolver_injective = false`). Processed after each call to `unify()`:
+
+```rust
+fn unify(a: Type, b: Type, subst: &mut Substitution, state: &mut InferState, span: Span) -> Result<(), TypeError> {
+    let norm = NormCtxt::from(subst, state);
+    let a' = normalize(a, &norm);
+    let b' = normalize(b, &norm);
+    unify_normalized(a', b', subst, state, span)?;
+    // Process deferred equalities — retry any that may now be reducible
+    let mut i = 0;
+    while i < state.deferred_equalities.len() {
+        let (lhs, rhs) = &state.deferred_equalities[i];
+        let lhs' = normalize(lhs.clone(), &NormCtxt::from(subst, state));
+        let rhs' = normalize(rhs.clone(), &NormCtxt::from(subst, state));
+        if !lhs'.has_type_stage_app() && !rhs'.has_type_stage_app() {
+            state.deferred_equalities.remove(i);
+            unify(lhs', rhs', subst, state, span)?;  // concrete ~ concrete
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+```
+
+**Termination:** The loop terminates because concrete-concrete `unify()` cannot trigger Case 1 of `unify_normalized` (both sides are concrete, not TypeStageApp). If the recursive `unify(lhs', rhs')` at line 1415 encounters a new non-injective `TypeStageApp` pair at a deeper call, those are appended to `state.deferred_equalities` — the outer loop will see them on subsequent iterations (correct, intentional). The queue drains monotonically: the substitution grows only, so args that are TypeVars today either remain TypeVars (entry stays deferred) or become ground (entry fires and is removed); entries are never re-added with the same TypeVars. **Worst-case complexity:** O(k × n) where k = max queue depth and n = constraint count. For config-language programs, k is bounded to a small constant because direct comparisons of two arithmetic subexpressions (the only trigger for Case 1) are rare.
+
+**At let-generalization time:** any remaining deferred equalities whose `TypeStageApp` nodes contain only generalized TypeVars are **discarded** — they will be re-established at each call site when the scheme is instantiated and those TypeVars become ground. This is correct: the deferred equality `(TypeStageApp("F", [a, b]), TypeStageApp("F", [c, d]))` with generalized `a,b,c,d` becomes `(TypeStageApp("F", [a', b']), TypeStageApp("F", [c', d']))` with fresh instances at each call site, where FD improvement resolves them correctly.
+
+**Impact:** Small addition to `InferState` and `unify()`; ~25 lines.
 
 ### `src/type_unify.rs` — BAS deferral
 
@@ -1338,7 +1453,15 @@ This design is consistent with the "no global registries" principle: everything 
 ### `src/typecheck.rs` — Post-inference boundary guard elaboration pass
 
 **Current:** `ThunkState::Guarded` nodes are inserted only at explicit `[@Type expr]` TypeAssert sites, inline during `infer_expr`. `Unknown → Concrete` boundaries at call arguments, builtin args, field accesses, and `---` crossings produce no guards — mismatches surface only at the point of forced materialization with no blame provenance.  
-**Proposed:** After `infer_dict` completes (all TypeVars ground, full substitution available), run a second pass — `elaborate_boundary_guards` — over the type map. For each expression where the inferred type is `Unknown` and the contextual expected type is concrete: call `normalize(expected, NormCtxt::final(...))` to reduce any remaining `TypeStageApp` nodes, then replace the expression's thunk with `Guarded(inner, expected_concrete, BlameLabel { origin_span, boundary_span, polarity })`. Polarity is `Negative` for argument positions (untyped provider is blamed), `Positive` for return-value uses (consuming context is blamed). `---` boundary crossings are treated as implicit TypeAsserts — each binding that crosses a `---` with type `Unknown` on the upstream side and a concrete expected type on the downstream side receives a guard. The co-natural strategy (Greenman et al. 2019) applies: a value crossing a second boundary keeps only the inner (most recent) blame label.  
+**Proposed:** After `infer_dict` completes (all TypeVars ground, full substitution available), run `elaborate_boundary_guards` — a post-inference pass that writes guard annotations into AST `RefCell` fields (the same mechanism used by `Expr::TypeAssert`'s `resolved_type: RefCell<Option<Type>>`), not a thunk-wrapping operation. Thunks do not exist during typecheck; `eval()` creates `Guarded` thunks when it reads these annotations during its normal AST walk.
+
+For each expression where the inferred type is `Unknown` and the contextual expected type is concrete: call `normalize(expected, NormCtxt::final(...))` to reduce any remaining `TypeStageApp` nodes, assert the result is `is_concrete` (defined as: not `TypeVar`, not `TypeStageApp`, not `Unknown` — union/intersection/named types all qualify), then write the normalized expected type into the expression's guard annotation `RefCell`. `eval()` reads this annotation and wraps the expression's result thunk in `Guarded(inner, expected_concrete, BlameLabel)`.
+
+`---` boundary crossings: inject a call to `wrap_with_nominal_validation()` (already used for explicit `expects:` pragma guards) at each `---` where downstream expected types are concrete and upstream bindings are `Unknown`. The existing `GuardedValidate` continuation in `eval_materialize.rs` handles `Value::Overlay` correctly via `guard_ctx` extraction.
+
+Polarity: `Negative` for argument positions (untyped provider blamed), `Positive` for return-value consumers. `---` pipeline crossings: `Positive`. The upstream section is treated as a *producer* (analogous to a function returning an Unknown value); the downstream section that specifies the type expectation carries the boundary label. This matches co-natural blame: when the value later crosses a second boundary, the inner (most recent) label is kept — the downstream section's label is the most actionable, pointing at where the typed expectation was imposed. The fix is to annotate or correct the upstream producer, but the boundary is labelled at the consumer. This is the standard treatment for return-value blame (Wadler & Findler 2009).
+
+The co-natural O(1) space claim requires that when constructing `Guarded { inner, ... }` and `inner`'s state is already `Guarded { inner: inner2, ... }`, use `inner2` as the actual inner thunk — collapsing the nesting. Without this optimization, N boundary crossings create O(N) nested `Guarded` thunks. Either implement the constructor optimization or note the O(N) cost is acceptable if boundaries are rare.  
 **Impact:** New pass after inference; requires `NormCtxt` construction from the final substitution; adds `elaborate_boundary_guards(type_map, subst, type_stage_env) -> Result<(), TypeError>` to `src/typecheck.rs` or a new `src/typecheck_elaborate.rs`.
 
 ## Prerequisites
@@ -1355,5 +1478,7 @@ This design is consistent with the "no global registries" principle: everything 
 - Jones, M.P. (2000). "Type Classes with Functional Dependencies." *ESOP 2000*, LNCS 1782, pp. 230–244. — [FD improvement in HM; coverage and consistency conditions (not "Paterson conditions")]
 - Chakravarty, M.M.T., Keller, G. & Peyton Jones, S. (2005). "Associated Type Synonyms." *ICFP 2005*, pp. 241–253. — [type families as the alternative to FDs; inter-encoding argument; simplification vs propagation distinction]
 - Schrijvers, T., Peyton Jones, S., Sulzmann, M. & Vytiniotis, D. (2009). "Complete and Decidable Type Inference for GADTs." *ICFP '09*, pp. 341–352. — [OutsideIn(X) framework; touchability conditions on when improvement may fire; relevant to BAS-aware deferral]
+- Greenman, B., Felleisen, M. & Dimoulas, C. (2019). "Complete Monitors for Gradual Types." *Proc. ACM Program. Lang.* 3, OOPSLA, Article 122. doi:10.1145/3360548. — [co-natural blame strategy; O(1) space overhead for boundary guards; proves co-natural is sufficient for the blame theorem]
 - Stuckey, P.J. & Sulzmann, M. (2005). "A Theory of Overloading." *ACM TOPLAS*, 27(6), 1216–1269. — [CLP(H) foundation for CHR-based typeclass resolution; formal basis for constraint store and improvement]
 - Sulzmann, M., Duck, G.J., Peyton Jones, S. & Stuckey, P.J. (2007). "Understanding Functional Dependencies via Constraint Handling Rules." *Journal of Functional Programming*, 17(1), 83–129. — [foundational CHR unification of FDs and type families; Theorem 4.2 (confluence); coverage and consistency conditions; the theoretical basis for this design]
+- Wadler, P. & Findler, R.B. (2009). "Well-Typed Programs Can't Be Blamed." *ESOP '09*, LNCS 5502, pp. 1–16. — [blame theorem; proves well-typed components are never blamed; foundation for polarity assignment in boundary guards]

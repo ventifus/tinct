@@ -393,6 +393,27 @@ All other non-structural, non-subsumable combinations: error [U-FAIL]
 
 **Interaction with CALL-POLY:** Polymorphic call checking synthesizes all argument types, then unifies each against the corresponding instantiated parameter type. Type variable binding comes from [U-VAR]; concrete type compatibility (after substitution resolves variables) comes from [U-SUBSUME]. The bidirectional subsumption in [U-SUBSUME] ensures confluence — argument order does not affect whether type checking succeeds, only the precision of the resulting binding.
 
+**`TypeStageApp` unification rules.** After `normalize()` runs, `unify_normalized` may still encounter irreducible `TypeStageApp` nodes (non-ground args). Four cases:
+
+```
+unify(TypeStageApp("F", a₁), TypeStageApp("F", a₂))   # same function, F injective:
+  → unify args pairwise                               [U-TSA-CONGRUENCE]
+
+unify(TypeStageApp("F", a₁), TypeStageApp("F", a₂))   # same function, F non-injective:
+  → defer to InferState.deferred_equalities           [U-TSA-DEFER]
+
+unify(TypeStageApp("F", _), TypeStageApp("G", _))      # different functions:
+  → TypeError (apart — Eisenberg et al. 2014)         [U-TSA-APART]
+
+unify(TypeStageApp("F", args), ConcreteType)           # stuck application:
+  → TypeError("type-stage application has unresolved arguments")  [U-TSA-STUCK]
+
+unify(TypeStageApp("F", args), TypeVar(α))             # TypeVar binding:
+  → S[α ↦ TypeStageApp("F", args)], occurs check traverses args  [U-TSA-VAR]
+```
+
+The FD elaboration case (`c ~ TypeStageApp("AddResult", [a, b])`) uses [U-TSA-VAR] — `c` is the mediating TypeVar and is never stuck against a non-TypeVar.
+
 ## Subtyping: τ <: σ
 
 Subtyping is a pure predicate (no substitution mutation). Used for TypeAssert validation and return type checking.
@@ -838,32 +859,41 @@ result: [= [fn [] 1] [fn [] 2]]
 
 ### Multi-Parameter Type Classes and Functional Dependencies
 
-Arithmetic operators use a 3-parameter `Add` class with functional dependency `(a, b) → c` — given the types of both operands, the result type is uniquely determined (Jones 2000):
+Tinct's MPTC/FD system is grounded in **Constraint Handling Rules** (CHRs, Sulzmann et al. 2007), which unify functional dependencies (propagation rules `==>`) and type-stage functions (simplification rules `<=>`). The central mechanism is `normalize()`, called before every `unify` step.
 
+**`Type::TypeStageApp` — lazy type-stage application.** When FD improvement fires and the determining positions are not yet ground, the type checker produces `TypeStageApp { fn_name, args }` rather than calling the resolver eagerly. `normalize()` reduces it to a concrete type when args become ground. When any determining position is `Unknown`, the result is `Unknown` directly (not deferred indefinitely).
+
+**FD elaboration into equality goals.** When `[$Addable a b c]` is registered with FD `(a,b)→c` and resolver `AddResult`, `c` is immediately unified with `TypeStageApp("AddResult", [a, b])`. As `a`, `b` become ground, `normalize()` fires the resolver and `c` takes on a concrete type. `c`'s level is set to `max(enclosing_level, max(ℓ_a, ℓ_b))` at constraint-creation time. The FD constraint propagates in the type scheme alongside `c` (Jones 1995 qualified types), so the FD fires correctly at every call site.
+
+**Arithmetic operators** use `Addable`, `Subtractable`, `Multipliable`, `Divisible` classes with FD `(a,b)→c` and resolver functions (`AddResult`, etc.) declared in `stdlib/prelude.llt`. Instances cover Int/Float combinations. User-defined numeric types add instances — no code change required.
+
+**Deferred equality for non-injective resolvers.** When `unify_normalized` encounters two `TypeStageApp("F", _)` nodes from different elaboration sites, behavior splits on `ClassDecl.resolver_injective` (computed during the batch instance coherence check):
+- **Injective F:** unify args pairwise (congruence — sound).
+- **Non-injective F** (all arithmetic classes — `AddResult(Int,Float)=Float=AddResult(Float,Float)`): add `(lhs, rhs)` to `InferState.deferred_equalities`. After each `unify` call, if both sides have reduced to concrete types, fire `unify(concrete_lhs, concrete_rhs)`. This prevents false type errors on `[= [+ 1 2.0] [+ 1.5 2.5]]` (both produce `Float` via different arg types).
+
+**Class and instance declarations.** Classes use the two-bracket form; instances use match-arm syntax:
+
+```tinct
+--- stage: type
+[AddResult: [fn [...args] [match ... ]]]   # resolver function
+---
+Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
+  +: [fn@c [a b]]]
+
+[instance Addable
+  [pattern [a@Int  b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
+  [pattern [a@Int  b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]]
 ```
-+ : Add a b c => a → b → c
-- : Sub a b c => a → b → c
-* : Mul a b c => a → b → c
-/ : Div a b c => a → b → c
-```
 
-**Instances** (closed set; user-defined types may add instances):
+The structural metadata bracket (`[determines: ... resolver: ...]`) is the second positional argument to `[class ...]`. Classes are **scope-resident values** in the TypeEnv, not global registry entries. `[$Addable a b c]` resolves the class via the `$`-sigil from current scope at constraint-creation time.
 
-| `Add a b c` | Result |
-|---|---|
-| `Add Int Int Int` | homogeneous int |
-| `Add Float Float Float` | homogeneous float |
-| `Add Int Float Float` | Int widened to Float |
-| `Add Float Int Float` | Int widened to Float |
-| `Add Number Number Number` | gradual numeric |
-| `Add Number Int Number` / `Add Int Number Number` | gradual + int |
-| `Add Number Float Number` / `Add Float Number Number` | gradual + float |
+**Instance soundness.** At the batch instance coherence check (after all `[instance ...]` forms for a class are processed): disjointness (no two arms match the same type tuple), coverage (no fresh TypeVars in determined positions), and consistency (if two arms' determining positions unify, their determined types must agree) are all verified. Violations are rejected with diagnostic messages naming the conflicting arms.
 
-**Residual constraints and improvement.** `Add a b c` propagates as a residual constraint in `TypeScheme.constraints` (Jones 1995 qualified types). Improvement fires eagerly in `check_constraints_on_var` whenever the determining positions (`a`, `b`) become ground: look up the matching instance and unify `c` with the instance's result type. `[fn [x y] [+ x y]]` infers `Add a b c => Fn@c [a b]` without annotation. If both determining vars are ground at generalization but no instance matches, the type checker rejects immediately (Sulzmann et al. 2007).
+**Coherence.** Two instances with the same determining-position tuple but different determined types are rejected (consistency condition, Jones 2000). Instances are closed within a compilation unit — cross-file includes contribute arms, and the full accumulated set is checked before the first constrained expression.
 
-**Coherence.** For MPTCs with functional dependencies, the coherence check is per determining-position tuple: two `Add` instances with the same `(a, b)` pair but different `c` are rejected regardless of `c`.
+**Cross-arity entailment.** `Addable a b c` does not automatically entail `Numeric a`. The closed instance set restricts operands to numeric types — any non-numeric operand produces a type error at the call site. Same-arity superclass entailment (`Comparable a` entails `Equatable a`) traverses `ClassDecl.superclasses`.
 
-**Cross-arity entailment.** `Add a b c` does not automatically entail `Numeric a` or `Numeric b`. The closed instance set already restricts operands to numeric types — any non-numeric type produces a type error at the call site. Same-arity entailment (`Comparable a` entails `Equatable a`) is supported via the existing `entails()` function.
+See `doc/whatif/chr-unification.md` for the complete formal specification including normalization algorithm, resolver soundness obligations, TypeStageApp unification rules, and boundary guard elaboration.
 
 ### Nested Dict Polymorphism
 
@@ -927,28 +957,36 @@ UNIFY-APP:
 
 ### Typeclass Declarations and Instances
 
-Classes are declared with `[class ...]` and instances with `[instance ...]`:
+Classes are declared with `[class [params] [structural-metadata] methods...]`. The second positional bracket carries `determines:`, `resolver:`, `kinds:`, and `superclasses:` — omit it for classes with no FDs or kind constraints:
 
 ```tinct
-[Functor: [class [f@Operator]
-  [fmap: [fn@[f b] [fn@b [a]  [f a]]]]]]
+Functor: [class [f]  [kinds: [f: Operator]]
+  fmap: [fn@[return: [f b]] [g@[Fn@b [a]]  xs@[f a]]]]
 
-[FunctorResult: [instance [Functor Result]
-  [fmap: result-map]]]
+Equatable: [class [a]
+  eq?: [fn@Bool [a a]]]
 ```
 
-**Superclass chains** use `extends`:
+Instances use match-arm syntax with `[pattern [...]]` arm keys:
 
 ```tinct
-[Applicative: [class [f@Operator] extends [Functor f]
-  [pure:  [fn@[f a] [a]]]
-  [lift2: [fn@[f c] [fn@c [a b]  [f a]  [f b]]]]]]
-
-[Monad: [class [m@Operator] extends [Applicative m]
-  [bind: [fn@[m b] [[m a]  fn@[m b] [a]]]]]]
+[instance Functor
+  [pattern [f@Seq  ]]: [fmap: [fn@[return: [Seq b]]   [g@[Fn@b [a]]  xs@[Seq a]] [map g xs]]]
+  [pattern [f@Maybe]]: [fmap: [fn@[return: [Maybe b]] [g@[Fn@b [a]]  m@[Maybe a]]
+                 [match m  [Some v]: [Some [g v]]  None: None]]]]
 ```
 
-The superclass chain provides method inheritance. `MonadResult` carries `bind` directly and inherits `pure`, `lift2`, and `fmap` from the superclass instances.
+**Superclasses** use `superclasses:` in the structural bracket:
+
+```tinct
+Comparable: [class [a]  [superclasses: [Equatable]]
+  lt?: [fn@Bool [a a]]]
+
+Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
+  bind: [fn@[return: [m b]] [ma@[m a]  k@[Fn@[return: [m b]] [a]]]]]
+```
+
+The superclass chain provides constraint entailment. Functions constrained by `[a: Comparable]` can call `eq?` from `Equatable` without an additional explicit constraint. Superclass instances must exist before a subclass instance can be declared.
 
 **Rank-1 restriction:** `App(Operator("f"), Operator("g"))` (applying one Operator variable to another) is excluded. Multiple flat Operator quantifiers in one method type are allowed — `traverse` has both `f@Applicative` and `t@Traversable` in its signature, which is rank-1.
 

@@ -14,7 +14,7 @@ Blame tracking identifies which boundary between typed and untyped code is respo
 ## Supersession Notes
 
 - **`Type::Any` split**: `Type::Any` was replaced by two distinct types: `Type::Unknown` (gradual typing opt-out — the `?` type, consistent with anything) and `Type::Top` (the true supertype, accepts all values within the lattice). Any section referring to `Type::Any` uses stale terminology. See [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md) (2026-05-09).
-- **Phase 3b (automatic guard insertion)**: Automatic guard insertion at all `Unknown → Concrete` boundaries. Phase 3a (TypeAssert-site blame tracking) is the foundation; Phase 3b extends it with systematic boundary guards.
+- **Automatic boundary guards**: Runtime guards are inserted at every `Unknown → Concrete` boundary — both explicit TypeAssert sites and implicit call-argument, builtin-argument, field-access, and `---` pipeline-crossing boundaries. Full design is specified in [CHR-Unified Type Constraints](../whatif/chr-unification.md) §Automatic Boundary Guards.
 
 ## Design
 
@@ -105,10 +105,7 @@ Every point where `Unknown` meets a concrete type is a blame boundary requiring 
   with runtime check: materialize(x) must be Int
 ```
 
-Tinct's TypeAssert proxy contracts (Findler & Felleisen 2002) provide the mechanism. Two modes:
-
-- **Explicit-only** (Phase 3a): runtime checks only at TypeAssert sites. `Unknown -> Concrete` mismatches caught at runtime materialization, not at the function boundary.
-- **Automatic insertion** (Phase 3b): the compiler inserts runtime guards at every `Unknown -> Concrete` boundary.
+Tinct's TypeAssert proxy contracts (Findler & Felleisen 2002) provide the mechanism: every `Unknown → Concrete` boundary becomes a `ThunkState::Guarded` node inserted by the type checker's post-inference elaboration pass. TypeAssert sites insert guards inline at annotation time; all other boundaries (call arguments, builtin arguments, field access on `Unknown`, `---` pipeline crossings) are covered by the elaboration pass after inference is complete. See [CHR-Unified Type Constraints](../whatif/chr-unification.md) §Automatic Boundary Guards for the full elaboration algorithm.
 
 ### Blame Provenance
 
@@ -147,7 +144,7 @@ type assertion failed at line 5: expected Int, got String
   value originated from: unannotated parameter x at line 3
 ```
 
-For automatic insertion at implicit boundaries:
+At implicit boundaries (argument positions, field access, pipeline crossings):
 
 ```
 type mismatch at line 12: add expected Int for first argument
@@ -203,9 +200,7 @@ The AGT approach resolves the constraint interaction: `Unknown` satisfies a cons
 
 ### Evaluator (`src/eval.rs`)
 
-**Phase 3a (explicit blame):** `ThunkState::Guarded` carries `blame_label: Option<BlameLabel>`. TypeAssert guards carry `BlameLabel { polarity: Positive, origin_span, boundary_span }`. `Unknown` values that don't cross a TypeAssert boundary still produce point-of-failure errors without blame provenance.
-
-**Phase 3b (automatic insertion):** The type checker elaborates every `Unknown -> Concrete` boundary into an explicit `ThunkState::Guarded` with a blame label. The `---` pipeline boundary creates implicit guards at the start of each consuming section.
+`ThunkState::Guarded` carries `blame_label: Option<BlameLabel>`. TypeAssert guards carry `BlameLabel { polarity: Positive, origin_span, boundary_span }`. The post-inference elaboration pass (see [CHR-Unified Type Constraints](../whatif/chr-unification.md) §Automatic Boundary Guards) inserts `Guarded` nodes at every remaining `Unknown → Concrete` boundary with the appropriate polarity and origin span, so all boundaries produce blamed errors rather than point-of-failure errors without provenance.
 
 ### TypeAssert (`src/typecheck.rs`, `src/eval.rs`)
 
