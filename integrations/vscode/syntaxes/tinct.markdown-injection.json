@@ -18,7 +18,7 @@
       "name": "markup.fenced_code.block.llt.markdown",
       "contentName": "meta.embedded.block.llt",
       "patterns": [
-        { "include": "source.llt" }
+        { "include": "source.llt.corpus" }
       ]
     }
   }
