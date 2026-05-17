@@ -341,7 +341,7 @@ traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
   [t.traverse f xs]]
 
 # forM: traverse with arguments flipped (collection before function)
-forM: [fn@[m [Seq b]] [m@Monad  xs@[Seq a]  f@fn@[m b] [a]]
+forM: [fn@[m [Seq b]] [m@Monad  xs@[Seq a]  f@[Fn@[m b] [a]]]
   [traverse m f xs]]
 
 # when: conditionally execute a monadic action
@@ -349,7 +349,7 @@ when: [fn@[m []] [m@Monad  cond@Bool  action@[m []]]
   [if cond action [m.pure []]]]
 
 # liftM2: lift a two-argument function into the monad
-liftM2: [fn@[m c] [m@Monad  f@fn@c [a b]  ma@[m a]  mb@[m b]]
+liftM2: [fn@[m c] [m@Monad  f@[Fn@c [a b]]  ma@[m a]  mb@[m b]]
   [m.bind ma [fn [a]
   [m.bind mb [fn [b]
     [m.pure [f a b]]]]]]]
@@ -734,7 +734,7 @@ Tinct already has `Handle@[...]` — tinct's streaming session type where the pa
 
 - `Handle@[Tls Stream]` uses `Row` kind
 - `@[Result T]` uses `Operator` kind
-- `@Map@[K: V]` uses `Operator → Operator → *` (rank-2, supported for concrete applications only)
+- `@[Map [K: V]]` uses `Operator → Operator → *` (rank-2, supported for concrete applications only)
 - `key@Label` or `key@[label: l]` uses `Label` kind — a label TypeVar names a specific field; it does not participate in row construction or type constructor application. `Seq(TypeVar(l, Label))` is a `KIND-LABEL-ERROR` — `Seq` expects a `*`-kinded argument.
 
 Row variables remain unchanged. `Operator` and `Label` variables are new and separate from each other and from row variables. The existing `Row`-kinded `Handle` is not affected.
@@ -783,7 +783,7 @@ The upgrade path: existing code compiles unchanged. New code can drop the explic
 ### Parser (`src/parser.rs`, `src/lexer.rs`) *(hkt-foundation)*
 
 - Recognize `Operator` as a reserved kind-level name in annotation positions.
-- In annotation positions, parse `[f a]` (no colons) as `Expr::TypeApp(f, a)` when `f` is an Operator-kinded type variable or a user-defined parameterized type alias. Built-in names (`Seq`, `Map`, etc.) continue to use the existing `@Seq@T` path and produce `Type::Seq(T)` directly — no `App(Seq, T)` variant for builtins. When an Operator variable is resolved to a builtin at instance resolution time, normalize to the builtin type form.
+- In annotation positions, parse `[f a]` (no colons) as `Expr::TypeApp(f, a)` when `f` is an Operator-kinded type variable or a user-defined parameterized type alias. Built-in names (`Seq`, `Map`, etc.) use the bracket application form `@[Seq T]` and produce `Type::Seq(T)` directly — no `App(Seq, T)` variant for builtins. When an Operator variable is resolved to a builtin at instance resolution time, normalize to the builtin type form.
 - Extend `class` declaration parsing to accept `extends [SuperClass param]` clause.
 
 ### Type System (`src/types.rs`, `src/type_unify.rs`) *(hkt-foundation)*

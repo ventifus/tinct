@@ -200,7 +200,14 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // Populates VarRef resolved caches with (level, slot) coordinates.
     resolve::resolve_file(&file.node);
     // Type errors are advisory; evaluation proceeds regardless.
-    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
+    // Use the version that returns InferState so we can extract boundary_guards.
+    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state) =
+        typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
+            &file.node,
+            crate::imports::build_prelude_env(),
+            false, // disable scheme_map (not needed for eval)
+            false, // not in prelude load
+        );
     // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
     // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
     // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
@@ -216,6 +223,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
+    // Wire boundary guards from type inference to the eval context
+    ctx.set_boundary_guards(infer_state.boundary_guards);
     // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
     // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
@@ -294,7 +303,14 @@ pub fn eval_source_with_cap_net(
 
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
-    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
+    // Use the version that returns InferState so we can extract boundary_guards.
+    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state) =
+        typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
+            &file.node,
+            crate::imports::build_prelude_env(),
+            false, // disable scheme_map (not needed for eval)
+            false, // not in prelude load
+        );
     let (env, stdlib_arena) =
         builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
 
@@ -305,6 +321,8 @@ pub fn eval_source_with_cap_net(
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
+    // Wire boundary guards from type inference to the eval context
+    ctx.set_boundary_guards(infer_state.boundary_guards);
 
     if !no_fs {
         if let Ok(pwd_dir) =

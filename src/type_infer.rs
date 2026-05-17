@@ -170,6 +170,15 @@ pub struct InferState {
     /// check_constraints_on_var → improve_functional_dependency cycle. Incremented when
     /// entering improve_functional_dependency, decremented when exiting.
     pub fd_depth: usize,
+    /// Instance resolution recursion depth.
+    /// Prevents infinite loops through the check_constraints_on_var → resolve_instance →
+    /// unify → check_constraints_on_var cycle. Incremented when entering resolve_instance,
+    /// decremented when exiting. Matches GHC's -freduction-depth semantics (Sulzmann et al. 2007 §3.2).
+    pub instance_resolution_depth: u32,
+    /// Flag indicating whether we are currently type-checking the prelude.
+    /// When true, instance method body inference is skipped (optimization — method types
+    /// are unused during prelude loading as they are #[allow(dead_code)] in InstanceDecl).
+    pub in_prelude_load: bool,
 }
 
 impl InferState {
@@ -332,6 +341,8 @@ impl InferState {
             deferred_equalities: Vec::new(),
             boundary_guards: Vec::new(),
             fd_depth: 0,
+            instance_resolution_depth: 0,
+            in_prelude_load: false,
         }
     }
 

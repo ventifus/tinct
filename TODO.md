@@ -31,7 +31,9 @@ Moves the hardcoded arithmetic instance table out of Rust and into tinct itself.
 - [ ] Fix consistency check to use unify-under-θ instead of structural equality (`types_equal`) — deferred, O(N²) performance risk for large prelude (`src/typecheck.rs:2400`)
 - [x] Improve disjointness/consistency error spans: both arm spans included (`src/typecheck.rs`)
 - [x] Coverage error message: uses param name from `params` list (`src/typecheck.rs`)
-- [ ] Add `instance_resolution_depth` guard to `check_constraints_on_var` → `resolve_instance` chain to prevent recursive constraint resolution loop; required before enabling instance declarations in prelude (`src/type_unify.rs`)
+- [x] Add `instance_resolution_depth: u32` to `InferState`; guard `resolve_instance` call in `check_constraints_on_var` (limit 64, matching GHC `-freduction-depth` per Sulzmann et al. 2007 §3.2); **unblocks all remaining chr-prelude and unified-bindings-migrate work** (`src/type_unify.rs`, `src/type_infer.rs`)
+- [x] Add `in_prelude_load: bool` flag to `InferState`; skip InstanceDecl method body inference during prelude load (`src/type_infer.rs`, `src/typecheck.rs`, `src/imports.rs`)
+- [x] Wire boundary guards from typecheck to eval pipeline: `boundary_guards` on EvalContext, `set_boundary_guards()` method; wired in `eval_source_with_config`, `eval_source_with_cap_net`, `run_eval` (`src/eval.rs`, `src/lib.rs`, `src/main.rs`)
 - [ ] Remove backward-compat legacy instance parsing — after instance_resolution_depth guard is in and all prelude instances migrated (`src/parser.rs`)
 - [ ] Write resolver functions + arithmetic class declarations in prelude.llt; activate `improve_functional_dependency` cache path — requires instance_resolution_depth guard first (`stdlib/prelude.llt`, `src/type_unify.rs`)
 - [x] NormCtxt resolver_cache pre-populated (16 entries); `improve_functional_dependency` has `fd_depth` guard with `MAX_FD_DEPTH=16` (`src/type_normalize.rs`, `src/type_unify.rs`)
@@ -39,6 +41,48 @@ Moves the hardcoded arithmetic instance table out of Rust and into tinct itself.
 - [ ] Wire boundary guards to eval: create guarded thunks from `state.boundary_guards`; eval-side `ThunkState::Guarded` with BlameLabel (`src/eval.rs`)
 - [ ] Tests: full arithmetic FD + boundary guard tests (blocked on resolver activation)
 
+---
+
+## Unified Binding Declarations
+
+`unified-bindings` accepted 2026-05-17. See `doc/whatif/unified-bindings.md` and `doc/02-syntax.md` §6, §9. Implementation order: unified-bindings-ast → unified-bindings-typecheck → unified-bindings-migrate.
+
+- [x] Design unified bindings — see doc/whatif/unified-bindings.md
+
+### unified-bindings-ast: Lexer, AST, and parser for [let ...], [case ...], and ... placeholder
+
+Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeholder` and parser support. Both old and new binding syntax accepted during this phase (old syntax deprecated but functional to avoid breaking everything at once). **Spec chapters:** `doc/02-syntax.md §6, §9`, `doc/whatif/unified-bindings.md §src/lexer.rs, §src/ast.rs, §src/parser.rs`.
+
+- [ ] Add `Token::Let` and `Token::Case` keywords to `src/lexer.rs`; add both to the reserved keyword denylist (`src/lexer.rs`)
+- [ ] Add `Expr::LetDecl { bindings: Vec<Spanned<Expr>> }`, `Expr::CaseArm { pattern: Box<Spanned<Expr>>, body: Box<Spanned<Expr>> }`, `Expr::Placeholder` to `src/ast.rs`; update all exhaustive match sites (`src/ast.rs`, `src/desugar.rs`, `src/formatter.rs`, `src/expand.rs`, `src/resolve.rs`, `src/ast_dict.rs`)
+- [ ] Add `StackFrame::LetDecl` to `src/parser.rs`; add `StackFrame::CaseDecl` (`src/parser.rs`)
+- [ ] Parse `Expr::Placeholder`: `Token::Spread` not followed by `Token::Identifier` in value position (`src/parser.rs`)
+- [ ] Add `let:` and `case:` colon-ahead disambiguation to keyword dispatch table (`src/parser.rs`)
+- [ ] Update `StackFrame::Fn`, `StackFrame::ClassDecl`, `StackFrame::TypeAlias`, `StackFrame::InstanceDecl`, `StackFrame::Match` to accept `[let ...]` / `[case ...]` forms (keep old paths functional) (`src/parser.rs`)
+- [ ] Tests: parser tests for new binding syntax, `...` placeholder, colon-ahead disambiguation (`tests/corpus/eval/`, `src/lib.rs`)
+
+### unified-bindings-typecheck: Type checker and evaluator for binding declarations, case arms, and placeholders
+
+**Depends on:** `unified-bindings-ast`
+
+- [ ] Implement binding extraction from `Expr::LetDecl` in fn/class/type/instance/case contexts (`src/typecheck.rs`)
+- [ ] Implement `typecheck_case_arm`: constructor payload lookup, type narrowing (`[let n@T]` → `n : scrutinee_ty ∩ T`) (`src/typecheck.rs`)
+- [ ] Implement `Expr::LetDecl` validity check and structural-test restriction (`src/typecheck.rs`)
+- [ ] Type `Expr::Placeholder` as `Unknown` (`src/typecheck.rs`)
+- [ ] Implement `eval_case_arm`, `eval_let_pattern`, nullary variant `values_equal`, `Expr::Placeholder` eval (`src/eval.rs`, `src/value.rs`)
+- [ ] Tests: case arm type narrowing, LetDecl-in-expression-position error, Placeholder eval (`tests/corpus/eval/`, `src/lib.rs`)
+
+### unified-bindings-migrate: Migrate all existing code to [let ...] and [case ...] syntax
+
+**Depends on:** `unified-bindings-typecheck`
+
+- [ ] Migrate ~242 fn declarations in `stdlib/prelude.llt` to `[fn [let params] body]` (`stdlib/prelude.llt`)
+- [ ] Migrate class/type/instance declarations in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
+- [ ] Migrate all corpus test files and doc examples (`tests/corpus/`, `doc/`)
+- [ ] Remove old param-list parsing paths (old syntax becomes a parse error) (`src/parser.rs`)
+- [ ] Verify `just test` passes with all migrations applied (`tests/`)
+
+---
 
 ## Codebase Health
 

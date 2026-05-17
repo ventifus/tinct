@@ -788,7 +788,7 @@ results@[Seq Int]:  [await-all [task [+ 1 2]] [task [* 3 4]]]
 ]
 ```
 
-`await-all` is intentionally homogeneous: `Seq@Task@T → Seq@T`. This matches F# `Async<'T>` and Haskell `Async a`. For mixed types, separate `await` calls or wrapping results in a nominal sum type are the correct pattern.
+`await-all` is intentionally homogeneous: `[Seq [Task T]] → [Seq T]`. This matches F# `Async<'T>` and Haskell `Async a`. For mixed types, separate `await` calls or wrapping results in a nominal sum type are the correct pattern.
 
 `select-once` typing: each `[channel handler]` pair must have a handler whose argument type matches the channel's element type. The return type of `select-once` is the union of all handler return types.
 
@@ -1137,23 +1137,23 @@ A client connecting to this server would use the symmetric stack:
 | `with-deadline` | `Context → Timestamp → Context` | Child context that auto-cancels at an absolute time. |
 | `cancelled?` | `Context → Bool` | True if the context has been cancelled. |
 | `non-cancellable` | `→ Context` | Returns a fresh `Context` backed by a root `CancellationToken` that nothing will ever cancel. Used to run cleanup that must not be interrupted. |
-| `with-context` | `Context → Fn@[]@T → T` | Evaluates the zero-arg function in a derived `EvalContext` where the cancel token is replaced by the given `Context`. Required for `[finally ...]`. |
+| `with-context` | `Context → [Fn@T []] → T` | Evaluates the zero-arg function in a derived `EvalContext` where the cancel token is replaced by the given `Context`. Required for `[finally ...]`. |
 | `timeout` | `Duration → Task@T → Result@T` | Awaits the task; returns `Ok@T` or `Err@"timeout"` if the duration elapses. Aborts the task on timeout. |
 | `cancel-root` | `→ Null` | Cancel the root `CancellationToken`. Signals all tasks to stop. Not capability-gated (process isolation is the security boundary). |
 | `drain` | `→ Null` | Await until all in-flight tasks (including `cluster-local` workers) have finished. Does not include remote workers. |
 | `exit-now` | `Int → Null` | Immediate `process::exit`. No drain, no cleanup. |
 | `task` | `expr → Task@T` | Spawns evaluation of `expr` via `spawn_local` when the task expression is materialized. Clones `Rc<Thunk>` + `Rc<EvalContext>` for `'static` bound. |
 | `await` | `Task@T → T` | Suspends until task completes; propagates its error. |
-| `await-all` | `Seq@Task@T → Seq@T` | Awaits all tasks; results in submission order. Homogeneous: all tasks must share type `T`. |
-| `await-any` | `Seq@Task@T → T` | Returns first completed result; calls `abort()` on all remaining tasks. Aborted tasks stop at their next yield point; side effects are not rolled back. |
+| `await-all` | `[Seq Task@T] → [Seq T]` | Awaits all tasks; results in submission order. Homogeneous: all tasks must share type `T`. |
+| `await-any` | `[Seq Task@T] → T` | Returns first completed result; calls `abort()` on all remaining tasks. Aborted tasks stop at their next yield point; side effects are not rolled back. |
 | `channel` | `Int → Channel@T` | Creates a bounded channel. Capacity must be ≥ 1; `[channel 0]` is an error. |
 | `send` | `Channel@T → T → Null` | Sends a value; suspends if buffer full. |
 | `recv` | `Channel@T → T` | Receives next value; suspends until available. Returns error if channel is closed. |
-| `select-once` | `Seq@[Channel@T, Fn@T→R] → R` | Polls channels in pseudo-random order; calls handler of first ready channel. Removes closed channels from consideration; errors if all sources closed. |
+| `select-once` | `[Seq [Channel@T Fn@T→R]] → R` | Polls channels in pseudo-random order; calls handler of first ready channel. Removes closed channels from consideration; errors if all sources closed. |
 | `par` | `expr → T` | Spawns `expr` on the thread pool immediately; returns same value when demanded. No-op if thunk already in flight. |
 | `par-map` | `[Fn@B [A]] → [Seq A] → [Seq B]` | Parallel map: all elements submitted to thread pool simultaneously; results in order. |
 | `par-filter` | `[Fn@Bool [A]] → [Seq A] → [Seq A]` | Parallel filter. |
-| `signal-channel` | `Seq@Signal → Channel@Signal` | Channel that delivers the signal name (`"SIGTERM"`, `"SIGINT"`) when any listed signal fires. Background task aborted when channel is dropped. |
+| `signal-channel` | `[Seq Signal] → Channel@Signal` | Channel that delivers the signal name (`"SIGTERM"`, `"SIGINT"`) when any listed signal fires. Background task aborted when channel is dropped. |
 | `timer-channel` | `ClockCap → Duration → Channel@Timestamp` | Fires on each interval. Delivers the scheduled fire time as a `Timestamp`. Lag = `[timestamp-diff [now clock] scheduled]`. Dropped ticks not queued. Background task aborted when channel is dropped. |
 | `watch-channel` | `DirCap → Str → Channel@Null` | Fires when the watched path is modified. Background task aborted when channel is dropped. |
 | `tcp-listen` | `NetCap → Int → Channel@Handle` | One bidirectional `Handle` per accepted TCP connection. HTTP/1.1 framing is `stdlib/http1.llt`. |
@@ -1163,7 +1163,7 @@ A client connecting to this server would use the symmetric stack:
 
 **Current:** No `Task`, `Channel`, or `Context` types.
 
-**Proposed:** `Type::Task(Box<Type>)`, `Type::Channel(Box<Type>)`, and `Type::Context` (opaque) — all new. `task` infers the inner type from the body expression. `await` unifies `Task@?T` → `?T`. `send`/`recv` unify channel element type. `select-once` checks handler arity against channel element type. `with-cancel` returns `[Context Fn@[]@Null]`. `timeout` returns `Result@T`.
+**Proposed:** `Type::Task(Box<Type>)`, `Type::Channel(Box<Type>)`, and `Type::Context` (opaque) — all new. `task` infers the inner type from the body expression. `await` unifies `Task@?T` → `?T`. `send`/`recv` unify channel element type. `select-once` checks handler arity against channel element type. `with-cancel` returns `[Context [Fn@Null []]]`. `timeout` returns `Result@T`.
 
 **Impact:** Moderate — new inference rules for 5 types. Pattern is identical to existing parameterized types (`Seq@T`, `Map@[K:V]`).
 

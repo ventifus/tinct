@@ -266,7 +266,7 @@ The options dict keys:
 | `mozilla-roots` | `Bool` | `false` | Also load compiled-in Mozilla roots (`webpki-roots` opt-in) |
 | `client-cert` | `Handle[Text Readable ...]` | — | PEM client certificate (mTLS) |
 | `client-key` | `Handle[Text Readable ...]` | — | PEM private key for client cert |
-| `pins` | `@Seq@SpkiPin` | — | SPKI fingerprints; leaf cert must match one. See §SPKI Pins. |
+| `pins` | `@[Seq SpkiPin]` | — | SPKI fingerprints; leaf cert must match one. See §SPKI Pins. |
 | `alpn` | `Seq[String]` | `["http/1.1"]` | ALPN protocol list for negotiation |
 
 ### CA Root Selection
@@ -622,15 +622,15 @@ available at runtime without recompilation.
     mozilla-roots:  @[Bool Null]    # default false; opt-in webpki-roots
     client-cert:    @[Handle Null]  # PEM client cert (mTLS)
     client-key:     @[Handle Null]  # PEM private key for client cert
-    pins:           @[Seq@SpkiPin Null] # typed SPKI fingerprints; see §SPKI Pins
-    alpn:           @[Seq@String Null]  # default ["http/1.1"]
+    pins:           @[[Seq SpkiPin] Null] # typed SPKI fingerprints; see §SPKI Pins
+    alpn:           @[[Seq String] Null]  # default ["http/1.1"]
   ]]
 
   # tls-peer-cert return type
   PeerCert: [type [
     subject:     @String
     issuer:      @String
-    sans:        @Seq@String        # Subject Alternative Names
+    sans:        @[Seq String]      # Subject Alternative Names
     not-before:  @Timestamp         # lib-datetime Timestamp (depends on lib-datetime.md)
     not-after:   @Timestamp         # compare directly with [now clock]; no parse-timestamp needed
     spki-sha256: @String            # sha256//base64= format

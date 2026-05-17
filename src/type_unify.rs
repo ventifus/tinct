@@ -331,11 +331,22 @@ fn check_constraints_on_var(
                 // This enables user-defined instances (future work: dictionary construction)
                 // Clone instance_env to avoid borrowing state both immutably (for the
                 // field access) and mutably (as the unify parameter) at the same time.
+                const MAX_INSTANCE_RESOLUTION_DEPTH: u32 = 64;
+                if state.instance_resolution_depth >= MAX_INSTANCE_RESOLUTION_DEPTH {
+                    // Too deep — skip this constraint to prevent infinite recursion.
+                    // The recursion cycle is: check_constraints_on_var → resolve_instance →
+                    // unify → check_constraints_on_var. This matches GHC's -freduction-depth
+                    // semantics (Sulzmann et al. 2007 §3.2).
+                    continue;
+                }
+                state.instance_resolution_depth += 1;
                 let inst_env = state.instance_env.clone();
-                if inst_env
+                let instance_found = inst_env
                     .resolve_instance(&class, concrete_ty, state)
-                    .is_some()
-                {
+                    .is_some();
+                state.instance_resolution_depth -= 1;
+
+                if instance_found {
                     // Instance found - constraint satisfied
                     continue;
                 }

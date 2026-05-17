@@ -28,11 +28,11 @@ completed.
 min: [fn@Unknown [xs] ...]
 
 # TypeVar works for the return type, but constraint has no syntax
-min: [fn@a [xs@Seq@a] ...]   # a is Comparable — but nothing says so
+min: [fn@a [xs@[Seq a]] ...]   # a is Comparable — but nothing says so
 ```
 
 ```tinct
-# LSP hover shows: Comparable a => Fn@a [Seq@a]
+# LSP hover shows: Comparable a => Fn@a [[Seq a]]
 # User cannot copy that display back into source annotations
 ```
 
@@ -51,11 +51,11 @@ min: [fn@a [xs@Seq@a] ...]   # a is Comparable — but nothing says so
 
 **Accurate stdlib types.** `min`, `max`, `sorted`, and any function that
 compares or hashes its arguments currently can only be annotated `@Unknown`.
-With constraint annotations they become `fn@a [xs@Seq@a]` with `Comparable a`
+With constraint annotations they become `fn@a [xs@[Seq a]]` with `Comparable a`
 — a precise type the checker enforces.
 
 **LSP hover round-trip.** The type checker already computes `Comparable a =>
-Fn@a [Seq@a]`. With constraint annotations, users can paste that back into
+Fn@a [[Seq a]]`. With constraint annotations, users can paste that back into
 source. Hover and annotation are isomorphic.
 
 **Library interface documentation.** Stdlib authors writing polymorphic
@@ -88,16 +88,16 @@ to `fn@[return: Type]` and covers the common case with no extra syntax.
 
 ```tinct
 # Shorthand — unchanged, always valid
-min: [fn@a [xs@Seq@a] ...]
+min: [fn@a [xs@[Seq a]] ...]
 
 # Full form — explicit return type, constraint, and doc
-min: [fn@[return: a  constraint: [a: Comparable]  doc: "Return smallest element"] [xs@Seq@a] ...]
+min: [fn@[return: a  constraint: [a: Comparable]  doc: "Return smallest element"] [xs@[Seq a]] ...]
 
 # Doc-only — return type inferred from body
 greet: [fn@[doc: "Format a greeting string"] [name@String] [str "Hello " name]]
 
 # Constraint on a TypeVar not used as the return type
-check-all: [fn@[return: Bool  constraint: [a: Equatable]] [xs@Seq@a  target@a] ...]
+check-all: [fn@[return: Bool  constraint: [a: Equatable]] [xs@[Seq a]  target@a] ...]
 ```
 
 ### Constraint value syntax
@@ -148,7 +148,7 @@ Constraint declaration and TypeVar naming use the same `ann_mapping` mechanism
 as today. Processing `constraint: [a: Comparable]` creates a fresh TypeVar
 `_t0`, registers `a → _t0` in `ann_mapping` (and `state.levels[_t0] =
 state.level`), and adds `Constraint { class: "Comparable", var: "_t0" }` to
-`state.constraints`. When `return: a` or `xs@Seq@a` is resolved subsequently,
+`state.constraints`. When `return: a` or `xs@[Seq a]` is resolved subsequently,
 `ann_mapping` looks up `a` and returns the same constrained `_t0`.
 
 ### Interaction with inference

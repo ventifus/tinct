@@ -323,17 +323,24 @@ pub fn typecheck_file_with_types_and_env_and_source(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state) =
-        typecheck_file_with_types_and_env_and_source_returning_state(file, initial_env, true);
+        typecheck_file_with_types_and_env_and_source_returning_state(
+            file,
+            initial_env,
+            true,
+            false,
+        );
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
 
 /// Like [`typecheck_file_with_types_and_env_and_source`], but also returns the final
 /// [`InferState`]. Used by `imports::build_prelude_env_inner` to capture the prelude's
-/// `instance_env` for propagation to user-code type-checking sessions.
-pub(crate) fn typecheck_file_with_types_and_env_and_source_returning_state(
+/// `instance_env` for propagation to user-code type-checking sessions. Also used by eval
+/// pipeline to extract boundary_guards for gradual typing runtime checks.
+pub fn typecheck_file_with_types_and_env_and_source_returning_state(
     file: &File,
     initial_env: Rc<TypeEnv>,
     enable_scheme_map: bool,
+    in_prelude_load: bool,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -352,6 +359,9 @@ pub(crate) fn typecheck_file_with_types_and_env_and_source_returning_state(
     // Seed with prelude instances so user code sees class instances registered by prelude.llt.
     // This call is a no-op when the cache is empty (i.e., when we ARE type-checking the prelude).
     crate::imports::seed_infer_state_from_prelude_cache(&mut state);
+
+    // Set the prelude load flag if requested (optimization for prelude type-checking)
+    state.in_prelude_load = in_prelude_load;
 
     if enable_scheme_map {
         // Enable scheme collection for LSP hover (constraints display).
@@ -2458,31 +2468,38 @@ fn infer_expr(
                 // Infer types for all method implementations (Task 7.6)
                 let mut method_types = HashMap::new();
 
-                for method in *methods {
-                    // Extract method name from key
-                    let method_name = match &method.node.key {
-                        Some(key_expr) => match &key_expr.node {
-                            Expr::Str(s) => s.clone(),
-                            Expr::VarRef { name, .. } => name.clone(),
-                            _ => {
+                // Skip method body inference during prelude loading (optimization).
+                // The method types are unused — they're stored in InstanceDecl.method_types
+                // which is #[allow(dead_code)]. This avoids O(N²) state clones in
+                // patterns_overlap when prelude instances reach a certain count.
+                if !state.in_prelude_load {
+                    for method in *methods {
+                        // Extract method name from key
+                        let method_name = match &method.node.key {
+                            Some(key_expr) => match &key_expr.node {
+                                Expr::Str(s) => s.clone(),
+                                Expr::VarRef { name, .. } => name.clone(),
+                                _ => {
+                                    return Err(vec![TypeError::new(
+                                        "instance method name must be a string or identifier",
+                                        key_expr.span,
+                                    )]);
+                                }
+                            },
+                            None => {
                                 return Err(vec![TypeError::new(
-                                    "instance method name must be a string or identifier",
-                                    key_expr.span,
+                                    "instance method must have a name",
+                                    method.span,
                                 )]);
                             }
-                        },
-                        None => {
-                            return Err(vec![TypeError::new(
-                                "instance method must have a name",
-                                method.span,
-                            )]);
-                        }
-                    };
+                        };
 
-                    // Infer the type of the method implementation
-                    let method_impl_type = infer_expr(&method.node.value, env, state, type_map)?;
+                        // Infer the type of the method implementation
+                        let method_impl_type =
+                            infer_expr(&method.node.value, env, state, type_map)?;
 
-                    method_types.insert(method_name, method_impl_type);
+                        method_types.insert(method_name, method_impl_type);
+                    }
                 }
 
                 // Build instance declaration

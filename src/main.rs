@@ -1644,8 +1644,11 @@ fn run_eval(
                 tinct::build_prelude_env()
             }
         };
-        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-            tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, type_env);
+        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state) =
+            tinct::typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
+                &ast.node, type_env, false, // disable scheme_map (not needed for eval)
+                false, // not in prelude load
+            );
         if !type_errors.is_empty() {
             let file_name = match stage {
                 PipelineStage::File(fp) => fp.as_str(),
@@ -1695,6 +1698,9 @@ fn run_eval(
             base_eval_ctx = Some(Rc::clone(&ctx));
             ctx
         };
+
+        // Wire boundary guards from type inference to the eval context
+        eval_ctx.set_boundary_guards(infer_state.boundary_guards);
 
         // Evaluate file with pipeline input
         let file_result =
