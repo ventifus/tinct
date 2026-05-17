@@ -71,8 +71,8 @@ config.database.host            # chained dot access
 # Apply (spread list into function args)
 [apply f arg-list]              # Spreads list entries as positional args
 
-# Function definition
-[fn@Number [x@Number  y@Number]
+# Function definition — [let ...] declares bindings
+[fn@Number [let x@Number  y@Number]
   [+ x y]]
 
 # Named function (just a dict entry)
@@ -386,14 +386,16 @@ A keyword followed by `:` is a dict entry, not a special form: `[call: something
 
 ## 6. Function Definitions
 
-Functions are defined with `fn`:
+Functions are defined with `fn`. Parameters are always wrapped in a `[let ...]` binding declaration list:
 
 ```tinct
-[fn [x] x]                               # Identity function
-[fn [x y] [+ x y]]                      # Two parameters
-[fn@Number [x@Number  y@Number] [+ x y]] # With type annotations
-[fn [f ...args] [map f args]]            # Variadic parameter
+[fn [let x] x]                                    # Identity function
+[fn [let x y] [+ x y]]                           # Two parameters
+[fn@Number [let x@Number  y@Number] [+ x y]]     # With type annotations
+[fn [let f ...args] [map f args]]                 # Variadic parameter
 ```
+
+The `[let ...]` form is the universal binding declaration — it appears in `fn`, `class`, `type`, `instance`, and `case` positions. See §9 Advanced Features for the full specification.
 
 ### Parameters and Annotations
 
@@ -416,7 +418,7 @@ fn@[return: String  doc: "..."]   # Return type with properties
 `...name` captures remaining positional arguments into a list:
 
 ```tinct
-[fn [f ...args] [map f args]]
+[fn [let f ...args] [map f args]]
 ```
 
 At most one variadic parameter is allowed; it must appear last.
@@ -629,20 +631,72 @@ Note: The `Expr::TypeApp` AST variant exists for legacy reasons but is never con
 - Lowercase first letter = type variable (`a`, `b`, `k`, `v`)
 - `Any` = dynamic escape hatch
 
+### Binding Declarations — `[let ...]`
+
+`let` is a keyword. `[let ...]` is a **binding declaration list** — always. Each element is a binding pattern:
+
+```tinct
+[let x]             # bare binding
+[let x@Int]         # typed binding
+[let _]             # wildcard
+[let v: Ok]         # structural test — v binds to Ok's payload
+[let [a b]: Pair]   # multi-payload structural test
+```
+
+`[let ...]` appears as the first expression in `fn`, `class`, `type`, `instance`, and `case` positions. Outside these positions, `[let ...]` is a type error. Every bracket NOT starting with `let` is always an expression — no exceptions.
+
+This invariant is complete: `[a b c]` is always an implied call. A reader never needs to know the enclosing context to determine whether a bracket introduces names or calls a function.
+
+### Match Arms — `[case ...]`
+
+`case` is a keyword. `[case pattern body]` is a match arm with explicit scoping:
+
+```tinct
+[match result
+  [case [let v: Ok]   v]           # structural test; v scoped to body
+  [case [let e: Err]  [log e]]     # structural test; e scoped to body
+  [case [let _]       0]]          # wildcard
+
+[match status
+  [case 200           "ok"]        # exact value — no [let ...], no new bindings
+  [case 404           "missing"]
+  [case [let n@Int]   [str n]]]    # typed binding
+```
+
+Existing match arm shorthands (`[Ok v]:`, `n@Int:`, `_:`) coexist with `[case ...]`. Migration to `[case ...]` is encouraged.
+
+### Placeholder Expression — `...`
+
+`...` (three dots, no trailing identifier) is a placeholder expression. It produces a lazy thunk that raises `UnimplementedError` with its source span when materialized:
+
+```tinct
+process: [fn@Result [let data@Input] ...]    # stub — type-checks, fails at call time
+
+config: [host: "localhost"  port: ...]        # required but unset — fails when accessed
+
+[match x
+  [case [let v: Ok]  v]
+  [case [let _: Err] ...]]                   # unreachable branch guard
+```
+
+`...` has type `Unknown` — the gradual escape hatch. It satisfies any type constraint without generating a type error. `UnimplementedError` is catchable via `$try`.
+
+**Disambiguation from other `...` uses:** `...rest` in a parameter list is a variadic binding. `[name: Str ...]` in a type annotation is an open record rest. Bare `...` (no following identifier) in value position is the placeholder expression.
+
 ### Pattern Matching
 
 ```tinct
 [match x
-  0: "zero"
-  1: "one"
-  _: "other"]
+  [case 0           "zero"]
+  [case 1           "one"]
+  [case [let _]     "other"]]
 
 [match response
-  [Ok result]: result
-  [Err msg]:   [error msg]]
+  [case [let result: Ok]  result]
+  [case [let msg: Err]    [error msg]]]
 ```
 
-Patterns include wildcards, variable bindings, literals, type tags, pins, and dict/list destructuring.
+Patterns include wildcards, variable bindings, literals, type tags, pins, and dict/list destructuring. See the `[case ...]` section above for the full binding pattern specification.
 
 ### Quasiquoting
 

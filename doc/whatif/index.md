@@ -51,7 +51,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Async and Parallel Evaluator](async-eval.md) | Single implementation pass: `async fn` contagion + `Rc`→`Arc` migration + `OnceLock` thunk + multi-thread Tokio; automatic parallel dict eval; `par`/`par-map`; `task`/`await`/`channel`/`select`/`context`/`timeout`/`exit`; event sources; cancellation; graceful shutdown |
+| [Async, Parallel, and Stdlib](async-eval.md) | `async fn` + `Rc`→`Arc` + `OnceLock` thunk + multi-thread Tokio; parallel dict eval; `par`/`par-map`; `task`/`await`/`channel`/`select`/`context`/`timeout`/`finally`/`exit`; serve+connect layer composition (`make-serve-layer`, `make-multiplex-serve`); Rust/tinct boundary; stdlib module map |
 | [Distributed Evaluation](dist-eval.md) | `remote-task` / `cluster-local`; thunk serialization; content-addressed result cache (SHA-256); `dist-map`/`dist-reduce`; capability delegation (pure/delegated/proxied); worker protocol over QUIC; automatic distribution. Depends on: async-eval |
 
 ## Runtime and Performance
@@ -66,7 +66,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Stdlib Architecture — The Rust/tinct Boundary](stdlib-architecture.md) | Principled rule for what stays in Rust vs tinct; removes hyper/reqwest; `stdlib/http1.llt` (HTTP/1.1 in tinct), `stdlib/http.llt` (unified server/client), `stdlib/async.llt`, `stdlib/strings.llt`, `stdlib/seq.llt`, `stdlib/path.llt`, `stdlib/cap.llt`; `tcp-listen`/`quic-listen` as the minimal Rust server primitives |
+| [Stdlib Architecture — The Rust/tinct Boundary](stdlib-architecture.md) | **Merged into async-eval.md.** See §Rust/tinct Boundary, §Serve and Connect Layers, §Stdlib Module Map. |
 | [Value Serializer Visitor](value-serializer-visitor.md) | Shared traversal for `value_to_json` + `value_to_display_string`; defer until a third format is needed |
 
 ## Formal Verification
@@ -89,6 +89,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Multi-Line Strings](multi-line-strings.md) | **Accepted 2026-05-11.** `unindent` stdlib function strips indentation using last-line baseline; `"""..."""` is a parse-stage macro wrapping `[unindent "..."]`; `i"""..."""` for interpolation; no lexer changes needed |
+| [Unified Binding Declarations](unified-bindings.md) | **Accepted 2026-05-17.** `[let ...]` universal binding form for fn/class/type/instance/case; `[case ...]` explicit match arms; `...` placeholder expression; constructor payload registry; parsing invariant: `[let ...]` = binding, everything else = expression |
 | [Template-Polarity Embedding](template-polarity.md) | `tinct template` subcommand — `{{ expr }}` / `{% block %}` Jinja-style preprocessing of foreign-format files (nginx.conf, Dockerfile, Makefile) |
 
 ## Standard Library
@@ -116,6 +117,7 @@ Accepted proposals with sprints in TODO.md. Not yet fully implemented.
 | [Advanced Typeclass Extensions](advanced-typeclasses.md) | MPTC `Add a b c \| (a,b)→c` for precise arithmetic; `[CONSTRAIN-FIELD/INTER/UNION/TOP/UNKNOWN/NEVER]` row-level propagation; ClassEnv runtime dispatch | 2026-05-14 |
 | [Inference Completeness](inference-completeness.md) | SCC DICT-GEN (done); variadic `Seq(T)`; nested dict polymorphism via `TypeScheme.inner_schemes` | 2026-05-14 |
 | [Runtime Reflection — Annotations as Value Metadata](runtime-reflection.md) | `FnAnnotation` on `Value::Function`; `ast-of` Rust primitive; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude | 2026-05-14 |
+| [Unified Binding Declarations](unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; `Expr::LetDecl`/`CaseArm`/`Placeholder` | 2026-05-17 |
 
 ### Completed
 
