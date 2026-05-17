@@ -360,61 +360,26 @@ try-or-impl: [fn [try-result default]
 # Identity
 # ============================================================================
 
-# Returns its argument unchanged.
-# Type: (a -> a)
-# Example: [identity 42] => 42
-identity@[doc: "Return argument unchanged"]: [fn [x] x]
+identity: [fn@[return: a  doc: "Return argument unchanged.\n\nExample: [identity 42] => 42"] [x] x]
 
-# Returns first argument, ignores second. Classic K combinator (K in SKI combinatorics).
-# Type: (a -> b -> a)
-# Example: [const "hello" "ignored"] => "hello"
-# Example: [map [const 0] [1 2 3]] => [0 0 0]
-const@[doc: "Return first argument, ignore second (K combinator)"]: [fn [x] [fn [y] x]]
+const: [fn@[return: a  doc: "Return first argument, ignore second (K combinator).\n\nExample: [const \"hello\" \"ignored\"] => \"hello\"\nExample: [map [const 0] [1 2 3]] => [0 0 0]"] [x] [fn [y] x]]
 
 # ============================================================================
 # Logic
 # ============================================================================
 
-# Boolean negation. Materializes x; returns false if truthy, true if falsy.
-# Type: (Any -> Bool)
-# Example: [not true] => false
-# Example: [not 0] => true
-not@[doc: "Boolean negation"]: [fn@Bool [x] [builtin-if x false true]]
+not: [fn@[return: Bool  doc: "Boolean negation.\n\nExample: [not true] => false\nExample: [not 0] => true"] [x] [builtin-if x false true]]
 
-# Short-circuit AND: if a is false, b is never evaluated.
-# Type: (Any -> a -> Union(a, Bool))
-# Example: [and true "yes"] => "yes"
-# Example: [and false [expensive]] => false   (expensive never called)
-and@[doc: "Short-circuit AND"]: [fn@[a Bool] [p b@a] [builtin-if p b false]]
+and: [fn@[return: [a Bool]  doc: "Short-circuit AND.\n\nExample: [and true \"yes\"] => \"yes\"\nExample: [and false [expensive]] => false   (expensive never called)\n\nNote: If a is false, b is never evaluated (lazy short-circuit)."] [p b@a] [builtin-if p b false]]
 
-# Short-circuit OR: if a is truthy, returns a; otherwise returns b.
-# Type: (Any -> Any -> Any)
-# Example: [or 42 0] => 42
-# Example: [or false "default"] => "default"
-# NOTE: Both references to `a` in `[builtin-if a a b]` are bound to
-# the same parameter — the parameter binding is shared, so the thunk is forced
-# at most once (Launchbury 1993). The second reference is a cache hit.
-# NOTE: `fn@Unknown` rather than `fn@a [a@a b@a]` because the two arguments
-# need not be the same type — `[or nil "default"]` is a common use case.
-# A homogeneous-type annotation would emit spurious type errors on mixed-type callers.
-or@[doc: "Short-circuit OR"]: [fn@Unknown [a b] [builtin-if a a b]]
+or: [fn@[return: Unknown  doc: "Short-circuit OR.\n\nExample: [or 42 0] => 42\nExample: [or false \"default\"] => \"default\"\n\nNote: If a is truthy, returns a; otherwise returns b. Both references to `a` in `[builtin-if a a b]` are bound to the same parameter — the parameter binding is shared, so the thunk is forced at most once (Launchbury 1993). The second reference is a cache hit.\n\nNote: `fn@Unknown` rather than `fn@a [a@a b@a]` because the two arguments need not be the same type — `[or nil \"default\"]` is a common use case. A homogeneous-type annotation would emit spurious type errors on mixed-type callers."] [a b] [builtin-if a a b]]
 
-# Short-circuit predicate test: returns true if any element satisfies pred.
-# Type: ((a -> Bool) -> Dict a -> Bool)
-# Errors if xs is a Seq (collect first).
-# Example: [any? [fn [x] [> x 0]] [1 -2 3]] => true
-# Inherently materializing: short-circuits but materializes elements until condition met.
-any?@[doc: "True if any element satisfies predicate"]: [fn@Bool [pred@Fn xs@Dict]
+any?: [fn@[return: Bool  doc: "True if any element satisfies predicate.\n\nType: ((a -> Bool) -> Dict a -> Bool)\n\nExample: [any? [fn [x] [> x 0]] [1 -2 3]] => true\n\nNote: Errors if xs is a Seq (collect first). Inherently materializing: short-circuits but materializes elements until condition met."] [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "any?: expected Dict, got Seq -- collect the Seq first"]
         [any?-impl pred xs [keys xs] 0 [length xs]]]]
 
-# Short-circuit predicate test: returns true if all elements satisfy pred.
-# Type: ((a -> Bool) -> Dict a -> Bool)
-# Errors if xs is a Seq (collect first).
-# Example: [all? [fn [x] [> x 0]] [1 2 3]] => true
-# Inherently materializing: short-circuits but materializes elements until condition failed.
-all?@[doc: "True if all elements satisfy predicate"]: [fn@Bool [pred@Fn xs@Dict]
+all?: [fn@[return: Bool  doc: "True if all elements satisfy predicate.\n\nType: ((a -> Bool) -> Dict a -> Bool)\n\nExample: [all? [fn [x] [> x 0]] [1 2 3]] => true\n\nNote: Errors if xs is a Seq (collect first). Inherently materializing: short-circuits but materializes elements until condition failed."] [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "all?: expected Dict, got Seq -- collect the Seq first"]
         [all?-impl pred xs [keys xs] 0 [length xs]]]]
@@ -423,86 +388,37 @@ all?@[doc: "True if all elements satisfy predicate"]: [fn@Bool [pred@Fn xs@Dict]
 # Comparison (derived from < and =)
 # ============================================================================
 
-# Greater than. Derived by swapping arguments of builtin-lt.
-# Type: (Comparable -> Comparable -> Bool)
->@[doc: "Greater than"]: [fn@[return: Bool constraint: [a: Comparable]] [x@a y@a] [builtin-lt y x]]
+>: [fn@[return: Bool  constraint: [a: Comparable]  doc: "Greater than.\n\nExample: [> 5 3] => true\nExample: [> 3 5] => false\n\nNote: Derived by swapping arguments of builtin-lt."] [x@a y@a] [builtin-lt y x]]
 
-# Less than or equal. Derived as negation of >.
-# Type: (Comparable -> Comparable -> Bool)
-<=@[doc: "Less than or equal"]: [fn@[return: Bool constraint: [a: Comparable]] [x@a y@a] [not [builtin-lt y x]]]
+<=: [fn@[return: Bool  constraint: [a: Comparable]  doc: "Less than or equal.\n\nExample: [<= 3 5] => true\nExample: [<= 5 5] => true\nExample: [<= 5 3] => false\n\nNote: Derived as negation of >."] [x@a y@a] [not [builtin-lt y x]]]
 
-# Greater than or equal. Derived as negation of <.
-# Type: (Comparable -> Comparable -> Bool)
->=@[doc: "Greater than or equal"]: [fn@[return: Bool constraint: [a: Comparable]] [x@a y@a] [not [builtin-lt x y]]]
+>=: [fn@[return: Bool  constraint: [a: Comparable]  doc: "Greater than or equal.\n\nExample: [>= 5 3] => true\nExample: [>= 5 5] => true\nExample: [>= 3 5] => false\n\nNote: Derived as negation of <."] [x@a y@a] [not [builtin-lt x y]]]
 
 # ============================================================================
 # Arithmetic (derived from builtin-add, builtin-sub, builtin-mul, builtin-div)
 # ============================================================================
 
-# Integer quotient: truncates toward zero (like Clojure's quot).
-# Type: (Number -> Number -> Int)
-# Uses builtin-div (float division) then trunc (toward-zero truncation to Int).
-# Example: [quot 7 2] => 3
-# Example: [quot -7 2] => -3
-# Contrast with floor-div (truncates toward negative infinity) which does not exist in LLT.
-# Inherently materializing: derived from arithmetic operations.
-quot@[doc: "Integer quotient (truncate toward zero)"]: [fn@Int [a@Number b@Number] [trunc [builtin-div a b]]]
+quot: [fn@[return: Int  doc: "Integer quotient (truncate toward zero).\n\nExample: [quot 7 2] => 3\nExample: [quot -7 2] => -3\n\nNote: Uses builtin-div (float division) then trunc (toward-zero truncation to Int). Contrast with floor-div (truncates toward negative infinity) which does not exist in LLT. Inherently materializing: derived from arithmetic operations."] [a@Number b@Number] [trunc [builtin-div a b]]]
 
-# Integer remainder with the same sign as the dividend (a), NOT the divisor.
-# Type: (Number -> Number -> Number)
-# Uses the algebraic identity: mod(a, b) = a - (quot(a, b) * b).
-# Clojure/Haskell-rem semantics. Contrast with Python `%` / Haskell `mod` (sign of divisor).
-# Example: [mod 7 3] => 1
-# Example: [mod -7 3] => -1
-# Example: [mod 7 -3] => 1
-# Inherently materializing: derived from arithmetic operations.
-mod@[doc: "Integer remainder (sign of dividend)"]: [fn@Number [a@Number b@Number] [builtin-sub a [builtin-mul [quot a b] b]]]
+mod: [fn@[return: Number  doc: "Integer remainder (sign of dividend).\n\nExample: [mod 7 3] => 1\nExample: [mod -7 3] => -1\nExample: [mod 7 -3] => 1\n\nNote: Uses the algebraic identity: mod(a, b) = a - (quot(a, b) * b). Clojure/Haskell-rem semantics. Contrast with Python `%` / Haskell `mod` (sign of divisor). Inherently materializing: derived from arithmetic operations."] [a@Number b@Number] [builtin-sub a [builtin-mul [quot a b] b]]]
 
 # ============================================================================
 # Numeric Conversion (derived from floor, round, builtin-add, builtin-sub)
 # ============================================================================
 
-# Ceiling: smallest integer >= x. Derived as -floor(-x).
-# Type: (Number -> Int)
-# Example: [ceil 3.2] => 4
-# Example: [ceil -3.2] => -3
-# Inherently materializing: derived from arithmetic operations.
-ceil@[doc: "Ceiling (smallest integer >= x)"]: [fn@Int [x@Number] [builtin-sub 0 [floor [builtin-sub 0 x]]]]
+ceil: [fn@[return: Int  doc: "Ceiling (smallest integer >= x).\n\nExample: [ceil 3.2] => 4\nExample: [ceil -3.2] => -3\n\nNote: Derived as -floor(-x). Inherently materializing: derived from arithmetic operations."] [x@Number] [builtin-sub 0 [floor [builtin-sub 0 x]]]]
 
-# Truncate toward zero: floor for non-negative, ceil for negative.
-# Type: (Number -> Int)
-# Example: [trunc 3.7] => 3
-# Example: [trunc -3.7] => -3
-# Inherently materializing: derived from arithmetic operations.
-trunc@[doc: "Truncate toward zero"]: [fn@Int [x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
+trunc: [fn@[return: Int  doc: "Truncate toward zero.\n\nExample: [trunc 3.7] => 3\nExample: [trunc -3.7] => -3\n\nNote: Floor for non-negative, ceil for negative. Inherently materializing: derived from arithmetic operations."] [x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
 
-# Absolute value: non-negative magnitude. Returns -x for negative, x otherwise.
-# Type: (Number -> Number)
-# Example: [abs -5] => 5
-# Example: [abs 3.14] => 3.14
-# Inherently materializing: derived from comparison and arithmetic.
-abs@[doc: "Absolute value"]: [fn@Number [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]
+abs: [fn@[return: Number  doc: "Absolute value.\n\nExample: [abs -5] => 5\nExample: [abs 3.14] => 3.14\n\nNote: Returns -x for negative, x otherwise. Inherently materializing: derived from comparison and arithmetic."] [x@Number] [builtin-if [builtin-lt x 0] [builtin-sub 0 x] x]]
 
-# Sign of a number: -1 for negative, 0 for zero, 1 for positive.
-# Type: (Number -> Int)
-# Example: [sign -42] => -1
-# Example: [sign 0] => 0
-# Example: [sign 3.14] => 1
-# Inherently materializing: derived from comparison and arithmetic.
-sign@[doc: "Sign of number (-1, 0, or 1)"]: [fn@Int [x@Number]
+sign: [fn@[return: Int  doc: "Sign of number (-1, 0, or 1).\n\nExample: [sign -42] => -1\nExample: [sign 0] => 0\nExample: [sign 3.14] => 1\n\nNote: Inherently materializing: derived from comparison and arithmetic."] [x@Number]
     [cond [
         [[builtin-lt x 0] [builtin-sub 0 1]]
         [[builtin-eq x 0] 0]
         [true 1]]]]
 
-# Clamp a value between lo and hi bounds (inclusive).
-# Returns lo if x < lo, hi if x > hi, otherwise x.
-# Type: (Number -> Number -> Number -> Number)
-# Example: [clamp 0 10 -5] => 0
-# Example: [clamp 0 10 15] => 10
-# Example: [clamp 0 10 7] => 7
-# Inherently materializing: derived from comparison operations.
-clamp@[doc: "Clamp value between bounds (inclusive)"]: [fn@Number [lo@Number hi@Number x@Number]
+clamp: [fn@[return: Number  doc: "Clamp value between bounds (inclusive).\n\nExample: [clamp 0 10 -5] => 0\nExample: [clamp 0 10 15] => 10\nExample: [clamp 0 10 7] => 7\n\nNote: Returns lo if x < lo, hi if x > hi, otherwise x. Inherently materializing: derived from comparison operations."] [lo@Number hi@Number x@Number]
     [builtin-if [builtin-lt x lo]
         lo
         [builtin-if [builtin-lt hi x]
@@ -952,31 +868,17 @@ transpose@[doc: "Transpose 2D dict (flip rows and columns). O(n²) due to repeat
 # Aggregates
 # ============================================================================
 
-# Sum all elements of a numeric collection.
-# Inherently materializing: must reduce all elements.
-sum@[doc: "Sum all elements"]: [fn@Number [xs] [builtin-reduce [fn [a b] [builtin-add a b]] 0 xs]]
+sum: [fn@[return: Number  doc: "Sum all elements.\n\nExample: [sum [1 2 3]] => 6\nExample: [sum []] => 0\n\nNote: Returns 0 for empty collections. Inherently materializing: must reduce all elements."] [xs] [builtin-reduce [fn [a b] [builtin-add a b]] 0 xs]]
 
-# Product of all elements in a numeric collection.
-# Inherently materializing: must reduce all elements.
-product@[doc: "Product of all elements"]: [fn@Number [xs] [builtin-reduce [fn [a b] [builtin-mul a b]] 1 xs]]
+product: [fn@[return: Number  doc: "Product of all elements.\n\nExample: [product [2 3 4]] => 24\nExample: [product []] => 1\n\nNote: Returns 1 for empty collections. Inherently materializing: must reduce all elements."] [xs] [builtin-reduce [fn [a b] [builtin-mul a b]] 1 xs]]
 
-# Return the minimum element of a collection.
-# Errors on empty collection (no sensible default for polymorphic min).
-# NOTE: TypeVar 'a' is not bound via parameter annotation (xs@Seq@a would require
-# chained annotations, which are not supported). The constraint is aspirational,
-# relying on the type system to infer 'a' from context.
-min@[doc: "Minimum element"]: [fn@[return: a constraint: [a: Comparable]] [xs]
+min: [fn@[return: a  constraint: [a: Comparable]  doc: "Minimum element.\n\nExample: [min [3 1 2]] => 1\nExample: [min [\"c\" \"a\" \"b\"]] => \"a\"\n\nNote: Errors on empty collection (no sensible default for polymorphic min)."] [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] a b]]
         [builtin-first xs]
         [builtin-rest xs]]]
 
-# Return the maximum element of a collection.
-# Errors on empty collection (no sensible default for polymorphic max).
-# NOTE: TypeVar 'a' is not bound via parameter annotation (xs@Seq@a would require
-# chained annotations, which are not supported). The constraint is aspirational,
-# relying on the type system to infer 'a' from context.
-max@[doc: "Maximum element"]: [fn@[return: a constraint: [a: Comparable]] [xs]
+max: [fn@[return: a  constraint: [a: Comparable]  doc: "Maximum element.\n\nExample: [max [3 1 2]] => 3\nExample: [max [\"c\" \"a\" \"b\"]] => \"c\"\n\nNote: Errors on empty collection (no sensible default for polymorphic max)."] [xs]
     [builtin-reduce
         [fn [a b] [builtin-if [builtin-lt a b] b a]]
         [builtin-first xs]
@@ -1555,12 +1457,7 @@ str-find@[doc: "Find first occurrence of needle in haystack; returns byte index 
 # Numeric Range Predicates
 # ============================================================================
 
-# between: predicate factory — returns a predicate that checks lo <= v <= hi.
-# between: Int -> Int -> (Int -> Bool)
-# assert: [[between 0 255] 42] => true
-# assert: [[between 0 255] -1] => false
-# assert: [[between 0 255] 256] => false
-between@[doc: "Predicate factory for range check (inclusive)"]: [fn@Fn [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
+between: [fn@[return: Fn  doc: "Predicate factory for range check (inclusive).\n\nExample: [[between 0 255] 42] => true\nExample: [[between 0 255] -1] => false\nExample: [[between 0 255] 256] => false\n\nNote: Returns a predicate that checks lo <= v <= hi."] [lo hi] [fn [v] [and [>= v lo] [<= v hi]]]]
 
 # non-negative: predicate — checks v >= 0.
 # non-negative: Int -> Bool

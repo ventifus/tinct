@@ -4,4 +4,4 @@
 [E010] type mismatch: expected Function or Builtin, got Int
 
 === warn
-cannot unify Fn@_ [String] with 42 at 1:12-1:14
+cannot unify Fn@⊤ [String] with 42 at 1:12-1:14

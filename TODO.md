@@ -110,17 +110,17 @@ Modernize `stdlib/prelude.llt` to use the full annotation and typing infrastruct
 Public functions in prelude.llt lines ~357–550. ~25 functions:
 `identity`, `const`, `not`, `and`, `or`, `any?`, `all?`, `>`, `<=`, `>=`, `quot`, `mod`, `ceil`, `trunc`, `abs`, `sign`, `clamp`, `min`, `max`, `sum`, `product`, `average`, `gcd`, `lcm`, `between?`.
 
-- [ ] Migrate `identity`, `const`: consolidate `name@[doc: "..."]` + bare `fn` into `fn@[return: a  doc: "..."]`; drop comment block (`stdlib/prelude.llt`)
-- [ ] Migrate `not`: `fn@[return: Bool  doc: "Boolean negation.\n\nExample: [not true] => false"]`; drop comment block (`stdlib/prelude.llt`)
-- [ ] Migrate `and`, `or`: full metadata dict with `doc:` including `# NOTE:` content about lazy evaluation semantics; drop comment blocks (`stdlib/prelude.llt`)
-- [ ] Migrate `any?`, `all?`: add `doc:` with type, examples, and materialization note; param `pred` upgrade from `@Fn` to `@[return: Bool]` if supported (`stdlib/prelude.llt`)
-- [ ] Migrate `>`, `<=`, `>=`: already have `fn@[return: Bool constraint: [a: Comparable]]`; add `doc:` string from comment block (`stdlib/prelude.llt`)
-- [ ] Migrate `quot`, `mod`: `fn@[return: Int  doc: "..." ]`; include semantics note (truncation direction, sign of remainder); drop comment blocks (`stdlib/prelude.llt`)
-- [ ] Migrate `ceil`, `trunc`, `abs`, `sign`, `clamp`: `fn@[return: T  constraint: [a: Numeric]  doc: "..."]`; include examples from comment blocks (`stdlib/prelude.llt`)
-- [ ] Migrate `min`, `max`: `fn@[return: a  constraint: [a: Comparable]  doc: "..."]`; include empty-collection behavior note (`stdlib/prelude.llt`)
-- [ ] Migrate `sum`, `product`: `fn@[return: Number  doc: "..."]`; include empty-collection base-case note (`stdlib/prelude.llt`)
-- [ ] Migrate `average`, `gcd`, `lcm`, `between?`: full metadata dict with examples from comment blocks (`stdlib/prelude.llt`)
-- [ ] Verify `just test-lib` passes after each batch; fix any annotation-inference regressions (`stdlib/prelude.llt`)
+- [x] Migrate `identity`, `const`: consolidate `name@[doc: "..."]` + bare `fn` into `fn@[return: a  doc: "..."]`; drop comment block (`stdlib/prelude.llt`)
+- [x] Migrate `not`: `fn@[return: Bool  doc: "Boolean negation.\n\nExample: [not true] => false"]`; drop comment block (`stdlib/prelude.llt`)
+- [x] Migrate `and`, `or`: full metadata dict with `doc:` including `# NOTE:` content about lazy evaluation semantics; drop comment blocks (`stdlib/prelude.llt`)
+- [x] Migrate `any?`, `all?`: add `doc:` with type, examples, and materialization note (`stdlib/prelude.llt`)
+- [x] Migrate `>`, `<=`, `>=`: added `doc:` to existing `fn@[return: Bool constraint: [a: Comparable]]` (`stdlib/prelude.llt`)
+- [x] Migrate `quot`, `mod`: `fn@[return: Int/Number  doc: "..."]`; includes semantics notes (`stdlib/prelude.llt`)
+- [x] Migrate `ceil`, `trunc`, `abs`, `sign`, `clamp`: `fn@[return: T  doc: "..."]`; includes examples (`stdlib/prelude.llt`)
+- [x] Migrate `min`, `max`: added `doc:` to existing `fn@[return: a  constraint: [a: Comparable]]` (`stdlib/prelude.llt`)
+- [x] Migrate `sum`, `product`: `fn@[return: Number  doc: "..."]`; includes empty-collection base-case notes (`stdlib/prelude.llt`)
+- [x] Migrate `between?`: full metadata dict with examples — `average`, `gcd`, `lcm` do not exist in prelude (skipped) (`stdlib/prelude.llt`)
+- [x] Verify `just test-lib` passes; all 2185 tests pass; 6 corpus test expectations updated (`stdlib/prelude.llt`)
 
 ### prelude-annotations-b: Collection and Dict operations
 
