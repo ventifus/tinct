@@ -77,25 +77,25 @@ The existing `defmacro` form accepts `[let ...]` patterns in the argument positi
   [cond: [nth args 0]
    then: [nth args 1]
    else: [nth args 2]]
-  [list 'if cond then else]]
+  [quote [if [unquote cond] [unquote then] [unquote else]]]]
 
 # After: [let ...] pattern
 [defmacro my-if [let cond then else]
-  [list 'if cond then else]]
+  [quote [if [unquote cond] [unquote then] [unquote else]]]]
 ```
 
 Typed patterns constrain expected shapes:
 
 ```tinct
 [defmacro my-assert [let condition@Expr  message@Str]
-  [list 'if condition true [list 'error message]]]
+  [quote [if [unquote condition] true [error [unquote message]]]]]
 ```
 
 Variadic via `...rest` — already defined in `[let ...]` for function params:
 
 ```tinct
 [defmacro my-list [let ...items]
-  [reduce [fn [let acc item] [list 'cons item acc]] [list 'null] items]]
+  [quote [list [unquote-splice items]]]]
 ```
 
 **Multi-arm dispatch.** When a macro needs to handle different argument shapes, `[case ...]` arms dispatch on argument count and structure — the same match syntax:
@@ -103,8 +103,8 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 ```tinct
 [defmacro my-and
   [[case [let a]]          a]
-  [[case [let a b]]        [list 'if a b false]]
-  [[case [let a ...rest]]  [list 'if a [list 'my-and ...rest] false]]]
+  [[case [let a b]]        [quote [if [unquote a] [unquote b] false]]]
+  [[case [let a ...rest]]  [quote [if [unquote a] [my-and [unquote-splice rest]] false]]]]
 ```
 
 **Hygiene.** With `[let ...]` patterns, the template/user-code distinction is structural:
@@ -113,14 +113,15 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 
 ```tinct
 [defmacro with-retry [let max-attempts body]
-  [tmp: [gensym "count"]]
-  [list 'let [list tmp 0]
-    [list 'while [list '< tmp max-attempts]
-      body
-      [list 'set! tmp [list '+ tmp 1]]]]]
+  [counter: [gensym "counter"]]
+  # unquote-name splices a string as an identifier node in the output AST
+  [quote [let [[[unquote-name counter]: 0]]
+    [while [< [unquote-name counter] [unquote max-attempts]]
+      [unquote body]
+      [set! [unquote-name counter] [+ [unquote-name counter] 1]]]]]]
 ```
 
-`tmp` is gensym'd — macro-introduced. `max-attempts` and `body` are from the pattern — user-provided. The distinction is syntactically explicit. Scope set activation (Phase 2) becomes straightforward: pattern-bound names carry the caller's scope; gensym names carry the macro's scope.
+`counter` is gensym'd — macro-introduced. `max-attempts` and `body` are from the pattern — user-provided. `unquote-name` is the quasiquote primitive for splicing a string as an identifier; without it, the gensym'd string would be unquoted as a string literal rather than an identifier reference. The distinction is syntactically explicit. Scope set activation (Phase 2) becomes straightforward: pattern-bound names carry the caller's scope; gensym names carry the macro's scope.
 
 ---
 
@@ -147,18 +148,18 @@ For cases where the parser's call-semantics interpretation loses structure the m
 # stdlib/syntax.llt — available to any program that opts in
 [defparse-macro fn [params: flat-list  body: expr]
   [match [get-or [first-or params {}] "type" null]
-    [[case "let-decl"]  [list 'fn params body]]
-    [[case [let _]]     [list 'fn [cons 'let params] body]]]]
+    [[case "let-decl"]  [quote [fn [unquote params] [unquote body]]]]
+    [[case [let _]]     [quote [fn [let [unquote-splice params]] [unquote body]]]]]]
 
 [defparse-macro class [tvars: flat-list  ...body: expr]
   [match [get-or [first-or tvars {}] "type" null]
-    [[case "let-decl"]  [list 'class tvars ...body]]
-    [[case [let _]]     [list 'class [cons 'let tvars] ...body]]]]
+    [[case "let-decl"]  [quote [class [unquote tvars] [unquote-splice body]]]]
+    [[case [let _]]     [quote [class [let [unquote-splice tvars]] [unquote-splice body]]]]]]
 
 [defparse-macro type [params: flat-list  body: expr]
   [match [get-or [first-or params {}] "type" null]
-    [[case "let-decl"]  [list 'type params body]]
-    [[case [let _]]     [list 'type [cons 'let params] body]]]]
+    [[case "let-decl"]  [quote [type [unquote params] [unquote body]]]]
+    [[case [let _]]     [quote [type [let [unquote-splice params]] [unquote body]]]]]]
 ```
 
 Each macro body is pure tinct. No Rust flags. No hardcoded transformation logic. The infrastructure provides delivery; all logic lives in the macro.
@@ -200,10 +201,10 @@ Two `n@Int` entries are still a duplicate. Two `_` entries are still a duplicate
 [declare-key-identity dispatch  full-expression]
 
 [defmacro dispatch [let scrutinee  ...arms]
-  [list 'match scrutinee
-    ...[map [fn [let arm]
-              [list 'case [first arm] [second arm]]]
-           arms]]]
+  [quote [match [unquote scrutinee]
+    [unquote-splice [map [fn [let arm]
+                           [quote [case [unquote [first arm]] [unquote [second arm]]]]]
+                         arms]]]]]
 
 # Usage — n@Int and n@String are distinct arms:
 [dispatch result
@@ -223,7 +224,7 @@ A macro returns `[splice form1 form2 ...]` to inject multiple forms into the sur
 [defmacro derive [targets: flat-list  ...body: expr]
   [splice
     ...[map [fn [let target]
-              [list 'instance target ...body]]
+              [quote [instance [unquote target] [unquote-splice body]]]]
            targets]]]
 
 # Usage:
@@ -263,24 +264,28 @@ Macro bodies signal structured compile-time errors that point at source location
 Macro bodies inspect AST nodes using tinct predicates — the equivalent of Racket's syntax classes, expressed as ordinary tinct functions:
 
 ```tinct
-# Inspection
-[let-decl? expr]    # is this Expr::LetDecl?
-[var-ref? expr]     # is this a bare identifier?
-[annotated? expr]   # is this name@Type?
-[literal? expr]     # is this a literal scalar value?
-[call? expr]        # is this a function call form?
-[span-of expr]      # extract source span
+# Inspection — match on node.type for structural dispatch
+[span-of expr]      # extract source span from an AST node
+[literal? expr]     # is this a literal scalar value? (for macro-error guards)
 
-# Construction
-[list 'sym a b c]        # construct AST form [sym a b c]
-[cons x xs]              # prepend x to sequence
-[first xs] [rest xs]     # sequence access
-[gensym prefix]          # fresh unique identifier
-[macro-error span msg]   # compile-time error
+# Quasiquote — the primary construction mechanism
+[quote expr]             # produce the AST dict for expr
+[unquote val]            # splice val as an AST node (val is already an AST dict)
+[unquote-splice seq]     # splice a sequence of AST nodes into the enclosing form
+[unquote-name str]       # splice a string as an identifier node — for gensym'd names
+
+# Sequence operations on flat-list deliveries
+[first xs] [rest xs]     # element access on Seq
+[first-or xs default]    # first element, or default if empty
+[get-or dict key default] # field access with fallback — used for node.type
+
+# Gensym and error
+[gensym prefix]          # fresh unique identifier string (e.g. "prefix__42")
+[macro-error span msg]   # terminate transformation with compile error at span
 
 # Stdlib helpers
-[wrap-in-let elems]      # produce [let ...elems]
-[let-decl-elems decl]    # extract bindings from Expr::LetDecl
+[wrap-in-let elems]      # produce [let ...elems] AST node
+[let-decl-elems decl]    # extract bindings Seq from Expr::LetDecl node
 ```
 
 ---
@@ -309,7 +314,7 @@ Macro bodies are ordinary tinct code. They use `[match ...]`/`[case ...]` for st
 
 ```tinct
 [defmacro unless [let cond body]
-  [list 'if cond [list] body]]
+  [quote [if [unquote cond] [] [unquote body]]]]
 ```
 
 ```tinct
@@ -333,11 +338,13 @@ Macro bodies are ordinary tinct code. They use `[match ...]`/`[case ...]` for st
 
 ```tinct
 [defmacro my-or
-  [[case [let]]            false]
+  [[case [let]]            [quote false]]
   [[case [let a]]          a]
-  [[case [let a b]]        [list 'if a a b]]
-  [[case [let a ...rest]]  [list 'if a a [cons 'my-or rest]]]]
+  [[case [let a b]]        [quote [if [unquote a] [unquote a] [unquote b]]]]
+  [[case [let a ...rest]]  [quote [if [unquote a] [unquote a] [my-or [unquote-splice rest]]]]]]
 ```
+
+The zero-arg arm returns `[quote false]` — the AST for the literal `false`, not a raw boolean. The one-arg arm returns `a` directly — `a` is already an AST dict (the argument's parsed form), so no quoting needed. The two- and many-arg arms build new AST using quasiquote.
 
 ```tinct
 [my-or]              # → false
@@ -363,7 +370,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 ```tinct
 [defmacro with-tmp [let expr body]
   [tmp: [gensym "tmp"]]
-  [list 'let [list [list tmp expr]] body]]
+  # unquote-name splices the gensym'd string as an identifier in the output
+  [quote [let [[[unquote-name tmp]: [unquote expr]]] [unquote body]]]]
 ```
 
 ```tinct
@@ -371,7 +379,9 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 # → [let [[tmp__42: [expensive-computation]]] [+ tmp__42 1]]
 ```
 
-**Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces `tmp__42` (a name containing `:` or `__` that cannot appear in user-written tinct), so the user's `tmp` is unaffected.
+`unquote-name` is the quasiquote form for splicing a string as an identifier node — necessary whenever a gensym'd name appears in a binding position. Without it, `[unquote tmp]` would splice the string `"tmp__42"` as a string literal, not an identifier.
+
+**Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces `tmp__42` (a name containing `__` that cannot appear in user-written tinct), so the user's `tmp` is unaffected.
 
 ```tinct
 [let [tmp: 99]
@@ -462,7 +472,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 [defmacro derive [targets: flat-list  ...body: expr]
   [splice
     ...[map [fn [let target]
-              [list 'instance target ...body]]
+              [quote [instance [unquote target] [unquote-splice body]]]]
            targets]]]
 ```
 
@@ -498,10 +508,10 @@ Point: [type [x@Float  y@Float]]
 [declare-key-identity dispatch  full-expression]
 
 [defmacro dispatch [let scrutinee  ...arms]
-  [list 'match scrutinee
-    ...[map [fn [let arm]
-              [list 'case [first arm] [second arm]]]
-           arms]]]
+  [quote [match [unquote scrutinee]
+    [unquote-splice [map [fn [let arm]
+                           [quote [case [unquote [first arm]] [unquote [second arm]]]]]
+                         arms]]]]]
 ```
 
 ```tinct
@@ -553,7 +563,7 @@ Two `n@Int` entries are still a parse-time duplicate even under `full-expression
       [match [get-or [first name] "type" null]
         [[case "var-ref"]
           [match [literal? value]
-            [[case true]      [list 'pragma [first name] value]]
+            [[case true]      [quote [pragma [unquote [first name]] [unquote value]]]]
             [[case [let _]]   [macro-error [span-of value] "pragma value must be a literal"]]]]
         [[case [let _]]
           [macro-error [span-of [first name]] "pragma name must be a bare identifier"]]]]
@@ -619,8 +629,9 @@ Expr::Splice(Vec<Spanned<Expr>>)
 
 ### `stdlib/prelude.llt` — New AST Primitives
 
-Add: `let-decl?`, `var-ref?`, `annotated?`, `literal?`, `call?`, `span-of`, `wrap-in-let`, `let-decl-elems`.
+Add: `let-decl?`, `var-ref?`, `annotated?`, `literal?`, `call?`, `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or`.
 Add: `macro-error` as a Rust builtin (`ErrorKind::MacroError` with span).
+Add: `unquote-name` — a quasiquote special form (handled in `src/expand.rs`, not a function) that splices a string value as an identifier (`Expr::VarRef`) in the output AST. Valid only inside `[quote ...]`; a type error outside quasiquote context. Necessary for any macro that produces bindings for gensym'd names.
 **Impact:** Minor — additive.
 
 ### `stdlib/syntax.llt` (new file)
