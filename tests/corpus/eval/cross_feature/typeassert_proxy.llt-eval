@@ -2,6 +2,6 @@
 # Tests that TypeAssert works when the value comes from a proxy handler
 [handler: [fn [field] 42]]
 ---
-[p: [proxy %.handler]  checked: [@[type: Int  default: 0] %.p.x]]
+[p: [proxy %.handler]  checked: [@[type: Int  default: 0] p.x]]
 === out
 Dict({"p": Proxy, "checked": Int(42)})
