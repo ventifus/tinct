@@ -458,24 +458,11 @@ unindent@[doc: "Strip common leading indentation from a multi-line string"]: [fn
 # Control Flow
 # ============================================================================
 
-# Evaluates body if pred is true, otherwise returns [].
-# assert: [when true result] => result
-# assert: [when false result] => []
-when@[doc: "Evaluate body if predicate is true"]: [fn@[a Null] [pred body@a] [builtin-if pred body []]]
+when: [fn@[return: [a Null]  doc: "Evaluate body if predicate is true.\n\nExample: [when true \"result\"] => \"result\"\nExample: [when false \"result\"] => []\n\nNote: Returns [] (empty dict) if predicate is false. Only evaluates body when predicate is true (conditional evaluation)."] [pred body@a] [builtin-if pred body []]]
 
-# Evaluates body if pred is false, otherwise returns [].
-# assert: [unless false result] => result
-# assert: [unless true result] => []
-unless@[doc: "Evaluate body if predicate is false"]: [fn@[a Null] [pred body@a] [builtin-if pred [] body]]
+unless: [fn@[return: [a Null]  doc: "Evaluate body if predicate is false.\n\nExample: [unless false \"result\"] => \"result\"\nExample: [unless true \"result\"] => []\n\nNote: Returns [] (empty dict) if predicate is true. Only evaluates body when predicate is false (conditional evaluation)."] [pred body@a] [builtin-if pred [] body]]
 
-# Multi-branch conditional. Takes a list of [condition result] pairs.
-# Returns [] (empty dict) when no branch matches.
-# Usage: [cond [
-#   [[> x 10] "big"]
-#   [[> x 0]  "positive"]
-#   [true     "other"]
-# ]]
-cond@[doc: "Multi-branch conditional"]: [fn@[a Null] [pairs@Dict] [cond-impl pairs 0]]
+cond: [fn@[return: [a Null]  doc: "Multi-branch conditional.\n\nExample: [cond [[[> x 10] \"big\"] [[> x 0] \"positive\"] [true \"other\"]]]\n\nNote: Takes a list of [condition result] pairs. Returns the first result where condition is true. Returns [] (empty dict) when no branch matches. Only the matched branch is evaluated (lazy branch evaluation)."] [pairs@Dict] [cond-impl pairs 0]]
 
 # until: Moved to Rust builtin to avoid recursion depth limit.
 # The LLT recursive version hit MAX_EVAL_DEPTH at ~230 iterations.
@@ -865,12 +852,9 @@ foldr@[doc: "Right fold"]: [fn [f@Fn acc xs] [builtin-reduce f acc [builtin-reve
 # Composition
 # ============================================================================
 
-# Compose two functions: (compose f g)(x) = f(g(x)).
-compose@[doc: "Compose two functions"]: [fn@Fn [f@Fn g@Fn] [fn [x] [f [g x]]]]
+compose: [fn@[return: Fn  doc: "Compose two functions: (compose f g)(x) = f(g(x)).\n\nExample: [[compose [+ _ 1] [* _ 2]] 5] => 11  (first *2=10, then +1=11)\n\nNote: Returns a new function that applies g first, then f. Composition order is right-to-left (mathematical convention)."] [f@Fn g@Fn] [fn [x] [f [g x]]]]
 
-# Thread a value through a series of functions.
-# Usage: [-> data step1 step2 step3]
-->@[doc: "Thread value through functions"]: [fn [x ...stages] [builtin-reduce [fn [acc f] [f acc]] x stages]]
+->: [fn@[return: Unknown  doc: "Thread value through functions (pipeline operator).\n\nExample: [-> 5 [+ _ 1] [* _ 2]] => 12\nExample: [-> [1 2 3] [map [+ _ 1]] [filter [> _ 2]]] => Seq(3, 4)\n\nNote: Threads initial value x through each function in sequence. Each function receives the result of the previous step. Pipeline flows left-to-right."] [x ...stages] [builtin-reduce [fn [acc f] [f acc]] x stages]]
 
 # ============================================================================
 # Type Predicates
@@ -917,9 +901,7 @@ list?@[doc: "Check if dict has all integer keys"]: [fn@Bool [xs]
 # Error Handling
 # ============================================================================
 
-# Call a function; if it errors, return the default value.
-# Inherently materializing: must materialize body to catch errors.
-try-or@[doc: "Call function; return default on error"]: [fn [f@Fn default]
+try-or: [fn@[return: a  doc: "Call function; return default on error.\n\nExample: [try-or [fn [] [/ 10 0]] 99] => 99\nExample: [try-or [fn [] [/ 10 2]] 99] => 5\n\nNote: Wraps the function call in error handling. Returns the function's result if successful, or the default value if an error occurs. Inherently materializing: must materialize body to catch errors."] [f@Fn default@a]
     [try-or-impl [try f] default]]
 
 # ============================================================================
@@ -1295,9 +1277,7 @@ AppendableSeq@[doc: "Appendable instance for Seq: append-one = concat, empty = e
 # Assertions
 # ============================================================================
 
-# Assert a condition; if false, raise an error with the given message.
-# Inherently materializing: must materialize condition to check.
-assert@[doc: "Assert condition with error message"]: [fn@Bool [cond msg@Stringing] [builtin-if cond true [error msg]]]
+assert: [fn@[return: Bool  doc: "Assert condition with error message.\n\nExample: [assert true \"never fails\"] => true\nExample: [assert false \"fails\"] => error \"fails\"\n\nNote: Returns true if condition is true; raises an error with the given message if false. Inherently materializing: must materialize condition to check."] [cond msg@Stringing] [builtin-if cond true [error msg]]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
@@ -1410,62 +1390,41 @@ positive@[doc: "Check if value is positive"]: [fn@Bool [v] [> v 0]]
 # name overridable by user code via include while internal prelude code
 # continues to work correctly through the builtin-* escape hatch.
 
-# Construct a Seq node from a head element and a tail Seq.
-seq@[doc: "Construct a Seq node (head, tail)"]: [fn [h t] [builtin-seq h t]]
+seq: [fn@[return: Seq  doc: "Construct a Seq node from head and tail.\n\nExample: [seq 1 [seq 2 [seq 3 []]]] => Seq(1, 2, 3)\n\nNote: Creates a lazy sequence node. The tail must be another Seq or [] (empty Seq)."] [h t] [builtin-seq h t]]
 
-# Get the first element of a Seq (errors on empty Seq).
-head@[doc: "First element of a Seq"]: [fn [xs] [builtin-head xs]]
+head: [fn@[return: Unknown  doc: "First element of a Seq.\n\nExample: [head [seq 1 [seq 2 []]]] => 1\n\nNote: Errors on empty Seq. Forces evaluation of the head element only."] [xs] [builtin-head xs]]
 
-# Get the tail of a Seq (all elements after the first; errors on empty Seq).
-tail@[doc: "Tail of a Seq (all elements after first)"]: [fn [xs] [builtin-tail xs]]
+tail: [fn@[return: Seq  doc: "Tail of a Seq (all elements after first).\n\nExample: [head [tail [seq 1 [seq 2 [seq 3 []]]]]] => 2\n\nNote: Errors on empty Seq. Returns a Seq (lazy; does not force tail elements)."] [xs] [builtin-tail xs]]
 
-# Materialize a lazy Seq into an integer-keyed Dict.
-collect@[doc: "Materialize Seq into Dict"]: [fn [xs] [builtin-collect xs]]
+collect: [fn@[return: Dict  doc: "Materialize lazy Seq into integer-keyed Dict.\n\nExample: [collect [range 0 3]] => [0: 0  1: 1  2: 2]\n\nNote: Forces evaluation of the entire Seq. Use with caution on infinite sequences."] [xs] [builtin-collect xs]]
 
-# Generate a lazy integer range. 1-arg [range start] = infinite; 2-arg [range start end] = finite.
-# Example: [collect [range 0 3]] => [0 1 2]
-# Example: [take 3 [range 5]] => Seq(5, 6, 7, ...)
-range@[doc: "Lazy integer range (1-arg: infinite; 2-arg: finite half-open)"]: [fn [start@Int ...rest]
+range: [fn@[return: Seq  doc: "Lazy integer range (1-arg: infinite; 2-arg: finite half-open).\n\nExample: [collect [range 0 3]] => [0 1 2]\nExample: [take 3 [range 5]] => Seq(5, 6, 7, ...)\n\nNote: 1-arg form produces infinite sequence; 2-arg form is half-open [start, end). Lazy evaluation allows infinite ranges."] [start@Int ...rest]
     [builtin-if [seq? rest]
         [builtin-range start [builtin-head rest]]
         [builtin-range start]]]
 
-# Infinite lazy Seq repeating a single value.
-repeat@[doc: "Infinite lazy Seq repeating a value"]: [fn [x] [builtin-repeat x]]
+repeat: [fn@[return: Seq  doc: "Infinite lazy Seq repeating a value.\n\nExample: [collect [take 3 [repeat \"x\"]]] => [\"x\" \"x\" \"x\"]\n\nNote: Produces an infinite sequence. Must be consumed with take, drop, or other limiting operations."] [x] [builtin-repeat x]]
 
-# Cycle a collection infinitely.
-cycle@[doc: "Cycle collection infinitely"]: [fn [xs] [builtin-cycle xs]]
+cycle: [fn@[return: Seq  doc: "Cycle collection infinitely.\n\nExample: [collect [take 5 [cycle [\"a\" \"b\"]]]] => [\"a\" \"b\" \"a\" \"b\" \"a\"]\n\nNote: Repeats the collection elements in order infinitely. Must be consumed with take, drop, or other limiting operations."] [xs] [builtin-cycle xs]]
 
-# Infinite lazy Seq by repeatedly applying f to seed.
-iterate@[doc: "Iterate f over seed infinitely"]: [fn [f@Fn x] [builtin-iterate f x]]
+iterate: [fn@[return: Seq  doc: "Infinite lazy Seq by repeatedly applying f to seed.\n\nExample: [collect [take 4 [iterate [fn [n] [+ n 1]] 0]]] => [0 1 2 3]\n\nNote: Produces the sequence [x, f(x), f(f(x)), ...]. Infinite; must be consumed with take, drop, or other limiting operations. Lazy evaluation allows efficient generation."] [f@Fn x] [builtin-iterate f x]]
 
-# Generate a Seq by unfolding a seed with f (f returns null to stop).
-unfold@[doc: "Unfold a Seq from seed using f"]: [fn [f@Fn seed] [builtin-unfold f seed]]
+unfold: [fn@[return: Seq  doc: "Unfold a Seq from seed using f.\n\nExample: [collect [unfold [fn [n] [if [< n 5] [0: n  1: [+ n 1]] []]] 0]] => [0 1 2 3 4]\n\nNote: f receives state, returns [0: value  1: next-state] to continue, or [] to stop. Lazy; generates elements on demand."] [f@Fn seed] [builtin-unfold f seed]]
 
-# Join collection elements as strings with a separator.
-# Example: [join ", " ["a" "b" "c"]] => "a, b, c"
-join@[doc: "Join elements as strings with separator"]: [fn [sep@Stringing xs] [builtin-join sep xs]]
+join: [fn@[return: String  doc: "Join collection elements as strings with a separator.\n\nExample: [join \", \" [\"a\" \"b\" \"c\"]] => \"a, b, c\"\n\nNote: Converts each element to a string, then concatenates with separator between elements. Works on both Dict and Seq."] [sep@Stringing xs] [builtin-join sep xs]]
 
-# Concatenate two collections (Dict or Seq).
-# Example: [concat [1 2] [3 4]] => [1 2 3 4]
-concat@[doc: "Concatenate two collections"]: [fn [xs ys] [builtin-concat xs ys]]
+concat: [fn@[return: Unknown  doc: "Concatenate two collections.\n\nExample: [concat [1 2] [3 4]] => [1 2 3 4]\n\nNote: Works on Dict (reindexed), Seq (lazy), or String (concatenate). Return type matches inputs."] [xs ys] [builtin-concat xs ys]]
 
-# Get the first element of a Dict, Stringing, or Bytes.
-first@[doc: "First element of a collection"]: [fn [xs] [builtin-first xs]]
+first: [fn@[return: Unknown  doc: "First element of a collection.\n\nExample: [first [10 20 30]] => 10\nExample: [first \"hello\"] => \"h\"\nExample: [first (str-bytes \"A\")] => 65\n\nNote: Works on Dict (by insertion order), String (first char), or Bytes (first byte as Int)."] [xs] [builtin-first xs]]
 
-# Get the last element of a Dict, Stringing, or Bytes.
-last@[doc: "Last element of a collection"]: [fn [xs] [builtin-last xs]]
+last: [fn@[return: Unknown  doc: "Last element of a collection.\n\nExample: [last [10 20 30]] => 30\nExample: [last \"hello\"] => \"o\"\nExample: [last (str-bytes \"Z\")] => 90\n\nNote: Works on Dict (by insertion order), String (last char), or Bytes (last byte as Int)."] [xs] [builtin-last xs]]
 
-# Get all elements after the first (reindexed from 0).
-rest@[doc: "All elements after first (reindexed)"]: [fn [xs] [builtin-rest xs]]
+rest: [fn@[return: Dict  doc: "All elements after first (reindexed from 0).\n\nExample: [rest [10 20 30]] => [0: 20  1: 30]\n\nNote: Returns a new Dict with keys reindexed starting from 0. Removes the first element."] [xs] [builtin-rest xs]]
 
-# Prepend an element to a collection.
-cons@[doc: "Prepend element to collection"]: [fn [x xs] [builtin-cons x xs]]
+cons: [fn@[return: Dict  doc: "Prepend element to collection.\n\nExample: [cons 0 [10 20]] => [0: 0  1: 10  2: 20]\n\nNote: Returns a new Dict with the element prepended and all keys reindexed from 0."] [x xs] [builtin-cons x xs]]
 
-# Reverse a collection (reindexed from 0).
-reverse@[doc: "Reverse a collection"]: [fn [xs] [builtin-reverse xs]]
+reverse: [fn@[return: Dict  doc: "Reverse a collection (reindexed from 0).\n\nExample: [reverse [1 2 3]] => [0: 3  1: 2  2: 1]\n\nNote: Returns a new Dict with elements in reverse order, keys reindexed from 0."] [xs] [builtin-reverse xs]]
 
-# Sort a collection in natural ascending order.
-sort@[doc: "Sort collection in natural ascending order"]: [fn [xs] [builtin-sort xs]]
+sort: [fn@[return: Dict  doc: "Sort collection in natural ascending order.\n\nExample: [sort [3 1 2]] => [0: 1  1: 2  2: 3]\nExample: [sort [\"c\" \"a\" \"b\"]] => [0: \"a\"  1: \"b\"  2: \"c\"]\n\nNote: Returns a new Dict with elements sorted, keys reindexed from 0. Uses natural ordering (<)."] [xs] [builtin-sort xs]]
 
 ]
