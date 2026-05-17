@@ -1,0 +1,16 @@
+# Class declaration with empty structural metadata
+# Verifies that a class can have the two-bracket form with an empty metadata dict
+[
+  # Define a test class with empty structural metadata bracket
+  TestClass: [class [TestClass a] []
+    test-method: [Fn@Bool [a a]]]
+
+  # Return a simple value to verify the class declaration typechecks
+  result: true
+]
+
+---
+
+%.result
+=== out
+Bool(true)

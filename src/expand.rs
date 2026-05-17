@@ -699,6 +699,8 @@ fn expand_expr_inner(
             params,
             superclasses,
             methods,
+            determines,
+            resolver,
         } => {
             let expanded_methods = methods
                 .iter()
@@ -720,37 +722,53 @@ fn expand_expr_inner(
                     params: params.clone(),
                     superclasses: superclasses.clone(),
                     methods: expanded_methods,
+                    determines: determines.clone(),
+                    resolver: resolver.clone(),
                 },
                 expr.span,
             ))
         }
 
-        // InstanceDecl: expand instance type and method implementations
-        Expr::InstanceDecl {
-            class_name,
-            instance_type,
-            methods,
-        } => {
-            let expanded_type = expand_expr(instance_type.as_ref().clone(), env, ctx, stdlib_env)?;
-            let expanded_methods = methods
+        // InstanceDecl: expand pattern expressions and method implementations
+        Expr::InstanceDecl { class_name, arms } => {
+            let expanded_arms = arms
                 .iter()
-                .map(|method| {
-                    let expanded_value =
-                        expand_expr((*method.node.value).clone(), env, ctx, stdlib_env)?;
-                    Ok(Spanned::new(
-                        Entry {
-                            key: method.node.key.clone(),
-                            value: Rc::new(expanded_value),
-                        },
-                        method.span,
-                    ))
+                .map(|(pattern_expr, methods)| {
+                    let expanded_pattern = expand_expr(pattern_expr.clone(), env, ctx, stdlib_env)?;
+                    let expanded_methods = methods
+                        .iter()
+                        .map(|method| {
+                            let expanded_value =
+                                expand_expr((*method.node.value).clone(), env, ctx, stdlib_env)?;
+                            Ok(Spanned::new(
+                                Entry {
+                                    key: method.node.key.clone(),
+                                    value: Rc::new(expanded_value),
+                                },
+                                method.span,
+                            ))
+                        })
+                        .collect::<EvalResult<Vec<_>>>()?;
+                    Ok((expanded_pattern, expanded_methods))
                 })
                 .collect::<EvalResult<Vec<_>>>()?;
             Ok(Spanned::new(
                 Expr::InstanceDecl {
                     class_name: class_name.clone(),
-                    instance_type: Box::new(expanded_type),
-                    methods: expanded_methods,
+                    arms: expanded_arms,
+                },
+                expr.span,
+            ))
+        }
+
+        Expr::PatternDecl { bindings } => {
+            let expanded_bindings = bindings
+                .iter()
+                .map(|binding| expand_expr(binding.clone(), env, ctx, stdlib_env))
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(
+                Expr::PatternDecl {
+                    bindings: expanded_bindings,
                 },
                 expr.span,
             ))

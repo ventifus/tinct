@@ -1199,6 +1199,8 @@ pub(crate) fn eval_recursive(
             params,
             superclasses,
             methods,
+            determines: _,
+            resolver: _,
         } => {
             // Register the class in the runtime registry
             // Default method implementations are stored as thunks
@@ -1207,10 +1209,12 @@ pub(crate) fn eval_recursive(
             // Wrap method default implementations as unevaluated thunks (preserve laziness)
             for method_entry in methods {
                 if let Some(ref key_expr) = method_entry.node.key {
-                    // Extract method name
+                    // Extract method name — accept both string literals and identifier keys
+                    // (the parser produces VarRef for bare identifier method names like `eq: [fn ...]`)
                     let method_name = match &key_expr.node {
                         Expr::Str(s) => s.clone(),
-                        _ => continue, // Skip non-string keys
+                        Expr::VarRef { name, .. } => name.clone(),
+                        _ => continue, // Skip other key forms
                     };
 
                     // Wrap the method implementation as an unevaluated thunk (no materialization)
@@ -1242,66 +1246,93 @@ pub(crate) fn eval_recursive(
                 expr.span,
             )))
         }
-        Expr::InstanceDecl {
-            class_name,
-            instance_type,
-            methods,
-        } => {
-            // Build the instance dictionary with method implementations
+        Expr::InstanceDecl { class_name, arms } => {
+            // Build the instance dictionary with method implementations.
+            // Each arm is registered separately in the instance_registry.
+            // Runtime type-dispatch (selecting the matching arm for a given call site)
+            // is deferred to the chr-prelude sprint; for now all arms are registered
+            // with placeholder type tags so they are at least reachable.
 
-            // Look up the class declaration to get defaults
+            if arms.is_empty() {
+                return Ok(Rc::new(Thunk::new_materialized(
+                    Value::Dict(IndexMap::new()),
+                    expr.span,
+                )));
+            }
+
+            // Look up the class declaration to get default method implementations.
             let class_decl = ctx.state.borrow().class_registry.get(class_name).cloned();
 
-            // Start with default methods from class (if any)
-            let mut method_dict = if let Some(ref decl) = class_decl {
-                decl.method_defaults.clone()
-            } else {
-                IndexMap::new()
-            };
+            let mut last_arm_thunk: Option<Rc<Thunk>> = None;
 
-            // Override with instance-specific implementations (wrapped as unevaluated thunks)
-            for method_entry in methods {
-                if let Some(ref key_expr) = method_entry.node.key {
-                    // Extract method name
-                    let method_name = match &key_expr.node {
-                        Expr::Str(s) => s.clone(),
-                        _ => continue, // Skip non-string keys
-                    };
+            for (arm_idx, (_pattern_expr, methods)) in arms.iter().enumerate() {
+                // Start with class-level defaults for each arm independently.
+                let mut method_dict = if let Some(ref decl) = class_decl {
+                    decl.method_defaults.clone()
+                } else {
+                    IndexMap::new()
+                };
 
-                    // Wrap the method implementation as an unevaluated thunk (no materialization)
-                    let method_thunk = Rc::new(Thunk::new_unevaluated(
-                        Rc::clone(&method_entry.node.value),
-                        Rc::clone(&env),
-                        Rc::clone(ctx),
-                        method_entry.span,
-                    ));
-                    method_dict.insert(method_name, method_thunk);
+                // Override with this arm's instance-specific implementations.
+                for method_entry in methods {
+                    if let Some(ref key_expr) = method_entry.node.key {
+                        // Extract method name — accept both string literals and identifier keys
+                        // (the parser produces VarRef for bare identifier method names like `eq: [fn ...]`)
+                        let method_name = match &key_expr.node {
+                            Expr::Str(s) => s.clone(),
+                            Expr::VarRef { name, .. } => name.clone(),
+                            _ => continue, // Skip other key forms
+                        };
+
+                        // Wrap the method implementation as an unevaluated thunk (no materialization)
+                        let method_thunk = Rc::new(Thunk::new_unevaluated(
+                            Rc::clone(&method_entry.node.value),
+                            Rc::clone(&env),
+                            Rc::clone(ctx),
+                            method_entry.span,
+                        ));
+                        method_dict.insert(method_name, method_thunk);
+                    }
                 }
+
+                // Convert IndexMap<String, Rc<Thunk>> to IndexMap<Key, Rc<Thunk>>
+                let mut instance_dict_map = IndexMap::new();
+                for (name, thunk) in method_dict {
+                    instance_dict_map.insert(Key::String(name), ctx.alloc_thunk(thunk));
+                }
+
+                // Eagerly materialize the dict for this arm.
+                let arm_dict_thunk = Rc::new(Thunk::new_materialized(
+                    Value::Dict(instance_dict_map),
+                    expr.span,
+                ));
+
+                // Register this arm in the runtime registry.
+                // TODO: extract canonical type tag from pattern_expr (chr-prelude sprint)
+                let type_tag = format!("arm_{}", arm_idx);
+                ctx.state
+                    .borrow_mut()
+                    .instance_registry
+                    .insert((class_name.clone(), type_tag), Rc::clone(&arm_dict_thunk));
+
+                last_arm_thunk = Some(arm_dict_thunk);
             }
 
-            // Convert IndexMap<String, Rc<Thunk>> to IndexMap<Key, Rc<Thunk>>
-            let mut instance_dict_map = IndexMap::new();
-            for (name, thunk) in method_dict {
-                instance_dict_map.insert(Key::String(name), ctx.alloc_thunk(thunk));
-            }
-
-            // Eagerly materialize the dict (per task requirement)
-            let instance_dict_thunk = Rc::new(Thunk::new_materialized(
-                Value::Dict(instance_dict_map),
+            // Return the last arm's dict as the expression value.
+            Ok(last_arm_thunk.unwrap_or_else(|| {
+                Rc::new(Thunk::new_materialized(
+                    Value::Dict(IndexMap::new()),
+                    expr.span,
+                ))
+            }))
+        }
+        Expr::PatternDecl { .. } => {
+            // PatternDecl should never be evaluated at runtime
+            Err(EvalError::internal(
+                "pattern declaration is only valid in instance match arms".to_string(),
                 expr.span,
-            ));
-
-            // Register the instance in the runtime registry
-            // Extract canonical type name from instance_type Expr (e.g., VarRef "Int" → "Int")
-            // This matches the runtime type names returned by Value::type_name()
-            let type_tag = extract_instance_type_name(&instance_type.node);
-            ctx.state.borrow_mut().instance_registry.insert(
-                (class_name.clone(), type_tag),
-                Rc::clone(&instance_dict_thunk),
-            );
-
-            // Return the instance dictionary
-            Ok(instance_dict_thunk)
+            )
+            .into())
         }
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
@@ -1336,6 +1367,7 @@ pub(crate) fn eval_recursive(
 ///
 /// For user-defined types (variants, nominal types), this returns the constructor name.
 /// For structural types (record literals), this returns the Value tag ("Dict").
+#[allow(dead_code)]
 fn extract_instance_type_name(expr: &Expr) -> String {
     match expr {
         // Simple type name: Int, Float, String, Bool, Result, Seq, etc.

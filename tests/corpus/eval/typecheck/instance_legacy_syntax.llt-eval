@@ -1,0 +1,19 @@
+# Regression: old [instance [ClassName Type] methods...] syntax still accepted.
+# The parser converts [ClassName Type] to a synthetic PatternDecl internally,
+# so legacy syntax produces the same AST as new [pattern [a@Type]] syntax.
+[
+  Equatable: [class [Equatable a]
+    eq: [Fn@Bool [a a]]]
+
+  # Old syntax: class name and type in a single bracket, methods as sibling entries
+  EqInt: [instance [Equatable Int]
+    eq: [fn [x y] [= x y]]]
+
+  result: true
+]
+
+---
+
+%.result
+=== out
+Bool(true)

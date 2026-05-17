@@ -529,12 +529,28 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
                 collect_include_paths_from_expr(&arm.body.node, paths);
             }
         }
-        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+        Expr::ClassDecl { methods, .. } => {
             for method in methods {
                 if let Some(ref key) = method.node.key {
                     collect_include_paths_from_expr(&key.node, paths);
                 }
                 collect_include_paths_from_expr(&method.node.value.node, paths);
+            }
+        }
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                collect_include_paths_from_expr(&pattern_expr.node, paths);
+                for method in methods {
+                    if let Some(ref key) = method.node.key {
+                        collect_include_paths_from_expr(&key.node, paths);
+                    }
+                    collect_include_paths_from_expr(&method.node.value.node, paths);
+                }
+            }
+        }
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                collect_include_paths_from_expr(&binding.node, paths);
             }
         }
         // Literals and other leaf nodes: no recursive traversal needed
@@ -829,7 +845,7 @@ fn apply_include_type_to_spanned(
                 apply_include_type_to_spanned(&arm.body, include_bindings, type_map);
             }
         }
-        Expr::ClassDecl { methods, .. } | Expr::InstanceDecl { methods, .. } => {
+        Expr::ClassDecl { methods, .. } => {
             for method in methods {
                 if let Some(ref key) = method.node.key {
                     apply_include_type_to_spanned(key, include_bindings, type_map);
@@ -839,6 +855,26 @@ fn apply_include_type_to_spanned(
                     include_bindings,
                     type_map,
                 );
+            }
+        }
+        Expr::InstanceDecl { arms, .. } => {
+            for (pattern_expr, methods) in arms {
+                apply_include_type_to_spanned(pattern_expr, include_bindings, type_map);
+                for method in methods {
+                    if let Some(ref key) = method.node.key {
+                        apply_include_type_to_spanned(key, include_bindings, type_map);
+                    }
+                    apply_include_type_to_spanned(
+                        method.node.value.as_ref(),
+                        include_bindings,
+                        type_map,
+                    );
+                }
+            }
+        }
+        Expr::PatternDecl { bindings } => {
+            for binding in bindings {
+                apply_include_type_to_spanned(binding, include_bindings, type_map);
             }
         }
         // Leaf nodes: no recursive traversal needed

@@ -1,0 +1,21 @@
+# Instance with FD consistency violation
+# Two arms with same determining positions (Int, Int) but different determined types (Int vs Float)
+[
+  # Define a class with FD: (a, b) determines c
+  TestAdd: [class [TestAdd a b c] [determines: [[[a b] c]]]
+    op: [Fn@c [a b]]]
+
+  # Define instances that violate consistency
+  # Both arms have (Int, Int) determining positions but disagree on c
+  TestAddInst: [instance TestAdd
+    [pattern [a@Int b@Int c@Int]]: [op: [fn [x y] [+ x y]]]
+    [pattern [a@Int b@Int c@Float]]: [op: [fn [x y] [+ x y]]]]
+
+  result: 42
+]
+
+---
+
+%.result
+=== out
+consistency violation

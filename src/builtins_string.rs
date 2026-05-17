@@ -46,9 +46,18 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     reject_named("str", named, call_span)?;
 
-    // Runtime typeclass dispatch: check for Showable instance
-    // For multi-arg str, only check the first arg for an instance
-    if !args.is_empty() {
+    // Runtime typeclass dispatch: check for Showable instance.
+    // Only materialize args[0] if at least one Showable instance is registered;
+    // otherwise we would force a lazy thunk solely to check a registry key.
+    // For multi-arg str, only check the first arg for an instance.
+    let has_showable = !args.is_empty()
+        && ctx
+            .state
+            .borrow()
+            .instance_registry
+            .keys()
+            .any(|(cn, _)| cn == "Showable");
+    if has_showable {
         let val = materialize(&args[0], Some(&call_span), &ctx)?;
         let type_name = val.type_name();
         if let Some(instance_thunk) = ctx

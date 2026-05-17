@@ -425,20 +425,33 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             params,
             superclasses,
             methods,
+            determines,
+            resolver,
         } => Expr::ClassDecl {
             name,
             params,
             superclasses,
             methods: adjust_entries(methods, base),
+            determines,
+            resolver,
         },
-        Expr::InstanceDecl {
+        Expr::InstanceDecl { class_name, arms } => Expr::InstanceDecl {
             class_name,
-            instance_type,
-            methods,
-        } => Expr::InstanceDecl {
-            class_name,
-            instance_type: Box::new(adjust_spanned_expr(*instance_type, base)),
-            methods: adjust_entries(methods, base),
+            arms: arms
+                .into_iter()
+                .map(|(pattern_expr, methods)| {
+                    (
+                        adjust_spanned_expr(pattern_expr, base),
+                        adjust_entries(methods, base),
+                    )
+                })
+                .collect(),
+        },
+        Expr::PatternDecl { bindings } => Expr::PatternDecl {
+            bindings: bindings
+                .into_iter()
+                .map(|b| adjust_spanned_expr(b, base))
+                .collect(),
         },
         Expr::TypeApp { func, arg } => Expr::TypeApp {
             func: Box::new(adjust_spanned_expr(*func, base)),
@@ -1037,7 +1050,7 @@ enum StackFrame {
         pending_pattern: Option<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>)>,
         span_start: Position,
     },
-    /// Class declaration: `[class [ClassName param...] method: Type ...]`
+    /// Class declaration: `[class [ClassName param...] [structural-metadata] method: Type ...]`
     ClassDecl {
         name: Option<String>,
         params: Vec<String>,
@@ -1045,15 +1058,31 @@ enum StackFrame {
         methods: Vec<Entry>,
         /// Pending key for method entries
         pending_key: Option<Spanned<Expr>>,
+        /// Structural metadata bracket (second positional): `[determines: [...] resolver: ...]`
+        structural_metadata: Option<Spanned<Expr>>,
         span_start: Position,
     },
-    /// Instance declaration: `[instance [ClassName Type] method: impl ...]`
+    /// Instance declaration: `[instance ClassName [pattern [...]]`: methods... ...]`
+    /// Also supports legacy syntax: `[instance [ClassName Type] method: impl ...]`
     InstanceDecl {
         class_name: Option<String>,
-        instance_type: Option<Spanned<Expr>>,
-        methods: Vec<Entry>,
-        /// Pending key for method entries
+        /// Match arms: (pattern_expr, method_entries)
+        arms: Vec<(Spanned<Expr>, Vec<Entry>)>,
+        /// Pending arm pattern expression (before colon)
+        pending_arm_pattern: Option<Spanned<Expr>>,
+        /// Pending key for method entries within current arm
         pending_key: Option<Spanned<Expr>>,
+        /// Current arm's accumulated method entries (before colon closes the arm)
+        current_arm_methods: Vec<Entry>,
+        /// Legacy arm pattern from old `[instance [ClassName Type] ...]` syntax.
+        /// When set, `current_arm_methods` is collected into an arm with this pattern
+        /// at CloseBracket time.
+        legacy_arm_pattern: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Pattern declaration: `[pattern [a@Int b@Float]]`
+    PatternDecl {
+        bindings: Vec<Spanned<Expr>>,
         span_start: Position,
     },
     /// Pipe operator: `lhs | rhs`
@@ -1847,7 +1876,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Class declaration: [class [Name a] method: Type ...]
+                        // Class declaration: [class [Name a] [structural-metadata] method: Type ...]
                         // (Not a class form if the keyword is followed by colon: [class: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::ClassDecl {
@@ -1856,6 +1885,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             superclasses: Vec::new(),
                             methods: Vec::new(),
                             pending_key: None,
+                            structural_metadata: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -1876,18 +1906,45 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Instance declaration: [instance [Name Type] method: impl ...]
+                        // Instance declaration: [instance ClassName [pattern ...]: methods ...]
                         // (Not an instance form if the keyword is followed by colon: [instance: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::InstanceDecl {
                             class_name: None,
-                            instance_type: None,
-                            methods: Vec::new(),
+                            arms: Vec::new(),
+                            pending_arm_pattern: None,
                             pending_key: None,
+                            current_arm_methods: Vec::new(),
+                            legacy_arm_pattern: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "instance" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "pattern"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // Pattern declaration: [pattern [a@Int b@Float c@Float]]
+                        // (Not a pattern form if the keyword is followed by colon: [pattern: x] is a dict.)
+                        // (depth already checked above)
+                        stack.push(StackFrame::PatternDecl {
+                            bindings: Vec::new(),
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "pattern" token
                         i += skip_whitespace_tokens(
                             &token_vec,
                             i,
@@ -2468,6 +2525,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         superclasses,
                         methods,
                         pending_key,
+                        structural_metadata,
                         span_start,
                     } => {
                         if name.is_none() {
@@ -2482,6 +2540,50 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         } else {
+                            // Extract determines and resolver from structural_metadata dict
+                            let mut determines = Vec::new();
+                            let mut resolver = None;
+
+                            if let Some(metadata_expr) = structural_metadata {
+                                if let Expr::Dict(entries) = &metadata_expr.node {
+                                    for entry in entries {
+                                        if let Some(ref key_expr) = entry.node.key {
+                                            // Keys in the structural metadata dict are stored as
+                                            // Expr::Str (identifiers followed by `:` are stored
+                                            // as Str in ClassDecl pending_key). Match both forms
+                                            // for robustness.
+                                            let key_name_opt = match &key_expr.node {
+                                                Expr::VarRef { name, .. } => Some(name.as_str()),
+                                                Expr::Str(s) => Some(s.as_str()),
+                                                _ => None,
+                                            };
+                                            if let Some(key_name) = key_name_opt {
+                                                match key_name {
+                                                    "determines" => {
+                                                        // Extract list of FD declarations
+                                                        if let Expr::Dict(fd_entries) =
+                                                            &entry.node.value.node
+                                                        {
+                                                            for fd_entry in fd_entries {
+                                                                determines.push(
+                                                                    (*fd_entry.node.value).clone(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    "resolver" => {
+                                                        resolver = Some(Box::new(
+                                                            (*entry.node.value).clone(),
+                                                        ));
+                                                    }
+                                                    _ => {} // Ignore other keys for now (kinds, superclasses handled later)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             let class_expr = Expr::ClassDecl {
                                 name: name.unwrap(),
                                 params,
@@ -2500,6 +2602,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                         Spanned::new(e, entry_span)
                                     })
                                     .collect(),
+                                determines,
+                                resolver,
                             };
                             let spanned_class = Spanned::new(class_expr, dict_span(span_start));
                             if let Err(push_err) = push_value(
@@ -2514,19 +2618,16 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                     StackFrame::InstanceDecl {
                         class_name,
-                        instance_type,
-                        methods,
+                        mut arms,
+                        pending_arm_pattern,
                         pending_key,
+                        current_arm_methods,
+                        legacy_arm_pattern,
                         span_start,
                     } => {
                         if class_name.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "instance form requires a class name".to_string(),
-                                span: Some(span),
-                            });
-                        } else if instance_type.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "instance form requires an instance type".to_string(),
                                 span: Some(span),
                             });
                         } else if pending_key.is_some() {
@@ -2535,22 +2636,57 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                     .to_string(),
                                 span: Some(span),
                             });
+                        } else if pending_arm_pattern.is_some() {
+                            close_bracket_recover!(ParseError {
+                                message:
+                                    "instance form has incomplete arm (pattern without methods)"
+                                        .to_string(),
+                                span: Some(span),
+                            });
                         } else {
+                            // Finalize current arm methods:
+                            // - Legacy syntax: current_arm_methods collected under legacy_arm_pattern
+                            // - New syntax with colon-started arm: current_arm_methods under last arm's pattern
+                            if !current_arm_methods.is_empty() {
+                                if let Some(pattern) = legacy_arm_pattern {
+                                    // Legacy syntax: finalize the single arm
+                                    arms.push((pattern, current_arm_methods));
+                                } else if let Some(last_arm) = arms.last_mut() {
+                                    // New syntax: methods after colon-started arm
+                                    last_arm.1.extend(current_arm_methods);
+                                } else {
+                                    close_bracket_recover!(ParseError {
+                                        message:
+                                            "instance form has orphaned methods without pattern"
+                                                .to_string(),
+                                        span: Some(span),
+                                    });
+                                }
+                            } else if let Some(pattern) = legacy_arm_pattern {
+                                // Legacy syntax with no methods (e.g., [instance [MyClass Int]])
+                                arms.push((pattern, Vec::new()));
+                            }
+
                             let instance_expr = Expr::InstanceDecl {
                                 class_name: class_name.unwrap(),
-                                instance_type: Box::new(instance_type.unwrap()),
-                                methods: methods
+                                arms: arms
                                     .into_iter()
-                                    .map(|e| {
-                                        let entry_span = if let Some(ref key) = e.key {
-                                            Span {
-                                                start: key.span.start,
-                                                end: e.value.span.end,
-                                            }
-                                        } else {
-                                            e.value.span
-                                        };
-                                        Spanned::new(e, entry_span)
+                                    .map(|(pattern, methods)| {
+                                        let spanned_methods = methods
+                                            .into_iter()
+                                            .map(|e| {
+                                                let entry_span = if let Some(ref key) = e.key {
+                                                    Span {
+                                                        start: key.span.start,
+                                                        end: e.value.span.end,
+                                                    }
+                                                } else {
+                                                    e.value.span
+                                                };
+                                                Spanned::new(e, entry_span)
+                                            })
+                                            .collect();
+                                        (pattern, spanned_methods)
                                     })
                                     .collect(),
                             };
@@ -2563,6 +2699,21 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             ) {
                                 close_bracket_recover!(push_err);
                             }
+                        }
+                    }
+
+                    StackFrame::PatternDecl {
+                        bindings,
+                        span_start,
+                    } => {
+                        let pattern_expr = Expr::PatternDecl { bindings };
+                        let spanned_pattern = Spanned::new(pattern_expr, dict_span(span_start));
+                        if let Err(push_err) = push_value(
+                            &mut stack,
+                            &mut current_document_expressions,
+                            spanned_pattern,
+                        ) {
+                            close_bracket_recover!(push_err);
                         }
                     }
 
@@ -2629,12 +2780,30 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                     }
                     Some(StackFrame::InstanceDecl {
+                        ref mut pending_arm_pattern,
                         ref mut pending_key,
+                        ref mut arms,
+                        ref mut current_arm_methods,
                         ..
                     }) => {
-                        if pending_key.is_none() {
+                        // InstanceDecl colon can be:
+                        // 1. After a pattern expr → starts a new arm (store pattern, clear for method entries)
+                        // 2. After a method name → method entry within current arm
+                        if let Some(pattern_expr) = pending_arm_pattern.take() {
+                            // This colon follows a pattern expression → new arm starts.
+                            // Push the pattern as a new arm (methods will be collected in current_arm_methods
+                            // and finalized at CloseBracket or when the next arm starts).
+                            // First, finalize any previous arm's methods.
+                            if !current_arm_methods.is_empty() {
+                                if let Some(last_arm) = arms.last_mut() {
+                                    last_arm.1.extend(std::mem::take(current_arm_methods));
+                                }
+                            }
+                            arms.push((pattern_expr, Vec::new()));
+                            None
+                        } else if pending_key.is_none() {
                             Some(ParseError {
-                                message: "`:` without a method name (expected method: impl)"
+                                message: "`:` without a method name or pattern (expected method: impl or [pattern ...]: methods)"
                                     .to_string(),
                                 span: Some(span),
                             })
@@ -3946,6 +4115,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Match { span_start, .. } => *span_start,
             StackFrame::ClassDecl { span_start, .. } => *span_start,
             StackFrame::InstanceDecl { span_start, .. } => *span_start,
+            StackFrame::PatternDecl { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -4214,6 +4384,10 @@ fn pop_last_value_from_frame(
         }),
         Some(StackFrame::InstanceDecl { .. }) => Err(ParseError {
             message: "dot access is not valid inside instance form".to_string(),
+            span: Some(span),
+        }),
+        Some(StackFrame::PatternDecl { .. }) => Err(ParseError {
+            message: "dot access is not valid inside pattern form".to_string(),
             span: Some(span),
         }),
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
@@ -4730,11 +4904,13 @@ fn push_expr_to_parent(
             Some(StackFrame::ClassDecl {
                 ref mut name,
                 ref mut params,
+                ref mut structural_metadata,
                 superclasses: _,
                 ..
             }) => {
-                // ClassDecl expects: [class [Name params...] method: Type ...]
+                // ClassDecl expects: [class [Name params...] [structural-metadata] method: Type ...]
                 // First expression is the class header: [Name params...]
+                // Second expression (if Dict) is structural metadata: [determines: [...] resolver: ...]
                 if name.is_none() {
                     // This is the class header — must be a dict or call with class name
                     // Parse: [Equatable a] or [Ord] or just Ord
@@ -4816,8 +4992,24 @@ fn push_expr_to_parent(
                             span: Some(expr.span),
                         }),
                     }
+                } else if structural_metadata.is_none() {
+                    // Second positional expression after header
+                    // If it's a Dict, it's structural metadata
+                    // Otherwise, it should be handled by push_value (method entries)
+                    match &expr.node {
+                        Expr::Dict(_) => {
+                            *structural_metadata = Some(expr);
+                            Ok(())
+                        }
+                        _ => Err(ParseError {
+                            message:
+                                "unexpected expression in class form (expected method: Type entries or structural metadata dict)"
+                                    .to_string(),
+                            span: Some(expr.span),
+                        }),
+                    }
                 } else {
-                    // Already have name/params — subsequent expressions should be handled
+                    // Already have name/params/structural_metadata — subsequent expressions should be handled
                     // by push_value (which handles pending_key for method entries)
                     Err(ParseError {
                         message:
@@ -4829,64 +5021,109 @@ fn push_expr_to_parent(
             }
             Some(StackFrame::InstanceDecl {
                 ref mut class_name,
-                ref mut instance_type,
+                ref mut pending_arm_pattern,
+                ref mut legacy_arm_pattern,
                 ..
             }) => {
-                // InstanceDecl expects: [instance [ClassName Type] method: impl ...]
-                // First expression is the instance header: [ClassName Type]
+                // InstanceDecl expects: [instance ClassName [pattern [...]]`: methods... ...]
+                // Also supports legacy syntax: [instance [ClassName Type] method: impl ...]
+                // First expression is either a bare class name (VarRef) or a legacy header (Call/Dict).
+                // Subsequent pattern expressions are handled as pending_arm_pattern.
                 if class_name.is_none() {
-                    // This is the instance header
+                    // This is the class name — or legacy header bracket
                     match &expr.node {
-                        Expr::Dict(entries) if entries.len() >= 2 => {
-                            // Dict form: [instance [Equatable Int] ...]
-                            if let Expr::VarRef { name: cls_name, .. } = &entries[0].node.value.node
-                            {
-                                *class_name = Some(cls_name.clone());
-                                // Instance type is the second entry
-                                *instance_type = Some((*entries[1].node.value).clone());
-                                Ok(())
-                            } else {
-                                Err(ParseError {
-                                    message: "instance header must start with class name"
-                                        .to_string(),
-                                    span: Some(expr.span),
-                                })
-                            }
+                        Expr::VarRef { name: cls_name, .. } => {
+                            *class_name = Some(cls_name.clone());
+                            Ok(())
                         }
                         Expr::Call {
                             func,
                             args,
                             implied: true,
                             ..
-                        } if !args.is_empty() => {
-                            // Implied call form: [instance [Equatable Int] ...]
+                        } => {
+                            // Legacy syntax: [instance [ClassName Type1 Type2 ...] ...]
+                            // Extract class name from func, create a synthetic pattern from type args.
                             if let Expr::VarRef { name: cls_name, .. } = &func.node {
                                 *class_name = Some(cls_name.clone());
-                                *instance_type = Some((*args[0]).clone());
+                                // Create a synthetic PatternDecl from the type arguments
+                                let bindings: Vec<Spanned<Expr>> = args
+                                    .iter()
+                                    .map(|arg| Spanned::new(arg.node.clone(), arg.span))
+                                    .collect();
+                                let pattern =
+                                    Spanned::new(Expr::PatternDecl { bindings }, expr.span);
+                                *legacy_arm_pattern = Some(pattern);
                                 Ok(())
                             } else {
                                 Err(ParseError {
-                                    message: "instance header must start with class name"
-                                        .to_string(),
+                                    message:
+                                        "instance form expects class name after 'instance' keyword"
+                                            .to_string(),
+                                    span: Some(expr.span),
+                                })
+                            }
+                        }
+                        Expr::Dict(entries)
+                            if entries.len() >= 2
+                                && entries.iter().all(|e| e.node.key.is_none()) =>
+                        {
+                            // Legacy syntax with positional-only dict: [instance [ClassName Type] ...]
+                            // where the bracket parsed as a Dict with auto-indexed entries.
+                            // First entry is the class name, rest are type args.
+                            if let Expr::VarRef { name: cls_name, .. } = &entries[0].node.value.node
+                            {
+                                *class_name = Some(cls_name.clone());
+                                let bindings: Vec<Spanned<Expr>> = entries[1..]
+                                    .iter()
+                                    .map(|e| {
+                                        Spanned::new(e.node.value.node.clone(), e.node.value.span)
+                                    })
+                                    .collect();
+                                let pattern =
+                                    Spanned::new(Expr::PatternDecl { bindings }, expr.span);
+                                *legacy_arm_pattern = Some(pattern);
+                                Ok(())
+                            } else {
+                                Err(ParseError {
+                                    message:
+                                        "instance form expects class name after 'instance' keyword"
+                                            .to_string(),
                                     span: Some(expr.span),
                                 })
                             }
                         }
                         _ => Err(ParseError {
-                            message: "instance header must be [ClassName Type]".to_string(),
+                            message: "instance form expects class name after 'instance' keyword"
+                                .to_string(),
                             span: Some(expr.span),
                         }),
                     }
+                } else if pending_arm_pattern.is_none() {
+                    // This could be a pattern expr (PatternDecl or other expr before colon)
+                    // Store it and wait for colon
+                    *pending_arm_pattern = Some(expr);
+                    Ok(())
                 } else {
-                    // Already have class_name/instance_type — subsequent expressions should be handled
-                    // by push_value (which handles pending_key for method entries)
+                    // Already have a pending pattern — shouldn't happen
+                    // (colon should clear pending_arm_pattern before next expr)
                     Err(ParseError {
                         message:
-                            "unexpected expression in instance form (expected method: impl entries)"
+                            "unexpected expression in instance form (expected colon after pattern)"
                                 .to_string(),
                         span: Some(expr.span),
                     })
                 }
+            }
+            Some(StackFrame::PatternDecl {
+                ref mut bindings, ..
+            }) => {
+                // PatternDecl collects binding expressions (typically Annotated nodes).
+                // The inner bracket [a@Int b@Float] is parsed as a Dict with auto-indexed
+                // entries and stored as a single Dict binding — this preserves the bracket
+                // structure so Display shows [pattern [a@Int b@Float]] naturally.
+                bindings.push(expr);
+                Ok(())
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {
                 // We have the RHS expression; pop the frame and create the Pipe node
@@ -4979,10 +5216,15 @@ fn push_value(
             ref name,
             ref mut methods,
             ref mut pending_key,
+            ref structural_metadata,
             ..
         }) => {
             if name.is_none() {
                 // Header not yet parsed — delegate to push_expr_to_parent
+                push_expr_to_parent(stack, current_document_expressions, expr)
+            } else if structural_metadata.is_none() && pending_key.is_none() {
+                // Header parsed but no structural metadata yet — delegate to push_expr_to_parent
+                // which handles the second positional (structural metadata dict)
                 push_expr_to_parent(stack, current_document_expressions, expr)
             } else if let Some(key) = pending_key.take() {
                 // This value completes a method signature entry
@@ -5001,21 +5243,45 @@ fn push_value(
         }
         Some(StackFrame::InstanceDecl {
             ref class_name,
-            ref instance_type,
-            ref mut methods,
+            ref mut current_arm_methods,
+            ref mut arms,
             ref mut pending_key,
+            ref pending_arm_pattern,
             ..
         }) => {
-            if class_name.is_none() || instance_type.is_none() {
-                // Header not yet fully parsed — delegate to push_expr_to_parent
+            if class_name.is_none() {
+                // Class name not yet parsed — delegate to push_expr_to_parent
                 push_expr_to_parent(stack, current_document_expressions, expr)
             } else if let Some(key) = pending_key.take() {
-                // This value completes a method implementation entry
-                methods.push(Entry {
+                // This value completes a method implementation entry within current arm
+                current_arm_methods.push(Entry {
                     key: Some(key),
                     value: Rc::new(expr),
                 });
                 Ok(())
+            } else if let Expr::Dict(entries) = &expr.node {
+                // New syntax: a Dict expression after pattern colon contains method entries.
+                // e.g., [instance ClassName [pattern [...]]: ["eq": [fn ...]]]
+                // Extract its entries as method entries for the current arm.
+                for entry_spanned in entries {
+                    let entry = &entry_spanned.node;
+                    if let Some(last_arm) = arms.last_mut() {
+                        last_arm.1.push(Entry {
+                            key: entry.key.clone(),
+                            value: Rc::clone(&entry.value),
+                        });
+                    } else {
+                        current_arm_methods.push(Entry {
+                            key: entry.key.clone(),
+                            value: Rc::clone(&entry.value),
+                        });
+                    }
+                }
+                Ok(())
+            } else if pending_arm_pattern.is_none() {
+                // No pending arm pattern yet — this expression is a pattern (e.g., PatternDecl).
+                // Delegate to push_expr_to_parent which sets pending_arm_pattern.
+                push_expr_to_parent(stack, current_document_expressions, expr)
             } else {
                 // InstanceDecl expects keyed entries only (method names)
                 Err(ParseError {

@@ -47,6 +47,13 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — user-defined macros can use full-annotated-expression equality for dict keys |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 
+## Concurrency and Distribution
+
+| Proposal | Summary |
+|----------|---------|
+| [Async and Parallel Evaluator](async-eval.md) | Single implementation pass: `async fn` contagion + `Rc`→`Arc` migration + `OnceLock` thunk + multi-thread Tokio; automatic parallel dict eval; `par`/`par-map`; `task`/`await`/`channel`/`select`/`context`/`timeout`/`exit`; event sources; cancellation; graceful shutdown |
+| [Distributed Evaluation](dist-eval.md) | `remote-task` / `cluster-local`; thunk serialization; content-addressed result cache (SHA-256); `dist-map`/`dist-reduce`; capability delegation (pure/delegated/proxied); worker protocol over QUIC; automatic distribution. Depends on: async-eval |
+
 ## Runtime and Performance
 
 | Proposal | Summary |
@@ -59,6 +66,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
+| [Stdlib Architecture — The Rust/tinct Boundary](stdlib-architecture.md) | Principled rule for what stays in Rust vs tinct; removes hyper/reqwest; `stdlib/http1.llt` (HTTP/1.1 in tinct), `stdlib/http.llt` (unified server/client), `stdlib/async.llt`, `stdlib/strings.llt`, `stdlib/seq.llt`, `stdlib/path.llt`, `stdlib/cap.llt`; `tcp-listen`/`quic-listen` as the minimal Rust server primitives |
 | [Value Serializer Visitor](value-serializer-visitor.md) | Shared traversal for `value_to_json` + `value_to_display_string`; defer until a third format is needed |
 
 ## Formal Verification
@@ -214,6 +222,13 @@ eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 # Post typing-cluster type system research
 union-types ✓ ─── boolean-algebraic-subtyping ✓ ─── record-map-split (parameterized-dict) ✓
                                                └─── error-patterns ✓ (nominal Result)
+
+# Concurrency/distribution chain
+async-eval (async fn + Arc + multi-thread + task/channel/context/par) ─── dist-eval (cluster/remote-task)
+
+# Stdlib architecture chain
+stdlib-architecture ─── async-eval (http.llt needs async eval for non-blocking I/O)
+stdlib-architecture ─── lib-net-v2 ✓ (tcp-listen/quic-listen/tls-layer)
 
 # Profile-gated (no deps, waiting for profiling data)
 string-interning, union-find-substitution

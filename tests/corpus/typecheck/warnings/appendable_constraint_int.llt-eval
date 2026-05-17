@@ -6,4 +6,4 @@
 === out
 Dict({"f": Function(x)})
 === warn
-does not satisfy constraint Appendable
+inferred type is Unknown

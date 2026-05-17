@@ -13,20 +13,25 @@ See DONE.md for the full history of completed sprints.
 
 Redesigns `Expr::ClassDecl` and `Expr::InstanceDecl` for the two-bracket class body and match-arm instance syntax. New `[pattern [...]]` form reuses existing annotated-identifier machinery.
 
-- [ ] Extend `Expr::ClassDecl` in `src/ast.rs`: add `determines: Vec<Spanned<Expr>>`, `resolver: Option<Spanned<Expr>>`; update all exhaustive match sites (`src/eval.rs`, `src/typecheck.rs`, `src/formatter.rs`, `src/desugar.rs`, `src/resolve.rs`, `src/lsp/analysis.rs`, `src/ast_dict.rs`, `src/expand.rs`) (`src/ast.rs` + ~8 files)
-- [ ] Update `StackFrame::ClassDecl` in `src/parser.rs`: add `structural_metadata: Option<Spanned<Expr>>`; route second positional `Expr::Dict` to `structural_metadata` (currently hard-errors at `parser.rs:~4819–4827`); extract `determines:`, `resolver:`, `kinds:`, `superclasses:` from structural metadata entries in `CloseBracket` ClassDecl handler; retire `f@Operator` form in class param lists (`src/parser.rs`)
-- [ ] Redesign `Expr::InstanceDecl` in `src/ast.rs`: from `{class_name, instance_type, methods}` to `{class_name, arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>}`; update all exhaustive match sites (~8 files); update `InstanceDecl` Display to render match-arm form (`src/ast.rs` + ~8 files)
-- [ ] Update `StackFrame::InstanceDecl` in `src/parser.rs`: replace `instance_type`/`methods` with `arms`/`pending_arm_key`; add `VarRef` branch for bare class name; handle `[pattern [...]]` arm key / `:` separator; require method bodies as bracket forms (inner `StackFrame::Dict` delivers completed `Expr::Dict`) (`src/parser.rs`)
-- [ ] Add `Expr::PatternDecl { bindings: Vec<Spanned<Expr>> }` to `src/ast.rs` + `StackFrame::PatternDecl` in `src/parser.rs`: `pattern` keyword recognition (with colon-ahead rejection guard `!matches!(peek_next_horizontal(...), Some((Token::Colon, _)))`); collects `Expr::Annotated` nodes from inner Dict frame into `bindings`; no body (`src/ast.rs`, `src/parser.rs`)
-- [ ] Implement `Expr::ClassDecl` typecheck handler in `src/typecheck.rs`: validate `determines:` 2-element list structure; resolve param names to positional indices; check `resolver` name exists in type-stage Env; validate coverage condition; compute `resolver_injective` during batch instance coherence check; validate consistency condition (`src/typecheck.rs`)
-- [ ] Implement `Expr::InstanceDecl` typecheck handler in `src/typecheck.rs`: validate arm type-parameter count matches class params; pairwise disjointness check across arms; coverage and consistency checks for FD classes; register arms in scope-local InstanceEnv (TypeEnv entry, not global HashMap); typecheck each method impl against class method signature with arm's type params substituted (`src/typecheck.rs`)
-- [ ] Tests: basic `[class [a b c] [determines: ...] +: [fn@c [a b]]]` + `[instance ...]` declaration; FD inference at call site; disjointness violation error message; coverage violation error; consistency violation error; method type mismatch error (`tests/corpus/eval/typecheck/`)
+- [x] Extend `Expr::ClassDecl` in `src/ast.rs`: add `determines`, `resolver` fields; update all exhaustive match sites (`src/ast.rs` + ~8 files)
+- [x] Update `StackFrame::ClassDecl` in `src/parser.rs`: structural_metadata second bracket; extract determines/resolver/kinds/superclasses; key extraction handles VarRef+Str (`src/parser.rs`)
+- [x] Redesign `Expr::InstanceDecl` in `src/ast.rs`: arms Vec form; backward-compat legacy_arm_pattern; update all exhaustive match sites (`src/ast.rs` + ~8 files)
+- [x] Update `StackFrame::InstanceDecl` in `src/parser.rs`: arms/pending_arm_pattern; pattern arm syntax; legacy support (`src/parser.rs`)
+- [x] Add `Expr::PatternDecl { bindings }` to `src/ast.rs` + `StackFrame::PatternDecl`; colon-ahead rejection guard (`src/ast.rs`, `src/parser.rs`)
+- [x] Implement ClassDecl typecheck: determines/resolver validation, coverage, consistency; 6-field probe isolation in patterns_overlap (`src/typecheck.rs`)
+- [x] Implement InstanceDecl typecheck: disjointness, coverage, consistency, InstanceEnv registration, all-arms iteration, VarRef method keys (`src/typecheck.rs`, `src/eval.rs`)
+- [x] Tests: class_fd_basic.llt-eval, instance_pattern_basic.llt-eval, instance_legacy_syntax.llt-eval; unit test for FD consistency violation (`tests/corpus/eval/typecheck/`, `src/lib.rs`)
 
 ### chr-prelude: Migrate arithmetic classes to prelude.llt and implement boundary guard elaboration
 
 Moves the hardcoded arithmetic instance table out of Rust and into tinct itself. Completes the CHR cycle by adding the post-inference boundary guard elaboration pass.
 
 - [ ] Add iteration cap (e.g. 100) to `process_deferred_equalities()` in `src/type_unify.rs` before resolver evaluation activates (safety against unbounded fixed-point iteration) (`src/type_unify.rs`)
+- [ ] Add corpus test for `determines:` extraction round-trip before wiring up chr-prelude resolvers; verify `[class [a b c] [determines: [[[a b] c]]] ...]` correctly populates ClassDecl.determines (`tests/corpus/eval/typecheck/`)
+- [ ] Fix consistency check to use unify-under-θ instead of structural equality (`types_equal`) — currently overly conservative for parametric instance types (`src/typecheck.rs:2400`)
+- [ ] Improve disjointness/consistency error spans: include both conflicting arm spans, not just the second one (`src/typecheck.rs:2326,2401`)
+- [ ] Coverage error message: use param name from `params` list instead of zero-based index (`src/typecheck.rs:2362`)
+- [ ] Remove backward-compat legacy instance parsing (`legacy_arm_pattern` field in `StackFrame::InstanceDecl`, `push_expr_to_parent` legacy branch in parser.rs ~line 5032) — only valid after all `[instance [ClassName Type] ...]` forms in `stdlib/prelude.llt` and corpus tests are migrated to `[instance ClassName [pattern [...]] ...]` form (`src/parser.rs`)
 - [ ] Write `AddResult`, `SubResult`, `MulResult`, `DivResult` resolver functions in `--- stage: type` section of `stdlib/prelude.llt`; write `Addable`, `Subtractable`, `Multipliable`, `Divisible` class declarations with `determines:/resolver:` and all instance arms (Int×Int, Int×Float, Float×Int, Float×Float) (`stdlib/prelude.llt`)
 - [ ] Remove `lookup_arithmetic_instance` from `src/type_unify.rs`; pre-populate `NormCtxt` normalization cache with the 9 arithmetic results as the O(1) fast path (keyed by resolver name + type-dict args) (`src/type_unify.rs`)
 - [ ] Implement `elaborate_boundary_guards()` post-inference elaboration pass in `src/typecheck.rs` or new `src/typecheck_elaborate.rs`: walk type map after inference completes; for each expression where inferred type is `Unknown` and contextual expected type is concrete, call `normalize(τ_ctx, NormCtxt::final(...))` and annotate the expression with the concrete expected type; emit `TypeError` if expected type is still irreducible after normalization (`src/typecheck.rs` or `src/typecheck_elaborate.rs`)
@@ -60,7 +65,7 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 **Category A — Genuinely unknown (no precise type possible without language feature):**
 - `from-json`: requires schema-directed parsing; return is `Unknown` by design.
 - `include`: included file type not knowable without parsing the included file at type-check time.
-- `builtin-get`/`get?`: special-cased by `check_get` dispatcher; performance constraint prevents polymorphic registration.
+- `builtin-get`/`get?`: special-cased by `check_get` dispatcher; label-polymorphic scheme (`HasField l d a`) was attempted but reportedly caused inference to hang on prelude.llt (informal O(N²) analysis: ~35 `get` calls × HasField constraints × substitution merge loop); unproven whether this was a true performance issue or a unification bug — worth re-investigating once chr-class-instance lands a better HasField implementation.
 - `map`/`filter`/`reduce` seq/init params: HKT required.
 - `builtin-join` seq param: `stringify()` accepts any element type.
 - `builtin-concat` return: merge shape not inferrable statically.
@@ -74,6 +79,21 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 - [x] Add precise `Seq({...})` return for `list-dir` — `Seq({name: Str, kind: Str, size: Int})` (`src/type_env.rs`)
 - [ ] Implement HKT (`Type::App`) to express `map`/`filter`/`reduce`/`each` precisely — see `chr-unification` sprint for the type-application machinery
 - [ ] After above: add `from-json` option for schema-directed typed parse returning a specific Record type
+
+---
+
+## Test Infrastructure
+
+### corpus-consolidation: Consolidate corpus tests into fewer, more comprehensive test cases
+
+The corpus test suite has grown to hundreds of fine-grained single-feature tests. The goal is to reduce the total number while increasing coverage density per test — each consolidated test should exercise multiple related features together (e.g., a single `arithmetic_mixed_types.llt-eval` that covers Int+Int, Int+Float, Float+Int, Float+Float and their type annotations, rather than 4 separate files). This reduces the serial test execution time (currently 700+ seconds for the full corpus).
+
+**Strategy:** Merge tests within the same subdirectory that share the same builtin or feature area. Keep negative/error tests separate (one file per distinct error code is fine). Target: reduce corpus file count by 30-40%.
+
+- [ ] Audit `tests/corpus/eval/builtins/` — merge arithmetic variants, string operation variants, and type-predicate variants into composite tests (`tests/corpus/eval/builtins/`)
+- [ ] Audit `tests/corpus/eval/typecheck/` — merge related positive typecheck tests into 1-3 comprehensive files per feature area (`tests/corpus/eval/typecheck/`)
+- [ ] Audit `tests/corpus/eval/stdlib/` — merge related prelude function tests (`tests/corpus/eval/stdlib/`)
+- [ ] Verify `just test` passes after consolidation; update any CI time baselines (`tests/`)
 
 ---
 

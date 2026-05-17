@@ -6894,3 +6894,14 @@ Breaks the `value.rs → types.rs` circular dependency. `types.rs` → 4 new top
 - [x] Add `deferred_equalities: Vec<(Type, Type)>` to InferState; `process_deferred_equalities()` fixed-point loop — returns (), uses .is_ok() to preserve invariant (`src/type_infer.rs`, `src/type_unify.rs`)
 - [x] Additive resolver path in `improve_functional_dependency`: check ClassDecl.resolver stub alongside existing `lookup_arithmetic_instance` fast path (`src/type_unify.rs`)
 - [x] 23 unit tests: normalize() identity/subst/cache/cycle/depth, has_type_stage_app, TypeStageApp PartialEq/Display, occurs-check test in type_unify_tests.rs (`src/type_normalize.rs`, `src/type_unify_tests.rs`)
+
+### chr-class-instance: AST redesign and parser/typecheck support for [class] and [instance]
+
+- [x] Expr::ClassDecl extended: determines/resolver fields; all exhaustive match sites updated (~13 files)
+- [x] Parser StackFrame::ClassDecl: structural_metadata second bracket; key extraction for determines/resolver/kinds/superclasses (handles both VarRef+Str keys)
+- [x] Expr::InstanceDecl redesigned: arms Vec<(pattern, methods)>; backward-compat legacy_arm_pattern for old `[instance [Class Type] ...]` syntax
+- [x] Parser StackFrame::InstanceDecl: arms/pending_arm_pattern; [pattern [...]] arm key syntax; legacy auto-conversion
+- [x] Expr::PatternDecl { bindings } added; StackFrame::PatternDecl with colon-ahead rejection guard
+- [x] ClassDecl typecheck: determines/resolver validation, 6-field state-isolated patterns_overlap probe, FD coverage/consistency checks
+- [x] InstanceDecl typecheck: pairwise disjointness, FD coverage/consistency, InstanceEnv registration per arm; eval processes all arms, VarRef method keys handled
+- [x] Tests: corpus tests for class/instance syntax; FD consistency unit test; 1885 tests pass
