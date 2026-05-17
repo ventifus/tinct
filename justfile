@@ -180,12 +180,25 @@ versions:
 docgen:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs root=. --cap-fs docdir=doc/lib scripts/docgen.llt"
 
-# Build documentation
-doc:
+# Weave tinct code block outputs into doc/*.md (living documentation).
+# Updates the === out / === warn / === info sections inside each ```tinct block.
+# Re-run to update. Use `just doc-verify` in CI to check without modifying.
+doc: build-release
+    {{container}} run {{run_flags}} {{rust_image}} sh -c \
+        "for f in doc/*.md; do ./target/release/tinct literate weave --strict -i \"$$f\"; done"
+
+# Verify that all annotated ```tinct blocks in doc/*.md match their === expected sections.
+# Exits 0 if all match, exits 1 with diff details if any mismatch. Use in CI.
+doc-verify: build-release
+    {{container}} run {{run_flags}} {{rust_image}} sh -c \
+        "for f in doc/*.md; do ./target/release/tinct literate weave --strict --fail-on-errors --verify \"$$f\"; done"
+
+# Build Rust API documentation
+rust-doc:
     {{container}} run {{run_flags}} {{rust_image}} cargo doc --no-deps
 
-# Build and open documentation
-doc-open:
+# Build and open Rust API documentation
+rust-doc-open:
     {{container}} run {{run_flags}} {{rust_image}} cargo doc --no-deps --open
 
 # Run cargo bench (if benchmarks exist)

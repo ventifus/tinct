@@ -5105,6 +5105,22 @@ fn push_expr_to_parent(
                     // This is the scrutinee
                     *scrutinee = Some(expr);
                     Ok(())
+                } else if matches!(expr.node, Expr::CaseArm { .. }) {
+                    // [case ...] arms are complete (pattern + body in one expression).
+                    // Store as a MatchArm with Wildcard sentinel pattern; the evaluator
+                    // detects Expr::CaseArm in the body and calls eval_case_arm directly.
+                    if pending_pattern_expr.is_some() || pending_pattern.is_some() {
+                        return Err(ParseError {
+                            message: "match pattern must be followed by `:` and a body before a [case ...] arm".to_string(),
+                            span: Some(expr.span),
+                        });
+                    }
+                    arms.push(MatchArm {
+                        pattern: Spanned::new(Pattern::Wildcard, expr.span),
+                        guard: None,
+                        body: Box::new(expr),
+                    });
+                    Ok(())
                 } else if pending_pattern.is_none() && pending_pattern_expr.is_none() {
                     // No pending pattern or pattern expression — store bracket expressions
                     // in pending_pattern_expr (they will be converted on colon)
