@@ -37,6 +37,12 @@ pub(crate) mod test_util;
 #[allow(dead_code)]
 pub(crate) mod type_dict;
 pub mod typecheck;
+// Type system modules (top-level for circular dependency avoidance)
+pub(crate) mod type_class;
+pub(crate) mod type_def;
+pub(crate) mod type_infer;
+pub(crate) mod type_normalize;
+// Type system façade (re-exports from all type modules)
 pub(crate) mod types;
 pub(crate) mod value;
 // Import resolution for type checker — seeds TypeEnv with prelude function types.

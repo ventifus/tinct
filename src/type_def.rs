@@ -1,0 +1,1549 @@
+//! Core type representations for the LLT type system.
+//!
+//! This module contains the `Type` enum, `Row` struct for record types, kind definitions,
+//! and purely structural operations on types (subtyping, consistency, variable collection).
+//!
+//! Inference machinery (`InferState`, generalization) lives in `type_infer.rs`.
+//! Substitution and unify live in `type_unify.rs`.
+//! Type class declarations (`ClassDecl`, `Constraint`) live in `type_class.rs`.
+//! Normalization and Display impls live in `type_normalize.rs`.
+
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+
+use crate::ast::Span;
+
+// TypeError is defined in type_env.rs (will be moved to type_class.rs or kept in type_env.rs)
+// We need to import it for check_kind_wellformed
+use crate::types::TypeError;
+
+/// Row representation for record types.
+///
+/// `fields` uses `HashMap` because row field order is semantically irrelevant at the type level —
+/// structural subtyping makes rows unordered. `Display` sorts field names for
+/// deterministic output. Runtime `Value::Dict` keeps `IndexMap` for ordered user-visible
+/// semantics; this HashMap is only at the type-inference layer.
+///
+/// Under Boolean-Algebraic Subtyping (BAS), all records are closed: openness is expressed via
+/// width subtyping in `is_subtype` (a record with MORE fields satisfies an annotation with FEWER
+/// fields). There are no row-variable tails.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub fields: HashMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
+}
+
+/// Kind for higher-kinded types (Jones 1993)
+/// Kinds classify types: * for proper types, (* -> *) for type constructors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// * — kind of proper types (Int, Str, [name: Str], etc.)
+    Type,
+    /// k1 -> k2 — kind of type constructors (Seq: * -> *, Mappable: (* -> *) -> Constraint)
+    #[allow(dead_code)] // Scaffolding for higher-kinded types
+    Arrow(Box<Kind>, Box<Kind>),
+    /// Operator — kind of type constructors (* → *), represents `Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Type))`
+    /// Used for type constructor variables like `m` in `Monad m`
+    #[allow(dead_code)] // Used in hkt-kind-inference sprint
+    Operator,
+    /// Label — kind of type-level string labels used for record field names
+    /// Used for label TypeVars in `HasField` constraints (e.g., `key@"k"`)
+    #[allow(dead_code)] // Used in hkt-mappable-appendable sprint
+    Label,
+    /// Kind variable — unification variable for kind inference
+    #[allow(dead_code)] // Scaffolding for kind inference
+    Var(u32),
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Kind::Type => write!(f, "*"),
+            Kind::Arrow(k1, k2) => write!(f, "({} -> {})", k1, k2),
+            Kind::Operator => write!(f, "* → *"),
+            Kind::Label => write!(f, "Label"),
+            Kind::Var(id) => write!(f, "?k{}", id),
+        }
+    }
+}
+
+/// Errors that can occur during kind unification
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Scaffolding for type class implementation
+pub enum KindError {
+    /// Kind mismatch — attempted to unify incompatible kinds
+    Mismatch(Kind, Kind),
+    /// Infinite kind — occurs check failed (kind variable appears in its own definition)
+    InfiniteKind,
+}
+
+impl fmt::Display for KindError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KindError::Mismatch(k1, k2) => write!(f, "Kind mismatch: {} vs {}", k1, k2),
+            KindError::InfiniteKind => write!(f, "Infinite kind"),
+        }
+    }
+}
+
+/// Label for record field names in HasField constraints.
+/// Used in `HasField { label: Label, dict_var: String, field_var: String }`.
+/// Provides compile-time structural enforcement that the label position is always
+/// a string literal or a label TypeVar name, never an arbitrary Type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[allow(dead_code)] // Scaffolding for HasField constraint (hkt-mappable-appendable sprint)
+pub enum Label {
+    /// Concrete label — a known field name like "host" or "port"
+    Concrete(String),
+    /// Label variable — a TypeVar name referencing a Kind::Label variable in kind_env
+    Var(String),
+}
+
+impl fmt::Display for Label {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Label::Concrete(s) => write!(f, "\"{}\"", s),
+            Label::Var(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Type {
+    Int,
+    IntLiteral(i64),
+    Float,
+    Str,
+    StringLiteral(String),
+    Bool,
+    Bytes,
+    /// Supertype of both `Int` and `Float` — represents any numeric value.
+    /// No `NumberLiteral` variant exists (unlike `IntLiteral`/`StringLiteral`) because:
+    /// - Literals parse to concrete types (`IntLiteral` or `Float`)
+    /// - `Number` only appears in user annotations (`[@Number ...]`) and subtyping relations
+    /// - There is no runtime value that is "a number but neither int nor float"
+    Number,
+    Record(Row),
+    Function {
+        params: Vec<(Option<String>, Type)>, // (param_name, param_type) — None = positional-only
+        ret: Box<Type>,
+        variadic: bool,
+    },
+    Seq(Box<Type>),
+    Map(Box<Type>, Box<Type>), // Map[K V] — homogeneous map with key type and value type
+    Proxy,
+    #[allow(clippy::enum_variant_names)]
+    TypeVar(String, u32),
+    /// Unknown type — the gradual typing "?" type. Represents "I don't know the type"
+    /// (unannotated params, inference defaults, builtin returns that can't be precisely typed).
+    /// Related to other types via CONSISTENCY (~), not subtyping (<:).
+    /// Consistency is symmetric but NOT transitive: Int ~ Unknown, Unknown ~ Str, but NOT Int ~ Str.
+    /// This prevents the lattice collapse that Any-as-top-and-bottom caused.
+    /// See Siek & Taha (2006), Garcia et al. (2016) AGT framework.
+    Unknown,
+    /// Top type — ⊤, the true supertype of everything. Represents "any type is allowed here"
+    /// (TypeAssert upper bound, explicit "accept anything" positions).
+    /// All types τ satisfy τ <: Top.
+    Top,
+    /// Sentinel for failed sub-expression inference. Prevents cascade errors: when a
+    /// sub-expression fails type inference, its result is `Error` rather than propagating
+    /// the failure to parent expressions. `unify(Error, T)` is a no-op for all T (silent
+    /// absorption), so parent expressions can continue inference without spurious downstream
+    /// errors. `is_subtype(Error, _)` returns false; Error is not a subtype of anything.
+    Error,
+    /// Directory capability — wraps cap_std::fs::Dir. Injected via CLI --cap-fs or
+    /// runtime env (pwd, libdir). Represents authority to access a specific directory tree.
+    DirCap,
+    /// Network capability — wraps host allowlist. Injected via CLI --cap-net.
+    /// Represents authority to connect to specific network hosts.
+    NetCap,
+    /// File/stream handle — wraps Box<dyn BufRead>. Created by `open` or `connect`.
+    /// Represents authority to read/write a specific open resource.
+    Handle,
+    /// URI — uniform resource identifier with scheme. Represents capability-tagged URLs.
+    Uri,
+    /// UTC timestamp (nanoseconds since Unix epoch) — created by `parse-timestamp` or `now`.
+    Timestamp,
+    /// Signed duration (nanoseconds) — created by `duration-*` constructors.
+    Duration,
+    /// Clock capability — authority to read current time. Injected by default as %clock (disable with --no-cap-clock).
+    ClockCap,
+    /// Timezone — parsed IANA TZ rules from zoneinfo file. Created by `load-tz`.
+    Timezone,
+    /// QUIC session — multiplexed connection over UDP (RFC 9000). Created by `quic-session`.
+    QuicSession,
+    /// HTTP/2 session — multiplexed HTTP connection (RFC 9113). Created by `http2-session`.
+    Http2Session,
+    /// HTTP/3 session — HTTP over QUIC (RFC 9114). Created by `http3-session`.
+    Http3Session,
+    /// QUIC datagram handle — unreliable message delivery (RFC 9221). Created by `quic-open-datagram`.
+    QuicDatagramHandle,
+    /// Datagram socket handle — message-oriented I/O (UDP or Unix datagram).
+    /// Created by `connect cap Udp host port`. Consumed by `send-datagram` and `recv-datagram`.
+    DatagramHandle,
+    /// Union type — represents a value that can be one of several types.
+    /// Invariant: members are sorted, deduplicated, and flattened (no nested unions).
+    /// Single-element unions are unwrapped to the bare type by normalize_union().
+    /// Unions appear in explicit annotations, builtin signatures, and inferred types
+    /// when a type variable has multiple lower bounds (algebraic subtyping Phase 3c).
+    Union(Vec<Type>),
+    /// Intersection type — represents a value that satisfies all constituent types.
+    /// Invariant: members are sorted, deduplicated, and flattened (no nested intersections).
+    /// Single-element intersections are unwrapped to the bare type by normalize_intersection().
+    /// Intersections appear in inferred types when a type variable has multiple upper bounds
+    /// (algebraic subtyping Phase 3c). Top is the identity (T & Top = T), Never is absorbing
+    /// (T & Never = Never).
+    Intersection(Vec<Type>),
+    /// Negation type — ~A, the complement type. Represents "definitely not A".
+    /// Essential for BAS constraint solving (C-Var1/2 rules) and false-branch narrowing.
+    /// Example: after `[int? x]` fails, x : (Int | Str) & ~Int = Str.
+    /// In annotation syntax: @[[without A]].
+    Negation(Box<Type>),
+    /// Never type — ⊥, the bottom type. Represents "no value can inhabit this type".
+    /// The empty intersection. Intersections that simplify to Never (e.g., Int & Str,
+    /// #Ok & #Err via S-ClsBot) become Never. In annotation syntax: @Never.
+    Never,
+    /// Type constructor application — `App(f, a)` represents type constructor `f` applied to type `a`.
+    /// Example: `App(Operator("m"), Int)` for a monad of integers.
+    /// When resolved to a builtin (e.g., `f` = `Seq`), normalized to the builtin form `Seq(a)`.
+    App(Box<Type>, Box<Type>),
+    /// Type constructor variable — represents a type constructor like `m` in `Monad m`.
+    /// Kind: `Operator` (i.e., `* → *`). Used in typeclass constraints and generic functions.
+    Operator(String),
+}
+
+// Manual PartialEq for Type: TypeVar compares name only, level ignored
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Type::Int, Type::Int) => true,
+            (Type::IntLiteral(v1), Type::IntLiteral(v2)) => v1 == v2,
+            (Type::Float, Type::Float) => true,
+            (Type::Str, Type::Str) => true,
+            (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 == s2,
+            (Type::Bool, Type::Bool) => true,
+            (Type::Bytes, Type::Bytes) => true,
+            (Type::Number, Type::Number) => true,
+            (Type::Record(row1), Type::Record(row2)) => row1 == row2,
+            (
+                Type::Function {
+                    params: p1,
+                    ret: r1,
+                    variadic: v1,
+                },
+                Type::Function {
+                    params: p2,
+                    ret: r2,
+                    variadic: v2,
+                },
+            ) => {
+                p1.len() == p2.len()
+                    && p1.iter().zip(p2).all(|((_, t1), (_, t2))| t1 == t2)
+                    && r1 == r2
+                    && v1 == v2
+            }
+            (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => k1 == k2 && v1 == v2,
+            (Type::Proxy, Type::Proxy) => true,
+            (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
+            (Type::Unknown, Type::Unknown) => true,
+            (Type::Top, Type::Top) => true,
+            (Type::Error, Type::Error) => true,
+            (Type::DirCap, Type::DirCap) => true,
+            (Type::NetCap, Type::NetCap) => true,
+            (Type::Handle, Type::Handle) => true,
+            (Type::Uri, Type::Uri) => true,
+            (Type::Timestamp, Type::Timestamp) => true,
+            (Type::Duration, Type::Duration) => true,
+            (Type::ClockCap, Type::ClockCap) => true,
+            (Type::Timezone, Type::Timezone) => true,
+            (Type::QuicSession, Type::QuicSession) => true,
+            (Type::Http2Session, Type::Http2Session) => true,
+            (Type::Http3Session, Type::Http3Session) => true,
+            (Type::QuicDatagramHandle, Type::QuicDatagramHandle) => true,
+            (Type::DatagramHandle, Type::DatagramHandle) => true,
+            (Type::Union(members1), Type::Union(members2)) => members1 == members2,
+            (Type::Intersection(members1), Type::Intersection(members2)) => members1 == members2,
+            (Type::Negation(t1), Type::Negation(t2)) => t1 == t2,
+            (Type::Never, Type::Never) => true,
+            (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && a1 == a2,
+            (Type::Operator(name1), Type::Operator(name2)) => name1 == name2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Type {}
+
+impl std::hash::Hash for Type {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Hash the discriminant first
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Type::Int
+            | Type::Float
+            | Type::Str
+            | Type::Bool
+            | Type::Bytes
+            | Type::Number
+            | Type::Proxy
+            | Type::Unknown
+            | Type::Top
+            | Type::Error
+            | Type::DirCap
+            | Type::NetCap
+            | Type::Handle
+            | Type::Uri
+            | Type::Timestamp
+            | Type::Duration
+            | Type::ClockCap
+            | Type::Timezone
+            | Type::QuicSession
+            | Type::Http2Session
+            | Type::Http3Session
+            | Type::QuicDatagramHandle
+            | Type::DatagramHandle
+            | Type::Never => {}
+            Type::IntLiteral(v) => v.hash(state),
+            Type::StringLiteral(s) => s.hash(state),
+            Type::Record(row) => {
+                // Hash fields in sorted order for deterministic hashing
+                let mut fields: Vec<_> = row.fields.iter().collect();
+                fields.sort_by_key(|(k, _)| *k);
+                fields.hash(state);
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
+                // Hash parameter types (ignore names for equality)
+                for (_, ty) in params {
+                    ty.hash(state);
+                }
+                ret.hash(state);
+                variadic.hash(state);
+            }
+            Type::Seq(elem) => elem.hash(state),
+            Type::Map(k, v) => {
+                k.hash(state);
+                v.hash(state);
+            }
+            Type::TypeVar(name, _) => name.hash(state), // Ignore level
+            Type::Union(members) => members.hash(state),
+            Type::Intersection(members) => members.hash(state),
+            Type::Negation(ty) => ty.hash(state),
+            Type::App(f, a) => {
+                f.hash(state);
+                a.hash(state);
+            }
+            Type::Operator(name) => name.hash(state),
+        }
+    }
+}
+
+impl Type {
+    /// Recursive without a depth guard; safe because `Type` is a finite tree (structural recursion
+    /// on an algebraic data type — each recursive call descends into a strict sub-term). The
+    /// occurs-check invariant (Robinson 1965) additionally ensures that substitution-applied types
+    /// are acyclic.
+    ///
+    /// Post gradual-typing-split (B2): Top is the true supertype (τ <: Top for all τ). Unknown
+    /// is NOT in the subtype lattice — Unknown relates to other types via consistency (~), not
+    /// subtyping (<:). See is_consistent() for the consistency relation.
+    pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
+        // Error is not a subtype of anything (not even itself), and nothing is a subtype of Error.
+        // It is a sentinel for failed inference and should not satisfy any constraint.
+        if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
+            return false;
+        }
+        // [S-TOP]: τ <: Top for all τ (Top is the supertype of everything)
+        if matches!(sup, Type::Top) {
+            return true;
+        }
+        // [S-NEVER]: Never <: τ for all τ (Never is the subtype of everything)
+        if matches!(sub, Type::Never) {
+            return true;
+        }
+        // Unknown is NOT a subtype of anything (except Top, handled above), and no type is a
+        // subtype of Unknown. Unknown uses consistency, not subtyping. See is_consistent().
+        if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
+            return false;
+        }
+        match (sub, sup) {
+            (a, b) if a == b => true,
+            (Type::Seq(sub_elem), Type::Seq(sup_elem)) => Type::is_subtype(sub_elem, sup_elem),
+            // Map[K V1] <: Map[K V2] when V1 <: V2 (V covariant, K invariant via ==)
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => k1 == k2 && Type::is_subtype(v1, v2),
+            (Type::IntLiteral(_), Type::Int | Type::Number) => true,
+            (Type::StringLiteral(_), Type::Str) => true,
+            (Type::Int | Type::Float, Type::Number) => true,
+            // [UNION-INJ-L] and [UNION-INJ-R]: any member is a subtype of the union
+            (sub_ty, Type::Union(sup_members)) => sup_members
+                .iter()
+                .any(|member| Type::is_subtype(sub_ty, member)),
+            // [S-RcdTop] (BAS width subtyping): A union of closed single-field records with
+            // disjoint field names is equivalent to Top in the BAS lattice.  The union
+            // `{x: τ} | {y: π}` cannot be refined further by structural subtyping — together
+            // these two shapes cover the entire closed-record universe at those labels.
+            // Since Top <: T holds only when T = Top (already handled by the S-TOP guard
+            // above), this fires as a pass-through to the S-TOP result when sup is Top, and
+            // correctly returns false for any non-Top supertype.
+            (Type::Union(sub_members), sup_ty) if Self::check_s_rcd_top(sub_members).is_some() => {
+                // The union is semantically Top; delegate to is_subtype(Top, sup_ty).
+                // S-TOP (sup == Top) is already handled before the match, so we only
+                // reach here when sup is NOT Top — meaning Top is not a subtype of it.
+                matches!(sup_ty, Type::Top)
+            }
+            // [UNION-ELIM]: union is a subtype iff ALL members are subtypes
+            (Type::Union(sub_members), sup_ty) => sub_members
+                .iter()
+                .all(|member| Type::is_subtype(member, sup_ty)),
+            // [S-ClsBot] (nominal disjointness / structural annihilation): An intersection of
+            // two or more closed single-field records with DIFFERENT field names is uninhabited
+            // — no value can simultaneously be `{x: τ}` (exactly field x) and `{y: π}`
+            // (exactly field y) when x ≠ y.  This is the structural analogue of S-ClsBot
+            // (#C1 & #C2 ≤ Never) for nominal class tags.  Since the intersection reduces to
+            // Never, and Never <: T for all T [S-NEVER], we return true.
+            (Type::Intersection(sub_members), _sup_ty) if Self::check_s_cls_bot(sub_members) => {
+                true // intersection ≡ Never, and Never <: anything [S-NEVER]
+            }
+            // [INTERSECT-INTRO]: intersection is a subtype of any of its members
+            (Type::Intersection(sub_members), sup_ty) => sub_members
+                .iter()
+                .any(|member| Type::is_subtype(member, sup_ty)),
+            // [INTERSECT-ELIM]: type is a subtype of intersection iff it's a subtype of ALL members
+            (sub_ty, Type::Intersection(sup_members)) => sup_members
+                .iter()
+                .all(|member| Type::is_subtype(sub_ty, member)),
+            // Negation: A <: ~B iff A and B are disjoint (for now, conservative: only reflexive negation)
+            // Full BAS subtyping requires RDNF normalization — this is a placeholder
+            (Type::Negation(t1), Type::Negation(t2)) => Type::is_subtype(t2, t1), // contravariant
+            // Negation subtyping: T <: ~A iff T and A are disjoint (no values in common).
+            // Full BAS uses RDNF normalization to compute T ∩ A = Never, but we use a
+            // conservative syntactic disjointness check that catches obvious cases like
+            // Int <: ~String (true) and Int <: ~Int (false).
+            (sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a),
+            // Capability types: reflexive only (DirCap <: DirCap, etc.)
+            // The equality check at the top of the match handles this, but we document it here.
+            // All capability types are subtypes of Any (handled by Any short-circuit above).
+            (Type::Record(sub_row), Type::Record(sup_row)) => {
+                // BAS width subtyping:
+                //
+                // R1 <: R2 iff all keys of R2 are in R1 with compatible types.
+                // Extra fields in R1 beyond those in R2 are always allowed (conjunction
+                // elimination: a record satisfies an annotation if it has AT LEAST those fields).
+                //
+                // The only case that fails is when a required field of R2 is missing from R1.
+                for (k, sup_ty) in &sup_row.fields {
+                    match sub_row.fields.get(k) {
+                        Some(sub_ty) => {
+                            if !Type::is_subtype(sub_ty, sup_ty) {
+                                return false;
+                            }
+                        }
+                        None => {
+                            // Required field k is absent from sub's known fields.
+                            // Whether R1 is open or closed, we cannot prove R1 has field k
+                            // without it being in the known field set. Reject.
+                            return false;
+                        }
+                    }
+                }
+
+                // All required fields from sup are present in sub with compatible types.
+                // Tail check: under BAS all tails are Empty; sub may have extra fields (width subtyping).
+                true
+            }
+            (
+                Type::Function {
+                    params: sub_p,
+                    ret: sub_r,
+                    variadic: sv,
+                },
+                Type::Function {
+                    params: sup_p,
+                    ret: sup_r,
+                    variadic: pv,
+                },
+            ) => {
+                sv == pv
+                    && sub_p.len() == sup_p.len()
+                    && sub_p.iter().zip(sup_p.iter()).all(
+                        |((_sp_name, sp_ty), (_pp_name, pp_ty))| Type::is_subtype(pp_ty, sp_ty),
+                    )
+                    && Type::is_subtype(sub_r, sup_r)
+            }
+            // App and Operator: structural equality for now (full BAS rules in hkt-bas).
+            // App(f1, a1) <: App(f2, a2) requires f1 = f2 and a1 <: a2 (covariant).
+            (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && Type::is_subtype(a1, a2),
+            // Operator variables are treated like TypeVars for subtyping purposes.
+            (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
+            _ => false,
+        }
+    }
+
+    /// Check if two types are disjoint (have no values in common).
+    ///
+    /// Used for Negation subtyping: `A <: ~B` iff `types_are_disjoint(A, B)`.
+    ///
+    /// Returns true if the types provably have no overlap, false if they might overlap
+    /// or we can't prove disjointness (conservative). This is NOT complete — it only
+    /// catches obvious disjointness like `Int` vs `String`.
+    pub fn types_are_disjoint(t1: &Type, t2: &Type) -> bool {
+        // Never is disjoint from everything (it has no inhabitants)
+        if matches!(t1, Type::Never) || matches!(t2, Type::Never) {
+            return true;
+        }
+
+        // Unknown, Top, and Error are conservatively assumed to overlap with everything
+        if matches!(t1, Type::Unknown | Type::Top | Type::Error)
+            || matches!(t2, Type::Unknown | Type::Top | Type::Error)
+        {
+            return false;
+        }
+
+        // Different concrete primitives are disjoint
+        match (t1, t2) {
+            // Same type → not disjoint
+            (a, b) if a == b => false,
+
+            // Int and Float are disjoint (Number is their supertype, not intersection)
+            (Type::Int, Type::Float) | (Type::Float, Type::Int) => true,
+            (Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => true,
+
+            // Different primitives are disjoint
+            (Type::Int | Type::IntLiteral(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Bool) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Bytes) => true,
+            (Type::Float, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Float, Type::Bool) => true,
+            (Type::Float, Type::Bytes) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Bool) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Bytes) => true,
+            (Type::Bool, Type::Bytes) => true,
+
+            // Symmetric cases
+            (Type::Str | Type::StringLiteral(_), Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Bool, Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Bytes, Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Float) => true,
+            (Type::Bool, Type::Float) => true,
+            (Type::Bytes, Type::Float) => true,
+            (Type::Bool, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Bytes, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Bytes, Type::Bool) => true,
+
+            // Record vs any primitive is disjoint
+            (Type::Record(_), Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Record(_), Type::Float) => true,
+            (Type::Record(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Record(_), Type::Bool) => true,
+            (Type::Record(_), Type::Bytes) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Record(_)) => true,
+            (Type::Float, Type::Record(_)) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Record(_)) => true,
+            (Type::Bool, Type::Record(_)) => true,
+            (Type::Bytes, Type::Record(_)) => true,
+
+            // Seq vs primitives
+            (Type::Seq(_), Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Seq(_), Type::Float) => true,
+            (Type::Seq(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Seq(_), Type::Bool) => true,
+            (Type::Seq(_), Type::Bytes) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Seq(_)) => true,
+            (Type::Float, Type::Seq(_)) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Seq(_)) => true,
+            (Type::Bool, Type::Seq(_)) => true,
+            (Type::Bytes, Type::Seq(_)) => true,
+
+            // Union: disjoint if ALL members are disjoint from the other type
+            (Type::Union(members), t) | (t, Type::Union(members)) => {
+                members.iter().all(|m| Type::types_are_disjoint(m, t))
+            }
+
+            // Intersection: disjoint if ANY member is disjoint from the other type
+            (Type::Intersection(members), t) | (t, Type::Intersection(members)) => {
+                members.iter().any(|m| Type::types_are_disjoint(m, t))
+            }
+
+            // Two single-field records with DIFFERENT keys are disjoint (S-RcdTop).
+            // {x: T} and {y: U} where x ≠ y have no values in common — no record can
+            // satisfy both field requirements. This improves Negation subtyping precision
+            // without requiring full RDNF normalization.
+            (Type::Record(row1), Type::Record(row2)) => {
+                if row1.fields.len() == 1 && row2.fields.len() == 1 {
+                    let key1 = row1.fields.keys().next().unwrap();
+                    let key2 = row2.fields.keys().next().unwrap();
+                    key1 != key2
+                } else {
+                    // Multi-field records: conservative (might overlap)
+                    false
+                }
+            }
+
+            // Conservative: assume all other combinations might overlap
+            _ => false,
+        }
+    }
+
+    /// Consistency relation for gradual typing (Siek & Taha 2006, Garcia et al. 2016 AGT).
+    ///
+    /// The consistency relation (~) is used for Unknown types. Key properties:
+    /// - Reflexive: τ ~ τ for all τ
+    /// - Symmetric: τ₁ ~ τ₂ ⟺ τ₂ ~ τ₁
+    /// - NOT transitive: Int ~ Unknown and Unknown ~ Str, but NOT Int ~ Str
+    ///
+    /// This non-transitivity prevents Unknown from collapsing all types into equivalence,
+    /// which was the problem with Any-as-top-and-bottom.
+    ///
+    /// Consistency decomposes structurally: Fn(τ₁ → τ₂) ~ Fn(σ₁ → σ₂) iff τ₁ ~ σ₁ and τ₂ ~ σ₂.
+    /// Records require shared fields to be consistent; differing field sets are consistent
+    /// (no width restriction).
+    pub fn is_consistent(a: &Type, b: &Type) -> bool {
+        // Unknown is consistent with everything
+        if matches!(a, Type::Unknown) || matches!(b, Type::Unknown) {
+            return true;
+        }
+        // Reflexive: τ ~ τ for all concrete types
+        if a == b {
+            return true;
+        }
+        // Error is not consistent with anything (sentinel for failed inference)
+        if matches!(a, Type::Error) || matches!(b, Type::Error) {
+            return false;
+        }
+        // Structural decomposition
+        match (a, b) {
+            (Type::Seq(e1), Type::Seq(e2)) => Type::is_consistent(e1, e2),
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => {
+                Type::is_consistent(k1, k2) && Type::is_consistent(v1, v2)
+            }
+            (
+                Type::Function {
+                    params: p1,
+                    ret: r1,
+                    variadic: v1,
+                },
+                Type::Function {
+                    params: p2,
+                    ret: r2,
+                    variadic: v2,
+                },
+            ) => {
+                v1 == v2
+                    && p1.len() == p2.len()
+                    && p1
+                        .iter()
+                        .zip(p2.iter())
+                        .all(|((_n1, ty1), (_n2, ty2))| Type::is_consistent(ty1, ty2))
+                    && Type::is_consistent(r1, r2)
+            }
+            (Type::Record(row1), Type::Record(row2)) => {
+                // Shared fields must be consistent
+                for (k, ty1) in &row1.fields {
+                    if let Some(ty2) = row2.fields.get(k) {
+                        if !Type::is_consistent(ty1, ty2) {
+                            return false;
+                        }
+                    }
+                }
+                // Differing fields are OK (width subtyping-like, but symmetric).
+                // Under BAS all tails are Empty; tails are always consistent.
+                true
+            }
+            (Type::Union(members1), Type::Union(members2)) => {
+                // Union ~ Union iff for each member in one, there's a consistent member in the other
+                // This is symmetric and handles partial overlap
+                members1
+                    .iter()
+                    .all(|m1| members2.iter().any(|m2| Type::is_consistent(m1, m2)))
+                    && members2
+                        .iter()
+                        .all(|m2| members1.iter().any(|m1| Type::is_consistent(m1, m2)))
+            }
+            (Type::Intersection(members1), Type::Intersection(members2)) => {
+                // Intersection ~ Intersection iff for each member in one, there's a consistent member in the other
+                // This mirrors the union case
+                members1
+                    .iter()
+                    .all(|m1| members2.iter().any(|m2| Type::is_consistent(m1, m2)))
+                    && members2
+                        .iter()
+                        .all(|m2| members1.iter().any(|m1| Type::is_consistent(m1, m2)))
+            }
+            // Record ~ Intersection-of-Records: consistent if shared fields are consistent.
+            // Multi-field annotations `@[f1: T1  f2: T2]` resolve to
+            // `Intersection([{f1: T1, ...ρ1}, {f2: T2, ...ρ2}])`.  Checking a concrete
+            // record (possibly containing Unknown) against this intersection should succeed
+            // when all intersection members' known fields are individually consistent with
+            // the corresponding record fields.  This mirrors the `Record ~ Record` case
+            // (which only checks shared fields) applied per member.
+            (Type::Record(row), Type::Intersection(members))
+            | (Type::Intersection(members), Type::Record(row)) => members.iter().all(|m| {
+                if let Type::Record(mrow) = m {
+                    // Check shared fields between the record and this member
+                    for (k, mt) in &mrow.fields {
+                        if let Some(rt) = row.fields.get(k) {
+                            if !Type::is_consistent(rt, mt) {
+                                return false;
+                            }
+                        }
+                        // Field present in member but not in record is OK — open rows absorb
+                    }
+                    true
+                } else {
+                    // Non-Record member — fall back to structural consistency
+                    Type::is_consistent(&Type::Record(row.clone()), m)
+                }
+            }),
+            // Literal types are consistent with their parent types (similar to subtyping)
+            (Type::IntLiteral(_), Type::Int | Type::Number)
+            | (Type::Int | Type::Number, Type::IntLiteral(_)) => true,
+            (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => true,
+            (Type::Int | Type::Float, Type::Number) | (Type::Number, Type::Int | Type::Float) => {
+                true
+            }
+            // Top is consistent with everything (τ ~ Top for all τ)
+            (Type::Top, _) | (_, Type::Top) => true,
+            // Never is consistent with everything (like Unknown, for gradual typing)
+            (Type::Never, _) | (_, Type::Never) => true,
+            // TypeVar consistency: SOUND reflexivity check only.
+            // Two TypeVars are consistent if they have the same name (same variable).
+            // TypeVar vs concrete type is NOT consistent — callers must apply substitution first.
+            (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
+            // Negation: structurally consistent
+            (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),
+            // Capability types, Proxy: consistent only if equal (handled by a == b above)
+            // All other combinations are inconsistent
+            _ => false,
+        }
+    }
+
+    /// Check S-RcdTop: does the union contain two closed single-field Records with disjoint keys?
+    /// Returns Some(()) if the union simplifies to Top, None otherwise.
+    fn check_s_rcd_top(members: &[Type]) -> Option<()> {
+        // S-RcdTop (Chau & Parreaux, POPL 2026): {x: tau} | {y: pi} = Top
+        // Requires ALL members to be single-field records with pairwise disjoint field names.
+        // A union like Union([Float, {x: Int}, {y: Str}]) must NOT trigger this rule
+        // because Float is not a single-field record.
+        if members.len() < 2 {
+            return None;
+        }
+        // Guard: every member must be a single-field record
+        let single_field_keys: Vec<&str> = members
+            .iter()
+            .map(|m| {
+                if let Type::Record(row) = m {
+                    if row.fields.len() == 1 {
+                        return row.fields.keys().next().map(|k| k.as_str());
+                    }
+                }
+                None
+            })
+            .collect::<Option<Vec<_>>>()?;
+
+        // Need at least two with different field names
+        for i in 0..single_field_keys.len() {
+            for j in (i + 1)..single_field_keys.len() {
+                if single_field_keys[i] != single_field_keys[j] {
+                    return Some(());
+                }
+            }
+        }
+        None
+    }
+
+    /// Check S-ClsBot: does the intersection contain two closed single-field Records with
+    /// different field names?  Such a value cannot exist -> Never.
+    /// S-ClsBot (Chau & Parreaux, POPL 2026): {x: tau} & {y: pi} = Never when x != y.
+    /// Requires ALL members to be single-field records. An intersection like
+    /// Intersection([Int, {x: T}, {y: U}]) must NOT trigger this rule.
+    fn check_s_cls_bot(members: &[Type]) -> bool {
+        if members.len() < 2 {
+            return false;
+        }
+        // Guard: every member must be a single-field record
+        let single_field_keys: Option<Vec<&str>> = members
+            .iter()
+            .map(|m| {
+                if let Type::Record(row) = m {
+                    if row.fields.len() == 1 {
+                        return row.fields.keys().next().map(|k| k.as_str());
+                    }
+                }
+                None
+            })
+            .collect();
+        let Some(keys) = single_field_keys else {
+            return false;
+        };
+
+        // If there are two entries with different names, the intersection is uninhabited
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                if keys[i] != keys[j] {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn collect_type_vars(&self, vars: &mut HashSet<String>) {
+        match self {
+            Type::TypeVar(name, _) => {
+                vars.insert(name.clone());
+            }
+            Type::Record(row) => {
+                for ty in row.fields.values() {
+                    ty.collect_type_vars(vars);
+                }
+                // Row tail contains no type variables (only RowVar or Empty)
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                for (_name, p_ty) in params {
+                    p_ty.collect_type_vars(vars);
+                }
+                ret.collect_type_vars(vars);
+            }
+            Type::Seq(elem) => elem.collect_type_vars(vars),
+            Type::Map(key, val) => {
+                key.collect_type_vars(vars);
+                val.collect_type_vars(vars);
+            }
+            Type::Union(members) => {
+                for member in members {
+                    member.collect_type_vars(vars);
+                }
+            }
+            Type::Intersection(members) => {
+                for member in members {
+                    member.collect_type_vars(vars);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns true if the type contains any inference variables (TypeVar).
+    /// Used to determine whether a type is concrete or still under inference.
+    pub fn has_inference_vars(&self) -> bool {
+        match self {
+            Type::TypeVar(_, _) => true,
+            Type::Record(row) => row.fields.values().any(|ty| ty.has_inference_vars()),
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                params.iter().any(|(_name, p_ty)| p_ty.has_inference_vars())
+                    || ret.has_inference_vars()
+            }
+            Type::Seq(elem) => elem.has_inference_vars(),
+            Type::Map(key, val) => key.has_inference_vars() || val.has_inference_vars(),
+            Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
+            Type::Intersection(members) => members.iter().any(|m| m.has_inference_vars()),
+            Type::Negation(inner) => inner.has_inference_vars(),
+            Type::App(f, a) => f.has_inference_vars() || a.has_inference_vars(),
+            Type::Operator(_) => true, // Operator variables ARE inference variables
+            Type::Proxy => false,
+            _ => false,
+        }
+    }
+
+    /// Collect both type variables and row variables in a single tree walk.
+    /// Performance optimization: avoids allocating two HashSets and traversing the type tree twice.
+    pub fn collect_all_vars(
+        &self,
+        type_vars: &mut HashSet<String>,
+        row_vars: &mut HashSet<String>,
+    ) {
+        match self {
+            Type::TypeVar(name, _) => {
+                type_vars.insert(name.clone());
+            }
+            Type::Record(row) => {
+                for ty in row.fields.values() {
+                    ty.collect_all_vars(type_vars, row_vars);
+                }
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                for (_name, p_ty) in params {
+                    p_ty.collect_all_vars(type_vars, row_vars);
+                }
+                ret.collect_all_vars(type_vars, row_vars);
+            }
+            Type::Seq(elem) => elem.collect_all_vars(type_vars, row_vars),
+            Type::Map(key, val) => {
+                key.collect_all_vars(type_vars, row_vars);
+                val.collect_all_vars(type_vars, row_vars);
+            }
+            Type::Union(members) => {
+                for member in members {
+                    member.collect_all_vars(type_vars, row_vars);
+                }
+            }
+            Type::Intersection(members) => {
+                for member in members {
+                    member.collect_all_vars(type_vars, row_vars);
+                }
+            }
+            Type::Negation(inner) => {
+                inner.collect_all_vars(type_vars, row_vars);
+            }
+            Type::App(f, a) => {
+                f.collect_all_vars(type_vars, row_vars);
+                a.collect_all_vars(type_vars, row_vars);
+            }
+            Type::Operator(name) => {
+                type_vars.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+
+    /// Fused occurs check + variable collection: checks whether `occurs_name` appears
+    /// in the type tree and simultaneously collects all type vars and row vars.
+    /// Returns `true` if `occurs_name` was found (infinite-type guard for U-VAR arms).
+    ///
+    /// This replaces the double-walk pattern of calling `type_var_occurs()` then
+    /// `collect_all_vars()` separately in each U-VAR arm of `unify()`.
+    pub fn collect_all_vars_check_occurs(
+        &self,
+        occurs_name: &str,
+        type_vars: &mut HashSet<String>,
+        row_vars: &mut HashSet<String>,
+    ) -> bool {
+        match self {
+            Type::TypeVar(name, _) => {
+                let found = name == occurs_name;
+                type_vars.insert(name.clone());
+                found
+            }
+            Type::Record(row) => {
+                let mut found = false;
+                for ty in row.fields.values() {
+                    found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                let mut found = false;
+                for (_name, p_ty) in params {
+                    found |= p_ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found |= ret.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found
+            }
+            Type::Seq(elem) => elem.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars),
+            Type::Map(key, val) => {
+                let mut found = false;
+                found |= key.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found |= val.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found
+            }
+            Type::Union(members) => {
+                let mut found = false;
+                for member in members {
+                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found
+            }
+            Type::Intersection(members) => {
+                let mut found = false;
+                for member in members {
+                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found
+            }
+            Type::Negation(inner) => {
+                inner.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars)
+            }
+            Type::App(f, a) => {
+                let mut found = false;
+                found |= f.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found |= a.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found
+            }
+            Type::Operator(name) => {
+                let found = name == occurs_name;
+                type_vars.insert(name.clone());
+                found
+            }
+            _ => false,
+        }
+    }
+
+    /// Collect type and row variables into Vecs, allowing duplicates. Cheaper than HashSet
+    /// allocation; callers that need deduplication handle it via seen-set or contains_key guards.
+    /// Production callers: `instantiate_at_level` and `generalize`. (The test-only `instantiate()`
+    /// uses the HashSet variant `collect_all_vars` instead.)
+    pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>, row_vars: &mut Vec<String>) {
+        match self {
+            Type::TypeVar(name, _) => {
+                type_vars.push(name.clone());
+            }
+            Type::Record(row) => {
+                for ty in row.fields.values() {
+                    ty.collect_all_vars_vec(type_vars, row_vars);
+                }
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                for (_name, p_ty) in params {
+                    p_ty.collect_all_vars_vec(type_vars, row_vars);
+                }
+                ret.collect_all_vars_vec(type_vars, row_vars);
+            }
+            Type::Seq(elem) => elem.collect_all_vars_vec(type_vars, row_vars),
+            Type::Map(key, val) => {
+                key.collect_all_vars_vec(type_vars, row_vars);
+                val.collect_all_vars_vec(type_vars, row_vars);
+            }
+            Type::Union(members) => {
+                for member in members {
+                    member.collect_all_vars_vec(type_vars, row_vars);
+                }
+            }
+            Type::Intersection(members) => {
+                for member in members {
+                    member.collect_all_vars_vec(type_vars, row_vars);
+                }
+            }
+            Type::Negation(inner) => {
+                inner.collect_all_vars_vec(type_vars, row_vars);
+            }
+            Type::App(f, a) => {
+                f.collect_all_vars_vec(type_vars, row_vars);
+                a.collect_all_vars_vec(type_vars, row_vars);
+            }
+            Type::Operator(name) => {
+                type_vars.push(name.clone());
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect all Operator variable names from this type.
+    /// Used by instantiate_at_level to preserve Operator kind during instantiation.
+    pub fn collect_operator_names(&self, operator_names: &mut HashSet<String>) {
+        match self {
+            Type::Operator(name) => {
+                operator_names.insert(name.clone());
+            }
+            Type::Record(row) => {
+                for ty in row.fields.values() {
+                    ty.collect_operator_names(operator_names);
+                }
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic: _,
+            } => {
+                for (_name, p_ty) in params {
+                    p_ty.collect_operator_names(operator_names);
+                }
+                ret.collect_operator_names(operator_names);
+            }
+            Type::Seq(elem) => elem.collect_operator_names(operator_names),
+            Type::Map(key, val) => {
+                key.collect_operator_names(operator_names);
+                val.collect_operator_names(operator_names);
+            }
+            Type::Union(members) | Type::Intersection(members) => {
+                for member in members {
+                    member.collect_operator_names(operator_names);
+                }
+            }
+            Type::Negation(inner) => {
+                inner.collect_operator_names(operator_names);
+            }
+            Type::App(f, a) => {
+                f.collect_operator_names(operator_names);
+                a.collect_operator_names(operator_names);
+            }
+            _ => {}
+        }
+    }
+
+    /// Normalize a union type by flattening nested unions and removing duplicates.
+    ///
+    /// `Int | (Str | Bool)` becomes `Int | Str | Bool`.
+    /// `Int | Int` becomes `Int`.
+    pub fn normalize_union(members: Vec<Type>) -> Type {
+        if members.is_empty() {
+            panic!("normalize_union: empty union not allowed");
+        }
+
+        let mut flattened = Vec::new();
+        for member in members {
+            match member {
+                Type::Union(nested) => {
+                    // Flatten nested unions
+                    flattened.extend(nested);
+                }
+                // Top absorbs all in union: T | Top = Top
+                Type::Top => return Type::Top,
+                // Never is the identity in union: T | Never = T — skip it
+                Type::Never => continue,
+                _ => {
+                    flattened.push(member);
+                }
+            }
+        }
+
+        // If all members were Never (identity), the union is empty — which is Never
+        if flattened.is_empty() {
+            return Type::Never;
+        }
+
+        // Deduplicate by collecting into a set and back to a vec
+        let mut unique = Vec::new();
+        for ty in flattened {
+            if !unique.contains(&ty) {
+                unique.push(ty);
+            }
+        }
+
+        // Sort for canonical representation
+        unique.sort_by(|a, b| {
+            use std::cmp::Ordering;
+            // Stable ordering based on type variant discriminant + payload
+            let order_a = type_order(a);
+            let order_b = type_order(b);
+            match order_a.cmp(&order_b) {
+                Ordering::Equal => type_payload_cmp(a, b),
+                other => other,
+            }
+        });
+
+        // Single-element unions unwrap to the bare type
+        if unique.len() == 1 {
+            unique.into_iter().next().unwrap()
+        } else {
+            Type::Union(unique)
+        }
+    }
+
+    /// Normalize an intersection type: flatten, deduplicate, sort, and apply identity/absorbing rules.
+    /// - Top is the identity: T & Top = T
+    /// - Never is absorbing: T & Never = Never (bottom annihilates all in intersection)
+    /// - Error is absorbing: T & Error = Error (sentinel for failed inference)
+    /// - Single-element intersections unwrap to the bare type
+    pub fn normalize_intersection(members: Vec<Type>) -> Type {
+        if members.is_empty() {
+            panic!("normalize_intersection: empty intersection not allowed");
+        }
+
+        // Error is absorbing: any intersection containing Error becomes Error
+        if members.iter().any(|m| matches!(m, Type::Error)) {
+            return Type::Error;
+        }
+
+        // Never is absorbing: T & Never = Never (S-ClsBot base case: bottom annihilates)
+        if members.iter().any(|m| matches!(m, Type::Never)) {
+            return Type::Never;
+        }
+
+        let mut flattened = Vec::new();
+        for member in members {
+            match member {
+                Type::Intersection(nested) => {
+                    // Flatten nested intersections
+                    flattened.extend(nested);
+                }
+                Type::Top => {
+                    // Top is the identity: T & Top = T, so skip it
+                    continue;
+                }
+                _ => {
+                    flattened.push(member);
+                }
+            }
+        }
+
+        // If all members were Top (identity), return Top
+        if flattened.is_empty() {
+            return Type::Top;
+        }
+
+        // Deduplicate
+        let mut unique = Vec::new();
+        for ty in flattened {
+            if !unique.contains(&ty) {
+                unique.push(ty);
+            }
+        }
+
+        // Sort for canonical representation
+        unique.sort_by(|a, b| {
+            let order_a = type_order(a);
+            let order_b = type_order(b);
+            match order_a.cmp(&order_b) {
+                std::cmp::Ordering::Equal => type_payload_cmp(a, b),
+                other => other,
+            }
+        });
+
+        // Single-element intersections unwrap to the bare type
+        if unique.len() == 1 {
+            unique.into_iter().next().unwrap()
+        } else {
+            Type::Intersection(unique)
+        }
+    }
+
+    /// Simplify a type by reducing trivial unions/intersections and applying algebraic laws.
+    ///
+    /// Rules applied:
+    /// - Single-element union/intersection unwrapping
+    /// - Never absorption in intersection, Top absorption in union
+    /// - Never removal from union, Top removal from intersection
+    /// - Literal promotion: 2+ IntLiterals → Int, 2+ StringLiterals → Str
+    /// - Subsumption elimination: if A <: B for two members, drop A
+    /// - S-RcdTop / S-ClsBot structural rules
+    pub fn simplify_type(ty: Type) -> Type {
+        // Bottom-up pass: simplify children first, then apply top-level rules.
+        // This ensures that e.g. Union([Union([Int, Int]), Str]) fully collapses.
+        let ty = Self::simplify_children(ty);
+
+        match ty {
+            // Single-element union/intersection — identity
+            Type::Union(members) if members.len() == 1 => {
+                // Unwrap and recursively simplify
+                Type::simplify_type(members.into_iter().next().unwrap())
+            }
+            Type::Intersection(members) if members.len() == 1 => {
+                Type::simplify_type(members.into_iter().next().unwrap())
+            }
+            // Never absorbs all in intersection: T & Never = Never
+            Type::Intersection(ref members) if members.iter().any(|m| matches!(m, Type::Never)) => {
+                Type::Never
+            }
+            // Top absorbs all in union: T | Top = Top
+            Type::Union(ref members) if members.iter().any(|m| matches!(m, Type::Top)) => Type::Top,
+            // Remove Never arms from union: T | Never = T
+            Type::Union(members) if members.iter().any(|m| matches!(m, Type::Never)) => {
+                let filtered: Vec<Type> = members
+                    .into_iter()
+                    .filter(|m| !matches!(m, Type::Never))
+                    .collect();
+                if filtered.is_empty() {
+                    Type::Never
+                } else {
+                    Type::normalize_union(filtered)
+                }
+            }
+            // Literal promotion: Union of multiple IntLiterals → replace with Int.
+            // Union of multiple StringLiterals → replace with Str.
+            // This mirrors the [U-SUBSUME] rule for literal types: IntLiteral(n) <: Int, so
+            // any union of IntLiterals can be widened to Int. Applied when the union contains
+            // 2+ distinct IntLiterals (or StringLiterals) so that infer_if's branch joins
+            // produce a clean type rather than a collection of literals.
+            // E.g., Union([IntLiteral(0), IntLiteral(42)]) → Int (via this rule + subsumption).
+            Type::Union(members)
+                if members
+                    .iter()
+                    .filter(|m| matches!(m, Type::IntLiteral(_)))
+                    .count()
+                    >= 2 =>
+            {
+                // Replace all IntLiterals with Int, then re-normalize
+                let promoted: Vec<Type> = members
+                    .into_iter()
+                    .map(|m| {
+                        if matches!(m, Type::IntLiteral(_)) {
+                            Type::Int
+                        } else {
+                            m
+                        }
+                    })
+                    .collect();
+                Type::simplify_type(Type::normalize_union(promoted))
+            }
+            Type::Union(members)
+                if members
+                    .iter()
+                    .filter(|m| matches!(m, Type::StringLiteral(_)))
+                    .count()
+                    >= 2 =>
+            {
+                // Replace all StringLiterals with Str, then re-normalize
+                let promoted: Vec<Type> = members
+                    .into_iter()
+                    .map(|m| {
+                        if matches!(m, Type::StringLiteral(_)) {
+                            Type::Str
+                        } else {
+                            m
+                        }
+                    })
+                    .collect();
+                Type::simplify_type(Type::normalize_union(promoted))
+            }
+            // Subsumption elimination: if A <: B for two members, drop A (B covers it).
+            // This collapses e.g. Union([Int, IntLiteral(0)]) → Int since IntLiteral(0) <: Int.
+            // Conditions:
+            // 1. No inference variables (concrete types only) — avoid eliminating free TypeVars.
+            // 2. Supertype is not Negation — the conservative (_, Negation(_)) => true rule in
+            //    is_subtype is an approximation and must not drive subsumption elimination.
+            // 3. At least one pairwise (A, B) where A <: B and B is not Negation.
+            Type::Union(members)
+                if members.iter().all(|m| !m.has_inference_vars()) && {
+                    members.iter().enumerate().any(|(i, a)| {
+                        members.iter().enumerate().any(|(j, b)| {
+                            i != j && !matches!(b, Type::Negation(_)) && Type::is_subtype(a, b)
+                        })
+                    })
+                } =>
+            {
+                // Remove members that are strict subtypes of another non-Negation member
+                let mut to_keep: Vec<bool> = vec![true; members.len()];
+                for i in 0..members.len() {
+                    if !to_keep[i] {
+                        continue;
+                    }
+                    for j in 0..members.len() {
+                        if i == j || !to_keep[j] {
+                            continue;
+                        }
+                        // Skip if supertype candidate is Negation (conservative rule not sound here)
+                        if matches!(members[j], Type::Negation(_)) {
+                            continue;
+                        }
+                        // If members[i] <: members[j], remove members[i]
+                        if Type::is_subtype(&members[i], &members[j]) {
+                            to_keep[i] = false;
+                            break;
+                        }
+                    }
+                }
+                let reduced: Vec<Type> = members
+                    .into_iter()
+                    .zip(to_keep.into_iter())
+                    .filter_map(|(m, keep)| if keep { Some(m) } else { None })
+                    .collect();
+                if reduced.is_empty() {
+                    Type::Never
+                } else {
+                    Type::normalize_union(reduced)
+                }
+            }
+            // S-RcdTop: union of closed single-field records with disjoint field names → Top
+            Type::Union(members) => {
+                if Self::check_s_rcd_top(&members).is_some() {
+                    Type::Top
+                } else {
+                    Type::Union(members)
+                }
+            }
+            // S-ClsBot: intersection of closed single-field records with different field names → Never
+            Type::Intersection(members) => {
+                if Self::check_s_cls_bot(&members) {
+                    Type::Never
+                } else {
+                    Type::Intersection(members)
+                }
+            }
+            // All other types are already in simplified form
+            _ => ty,
+        }
+    }
+
+    /// Recursively simplify all children of a compound type (bottom-up pass).
+    /// Does NOT apply top-level simplification rules — that is done by `simplify_type`.
+    fn simplify_children(ty: Type) -> Type {
+        match ty {
+            Type::Union(members) => {
+                Type::Union(members.into_iter().map(Type::simplify_type).collect())
+            }
+            Type::Intersection(members) => {
+                Type::Intersection(members.into_iter().map(Type::simplify_type).collect())
+            }
+            Type::Negation(inner) => Type::Negation(Box::new(Type::simplify_type(*inner))),
+            Type::Record(row) => {
+                let fields = row
+                    .fields
+                    .into_iter()
+                    .map(|(k, v)| (k, Type::simplify_type(v)))
+                    .collect();
+                Type::Record(Row { fields })
+            }
+            Type::Seq(elem) => Type::Seq(Box::new(Type::simplify_type(*elem))),
+            Type::Map(k, v) => Type::Map(
+                Box::new(Type::simplify_type(*k)),
+                Box::new(Type::simplify_type(*v)),
+            ),
+            Type::Function {
+                params,
+                ret,
+                variadic,
+            } => {
+                let params = params
+                    .into_iter()
+                    .map(|(name, ty)| (name, Type::simplify_type(ty)))
+                    .collect();
+                let ret = Box::new(Type::simplify_type(*ret));
+                Type::Function {
+                    params,
+                    ret,
+                    variadic,
+                }
+            }
+            Type::App(f, a) => Type::App(
+                Box::new(Type::simplify_type(*f)),
+                Box::new(Type::simplify_type(*a)),
+            ),
+            _ => ty,
+        }
+    }
+}
+
+/// Helper for normalize_union: assign a stable sort order to each Type variant.
+fn type_order(ty: &Type) -> u8 {
+    match ty {
+        Type::Int => 0,
+        Type::IntLiteral(_) => 1,
+        Type::Float => 2,
+        Type::Str => 3,
+        Type::StringLiteral(_) => 4,
+        Type::Bool => 5,
+        Type::Bytes => 6,
+        Type::Number => 7,
+        Type::Record(_) => 8,
+        Type::Function { .. } => 9,
+        Type::Seq(_) => 10,
+        Type::Map(_, _) => 11,
+        Type::Proxy => 12,
+        Type::TypeVar(_, _) => 13,
+        Type::Unknown => 14,
+        Type::Top => 15,
+        Type::Error => 16,
+        Type::DirCap => 17,
+        Type::NetCap => 18,
+        Type::Handle => 19,
+        Type::Uri => 20,
+        Type::Timestamp => 21,
+        Type::Duration => 22,
+        Type::ClockCap => 23,
+        Type::Timezone => 24,
+        Type::QuicSession => 25,
+        Type::Http2Session => 26,
+        Type::Http3Session => 27,
+        Type::QuicDatagramHandle => 28,
+        Type::DatagramHandle => 29,
+        Type::Union(_) => 30, // Should not appear after flattening, but included for completeness
+        Type::Intersection(_) => 31, // Should not appear after flattening, but included for completeness
+        Type::Negation(_) => 32,
+        Type::Never => 33,
+        Type::App(_, _) => 34,
+        Type::Operator(_) => 35,
+    }
+}
+
+/// Helper for normalize_union: compare payloads for types with the same variant.
+pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Type::IntLiteral(n1), Type::IntLiteral(n2)) => n1.cmp(n2),
+        (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1.cmp(s2),
+        (Type::TypeVar(name1, _), Type::TypeVar(name2, _)) => name1.cmp(name2),
+        (Type::Operator(name1), Type::Operator(name2)) => name1.cmp(name2),
+        // For complex types (Record, Function, Seq, Map, App), use Display representation
+        // This is not ideal but ensures stability
+        (Type::Record(_), Type::Record(_))
+        | (Type::Function { .. }, Type::Function { .. })
+        | (Type::Seq(_), Type::Seq(_))
+        | (Type::Map(_, _), Type::Map(_, _))
+        | (Type::App(_, _), Type::App(_, _)) => a.to_string().cmp(&b.to_string()),
+        _ => Ordering::Equal,
+    }
+}
+
+/// Check that a type is well-kinded with respect to the kind environment.
+///
+/// This implements the [KIND-LABEL-ERROR] kinding judgment from doc/whatif/completed/hkt-monads.md:
+/// Label-kinded TypeVars (Kind::Label) cannot appear in positions expecting Kind::Type (e.g., as
+/// the element type of Seq, as function parameters/return types, or as record field types).
+///
+/// Returns an error if any TypeVar in the type has Kind::Label in `kind_env`.
+pub fn check_kind_wellformed(
+    ty: &Type,
+    kind_env: &HashMap<String, Kind>,
+    span: Span,
+) -> Result<(), TypeError> {
+    match ty {
+        Type::TypeVar(name, _) => {
+            if let Some(Kind::Label) = kind_env.get(name.as_str()) {
+                return Err(TypeError::new(
+                    format!("label variable {} has kind Label, expected kind *", name),
+                    span,
+                ));
+            }
+            Ok(())
+        }
+        Type::Seq(elem) => check_kind_wellformed(elem, kind_env, span),
+        Type::Map(key, val) => {
+            check_kind_wellformed(key, kind_env, span)?;
+            check_kind_wellformed(val, kind_env, span)
+        }
+        Type::Function { params, ret, .. } => {
+            for (_name, param_ty) in params {
+                check_kind_wellformed(param_ty, kind_env, span)?;
+            }
+            check_kind_wellformed(ret, kind_env, span)
+        }
+        Type::Record(row) => {
+            for field_ty in row.fields.values() {
+                check_kind_wellformed(field_ty, kind_env, span)?;
+            }
+            Ok(())
+        }
+        Type::Union(members) | Type::Intersection(members) => {
+            for member in members {
+                check_kind_wellformed(member, kind_env, span)?;
+            }
+            Ok(())
+        }
+        Type::Negation(inner) => check_kind_wellformed(inner, kind_env, span),
+        Type::App(func, arg) => {
+            check_kind_wellformed(func, kind_env, span)?;
+            check_kind_wellformed(arg, kind_env, span)
+        }
+        Type::Operator(name) => {
+            // Bare Operator in a type position (kind *) is kind-incorrect.
+            // Operator variables have kind (* → *) and must be applied via Type::App.
+            if let Some(Kind::Operator) = kind_env.get(name.as_str()) {
+                return Err(TypeError::new(
+                    format!(
+                        "kind mismatch: {} has kind * → * but appears in a type (kind *) position",
+                        name
+                    ),
+                    span,
+                ));
+            }
+            // If the name is not in kind_env, let it pass (freshly introduced Operator
+            // that hasn't been kind-registered yet, or will be registered later)
+            Ok(())
+        }
+        // All other types (Int, Str, Bool, literals, capabilities, etc.) are always well-kinded
+        _ => Ok(()),
+    }
+}

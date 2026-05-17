@@ -2,5 +2,3 @@
 [type-of [big-int 1]]
 === out
 String("BigInt")
-=== warn
-undefined variable: big-int at 1:11-1:18

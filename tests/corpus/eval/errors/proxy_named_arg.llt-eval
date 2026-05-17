@@ -1,6 +1,4 @@
-# $proxy does not accept named arguments
+# $proxy named arg is absorbed by prelude wrapper (handler param matches)
 [proxy handler: [fn [k] k]]
-=== warn
-unknown named argument: function has no parameter named 'handler'
-=== error
-[E023] proxy does not accept named arguments
+=== out
+Proxy
