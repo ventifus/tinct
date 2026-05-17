@@ -101,11 +101,11 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
 # Used by let-softening macros and any macro that needs bracket elements.
 flatten-args: [fn [let node@Expr] -> Seq@Expr
   [match node
-    [[case [let p: Call]]   [prepend p.func p.args]]  # [x y z] → Call(x,[y,z]) → [x,y,z]
-    [[case [let p: Let]]    p.bindings]                # [let x y] → already flat
-    [[case [let p: Seq]]    p.elements]                # [$x $y] → positional seq
-    [[case [let p: Dict]]   [map [fn [let e] e.value] p.entries]]  # keyed dict → values
-    [[case [let _]]         [list node]]]]             # scalar → one-element seq
+    [case [let p: Call]   [prepend p.func p.args]]  # [x y z] → Call(x,[y,z]) → [x,y,z]
+    [case [let p: Let]    p.bindings]                # [let x y] → already flat
+    [case [let p: Seq]    p.elements]                # [$x $y] → positional seq
+    [case [let p: Dict]   [map [fn [let e] e.value] p.entries]]  # keyed dict → values
+    [case [let _]         [list node]]]]             # scalar → one-element seq
 ```
 
 Variant names match their keywords: `Fn` for `fn`, `Let` for `let`, `Case` for `case`, `Macro` for `macro`. No `Decl` suffix — there is only one `Let` and one `Macro` in the type.
@@ -161,12 +161,12 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 ```tinct
 [macro my-and [let ...args@Seq@Expr]
   [match [length args]
-    [[case 0]       [quote true]]
-    [[case 1]       [first args]]
-    [[case 2]
+    [case 0       [quote true]]
+    [case 1       [first args]]
+    [case 2
       [a: [first args]  b: [second args]]
       [quote [if [unquote a] [unquote b] false]]]
-    [[case [let _]]
+    [case [let _]
       [a: [first args]  rest: [rest args]]
       [quote [if [unquote a] [my-and [unquote-splice rest]] false]]]]]
 ```
@@ -200,22 +200,22 @@ When the parser processes `[fn [x y] body]`, the inner bracket `[x y]` becomes `
 
 [macro fn [let params@Expr  body@Expr]
   [match params
-    [[case [let _ : Let]]   [quote [fn [unquote params] [unquote body]]]]
-    [[case [let _]]
+    [case [let _ : Let]   [quote [fn [unquote params] [unquote body]]]]
+    [case [let _]
       [flat: [flatten-args params]]
       [quote [fn [let [unquote-splice flat]] [unquote body]]]]]]
 
 [macro class [let tvars@Expr  ...body@Expr]
   [match tvars
-    [[case [let _ : Let]]   [quote [class [unquote tvars] [unquote-splice body]]]]
-    [[case [let _]]
+    [case [let _ : Let]   [quote [class [unquote tvars] [unquote-splice body]]]]
+    [case [let _]
       [flat: [flatten-args tvars]]
       [quote [class [let [unquote-splice flat]] [unquote-splice body]]]]]]
 
 [macro type [let params@Expr  body@Expr]
   [match params
-    [[case [let _ : Let]]   [quote [type [unquote params] [unquote body]]]]
-    [[case [let _]]
+    [case [let _ : Let]   [quote [type [unquote params] [unquote body]]]]
+    [case [let _]
       [flat: [flatten-args params]]
       [quote [type [let [unquote-splice flat]] [unquote body]]]]]]
 ```
@@ -279,8 +279,8 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 ```tinct
 # Inspection — use tinct's own [match ...]/[case ...] to dispatch on Expr variants:
-#   [match node [[case [let _ : VarRef]] ...] [[case [let _ : Let]] ...]]
-#   [match node [[case [let [name: n] : VarRef]] ...]]   # extract VarRef's name field
+#   [match node [case [let _ : VarRef] ...] [case [let _ : Let] ...]]
+#   [match node [case [let [name: n] : VarRef] ...]]   # extract VarRef's name field
 # No predicate functions needed — variant matching IS the predicate.
 [span-of expr]           # extract source span from an Expr node (spans are metadata)
 
@@ -355,9 +355,9 @@ Multi-arity is handled with `...args` variadic and `[match [length args] ...]` i
 ```tinct
 [macro my-or [let ...args@Seq@Expr]
   [match [length args]
-    [[case 0]       [quote false]]
-    [[case 1]       [first args]]
-    [[case [let _]]
+    [case 0       [quote false]]
+    [case 1       [first args]]
+    [case [let _]
       [a: [first args]  rest: [rest args]]
       [quote [if [unquote a] [unquote a] [my-or [unquote-splice rest]]]]]]]
 ```
@@ -421,8 +421,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 [macro fn [let params@Expr  body@Expr]
   [flat: [flatten-args params]]          # re-extract bracket elements
   [match [first-or flat Null]
-    [[case [let _ : Let]]  [quote [fn [unquote params] [unquote body]]]]
-    [[case [let _]]        [quote [fn [let [unquote-splice flat]] [unquote body]]]]]]
+    [case [let _ : Let]  [quote [fn [unquote params] [unquote body]]]]
+    [case [let _]        [quote [fn [let [unquote-splice flat]] [unquote body]]]]]]
 ```
 
 `flatten-args params` re-extracts the bracket elements — `Call(VarRef("x"), [VarRef("y")])` becomes `[VarRef("x"), VarRef("y")]`. `first-or flat Null` gets the first element. The `[case [let _ : Let]]` arm matches if params was already a `[let ...]` form. The wildcard catches everything else — `VarRef`, `Annotated`, `Null` (empty) — and wraps.
@@ -449,9 +449,9 @@ The `flatten-args` design above has a subtlety: for the pass-through case, we ne
 ```tinct
 [macro fn [let params@Expr  body@Expr]
   [match params
-    [[case [let _ : Let]]                          # params itself is [let ...] — pass through
+    [case [let _ : Let]                          # params itself is [let ...] — pass through
       [quote [fn [unquote params] [unquote body]]]]
-    [[case [let _]]                                # params is Call/Seq/etc — unpack and wrap
+    [case [let _]                                # params is Call/Seq/etc — unpack and wrap
       [flat: [flatten-args params]]
       [quote [fn [let [unquote-splice flat]] [unquote body]]]]]]
 ```
@@ -558,17 +558,17 @@ Point: [type [x@Float  y@Float]]
 ```tinct
 [macro cond [let ...clauses@Seq@Expr]
   [match [length clauses]
-    [[case 0]
+    [case 0
       [quote [error "cond: no matching clause"]]]
-    [[case 1]
+    [case 1
       [clause: [first clauses]]
       [match [first clause]
-        [[case [let _ : VarRef]]  [quote [unquote [second clause]]]]   # [else body]
-        [[case [let _]]
+        [case [let _ : VarRef]  [quote [unquote [second clause]]]]   # [else body]
+        [case [let _]
           [quote [if [unquote [first clause]]
             [unquote [second clause]]
             [error "cond: no matching clause"]]]]]]
-    [[case [let _]]
+    [case [let _]
       [clause: [first clauses]  rest: [rest clauses]]
       [quote [if [unquote [first clause]]
         [unquote [second clause]]
@@ -604,17 +604,17 @@ Expansion trace:
 ```tinct
 [macro pragma [let name:flat-list  value]
   [match [length name]
-    [[case 0]
+    [case 0
       [macro-error [span-of name] "pragma: name required"]]
-    [[case 1]
+    [case 1
       [match [get-or [first name] "type" null]
-        [[case [let _ : VarRef]]
+        [case [let _ : VarRef]
           [match value
-            [[case [let _ : Literal]]  [quote [pragma [unquote [first name]] [unquote value]]]]
-            [[case [let _]]            [macro-error [span-of value] "pragma value must be a literal"]]]]
-        [[case [let _]]
+            [case [let _ : Literal]  [quote [pragma [unquote [first name]] [unquote value]]]]
+            [case [let _]            [macro-error [span-of value] "pragma value must be a literal"]]]]
+        [case [let _]
           [macro-error [span-of [first name]] "pragma name must be a bare identifier"]]]]
-    [[case [let _]]
+    [case [let _]
       [macro-error [span-of name] "pragma: exactly one name allowed"]]]]
 ```
 
