@@ -19,7 +19,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [CHR-Unified Type Constraints](chr-unification.md) | **Accepted 2026-05-16.** `normalize()` unified type simplification; `TypeStageApp` lazy FD elaboration; deferred equality for non-injective resolvers; user-declared `[class ...]` and `[instance ...]`; scope-resident ClassEnv; arithmetic classes in prelude; automatic boundary guards |
 | [Advanced Typeclass Extensions](completed/advanced-typeclasses.md) | **Accepted 2026-05-14.** 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
 | [Parameterized Type Annotations](completed/parameterized-dict.md) | **Accepted 2026-05-09.** Bracket application form `@[Seq T]`, `@[Map [K: V]]`, `@Map` bare; type alias composition (`T2: [type [Map T1]]`); Record/Map split; see `doc/feature/parameterized-types.md` |
-| [Type Annotations v2](type-annotations-v2.md) | Comprehensive revisit: explicit union (`\|`) and intersection (`&`) separators in `@[...]`; capability type annotation; property-dict collision fix; migration from positional-union convention; builds on `parameterized-annotations` sprint |
+| [Type Annotations v2](type-annotations-v2.md) | **Accepted 2026-05-14.** Bracket application `@[Type Arg]` replaces chained `@`; `or`/`each` type-stage combinators for union/intersection; `bind:`/`return:`/`constraint:`/`kinds:` annotation keys; TypeVar scoping via `bind:`; `@Record@[...]` and all chained-@ forms retired |
 
 ## Reflection and Metaprogramming
 
@@ -115,6 +115,7 @@ Accepted proposals with sprints in TODO.md. Not yet fully implemented.
 |----------|---------|----------|
 | [CHR-Unified Type Constraints](chr-unification.md) | `Type::TypeStageApp`; `normalize()` unified simplification pass; FD elaboration into equality goals; deferred equality for non-injective resolvers; `[class ...]` two-bracket form; `[instance ...]` match-arm syntax; scope-resident ClassEnv; arithmetic class migration to prelude; boundary guard elaboration | 2026-05-16 |
 | [Unified Binding Declarations](unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; `Expr::LetDecl`/`CaseArm`/`Placeholder` | 2026-05-17 |
+| [Type Annotations v2](type-annotations-v2.md) | Single-bracket `@[type: T ...]` form; `or`/`each` type-stage combinators; `bind:`/`return:`/`constraint:`/`kinds:` keys; TypeVar scoping; double-`@` chained form retired in favour of bracket application `@[Type Arg]` | 2026-05-14 |
 
 ### Completed
 
@@ -163,6 +164,7 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Inference Completeness](completed/inference-completeness.md) | SCC-based DICT-GEN; variadic `Seq(T)` typed params; nested dict polymorphism via `TypeScheme.inner_schemes`; typeclass-based heterogeneous variadics | 2026-05-14 — `inference-completeness-variadic`, `inference-completeness-nested-dict` |
 | [Advanced Typeclass Extensions](completed/advanced-typeclasses.md) | MPTC `Add a b c \| (a,b)→c` for mixed-mode arithmetic; `[CONSTRAIN-FIELD/INTER/UNION/TOP/UNKNOWN/NEVER]` propagation; ClassEnv runtime dispatch for user-defined `=`, `<`, `str` | 2026-05-14 — `typeclass-constraint-propagation`, `typeclass-mptc-fundeps`, `typeclass-runtime-dispatch` |
 | [Runtime Reflection — Annotations as Value Metadata](completed/runtime-reflection.md) | `FnAnnotation` on `Value::Function`; `ast-of` Rust primitive; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; LSP hover + docgen | 2026-05-14 — `runtime-reflection-core`, `runtime-reflection-include` |
+| [Higher-Kinded Types, Monadic `[do]`, and Precise Field Access](completed/hkt-monads.md) | `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2`; `Kind::Label`; `HasField` constraint with `[HAS-FIELD-UNION]`/`[HAS-FIELD-INTER]`/`[HAS-FIELD-TOP]` BAS rules; label-polymorphic `get`/`get-in` | 2026-05-11 |
 
 ### Adopt Now
 
@@ -229,12 +231,13 @@ eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 union-types ✓ ─── boolean-algebraic-subtyping ✓ ─── record-map-split (parameterized-dict) ✓
                                                └─── error-patterns ✓ (nominal Result)
 
-# Concurrency/distribution chain
-async-eval (async fn + Arc + multi-thread + task/channel/context/par) ─── dist-eval (cluster/remote-task)
+# Type annotation chain
+type-annotations-v2 (accepted, in progress) ─── unified-bindings (accepted, in progress)
 
-# Stdlib architecture chain
-stdlib-architecture ─── async-eval (http.llt needs async eval for non-blocking I/O)
-stdlib-architecture ─── lib-net-v2 ✓ (tcp-listen/quic-listen/tls-layer)
+# Concurrency and stdlib chain (async-eval absorbed stdlib-architecture)
+async-eval (async fn + Arc + OnceLock + multi-thread + task/channel/context/par/serve-layers)
+  └─── dist-eval (cluster/remote-task/content-addressed-cache)
+async-eval ─── lib-net-v2 ✓ (tcp-listen/quic-listen/tls-layer serve/connect layers)
 
 # Profile-gated (no deps, waiting for profiling data)
 string-interning, union-find-substitution
