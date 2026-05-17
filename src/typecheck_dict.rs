@@ -134,92 +134,93 @@ fn compute_sccs(entries: &[Spanned<Entry>], key_entries: &[(Option<String>, bool
 
 /// Collect all sibling variable references in an expression.
 /// Returns the set of indices that this expression depends on.
+///
+/// Uses an iterative worklist to avoid stack overflow on deeply nested
+/// Sequential/Pipe chains (which are unbounded by the parser's MAX_PARSE_DEPTH).
+/// This mirrors the iterative Tarjan's algorithm above.
 fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usize>) -> Vec<usize> {
     let mut deps = HashSet::new();
-    collect_deps_recursive(expr, name_to_idx, &mut deps);
-    deps.into_iter().collect()
-}
+    let mut worklist: Vec<&Spanned<Expr>> = vec![expr];
 
-fn collect_deps_recursive(
-    expr: &Spanned<Expr>,
-    name_to_idx: &HashMap<String, usize>,
-    deps: &mut HashSet<usize>,
-) {
-    match &expr.node {
-        Expr::VarRef { name, .. } => {
-            if let Some(&idx) = name_to_idx.get(name) {
-                deps.insert(idx);
-            }
-        }
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
-        Expr::Dict(entries) => {
-            for entry in entries {
-                if let Some(ref key) = entry.node.key {
-                    collect_deps_recursive(key, name_to_idx, deps);
-                }
-                collect_deps_recursive(&entry.node.value, name_to_idx, deps);
-            }
-        }
-        Expr::Fn { body, .. } => {
-            collect_deps_recursive(body, name_to_idx, deps);
-        }
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            collect_deps_recursive(func, name_to_idx, deps);
-            for arg in args {
-                collect_deps_recursive(arg, name_to_idx, deps);
-            }
-            for named_arg in named_args {
-                collect_deps_recursive(&named_arg.node.value, name_to_idx, deps);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_deps_recursive(scrutinee, name_to_idx, deps);
-            for arm in arms {
-                collect_deps_recursive(&arm.body, name_to_idx, deps);
-                if let Some(ref guard) = arm.guard {
-                    collect_deps_recursive(guard, name_to_idx, deps);
+    while let Some(current) = worklist.pop() {
+        match &current.node {
+            Expr::VarRef { name, .. } => {
+                if let Some(&idx) = name_to_idx.get(name) {
+                    deps.insert(idx);
                 }
             }
-        }
-        Expr::DotAccess { expr, .. } => {
-            collect_deps_recursive(expr, name_to_idx, deps);
-        }
-        Expr::Pipe { lhs, rhs } => {
-            collect_deps_recursive(lhs, name_to_idx, deps);
-            collect_deps_recursive(rhs, name_to_idx, deps);
-        }
-        Expr::Sequential(exprs) => {
-            for e in exprs {
-                collect_deps_recursive(e, name_to_idx, deps);
+            Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            Expr::Dict(entries) => {
+                for entry in entries {
+                    if let Some(ref key) = entry.node.key {
+                        worklist.push(key);
+                    }
+                    worklist.push(&entry.node.value);
+                }
             }
+            Expr::Fn { body, .. } => {
+                worklist.push(body);
+            }
+            Expr::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } => {
+                worklist.push(func);
+                for arg in args {
+                    worklist.push(arg);
+                }
+                for named_arg in named_args {
+                    worklist.push(&named_arg.node.value);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                worklist.push(scrutinee);
+                for arm in arms {
+                    worklist.push(&arm.body);
+                    if let Some(ref guard) = arm.guard {
+                        worklist.push(guard);
+                    }
+                }
+            }
+            Expr::DotAccess { expr, .. } => {
+                worklist.push(expr);
+            }
+            Expr::Pipe { lhs, rhs } => {
+                worklist.push(lhs);
+                worklist.push(rhs);
+            }
+            Expr::Sequential(exprs) => {
+                for e in exprs {
+                    worklist.push(e);
+                }
+            }
+            Expr::Annotated { .. } => {
+                // Annotated is a name with annotation, not an expr containing expr
+                // No dependencies to collect
+            }
+            Expr::TypeAssert { expr, .. } => {
+                worklist.push(expr);
+            }
+            Expr::Rest(_) => {}
+            Expr::Quote(e) | Expr::Unquote(e) | Expr::UnquoteSplice(e) => {
+                worklist.push(e);
+            }
+            Expr::DefMacro { body, .. } => {
+                worklist.push(body);
+            }
+            Expr::TypeAlias { .. } => {}
+            Expr::ClassDecl { .. } | Expr::InstanceDecl { .. } => {}
+            Expr::TypeApp { func, arg } => {
+                worklist.push(func);
+                worklist.push(arg);
+            }
+            Expr::Error(_) => {}
         }
-        Expr::Annotated { .. } => {
-            // Annotated is a name with annotation, not an expr containing expr
-            // No dependencies to collect
-        }
-        Expr::TypeAssert { expr, .. } => {
-            collect_deps_recursive(expr, name_to_idx, deps);
-        }
-        Expr::Rest(_) => {}
-        Expr::Quote(e) => collect_deps_recursive(e, name_to_idx, deps),
-        Expr::Unquote(e) => collect_deps_recursive(e, name_to_idx, deps),
-        Expr::UnquoteSplice(e) => collect_deps_recursive(e, name_to_idx, deps),
-        Expr::DefMacro { body, .. } => {
-            collect_deps_recursive(body, name_to_idx, deps);
-        }
-        Expr::TypeAlias { .. } => {}
-        Expr::ClassDecl { .. } | Expr::InstanceDecl { .. } => {}
-        Expr::TypeApp { func, arg } => {
-            collect_deps_recursive(func, name_to_idx, deps);
-            collect_deps_recursive(arg, name_to_idx, deps);
-        }
-        Expr::Error(_) => {}
     }
+
+    deps.into_iter().collect()
 }
 
 pub(crate) fn infer_dict(

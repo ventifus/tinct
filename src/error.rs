@@ -76,6 +76,10 @@ pub struct PipelineBlame {
 }
 
 /// Structured error kind with domain-specific data.
+///
+/// Note: `PartialEq` is implemented manually (not derived) to give
+/// `FloatNotFinite` and `FloatOutOfRange` total equality semantics where
+/// NaN == NaN. All other variants use structural field equality.
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
     // --- Access errors (E000-E009) ---
@@ -255,6 +259,214 @@ pub enum ErrorKind {
     Internal {
         message: String,
     },
+}
+
+impl PartialEq for ErrorKind {
+    /// Custom equality with total float semantics: NaN == NaN for float-containing
+    /// variants (`FloatNotFinite`, `FloatOutOfRange`). All other variants use
+    /// structural field equality equivalent to `#[derive(PartialEq)]`.
+    fn eq(&self, other: &Self) -> bool {
+        // Helper for f64 total equality: NaN == NaN, Inf == Inf, etc.
+        #[inline]
+        fn f64_total_eq(a: f64, b: f64) -> bool {
+            a.to_bits() == b.to_bits()
+        }
+
+        match (self, other) {
+            // --- Float variants with total equality ---
+            (
+                Self::FloatNotFinite {
+                    builtin: b1,
+                    value: v1,
+                },
+                Self::FloatNotFinite {
+                    builtin: b2,
+                    value: v2,
+                },
+            ) => b1 == b2 && f64_total_eq(*v1, *v2),
+            (
+                Self::FloatOutOfRange {
+                    builtin: b1,
+                    value: v1,
+                },
+                Self::FloatOutOfRange {
+                    builtin: b2,
+                    value: v2,
+                },
+            ) => b1 == b2 && f64_total_eq(*v1, *v2),
+
+            // --- All other variants: structural field equality ---
+            (
+                Self::KeyNotFound {
+                    key: k1,
+                    available_keys: a1,
+                },
+                Self::KeyNotFound {
+                    key: k2,
+                    available_keys: a2,
+                },
+            ) => k1 == k2 && a1 == a2,
+            (Self::UndefinedVariable { name: n1 }, Self::UndefinedVariable { name: n2 }) => {
+                n1 == n2
+            }
+            (
+                Self::TypeMismatch {
+                    context: c1,
+                    expected: e1,
+                    got: g1,
+                },
+                Self::TypeMismatch {
+                    context: c2,
+                    expected: e2,
+                    got: g2,
+                },
+            ) => c1 == c2 && e1 == e2 && g1 == g2,
+            (
+                Self::TypeAssertFailed {
+                    expected: e1,
+                    got: g1,
+                },
+                Self::TypeAssertFailed {
+                    expected: e2,
+                    got: g2,
+                },
+            ) => e1 == e2 && g1 == g2,
+            (
+                Self::ArityMismatch {
+                    expected: e1,
+                    got: g1,
+                },
+                Self::ArityMismatch {
+                    expected: e2,
+                    got: g2,
+                },
+            ) => e1 == e2 && g1 == g2,
+            (
+                Self::MissingRequiredParam { param: p1 },
+                Self::MissingRequiredParam { param: p2 },
+            ) => p1 == p2,
+            (Self::NamedArgConflict { param: p1 }, Self::NamedArgConflict { param: p2 }) => {
+                p1 == p2
+            }
+            (
+                Self::UnknownNamedArg {
+                    name: n1,
+                    valid_params: v1,
+                },
+                Self::UnknownNamedArg {
+                    name: n2,
+                    valid_params: v2,
+                },
+            ) => n1 == n2 && v1 == v2,
+            (Self::NamedArgRejected { builtin: b1 }, Self::NamedArgRejected { builtin: b2 }) => {
+                b1 == b2
+            }
+            (Self::DuplicateKey { key: k1 }, Self::DuplicateKey { key: k2 }) => k1 == k2,
+            (Self::DivisionByZero { op: o1 }, Self::DivisionByZero { op: o2 }) => o1 == o2,
+            (Self::IntegerOverflow { op: o1 }, Self::IntegerOverflow { op: o2 }) => o1 == o2,
+            (Self::EmptyCollection { op: o1 }, Self::EmptyCollection { op: o2 }) => o1 == o2,
+            (
+                Self::ValueNotSerializable { value_type: t1 },
+                Self::ValueNotSerializable { value_type: t2 },
+            ) => t1 == t2,
+            (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
+            (Self::JsonDepthExceeded { limit: l1 }, Self::JsonDepthExceeded { limit: l2 }) => {
+                l1 == l2
+            }
+            (Self::IncludeForbidden, Self::IncludeForbidden) => true,
+            (
+                Self::ResourceLimitExceeded { message: m1 },
+                Self::ResourceLimitExceeded { message: m2 },
+            ) => m1 == m2,
+            (Self::IncludeNotAvailable, Self::IncludeNotAvailable) => true,
+            (
+                Self::IncludeIoError {
+                    path: p1,
+                    detail: d1,
+                },
+                Self::IncludeIoError {
+                    path: p2,
+                    detail: d2,
+                },
+            ) => p1 == p2 && d1 == d2,
+            (Self::IncludeCycle { path: p1 }, Self::IncludeCycle { path: p2 }) => p1 == p2,
+            (
+                Self::IncludeParseFailed {
+                    path: p1,
+                    detail: d1,
+                },
+                Self::IncludeParseFailed {
+                    path: p2,
+                    detail: d2,
+                },
+            ) => p1 == p2 && d1 == d2,
+            (
+                Self::IncludeFileTooLarge {
+                    path: p1,
+                    size: s1,
+                    limit: l1,
+                },
+                Self::IncludeFileTooLarge {
+                    path: p2,
+                    size: s2,
+                    limit: l2,
+                },
+            ) => p1 == p2 && s1 == s2 && l1 == l2,
+            (
+                Self::IncludeHashMismatch {
+                    path: p1,
+                    expected: e1,
+                    actual: a1,
+                },
+                Self::IncludeHashMismatch {
+                    path: p2,
+                    expected: e2,
+                    actual: a2,
+                },
+            ) => p1 == p2 && e1 == e2 && a1 == a2,
+            (Self::IncludeHashRequired { path: p1 }, Self::IncludeHashRequired { path: p2 }) => {
+                p1 == p2
+            }
+            (
+                Self::IncludePathNotAllowed { path: p1 },
+                Self::IncludePathNotAllowed { path: p2 },
+            ) => p1 == p2,
+            (
+                Self::ParseConversion {
+                    builtin: b1,
+                    input: i1,
+                    target: t1,
+                },
+                Self::ParseConversion {
+                    builtin: b2,
+                    input: i2,
+                    target: t2,
+                },
+            ) => b1 == b2 && i1 == i2 && t1 == t2,
+            (Self::JsonParse { detail: d1 }, Self::JsonParse { detail: d2 }) => d1 == d2,
+            (Self::JsonRange, Self::JsonRange) => true,
+            (Self::UriParseError { detail: d1 }, Self::UriParseError { detail: d2 }) => d1 == d2,
+            (
+                Self::CircularDependency {
+                    name: n1,
+                    cycle_path: c1,
+                },
+                Self::CircularDependency {
+                    name: n2,
+                    cycle_path: c2,
+                },
+            ) => n1 == n2 && c1 == c2,
+            (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
+            (
+                Self::SchemaViolation { violations: v1 },
+                Self::SchemaViolation { violations: v2 },
+            ) => v1 == v2,
+            (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
+
+            // Different variants are never equal
+            _ => false,
+        }
+    }
 }
 
 impl ErrorKind {
@@ -626,191 +838,6 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-impl PartialEq for ErrorKind {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::KeyNotFound { key: k1, .. }, Self::KeyNotFound { key: k2, .. }) => k1 == k2,
-            (Self::UndefinedVariable { name: n1 }, Self::UndefinedVariable { name: n2 }) => {
-                n1 == n2
-            }
-            (
-                Self::TypeMismatch {
-                    context: c1,
-                    expected: e1,
-                    got: g1,
-                },
-                Self::TypeMismatch {
-                    context: c2,
-                    expected: e2,
-                    got: g2,
-                },
-            ) => c1 == c2 && e1 == e2 && g1 == g2,
-            (
-                Self::TypeAssertFailed {
-                    expected: e1,
-                    got: g1,
-                },
-                Self::TypeAssertFailed {
-                    expected: e2,
-                    got: g2,
-                },
-            ) => e1 == e2 && g1 == g2,
-            (
-                Self::ArityMismatch {
-                    expected: e1,
-                    got: g1,
-                },
-                Self::ArityMismatch {
-                    expected: e2,
-                    got: g2,
-                },
-            ) => e1 == e2 && g1 == g2,
-            (
-                Self::MissingRequiredParam { param: p1 },
-                Self::MissingRequiredParam { param: p2 },
-            ) => p1 == p2,
-            (Self::NamedArgConflict { param: p1 }, Self::NamedArgConflict { param: p2 }) => {
-                p1 == p2
-            }
-            (Self::UnknownNamedArg { name: n1, .. }, Self::UnknownNamedArg { name: n2, .. }) => {
-                n1 == n2
-            }
-            (Self::NamedArgRejected { builtin: b1 }, Self::NamedArgRejected { builtin: b2 }) => {
-                b1 == b2
-            }
-            (Self::DuplicateKey { key: k1 }, Self::DuplicateKey { key: k2 }) => k1 == k2,
-            (Self::DivisionByZero { op: o1 }, Self::DivisionByZero { op: o2 }) => o1 == o2,
-            (Self::IntegerOverflow { op: o1 }, Self::IntegerOverflow { op: o2 }) => o1 == o2,
-            // Use bitwise comparison for f64 to handle NaN correctly
-            (
-                Self::FloatNotFinite {
-                    builtin: b1,
-                    value: v1,
-                },
-                Self::FloatNotFinite {
-                    builtin: b2,
-                    value: v2,
-                },
-            ) => b1 == b2 && v1.to_bits() == v2.to_bits(),
-            (Self::EmptyCollection { op: o1 }, Self::EmptyCollection { op: o2 }) => o1 == o2,
-            (
-                Self::ValueNotSerializable { value_type: v1 },
-                Self::ValueNotSerializable { value_type: v2 },
-            ) => v1 == v2,
-            (
-                Self::FloatOutOfRange {
-                    builtin: b1,
-                    value: v1,
-                },
-                Self::FloatOutOfRange {
-                    builtin: b2,
-                    value: v2,
-                },
-            ) => b1 == b2 && v1.to_bits() == v2.to_bits(),
-            (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
-            (Self::JsonDepthExceeded { limit: l1 }, Self::JsonDepthExceeded { limit: l2 }) => {
-                l1 == l2
-            }
-            (Self::IncludeForbidden, Self::IncludeForbidden) => true,
-            (
-                Self::ResourceLimitExceeded { message: m1 },
-                Self::ResourceLimitExceeded { message: m2 },
-            ) => m1 == m2,
-            (Self::IncludeNotAvailable, Self::IncludeNotAvailable) => true,
-            (
-                Self::IncludeIoError {
-                    path: p1,
-                    detail: d1,
-                },
-                Self::IncludeIoError {
-                    path: p2,
-                    detail: d2,
-                },
-            ) => p1 == p2 && d1 == d2,
-            (Self::IncludeCycle { path: p1 }, Self::IncludeCycle { path: p2 }) => p1 == p2,
-            (
-                Self::IncludeParseFailed {
-                    path: p1,
-                    detail: d1,
-                },
-                Self::IncludeParseFailed {
-                    path: p2,
-                    detail: d2,
-                },
-            ) => p1 == p2 && d1 == d2,
-            (
-                Self::IncludeFileTooLarge {
-                    path: p1,
-                    size: s1,
-                    limit: l1,
-                },
-                Self::IncludeFileTooLarge {
-                    path: p2,
-                    size: s2,
-                    limit: l2,
-                },
-            ) => p1 == p2 && s1 == s2 && l1 == l2,
-            (
-                Self::IncludeHashMismatch {
-                    path: p1,
-                    expected: e1,
-                    actual: a1,
-                },
-                Self::IncludeHashMismatch {
-                    path: p2,
-                    expected: e2,
-                    actual: a2,
-                },
-            ) => p1 == p2 && e1 == e2 && a1 == a2,
-            (Self::IncludeHashRequired { path: p1 }, Self::IncludeHashRequired { path: p2 }) => {
-                p1 == p2
-            }
-            (
-                Self::IncludePathNotAllowed { path: p1 },
-                Self::IncludePathNotAllowed { path: p2 },
-            ) => p1 == p2,
-            (
-                Self::ParseConversion {
-                    builtin: b1,
-                    input: i1,
-                    target: t1,
-                },
-                Self::ParseConversion {
-                    builtin: b2,
-                    input: i2,
-                    target: t2,
-                },
-            ) => b1 == b2 && i1 == i2 && t1 == t2,
-            (Self::JsonParse { detail: d1 }, Self::JsonParse { detail: d2 }) => d1 == d2,
-            (Self::JsonRange, Self::JsonRange) => true,
-            (Self::UriParseError { detail: d1 }, Self::UriParseError { detail: d2 }) => d1 == d2,
-            (
-                Self::CircularDependency {
-                    name: n1,
-                    cycle_path: p1,
-                },
-                Self::CircularDependency {
-                    name: n2,
-                    cycle_path: p2,
-                },
-            ) => n1 == n2 && p1 == p2,
-            (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
-            (
-                Self::SchemaViolation { violations: v1 },
-                Self::SchemaViolation { violations: v2 },
-            ) => v1 == v2,
-            (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
-            // This wildcard correctly returns false for cross-variant comparisons
-            // (e.g., Timeout vs IoError). When adding a new ErrorKind variant, add a
-            // corresponding same-variant arm in each match block in code(), Display,
-            // is_catchable(), is_cacheable() — enforced by the all_error_kind_variants()
-            // runtime test (test_partialeq_all_variants_covered, test_error_kind_code,
-            // test_error_kind_display, test_is_catchable_all_variants, test_is_cacheable).
-            _ => false,
-        }
-    }
-}
-
 /// A single frame in an evaluation stack trace (function name + source location).
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrame {
@@ -1002,7 +1029,6 @@ impl EvalError {
         }
     }
 
-    #[cfg(test)]
     pub fn depth_exceeded(limit: usize, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::DepthExceeded { limit },
@@ -4325,10 +4351,10 @@ mod tests {
 
     #[test]
     fn test_error_kind_partial_eq_reflexive() {
-        // Verify ErrorKind implements PartialEq correctly (reflexivity).
-        // The exhaustive match without catch-all ensures PartialEq handles all variants.
-        // If a new variant is added without updating PartialEq, this test won't compile.
-        // (Use a simple construction for a few variants as smoke test)
+        // Smoke test: verify ErrorKind reflexivity for one representative variant.
+        // Runtime exhaustiveness is enforced by test_partialeq_all_variants_covered
+        // via all_error_kind_variants(). No compile-time guarantee exists for PartialEq
+        // (the catch-all _ => false arm prevents that).
         let a = ErrorKind::Internal {
             message: "test".to_string(),
         };

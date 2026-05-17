@@ -245,7 +245,15 @@ pub(crate) fn resolve_fn_metadata(
         if let Some(key_expr) = &entry.node.key {
             if let Expr::Str(key_name) = &key_expr.node {
                 if key_name == "bind" {
-                    // bind: [a b c] — positional list of TypeVar names
+                    // bind: [a b c] — positional list of TypeVar names.
+                    //
+                    // The LLT parser represents `[a b c]` (three bare names) as
+                    // Expr::Call (call `a` with args `b`, `c`), and `[a]` (one bare
+                    // name) as Expr::Call (zero-arg call to `a`). We accept Call-form
+                    // bind lists by treating the function name and each positional arg
+                    // as a TypeVar name to bind. The Dict form is also accepted for
+                    // compatibility, though the parser does not produce it for bare-name
+                    // lists.
                     match &entry.node.value.node {
                         Expr::Dict(bind_entries) => {
                             for bind_entry in bind_entries {
@@ -286,6 +294,71 @@ pub(crate) fn resolve_fn_metadata(
                                             bind_entry.node.value.span,
                                         ));
                                     }
+                                }
+                            }
+                        }
+                        // Call form: `[a b c]` is parsed as Call(VarRef("a"), [VarRef("b"), VarRef("c")]).
+                        // `[a]` (single-element) is Call(VarRef("a"), []) — a zero-arg call.
+                        // Treat func + each positional arg as the ordered list of TypeVar names.
+                        Expr::Call {
+                            func,
+                            args,
+                            named_args,
+                            ..
+                        } => {
+                            if !named_args.is_empty() {
+                                return Err(TypeError::new(
+                                    "bind: list must contain only bare names, not named arguments",
+                                    entry.node.value.span,
+                                ));
+                            }
+                            // Collect all names: func first, then each positional arg
+                            let all_names: Vec<(&str, Span)> = {
+                                let mut v: Vec<(&str, Span)> = Vec::new();
+                                match &func.node {
+                                    Expr::VarRef { name, .. } => v.push((name.as_str(), func.span)),
+                                    _ => {
+                                        return Err(TypeError::new(
+                                            "bind: entries must be bare names (TypeVar names)",
+                                            func.span,
+                                        ))
+                                    }
+                                }
+                                for arg in args.iter() {
+                                    match &arg.node {
+                                        Expr::VarRef { name, .. } => {
+                                            v.push((name.as_str(), arg.span))
+                                        }
+                                        _ => {
+                                            return Err(TypeError::new(
+                                                "bind: entries must be bare names (TypeVar names)",
+                                                arg.span,
+                                            ))
+                                        }
+                                    }
+                                }
+                                v
+                            };
+                            for (name, name_span) in all_names {
+                                if !name.starts_with(|c: char| c.is_lowercase()) {
+                                    return Err(TypeError::new(
+                                        format!(
+                                            "bind: TypeVar name '{}' must start with lowercase letter",
+                                            name
+                                        ),
+                                        name_span,
+                                    ));
+                                }
+                                let fresh = format!("_t{}", state.name_counter);
+                                state.name_counter += 1;
+                                state.levels.insert(fresh.clone(), state.level);
+                                if let Some(ref mut mapping) = ann_mapping {
+                                    mapping.insert(name.to_string(), fresh);
+                                } else {
+                                    return Err(TypeError::new(
+                                        "bind: requires an annotation mapping context",
+                                        span,
+                                    ));
                                 }
                             }
                         }
@@ -435,6 +508,9 @@ pub(crate) fn resolve_fn_metadata(
                                 };
 
                                 // Parse the class name(s) — can be a single name, [each ...], or [...]
+                                // The LLT parser represents `[each Comparable Showable]` as
+                                // Expr::Call { func: VarRef("each"), args: [VarRef("Comparable"), VarRef("Showable")] }.
+                                // We accept both Dict form (legacy) and Call form (natural parse).
                                 match &c_entry.node.value.node {
                                     Expr::VarRef { name, .. } => {
                                         // Single class: [a: Comparable]
@@ -503,6 +579,70 @@ pub(crate) fn resolve_fn_metadata(
                                                     ));
                                                 }
                                             }
+                                        }
+                                    }
+                                    // Call form: `[each Comparable Showable]` →
+                                    // Call(VarRef("each"), [VarRef("Comparable"), VarRef("Showable")]).
+                                    // The parser produces Call for bracket forms with bare names.
+                                    // If func is "each" (the multi-class keyword), args are the classes.
+                                    // If func is a class name with no args, treat as single class.
+                                    Expr::Call {
+                                        func,
+                                        args,
+                                        named_args,
+                                        ..
+                                    } => {
+                                        if !named_args.is_empty() {
+                                            return Err(TypeError::new(
+                                                "constraint class list must not contain named arguments",
+                                                c_entry.node.value.span,
+                                            ));
+                                        }
+                                        // Determine class names to add
+                                        let class_names: Vec<(&str, Span)> =
+                                            match &func.node {
+                                                Expr::VarRef { name, .. }
+                                                    if name == "each" =>
+                                                {
+                                                    // [each Cls1 Cls2 ...]: args are the class names
+                                                    let mut names: Vec<(&str, Span)> = Vec::new();
+                                                    for arg in args.iter() {
+                                                        match &arg.node {
+                                                            Expr::VarRef { name, .. } => {
+                                                                names.push((name.as_str(), arg.span))
+                                                            }
+                                                            _ => {
+                                                                return Err(TypeError::new(
+                                                                    "constraint class must be a class name (e.g., Comparable)",
+                                                                    arg.span,
+                                                                ))
+                                                            }
+                                                        }
+                                                    }
+                                                    names
+                                                }
+                                                Expr::VarRef { name, .. } if args.is_empty() => {
+                                                    // [ClassName]: zero-arg call, treat func as single class
+                                                    vec![(name.as_str(), func.span)]
+                                                }
+                                                _ => {
+                                                    return Err(TypeError::new(
+                                                        "constraint value must be a class name or [each Class1 Class2 ...]",
+                                                        c_entry.node.value.span,
+                                                    ))
+                                                }
+                                            };
+                                        for (name, name_span) in class_names {
+                                            if !VALID_CLASSES.contains(&name)
+                                                && state.class_env.get(name).is_none()
+                                            {
+                                                return Err(TypeError::new(
+                                                    format!("unknown constraint class '{}'", name),
+                                                    name_span,
+                                                ));
+                                            }
+                                            state
+                                                .add_constraint(name.to_string(), type_var.clone());
                                         }
                                     }
                                     _ => {

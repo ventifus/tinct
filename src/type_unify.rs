@@ -212,9 +212,25 @@ pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint
 ///
 /// This computes the transitive closure of the superclass relation.
 fn is_superclass_of(class_env: &ClassEnv, subclass: &str, superclass: &str) -> bool {
+    let mut visited = HashSet::new();
+    is_superclass_of_impl(class_env, subclass, superclass, &mut visited)
+}
+
+/// Implementation of is_superclass_of with cycle detection.
+fn is_superclass_of_impl(
+    class_env: &ClassEnv,
+    subclass: &str,
+    superclass: &str,
+    visited: &mut HashSet<String>,
+) -> bool {
     // If they're the same, trivially true
     if subclass == superclass {
         return true;
+    }
+
+    // Cycle detection: if we've already visited this class, stop
+    if !visited.insert(subclass.to_string()) {
+        return false;
     }
 
     // Get the subclass declaration
@@ -233,7 +249,7 @@ fn is_superclass_of(class_env: &ClassEnv, subclass: &str, superclass: &str) -> b
 
     // Check transitive superclasses (recursively)
     for (direct_super, _param) in &subclass_decl.superclasses {
-        if is_superclass_of(class_env, direct_super, superclass) {
+        if is_superclass_of_impl(class_env, direct_super, superclass, visited) {
             return true;
         }
     }
@@ -259,13 +275,52 @@ fn check_constraints_on_var(
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
-    // Find all constraints on this variable
-    for constraint in &state.constraints.clone() {
-        match constraint {
+    // Collect only the constraints that apply to var_name (immutable scan first).
+    // This avoids cloning the entire Vec<Constraint> — we clone only the constraints
+    // that match, which is typically 0–2 per variable binding even in constraint-heavy
+    // programs. HasField constraints are skipped here (handled in resolve_has_field).
+    #[derive(Clone)]
+    enum ApplicableConstraint {
+        SingleParam {
+            class: String,
+        },
+        MultiParam {
+            class: String,
+            vars: Vec<String>,
+            fundeps: Vec<(Vec<usize>, Vec<usize>)>,
+        },
+    }
+
+    let applicable: Vec<ApplicableConstraint> = state
+        .constraints
+        .iter()
+        .filter_map(|c| match c {
             Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == var_name => {
+                Some(ApplicableConstraint::SingleParam {
+                    class: class.clone(),
+                })
+            }
+            Constraint::Class {
+                class,
+                vars,
+                fundeps,
+            } if vars.len() > 1 && vars.iter().any(|v| v == var_name) => {
+                Some(ApplicableConstraint::MultiParam {
+                    class: class.clone(),
+                    vars: vars.clone(),
+                    fundeps: fundeps.clone(),
+                })
+            }
+            _ => None,
+        })
+        .collect();
+
+    for constraint in applicable {
+        match constraint {
+            ApplicableConstraint::SingleParam { class } => {
                 // Single-parameter type class constraint (e.g., Numeric a)
                 // First, check the fixed instance sets (B4 constrained type variables)
-                if satisfies_constraint(concrete_ty, class) {
+                if satisfies_constraint(concrete_ty, &class) {
                     continue;
                 }
 
@@ -275,7 +330,7 @@ fn check_constraints_on_var(
                 // field access) and mutably (as the unify parameter) at the same time.
                 let inst_env = state.instance_env.clone();
                 if inst_env
-                    .resolve_instance(class, concrete_ty, state)
+                    .resolve_instance(&class, concrete_ty, state)
                     .is_some()
                 {
                     // Instance found - constraint satisfied
@@ -288,17 +343,17 @@ fn check_constraints_on_var(
                     span,
                 ));
             }
-            Constraint::Class {
+            ApplicableConstraint::MultiParam {
                 class,
                 vars,
                 fundeps,
-            } if vars.len() > 1 => {
+            } => {
                 // Multi-parameter type class constraint with functional dependencies
                 // Check if this variable binding triggers FD improvement
                 improve_functional_dependency(
-                    class,
-                    vars,
-                    fundeps,
+                    &class,
+                    &vars,
+                    &fundeps,
                     var_name,
                     concrete_ty,
                     subst,
@@ -306,12 +361,6 @@ fn check_constraints_on_var(
                     span,
                 )?;
             }
-            Constraint::HasField { .. } => {
-                // HasField constraints are resolved separately in resolve_has_field
-                // They don't participate in check_constraints_on_var
-                continue;
-            }
-            _ => continue,
         }
     }
     Ok(())
@@ -403,6 +452,8 @@ fn improve_functional_dependency(
                 .iter()
                 .map(|(_, _, ty)| ty.clone())
                 .collect::<Vec<_>>(),
+            state,
+            span,
         )?;
 
         // Unify each determined position with the result type
@@ -425,20 +476,38 @@ fn improve_functional_dependency(
     Ok(())
 }
 
-/// Hardcoded instance lookup for arithmetic type classes with functional dependencies.
-/// Given the determining types (a, b), returns the determined type (c).
+/// Instance lookup for multi-parameter type classes with functional dependencies.
+/// Given the class name and the determining types, returns the determined type.
 ///
-/// This is a FAST PATH for the 9 builtin instances of Add/Sub/Mul/Div (all have FD (a,b) → c).
-/// For other MPTCs with functional dependencies, this function should be generalized to query
-/// `state.instance_env` for matching instances (future work: sprint type-precision-fixes Task 5).
+/// Two-tier lookup:
 ///
-/// GENERALIZATION PLAN:
-/// 1. Given class name and determining types, iterate `instance_env.iter_instances()`
-/// 2. For each instance of the class, extract the instance type (which for MPTCs is App-encoded)
-/// 3. Check if determining positions match the given types (via unification or syntactic equality)
-/// 4. Return the determined type(s) if a unique match is found
-/// 5. Keep this hardcoded table as the fast path for Add/Sub/Mul/Div (performance)
-fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, TypeError> {
+/// 1. FAST PATH — hardcoded table for the 9 builtin Add/Sub/Mul/Div instances (all share
+///    the FD shape `(a,b) → c`). This avoids `instance_env` iteration for the common case.
+///
+/// 2. GENERAL PATH (stub) — for any MPTC class not in the hardcoded list, the caller
+///    would query `state.instance_env`.  This is currently a stub because `InstanceEnv`
+///    only supports single-parameter instances: the key is `(class_name, instance_type_string)`
+///    and `InstanceDecl.instance_type` holds one `Type`, not a tuple of types.
+///
+///    To support general MPTC lookup, the following API additions are needed:
+///
+///    a. `InstanceDecl` must store a `Vec<Type>` of instance head types (one per class param),
+///       not a single `instance_type`.
+///    b. `InstanceEnv::lookup_mptc(class, det_types, ded_positions, state)` should:
+///       - iterate instances for `class`
+///       - for each candidate, unify `candidate.head_types[det_pos]` against `det_types[i]`
+///         for each determining position
+///       - if all unify, return `candidate.head_types[ded_pos]` for each determined position
+///    c. The FD positions must be stored on the `InstanceDecl` (or looked up from `ClassDecl`).
+///
+///    Until that API exists, this function handles Add/Sub/Mul/Div via the fast path and
+///    returns a descriptive error for any other class (no other MPTCs with FDs exist yet).
+fn lookup_arithmetic_instance(
+    class: &str,
+    det_types: &[Type],
+    _state: &InferState,
+    span: Span,
+) -> Result<Type, TypeError> {
     if det_types.len() != 2 {
         return Err(TypeError::new(
             format!(
@@ -446,7 +515,7 @@ fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, T
                 class,
                 det_types.len()
             ),
-            Span::origin(),
+            span,
         ));
     }
 
@@ -469,7 +538,7 @@ fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, T
             | ("Float", "Number") => Ok(Type::Number),
             _ => Err(TypeError::new(
                 format!("no instance for {} {} {}", class, a, b),
-                Span::origin(),
+                span,
             )),
         },
         "Div" => match key {
@@ -483,15 +552,19 @@ fn lookup_arithmetic_instance(class: &str, det_types: &[Type]) -> Result<Type, T
             | ("Float", "Number") => Ok(Type::Number),
             _ => Err(TypeError::new(
                 format!("no instance for Div {} {}", a, b),
-                Span::origin(),
+                span,
             )),
         },
         _ => {
-            // FUTURE: general MPTC instance lookup would go here
-            // For now, return error for unknown classes (no other MPTCs with FDs exist yet)
+            // GENERAL PATH (stub): no other MPTCs with functional dependencies exist yet.
+            // When they do, query state.instance_env here — but InstanceEnv must first be
+            // extended to support multi-parameter instance heads (see doc comment above).
             Err(TypeError::new(
-                format!("unknown arithmetic class {}", class),
-                Span::origin(),
+                format!(
+                    "no instance for {} {} {} (class not supported by MPTC lookup)",
+                    class, a, b
+                ),
+                span,
             ))
         }
     }
@@ -540,7 +613,7 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
 
     let has_promotable_constraint = state.constraints.iter().any(|c| match c {
         Constraint::Class { class, vars, .. } => {
-            vars.contains(&var_name.to_string()) && PROMOTABLE_CLASSES.contains(&class.as_str())
+            vars.iter().any(|v| v == var_name) && PROMOTABLE_CLASSES.contains(&class.as_str())
         }
         _ => false,
     });
@@ -1110,7 +1183,34 @@ fn lower_levels_check_occurs(
                 .insert(name.clone(), current_level.min(cap_level));
             found
         }
-        _ => false,
+        // Leaf types — no type variables to lower, no occurs check needed.
+        // Exhaustive match ensures new compound types are not silently missed.
+        Type::Int
+        | Type::IntLiteral(_)
+        | Type::Float
+        | Type::Str
+        | Type::StringLiteral(_)
+        | Type::Bool
+        | Type::Bytes
+        | Type::Number
+        | Type::Proxy
+        | Type::Unknown
+        | Type::Top
+        | Type::Error
+        | Type::DirCap
+        | Type::NetCap
+        | Type::Handle
+        | Type::Uri
+        | Type::Timestamp
+        | Type::Duration
+        | Type::ClockCap
+        | Type::Timezone
+        | Type::QuicSession
+        | Type::Http2Session
+        | Type::Http3Session
+        | Type::QuicDatagramHandle
+        | Type::DatagramHandle
+        | Type::Never => false,
     }
 }
 
@@ -1475,6 +1575,91 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
             });
         }
     }
+}
+
+/// Shared binding logic for C-Var1 (Union) and C-Var2 (Intersection) unification arms.
+///
+/// Both arms have the same structure:
+/// 1. Partition compound members into TypeVars and concrete members.
+/// 2. Require exactly one TypeVar in the compound.
+/// 3. Check whether the concrete side is already covered/satisfied by the non-var members.
+/// 4. If not covered, bind the TypeVar to the concrete type.
+///
+/// The only difference between C-Var1 and C-Var2 is the coverage check direction:
+/// - C-Var1 (Union, `is_union = true`):  covered iff `concrete <: member`
+///   (the concrete type is already a member of the union — no binding needed).
+/// - C-Var2 (Intersection, `is_union = false`): satisfied iff `member <: concrete`
+///   (the intersection already implies the target — the TypeVar is unconstrained).
+///
+/// Returns `Ok(())` when the TypeVar is bound or the compound already covers the concrete type.
+/// Returns `Err(TypeError::type_mismatch)` when the compound has != 1 TypeVar.
+fn bind_single_type_var_from_compound(
+    compound_members: &[Type],
+    concrete: &Type,
+    is_union: bool,
+    subst: &mut Substitution,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
+    // Partition into TypeVars and non-TypeVar (concrete) members
+    let type_vars: Vec<_> = compound_members
+        .iter()
+        .filter(|m| matches!(m, Type::TypeVar(_, _)))
+        .collect();
+    let concrete_members: Vec<_> = compound_members
+        .iter()
+        .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+        .collect();
+
+    if type_vars.len() != 1 {
+        // Zero TypeVars: no binding target; >1 TypeVars: ambiguous binding.
+        // Neither case is handled conservatively — fall through to mismatch.
+        // Reconstruct a representative compound for the error message.
+        let representative = if is_union {
+            Type::Union(compound_members.to_vec())
+        } else {
+            Type::Intersection(compound_members.to_vec())
+        };
+        return Err(TypeError::type_mismatch(concrete, &representative, span));
+    }
+
+    // Check whether the concrete side is already handled by the non-var members.
+    let already_handled = if is_union {
+        // C-Var1: concrete is subsumed by an existing non-var union member.
+        concrete_members
+            .iter()
+            .any(|m| Type::is_subtype(concrete, m))
+    } else {
+        // C-Var2: an existing non-var intersection member already implies the concrete target.
+        concrete_members
+            .iter()
+            .any(|m| Type::is_subtype(m, concrete))
+    };
+
+    if already_handled {
+        return Ok(());
+    }
+
+    // Extract the single TypeVar name (the `!= 1` guard above ensures this unwrap is safe).
+    let Type::TypeVar(var_name, _) = type_vars[0] else {
+        unreachable!()
+    };
+
+    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
+        return Err(TypeError::new(
+            format!("infinite type: {var_name} occurs in {concrete}"),
+            span,
+        ));
+    }
+
+    let concrete_promoted = promote_literal_for_constrained_var(var_name, concrete.clone(), state);
+    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
+    subst
+        .type_map
+        .borrow_mut()
+        .insert(var_name.clone(), concrete_promoted);
+    subst.check_size(span)
 }
 
 pub fn unify(
@@ -1888,95 +2073,14 @@ pub fn unify(
         //
         // Pattern: concrete type a, Union on side b with exactly one TypeVar
         (concrete, Type::Union(members)) if !concrete.has_inference_vars() => {
-            // Partition union members into TypeVars and concrete members
-            let type_vars: Vec<_> = members
-                .iter()
-                .filter(|m| matches!(m, Type::TypeVar(_, _)))
-                .collect();
-            let concrete_members: Vec<_> = members
-                .iter()
-                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
-                .collect();
-
-            // C-Var1 applies when there is exactly one TypeVar in the union
-            if type_vars.len() == 1 {
-                let already_covered = concrete_members
-                    .iter()
-                    .any(|m| Type::is_subtype(concrete, m));
-
-                if already_covered {
-                    // The concrete type is already covered by a non-var member — no binding needed.
-                    Ok(())
-                } else {
-                    // Bind the TypeVar to the concrete type (conservative C-Var1)
-                    let Type::TypeVar(var_name, _) = type_vars[0] else {
-                        unreachable!()
-                    };
-                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
-                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
-                        return Err(TypeError::new(
-                            format!("infinite type: {var_name} occurs in {concrete}"),
-                            span,
-                        ));
-                    }
-                    let concrete_promoted =
-                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
-                    subst
-                        .type_map
-                        .borrow_mut()
-                        .insert(var_name.clone(), concrete_promoted.clone());
-                    subst.check_size(span)?;
-                    Ok(())
-                }
-            } else {
-                // More than one TypeVar, or zero TypeVars with no subtype relation — fall through
-                Err(TypeError::type_mismatch(&a, &b, span))
-            }
+            let members = members.clone();
+            bind_single_type_var_from_compound(&members, concrete, true, subst, state, span)
         }
 
         // Symmetric C-Var1: Union on the left, concrete on the right
         (Type::Union(members), concrete) if !concrete.has_inference_vars() => {
-            let type_vars: Vec<_> = members
-                .iter()
-                .filter(|m| matches!(m, Type::TypeVar(_, _)))
-                .collect();
-            let concrete_members: Vec<_> = members
-                .iter()
-                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
-                .collect();
-
-            if type_vars.len() == 1 {
-                let already_covered = concrete_members
-                    .iter()
-                    .any(|m| Type::is_subtype(concrete, m));
-
-                if already_covered {
-                    Ok(())
-                } else {
-                    let Type::TypeVar(var_name, _) = type_vars[0] else {
-                        unreachable!()
-                    };
-                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
-                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
-                        return Err(TypeError::new(
-                            format!("infinite type: {var_name} occurs in {concrete}"),
-                            span,
-                        ));
-                    }
-                    let concrete_promoted =
-                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
-                    subst
-                        .type_map
-                        .borrow_mut()
-                        .insert(var_name.clone(), concrete_promoted.clone());
-                    subst.check_size(span)?;
-                    Ok(())
-                }
-            } else {
-                Err(TypeError::type_mismatch(&a, &b, span))
-            }
+            let members = members.clone();
+            bind_single_type_var_from_compound(&members, concrete, true, subst, state, span)
         }
 
         // [C-VAR2] (BAS constraint rewriting, conservative):
@@ -1988,92 +2092,14 @@ pub fn unify(
         //
         // Pattern: Intersection with exactly one TypeVar on one side, concrete on the other
         (Type::Intersection(members), concrete) if !concrete.has_inference_vars() => {
-            let type_vars: Vec<_> = members
-                .iter()
-                .filter(|m| matches!(m, Type::TypeVar(_, _)))
-                .collect();
-            let concrete_members: Vec<_> = members
-                .iter()
-                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
-                .collect();
-
-            if type_vars.len() == 1 {
-                // If concrete members already satisfy the target, TypeVar can be anything
-                let already_satisfied = concrete_members
-                    .iter()
-                    .any(|m| Type::is_subtype(m, concrete));
-
-                if already_satisfied {
-                    Ok(())
-                } else {
-                    // Bind TypeVar to the target concrete type (conservative C-Var2)
-                    let Type::TypeVar(var_name, _) = type_vars[0] else {
-                        unreachable!()
-                    };
-                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
-                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
-                        return Err(TypeError::new(
-                            format!("infinite type: {var_name} occurs in {concrete}"),
-                            span,
-                        ));
-                    }
-                    let concrete_promoted =
-                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
-                    subst
-                        .type_map
-                        .borrow_mut()
-                        .insert(var_name.clone(), concrete_promoted.clone());
-                    subst.check_size(span)?;
-                    Ok(())
-                }
-            } else {
-                Err(TypeError::type_mismatch(&a, &b, span))
-            }
+            let members = members.clone();
+            bind_single_type_var_from_compound(&members, concrete, false, subst, state, span)
         }
 
         // Symmetric C-Var2: concrete on the left, Intersection on the right
         (concrete, Type::Intersection(members)) if !concrete.has_inference_vars() => {
-            let type_vars: Vec<_> = members
-                .iter()
-                .filter(|m| matches!(m, Type::TypeVar(_, _)))
-                .collect();
-            let concrete_members: Vec<_> = members
-                .iter()
-                .filter(|m| !matches!(m, Type::TypeVar(_, _)))
-                .collect();
-
-            if type_vars.len() == 1 {
-                let already_satisfied = concrete_members
-                    .iter()
-                    .any(|m| Type::is_subtype(m, concrete));
-
-                if already_satisfied {
-                    Ok(())
-                } else {
-                    let Type::TypeVar(var_name, _) = type_vars[0] else {
-                        unreachable!()
-                    };
-                    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
-                    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
-                        return Err(TypeError::new(
-                            format!("infinite type: {var_name} occurs in {concrete}"),
-                            span,
-                        ));
-                    }
-                    let concrete_promoted =
-                        promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-                    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
-                    subst
-                        .type_map
-                        .borrow_mut()
-                        .insert(var_name.clone(), concrete_promoted.clone());
-                    subst.check_size(span)?;
-                    Ok(())
-                }
-            } else {
-                Err(TypeError::type_mismatch(&a, &b, span))
-            }
+            let members = members.clone();
+            bind_single_type_var_from_compound(&members, concrete, false, subst, state, span)
         }
 
         // [U-SUBSUME]: concrete type subsumption fallback (Pierce & Turner 2000)

@@ -1709,11 +1709,20 @@ impl TypeEnv {
         }
 
         // str-map-chars: (String → String) → String → String
-        // Typed with Unknown for the function param since we lack a Fn type in the type env.
         env.insert(
             "str-map-chars".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown), (None, Type::Str)],
+                params: vec![
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::Str)],
+                            ret: Box::new(Type::Str),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Str),
+                ],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -1955,6 +1964,8 @@ impl TypeEnv {
         env.insert(
             "eval".to_string(),
             Type::Function {
+                // Genuinely unknown: eval accepts any thunk/expression and returns an
+                // arbitrary value whose type is not knowable at compile time.
                 params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
                 variadic: false,
@@ -2027,38 +2038,46 @@ impl TypeEnv {
         );
 
         // Convergence loop: until(pred, f, init) applies f until pred holds
-        env.insert(
+        // ∀T. (T → Bool) → (T → T) → T → T
+        env.insert_scheme(
             "until".to_string(),
-            Type::Function {
-                params: vec![
-                    (
-                        None,
-                        Type::Function {
-                            params: vec![(None, Type::Unknown)],
-                            ret: Box::new(Type::Bool),
-                            variadic: false,
-                        },
-                    ),
-                    (
-                        None,
-                        Type::Function {
-                            params: vec![(None, Type::Unknown)],
-                            ret: Box::new(Type::Unknown),
-                            variadic: false,
-                        },
-                    ),
-                    (None, Type::Unknown),
-                ],
-                ret: Box::new(Type::Unknown),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["T".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![
+                        (
+                            None,
+                            Type::Function {
+                                params: vec![(None, Type::TypeVar("T".to_string(), 0))],
+                                ret: Box::new(Type::Bool),
+                                variadic: false,
+                            },
+                        ),
+                        (
+                            None,
+                            Type::Function {
+                                params: vec![(None, Type::TypeVar("T".to_string(), 0))],
+                                ret: Box::new(Type::TypeVar("T".to_string(), 0)),
+                                variadic: false,
+                            },
+                        ),
+                        (None, Type::TypeVar("T".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::TypeVar("T".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
 
-        // Type introspection
+        // Type introspection — these accept any value (Top), return Str
         env.insert(
             "type-of".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -2066,7 +2085,7 @@ impl TypeEnv {
         env.insert(
             "llt-repr".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -2074,7 +2093,7 @@ impl TypeEnv {
         env.insert(
             "tag-of".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Str),
                 variadic: false,
             },
@@ -2087,10 +2106,11 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // Type predicates — accept any value (Top), return Bool
         env.insert(
             "int?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2098,7 +2118,7 @@ impl TypeEnv {
         env.insert(
             "float?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2106,7 +2126,7 @@ impl TypeEnv {
         env.insert(
             "num?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2114,7 +2134,7 @@ impl TypeEnv {
         env.insert(
             "str?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2122,7 +2142,7 @@ impl TypeEnv {
         env.insert(
             "bool?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2130,7 +2150,7 @@ impl TypeEnv {
         env.insert(
             "bytes?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2138,7 +2158,7 @@ impl TypeEnv {
         env.insert(
             "null?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2146,7 +2166,7 @@ impl TypeEnv {
         env.insert(
             "dict?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2154,7 +2174,7 @@ impl TypeEnv {
         env.insert(
             "fn?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2162,7 +2182,7 @@ impl TypeEnv {
         env.insert(
             "record?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2170,7 +2190,7 @@ impl TypeEnv {
         env.insert(
             "map?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2261,7 +2281,10 @@ impl TypeEnv {
             "revocable".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap)],
-                ret: Box::new(Type::Unknown), // returns dict with cap and revoke fields
+                // TODO(unknown-elimination): Returns {cap: DirCap, revoke: Fn()->Null}.
+                // Expressible as a closed Record type once precise record return types are
+                // supported in builtin signatures.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2280,12 +2303,16 @@ impl TypeEnv {
             "connect".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Unknown), // NetCap or DirCap (UnixStream/UnixDatagram)
-                    (None, Type::Unknown), // Transport variant (Tcp, Udp, UnixStream, etc.)
+                    (None, Type::Top), // NetCap or DirCap (UnixStream/UnixDatagram)
+                    // Genuinely unknown: Transport variant constant (Tcp, Udp, UnixStream, etc.)
+                    // — no Type::Variant yet.
+                    (None, Type::Unknown), // Transport variant
                     (None, Type::Str),     // host
                     (None, Type::Int),     // port
                 ],
-                ret: Box::new(Type::Unknown), // Handle or DatagramHandle depending on transport
+                // Genuinely unknown: return is Handle or DatagramHandle depending on transport.
+                // TODO(unknown-elimination): union Handle|DatagramHandle once variant type exists.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2294,8 +2321,8 @@ impl TypeEnv {
             "send-datagram".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::DatagramHandle), // socket
-                    (None, Type::Unknown),        // String or Bytes
+                    (None, Type::DatagramHandle),                                // socket
+                    (None, Type::normalize_union(vec![Type::Str, Type::Bytes])), // String or Bytes
                 ],
                 ret: Box::new(Type::Record(crate::types::Row {
                     fields: std::collections::HashMap::new(),
@@ -2307,7 +2334,9 @@ impl TypeEnv {
             "recv-datagram".to_string(),
             Type::Function {
                 params: vec![(None, Type::DatagramHandle)],
-                ret: Box::new(Type::Unknown), // Dict {data: Bytes}
+                // TODO(unknown-elimination): Returns {data: Bytes, addr: Str, port: Int}.
+                // Expressible as a closed Record once precise record return types land.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2318,7 +2347,9 @@ impl TypeEnv {
                 params: vec![
                     (None, Type::Handle),
                     (None, Type::Str),
-                    (None, Type::Unknown), // opts dict
+                    // TODO(unknown-elimination): opts is an open record {alpn?: Seq(Str), ...}.
+                    // Use an open Record with RowVar tail once opts-dict pattern is established.
+                    (None, Type::Top), // opts dict — any record or null
                 ],
                 ret: Box::new(Type::Handle),
                 variadic: false,
@@ -2328,7 +2359,9 @@ impl TypeEnv {
             "tls-peer-cert".to_string(),
             Type::Function {
                 params: vec![(None, Type::Handle)],
-                ret: Box::new(Type::Unknown), // Returns Dict with subject, issuer, sans, etc.
+                // TODO(unknown-elimination): Returns {subject: Str, issuer: Str, sans: Seq(Str), ...}.
+                // Expressible as a closed Record once precise record return types land.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2338,10 +2371,11 @@ impl TypeEnv {
             "quic-session".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::NetCap),  // cap
-                    (None, Type::Str),     // host
-                    (None, Type::Int),     // port
-                    (None, Type::Unknown), // opts dict
+                    (None, Type::NetCap), // cap
+                    (None, Type::Str),    // host
+                    (None, Type::Int),    // port
+                    // TODO(unknown-elimination): opts is an open record {alpn?: Seq(Str), cert?: ...}.
+                    (None, Type::Top), // opts dict — any record or null
                 ],
                 ret: Box::new(Type::QuicSession),
                 variadic: false,
@@ -2367,9 +2401,10 @@ impl TypeEnv {
             "http2-session".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::NetCap),  // capability
-                    (None, Type::Str),     // base_url (scheme://host:port)
-                    (None, Type::Unknown), // opts dict
+                    (None, Type::NetCap), // capability
+                    (None, Type::Str),    // base_url (scheme://host:port)
+                    // TODO(unknown-elimination): opts is an open record.
+                    (None, Type::Top), // opts dict — any record or null
                 ],
                 ret: Box::new(Type::Http2Session),
                 variadic: false,
@@ -2380,7 +2415,8 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (None, Type::QuicSession), // QUIC session
-                    (None, Type::Unknown),     // opts dict
+                    // TODO(unknown-elimination): opts is an open record.
+                    (None, Type::Top), // opts dict — any record or null
                 ],
                 ret: Box::new(Type::Http3Session),
                 variadic: false,
@@ -2394,12 +2430,23 @@ impl TypeEnv {
                         None,
                         Type::Union(vec![Type::Http2Session, Type::Http3Session]),
                     ), // Http2Session or Http3Session
-                    (None, Type::Str),     // method
-                    (None, Type::Str),     // path
-                    (None, Type::Unknown), // headers dict
-                    (None, Type::Unknown), // body (Bytes or Null)
+                    (None, Type::Str), // method
+                    (None, Type::Str), // path
+                    // TODO(unknown-elimination): headers is {Str: Str} — a Map(Str,Str).
+                    (None, Type::Top), // headers dict — any record or null
+                    // TODO(unknown-elimination): body is Bytes | Null.
+                    (
+                        None,
+                        Type::normalize_union(vec![
+                            Type::Bytes,
+                            Type::Record(Row {
+                                fields: HashMap::new(),
+                            }), // Null
+                        ]),
+                    ), // body
                 ],
-                ret: Box::new(Type::Unknown), // Returns Dict {status, headers, body}
+                // TODO(unknown-elimination): Returns {status: Int, headers: Map(Str,Str), body: Bytes}.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2411,7 +2458,9 @@ impl TypeEnv {
                     (None, Type::Str),    // host
                     (None, Type::Int),    // timeout_ms
                 ],
-                ret: Box::new(Type::Unknown), // Returns Dict {rtt_ms, success}
+                // TODO(unknown-elimination): Returns {rtt_ms: Int, success: Bool}.
+                // Expressible as a closed Record once precise record return types land.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2419,7 +2468,9 @@ impl TypeEnv {
             "cap-data".to_string(),
             Type::Function {
                 params: vec![(None, Type::Handle), (None, Type::Str)],
-                ret: Box::new(Type::Unknown), // Returns the cap value (can be any type)
+                // Genuinely unknown: cap-data returns the value stored in the Handle's
+                // capability map, which can be any type (cap name is a dynamic string key).
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2427,8 +2478,11 @@ impl TypeEnv {
         env.insert(
             "write-handle".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle), (None, Type::Unknown)], // Handle/WriteHandle, String or Bytes
-                ret: Box::new(Type::Handle),                               // Returns WriteHandle
+                params: vec![
+                    (None, Type::Handle),
+                    (None, Type::normalize_union(vec![Type::Str, Type::Bytes])), // String or Bytes
+                ],
+                ret: Box::new(Type::Handle), // Returns WriteHandle
                 variadic: false,
             },
         );
@@ -2487,7 +2541,9 @@ impl TypeEnv {
             "list-dir".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
-                ret: Box::new(Type::Unknown), // Returns Seq of metadata Dicts
+                // TODO(unknown-elimination): Returns Seq({name: Str, kind: Str, size: Int, ...}).
+                // Expressible once Seq(Record) return types are supported in builtin signatures.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2495,7 +2551,9 @@ impl TypeEnv {
             "stat".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
-                ret: Box::new(Type::Unknown), // Returns metadata Dict
+                // TODO(unknown-elimination): Returns {name: Str, kind: Str, size: Int, ...}.
+                // Expressible as a closed Record once precise record return types land.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2555,6 +2613,8 @@ impl TypeEnv {
             "from-json".to_string(),
             Type::Function {
                 params: vec![(None, Type::Str)],
+                // Genuinely unknown: JSON parse output can be any JSON value (object, array,
+                // string, number, bool, null). A precise type requires schema information.
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -2562,12 +2622,14 @@ impl TypeEnv {
         // include: accepts 2–3 positional args (runtime: builtins_meta.rs:builtin_include).
         //   [include $cap "path"]          — 2 args: DirCap + path
         //   [include $cap "path" "hash"]   — 3 args: DirCap + path + hash
-        // First arg is Unknown (DirCap); variadic covers 2- and 3-arg forms.
+        // First arg is Unknown because it accepts DirCap or RustRegistry (%rust virtual module).
+        // Return is genuinely unknown: the included file type is not knowable at compile time
+        // without reading and type-checking the included file.
         env.insert(
             "include".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
-                ret: Box::new(Type::Unknown),
+                params: vec![(None, Type::Unknown)], // Genuinely unknown: DirCap or RustRegistry
+                ret: Box::new(Type::Unknown),        // Genuinely unknown: included file type
                 variadic: true,
             },
         );
@@ -2581,22 +2643,42 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        env.insert(
+        // builtin-head: ∀T. Seq(T) → T
+        env.insert_scheme(
             "builtin-head".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
-                ret: Box::new(Type::Unknown),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["T".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
+                    ret: Box::new(Type::TypeVar("T".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
-        env.insert(
+        // builtin-tail: ∀T. Seq(T) → Seq(T)
+        env.insert_scheme(
             "builtin-tail".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
-                ret: Box::new(Type::Seq(Box::new(Type::Unknown))),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["T".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
+                    ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
+        // builtin-collect: ∀T. Seq(T) → Dict
+        // The Unknown in Seq(Unknown) should ideally be TypeVar("T") but the Dict return type
+        // already erases element type information, so the polymorphism buys nothing here.
+        // TODO(unknown-elimination): Make Seq param ∀T once collect returns a typed Dict.
         env.insert(
             "builtin-collect".to_string(),
             Type::Function {
@@ -2610,7 +2692,7 @@ impl TypeEnv {
         env.insert(
             "seq?".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
             },
@@ -2689,11 +2771,9 @@ impl TypeEnv {
         );
 
         // Sequences: transforms
-        // KNOWN ISSUE: Mappable class and instances exist in stdlib/prelude.llt
-        // (MappableSeq, MappableDict), but proper TypeScheme registration with
-        // `Constraint::new("Mappable", "f")` and `Type::App(Operator("f"), TypeVar("a"))`
-        // requires TypeApp annotation support in type_env registration.
-        // For now, these remain typed as Unknown → Unknown.
+        // TODO(unknown-elimination): map/filter/reduce use Unknown because the Mappable typeclass
+        // (MappableSeq, MappableDict in stdlib/prelude.llt) requires higher-kinded types
+        // (Type::App(Operator("f"), TypeVar("a"))) which are not yet representable in TypeScheme.
         // Target signature: ∀f a b. Mappable f => (a → b) → f a → f b
         env.insert(
             "map".to_string(),
@@ -2702,14 +2782,14 @@ impl TypeEnv {
                     (
                         Some("fn_".to_string()),
                         Type::Function {
-                            params: vec![(None, Type::Unknown)],
-                            ret: Box::new(Type::Unknown),
+                            params: vec![(None, Type::Unknown)], // Genuinely unknown: HKT required
+                            ret: Box::new(Type::Unknown),        // Genuinely unknown: HKT required
                             variadic: false,
                         },
                     ),
-                    (Some("seq".to_string()), Type::Unknown),
+                    (Some("seq".to_string()), Type::Unknown), // Genuinely unknown: HKT required
                 ],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Unknown), // Genuinely unknown: HKT required
                 variadic: false,
             },
         );
@@ -2721,14 +2801,14 @@ impl TypeEnv {
                     (
                         Some("pred".to_string()),
                         Type::Function {
-                            params: vec![(None, Type::Unknown)],
+                            params: vec![(None, Type::Unknown)], // Genuinely unknown: HKT required
                             ret: Box::new(Type::Bool),
                             variadic: false,
                         },
                     ),
-                    (Some("seq".to_string()), Type::Unknown),
+                    (Some("seq".to_string()), Type::Unknown), // Genuinely unknown: HKT required
                 ],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Unknown), // Genuinely unknown: HKT required
                 variadic: false,
             },
         );
@@ -2750,6 +2830,8 @@ impl TypeEnv {
         );
 
         // Sequences: reductions
+        // TODO(unknown-elimination): reduce uses Unknown for the same HKT reason as map/filter.
+        // Target signature: ∀a b. (b → a → b) → b → Seq(a) → b
         env.insert(
             "reduce".to_string(),
             Type::Function {
@@ -2757,15 +2839,15 @@ impl TypeEnv {
                     (
                         Some("fn_".to_string()),
                         Type::Function {
-                            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-                            ret: Box::new(Type::Unknown),
+                            params: vec![(None, Type::Unknown), (None, Type::Unknown)], // Genuinely unknown: HKT
+                            ret: Box::new(Type::Unknown), // Genuinely unknown: HKT
                             variadic: false,
                         },
                     ),
-                    (Some("init".to_string()), Type::Unknown),
-                    (Some("seq".to_string()), Type::Seq(Box::new(Type::Unknown))),
+                    (Some("init".to_string()), Type::Unknown), // Genuinely unknown: HKT
+                    (Some("seq".to_string()), Type::Seq(Box::new(Type::Unknown))), // Genuinely unknown: HKT
                 ],
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Unknown), // Genuinely unknown: HKT
                 variadic: false,
             },
         );
@@ -2774,6 +2856,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (None, Type::Str),
+                    // Genuinely unknown: join stringifies any element type via stringify().
                     (None, Type::Seq(Box::new(Type::Unknown))),
                 ],
                 ret: Box::new(Type::Str),
@@ -2783,8 +2866,9 @@ impl TypeEnv {
         // builtin-concat: Appendable a, Appendable b => a -> b -> Unknown
         // Each argument must be Appendable (Record/Seq), but both args need not be the
         // same concrete type (e.g. two dicts with different field types are both Appendable).
-        // Return type is Unknown because the output shape depends on runtime values.
-        // This causes a type warning when concat is called with a non-Appendable (e.g. Int).
+        // Return type is genuinely unknown: output shape depends on runtime values (field merge).
+        // TODO(unknown-elimination): Return type could be a TypeVar with an Appendable constraint
+        // once the type system supports output-shape inference from structural merges.
         env.insert_scheme(
             "builtin-concat".to_string(),
             TypeScheme {
@@ -2798,7 +2882,7 @@ impl TypeEnv {
                         (None, Type::TypeVar("a".to_string(), 0)),
                         (None, Type::TypeVar("b".to_string(), 0)),
                     ],
-                    ret: Box::new(Type::Unknown),
+                    ret: Box::new(Type::Unknown), // Genuinely unknown: merge shape not inferrable
                     variadic: false,
                 },
                 label_vars: vec![],
@@ -2824,12 +2908,12 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // builtin-cons: Any -> Dict -> Dict (prepends element, reindexes)
+        // builtin-cons: Top -> Dict -> Dict (prepends element, reindexes)
         env.insert(
             "builtin-cons".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Unknown),
+                    (None, Type::Top), // element to prepend — any value
                     (
                         None,
                         Type::Record(Row {
@@ -2862,10 +2946,13 @@ impl TypeEnv {
         // builtin-sort: Dict -> Dict (natural ordering)
         //            OR (a -> a -> Bool) -> Dict -> Dict (custom comparator)
         // Variadic to accept both 1-arg and 2-arg call forms without arity errors.
+        // First param is Top (accepts either Dict or comparator Fn).
+        // TODO(unknown-elimination): Replace with two overloaded TypeSchemes or a union param
+        // once the type system supports overloaded/multi-arity signatures cleanly.
         env.insert(
             "builtin-sort".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
+                params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
                 })),
@@ -2873,7 +2960,8 @@ impl TypeEnv {
             },
         );
 
-        // Proxy
+        // Proxy: takes a (Str → Top) handler, returns a Proxy value.
+        // The handler receives field names as strings and can return any value.
         env.insert(
             "proxy".to_string(),
             Type::Function {
@@ -2881,7 +2969,7 @@ impl TypeEnv {
                     None,
                     Type::Function {
                         params: vec![(None, Type::Str)],
-                        ret: Box::new(Type::Unknown),
+                        ret: Box::new(Type::Top),
                         variadic: false,
                     },
                 )],
@@ -3132,7 +3220,9 @@ impl TypeEnv {
             "timestamp-parts".to_string(),
             Type::Function {
                 params: vec![(None, Type::Timestamp)],
-                ret: Box::new(Type::Unknown), // Returns Dict with year/month/day/hour/minute/second
+                // TODO(unknown-elimination): Returns {year: Int, month: Int, day: Int,
+                // hour: Int, minute: Int, second: Int}. Expressible as a closed Record.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -3174,7 +3264,10 @@ impl TypeEnv {
             "timestamp-in-tz".to_string(),
             Type::Function {
                 params: vec![(None, Type::Timestamp), (None, Type::Timezone)],
-                ret: Box::new(Type::Unknown), // Returns Dict with year/month/day/hour/minute/second/offset-seconds/tz-name
+                // TODO(unknown-elimination): Returns {year: Int, month: Int, day: Int,
+                // hour: Int, minute: Int, second: Int, offset-seconds: Int, tz-name: Str}.
+                // Expressible as a closed Record.
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -3204,20 +3297,24 @@ impl TypeEnv {
         );
 
         // builtin-first: Dict|String|Bytes -> Any (returns first element, char, or byte-as-Int)
+        // TODO(unknown-elimination): Input should be Dict|Str|Bytes union; return type depends on
+        // input (element type for Dict, Str for String, Int for Bytes). Requires union input types
+        // and type-indexed return — defer to unknown-elimination sprint.
         env.insert(
             "builtin-first".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
-                ret: Box::new(Type::Unknown),
+                params: vec![(None, Type::Top)], // Top: accepts Dict, Str, or Bytes
+                ret: Box::new(Type::Unknown),    // Genuinely unknown: depends on input type
                 variadic: false,
             },
         );
         // builtin-last: Dict|String|Bytes -> Any (returns last element, char, or byte-as-Int)
+        // TODO(unknown-elimination): same as builtin-first — see above.
         env.insert(
             "builtin-last".to_string(),
             Type::Function {
-                params: vec![(None, Type::Unknown)],
-                ret: Box::new(Type::Unknown),
+                params: vec![(None, Type::Top)], // Top: accepts Dict, Str, or Bytes
+                ret: Box::new(Type::Unknown),    // Genuinely unknown: depends on input type
                 variadic: false,
             },
         );
@@ -3324,21 +3421,26 @@ impl TypeEnv {
         }
 
         // Iteration builtins: each, each-key, each-kv
-        // These have complex polymorphic types (lazy sequence transformers with callback functions),
-        // so we register them as Unknown to avoid false "undefined variable" warnings in LSP.
-        // Their runtime types are enforced by the builtin implementations in src/builtins.rs.
+        // Each takes 1 arg (a dict/collection) and returns a lazy Seq of elements/keys/kv-pairs.
+        // The return element type depends on the input dict's value types — requires HKT to
+        // express precisely. Top is used for the input (accepts any Dict or Map).
+        // TODO(unknown-elimination): Return type should be Seq(T) for element type T.
+        // Requires HKT or specific dict-to-element type inference.
         for name in ["each", "each-key", "each-kv"] {
             env.insert(
                 name.to_string(),
                 Type::Function {
-                    params: vec![(None, Type::Unknown)],
-                    ret: Box::new(Type::Unknown),
+                    params: vec![(None, Type::Top)], // accepts any Dict or Map
+                    ret: Box::new(Type::Unknown),    // Genuinely unknown: element type requires HKT
                     variadic: false,
                 },
             );
         }
 
         // Type constructors
+        // Map with Unknown K/V is the unparameterized Map type — used when the user writes
+        // `Map` without type arguments. Parameterized Map[K V] is handled by the type alias below.
+        // Genuinely unknown until the user supplies type arguments via @[Map Str Int].
         env.insert(
             "Map".to_string(),
             Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),

@@ -48,7 +48,7 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Runtime typeclass dispatch: check for Showable instance
     // For multi-arg str, only check the first arg for an instance
-    if args.len() >= 1 {
+    if !args.is_empty() {
         let val = materialize(&args[0], Some(&call_span), &ctx)?;
         let type_name = val.type_name();
         if let Some(instance_thunk) = ctx
@@ -74,7 +74,6 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                             env: closure_env,
                             ..
                         } => {
-                            use crate::eval_call::{invoke_function, CallContext};
                             return invoke_function(&CallContext {
                                 params: &params,
                                 body: &body,

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-// Arena API methods are used only in tests and future Phase 3 (arena-eval) — suppress until migration is complete
 //! Arena allocation for thunks and environments (Phase 2 of arena allocation strategy).
 //!
 //! This module provides index-based arenas for thunks and environments, replacing the
@@ -72,6 +70,9 @@ impl ThunkArena {
     /// Forcing a placeholder before filling is a logic error (letrec construction bug)
     /// and will panic at materialization time. This maintains Launchbury's monotonicity
     /// invariant: Placeholder → Unevaluated is a forward state transition.
+    ///
+    /// Phase 3 (arena-eval): used when the evaluator builds letrec dicts via FlatEnv.
+    #[allow(dead_code)] // Phase 3 (arena-eval): not yet called by production evaluator
     pub fn alloc_placeholder(&mut self) -> ThunkId {
         let thunk = Rc::new(Thunk::new_placeholder(Span::origin()));
         self.alloc(thunk)
@@ -90,6 +91,7 @@ impl ThunkArena {
     }
 
     /// Number of thunks currently in the arena.
+    #[allow(dead_code)] // used in arena tests; not yet called by production evaluator
     pub(crate) fn len(&self) -> usize {
         self.thunks.len()
     }
@@ -102,11 +104,17 @@ impl Default for ThunkArena {
 }
 
 /// Arena for environment allocation. Stores `FlatEnv` indexed by `EnvId`.
+///
+/// Phase 3 (arena-eval): `EnvArena` and `FlatEnv` are scaffolding for the flat environment
+/// model. They are constructed in `EvalContext` but not yet populated or queried by the
+/// production evaluator (which still uses the chain-based `Environment`).
+#[allow(dead_code)] // Phase 3 (arena-eval): struct fields and methods not yet used by production evaluator
 #[derive(Debug)]
 pub(crate) struct EnvArena {
     envs: Vec<FlatEnv>,
 }
 
+#[allow(dead_code)] // Phase 3 (arena-eval): methods not yet called by production evaluator
 impl EnvArena {
     /// Create a new empty environment arena.
     pub fn new() -> Self {
@@ -150,6 +158,7 @@ impl Default for EnvArena {
 ///
 /// **Hybrid model:** Static keys (known at parse time) use `slots` for O(1) lookup.
 /// Computed keys (e.g., `[$expr: value]`) fall back to the `overflow` HashMap.
+#[allow(dead_code)] // Phase 3 (arena-eval): fields and methods not yet used by production evaluator
 #[derive(Debug)]
 pub(crate) struct FlatEnv {
     /// Static keys indexed by compile-time slot number from the resolver.
@@ -161,6 +170,7 @@ pub(crate) struct FlatEnv {
     pub(crate) parent: Option<EnvId>,
 }
 
+#[allow(dead_code)] // Phase 3 (arena-eval): methods not yet called by production evaluator
 impl FlatEnv {
     /// Create a new flat environment with the given slot capacity and optional parent.
     pub fn new(slot_count: usize, parent: Option<EnvId>) -> Self {

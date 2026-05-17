@@ -323,7 +323,7 @@ The stdlib follows four organizing principles:
 
 ## Stdlib Function Reference
 
-**Architecture:** 184 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`). All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
+**Architecture:** 184 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`). All wrapped builtins remain accessible via 29 stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
@@ -338,7 +338,7 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Datetime** (`parse-timestamp`, `format-timestamp`, `timestamp->unix`, `unix->timestamp`, `now`, `fixed-clock`, `timestamp-add`, `timestamp-diff`, `timestamp-lt`, `timestamp-gt`, `timestamp-eq`, `timestamp-year`, `timestamp-month`, `timestamp-day`, `timestamp-hour`, `timestamp-minute`, `timestamp-second`, `timestamp-parts`, `duration-nanos`, `duration-seconds`, `duration-minutes`, `duration-hours`, `duration-days`, `duration->seconds`, `duration->nanos`, `load-tz`, `timestamp-in-tz`, `local-to-timestamp`, `local-tz-name` as Rust builtins) — RFC 3339 timestamp parsing/formatting, Unix epoch conversion, arithmetic, timezone handling
 - **URI & HTTP** (`uri`, `url`, `urn` as Rust builtins; `uri-params`, `uri-origin`, `uri->string`, `http-get`, `fetch` in `stdlib/net.llt`) — RFC 3986/8141 URI parsing; HTTP client operations via reqwest
 - **Network handles** (`connect`, `tls-connect`, `tls-peer-cert`, `spki-pin`, `http-connect`, `socks5-connect`, `proxy-connect` as Rust builtins) — TCP/UDP/TLS connections with capability security; SPKI pinning; HTTP/2+3 connection pools; SOCKS5 and HTTP proxy tunneling
-- **I/O handles** (`open`, `slurp`, `lines`, `write`, `write-atomic`, `cap-data`, `has-cap?`, `write-handle`, `flush`, `close` as Rust builtins; `write-line` in `stdlib/io.llt`) — file/stream I/O with capability rows (Readable/Writable/Binary/Text/Seekable/Stream/Datagram/Tls); WriteHandle streaming output
+- **I/O handles** (`open`, `slurp`, `lines`, `write`, `write-atomic`, `cap-data`, `write-handle`, `flush`, `close` as Rust builtins; `has-cap?` and `write-line` in `stdlib/io.llt`) — file/stream I/O with capability rows (Readable/Writable/Binary/Text/Seekable/Stream/Datagram/Tls); WriteHandle streaming output
 
 Predicate builtins are Rust-native; `list?` is LLT-implemented on top of them.
 
@@ -1387,3 +1387,27 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 |----------|---------------|-------|
 | `try-or` | `(Fn -> a -> a)` | `fn [f@Fn default]` — no return annotation; returns default on error |
 | `assert` | `(Any -> String -> Bool)` | `fn@Unknown [cond msg@String]` — true path returns true; false path diverges via `[error]` |
+
+## Supplemental Module Reference
+
+Individual stdlib modules have detailed documentation in `doc/lib/`. These docs are generated from `@[doc: "..."]` annotations in `stdlib/` source files:
+
+**Core modules:**
+- [prelude](lib/prelude.md) — Always-available functions in `stdlib/prelude.llt`
+- [numeric](lib/numeric.md) — Numeric utilities and constants
+- [path](lib/path.md) — Filesystem path manipulation
+
+**Optional modules** (load with `[include libdir "<module>.llt"]`):
+- [cli-in-json](lib/cli-in-json.md), [cli-in-toml-lite](lib/cli-in-toml-lite.md) — CLI input parsers
+- [cli-out-csv](lib/cli-out-csv.md), [cli-out-env](lib/cli-out-env.md), [cli-out-json](lib/cli-out-json.md), [cli-out-toml](lib/cli-out-toml.md), [cli-out-yaml](lib/cli-out-yaml.md) — CLI output formatters
+- [datetime](lib/datetime.md) — Timestamp and duration utilities
+- [encoding](lib/encoding.md) — Base64, hex encoding/decoding
+- [formatter-compact](lib/formatter-compact.md), [formatter-pretty](lib/formatter-pretty.md) — JSON formatters
+- [io](lib/io.md) — File I/O helpers
+- [macros](lib/macros.md) — Code generation and metaprogramming
+- [math](lib/math.md) — Mathematical functions and constants
+- [out-csv](lib/out-csv.md), [out-env](lib/out-env.md), [out-json](lib/out-json.md), [out-toml](lib/out-toml.md), [out-yaml](lib/out-yaml.md) — Output formatters
+- [protocols-dns](lib/protocols-dns.md), [protocols-grpc](lib/protocols-grpc.md), [protocols-socks5](lib/protocols-socks5.md), [protocols-websocket](lib/protocols-websocket.md) — Network protocol helpers
+- [regex](lib/regex.md) — Regular expression utilities
+- [strings](lib/strings.md) — String manipulation functions
+- [toml-lite](lib/toml-lite.md) — TOML parsing
