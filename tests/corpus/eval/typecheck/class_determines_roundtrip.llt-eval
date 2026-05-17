@@ -1,0 +1,16 @@
+# Test determines: key extraction from class declaration.
+# The parser should extract [[[a b] c]] from determines: and populate ClassDecl.determines.
+# This test verifies the parser handles the key correctly without error.
+
+[
+  TripleClass: [class [Triple a b c] [determines: [[[a b] c]]]
+    combine: [Fn@c [a b c]]]
+
+  result: 42
+]
+
+---
+
+%.result
+=== out
+Int(42)

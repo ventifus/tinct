@@ -167,9 +167,9 @@ msg: [recv ch]         # take a value — suspends until one is available
 
 # Select — wait for whichever channel fires first, dispatch to handler
 [select
-  [sig-ch  [fn [_]   [exit 0]]]
-  [req-ch  [fn [req] [task [handle-request req]]]]
-  [tick-ch [fn [_]   [log "heartbeat"]]]]
+  [sig-ch  [fn [let _]   [exit 0]]]
+  [req-ch  [fn [let req] [task [handle-request req]]]]
+  [tick-ch [fn [let _]   [log "heartbeat"]]]]
 ```
 
 ### Automatic Parallel Dict Evaluation
@@ -195,10 +195,10 @@ For sequences — where elements are evaluated lazily on demand — `par` is an 
 
 ```tinct
 # Sequential: map forces one element at a time
-[map [fn [x] [expensive x]] big-list]
+[map [fn [let x] [expensive x]] big-list]
 
 # Parallel: all elements submitted to the thread pool simultaneously
-[par-map [fn [x] [expensive x]] big-list]
+[par-map [fn [let x] [expensive x]] big-list]
 
 # par as a primitive: start evaluating now, return value when demanded
 a: [par [expensive-computation input]]
@@ -216,8 +216,8 @@ Event sources are Rust builtins that return a `Channel` written to by a backgrou
 # OS signal handling — element type is Signal (string name of the signal)
 sig: [signal-channel SIGTERM SIGINT]
 
-# Periodic timer (ms interval) — delivers scheduled Timestamp
-tick: [timer-channel %clock 5000]
+# Periodic timer — interval is a Duration, delivers scheduled Timestamp
+tick: [timer-channel %clock [seconds 5]]
 
 # Incoming HTTP requests — from stdlib/http.llt, not a Rust builtin
 reqs: [http-channel cap 8080]
@@ -226,12 +226,12 @@ reqs: [http-channel cap 8080]
 changes: [watch-channel dir-cap "/etc/config"]
 
 # Event loop: handle all sources until exit
-[loop [fn []
+[loop [fn [let]
   [select
-    [sig     [fn [name] [log [str "signal: " name]] [exit 0]]]
-    [reqs    [fn [req]  [task [handle req]]]]
-    [tick    [fn [_]    [log "tick"]]]
-    [changes [fn [_]    [reload-config]]]]]]
+    [sig     [fn [let name] [log [str "signal: " name]] [exit 0]]]
+    [reqs    [fn [let req]  [task [handle req]]]]
+    [tick    [fn [let _]    [log "tick"]]]
+    [changes [fn [let _]    [reload-config]]]]]]
 ```
 
 **Rust event source builtins** (`signal-channel`, `timer-channel`, `watch-channel`) follow the same pattern: spawn a background task that writes to a channel; the channel is the user-visible value; `ChannelInner` holds an `AbortHandle` and calls `abort()` in `Drop`, so cleanup is automatic when all references to the channel are dropped.
@@ -274,24 +274,24 @@ Two generic factories in `stdlib/serve.llt` cover all server-side protocol layer
 ```tinct
 # 1:1 — each incoming connection is transformed into one outgoing connection
 # (TLS handshake, WireGuard, Noise Protocol, SSH transport, ...)
-make-serve-layer: [fn [accept-fn]
-  [fn [conn-ch config]
+make-serve-layer: [fn [let accept-fn]
+  [fn [let conn-ch config]
     [out: [channel 100]]
-    [task [loop [fn []
+    [task [loop [fn [let]
       [match [recv conn-ch]
-        [[ok raw] [send out [accept-fn raw config]]]
-        [[err _]  [null]]]]]]          # channel closed — stop
+        [case [let raw: Ok]  [send out [accept-fn raw config]]]
+        [case [let _: Err]   null]]]]]    # channel closed — stop
     out]]
 
 # 1:N — each incoming connection produces multiple items
 # (HTTP/1.1 keep-alive, HTTP/2 streams, HTTP/3 QUIC streams, WebSocket frames, ...)
-make-multiplex-serve: [fn [conn-fn]
-  [fn [conn-ch]
+make-multiplex-serve: [fn [let conn-fn]
+  [fn [let conn-ch]
     [out: [channel 1000]]
-    [task [loop [fn []
+    [task [loop [fn [let]
       [match [recv conn-ch]
-        [[ok conn] [task [conn-fn conn out]]]   # each conn gets its own task
-        [[err _]   [null]]]]]]
+        [case [let conn: Ok]  [task [conn-fn conn out]]]   # each conn gets its own task
+        [case [let _: Err]    null]]]]]
     out]]
 ```
 
@@ -404,13 +404,13 @@ wg-ch:  [wireguard-serve s-ch config]      # WireGuard on top
 
 # Server push: H2Conn is the same type on both sides
 conns: [h2-serve tls-ch]                   # Channel@H2Conn
-[loop [fn []
+[loop [fn [let]
   [conn: [recv conns]]
   [task [handle-h2-conn conn]]]]
 
-handle-h2-conn: [fn [conn]
+handle-h2-conn: [fn [let conn]
   [reqs: [h2-incoming conn]]              # Channel@H2Message — incoming requests
-  [loop [fn []
+  [loop [fn [let]
     [req: [recv reqs]]
     [h2-push conn push-promise pushed-response]    # server initiates push (result discarded)
     [h2-respond conn req response]]]]              # then responds
@@ -429,7 +429,7 @@ The DNS client and server are transport-agnostic. On the client side, a **resolv
 ```tinct
 # stdlib/dns.llt
 
-dns-resolve: [fn [resolver name type]
+dns-resolve: [fn [let resolver name type]
   [await [resolver [name: name type: type id: [random-id]]]]]
 
 # All identical from dns-resolve's perspective:
@@ -438,23 +438,23 @@ dns-resolve: [fn [resolver name type]
 [dns-resolve dot-resolver  "example.com" A]
 [dns-resolve doq-resolver  "example.com" A]
 
-# Resolver factories — each returns a Fn@DnsQuery@Task@DnsResponse
-dns-udp-resolver: [fn [cap host port]
-  [fn [q] [task [decode-dns-wire [udp-request cap host port [encode-dns-wire q]]]]]]
+# Resolver factories — each returns a function DnsQuery → Task@DnsResponse
+dns-udp-resolver: [fn [let cap host port]
+  [fn [let q] [task [decode-dns-wire [udp-request cap host port [encode-dns-wire q]]]]]]
 
-dns-tls-resolver: [fn [cap host port]
-  [fn [q] [task [dns-tls-send cap host port q]]]]
+dns-tls-resolver: [fn [let cap host port]
+  [fn [let q] [task [dns-tls-send cap host port q]]]]
 
-dns-tls-send: [fn [cap host port q]
+dns-tls-send: [fn [let cap host port q]
   [conn: [tls-layer [tcp-connect cap host port] tls-config]]
   [write-handle conn [encode-dns-length-prefixed q]]
   [decode-dns-wire [read-dns-length-prefixed conn]]]
 
-dns-https-resolver: [fn [cap url]
+dns-https-resolver: [fn [let cap url]
   [client: [http-client cap url]]
-  [fn [q] [task [dns-https-send client q]]]]
+  [fn [let q] [task [dns-https-send client q]]]]
 
-dns-https-send: [fn [client q]
+dns-https-send: [fn [let client q]
   [resp: [await [http-request client
                   [method:  "POST"
                    path:    "/dns-query"
@@ -462,10 +462,10 @@ dns-https-send: [fn [client q]
                    body:    [encode-dns-wire q]]]]]
   [decode-dns-wire resp.body]]
 
-dns-quic-resolver: [fn [cap host port]
-  [fn [q] [task [dns-quic-send cap host port q]]]]
+dns-quic-resolver: [fn [let cap host port]
+  [fn [let q] [task [dns-quic-send cap host port q]]]]
 
-dns-quic-send: [fn [cap host port q]
+dns-quic-send: [fn [let cap host port q]
   [stream: [quic-open-stream [quic-connect cap host port]]]
   [write-handle stream [encode-dns-length-prefixed q]]
   [decode-dns-wire [read-dns-length-prefixed stream]]]
@@ -474,8 +474,8 @@ dns-quic-send: [fn [cap host port q]
 On the server side, a **`Channel@DnsQuery`** is the transport-agnostic interface. Transport adapters produce this channel; the DNS server loop consumes it identically regardless of transport:
 
 ```tinct
-dns-server-loop: [fn [query-ch]
-  [loop [fn []
+dns-server-loop: [fn [let query-ch]
+  [loop [fn [let]
     [q: [recv query-ch]]
     [task [q.respond [dns-lookup q.name q.type]]]]]]
 
@@ -491,16 +491,16 @@ Each adapter wraps its transport's response mechanism in the `respond` closure:
 ```tinct
 # DoH adapter: Channel@RawRequest → Channel@DnsQuery
 # The respond closure encodes the DNS answer as an HTTP response
-dns-https-server: [fn [http-ch]
-  [filter-map [fn [req]
+dns-https-server: [fn [let http-ch]
+  [filter-map [fn [let req]
     [if [= [get-header req "content-type"] "application/dns-message"]
-      [ok [name:    [decode-dns-name req.body]
+      [Ok [name:    [decode-dns-name req.body]
            type:    [decode-dns-type req.body]
-           respond: [fn [answer]           # wraps req.respond
+           respond: [fn [let answer]       # wraps req.respond
                       [req.respond [status:  200
                                     headers: [["content-type" "application/dns-message"]]
                                     body:    [encode-dns-wire answer]]]]]]
-      [null]]]
+      null]]
   http-ch]]
 ```
 
@@ -508,18 +508,18 @@ dns-https-server: [fn [http-ch]
 
 ```tinct
 # 1. Define the domain message type with a respond closure
-AppMessage: { ...fields...  respond: Fn@AppResponse@Null }
+AppMessage: { ...fields...  respond: Fn@Null [AppResponse] }
 
 # 2. Write a codec adapter: Channel@TransportMsg → Channel@AppMessage
-my-server: [fn [transport-ch]
-  [map [fn [msg]
+my-server: [fn [let transport-ch]
+  [map [fn [let msg]
     [...fields decoded from msg...
-     respond: [fn [reply] [msg.respond [encode reply]]]]]
+     respond: [fn [let reply] [msg.respond [encode reply]]]]]
   transport-ch]]
 
-# 3. Write resolver factories for the client: resource → Fn@AppQuery@Task@AppResponse
-my-client: [fn [cap endpoint]
-  [fn [query] [task [...connect, encode, send, receive, decode...]]]]
+# 3. Write resolver factories for the client: resource → Fn@[Task AppResponse] [AppQuery]
+my-client: [fn [let cap endpoint]
+  [fn [let query] [task [...connect, encode, send, receive, decode...]]]]
 
 # 4. Application uses either without knowing the transport
 [app-loop [my-server [http3-requests [h3-serve [quic-listen cap 443]]]]]
@@ -560,7 +560,7 @@ DoH, REST APIs, gRPC, MQTT, and any other application-layer protocol are instanc
 
 ```tinct
 # stdlib/async.llt
-loop-select: [fn [sources]
+loop-select: [fn [let sources]
   [select-once sources]        # handle one event (result discarded)
   [loop-select sources]]       # tail-recursive loop
 ```
@@ -607,11 +607,11 @@ tokio::select! {
 `timeout` wraps a task with a deadline. It is a Rust builtin (not a stdlib wrapper) using `tokio::time::timeout` directly:
 
 ```tinct
-# Returns Ok@T on success, Err@"timeout" if the task exceeds the deadline
-result: [timeout 5000 [task [slow-fetch cap url]]]
+# Returns Ok@T on success, Err@"timeout" if the duration elapses
+result: [timeout [seconds 5] [task [slow-fetch cap url]]]
 
 # With context propagation: the task's context is a child of the caller's
-result: [timeout-with ctx 5000 [task [fetch-with-ctx ctx url]]]
+result: [timeout-with ctx [seconds 5] [task [fetch-with-ctx ctx url]]]
 ```
 
 `timeout` on a task that is already done returns immediately. The losing task is `abort()`ed.
@@ -636,15 +636,15 @@ exit-now:     Int → Null  # process::exit(code) immediately; no drain, no clea
 # stdlib/async.llt
 
 # Graceful: cancel all tasks, wait indefinitely for them to finish, then exit.
-exit: [fn [code]
+exit: [fn [let code]
   [cancel-root]
   [drain]
   [exit-now code]]
 
 # Graceful with an explicit drain window — caller decides how long to wait.
-graceful-exit: [fn [drain-ms code]
+graceful-exit: [fn [let drain-timeout@Duration code@Int]
   [cancel-root]
-  [timeout drain-ms [task [drain]]]    # wait up to drain-ms; result discarded
+  [timeout drain-timeout [task [drain]]]    # wait up to drain-timeout; result discarded
   [exit-now code]]
 ```
 
@@ -652,13 +652,13 @@ There is no built-in timeout on `exit`. If tasks do not finish, `exit` waits ind
 
 ```tinct
 # 10-second drain window, then force-exit
-[on-signal SIGTERM [fn [_] [graceful-exit 10000 0]]]
+[on-signal SIGTERM [fn [let _] [graceful-exit [seconds 10] 0]]]
 
 # Wait as long as it takes
-[on-signal SIGTERM [fn [_] [exit 0]]]
+[on-signal SIGTERM [fn [let _] [exit 0]]]
 
 # Immediate — no cleanup at all
-[on-signal SIGKILL [fn [_] [exit-now 0]]]
+[on-signal SIGKILL [fn [let _] [exit-now 0]]]
 ```
 
 Tasks that want to perform cleanup when cancelled use `[finally cleanup body]` or check `[cancelled? [context]]` at yield points.
@@ -682,9 +682,9 @@ Tasks that want to perform cleanup when cancelled use `[finally cleanup body]` o
 Expansion (in `stdlib/async.llt`):
 
 ```tinct
-finally: [fn [cleanup body]
+finally: [fn [let cleanup body]
   [result: body]                                          # evaluate body; bind result
-  [with-context [non-cancellable] [fn [] cleanup]]        # run cleanup in fresh context
+  [with-context [non-cancellable] [fn [let] cleanup]]     # run cleanup in fresh context
   result]                                                 # return body's result
 ```
 
@@ -772,13 +772,13 @@ This is the same model as Go's `context.Context`: parent cancels → subtasks ca
 `Task` and `Channel` are parameterized types:
 
 ```tinct
-task-a@Task@Int:    [task [+ 1 2]]
-ch@Channel@Str:     [channel 10]
+task-a@[Task Int]:  [task [+ 1 2]]
+ch@[Channel Str]:   [channel 10]
 result@Int:         [await task-a]
 msg@Str:            [recv ch]
 
-# await-all: homogeneous — Seq@Task@T → Seq@T, results in submission order
-results@Seq@Int:    [await-all [task [+ 1 2]] [task [* 3 4]]]
+# await-all: homogeneous — [Seq [Task T]] → Seq@T, results in submission order
+results@[Seq Int]:  [await-all [task [+ 1 2]] [task [* 3 4]]]
 
 # For heterogeneous concurrent work, use separate awaits or a sum type:
 [
@@ -947,7 +947,8 @@ stdlib/
   result.llt        — and-then, map-ok, map-err, unwrap-or, unwrap, ok?, err?, collect-results
   cap.llt           — narrow, readable?, writable?, with-temp, distributable?
 
-  net.llt           — parse-url, url-encode/decode, form-encode/decode, resolve-host,
+  net.llt           — Port: [type Int@[is: [between 1 65535]  repr: u16]]
+                      parse-url, url-encode/decode, form-encode/decode, resolve-host,
                       higher-level connection utilities  (expanded from existing)
   http1.llt         — HTTP/1.1 framing in pure tinct on top of Handle:
                         parse-request, write-response, serve-conn, serve-keepalive (server)
@@ -1009,18 +1010,26 @@ This example combines several design elements in one program:
 # One dict: channels, helpers, and all bindings together.
 # Letrec semantics mean everything can reference everything else freely.
 [
-  cap:       %net-cap
+  cap:            %net-cap
+
+  # Port is a stdlib/net.llt type alias — shown here for clarity
+  Port:           [type Int@[is: [between 1 65535]  repr: u16]]
+
+  # Configuration
+  port:           [@Port 4500]
+  probe-interval: [seconds 5]
+  client-backlog:          256            # unhandled connection backlog
 
   # Transport stack: QUIC → H3 connections → raw H3 streams → byte-level ICMP
-  quic-ch:   [quic-listen cap 4500]
+  quic-ch:   [quic-listen cap port]
   h3-ch:     [h3-serve quic-ch]               # Channel@H3Conn — connection promotion
   stream-ch: [h3-stream-ch h3-ch]             # Channel@Handle — one stream per H3 conn
 
   # Registry of active client streams for server-initiated pings
-  clients:   [channel 1000]
+  clients:   [channel client-backlog]
 
-  # Timer: server-initiated RTT probes every 5 seconds
-  tick:      [timer-channel %clock 5000]
+  # Timer: server-initiated RTT probes on configured interval
+  tick:      [timer-channel %clock probe-interval]
 
   # Respond to incoming echo requests; handle incoming echo replies (from our own probes)
   # read-icmp decodes the wire format into IcmpMessage nominal variants,
@@ -1030,21 +1039,21 @@ This example combines several design elements in one program:
   #     [EchoReply   [id: Int  seq: Int  data: Str]]
   #     [Unreachable [code: Int]]
   #     [TimeExceeded]]
-  serve-icmp-stream: [fn [stream]
-    [loop [fn []
+  serve-icmp-stream: [fn@Null [let stream@Handle]
+    [loop [fn [let]
       [pkt: [read-icmp stream]]
       [match pkt
-        [[EchoRequest req]  [send-icmp stream [EchoReply req.id req.seq req.data]]]
-        [[EchoReply   rep]  [log [str "RTT reply seq=" rep.seq]]]
-        [_                  null]]]]]
+        [case [let req: EchoRequest]  [send-icmp stream [EchoReply req.id req.seq req.data]]]
+        [case [let rep: EchoReply]    [log [str "RTT reply seq=" rep.seq]]]
+        [case [let _]                 null]]]]]
 
   # Send echo requests to all registered clients and log completion
-  probe-all-clients: [fn [clients-ch scheduled]
-    [lag:    [timestamp-diff [now %clock] scheduled]]
-    [seq:    [random-id]]
-    [probe:  [EchoRequest 0 seq "rtt-probe"]]
-    [active: [collect-channel clients-ch]]
-    [par-map [fn [stream]
+  probe-all-clients: [fn@Null [let clients-ch@[Channel Handle]  scheduled@Timestamp]
+    [lag:    [timestamp-diff [now %clock] scheduled]
+     seq:    [random-id]
+     probe:  [EchoRequest 0 seq "rtt-probe"]
+     active: [collect-channel clients-ch]]
+    [par-map [fn [let stream]
       [send-icmp stream probe]
       [send clients-ch stream]]             # put stream back in registry
      active]
@@ -1052,12 +1061,12 @@ This example combines several design elements in one program:
 ]
 
 # The event loop is the emitted value — demanding it drives evaluation of everything above.
-[loop [fn []
+[loop [fn [let]
   [select
-    [stream-ch [fn [stream]
+    [stream-ch [fn [let stream]
                  [send clients stream]
                  [task [serve-icmp-stream stream]]]]
-    [tick      [fn [scheduled]
+    [tick      [fn [let scheduled]
                  [probe-all-clients clients scheduled]]]]]]
 ```
 
@@ -1071,7 +1080,7 @@ This example combines several design elements in one program:
 | Bidirectional H3Conn | Server both receives from clients and sends to them on same streams |
 | Per-connection tasks | Each stream gets `[task [serve-icmp-stream stream]]` |
 | Shared mutable registry | `clients` channel acts as a concurrent queue of active streams |
-| Timer-driven server-initiated work | `timer-channel %clock 5000` delivers scheduled `Timestamp`; lag = `timestamp-diff now scheduled` |
+| Timer-driven server-initiated work | `timer-channel %clock [seconds 5]` delivers scheduled `Timestamp`; lag = `timestamp-diff [now %clock] scheduled` |
 | Parallel probe fan-out | `par-map` sends to all clients concurrently |
 | Transport-agnostic ICMP logic | `serve-icmp-stream` only sees `Handle` — works over any byte transport |
 
@@ -1083,12 +1092,13 @@ A client connecting to this server would use the symmetric stack:
   cap:    %net-cap
   conn:   [quic-connect cap "server.example.com" 4500]
   h3:     [h3-connect conn h3-config]
-  stream: [h3-open-stream h3]    # raw H3 stream — same type as the server sees
-  t0:     [time-now clock-cap]
+  stream: [h3-open-stream h3]          # raw H3 stream — same type as the server sees
+  t0:     [now %clock]
 ]
-[send-icmp stream [echo-request 0 1 "hello"]]
-[reply: [read-icmp stream]]
-[log [str "RTT: " [- [time-now clock-cap] t0] "ms"]]
+[send-icmp stream [EchoRequest 0 1 "hello"]]
+[match [read-icmp stream]
+  [case [let rep: EchoReply]  [log [str "RTT: " [timestamp-diff [now %clock] t0]]]]
+  [case [let _]               null]]
 ```
 
 ## What Would Change
@@ -1123,12 +1133,12 @@ A client connecting to this server would use the symmetric stack:
 |---------|-----------|-------------|
 | `context` | `→ Context` | Returns the current evaluation's cancellation context. |
 | `with-cancel` | `Context → [Context Fn]` | Child context + a zero-arg cancel function. Cancelling child does not cancel parent. |
-| `with-timeout` | `Context → Int → Context` | Child context that auto-cancels after `n` ms. |
+| `with-timeout` | `Context → Duration → Context` | Child context that auto-cancels after the given duration. |
 | `with-deadline` | `Context → Timestamp → Context` | Child context that auto-cancels at an absolute time. |
 | `cancelled?` | `Context → Bool` | True if the context has been cancelled. |
 | `non-cancellable` | `→ Context` | Returns a fresh `Context` backed by a root `CancellationToken` that nothing will ever cancel. Used to run cleanup that must not be interrupted. |
 | `with-context` | `Context → Fn@[]@T → T` | Evaluates the zero-arg function in a derived `EvalContext` where the cancel token is replaced by the given `Context`. Required for `[finally ...]`. |
-| `timeout` | `Int → Task@T → Result@T` | Awaits the task; returns `Ok@T` or `Err@"timeout"` if ms elapsed. Aborts the task on timeout. |
+| `timeout` | `Duration → Task@T → Result@T` | Awaits the task; returns `Ok@T` or `Err@"timeout"` if the duration elapses. Aborts the task on timeout. |
 | `cancel-root` | `→ Null` | Cancel the root `CancellationToken`. Signals all tasks to stop. Not capability-gated (process isolation is the security boundary). |
 | `drain` | `→ Null` | Await until all in-flight tasks (including `cluster-local` workers) have finished. Does not include remote workers. |
 | `exit-now` | `Int → Null` | Immediate `process::exit`. No drain, no cleanup. |
@@ -1141,10 +1151,10 @@ A client connecting to this server would use the symmetric stack:
 | `recv` | `Channel@T → T` | Receives next value; suspends until available. Returns error if channel is closed. |
 | `select-once` | `Seq@[Channel@T, Fn@T→R] → R` | Polls channels in pseudo-random order; calls handler of first ready channel. Removes closed channels from consideration; errors if all sources closed. |
 | `par` | `expr → T` | Spawns `expr` on the thread pool immediately; returns same value when demanded. No-op if thunk already in flight. |
-| `par-map` | `Fn@A@B → Seq@A → Seq@B` | Parallel map: all elements submitted to thread pool simultaneously; results in order. |
-| `par-filter` | `Fn@A@Bool → Seq@A → Seq@A` | Parallel filter. |
+| `par-map` | `[Fn@B [A]] → [Seq A] → [Seq B]` | Parallel map: all elements submitted to thread pool simultaneously; results in order. |
+| `par-filter` | `[Fn@Bool [A]] → [Seq A] → [Seq A]` | Parallel filter. |
 | `signal-channel` | `Seq@Signal → Channel@Signal` | Channel that delivers the signal name (`"SIGTERM"`, `"SIGINT"`) when any listed signal fires. Background task aborted when channel is dropped. |
-| `timer-channel` | `ClockCap → Int → Channel@Timestamp` | Fires every `n` milliseconds. Delivers the scheduled fire time as a `Timestamp`. Lag = `[timestamp-diff [now clock] scheduled]`. Dropped ticks not queued. Background task aborted when channel is dropped. |
+| `timer-channel` | `ClockCap → Duration → Channel@Timestamp` | Fires on each interval. Delivers the scheduled fire time as a `Timestamp`. Lag = `[timestamp-diff [now clock] scheduled]`. Dropped ticks not queued. Background task aborted when channel is dropped. |
 | `watch-channel` | `DirCap → Str → Channel@Null` | Fires when the watched path is modified. Background task aborted when channel is dropped. |
 | `tcp-listen` | `NetCap → Int → Channel@Handle` | One bidirectional `Handle` per accepted TCP connection. HTTP/1.1 framing is `stdlib/http1.llt`. |
 | `quic-listen` | `NetCap → Int → Channel@QuicConn` | One `QuicConn` per accepted QUIC connection. HTTP/3 framing via `h3` builtin. |

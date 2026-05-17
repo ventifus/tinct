@@ -78,19 +78,20 @@ A constrained annotation like `m@Monad` implies `Operator` — no separate kind 
 
 ### Type Constructor Application in Annotation Positions
 
-In annotation positions, `[f a]` (square brackets without colons) denotes type constructor application when `f` is either an Operator-kinded type variable (from a class or function annotation) or a user-defined parameterized type alias. Built-in type constructors (`Seq`, `Map`) keep their existing `@Seq@T`, `@Map@K@V` syntax:
+In annotation positions, `[f a]` (square brackets without colons) denotes type constructor application. This form is valid for Operator-kinded type variables and user-defined parameterized type aliases. All parameterized types — including builtins like `Seq` and `Map` — use the same bracket application syntax:
 
 | Syntax | When valid | Meaning |
 |--------|-----------|---------|
 | `@[m a]` | `m` is an Operator type variable | Apply type constructor `m` to type `a` |
-| `@[m [Seq a]]` | `m` is an Operator type variable | `m` applied to `Seq a` (nested) |
+| `@[m [Seq a]]` | `m` is an Operator type variable | `m` applied to `[Seq a]` (nested) |
 | `@[MyAlias Int]` | `MyAlias` is a user parameterized type alias | Alias instantiation |
-| `@Seq@Int` | always | Builtin sequence of `Int` (existing syntax) |
+| `@[Seq Int]` | always | Sequence of `Int` |
+| `@[Map [String: Int]]` | always | Map from String to Int |
 | `@[key: T]` | always | Record type (has colon — not application) |
 
 When an Operator-kinded variable is resolved to a builtin (e.g., `m` resolves to `Seq`), the resulting type is normalized to the builtin form (`Seq(T)`, not `App(Seq, T)`) during instance resolution. This preserves the existing `Type::Seq` variant and avoids introducing a duplicate representation alongside it.
 
-The disambiguation rule: square brackets with at least one colon form a record type. Square brackets without colons are type application — valid only for Operator variables and user aliases, not for bare builtin names.
+The disambiguation rule: square brackets with at least one colon form a record type. Square brackets without colons are type application.
 
 ### Class and Instance Declarations
 

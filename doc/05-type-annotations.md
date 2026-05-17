@@ -89,13 +89,13 @@ port: [@[type: Int  default: 8080] config.port]
 
 ### 4. Parameterized Types
 
-Type constructors take type arguments via chained `@`:
+Type constructors take type arguments via bracket application:
 
 ```tinct
-xs@Seq@Int               # Seq of Int
-scores@Map@[String: Int] # Map from String to Int
-nested@Seq@Seq@Int       # Seq of Seq of Int
-pair@[Pair Int String]   # Pair of Int and String (user-defined)
+xs@[Seq Int]               # Seq of Int
+scores@[Map [String: Int]] # Map from String to Int
+nested@[Seq [Seq Int]]     # Seq of Seq of Int
+pair@[Pair Int String]     # Pair of Int and String (user-defined)
 ```
 
 **Bare type constructors** produce unconstrained versions:
@@ -108,8 +108,8 @@ pair@[Pair Int String]   # Pair of Int and String (user-defined)
 # @Dict: each annotation creates an independent row variable
 process: [fn [x@Dict  y@Dict] ...]   # x and y may have different shapes
 
-# @Seq@Int in assertion position
-items: [@Seq@Int [from-json input]]   # checks element type
+# @[Seq Int] in assertion position
+items: [@[Seq Int] [from-json input]]   # checks element type
 ```
 
 Parameterized aliases use `[ConstructorName TypeArgs...]`:
@@ -128,7 +128,7 @@ y@[Either a b]            # TypeVars — must be in bind: if in fn@[...]
 ```tinct
 x@[or Int Null]           # Int | Null
 x@[or String Int Bool]    # String | Int | Bool
-fn@[return: [or Int Null]] [xs@Seq@Int  target@Int] ...]
+fn@[return: [or Int Null]] [xs@[Seq Int]  target@Int] ...]
 ```
 
 `or` is a type-stage function in the prelude. It produces `[kind: "union" members: [...]]` → `Type::Union(Vec<Type>)`. Union members are normalized: deduplicated, sorted, and flattened (nested unions collapse).
@@ -214,11 +214,11 @@ x@TypedItem
 ```tinct
 # Single TypeVar
 min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]]
-      [xs@Seq@a] ...]
+      [xs@[Seq a]] ...]
 
 # Multiple TypeVars
 zip: [fn@[bind: [a b]  return: [Seq [record left: a  right: b]]]
-      [xs@Seq@a  ys@Seq@b] ...]
+      [xs@[Seq a]  ys@[Seq b]] ...]
 ```
 
 **TypeVar scoping rules:**
@@ -230,14 +230,14 @@ zip: [fn@[bind: [a b]  return: [Seq [record left: a  right: b]]]
 ```tinct
 # a declared in bind:, referenced everywhere
 transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Showable]]
-             [xs@Seq@a  f@[Fn@b [a]]] ...]
+             [xs@[Seq a]  f@[Fn@b [a]]] ...]
 ```
 
 **Without `bind:`:** TypeVars introduced solely through `constraint:` keyed entries are also valid for single-TypeVar cases (backward compatible):
 
 ```tinct
 # Equivalent — a introduced via constraint:
-min: [fn@[return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]
+min: [fn@[return: a  constraint: [a: Comparable]] [xs@[Seq a]] ...]
 ```
 
 But when TypeVars appear only in MPTC positional entries (like `c` in `[$Addable a b c]`), `bind:` is required to declare them before use.
@@ -264,7 +264,7 @@ constraint: [a: [each Comparable Showable]]
 **`doc:` and LSP hover.** The doc string is stored in `TypeScheme.doc` and displayed below the inferred signature in LSP hover:
 
 ```
-min: Comparable a => Fn@a [Seq@a]
+min: Comparable a => Fn@a [[Seq a]]
 Return smallest element
 ```
 
@@ -272,20 +272,20 @@ Return smallest element
 
 ```tinct
 min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: "Return smallest element"]
-      [xs@Seq@a] ...]
-# Inferred: Comparable a => Fn@a [Seq@a]
+      [xs@[Seq a]] ...]
+# Inferred: Comparable a => Fn@a [[Seq a]]
 
 compare: [fn@[bind: [a b]  return: Bool  constraint: [a: Comparable  b: Showable]]
           [x@a  y@a  logger@b] ...]
 # Inferred: (Comparable a, Showable b) => Fn@Bool [a a b]
 
 display-sorted: [fn@[bind: [a]  return: String  constraint: [a: [each Comparable Showable]]]
-                 [xs@Seq@a] ...]
-# Inferred: (Comparable a, Showable a) => Fn@String [Seq@a]
+                 [xs@[Seq a]] ...]
+# Inferred: (Comparable a, Showable a) => Fn@String [[Seq a]]
 
 check-all: [fn@[bind: [a]  return: Bool  constraint: [a: Equatable]]
-            [xs@Seq@a  target@a] ...]
-# Inferred: Equatable a => Fn@Bool [Seq@a a]
+            [xs@[Seq a]  target@a] ...]
+# Inferred: Equatable a => Fn@Bool [[Seq a] a]
 
 between: [fn@[bind: [a]
               return: [Fn@Bool [a]]
@@ -701,7 +701,7 @@ See [Type Inference](06-type-inference.md) for the full let-generalization algor
 `ast-of` on an annotated expression returns the resolved type as a type dict (via `type_to_dict()`) alongside the expression's AST structure:
 
 ```tinct
-ast-of: [fn@a  min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]] [xs@Seq@a] ...]]
+ast-of: [fn@a  min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]] [xs@[Seq a]] ...]]
 # → [kind: "fn"
 #    return: [kind: "named" name: "a"]
 #    params: [[kind: "seq" element: [kind: "named" name: "a"]]]

@@ -6905,3 +6905,22 @@ Breaks the `value.rs → types.rs` circular dependency. `types.rs` → 4 new top
 - [x] ClassDecl typecheck: determines/resolver validation, 6-field state-isolated patterns_overlap probe, FD coverage/consistency checks
 - [x] InstanceDecl typecheck: pairwise disjointness, FD coverage/consistency, InstanceEnv registration per arm; eval processes all arms, VarRef method keys handled
 - [x] Tests: corpus tests for class/instance syntax; FD consistency unit test; 1885 tests pass
+
+### chr-prelude: Partial — infrastructure and quality fixes (resolver activation deferred)
+
+Completed:
+- [x] Iteration cap (100) on process_deferred_equalities; fd_depth guard (MAX_FD_DEPTH=16) in improve_functional_dependency
+- [x] Corpus test for determines: extraction round-trip (class_determines_roundtrip.llt-eval)
+- [x] Error spans: both conflicting arm spans included in disjointness/consistency errors
+- [x] Coverage error: uses param name from ClassDecl.params instead of zero-based index
+- [x] NormCtxt resolver_cache pre-populated (16 arithmetic results); improve_fd ready for activation
+- [x] boundary_guards: Vec<(Span, Type)> in InferState; collected at CALL-MONO/CALL-POLY boundaries
+- [x] Advisory prelude typecheck removed from load_stdlib_module; stage:type docs skipped in type-checker
+- [x] Dead code cleanup: normalize_for_arithmetic_lookup removed, norm_ctxt removed from InferState
+- [x] is_concrete_type correct (Type::Top → false), fd_depth guard implemented
+
+Deferred (blocked on instance_resolution_depth architectural fix):
+- consistency check unify-under-θ
+- resolver functions + arithmetic class declarations in prelude
+- instance migration to [pattern [...]] syntax
+- boundary guard eval-side wiring

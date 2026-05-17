@@ -146,19 +146,19 @@ For cases where the parser's call-semantics interpretation loses structure the m
 ```tinct
 # stdlib/syntax.llt — available to any program that opts in
 [defparse-macro fn [params: flat-list  body: expr]
-  [if [let-decl? [first params]]
-    [list 'fn params body]                  # already [let ...], pass through
-    [list 'fn [cons 'let params] body]]]    # prepend let
+  [match [get-or [first-or params {}] "type" null]
+    [[case "let-decl"]  [list 'fn params body]]
+    [[case [let _]]     [list 'fn [cons 'let params] body]]]]
 
 [defparse-macro class [tvars: flat-list  ...body: expr]
-  [if [let-decl? [first tvars]]
-    [list 'class tvars ...body]
-    [list 'class [cons 'let tvars] ...body]]]
+  [match [get-or [first-or tvars {}] "type" null]
+    [[case "let-decl"]  [list 'class tvars ...body]]
+    [[case [let _]]     [list 'class [cons 'let tvars] ...body]]]]
 
 [defparse-macro type [params: flat-list  body: expr]
-  [if [let-decl? [first params]]
-    [list 'type params body]
-    [list 'type [cons 'let params] body]]]
+  [match [get-or [first-or params {}] "type" null]
+    [[case "let-decl"]  [list 'type params body]]
+    [[case [let _]]     [list 'type [cons 'let params] body]]]]
 ```
 
 Each macro body is pure tinct. No Rust flags. No hardcoded transformation logic. The infrastructure provides delivery; all logic lives in the macro.
@@ -301,6 +301,8 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 Each example shows the macro definition, representative inputs, their expansions, and the edge cases that exercise boundary conditions.
 
+Macro bodies are ordinary tinct code. They use `[match ...]`/`[case ...]` for structural dispatch — the same construct as any other tinct expression. AST nodes delivered to macros are tinct dicts with a `type:` field (`"let-decl"`, `"var-ref"`, `"annotated"`, `"call"`, etc.), so dispatch on node kind is `[match node.type ...]`. `[if ...]` is reserved for simple boolean predicates with no else-if chain; everything with two or more distinct outcomes uses `[match ...]`.
+
 ---
 
 ### Simple 1: `unless` — Single `[let ...]` Pattern
@@ -389,17 +391,19 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [defparse-macro fn [params: flat-list  body: expr]
-  [if [or [empty? params] [let-decl? [first params]]]
-    [list 'fn params body]
-    [list 'fn [cons 'let params] body]]]
+  [match [get-or [first-or params {}] "type" null]
+    [[case "let-decl"]  [list 'fn params body]]           # already [let ...] — pass through
+    [[case [let _]]     [list 'fn [cons 'let params] body]]]]  # anything else — wrap
 ```
+
+`first-or` returns the first element of `params`, or `{}` (empty dict) if `params` is empty. `get-or node "type" null` extracts the AST node's type tag; an empty dict produces `null`. Matching on `"let-decl"` is the only positive case; the wildcard arm handles `null` (empty), `"var-ref"`, `"annotated"`, `"call"`, and any other node type.
 
 **Case 1 — already has `[let ...]`:** Idempotent; pass through unchanged.
 
 ```tinct
 [fn [let x@Int y@Float] [+ x y]]
-# params flat-list: [LetDecl([x@Int y@Float])]
-# [let-decl? [first params]] → true
+# params flat-list: [{type: "let-decl" ...}]
+# [get-or [first params] "type" null] → "let-decl"  → pass through
 # → [fn [let x@Int y@Float] [+ x y]]  (unchanged)
 ```
 
@@ -407,8 +411,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [x y] [+ x y]]
-# params flat-list: [VarRef("x") VarRef("y")]
-# [let-decl? [first params]] → false
+# params flat-list: [{type: "var-ref" name: "x"} {type: "var-ref" name: "y"}]
+# first.type → "var-ref" → wildcard arm → wrap
 # → [fn [let x y] [+ x y]]
 ```
 
@@ -416,8 +420,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [x@Int y@Float] [+ x y]]
-# params flat-list: [Annotated("x", Int) Annotated("y", Float)]
-# first is Annotated, not LetDecl → wrap
+# params flat-list: [{type: "annotated" ...} {type: "annotated" ...}]
+# first.type → "annotated" → wildcard arm → wrap
 # → [fn [let x@Int y@Float] [+ x y]]
 ```
 
@@ -425,9 +429,9 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [] body]
-# params flat-list: [] (empty)
-# [empty? params] → true → pass through
-# → [fn [] body]   (or [fn [let] body] — either is valid for zero-param fn)
+# params flat-list: []
+# first-or [] {} → {}  →  get-or {} "type" null → null → wildcard arm
+# → [fn [let] body]   (zero-param fn with explicit [let])
 ```
 
 **Case 5 — variadic params:**
@@ -544,16 +548,20 @@ Two `n@Int` entries are still a parse-time duplicate even under `full-expression
 [defparse-macro pragma [name: flat-list  value: expr]
   [match [length name]
     [[case 0]
-      [macro-error [span-of name]  "pragma: name required"]]
+      [macro-error [span-of name] "pragma: name required"]]
     [[case 1]
-      [if [not [var-ref? [first name]]]
-        [macro-error [span-of [first name]] "pragma name must be a bare identifier"]
-        [if [not [literal? value]]
-          [macro-error [span-of value]       "pragma value must be a literal"]
-          [list 'pragma [first name] value]]]]
+      [match [get-or [first name] "type" null]
+        [[case "var-ref"]
+          [match [literal? value]
+            [[case true]      [list 'pragma [first name] value]]
+            [[case [let _]]   [macro-error [span-of value] "pragma value must be a literal"]]]]
+        [[case [let _]]
+          [macro-error [span-of [first name]] "pragma name must be a bare identifier"]]]]
     [[case [let _]]
-      [macro-error [span-of name]  "pragma: exactly one name allowed"]]]]
+      [macro-error [span-of name] "pragma: exactly one name allowed"]]]]
 ```
+
+Each level of dispatch is a `[match ...]`: length (integer value), node type (string value), literalness (boolean). No `[if [not ...]]` chains — every branch is a case arm with its own arm body.
 
 ```tinct
 [pragma optimize true]       # → [pragma optimize true]  ✓

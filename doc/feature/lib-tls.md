@@ -82,7 +82,7 @@ WgConnector: [
 connect     connector Tcp  host port      → Handle@[Binary Readable Writable Stream]
 connect     connector Udp  host port      → Handle@[Binary Readable Writable Datagram]
 tls-connect connector Tcp  host port opts → Handle@[Binary Readable Writable Stream Tls]
-tls-connect h@Handle@[...Stream RW...] sni opts → Handle@[Binary Readable Writable Stream Tls]
+tls-connect h@[Handle [...Stream RW...]] sni opts → Handle@[Binary Readable Writable Stream Tls]
 ```
 
 **Two forms for `tls-connect`:**
@@ -225,8 +225,8 @@ The options dict keys:
 | `mozilla-roots` | `Bool` | `false` | Also load compiled-in Mozilla roots (`webpki-roots` opt-in) |
 | `client-cert` | `Handle@[Text Readable ...]` | — | PEM client certificate (mTLS) |
 | `client-key` | `Handle@[Text Readable ...]` | — | PEM private key for client cert |
-| `pins` | `@Seq@SpkiPin` | — | SPKI fingerprints; leaf cert must match one. See §SPKI Pins. |
-| `alpn` | `Seq@String` | `["http/1.1"]` | ALPN protocol list for negotiation |
+| `pins` | `@[Seq SpkiPin]` | — | SPKI fingerprints; leaf cert must match one. See §SPKI Pins. |
+| `alpn` | `[Seq String]` | `["http/1.1"]` | ALPN protocol list for negotiation |
 
 ### CA Root Selection
 
@@ -402,7 +402,7 @@ default when `Transport` is omitted.
 - Connector form: `tls-connect connector Transport host port opts`
   opens the connection via `connect connector Transport ...` then
   layers TLS. `Transport` must produce a `Stream` Handle.
-- Handle form: `tls-connect h@Handle@[...Stream RW...] sni opts`
+- Handle form: `tls-connect h@[Handle [...Stream RW...]] sni opts`
   layers TLS on an existing stream Handle.
 
 Returns `Handle@[Binary Readable Writable Stream Tls]`. Default trust:
@@ -505,14 +505,14 @@ pins.
     mozilla-roots:   @[Bool Null]
     client-cert:     @[Handle Null]
     client-key:      @[Handle Null]
-    pins:            @[Seq@SpkiPin Null]
-    alpn:            @[Seq@String Null]
+    pins:            @[[Seq SpkiPin] Null]
+    alpn:            @[[Seq String] Null]
   ]]
 
   PeerCert: [type [
     subject:     @String
     issuer:      @String
-    sans:        @Seq@String
+    sans:        @[Seq String]
     not-before:  @Timestamp
     not-after:   @Timestamp
     spki-sha256: @String

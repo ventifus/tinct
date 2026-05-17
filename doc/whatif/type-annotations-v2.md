@@ -80,7 +80,7 @@ fn@[bind: [a b c]  return: c  constraint: [a: Numeric  b: Numeric  [$Addable a b
 
 ```tinct
 # Single TypeVar
-min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]]  [xs@Seq@a] ...]
+min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]]  [xs@[Seq a]] ...]
 
 # Two TypeVars
 compare: [fn@[bind: [a b]  return: Bool  constraint: [a: Comparable  b: Showable]]
@@ -227,7 +227,7 @@ Type-stage functions return type dicts. Schema for all valid `kind:` values:
 `or:` (colon-suffixed) = always a dict key = always a Record field. `or` (bare in head position) = always a type function call. `@[or: Int  port: Int]` → Record with fields "or" and "port". `@[or Int Null]` → union type. Same bracket disambiguation rule as `[fn [x] x]` vs `[fn: x]`. No special annotation disambiguation.
 
 **Q2: Record collision with reserved keys.**
-A record type with field names that match reserved keys (`type:`, `return:`, etc.) must use a type alias or `@[type: [record fieldname: T ...]]`. The `@` double form `@Record@[...]` is removed — it was the proposed workaround, but it produced ambiguous parsing. Type aliases are the intended solution.
+A record type with field names that match reserved keys (`type:`, `return:`, etc.) must use a type alias or `@[type: [record fieldname: T ...]]`. The double-@ form `@Record@[...]` is removed — it was the proposed workaround, but it produced ambiguous parsing. Type aliases are the intended solution.
 
 **Q3: Macros vs type-stage are orthogonal.**
 Macros operate at parse/expansion time (code → code). Type-stage operates at type-check time (type → type). They compose: macros can produce annotations containing type-stage expressions. Type-stage does not replace macros.
@@ -244,7 +244,7 @@ Separate Env built from `--- stage: type` sections (prelude first, then program)
 ## What Would Change
 
 ### `src/ast.rs` — `Annotation` variants
-Add `Annotated(String, Box<Annotation>)` for chained annotations like `Seq@Int`. Already implemented.
+Add `Annotated(String, Box<Annotation>)` for chained annotations. Already implemented.
 
 ### `src/typecheck_annot.rs` — Annotation resolver
 **fn@[...] path:** Inspect PropertyDict for recognized metadata keys (`return:`, `constraint:`, `bind:`, `kinds:`, `doc:`). If any present → `resolve_fn_metadata()`. If all positional → type expression resolved via type-stage Env.

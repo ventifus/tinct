@@ -2037,9 +2037,11 @@ fn load_stdlib_module(
     crate::desugar::desugar_file(&mut file.node);
     crate::resolve::resolve_file(&file.node);
 
-    // Type errors are advisory; evaluation proceeds regardless.
-    let builtins_env = Rc::new(crate::types::TypeEnv::with_builtins());
-    let _unused = crate::typecheck::typecheck_file_with_types_and_env(&file.node, builtins_env);
+    // Type errors are advisory and the result is discarded, so skip the type-check pass
+    // during stdlib loading. This avoids a full type-check of the prelude (with all its
+    // class/instance declarations) on every create_stdlib_env() call — a significant
+    // cost reduction (~5s per call in debug builds). The prelude's types are properly
+    // checked in build_prelude_env_inner() via typecheck_and_merge_stdlib_module().
 
     let thunk = crate::eval::eval_file(&file.node, Rc::clone(env), ctx)?;
     let val = crate::eval::materialize(&thunk, None, ctx)?;

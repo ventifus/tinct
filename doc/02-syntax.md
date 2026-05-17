@@ -504,40 +504,41 @@ Fn@[Fn@c [b]]                    # Nested: function returning a function type
 
 ### Parameterized Type Annotations
 
-Chaining `@` on a type name passes a type parameter. The right-hand side of each `@` is a type argument, not a nested property annotation.
+Bracket application passes type arguments to a type constructor. The annotation contains a bracket expression that calls a type-stage function with type arguments.
 
 ```tinct
-# Seq — element type via chained @
-xs@Seq@Int                    # Seq of Int
-fn@Seq@String [s@String]      # Function returning Seq of String
+# Seq — element type via bracket application
+xs@[Seq Int]                    # Seq of Int
+fn@[Seq String] [s@String]      # Function returning Seq of String
 
 # Map — two annotation forms
-scores@Map@[String: Int]      # compact: "map from String to Int" (lookup perspective)
-hosts@Map@T1                  # single-arg: "collection of T1 values" (key type: Any)
-index@Map@[String: Any]       # string-keyed, untyped values
-cache@Map                     # bare: Map@[Any: Any]
-transitions@Map@[key: Int  value: Seq@Int]  # explicit named form
+scores@[Map [String: Int]]      # "map from String to Int" (lookup perspective)
+hosts@[Map T1]                  # "collection of T1 values" (key type: Any)
+index@[Map [String: Any]]       # string-keyed, untyped values
+cache@Map                       # bare: any map
+transitions@[Map [key: Int  value: [Seq Int]]]  # explicit named form
 
-# Record — explicit form (bypasses property-dict-key collision for fields named type/default/doc/repr)
-config@Record@[host: String  port: Int]     # explicit Record annotation
-r@Record                                    # any record
+# Records with reserved field names — use a type alias
+Config: [type [record host: String  port: Int]]
+config@Config                                   # alias for the record type
+r@[host: String  port: Int]                     # inline record annotation (no reserved fields)
 
 # Type alias composition
-T1: [type Record@[host: String  port: Int]]
-T2: [type Map@T1]             # Map of T1 values (key: Any) — collection perspective
-T3: [type Map@[String: T1]]   # Map from String to T1 — lookup perspective
-process: [fn [hosts@T2] ...]  # alias resolves transitively
+T1: [type [record host: String  port: Int]]
+T2: [type [Map T1]]            # Map of T1 values (key: Any) — collection perspective
+T3: [type [Map [String: T1]]]  # Map from String to T1 — lookup perspective
+process: [fn [hosts@T2] ...]   # alias resolves transitively
 ```
 
-**Chained `@` means type parameter.** In `xs@Seq@Int`, the first `@` is the annotation separator and `Seq@Int` is the annotation value — a parameterized type name. The second `@` passes `Int` as Seq's element type. This is distinct from nested property annotations: `xs@[type: Seq@Int]` is the full form; `xs@Seq@Int` is shorthand.
+**Bracket application for type parameters.** In `xs@[Seq Int]`, the `@` is the annotation separator and `[Seq Int]` is the annotation — a type-stage function application. `Seq` is called with `Int` as its element type argument. This is identical to how data bracket expressions work: `[Seq Int]` evaluates `Seq` in the type-stage Env and applies `Int` as an argument.
 
-**`Map@T` vs `Map@[K: V]`.** These are two perspectives on the same map type:
-- `Map@T` — collection perspective: iterate the values, key type is `Any`. Useful when you only care about the value type.
-- `Map@[K: V]` — lookup perspective: access by key of type `K`, value type `V`. Useful when the key type matters.
+**`[Map T]` vs `[Map [K: V]]`.** These are two perspectives on the same map type:
+- `[Map T]` — collection perspective: iterate the values, key type is `Any`. Useful when you only care about the value type.
+- `[Map [K: V]]` — lookup perspective: access by key of type `K`, value type `V`. Useful when the key type matters.
 
-**`@Record@[...]` for field-name collisions.** The shorthand `x@[field: Type ...]` already works when field names are unambiguous. Use `@Record@[...]` explicitly when field names collide with annotation property keys (`type`, `default`, `doc`, `repr`) — `x@[type: String]` is parsed as a property dict (setting the `type` property), not as a Record with a `type` field. `x@Record@[type: String]` is unambiguous.
+**Records with reserved field names.** The shorthand `x@[field: Type ...]` works when field names are unambiguous. When field names collide with annotation property keys (`type`, `return`, `default`, `doc`, `is`, `repr`, `constraint`, `bind`, `kinds`), define a type alias and annotate with the alias name — `x@[type: String]` is parsed as a property dict (setting the `type` property), not as a Record with a `type` field.
 
-**Bare `@Map`, `@Seq`, `@Record`** are accepted and mean "any map / any sequence / any record" (equivalent to `Map@[Any: Any]`, `Seq@Any`, `Record{...}`).
+**Bare `@Map`, `@Seq`** are accepted and mean "any map / any sequence" (unconstrained element/key/value types).
 
 **Annotations only.** These parameterized forms are for type annotations and `[type ...]` aliases — they describe types. They do not change how dicts are constructed or accessed at runtime.
 
@@ -559,10 +560,10 @@ The annotation value after `@` may be a single word or a full property dict. A s
 | `Fn@b` | Annotated value: "Fn" annotated with "b" |
 | `[@String $x]` | Type assertion expression |
 | `"a@b"` | Quoted string "a@b" |
-| `x@Seq@Int` | Annotation: x with type Seq(Int) |
-| `x@Map@[String: Int]` | Annotation: x with type Map@[String: Int] |
-| `x@Map@T1` | Annotation: x with type Map@[Any: T1] |
-| `Config: [type Record@[host: String  port: Int]]` | Type alias Config = Record{host:String, port:Int} |
+| `x@[Seq Int]` | Annotation: x with type Seq(Int) |
+| `x@[Map [String: Int]]` | Annotation: x with type Map(String, Int) |
+| `x@[Map T1]` | Annotation: x with type Map(Any, T1) |
+| `Config: [type [record host: String  port: Int]]` | Type alias Config = Record{host:String, port:Int} |
 
 ---
 
@@ -601,9 +602,9 @@ AdminUser: [type [name: Name  age: Age  role: String]]
 Aliases compose with parameterized type annotations:
 
 ```tinct
-Config:     [type Record@[host: String  port: Int]]
-Hosts:      [type Map@Config]           # collection of Config values (key: Any)
-NamedHosts: [type Map@[String: Config]] # lookup: name → Config
+Config:     [type [record host: String  port: Int]]
+Hosts:      [type [Map Config]]           # collection of Config values (key: Any)
+NamedHosts: [type [Map [String: Config]]] # lookup: name → Config
 ```
 
 Type aliases are resolved at type-check time — they have no runtime cost.

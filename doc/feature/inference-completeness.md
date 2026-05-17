@@ -95,7 +95,7 @@ When argument types vary by position — the printf pattern — use a recursive 
 
 ```tinct
 [FormatResult: [class [r@*]
-  [apply-fmt: [fn@r [template@Str collected@Seq@Str]]]]]
+  [apply-fmt: [fn@r [template@Str collected@[Seq Str]]]]]]
 
 [FormatStr: [instance [FormatResult Str]
   [apply-fmt: [fn [t args] [str-format t args]]]]]

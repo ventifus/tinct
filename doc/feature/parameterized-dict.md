@@ -15,7 +15,7 @@ The type hierarchy:
          /    \
     Record    Map@[K: V]          ← structural forms
       |            |
-@[x:T y:U]   @Map@[Int: Seq@Int]  ← concrete annotations
+@[x:T y:U]   @[Map [Int: [Seq Int]]]  ← concrete annotations
 ```
 
 **Runtime:** Both `Record` and `Map@[K: V]` are `Value::Dict(IndexMap<Key, Thunk>)` —
@@ -51,10 +51,10 @@ choice for a general rule.
 **Annotation syntax:**
 
 ```tinct
-transitions: @Map@[Int: Seq@Int]   # NFA: char code → successor state IDs
-groups:      @Map@[Int: String]    # regex: capture group → matched text
-index:       @Map@[Str: Any]       # string-keyed, untyped values
-cache:       @Map                  # bare: Map@[Any: Any]
+transitions: @[Map [Int: [Seq Int]]]   # NFA: char code → successor state IDs
+groups:      @[Map [Int: String]]    # regex: capture group → matched text
+index:       @[Map [Str: Any]]       # string-keyed, untyped values
+cache:       @Map                    # bare: Map[Any: Any]
 ```
 
 ### `Record` — Bare Structural Record Type
@@ -92,7 +92,7 @@ denotes `Record ∨ Map` and does not drive unification of row variables.
 |---------|----------|-------|
 | `@Dict` (row-polymorphic) | `@Record` | Preserves row unification |
 | `@Dict` (any dict) | `@Dict` | Same meaning, now formal |
-| `@Dict` (homogeneous) | `@Map@[K: V]` | More precise |
+| `@Dict` (homogeneous) | `@[Map [K: V]]` | More precise |
 
 ### Access Semantics and `get` Behavior
 
@@ -117,12 +117,12 @@ Access returns `V | Null`:
 adds `get?` for dynamic map access. `get-or` is built on `get?`:
 
 ```tinct
-get-or: [fn@V [map@Map@[K: V]  k@K  default@V]
+get-or: [fn@V [map@[Map [K: V]]  k@K  default@V]
   [x: [get? map k]]
   [if [= x []] default x]]
 ```
 
-**TypeAssert runtime cost:** `[@Map@[K: V] expr]` requires at runtime that all keys are
+**TypeAssert runtime cost:** `[@[Map [K: V]] expr]` requires at runtime that all keys are
 of type K and all values are of type V — an O(n) traversal. This is handled via tinct's
 proxy contract mechanism: keys are checked eagerly on TypeAssert; value types are
 checked lazily on access (wrapped in a guard thunk).
@@ -138,7 +138,7 @@ K and its values are uniformly of type V:
 Record(entries)  <:  Map[K V]
 ```
 
-This rule makes `@Map@[Int: String]` checkable against a dict literal `[0: "a" 1: "b"]` —
+This rule makes `@[Map [Int: String]]` checkable against a dict literal `[0: "a" 1: "b"]` —
 the literal infers a `Record`, and `is_subtype` uses [RECORD→MAP] to verify the annotation.
 
 The converse does **not** hold: `Map@[K: V] <: Record(row)` is false — a map does not
@@ -151,7 +151,7 @@ principal type property: `Record([x: IntLiteral(42), y: IntLiteral(99)], Empty)`
 strictly more informative than `Map@[Str: Int]`, which loses the field-name information.
 
 `Map@[K: V]` arises only from:
-- Explicit `@Map@[K: V]` annotations
+- Explicit `@[Map [K: V]]` annotations
 - Builtins whose return type is declared `Map@[K: V]`
 - Inference from `builtin-reduce` accumulating uniform-value `set` operations (Phase 2 refinement)
 
@@ -184,7 +184,7 @@ BAS refinement in `match` arms narrows from annotated types:
 ```tinct
 [match val
   @[x: Int  y: Str]:  ...    # Record branch — x and y proved present
-  @Map@[Str: Int]:    ...    # Map branch — get returns Int|Null
+  @[Map [Str: Int]]:  ...    # Map branch — get returns Int|Null
   @Dict:              ...    # catch-all for untyped dicts
   _:                  ...]
 ```
@@ -240,7 +240,7 @@ is `true`.
 
 - Chau, C.Y. & Parreaux, L. (2026). "Boolean-Algebraic Subtyping: Intersections, Unions, Negations, and Principal Type Inference." *Proc. ACM Program. Lang.*, 10(POPL). — BAS provides the union type algebra that makes `Dict = Record ∨ Map` well-formed and union elimination in pattern matching sound; prerequisite for this design.
 - Damas, L. & Milner, R. (1982). "Principal type-schemes for functional programs." *POPL '82*, pp. 207–212. — Principal type property: inference must produce the most specific type; motivates why dict literals always infer `Record`, not `Map@[K: V]`.
-- Findler, R.B. & Felleisen, M. (2002). "Contracts for higher-order functions." *ICFP '02*, pp. 48–59. — Proxy contract mechanism for lazy structural TypeAssert; used for O(n) `@Map@[K: V]` runtime validation.
+- Findler, R.B. & Felleisen, M. (2002). "Contracts for higher-order functions." *ICFP '02*, pp. 48–59. — Proxy contract mechanism for lazy structural TypeAssert; used for O(n) `@[Map [K: V]]` runtime validation.
 - Nickel language documentation (Tweag). nickel-lang.org. — Nickel's `{_: Type}` dictionary type as precedent for the Record/Map split; the cross-form subtyping rule `{f₁: T₁, ..., fₙ: Tₙ} <: {_: T}` when all Tᵢ <: T.
 - Pierce, B.C. (2002). *Types and Programming Languages*. MIT Press. — §11 (Record types and subtyping); §23 (Universal polymorphism and System F); row-polymorphic records and parametric type constructors address orthogonal typing concerns.
 - Rémy, D. (1994). "Type Inference for Records in a Natural Extension of ML." *Theoretical Aspects of Object-Oriented Programming* (Gunter & Mitchell, eds.), MIT Press. — Row polymorphism for structural records; basis for tinct's current `Record(Row)` type.

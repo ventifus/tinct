@@ -12,6 +12,7 @@ use crate::types::Substitution;
 /// Normalization context for type expressions.
 ///
 /// Tracks state for TypeStageApp reduction and caching.
+#[derive(Debug, Clone)]
 pub struct NormCtxt {
     /// Cache for normalized types (ground types only)
     pub cache: HashMap<Type, Type>,
@@ -21,16 +22,64 @@ pub struct NormCtxt {
     pub max_depth: u32,
     /// Call stack for cycle detection (resolver function names)
     pub call_stack: Vec<String>,
+    /// Resolver result cache: (resolver_name, [arg_types]) -> result_type
+    /// Pre-populated with arithmetic resolver results (Add/Sub/Mul/Div).
+    /// Key is (resolver function name, arg types), value is the resolved type.
+    pub resolver_cache: HashMap<(String, Vec<Type>), Type>,
 }
 
 impl NormCtxt {
     /// Create an empty normalization context with default limits.
     pub fn new() -> Self {
+        Self::with_arithmetic_cache()
+    }
+
+    /// Create a normalization context pre-populated with arithmetic resolver results.
+    ///
+    /// The resolver_cache is populated with the 16 arithmetic type resolver results:
+    /// - Add/Sub/Mul: (Int, Int) -> Int, mixed Int/Float -> Float, (Float, Float) -> Float
+    /// - Div: all combinations -> Float
+    ///
+    /// This replaces the hardcoded `lookup_arithmetic_instance` function with a cache-based lookup.
+    pub fn with_arithmetic_cache() -> Self {
+        let mut resolver_cache = HashMap::new();
+
+        // Arithmetic resolver results: Add/Sub/Mul share the same type rules, Div always returns Float
+        let ops = [
+            ("AddResult", false),
+            ("SubResult", false),
+            ("MulResult", false),
+            ("DivResult", true),
+        ];
+        let arg_combinations = [
+            (Type::Int, Type::Int),
+            (Type::Int, Type::Float),
+            (Type::Float, Type::Int),
+            (Type::Float, Type::Float),
+        ];
+
+        for (resolver_name, is_div) in &ops {
+            for (a, b) in &arg_combinations {
+                let result_type = if *is_div {
+                    Type::Float // Div always returns Float
+                } else if matches!((a, b), (Type::Int, Type::Int)) {
+                    Type::Int // Int op Int -> Int for Add/Sub/Mul
+                } else {
+                    Type::Float // Any Float involvement -> Float
+                };
+                resolver_cache.insert(
+                    (resolver_name.to_string(), vec![a.clone(), b.clone()]),
+                    result_type,
+                );
+            }
+        }
+
         Self {
             cache: HashMap::new(),
             depth: 0,
             max_depth: 64,
             call_stack: Vec::new(),
+            resolver_cache,
         }
     }
 }
@@ -81,22 +130,28 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
             let all_ground = normalized_args.iter().all(|arg| !arg.has_inference_vars());
 
             if all_ground {
-                // All args are ground — attempt reduction via resolver
+                // All args are ground — attempt reduction via resolver cache lookup
                 // Push fn_name to call stack for cycle detection
                 ctx.call_stack.push(fn_name.clone());
 
-                // STUB: Actual resolver evaluation will be implemented in chr-prelude sprint.
-                // For now, just return the TypeStageApp with normalized args (stuck).
-                // The deferred_equalities mechanism will handle this gracefully.
-                let stuck_result = Type::TypeStageApp {
-                    fn_name: fn_name.clone(),
-                    args: normalized_args,
+                // Check resolver_cache for pre-populated results (arithmetic resolvers)
+                let cache_key = (fn_name.clone(), normalized_args.clone());
+                let result = if let Some(resolved_type) = ctx.resolver_cache.get(&cache_key) {
+                    // Cache hit: return the resolved type directly
+                    resolved_type.clone()
+                } else {
+                    // Cache miss: return stuck TypeStageApp
+                    // (Future work: evaluate user-defined resolvers from prelude)
+                    Type::TypeStageApp {
+                        fn_name: fn_name.clone(),
+                        args: normalized_args,
+                    }
                 };
 
                 // Pop fn_name from call stack
                 ctx.call_stack.pop();
 
-                stuck_result
+                result
             } else {
                 // Not all args are ground — return stuck TypeStageApp with normalized args
                 Type::TypeStageApp {
@@ -284,24 +339,18 @@ mod tests {
         assert_eq!(result, Type::Str);
     }
 
-    /// Test: normalize(TypeStageApp with ground args) returns the TypeStageApp unchanged (stub)
+    /// Test: normalize(TypeStageApp with ground args) returns resolver result from cache
     #[test]
     fn test_normalize_type_stage_app_ground_args() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(); // pre-populated with arithmetic resolver cache
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
         let result = normalize(&ty, &subst, &mut ctx);
-        // STUB: no resolver available yet, should return TypeStageApp stuck
-        assert_eq!(
-            result,
-            Type::TypeStageApp {
-                fn_name: "AddResult".to_string(),
-                args: vec![Type::Int, Type::Float],
-            }
-        );
+        // NormCtxt::new() pre-populates resolver_cache; AddResult(Int, Float) -> Float
+        assert_eq!(result, Type::Float);
     }
 
     /// Test: normalize() cache - second call returns cached result
@@ -506,7 +555,7 @@ mod tests {
         );
     }
 
-    /// Test: normalize() recursively normalizes TypeStageApp args
+    /// Test: normalize() recursively normalizes TypeStageApp args then resolves from cache
     #[test]
     fn test_normalize_type_stage_app_recursive_arg_normalization() {
         let subst = Substitution::new();
@@ -514,7 +563,7 @@ mod tests {
             .type_map
             .borrow_mut()
             .insert("a".to_string(), Type::Int);
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(); // pre-populated with arithmetic resolver cache
 
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
@@ -523,14 +572,8 @@ mod tests {
 
         let result = normalize(&ty, &subst, &mut ctx);
 
-        // Args should be normalized (TypeVar("a") -> Int)
-        assert_eq!(
-            result,
-            Type::TypeStageApp {
-                fn_name: "AddResult".to_string(),
-                args: vec![Type::Int, Type::Float],
-            }
-        );
+        // Args normalized (TypeVar("a") -> Int), then cache hit: AddResult(Int, Float) -> Float
+        assert_eq!(result, Type::Float);
     }
 
     /// Test: NormCtxt::new() initializes with correct defaults
@@ -542,6 +585,8 @@ mod tests {
         assert_eq!(ctx.depth, 0);
         assert_eq!(ctx.max_depth, 64);
         assert!(ctx.call_stack.is_empty());
+        // resolver_cache should be pre-populated with 16 arithmetic entries (4 ops * 4 combinations)
+        assert_eq!(ctx.resolver_cache.len(), 16);
     }
 
     /// Test: cache only stores ground types
@@ -603,5 +648,67 @@ mod tests {
             args: vec![Type::Int, Type::Float],
         };
         assert!(!ty.has_inference_vars());
+    }
+
+    /// Test: resolver_cache lookup for AddResult(Int, Int) -> Int
+    #[test]
+    fn test_resolver_cache_add_int_int() {
+        let subst = empty_subst();
+        let mut ctx = NormCtxt::new();
+        let ty = Type::TypeStageApp {
+            fn_name: "AddResult".to_string(),
+            args: vec![Type::Int, Type::Int],
+        };
+        let result = normalize(&ty, &subst, &mut ctx);
+        // Should resolve to Int via cache lookup
+        assert_eq!(result, Type::Int);
+    }
+
+    /// Test: resolver_cache lookup for AddResult(Int, Float) -> Float
+    #[test]
+    fn test_resolver_cache_add_int_float() {
+        let subst = empty_subst();
+        let mut ctx = NormCtxt::new();
+        let ty = Type::TypeStageApp {
+            fn_name: "AddResult".to_string(),
+            args: vec![Type::Int, Type::Float],
+        };
+        let result = normalize(&ty, &subst, &mut ctx);
+        // Should resolve to Float via cache lookup
+        assert_eq!(result, Type::Float);
+    }
+
+    /// Test: resolver_cache lookup for DivResult(Int, Int) -> Float
+    #[test]
+    fn test_resolver_cache_div_int_int() {
+        let subst = empty_subst();
+        let mut ctx = NormCtxt::new();
+        let ty = Type::TypeStageApp {
+            fn_name: "DivResult".to_string(),
+            args: vec![Type::Int, Type::Int],
+        };
+        let result = normalize(&ty, &subst, &mut ctx);
+        // Should resolve to Float via cache lookup
+        assert_eq!(result, Type::Float);
+    }
+
+    /// Test: resolver_cache miss for unknown resolver
+    #[test]
+    fn test_resolver_cache_miss_unknown_resolver() {
+        let subst = empty_subst();
+        let mut ctx = NormCtxt::new();
+        let ty = Type::TypeStageApp {
+            fn_name: "UnknownResolver".to_string(),
+            args: vec![Type::Int, Type::Float],
+        };
+        let result = normalize(&ty, &subst, &mut ctx);
+        // Should return stuck TypeStageApp (cache miss)
+        assert_eq!(
+            result,
+            Type::TypeStageApp {
+                fn_name: "UnknownResolver".to_string(),
+                args: vec![Type::Int, Type::Float],
+            }
+        );
     }
 }

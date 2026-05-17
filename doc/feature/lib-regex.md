@@ -198,14 +198,14 @@ nfa-accepts: [fn [nfa s]
 [
   NfaState: [type [
     transitions: @Dict
-    epsilon:     @Seq@Int
+    epsilon:     @[Seq Int]
     accept:      @Bool
-    group-start: @Seq@Int
-    group-end:   @Seq@Int
+    group-start: @[Seq Int]
+    group-end:   @[Seq Int]
   ]]
 
   NfaDict: [type [
-    states: @Seq@NfaState
+    states: @[Seq NfaState]
     start:  @Int
     groups: @Dict
   ]]
@@ -228,7 +228,7 @@ type even if it has the right shape. The NFA dict is accessible via
 ```tinct
 [compiled: [re-compile "a+"]]
 [nfa: [payload compiled]]   # → NfaDict; inspect states, start, groups
-nfa.states                  # → Seq@NfaState
+nfa.states                  # → [Seq NfaState]
 
 # Write a custom runner against the same NFA:
 [my-run: [fn [s] [my-nfa-sim nfa s]]]
@@ -315,7 +315,7 @@ re-escape-replacement: [fn@String [s@String]
 
 Use this whenever the replacement string comes from user input or config values.
 
-**`re-split pattern@[String|Pattern] s@String`** → `Seq@String`
+**`re-split pattern@[String|Pattern] s@String`** → `[Seq String]`
 
 Parts of `s` between matches. **Zero-length match policy:** if the
 pattern can match the empty string, zero-length matches at the boundary
@@ -343,13 +343,13 @@ re-match   : [fn@Bool                 [pattern@[String Pattern]  s@String]]
 re-find    : [fn@[MatchResult Dict]   # Dict = [] (empty dict) on no match
                [pattern@[String Pattern]  s@String]]
 
-re-findall : [fn@Seq@MatchResult      [pattern@[String Pattern]  s@String]]
+re-findall : [fn@[Seq MatchResult]    [pattern@[String Pattern]  s@String]]
 
 re-replace : [fn@String               [pattern@[String Pattern]
                                        replacement@String
                                        s@String]]
 
-re-split   : [fn@Seq@String           [pattern@[String Pattern]  s@String]]
+re-split   : [fn@[Seq String]         [pattern@[String Pattern]  s@String]]
 ```
 
 `Pattern` is the nominal variant type produced by `re-compile` —

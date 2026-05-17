@@ -77,12 +77,6 @@ pub fn build_prelude_env() -> Rc<TypeEnv> {
     })
 }
 
-/// Inner implementation of `build_prelude_env()`.
-///
-/// Parses the embedded prelude source, runs the full type-checking pipeline
-/// (expand → desugar → resolve → typecheck), and extracts all top-level binding
-/// types into a new `TypeEnv`. Returns the environment even if type errors occur
-/// (best-effort approach).
 /// Helper function to type-check a stdlib module and extract its bindings into the given env.
 /// Returns the final `InferState` on success (used by the prelude path to capture instance_env).
 fn typecheck_and_merge_stdlib_module(
@@ -92,13 +86,19 @@ fn typecheck_and_merge_stdlib_module(
     _source_path: Option<&str>,
 ) -> Result<InferState, ()> {
     // Parse the module source
-    let file = parser::parse(source).map_err(|_| ())?;
+    let mut file = parser::parse(source).map_err(|_| ())?;
 
-    // Run macro expansion.
-    // NOTE: This may recursively call expand_macros if not already inside an expansion.
-    // The expand module's depth guard prevents infinite recursion.
-    let expand_result = expand::expand_macros(file, true).map_err(|_| ())?;
-    let mut file = expand_result.file;
+    // Skip macro expansion for stdlib modules.
+    //
+    // Rationale: stdlib modules (prelude.llt, macros.llt) never use [defmacro ...],
+    // so expand_macros is a no-op for them — but at depth 0 it triggers a full
+    // create_stdlib_env() bootstrap (~20s in debug builds). Since build_prelude_env
+    // is called once per test thread, this turns parallel test runs into a hang
+    // when each of N threads pays the 20s bootstrap cost simultaneously under
+    // memory pressure.
+    //
+    // The previous code called expand::expand_macros(file, true) here, which
+    // recursively built the stdlib just to check for macros that don't exist.
 
     // Desugar and resolve
     desugar::desugar_file(&mut file.node);
@@ -122,6 +122,12 @@ fn typecheck_and_merge_stdlib_module(
     Ok(state)
 }
 
+/// Inner implementation of `build_prelude_env()`.
+///
+/// Parses the embedded prelude source, runs the type-checking pipeline
+/// (desugar → resolve → typecheck), and extracts all top-level binding
+/// types into a new `TypeEnv`. Returns the environment even if type errors occur
+/// (best-effort approach).
 fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Start with builtins
     let mut env = TypeEnv::with_builtins();
