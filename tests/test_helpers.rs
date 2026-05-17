@@ -18,6 +18,8 @@ pub struct TestExpectations {
     pub warn: Option<String>,
     /// Expected error substring (from `=== error` section).
     pub error: Option<String>,
+    /// Expected info/log output (from `=== info` section).
+    pub info: Option<String>,
 }
 
 /// Parsed test file with optional directives.
@@ -137,6 +139,7 @@ pub fn split_test_file(content: &str) -> Result<TestFile, String> {
                 out: None,
                 warn: None,
                 error: None,
+                info: None,
             },
             no_fs,
             cap_net,
@@ -150,6 +153,7 @@ pub fn split_test_file(content: &str) -> Result<TestFile, String> {
     let mut out = None;
     let mut warn = None;
     let mut error = None;
+    let mut info = None;
 
     for (i, (pos, label)) in sections.iter().enumerate() {
         // Content starts after "\n=== label\n"
@@ -195,16 +199,23 @@ pub fn split_test_file(content: &str) -> Result<TestFile, String> {
                     Some(trimmed.to_string())
                 };
             }
+            "info" => {
+                info = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+            }
             "" => {
                 // Bare === without label
                 return Err(
-                    "bare '===' is no longer valid; use '=== out', '=== warn', or '=== error'"
+                    "bare '===' is no longer valid; use '=== out', '=== warn', '=== error', or '=== info'"
                         .to_string(),
                 );
             }
             other => {
                 return Err(format!(
-                    "unknown section label '{}'; valid labels are 'out', 'warn', 'error'",
+                    "unknown section label '{}'; valid labels are 'out', 'warn', 'error', 'info'",
                     other
                 ));
             }
@@ -213,7 +224,12 @@ pub fn split_test_file(content: &str) -> Result<TestFile, String> {
 
     Ok(TestFile {
         input: input.to_string(),
-        expectations: TestExpectations { out, warn, error },
+        expectations: TestExpectations {
+            out,
+            warn,
+            error,
+            info,
+        },
         no_fs,
         cap_net,
     })
