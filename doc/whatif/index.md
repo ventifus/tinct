@@ -37,7 +37,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Consistent Error Handling](completed/error-patterns.md) | **Accepted 2026-05-09.** Nominal `Ok@T\|Err@String` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
+| [Consistent Error Handling](completed/error-patterns.md) | **Accepted 2026-05-09.** Nominal `[or [Ok T] [Err String]]` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
 
 ## Syntax and Ergonomics
 
@@ -154,7 +154,7 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [TLS, PKI, and HTTP](completed/lib-tls.md) | Connector protocol, tls-connect, SpkiPin, HttpConn, system roots default, HTTP/1-3 | 2026-05-07 — `connector-tls` + `http-net` sprints |
 | [Composable Networking v2](completed/lib-net-v2.md) | Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory | 2026-05-09 — `connect-v2`, `http-sessions`, `stdlib-protocols` |
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference | 2026-05-09 — `bas-core` |
-| [Consistent Error Handling](completed/error-patterns.md) | Nominal `Ok@T\|Err@String` Result; `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate | 2026-05-09 — `result-nominal` |
+| [Consistent Error Handling](completed/error-patterns.md) | Nominal `[or [Ok T] [Err String]]` Result; `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate | 2026-05-09 — `result-nominal` |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | `Record` vs `Map[K: V]` type split with bracket application form `@[Map [K: V]]`; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality | 2026-05-09 — `record-map-split` |
 | [Constraint Annotations and fn@[...] Metadata](completed/constraint-annotations.md) | `fn@[return: T constraint: [a: Comparable] doc: "..."]`; TypeVar constraint binding syntax; `fn@Type` shorthand permanent; `TypeScheme.doc` for LSP hover | 2026-05-11 — `constraint-annotations` |
 | [builtin-* Privacy](completed/builtin-privacy.md) | Restrict `builtin-*` aliases to prelude evaluation context; env-layer isolation + T009 warning; migrate macros.llt, path.llt, toml-lite.llt to public wrappers | 2026-05-11 — `builtin-privacy` |

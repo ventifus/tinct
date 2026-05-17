@@ -1063,7 +1063,6 @@ enum StackFrame {
         span_start: Position,
     },
     /// Instance declaration: `[instance ClassName [pattern [...]]`: methods... ...]`
-    /// Also supports legacy syntax: `[instance [ClassName Type] method: impl ...]`
     InstanceDecl {
         class_name: Option<String>,
         /// Match arms: (pattern_expr, method_entries)
@@ -1074,10 +1073,6 @@ enum StackFrame {
         pending_key: Option<Spanned<Expr>>,
         /// Current arm's accumulated method entries (before colon closes the arm)
         current_arm_methods: Vec<Entry>,
-        /// Legacy arm pattern from old `[instance [ClassName Type] ...]` syntax.
-        /// When set, `current_arm_methods` is collected into an arm with this pattern
-        /// at CloseBracket time.
-        legacy_arm_pattern: Option<Spanned<Expr>>,
         span_start: Position,
     },
     /// Pattern declaration: `[pattern [a@Int b@Float]]`
@@ -1915,7 +1910,6 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             pending_arm_pattern: None,
                             pending_key: None,
                             current_arm_methods: Vec::new(),
-                            legacy_arm_pattern: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -2622,7 +2616,6 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         pending_arm_pattern,
                         pending_key,
                         current_arm_methods,
-                        legacy_arm_pattern,
                         span_start,
                     } => {
                         if class_name.is_none() {
@@ -2644,15 +2637,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         } else {
-                            // Finalize current arm methods:
-                            // - Legacy syntax: current_arm_methods collected under legacy_arm_pattern
-                            // - New syntax with colon-started arm: current_arm_methods under last arm's pattern
+                            // Finalize current arm methods by appending to the last arm
                             if !current_arm_methods.is_empty() {
-                                if let Some(pattern) = legacy_arm_pattern {
-                                    // Legacy syntax: finalize the single arm
-                                    arms.push((pattern, current_arm_methods));
-                                } else if let Some(last_arm) = arms.last_mut() {
-                                    // New syntax: methods after colon-started arm
+                                if let Some(last_arm) = arms.last_mut() {
+                                    // Append methods to the current arm
                                     last_arm.1.extend(current_arm_methods);
                                 } else {
                                     close_bracket_recover!(ParseError {
@@ -2662,9 +2650,6 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                         span: Some(span),
                                     });
                                 }
-                            } else if let Some(pattern) = legacy_arm_pattern {
-                                // Legacy syntax with no methods (e.g., [instance [MyClass Int]])
-                                arms.push((pattern, Vec::new()));
                             }
 
                             let instance_expr = Expr::InstanceDecl {
@@ -5022,80 +5007,22 @@ fn push_expr_to_parent(
             Some(StackFrame::InstanceDecl {
                 ref mut class_name,
                 ref mut pending_arm_pattern,
-                ref mut legacy_arm_pattern,
                 ..
             }) => {
                 // InstanceDecl expects: [instance ClassName [pattern [...]]`: methods... ...]
-                // Also supports legacy syntax: [instance [ClassName Type] method: impl ...]
-                // First expression is either a bare class name (VarRef) or a legacy header (Call/Dict).
+                // First expression is the class name (VarRef).
                 // Subsequent pattern expressions are handled as pending_arm_pattern.
                 if class_name.is_none() {
-                    // This is the class name — or legacy header bracket
+                    // This is the class name
                     match &expr.node {
                         Expr::VarRef { name: cls_name, .. } => {
                             *class_name = Some(cls_name.clone());
                             Ok(())
                         }
-                        Expr::Call {
-                            func,
-                            args,
-                            implied: true,
-                            ..
-                        } => {
-                            // Legacy syntax: [instance [ClassName Type1 Type2 ...] ...]
-                            // Extract class name from func, create a synthetic pattern from type args.
-                            if let Expr::VarRef { name: cls_name, .. } = &func.node {
-                                *class_name = Some(cls_name.clone());
-                                // Create a synthetic PatternDecl from the type arguments
-                                let bindings: Vec<Spanned<Expr>> = args
-                                    .iter()
-                                    .map(|arg| Spanned::new(arg.node.clone(), arg.span))
-                                    .collect();
-                                let pattern =
-                                    Spanned::new(Expr::PatternDecl { bindings }, expr.span);
-                                *legacy_arm_pattern = Some(pattern);
-                                Ok(())
-                            } else {
-                                Err(ParseError {
-                                    message:
-                                        "instance form expects class name after 'instance' keyword"
-                                            .to_string(),
-                                    span: Some(expr.span),
-                                })
-                            }
-                        }
-                        Expr::Dict(entries)
-                            if entries.len() >= 2
-                                && entries.iter().all(|e| e.node.key.is_none()) =>
-                        {
-                            // Legacy syntax with positional-only dict: [instance [ClassName Type] ...]
-                            // where the bracket parsed as a Dict with auto-indexed entries.
-                            // First entry is the class name, rest are type args.
-                            if let Expr::VarRef { name: cls_name, .. } = &entries[0].node.value.node
-                            {
-                                *class_name = Some(cls_name.clone());
-                                let bindings: Vec<Spanned<Expr>> = entries[1..]
-                                    .iter()
-                                    .map(|e| {
-                                        Spanned::new(e.node.value.node.clone(), e.node.value.span)
-                                    })
-                                    .collect();
-                                let pattern =
-                                    Spanned::new(Expr::PatternDecl { bindings }, expr.span);
-                                *legacy_arm_pattern = Some(pattern);
-                                Ok(())
-                            } else {
-                                Err(ParseError {
-                                    message:
-                                        "instance form expects class name after 'instance' keyword"
-                                            .to_string(),
-                                    span: Some(expr.span),
-                                })
-                            }
-                        }
                         _ => Err(ParseError {
-                            message: "instance form expects class name after 'instance' keyword"
-                                .to_string(),
+                            message:
+                                "instance form expects class name (VarRef) after 'instance' keyword"
+                                    .to_string(),
                             span: Some(expr.span),
                         }),
                     }

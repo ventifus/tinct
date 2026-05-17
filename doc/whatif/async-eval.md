@@ -607,7 +607,7 @@ tokio::select! {
 `timeout` wraps a task with a deadline. It is a Rust builtin (not a stdlib wrapper) using `tokio::time::timeout` directly:
 
 ```tinct
-# Returns Ok@T on success, Err@"timeout" if the duration elapses
+# Returns [Ok result] on success, [Err "timeout"] if the duration elapses
 result: [timeout [seconds 5] [task [slow-fetch cap url]]]
 
 # With context propagation: the task's context is a child of the caller's
@@ -1138,7 +1138,7 @@ A client connecting to this server would use the symmetric stack:
 | `cancelled?` | `Context → Bool` | True if the context has been cancelled. |
 | `non-cancellable` | `→ Context` | Returns a fresh `Context` backed by a root `CancellationToken` that nothing will ever cancel. Used to run cleanup that must not be interrupted. |
 | `with-context` | `Context → [Fn@T []] → T` | Evaluates the zero-arg function in a derived `EvalContext` where the cancel token is replaced by the given `Context`. Required for `[finally ...]`. |
-| `timeout` | `Duration → Task@T → Result@T` | Awaits the task; returns `Ok@T` or `Err@"timeout"` if the duration elapses. Aborts the task on timeout. |
+| `timeout` | `Duration → Task@T → Result@T` | Awaits the task; returns `[Ok result]` or `[Err "timeout"]` if the duration elapses. Aborts the task on timeout. |
 | `cancel-root` | `→ Null` | Cancel the root `CancellationToken`. Signals all tasks to stop. Not capability-gated (process isolation is the security boundary). |
 | `drain` | `→ Null` | Await until all in-flight tasks (including `cluster-local` workers) have finished. Does not include remote workers. |
 | `exit-now` | `Int → Null` | Immediate `process::exit`. No drain, no cleanup. |

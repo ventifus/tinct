@@ -2,7 +2,7 @@
 # Verifies Comparable constraint is attached to TypeVar 'a'
 [
   MyClass: [class [MyClass a]]
-  MyClassInt: [instance [MyClass Int]]
+  MyClassInt: [instance MyClass [pattern [Int]]:]
   constrained-fn: [fn@[return: a  constraint: [a: MyClass]] [x@a] x]
   result: [constrained-fn 42]
 ]

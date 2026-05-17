@@ -1,0 +1,17 @@
+# Instance with pattern syntax: [instance ClassName [pattern [...]]`: methods...]
+[
+  Equatable: [class [Equatable a]
+    eq: [Fn@Bool [a a]]]
+
+  # New syntax: class name, then [pattern [...]], then colon, then methods
+  EqInt: [instance Equatable [pattern [Int]]:
+    eq: [fn [x y] [= x y]]]
+
+  result: true
+]
+
+---
+
+%.result
+=== out
+Bool(true)

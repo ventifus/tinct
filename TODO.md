@@ -20,7 +20,8 @@ Redesigns `Expr::ClassDecl` and `Expr::InstanceDecl` for the two-bracket class b
 - [x] Add `Expr::PatternDecl { bindings }` to `src/ast.rs` + `StackFrame::PatternDecl`; colon-ahead rejection guard (`src/ast.rs`, `src/parser.rs`)
 - [x] Implement ClassDecl typecheck: determines/resolver validation, coverage, consistency; 6-field probe isolation in patterns_overlap (`src/typecheck.rs`)
 - [x] Implement InstanceDecl typecheck: disjointness, coverage, consistency, InstanceEnv registration, all-arms iteration, VarRef method keys (`src/typecheck.rs`, `src/eval.rs`)
-- [x] Tests: class_fd_basic.llt-eval, instance_pattern_basic.llt-eval, instance_legacy_syntax.llt-eval; unit test for FD consistency violation (`tests/corpus/eval/typecheck/`, `src/lib.rs`)
+- [x] Tests: class_fd_basic.llt-eval, instance_pattern_basic.llt-eval, instance_pattern_syntax.llt-eval; unit test for FD consistency violation (`tests/corpus/eval/typecheck/`, `src/lib.rs`)
+- [x] Remove legacy instance syntax: removed `legacy_arm_pattern` field, `[instance [ClassName Type] ...]` now produces parse error (`src/parser.rs`, `tests/corpus/invalid/instance_legacy_syntax_rejected.llt-eval`)
 
 ### chr-prelude: Migrate arithmetic classes to prelude.llt and implement boundary guard elaboration
 
@@ -34,8 +35,8 @@ Moves the hardcoded arithmetic instance table out of Rust and into tinct itself.
 - [x] Add `instance_resolution_depth: u32` to `InferState`; guard `resolve_instance` call in `check_constraints_on_var` (limit 64, matching GHC `-freduction-depth` per Sulzmann et al. 2007 §3.2); **unblocks all remaining chr-prelude and unified-bindings-migrate work** (`src/type_unify.rs`, `src/type_infer.rs`)
 - [x] Add `in_prelude_load: bool` flag to `InferState`; skip InstanceDecl method body inference during prelude load (`src/type_infer.rs`, `src/typecheck.rs`, `src/imports.rs`)
 - [x] Wire boundary guards from typecheck to eval pipeline: `boundary_guards` on EvalContext, `set_boundary_guards()` method; wired in `eval_source_with_config`, `eval_source_with_cap_net`, `run_eval` (`src/eval.rs`, `src/lib.rs`, `src/main.rs`)
-- [ ] Remove backward-compat legacy instance parsing — after instance_resolution_depth guard is in and all prelude instances migrated (`src/parser.rs`)
-- [ ] Write resolver functions + arithmetic class declarations in prelude.llt; activate `improve_functional_dependency` cache path — requires instance_resolution_depth guard first (`stdlib/prelude.llt`, `src/type_unify.rs`)
+- [x] Remove backward-compat legacy instance parsing — `legacy_arm_pattern` field removed, old syntax now produces parse error; 7 test files converted (`src/parser.rs`)
+- [x] Write resolver functions (AddResult/SubResult/MulResult/DivResult) in `--- stage: type` section + arithmetic class declarations with `[determines: [...] resolver: ...]` + migrate 27 instances to `[instance ClassName [pattern [...]]: [...]]` syntax + 16 new arithmetic instances (`stdlib/prelude.llt`)
 - [x] NormCtxt resolver_cache pre-populated (16 entries); `improve_functional_dependency` has `fd_depth` guard with `MAX_FD_DEPTH=16` (`src/type_normalize.rs`, `src/type_unify.rs`)
 - [x] `boundary_guards: Vec<(Span, Type)>` added to InferState; collected at CALL-MONO and CALL-POLY boundaries (`src/type_infer.rs`, `src/typecheck.rs`)
 - [ ] Wire boundary guards to eval: create guarded thunks from `state.boundary_guards`; eval-side `ThunkState::Guarded` with BlameLabel (`src/eval.rs`)
