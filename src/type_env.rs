@@ -2281,10 +2281,21 @@ impl TypeEnv {
             "revocable".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap)],
-                // TODO(unknown-elimination): Returns {cap: DirCap, revoke: Fn()->Null}.
-                // Expressible as a closed Record type once precise record return types are
-                // supported in builtin signatures.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("cap".to_string(), Type::DirCap),
+                        (
+                            "revoke".to_string(),
+                            Type::Function {
+                                params: vec![],
+                                ret: Box::new(Type::Record(Row {
+                                    fields: HashMap::new(),
+                                })), // Null
+                                variadic: false,
+                            },
+                        ),
+                    ]),
+                })),
                 variadic: false,
             },
         );
@@ -2334,9 +2345,13 @@ impl TypeEnv {
             "recv-datagram".to_string(),
             Type::Function {
                 params: vec![(None, Type::DatagramHandle)],
-                // TODO(unknown-elimination): Returns {data: Bytes, addr: Str, port: Int}.
-                // Expressible as a closed Record once precise record return types land.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("data".to_string(), Type::Bytes),
+                        ("addr".to_string(), Type::Str),
+                        ("port".to_string(), Type::Int),
+                    ]),
+                })),
                 variadic: false,
             },
         );
@@ -2359,9 +2374,13 @@ impl TypeEnv {
             "tls-peer-cert".to_string(),
             Type::Function {
                 params: vec![(None, Type::Handle)],
-                // TODO(unknown-elimination): Returns {subject: Str, issuer: Str, sans: Seq(Str), ...}.
-                // Expressible as a closed Record once precise record return types land.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("subject".to_string(), Type::Str),
+                        ("issuer".to_string(), Type::Str),
+                        ("sans".to_string(), Type::Seq(Box::new(Type::Str))),
+                    ]),
+                })),
                 variadic: false,
             },
         );
@@ -2445,8 +2464,16 @@ impl TypeEnv {
                         ]),
                     ), // body
                 ],
-                // TODO(unknown-elimination): Returns {status: Int, headers: Map(Str,Str), body: Bytes}.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("status".to_string(), Type::Int),
+                        (
+                            "headers".to_string(),
+                            Type::Map(Box::new(Type::Str), Box::new(Type::Str)),
+                        ),
+                        ("body".to_string(), Type::Bytes),
+                    ]),
+                })),
                 variadic: false,
             },
         );
@@ -2458,9 +2485,12 @@ impl TypeEnv {
                     (None, Type::Str),    // host
                     (None, Type::Int),    // timeout_ms
                 ],
-                // TODO(unknown-elimination): Returns {rtt_ms: Int, success: Bool}.
-                // Expressible as a closed Record once precise record return types land.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("rtt_ms".to_string(), Type::Int),
+                        ("success".to_string(), Type::Bool),
+                    ]),
+                })),
                 variadic: false,
             },
         );
@@ -2541,9 +2571,13 @@ impl TypeEnv {
             "list-dir".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
-                // TODO(unknown-elimination): Returns Seq({name: Str, kind: Str, size: Int, ...}).
-                // Expressible once Seq(Record) return types are supported in builtin signatures.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Seq(Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("name".to_string(), Type::Str),
+                        ("kind".to_string(), Type::Str),
+                        ("size".to_string(), Type::Int),
+                    ]),
+                })))),
                 variadic: false,
             },
         );
@@ -2551,9 +2585,13 @@ impl TypeEnv {
             "stat".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
-                // TODO(unknown-elimination): Returns {name: Str, kind: Str, size: Int, ...}.
-                // Expressible as a closed Record once precise record return types land.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("name".to_string(), Type::Str),
+                        ("kind".to_string(), Type::Str),
+                        ("size".to_string(), Type::Int),
+                    ]),
+                })),
                 variadic: false,
             },
         );
@@ -3220,9 +3258,16 @@ impl TypeEnv {
             "timestamp-parts".to_string(),
             Type::Function {
                 params: vec![(None, Type::Timestamp)],
-                // TODO(unknown-elimination): Returns {year: Int, month: Int, day: Int,
-                // hour: Int, minute: Int, second: Int}. Expressible as a closed Record.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("year".to_string(), Type::Int),
+                        ("month".to_string(), Type::Int),
+                        ("day".to_string(), Type::Int),
+                        ("hour".to_string(), Type::Int),
+                        ("minute".to_string(), Type::Int),
+                        ("second".to_string(), Type::Int),
+                    ]),
+                })),
                 variadic: false,
             },
         );
@@ -3264,10 +3309,18 @@ impl TypeEnv {
             "timestamp-in-tz".to_string(),
             Type::Function {
                 params: vec![(None, Type::Timestamp), (None, Type::Timezone)],
-                // TODO(unknown-elimination): Returns {year: Int, month: Int, day: Int,
-                // hour: Int, minute: Int, second: Int, offset-seconds: Int, tz-name: Str}.
-                // Expressible as a closed Record.
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::from([
+                        ("year".to_string(), Type::Int),
+                        ("month".to_string(), Type::Int),
+                        ("day".to_string(), Type::Int),
+                        ("hour".to_string(), Type::Int),
+                        ("minute".to_string(), Type::Int),
+                        ("second".to_string(), Type::Int),
+                        ("offset-seconds".to_string(), Type::Int),
+                        ("tz-name".to_string(), Type::Str),
+                    ]),
+                })),
                 variadic: false,
             },
         );
