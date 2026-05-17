@@ -4,7 +4,7 @@
 [
   use-it: [fn@[return: a constraint: [a: MyClass]] [x@a] x]
   MyClass: [class [MyClass a]]
-  MyClassInt: [instance [MyClass Int]]
+  MyClassInt: [instance MyClass [pattern [Int]]:]
   result: [use-it 42]
 ]
 

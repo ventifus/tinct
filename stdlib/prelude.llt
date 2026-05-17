@@ -31,6 +31,73 @@
   union:   [fn [...types] [kind: "union"        members: types]]
   all:     [fn [...types] [kind: "intersection" members: types]]
   without: [fn [t]        [kind: "negation"     inner: t]]
+
+  # ============================================================================
+  # Arithmetic Type-Stage Resolvers
+  # ============================================================================
+  #
+  # These resolvers compute result types for arithmetic operations with
+  # functional dependencies (a, b) → c. They run at type-check time, not runtime.
+
+  AddResult: [fn [...args]
+    [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+           [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
+        [kind: "named" name: "Int"]
+        [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+               [[kind: "named" name: "Int"]   [kind: "named" name: "Float"]]]
+            [kind: "named" name: "Float"]
+            [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                   [[kind: "named" name: "Float"] [kind: "named" name: "Int"]]]
+                [kind: "named" name: "Float"]
+                [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                       [[kind: "named" name: "Float"] [kind: "named" name: "Float"]]]
+                    [kind: "named" name: "Float"]
+                    [kind: "named" name: "Unknown"]]]]]]
+
+  SubResult: [fn [...args]
+    [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+           [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
+        [kind: "named" name: "Int"]
+        [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+               [[kind: "named" name: "Int"]   [kind: "named" name: "Float"]]]
+            [kind: "named" name: "Float"]
+            [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                   [[kind: "named" name: "Float"] [kind: "named" name: "Int"]]]
+                [kind: "named" name: "Float"]
+                [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                       [[kind: "named" name: "Float"] [kind: "named" name: "Float"]]]
+                    [kind: "named" name: "Float"]
+                    [kind: "named" name: "Unknown"]]]]]]
+
+  MulResult: [fn [...args]
+    [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+           [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
+        [kind: "named" name: "Int"]
+        [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+               [[kind: "named" name: "Int"]   [kind: "named" name: "Float"]]]
+            [kind: "named" name: "Float"]
+            [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                   [[kind: "named" name: "Float"] [kind: "named" name: "Int"]]]
+                [kind: "named" name: "Float"]
+                [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                       [[kind: "named" name: "Float"] [kind: "named" name: "Float"]]]
+                    [kind: "named" name: "Float"]
+                    [kind: "named" name: "Unknown"]]]]]]
+
+  DivResult: [fn [...args]
+    [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+           [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
+        [kind: "named" name: "Int"]
+        [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+               [[kind: "named" name: "Int"]   [kind: "named" name: "Float"]]]
+            [kind: "named" name: "Float"]
+            [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                   [[kind: "named" name: "Float"] [kind: "named" name: "Int"]]]
+                [kind: "named" name: "Float"]
+                [if [= [[builtin-get 0 args] [builtin-get 1 args]]
+                       [[kind: "named" name: "Float"] [kind: "named" name: "Float"]]]
+                    [kind: "named" name: "Float"]
+                    [kind: "named" name: "Unknown"]]]]]]
 ]
 
 ---
@@ -957,104 +1024,111 @@ result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  p
 
 # Maps a function over a wrapped value (fmap)
 Functor@[doc: "Type class for type constructors supporting fmap"]:
-  [class [Functor f]]
+  [class [f]]
 
 # Functor instance for Result type
 FunctorResult@[doc: "Functor instance for Result"]:
-  [instance [Functor Result]
-    fmap: result-map]
+  [instance Functor
+    [pattern [f@Result]]: [fmap: result-map]]
 
 # Functor instance for Seq type
 FunctorSeq@[doc: "Functor instance for Seq"]:
-  [instance [Functor Seq]
-    fmap: map]
+  [instance Functor
+    [pattern [f@Seq]]: [fmap: map]]
 
 # Lifts values and applies wrapped functions (pure, lift2)
 Applicative@[doc: "Type class for applicative functors"]:
-  [class [Applicative f]]
+  [class [f]]
 
 # Applicative instance for Result type
 ApplicativeResult@[doc: "Applicative instance for Result"]:
-  [instance [Applicative Result]
-    pure:  result-ok
-    lift2: [fn [f ra rb]
-      [and-then ra [fn [a]
-      [and-then rb [fn [b]
-        [result-ok [f a b]]]]]]]]
+  [instance Applicative
+    [pattern [f@Result]]: [
+      pure:  result-ok
+      lift2: [fn [f ra rb]
+        [and-then ra [fn [a]
+        [and-then rb [fn [b]
+          [result-ok [f a b]]]]]]]]]
 
 # Applicative instance for Seq type
 ApplicativeSeq@[doc: "Applicative instance for Seq"]:
-  [instance [Applicative Seq]
-    pure:  [fn [x] [x]]
-    lift2: [fn [f sa sb]
-      [flat-map sa [fn [a]
-        [map [fn [b] [f a b]] sb]]]]]
+  [instance Applicative
+    [pattern [f@Seq]]: [
+      pure:  [fn [x] [x]]
+      lift2: [fn [f sa sb]
+        [flat-map sa [fn [a]
+          [map [fn [b] [f a b]] sb]]]]]]
 
 # Sequential composition of wrapped computations (bind)
 Monad@[doc: "Type class for monads"]:
-  [class [Monad m]]
+  [class [m]]
 
 # Monad instance for Result type
 MonadResult@[doc: "Monad instance for Result"]:
-  [instance [Monad Result]
-    bind: and-then]
+  [instance Monad
+    [pattern [m@Result]]: [bind: and-then]]
 
 # Monad instance for Seq type
 MonadSeq@[doc: "Monad instance for Seq"]:
-  [instance [Monad Seq]
-    bind: flat-map]
+  [instance Monad
+    [pattern [m@Seq]]: [bind: flat-map]]
 
 # Reduces a structure to a single value (fold, to-seq)
 Foldable@[doc: "Type class for foldable structures"]:
-  [class [Foldable t]]
+  [class [t]]
 
 # Foldable instance for Seq type
 FoldableSeq@[doc: "Foldable instance for Seq"]:
-  [instance [Foldable Seq]
-    fold:   reduce
-    to-seq: [fn [xs] xs]]
+  [instance Foldable
+    [pattern [t@Seq]]: [
+      fold:   reduce
+      to-seq: [fn [xs] xs]]]
 
 # Foldable instance for Record (Dict) type
 FoldableRecord@[doc: "Foldable instance for Record"]:
-  [instance [Foldable Record]
-    fold:   reduce
-    to-seq: values]
+  [instance Foldable
+    [pattern [t@Record]]: [
+      fold:   reduce
+      to-seq: values]]
 
 # Foldable instance for Result type
 FoldableResult@[doc: "Foldable instance for Result"]:
-  [instance [Foldable Result]
-    fold:   [fn [f init r]
-      [match r
-        [Ok a]:  [f init a]
-        [Err _]: init]]
-    to-seq: [fn [r]
-      [match r
-        [Ok a]:  [0: a]
-        [Err _]: []]]]
+  [instance Foldable
+    [pattern [t@Result]]: [
+      fold:   [fn [f init r]
+        [match r
+          [Ok a]:  [f init a]
+          [Err _]: init]]
+      to-seq: [fn [r]
+        [match r
+          [Ok a]:  [0: a]
+          [Err _]: []]]]]
 
 # Traverses a structure applying effects (traverse)
 Traversable@[doc: "Type class for traversable structures"]:
-  [class [Traversable t]]
+  [class [t]]
 
 # Traversable instance for Seq type
 TraversableSeq@[doc: "Traversable instance for Seq"]:
-  [instance [Traversable Seq]
-    # Primitive fold-based implementation — NOT via generic sequence/traverse
-    # (which would be circular: sequence calls traverse calls t.traverse calls sequence).
-    traverse: [fn [f xs]
-      [reduce
-        [fn [acc x]
-          [f.lift2 [fn [as a] [concat as [a]]] acc [f x]]]
-        [f.pure []]
-        xs]]]
+  [instance Traversable
+    [pattern [t@Seq]]: [
+      # Primitive fold-based implementation — NOT via generic sequence/traverse
+      # (which would be circular: sequence calls traverse calls t.traverse calls sequence).
+      traverse: [fn [f xs]
+        [reduce
+          [fn [acc x]
+            [f.lift2 [fn [as a] [concat as [a]]] acc [f x]]]
+          [f.pure []]
+          xs]]]]
 
 # Traversable instance for Result type
 TraversableResult@[doc: "Traversable instance for Result"]:
-  [instance [Traversable Result]
-    traverse: [fn [f r]
-      [match r
-        [Ok a]:  [f.fmap Ok [f a]]
-        [Err e]: [f.pure [Err e]]]]]
+  [instance Traversable
+    [pattern [t@Result]]: [
+      traverse: [fn [f r]
+        [match r
+          [Ok a]:  [f.fmap Ok [f a]]
+          [Err e]: [f.pure [Err e]]]]]]
 
 # ============================================================================
 # Maybe ADT and Instances
@@ -1079,35 +1153,38 @@ maybe-map@[doc: "Map over Maybe value"]: [fn [f ma]
 
 # Functor instance for Maybe type
 FunctorMaybe@[doc: "Functor instance for Maybe"]:
-  [instance [Functor Maybe]
-    fmap: maybe-map]
+  [instance Functor
+    [pattern [f@Maybe]]: [fmap: maybe-map]]
 
 # Applicative instance for Maybe type
 ApplicativeMaybe@[doc: "Applicative instance for Maybe"]:
-  [instance [Applicative Maybe]
-    pure:  Some
-    lift2: [fn [f ma mb]
-      [match ma
-        [Some a]: [match mb
-          [Some b]: [Some [f a b]]
-          None:     None]
-        None: None]]]
+  [instance Applicative
+    [pattern [f@Maybe]]: [
+      pure:  Some
+      lift2: [fn [f ma mb]
+        [match ma
+          [Some a]: [match mb
+            [Some b]: [Some [f a b]]
+            None:     None]
+          None: None]]]]
 
 # Monad instance for Maybe type
 MonadMaybe@[doc: "Monad instance for Maybe"]:
-  [instance [Monad Maybe]
-    bind: [fn [ma f]
-      [match ma
-        [Some a]: [f a]
-        None:     None]]]
+  [instance Monad
+    [pattern [m@Maybe]]: [
+      bind: [fn [ma f]
+        [match ma
+          [Some a]: [f a]
+          None:     None]]]]
 
 # Traversable instance for Maybe type
 TraversableMaybe@[doc: "Traversable instance for Maybe"]:
-  [instance [Traversable Maybe]
-    traverse: [fn [f ma]
-      [match ma
-        [Some a]: [f.fmap Some [f a]]
-        None:     [f.pure None]]]]
+  [instance Traversable
+    [pattern [t@Maybe]]: [
+      traverse: [fn [f ma]
+        [match ma
+          [Some a]: [f.fmap Some [f a]]
+          None:     [f.pure None]]]]]
 
 # ============================================================================
 # Generic Functions for HKT
@@ -1132,12 +1209,56 @@ whenM: [fn@[return: Unknown  doc: "Conditionally execute monadic action.\n\nExam
   [if cond action [action.pure []]]]
 
 # ============================================================================
+# Type Class Declarations: Arithmetic
+# ============================================================================
+
+# Arithmetic type classes with functional dependencies (a, b) → c
+
+Add@[doc: "Type class for addition with FD (a, b) → c"]:
+  [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]]
+
+Sub@[doc: "Type class for subtraction with FD (a, b) → c"]:
+  [class [a b c]  [determines: [[[a b] c]]  resolver: SubResult]]
+
+Mul@[doc: "Type class for multiplication with FD (a, b) → c"]:
+  [class [a b c]  [determines: [[[a b] c]]  resolver: MulResult]]
+
+Div@[doc: "Type class for division with FD (a, b) → c"]:
+  [class [a b c]  [determines: [[[a b] c]]  resolver: DivResult]]
+
+# Arithmetic instances for Int/Float combinations
+
+[instance Add
+  [pattern [a@Int   b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [+: [fn@Float [x@Float y@Int  ] [builtin-add x y]]]
+  [pattern [a@Float b@Float c@Float]]: [+: [fn@Float [x@Float y@Float] [builtin-add x y]]]]
+
+[instance Sub
+  [pattern [a@Int   b@Int   c@Int  ]]: [-: [fn@Int   [x@Int   y@Int  ] [builtin-sub x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [-: [fn@Float [x@Int   y@Float] [builtin-sub x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [-: [fn@Float [x@Float y@Int  ] [builtin-sub x y]]]
+  [pattern [a@Float b@Float c@Float]]: [-: [fn@Float [x@Float y@Float] [builtin-sub x y]]]]
+
+[instance Mul
+  [pattern [a@Int   b@Int   c@Int  ]]: [*: [fn@Int   [x@Int   y@Int  ] [builtin-mul x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [*: [fn@Float [x@Int   y@Float] [builtin-mul x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [*: [fn@Float [x@Float y@Int  ] [builtin-mul x y]]]
+  [pattern [a@Float b@Float c@Float]]: [*: [fn@Float [x@Float y@Float] [builtin-mul x y]]]]
+
+[instance Div
+  [pattern [a@Int   b@Int   c@Int  ]]: [/: [fn@Int   [x@Int   y@Int  ] [builtin-div x y]]]
+  [pattern [a@Int   b@Float c@Float]]: [/: [fn@Float [x@Int   y@Float] [builtin-div x y]]]
+  [pattern [a@Float b@Int   c@Float]]: [/: [fn@Float [x@Float y@Int  ] [builtin-div x y]]]
+  [pattern [a@Float b@Float c@Float]]: [/: [fn@Float [x@Float y@Float] [builtin-div x y]]]]
+
+# ============================================================================
 # Type Class Declarations: Equatable
 # ============================================================================
 
 # Types supporting equality comparison (=)
 Equatable@[doc: "Type class for types that support equality comparison"]:
-  [class [Equatable a]]
+  [class [a]]
 
 # NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
 # EquatableInt@[doc: "Equatable instance for Int"]:
@@ -1162,7 +1283,7 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 
 # Types supporting ordering (< > <= >=)
 Comparable@[doc: "Type class for types that support ordering"]:
-  [class [Comparable a]]
+  [class [a]]
 
 # NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
 # ComparableInt@[doc: "Comparable instance for Int"]:
@@ -1183,7 +1304,7 @@ Comparable@[doc: "Type class for types that support ordering"]:
 
 # Types that can be converted to string (str)
 Showable@[doc: "Type class for types that can be converted to strings"]:
-  [class [Showable a]]
+  [class [a]]
 
 # NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
 # ShowableInt@[doc: "Showable instance for Int"]:
@@ -1208,17 +1329,17 @@ Showable@[doc: "Type class for types that can be converted to strings"]:
 
 # Collection-level mapping (map over structures)
 Mappable@[doc: "Type class for mappable type constructors (Seq, Dict)"]:
-  [class [Mappable f]]
+  [class [f]]
 
 # Mappable instance for Seq type
 MappableSeq@[doc: "Mappable instance for Seq: fmap = builtin-map"]:
-  [instance [Mappable Seq]
-    fmap: [fn [f xs] [builtin-map f xs]]]
+  [instance Mappable
+    [pattern [f@Seq]]: [fmap: [fn [f xs] [builtin-map f xs]]]]
 
 # Mappable instance for Dict type
 MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
-  [instance [Mappable Dict]
-    fmap: [fn [f m] [builtin-map f m]]]
+  [instance Mappable
+    [pattern [f@Dict]]: [fmap: [fn [f m] [builtin-map f m]]]]
 
 # ============================================================================
 # Type Class Declarations: Appendable
@@ -1226,25 +1347,28 @@ MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
 
 # Collections that support concatenation
 Appendable@[doc: "Type class for appendable types (String, Dict, Seq)"]:
-  [class [Appendable a]]
+  [class [a]]
 
 # Appendable instance for String type
 AppendableStr@[doc: "Appendable instance for String: append-one = str, empty = empty string"]:
-  [instance [Appendable String]
-    append-one: [fn [a b] [str a b]]
-    empty: ""]
+  [instance Appendable
+    [pattern [a@String]]: [
+      append-one: [fn [a b] [str a b]]
+      empty: ""]]
 
 # Appendable instance for Dict type
 AppendableDict@[doc: "Appendable instance for Dict: append-one = merge, empty = empty dict"]:
-  [instance [Appendable Dict]
-    append-one: [fn [a b] [merge a b]]
-    empty: []]
+  [instance Appendable
+    [pattern [a@Dict]]: [
+      append-one: [fn [a b] [merge a b]]
+      empty: []]]
 
 # Appendable instance for Seq type
 AppendableSeq@[doc: "Appendable instance for Seq: append-one = concat, empty = empty seq"]:
-  [instance [Appendable Seq]
-    append-one: [fn [a b] [builtin-concat a b]]
-    empty: []]
+  [instance Appendable
+    [pattern [a@Seq]]: [
+      append-one: [fn [a b] [builtin-concat a b]]
+      empty: []]]
 
 # ============================================================================
 # Sequences

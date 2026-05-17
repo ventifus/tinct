@@ -5,7 +5,7 @@
   MyClass: [class [MyClass a]]
 
   # Define an instance of MyClass for Int
-  MyClassInt: [instance [MyClass Int]
+  MyClassInt: [instance MyClass [pattern [Int]]:
     my-method: [fn [x] [builtin-add x 1]]]
 
   # Use the class in a constrained function (constraint checked at call site)

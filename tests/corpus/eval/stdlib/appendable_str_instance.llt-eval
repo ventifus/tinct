@@ -1,7 +1,7 @@
 # AppendableStr instance: append-one concatenates two strings, empty is "".
 # Access the append-one and empty methods from the instance dict.
 [
-  inst: [instance [Appendable String]
+  inst: [instance Appendable [pattern [String]]:
     append-one: [fn [a b] [str a b]]
     empty: ""]
   result: [inst.append-one "hello" " world"]

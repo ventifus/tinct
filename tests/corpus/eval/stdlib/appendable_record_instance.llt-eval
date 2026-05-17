@@ -1,7 +1,7 @@
 # AppendableRecord instance: append-one merges two dicts, empty is [].
 # merge is right-biased: keys from second dict override first.
 [
-  inst: [instance [Appendable Dict]
+  inst: [instance Appendable [pattern [Dict]]:
     append-one: [fn [a b] [merge a b]]
     empty: []]
   result: [inst.append-one [x: 1 y: 2] [y: 99 z: 3]]
