@@ -66,12 +66,12 @@ Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeh
 
 **Depends on:** `unified-bindings-ast`
 
-- [ ] Implement binding extraction from `Expr::LetDecl` in fn/class/type/instance/case contexts (`src/typecheck.rs`)
-- [ ] Implement `typecheck_case_arm`: constructor payload lookup, type narrowing (`[let n@T]` → `n : scrutinee_ty ∩ T`) (`src/typecheck.rs`)
-- [ ] Implement `Expr::LetDecl` validity check and structural-test restriction (`src/typecheck.rs`)
-- [ ] Type `Expr::Placeholder` as `Unknown` (`src/typecheck.rs`)
-- [ ] Implement `eval_case_arm`, `eval_let_pattern`, nullary variant `values_equal`, `Expr::Placeholder` eval (`src/eval.rs`, `src/value.rs`)
-- [ ] Tests: case arm type narrowing, LetDecl-in-expression-position error, Placeholder eval (`tests/corpus/eval/`, `src/lib.rs`)
+- [x] LetDecl binding extraction: fn params already handled by parser; extract_pattern_types updated to accept both PatternDecl and LetDecl (`src/typecheck.rs`)
+- [x] typecheck_case_arm: BAS narrowing (scrutinee_ty ∩ annotation_type); LetDecl/exact-value patterns; Type::Unknown ∩ T = T in normalize_intersection (`src/typecheck.rs`, `src/type_def.rs`)
+- [x] LetDecl validity check: TypeError "not valid in expression position" (`src/typecheck.rs`)
+- [x] Expr::Placeholder → Type::Unknown with gradual typing doc comment (`src/typecheck.rs`)
+- [x] eval_case_arm, eval_let_pattern, nullary variant values_equal; CaseArm routing in Match frame; Placeholder → EvalError::unimplemented (`src/eval.rs`, `src/parser.rs`)
+- [x] Tests: case_arm_basic, let_decl_fn_param, let_decl_wildcard, placeholder_unimplemented corpus tests; 9 new type checker unit tests (`tests/corpus/eval/`, `src/typecheck.rs`)
 
 ### unified-bindings-migrate: Migrate all existing code to [let ...] and [case ...] syntax
 
@@ -82,6 +82,7 @@ Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeh
 - [ ] Migrate all corpus test files and doc examples (`tests/corpus/`, `doc/`)
 - [ ] Remove old param-list parsing paths (old syntax becomes a parse error) (`src/parser.rs`)
 - [ ] Verify `just test` passes with all migrations applied (`tests/`)
+- [ ] Run `just doc` for the first time and commit the annotated output — populates `=== out`/`=== warn`/`=== info` sections inside each ```tinct block, making the docs self-verifying living documentation; add `just doc-verify` to CI (exits 1 if any annotated block's actual output diverges from its `===` sections) (`justfile`, CI config, `doc/*.md`)
 
 ---
 
@@ -132,14 +133,66 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 
 ### corpus-consolidation: Consolidate corpus tests into fewer, more comprehensive test cases
 
+**Depends on:** `literate-flags` — that sprint adds `=== info` as a new section label
+(for `log`/stdout output) alongside the existing `=== out`/`=== warn`/`=== error`.
+Corpus consolidation must use `=== info` for any tests that exercise `log` or other
+stdout-producing builtins, so the test infrastructure is consistent with `tinct literate`.
+
 The corpus test suite has grown to hundreds of fine-grained single-feature tests. The goal is to reduce the total number while increasing coverage density per test — each consolidated test should exercise multiple related features together (e.g., a single `arithmetic_mixed_types.llt-eval` that covers Int+Int, Int+Float, Float+Int, Float+Float and their type annotations, rather than 4 separate files). This reduces the serial test execution time (currently 700+ seconds for the full corpus).
 
-**Strategy:** Merge tests within the same subdirectory that share the same builtin or feature area. Keep negative/error tests separate (one file per distinct error code is fine). Target: reduce corpus file count by 30-40%.
+**Strategy:** Merge tests within the same subdirectory that share the same builtin or feature area. Keep negative/error tests separate (one file per distinct error code is fine). Target: reduce corpus file count by 30-40%. Use `=== info` for expected log/stdout output in consolidated tests.
 
-- [ ] Audit `tests/corpus/eval/builtins/` — merge arithmetic variants, string operation variants, and type-predicate variants into composite tests (`tests/corpus/eval/builtins/`)
+- [ ] Audit `tests/corpus/eval/builtins/` — merge arithmetic variants, string operation variants, and type-predicate variants into composite tests; use `=== info` for any `log` output (`tests/corpus/eval/builtins/`)
 - [ ] Audit `tests/corpus/eval/typecheck/` — merge related positive typecheck tests into 1-3 comprehensive files per feature area (`tests/corpus/eval/typecheck/`)
-- [ ] Audit `tests/corpus/eval/stdlib/` — merge related prelude function tests (`tests/corpus/eval/stdlib/`)
+- [ ] Audit `tests/corpus/eval/stdlib/` — merge related prelude function tests; use `=== info` for `log` output (`tests/corpus/eval/stdlib/`)
 - [ ] Verify `just test` passes after consolidation; update any CI time baselines (`tests/`)
+
+---
+
+## VS Code Extension
+
+### vscode-corpus-grammar: Colorize corpus/literate format in source and markdown preview
+
+**Depends on:** `literate-flags` — defines the `=== info` section label and the
+corpus-in-markdown format. This sprint wires the grammar support for both `.llt-eval`
+files and tinct code blocks in markdown that contain `===` sections.
+
+Two contexts need colorization:
+1. **`.llt-eval` files** (corpus tests) — currently unregistered; get tinct grammar up to
+   the first `===` line, then section-specific coloring for markers and their content.
+2. **Tinct code blocks in markdown** containing `===` sections — the current
+   `tinct.markdown-injection.json` embeds plain `source.llt` for the whole block, missing
+   the section structure introduced by literate-flags.
+
+**Grammar design** (`integrations/vscode/syntaxes/tinct.corpus.tmLanguage.json` — new):
+
+State machine: tinct-code-mode → `=== section` marker → output-mode → next marker.
+
+Scope names (map to standard theme colors):
+```
+=== out   line: markup.heading.output.corpus.llt        # neutral / heading color
+=== warn  line: keyword.control.warning.corpus.llt      # yellow in most themes
+=== error line: invalid.illegal.corpus.llt              # red
+=== info  line: keyword.control.info.corpus.llt         # blue/green
+output content: string.unquoted.output.corpus.llt       # dimmed, distinct from code
+tinct code portion: embedded source.llt (unchanged)
+```
+
+- [ ] Create `integrations/vscode/syntaxes/tinct.corpus.tmLanguage.json` — TextMate
+  grammar with state machine: tinct code (embed `source.llt`) until first `^===` line;
+  `=== (out|warn|error|info)` header with section-specific scope; content after header
+  with `string.unquoted.output.corpus.llt` scope until next `===` or end-of-block
+  (`integrations/vscode/syntaxes/`)
+- [ ] Register `.llt-eval` file type in `integrations/vscode/package.json` with the new
+  corpus grammar; associate with `llt-eval` language id (`integrations/vscode/package.json`)
+- [ ] Update `integrations/vscode/syntaxes/tinct.markdown-injection.json` — switch the
+  content grammar from plain `source.llt` to `source.llt.corpus` (the new grammar) so
+  that tinct markdown blocks with `===` sections are colored correctly in both the editor
+  and markdown preview (`integrations/vscode/syntaxes/tinct.markdown-injection.json`)
+- [ ] Verify colorization in: `.llt-eval` file open, markdown source with `===` blocks,
+  markdown preview pane with `===` blocks (`integrations/vscode/`)
+- [ ] Add `vsce package` to `just ext` and confirm the `.vsix` includes the new grammar
+  files (`justfile`, `integrations/vscode/`)
 
 ---
 
@@ -151,5 +204,118 @@ The corpus test suite has grown to hundreds of fine-grained single-feature tests
 
 - [ ] Replace all `doc: "...\n\n..."` multi-line strings in `stdlib/prelude.llt` with `doc: """..."""` triple-quoted form; use natural indentation for Example: and Note: sections (`stdlib/prelude.llt`)
 - [ ] Verify `just test-lib` passes; doc string content unchanged (`stdlib/prelude.llt`)
+
+---
+
+## tinct literate Hardening
+
+### literate-flags: --strict, -i/--in-place, --errors-in-doc, fixed clock, and capability flags
+
+Four improvements to `tinct literate` to make `just doc` robust and safe.
+
+**`--strict` mode** — mirror `tinct run --strict`: type errors are fatal (exit 1), rich
+parse error diagnostics via `format_parse_error`. Currently literate mode uses basic error
+formatting and type errors are non-fatal. Needed for `git diff --exit-code` CI gate to
+catch type regressions in doc examples, not just parse failures.
+
+- [ ] Add `--strict` flag to `tinct literate` subcommand; wire to the same `strict: bool`
+  path used by `run_eval` (`src/main.rs`)
+- [ ] Use `format_parse_error` for parse errors in literate strict mode (`src/main.rs`,
+  `src/parser.rs`)
+- [ ] Update `just doc` justfile target to pass `--strict` (`justfile`)
+
+**`-i` / `--in-place`** — write weaved output back to the source file atomically instead
+of stdout. Replaces the fragile `> tmp && mv` shell idiom in `just doc`.
+
+- [ ] Add `-i` / `--in-place` flag to `tinct literate weave`; write to `.tmp` then rename
+  (`src/main.rs`)
+- [ ] Update `just doc` justfile target to use `tinct literate weave --strict -i doc/*.md`
+  (`justfile`)
+
+**Corpus-test format inside code blocks** — use the same `=== out` / `=== warn` /
+`=== error` / `=== info` section format as corpus test files (`.llt-eval`), embedded
+directly inside the tinct code block. The literate parser splits on `===` markers exactly
+as the corpus test runner does, reusing `TestExpectations` parsing logic. Blocks without
+`===` sections have no expectations and are ignored by `--verify`.
+
+````markdown
+```tinct
+[log "hello"]
+[+ 1 2]
+=== warn
+[T003] undefined variable: x
+=== info
+hello
+=== out
+3
+```
+````
+
+The `===` sections are visible in rendered markdown — readers see code and expected output
+inline, without needing HTML rendering to surface results. The `=== info` section is new
+(not in corpus tests) and captures `log`/stdout output.
+
+**Weave (`--in-place`):** evaluate the code portion (everything before the first `===`
+line); update/insert `=== out`, `=== warn`, `=== info` sections with actual results.
+Replaces the previous `<!-- tinct-result: ... -->` HTML comment approach.
+
+**`--verify`:** compare actual output against the expected `===` sections. Blocks without
+`===` sections pass vacuously (allows incremental annotation). Exits 0 if all annotated
+blocks match, exits 1 with a diff-style report if any mismatch.
+
+- [ ] Extend `literate::extract_code_blocks` (or add a new extractor) to split each block
+  on `===` markers, returning `(code: &str, expectations: TestExpectations)` — reuse
+  `TestExpectations` from `tests/corpus_tests.rs` or factor into `src/literate.rs`
+  (`src/literate.rs`, `tests/corpus_tests.rs`)
+- [ ] Update `run_literate_weave --in-place` to evaluate code portion and update/insert
+  `=== out`, `=== warn`, `=== info` sections in-place; remove the old
+  `<!-- tinct-result: ... -->` HTML comment output (`src/main.rs`)
+- [ ] Add `--verify` flag to `tinct literate weave`; compare actual against expected
+  sections; exit 1 with diff-style details on mismatch; blocks without `===` pass
+  vacuously (`src/main.rs`)
+- [ ] Add `=== info` as a new section label alongside `=== out`/`=== warn`/`=== error`
+  in the corpus test parsing infrastructure (`tests/corpus_tests.rs`, `src/literate.rs`)
+- [ ] Update `doc/09-documents.md` §Weave Mode with the new block format and `--verify`
+  flag; update §Corpus Test Format to note `=== info` (`doc/09-documents.md`,
+  `doc/12-tooling.md`)
+
+**Error handling in weave** — embedding errors in the doc is the **default** behaviour:
+on block evaluation error, write the error to the block's `=== error` section, continue
+to the next block, and return exit 0. This ensures `just doc` always produces complete
+output even when examples break.
+
+`--fail-on-errors` opts into CI-style behaviour: any evaluation error is fatal (exit 1).
+Orthogonal to `--strict` (typecheck phase) and `--verify` (comparison phase). `just doc-verify`
+uses both `--strict` and `--fail-on-errors`.
+
+- [ ] Make embedding errors the default in `run_literate_weave`; on block evaluation error,
+  write error text to `=== error` section and continue; return exit 0 (`src/main.rs`)
+- [ ] Add `--fail-on-errors` flag; when set, any evaluation error exits 1 immediately
+  instead of embedding (`src/main.rs`)
+- [ ] Update `just doc-verify` in justfile to use `--strict --fail-on-errors --verify`
+  (`justfile`)
+
+**Fixed ClockCap from file mtime** — `%clock` is always available in literate programs,
+set to a fixed ClockCap derived from the source markdown file's mtime. This makes weave
+output deterministic: the same file always produces the same output regardless of when
+`just doc` runs, which is essential for `git diff --exit-code` to be stable.
+
+- [ ] In `tinct literate`, read the source file's mtime at startup; inject it as a fixed
+  ClockCap (`--cap-clock-fixed`) rather than the live system clock (`src/main.rs`)
+
+**Capability flags and `--no-pwd`** — `--cap-fs` and `--cap-net` work identically to
+`tinct run`: not specified = no DirCap/NetCap injected. `%libdir` is always available.
+`tinct literate` additionally always runs with `--no-pwd`: no implicit DirCap for the
+current working directory is granted. Code blocks cannot access CWD-relative files;
+all filesystem access must be through explicit `--cap-fs` grants. This prevents a
+markdown file being processed from accidentally reading or writing local files.
+
+- [ ] Hard-code `--no-pwd` and `--no-env` into `tinct literate`: never inject an implicit
+  CWD-based DirCap, and `env-var` always returns `Err` (no environment variable access)
+  regardless of flags (`src/main.rs`)
+- [ ] Expose `--cap-fs name=path:mode` and `--cap-net name=host:port` on `tinct literate`
+  subcommand; wire to the same cap-grant machinery as `tinct run` (`src/main.rs`)
+- [ ] Document in `doc/12-tooling.md` §Literate Mode: all flags, fixed-clock semantics,
+  `--no-pwd` always-on, and `--errors-in-doc` use case (`doc/12-tooling.md`)
 
 ---

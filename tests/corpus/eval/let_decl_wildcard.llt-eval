@@ -1,0 +1,7 @@
+# Wildcard in case arm: [case [let _] body].
+# _ is bound as a variable name but unused. Acts as a catch-all arm.
+# Any scrutinee value matches and the body "matched" is returned.
+[match "hello"
+  [case [let _] "matched"]]
+=== out
+String("matched")

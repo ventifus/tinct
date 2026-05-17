@@ -1139,6 +1139,16 @@ pub(crate) fn eval_recursive(
 
             // Try each arm in order
             for arm in arms {
+                // CaseArm-style arms: [case [let ...] body] or [case expr body].
+                // The parser stores these as MatchArm { pattern: Wildcard, body: Expr::CaseArm }.
+                // We detect the sentinel and route through eval_case_arm with the scrutinee thunk.
+                if let Expr::CaseArm { pattern, body } = &arm.body.node {
+                    if let Some(bound_env) = eval_case_arm(pattern, &scrutinee_thunk, &env, ctx)? {
+                        return eval(Rc::new(body.as_ref().clone()), bound_env, ctx);
+                    }
+                    continue;
+                }
+
                 if let Some(bound_env) = match_pattern(
                     &arm.pattern.node,
                     &scrutinee_value,
@@ -1386,7 +1396,11 @@ pub(crate) fn eval_recursive(
         }
         Expr::Placeholder => {
             // Placeholder evaluates to an error on force
-            Err(EvalError::unimplemented("... placeholder reached".to_string(), expr.span).into())
+            Err(EvalError::unimplemented(
+                "placeholder `...` was evaluated — replace with an implementation".to_string(),
+                expr.span,
+            )
+            .into())
         }
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
@@ -2638,6 +2652,118 @@ fn match_pattern(
     }
 }
 
+/// Evaluate a CaseArm pattern against a scrutinee value.
+///
+/// Returns `Some(env)` if the pattern matches (with any bindings added to env),
+/// or `None` if the pattern doesn't match (soft skip).
+///
+/// This is the initial implementation for Task 5 of unified-bindings. It supports:
+/// - `[let ...]` binding patterns with basic variable binding
+/// - Exact-value patterns (literals, VarRef expressions)
+///
+/// Not yet implemented:
+/// - Structural tests (`[let v: Ok]`)
+/// - Multi-element destructuring
+fn eval_case_arm(
+    pattern: &Spanned<Expr>,
+    scrutinee_thunk: &Rc<Thunk>,
+    env: &Rc<RefCell<Environment>>,
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<Option<Rc<RefCell<Environment>>>> {
+    match &pattern.node {
+        Expr::LetDecl { bindings } => {
+            // Binding pattern — process each binding
+            eval_let_pattern(bindings, scrutinee_thunk, env, &pattern.span, ctx)
+        }
+        _ => {
+            // Exact-value match — evaluate the pattern expression and compare
+            let pattern_thunk = eval(Rc::new(pattern.clone()), Rc::clone(env), ctx)?;
+            let pattern_value = materialize(&pattern_thunk, Some(&pattern.span), ctx)?;
+
+            // Materialize scrutinee for comparison
+            let scrutinee_value = materialize(scrutinee_thunk, Some(&pattern.span), ctx)?;
+
+            // Compare values
+            if values_equal(&pattern_value, &scrutinee_value) {
+                Ok(Some(Rc::clone(env)))
+            } else {
+                Ok(None) // Soft skip — arm doesn't match
+            }
+        }
+    }
+}
+
+/// Process a LetDecl binding pattern against a scrutinee value.
+///
+/// Returns `Some(env)` if all bindings match, `None` if any binding fails (soft skip).
+///
+/// Initial implementation supports:
+/// - `VarRef { name }` → bind name to scrutinee
+/// - `Annotated { expr: VarRef { name }, annotation }` → bind name to scrutinee (annotation is compile-time only)
+/// - `Placeholder` → wildcard, matches anything, no binding
+///
+/// For this initial implementation:
+/// - Single-element LetDecl: the whole scrutinee matches the single binding
+/// - Multi-element LetDecl: positional destructuring (match against dict fields by position)
+///
+/// Not yet implemented:
+/// - Structural tests (need parser support for Entry-based patterns)
+/// - Nested LetDecl patterns
+fn eval_let_pattern(
+    bindings: &[Spanned<Expr>],
+    scrutinee_thunk: &Rc<Thunk>,
+    env: &Rc<RefCell<Environment>>,
+    pattern_span: &Span,
+    _ctx: &Rc<EvalContext>,
+) -> EvalResult<Option<Rc<RefCell<Environment>>>> {
+    // For the initial implementation, keep it simple:
+    // Single binding: bind to the whole scrutinee
+    if bindings.len() == 1 {
+        let binding = &bindings[0];
+        match &binding.node {
+            Expr::VarRef { name, .. } => {
+                // Bind the name to the scrutinee (as a thunk, preserving laziness)
+                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+                child_env
+                    .borrow_mut()
+                    .insert(name.clone(), Rc::clone(scrutinee_thunk));
+                Ok(Some(child_env))
+            }
+            Expr::Annotated { name, .. } => {
+                // Type annotation is compile-time only; bind the name
+                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+                child_env
+                    .borrow_mut()
+                    .insert(name.clone(), Rc::clone(scrutinee_thunk));
+                Ok(Some(child_env))
+            }
+            Expr::Placeholder => {
+                // Wildcard — matches anything, no binding
+                Ok(Some(Rc::clone(env)))
+            }
+            _ => {
+                // Unsupported binding form for now
+                Err(EvalError::internal(
+                    format!(
+                        "unsupported binding pattern in [let ...]: {:?}",
+                        binding.node
+                    ),
+                    binding.span,
+                )
+                .into())
+            }
+        }
+    } else {
+        // Multi-element LetDecl: positional destructuring
+        // For now, return an error — this will be implemented in a future sprint
+        Err(EvalError::internal(
+            "multi-element [let ...] patterns not yet implemented".to_string(),
+            *pattern_span,
+        )
+        .into())
+    }
+}
+
 /// Check if two values are equal (for pattern matching).
 /// This is a simple structural equality check.
 fn values_equal(a: &Value, b: &Value) -> bool {
@@ -2658,6 +2784,17 @@ fn values_equal(a: &Value, b: &Value) -> bool {
             },
         ) => &s1[*start1..*end1] == &s2[*start2..*end2],
         (Value::Dict(_), Value::Dict(_)) => false, // Dict equality is complex, not supported for now
+        // Nullary variants compare by tag equality
+        (
+            Value::Variant {
+                tag: tag1,
+                payload: None,
+            },
+            Value::Variant {
+                tag: tag2,
+                payload: None,
+            },
+        ) => tag1 == tag2,
         _ => false,
     }
 }

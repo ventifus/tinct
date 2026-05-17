@@ -1254,6 +1254,12 @@ impl Type {
                     // Top is the identity: T & Top = T, so skip it
                     continue;
                 }
+                Type::Unknown => {
+                    // Unknown is the identity in intersection under AGT (Garcia et al. 2016):
+                    // T & ? = T. The gradual type ? acts as dynamic/Top in intersection contexts.
+                    // This ensures [let n@Int] on an Unknown scrutinee gives n : Int, not n : Int & ?.
+                    continue;
+                }
                 _ => {
                     flattened.push(member);
                 }

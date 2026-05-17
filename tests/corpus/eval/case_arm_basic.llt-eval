@@ -1,0 +1,8 @@
+# Basic case arm: [case [let n@Int] body] inside a match expression.
+# Exercises typecheck_case_arm with a typed binding — n gets type scrutinee_ty ∩ Int.
+# With scrutinee 42 (Int), n is bound to 42, and [+ n 1] evaluates to 43.
+[match 42
+  [case [let n@Int] [+ n 1]]
+  [case [let _] 0]]
+=== out
+Int(43)

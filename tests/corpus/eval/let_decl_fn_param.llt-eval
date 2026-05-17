@@ -1,0 +1,9 @@
+# Typed binding in a case arm used as a function body.
+# Exercises typecheck_case_arm: x gets type scrutinee_ty ∩ Int.
+# With scrutinee 5 (Int), x : Int, and [+ x 1] evaluates to 6.
+[f: [fn [n] [match n
+  [case [let x@Int] [+ x 1]]
+  [case [let _] 0]]]
+ result: [f 5]]
+=== out
+Dict({"f": Function(n), "result": Int(6)})
