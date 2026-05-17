@@ -211,12 +211,16 @@ fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usiz
                 worklist.push(body);
             }
             Expr::TypeAlias { .. } => {}
-            Expr::ClassDecl { .. } | Expr::InstanceDecl { .. } | Expr::PatternDecl { .. } => {}
+            Expr::ClassDecl { .. }
+            | Expr::InstanceDecl { .. }
+            | Expr::PatternDecl { .. }
+            | Expr::LetDecl { .. }
+            | Expr::CaseArm { .. } => {}
             Expr::TypeApp { func, arg } => {
                 worklist.push(func);
                 worklist.push(arg);
             }
-            Expr::Error(_) => {}
+            Expr::Placeholder | Expr::Error(_) => {}
         }
     }
 

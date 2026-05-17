@@ -1829,6 +1829,19 @@ pub(crate) fn eval_step(
             // PatternDecl is only valid in instance match arms, not in value positions.
             unreachable!("PatternDecl should never be evaluated")
         }
+        Expr::LetDecl { .. } => {
+            // LetDecl is only valid in binding contexts, not in value positions.
+            unreachable!("LetDecl should never be evaluated")
+        }
+        Expr::CaseArm { .. } => {
+            // CaseArm is only valid inside match, not in value positions.
+            unreachable!("CaseArm should never be evaluated")
+        }
+        Expr::Placeholder => Action::Continue(Err(EvalError::unimplemented(
+            "... placeholder reached".to_string(),
+            expr.span,
+        )
+        .into())),
         Expr::Rest(_) => Action::Continue(Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,

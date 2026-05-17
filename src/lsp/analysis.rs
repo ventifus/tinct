@@ -607,6 +607,57 @@ fn hover_at_expr(
             None
         }
 
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                if let Some(text) = hover_at_expr(
+                    &binding.node,
+                    binding.span,
+                    offset,
+                    type_map,
+                    scheme_map,
+                    doc_map,
+                    source,
+                    include_graph,
+                    doc_url,
+                ) {
+                    return Some(text);
+                }
+            }
+            None
+        }
+
+        Expr::CaseArm { pattern, body } => {
+            if let Some(text) = hover_at_expr(
+                &pattern.node,
+                pattern.span,
+                offset,
+                type_map,
+                scheme_map,
+                doc_map,
+                source,
+                include_graph,
+                doc_url,
+            ) {
+                return Some(text);
+            }
+            hover_at_expr(
+                &body.node,
+                body.span,
+                offset,
+                type_map,
+                scheme_map,
+                doc_map,
+                source,
+                include_graph,
+                doc_url,
+            )
+        }
+
+        Expr::Placeholder => Some(format!(
+            "Placeholder expression (`...`){}",
+            type_suffix(span, type_map, scheme_map, include_graph, doc_url)
+        )),
+
         Expr::TypeApp { .. } => Some(format!(
             "Type application{}",
             type_suffix(span, type_map, scheme_map, include_graph, doc_url)
@@ -1104,15 +1155,27 @@ fn collect_var_refs_spanned(
             }
         }
 
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                collect_var_refs_spanned(&binding.node, binding.span, name, source, uri, out);
+            }
+        }
+
+        Expr::CaseArm { pattern, body } => {
+            collect_var_refs_spanned(&pattern.node, pattern.span, name, source, uri, out);
+            collect_var_refs_spanned(&body.node, body.span, name, source, uri, out);
+        }
+
         Expr::DefMacro { body, .. } => {
             collect_var_refs_spanned(&body.node, body.span, name, source, uri, out);
         }
 
-        // Literals, TypeApp, Error, Rest, Annotated: no VarRef children.
+        // Literals, TypeApp, Error, Rest, Annotated, Placeholder: no VarRef children.
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
         | Expr::Str(_)
+        | Expr::Placeholder
         | Expr::Rest(_)
         | Expr::Annotated { .. }
         | Expr::TypeApp { .. }
@@ -2647,6 +2710,17 @@ fn collect_rename_edits_spanned(
             }
         }
 
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                collect_rename_edits_spanned(&binding.node, binding.span, name, source, out);
+            }
+        }
+
+        Expr::CaseArm { pattern, body } => {
+            collect_rename_edits_spanned(&pattern.node, pattern.span, name, source, out);
+            collect_rename_edits_spanned(&body.node, body.span, name, source, out);
+        }
+
         Expr::DefMacro { body, .. } => {
             collect_rename_edits_spanned(&body.node, body.span, name, source, out);
         }
@@ -2655,6 +2729,7 @@ fn collect_rename_edits_spanned(
         | Expr::Float(_)
         | Expr::Bool(_)
         | Expr::Str(_)
+        | Expr::Placeholder
         | Expr::Rest(_)
         | Expr::Annotated { .. }
         | Expr::TypeApp { .. }
@@ -2788,6 +2863,17 @@ fn collect_definition_key_edits(expr: &Expr, name: &str, source: &str, out: &mut
             for binding in bindings {
                 collect_definition_key_edits(&binding.node, name, source, out);
             }
+        }
+
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                collect_definition_key_edits(&binding.node, name, source, out);
+            }
+        }
+
+        Expr::CaseArm { pattern, body } => {
+            collect_definition_key_edits(&pattern.node, name, source, out);
+            collect_definition_key_edits(&body.node, name, source, out);
         }
 
         Expr::DefMacro { body, .. } => {
@@ -3053,6 +3139,15 @@ fn collect_dict_keys_in_scope(
                 collect_dict_keys_in_scope(&binding.node, binding.span, offset, items, seen);
             }
         }
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                collect_dict_keys_in_scope(&binding.node, binding.span, offset, items, seen);
+            }
+        }
+        Expr::CaseArm { pattern, body } => {
+            collect_dict_keys_in_scope(&pattern.node, pattern.span, offset, items, seen);
+            collect_dict_keys_in_scope(&body.node, body.span, offset, items, seen);
+        }
         Expr::DefMacro { body, .. } => {
             collect_dict_keys_in_scope(&body.node, body.span, offset, items, seen);
         }
@@ -3270,6 +3365,13 @@ fn find_enclosing_call(expr: &Expr, span: Span, offset: usize) -> Option<((usize
         Expr::PatternDecl { bindings } => bindings
             .iter()
             .find_map(|binding| find_enclosing_call(&binding.node, binding.span, offset)),
+
+        Expr::LetDecl { bindings } => bindings
+            .iter()
+            .find_map(|binding| find_enclosing_call(&binding.node, binding.span, offset)),
+
+        Expr::CaseArm { pattern, body } => find_enclosing_call(&pattern.node, pattern.span, offset)
+            .or_else(|| find_enclosing_call(&body.node, body.span, offset)),
 
         Expr::DefMacro { body, .. } => find_enclosing_call(&body.node, body.span, offset),
 

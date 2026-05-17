@@ -288,6 +288,27 @@ pub enum Expr {
         bindings: Vec<Spanned<Expr>>,
     },
 
+    /// Binding declaration list, e.g. `[let x@Int y@Float]`
+    /// Used in fn params, class TypeVars, type alias params, instance arm keys, and case arms.
+    /// Each element is one of:
+    /// - VarRef(name) — bare binding
+    /// - Annotated(name, ann) — typed binding (name@Type) or structural test (name: Constructor)
+    /// - Wildcard (_) — matches anything, introduces no binding
+    /// - LetDecl { .. } — nested bracket group for multi-payload patterns
+    LetDecl { bindings: Vec<Spanned<Expr>> },
+
+    /// Match arm with explicit scoping, e.g. `[case [let v: Ok] v]`
+    /// Pattern can be either `Expr::LetDecl` (binding pattern) or any expression (exact-value match).
+    CaseArm {
+        pattern: Box<Spanned<Expr>>,
+        body: Box<Spanned<Expr>>,
+    },
+
+    /// Placeholder expression `...` — evaluates to lazy error on force.
+    /// Type: Unknown (satisfies any constraint).
+    /// Eval: raises UnimplementedError when materialized.
+    Placeholder,
+
     /// Parse error — a section of source that couldn't be parsed.
     /// Emitted by bracket-level error recovery (parser-rewrite.md §Phase 4).
     /// The span covers the entire unparseable region.
@@ -598,6 +619,17 @@ impl fmt::Display for Expr {
                 }
                 write!(f, "]")
             }
+            Expr::LetDecl { bindings } => {
+                write!(f, "[let")?;
+                for binding in bindings {
+                    write!(f, " {}", binding.node)?;
+                }
+                write!(f, "]")
+            }
+            Expr::CaseArm { pattern, body } => {
+                write!(f, "[case {} {}]", pattern.node, body.node)
+            }
+            Expr::Placeholder => write!(f, "..."),
             Expr::Error(span) => write!(f, "<error at {span}>"),
         }
     }

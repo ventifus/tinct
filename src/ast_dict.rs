@@ -893,6 +893,56 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::LetDecl { bindings } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("let"), span))),
+            );
+            // Serialize bindings as a list
+            let bindings_dict: IndexMap<Key, ThunkId> = bindings
+                .iter()
+                .enumerate()
+                .filter_map(|(i, binding)| {
+                    Some((
+                        Key::Int(i as i64),
+                        expr_to_thunk_id(&binding.node, binding.span, opts, ctx).ok()?,
+                    ))
+                })
+                .collect();
+            dict.insert(
+                Key::String("bindings".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(bindings_dict),
+                    span,
+                ))),
+            );
+        }
+
+        Expr::CaseArm { pattern, body } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("case"), span))),
+            );
+            dict.insert(
+                Key::String("pattern".into()),
+                expr_to_thunk_id(&pattern.node, pattern.span, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("body".into()),
+                expr_to_thunk_id(&body.node, body.span, opts, ctx)?,
+            );
+        }
+
+        Expr::Placeholder => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    string_val("placeholder"),
+                    span,
+                ))),
+            );
+        }
+
         Expr::TypeApp { func, arg } => {
             dict.insert(
                 Key::String("type".into()),
@@ -1776,6 +1826,28 @@ pub fn dict_to_ast(
                 arg: Box::new(dict_to_ast(&arg_val, ctx)?),
             }
         }
+
+        "let" => {
+            let bindings_val = get_dict_field(dict, "bindings", &["type"], ctx)?;
+            let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
+            let mut bindings = Vec::new();
+            for (_i, binding_val) in bindings_list.into_iter().enumerate() {
+                let binding = dict_to_ast(&binding_val, ctx)?;
+                bindings.push(binding);
+            }
+            Expr::LetDecl { bindings }
+        }
+
+        "case" => {
+            let pattern_val = get_dict_field(dict, "pattern", &["type"], ctx)?;
+            let body_val = get_dict_field(dict, "body", &["type"], ctx)?;
+            Expr::CaseArm {
+                pattern: Box::new(dict_to_ast(&pattern_val, ctx)?),
+                body: Box::new(dict_to_ast(&body_val, ctx)?),
+            }
+        }
+
+        "placeholder" => Expr::Placeholder,
 
         "error" => {
             // Error nodes preserve their span

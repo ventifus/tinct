@@ -453,6 +453,17 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                 .map(|b| adjust_spanned_expr(b, base))
                 .collect(),
         },
+        Expr::LetDecl { bindings } => Expr::LetDecl {
+            bindings: bindings
+                .into_iter()
+                .map(|b| adjust_spanned_expr(b, base))
+                .collect(),
+        },
+        Expr::CaseArm { pattern, body } => Expr::CaseArm {
+            pattern: Box::new(adjust_spanned_expr(*pattern, base)),
+            body: Box::new(adjust_spanned_expr(*body, base)),
+        },
+        Expr::Placeholder => Expr::Placeholder,
         Expr::TypeApp { func, arg } => Expr::TypeApp {
             func: Box::new(adjust_spanned_expr(*func, base)),
             arg: Box::new(adjust_spanned_expr(*arg, base)),
@@ -1078,6 +1089,19 @@ enum StackFrame {
     /// Pattern declaration: `[pattern [a@Int b@Float]]`
     PatternDecl {
         bindings: Vec<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Binding declaration: `[let x@Int y@Float]`
+    /// Used in fn params, class TypeVars, type alias params, instance arm keys, and case arms.
+    LetDecl {
+        bindings: Vec<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Match arm with explicit scoping: `[case [let v: Ok] v]`
+    /// Collects two expressions: first = pattern, second = body.
+    CaseDecl {
+        pattern: Option<Spanned<Expr>>,
+        body: Option<Spanned<Expr>>,
         span_start: Position,
     },
     /// Pipe operator: `lhs | rhs`
@@ -1855,6 +1879,43 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "match" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Let, _keyword_idx)) => {
+                        // LetDecl form: [let x@Int y@Float]
+                        // (depth already checked above)
+                        stack.push(StackFrame::LetDecl {
+                            bindings: Vec::new(),
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "let" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Case, _keyword_idx)) => {
+                        // CaseArm form: [case [let v: Ok] v]
+                        // (depth already checked above)
+                        stack.push(StackFrame::CaseDecl {
+                            pattern: None,
+                            body: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "case" token
                         i += skip_whitespace_tokens(
                             &token_vec,
                             i,
@@ -2698,6 +2759,45 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             &mut current_document_expressions,
                             spanned_pattern,
                         ) {
+                            close_bracket_recover!(push_err);
+                        }
+                    }
+
+                    StackFrame::LetDecl {
+                        bindings,
+                        span_start,
+                    } => {
+                        let let_expr = Expr::LetDecl { bindings };
+                        let spanned_let = Spanned::new(let_expr, dict_span(span_start));
+                        if let Err(push_err) =
+                            push_value(&mut stack, &mut current_document_expressions, spanned_let)
+                        {
+                            close_bracket_recover!(push_err);
+                        }
+                    }
+
+                    StackFrame::CaseDecl {
+                        pattern,
+                        body,
+                        span_start,
+                    } => {
+                        // CaseDecl requires both pattern and body
+                        let pattern_unwrapped = pattern.ok_or_else(|| ParseError {
+                            message: "case form requires a pattern expression".to_string(),
+                            span: Some(dict_span(span_start)),
+                        })?;
+                        let body_unwrapped = body.ok_or_else(|| ParseError {
+                            message: "case form requires a body expression".to_string(),
+                            span: Some(dict_span(span_start)),
+                        })?;
+                        let case_expr = Expr::CaseArm {
+                            pattern: Box::new(pattern_unwrapped),
+                            body: Box::new(body_unwrapped),
+                        };
+                        let spanned_case = Spanned::new(case_expr, dict_span(span_start));
+                        if let Err(push_err) =
+                            push_value(&mut stack, &mut current_document_expressions, spanned_case)
+                        {
                             close_bracket_recover!(push_err);
                         }
                     }
@@ -4009,33 +4109,35 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::Ellipsis => {
-                // Rest/open-row marker: `...` or `...name` inside a dict expression.
-                // Only valid inside a Dict frame (type expression context).
-                // Produces Expr::Rest(None) for anonymous open row, Expr::Rest(Some(name)) for named.
+                // Three-dot handling:
+                // 1. Inside Dict frame + followed by identifier: Expr::Rest(Some(name)) — rest marker
+                // 2. Inside Dict frame + not followed by identifier: Expr::Rest(None) — open row
+                // 3. Outside Dict frame + followed by identifier: error (variadic only in dict)
+                // 4. Outside Dict frame + not followed by identifier: Expr::Placeholder
+                let ellipsis_span = span;
+                i += 1; // Consume ellipsis
+                i +=
+                    skip_whitespace_tokens(&token_vec, i, &mut leading_comments, &mut blank_before);
+
+                // Check for optional name after ...
+                let has_following_identifier =
+                    i < token_vec.len() && matches!(&token_vec[i].node, Token::Identifier(_));
+
                 if let Some(StackFrame::Dict { .. }) = stack.last() {
-                    let ellipsis_span = span;
-                    i += 1; // Consume ellipsis
-                    i += skip_whitespace_tokens(
-                        &token_vec,
-                        i,
-                        &mut leading_comments,
-                        &mut blank_before,
-                    );
-                    // Check for optional name after ...
-                    let (rest_name, rest_end) = if i < token_vec.len() {
-                        match &token_vec[i].node {
-                            Token::Identifier(name) => {
-                                let n = name.clone();
-                                let end_span = token_vec[i].span;
-                                (
-                                    Some(n),
-                                    Span {
-                                        start: ellipsis_span.start,
-                                        end: end_span.end,
-                                    },
-                                )
-                            }
-                            _ => (None, ellipsis_span),
+                    // Inside Dict: this is a rest/open-row marker
+                    let (rest_name, rest_end) = if has_following_identifier {
+                        if let Token::Identifier(name) = &token_vec[i].node {
+                            let n = name.clone();
+                            let end_span = token_vec[i].span;
+                            (
+                                Some(n),
+                                Span {
+                                    start: ellipsis_span.start,
+                                    end: end_span.end,
+                                },
+                            )
+                        } else {
+                            unreachable!()
                         }
                     } else {
                         (None, ellipsis_span)
@@ -4059,7 +4161,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                     last_significant_span = Some(rest_end);
                     i += name_advance;
                     continue;
-                } else {
+                } else if has_following_identifier {
+                    // Outside Dict, with identifier: error (variadic only in dict)
                     let err = ParseError {
                         message: "variadic/rest markers not yet supported outside dict context"
                             .to_string(),
@@ -4070,7 +4173,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             err,
                             span,
                             &token_vec,
-                            i + 1,
+                            i,
                             &mut stack,
                             &mut current_document_expressions,
                             &mut recovered_errors,
@@ -4078,6 +4181,134 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         continue;
                     }
                     return Err(err);
+                } else {
+                    // Outside Dict, no identifier: Expr::Placeholder
+                    let placeholder_expr = Spanned::new(Expr::Placeholder, ellipsis_span);
+                    if let Err(push_err) = push_value(
+                        &mut stack,
+                        &mut current_document_expressions,
+                        placeholder_expr,
+                    ) {
+                        i = recover_from_bracket_error(
+                            push_err,
+                            ellipsis_span,
+                            &token_vec,
+                            i,
+                            &mut stack,
+                            &mut current_document_expressions,
+                            &mut recovered_errors,
+                        );
+                        continue;
+                    }
+                    last_significant_span = Some(ellipsis_span);
+                    continue;
+                }
+            }
+
+            Token::Let | Token::Case => {
+                // Keywords `let` and `case` can appear as dict keys when followed by colon.
+                // Handle them the same as Identifier tokens in value position.
+                let keyword_str = if matches!(token, Token::Let) {
+                    "let"
+                } else {
+                    "case"
+                };
+
+                // Check if this is a key (next token is colon)
+                if let Some((Token::Colon, _)) = peek_next_horizontal(&token_vec, i) {
+                    // This keyword is a dict key candidate
+                    match stack.last_mut() {
+                        Some(StackFrame::Dict {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Dict key: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(keyword_str.to_string()), span);
+                            *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::Call {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Named arg key
+                            *pending_key = Some((keyword_str.to_string(), span));
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::ClassDecl {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Method name in class: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(keyword_str.to_string()), span);
+                            *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::InstanceDecl {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Method name in instance: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(keyword_str.to_string()), span);
+                            *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        _ => {
+                            // Not in a key-accepting context; treat as VarRef
+                            let expr = Spanned::new(Expr::var_ref(keyword_str.to_string()), span);
+                            if let Err(push_err) =
+                                push_value(&mut stack, &mut current_document_expressions, expr)
+                            {
+                                if !stack.is_empty() {
+                                    i = recover_from_bracket_error(
+                                        push_err,
+                                        span,
+                                        &token_vec,
+                                        i + 1,
+                                        &mut stack,
+                                        &mut current_document_expressions,
+                                        &mut recovered_errors,
+                                    );
+                                    continue;
+                                }
+                                return Err(push_err);
+                            }
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    // Not followed by colon; treat as VarRef
+                    let expr = Spanned::new(Expr::var_ref(keyword_str.to_string()), span);
+                    if let Err(push_err) =
+                        push_value(&mut stack, &mut current_document_expressions, expr)
+                    {
+                        if !stack.is_empty() {
+                            i = recover_from_bracket_error(
+                                push_err,
+                                span,
+                                &token_vec,
+                                i + 1,
+                                &mut stack,
+                                &mut current_document_expressions,
+                                &mut recovered_errors,
+                            );
+                            continue;
+                        }
+                        return Err(push_err);
+                    }
+                    last_significant_span = Some(span);
+                    i += 1;
+                    continue;
                 }
             }
         }
@@ -4101,6 +4332,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::ClassDecl { span_start, .. } => *span_start,
             StackFrame::InstanceDecl { span_start, .. } => *span_start,
             StackFrame::PatternDecl { span_start, .. } => *span_start,
+            StackFrame::LetDecl { span_start, .. } => *span_start,
+            StackFrame::CaseDecl { span_start, .. } => *span_start,
             StackFrame::Pipe { span_start, .. } => *span_start,
         };
 
@@ -4373,6 +4606,14 @@ fn pop_last_value_from_frame(
         }),
         Some(StackFrame::PatternDecl { .. }) => Err(ParseError {
             message: "dot access is not valid inside pattern form".to_string(),
+            span: Some(span),
+        }),
+        Some(StackFrame::LetDecl { .. }) => Err(ParseError {
+            message: "dot access is not valid inside let declaration".to_string(),
+            span: Some(span),
+        }),
+        Some(StackFrame::CaseDecl { .. }) => Err(ParseError {
+            message: "dot access is not valid inside case arm".to_string(),
             span: Some(span),
         }),
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
@@ -5051,6 +5292,35 @@ fn push_expr_to_parent(
                 // structure so Display shows [pattern [a@Int b@Float]] naturally.
                 bindings.push(expr);
                 Ok(())
+            }
+            Some(StackFrame::LetDecl {
+                ref mut bindings, ..
+            }) => {
+                // LetDecl collects binding expressions.
+                // Each element can be: VarRef (bare binding), Annotated (typed binding),
+                // or nested LetDecl (multi-payload pattern).
+                bindings.push(expr);
+                Ok(())
+            }
+            Some(StackFrame::CaseDecl {
+                ref mut pattern,
+                ref mut body,
+                ..
+            }) => {
+                // CaseDecl collects two expressions: first = pattern, second = body.
+                if pattern.is_none() {
+                    *pattern = Some(expr);
+                    Ok(())
+                } else if body.is_none() {
+                    *body = Some(expr);
+                    Ok(())
+                } else {
+                    Err(ParseError {
+                        message: "case form can only have two expressions (pattern and body)"
+                            .to_string(),
+                        span: Some(expr.span),
+                    })
+                }
             }
             Some(StackFrame::Pipe { lhs, span_start }) => {
                 // We have the RHS expression; pop the frame and create the Pipe node

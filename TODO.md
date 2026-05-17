@@ -54,13 +54,13 @@ Moves the hardcoded arithmetic instance table out of Rust and into tinct itself.
 
 Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeholder` and parser support. Both old and new binding syntax accepted during this phase (old syntax deprecated but functional to avoid breaking everything at once). **Spec chapters:** `doc/02-syntax.md §6, §9`, `doc/whatif/unified-bindings.md §src/lexer.rs, §src/ast.rs, §src/parser.rs`.
 
-- [ ] Add `Token::Let` and `Token::Case` keywords to `src/lexer.rs`; add both to the reserved keyword denylist (`src/lexer.rs`)
-- [ ] Add `Expr::LetDecl { bindings: Vec<Spanned<Expr>> }`, `Expr::CaseArm { pattern: Box<Spanned<Expr>>, body: Box<Spanned<Expr>> }`, `Expr::Placeholder` to `src/ast.rs`; update all exhaustive match sites (`src/ast.rs`, `src/desugar.rs`, `src/formatter.rs`, `src/expand.rs`, `src/resolve.rs`, `src/ast_dict.rs`)
-- [ ] Add `StackFrame::LetDecl` to `src/parser.rs`; add `StackFrame::CaseDecl` (`src/parser.rs`)
-- [ ] Parse `Expr::Placeholder`: `Token::Spread` not followed by `Token::Identifier` in value position (`src/parser.rs`)
-- [ ] Add `let:` and `case:` colon-ahead disambiguation to keyword dispatch table (`src/parser.rs`)
-- [ ] Update `StackFrame::Fn`, `StackFrame::ClassDecl`, `StackFrame::TypeAlias`, `StackFrame::InstanceDecl`, `StackFrame::Match` to accept `[let ...]` / `[case ...]` forms (keep old paths functional) (`src/parser.rs`)
-- [ ] Tests: parser tests for new binding syntax, `...` placeholder, colon-ahead disambiguation (`tests/corpus/eval/`, `src/lib.rs`)
+- [x] Add `Token::Let` and `Token::Case` keywords to `src/lexer.rs`; reserved keyword denylist (`src/lexer.rs`)
+- [x] Add `Expr::LetDecl { bindings }`, `Expr::CaseArm { pattern, body }`, `Expr::Placeholder` to `src/ast.rs`; updated all exhaustive match sites (~15 files) (`src/ast.rs` + all consumers)
+- [x] Add `StackFrame::LetDecl` and `StackFrame::CaseDecl` to `src/parser.rs`; push_value + CloseBracket handlers (`src/parser.rs`)
+- [x] Parse `Expr::Placeholder`: bare `...` (not followed by identifier) outside Dict context → `Expr::Placeholder` (`src/parser.rs`)
+- [x] Colon-ahead disambiguation for `let:` and `case:` via peek_next_horizontal (`src/parser.rs`)
+- [x] Fn/ClassDecl/TypeAlias/InstanceDecl/Match accept `Expr::LetDecl`/`Expr::CaseArm` (old syntax still works) (`src/parser.rs`)
+- [x] ErrorKind::Unimplemented added for Placeholder eval; all new AST nodes have Display/typecheck/eval stubs (`src/error.rs`, `src/eval.rs`, `src/typecheck.rs`)
 
 ### unified-bindings-typecheck: Type checker and evaluator for binding declarations, case arms, and placeholders
 

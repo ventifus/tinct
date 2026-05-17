@@ -126,6 +126,7 @@ fn reset_expr(expr: &Spanned<Expr>) {
         | Expr::Str(_)
         | Expr::VarRef { .. }
         | Expr::Rest(_)
+        | Expr::Placeholder
         | Expr::TypeApp { .. }
         | Expr::Error(_) => {}
 
@@ -258,6 +259,19 @@ fn reset_expr(expr: &Spanned<Expr>) {
             for binding in bindings {
                 reset_expr(binding);
             }
+        }
+
+        // LetDecl: recurse into bindings
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                reset_expr(binding);
+            }
+        }
+
+        // CaseArm: recurse into pattern and body
+        Expr::CaseArm { pattern, body } => {
+            reset_expr(pattern);
+            reset_expr(body);
         }
     }
 }
@@ -2529,6 +2543,27 @@ fn infer_expr(
             )])
         }
 
+        Expr::LetDecl { .. } => {
+            // LetDecl should never appear in value positions (only in binding contexts)
+            Err(vec![TypeError::new(
+                "binding declaration [let ...] is not valid in expression position",
+                expr.span,
+            )])
+        }
+
+        Expr::CaseArm { .. } => {
+            // CaseArm should never appear in value positions (only inside match)
+            Err(vec![TypeError::new(
+                "case arms are not valid in expression position",
+                expr.span,
+            )])
+        }
+
+        Expr::Placeholder => {
+            // Placeholder has type Unknown — satisfies any constraint
+            Ok(Type::Unknown)
+        }
+
         Expr::Rest(_) => Err(vec![TypeError::new(
             "rest marker (...) is only valid inside type expressions",
             expr.span,
@@ -4461,6 +4496,15 @@ pub fn scan_type_quality(
                         walk_expr(binding, spans);
                     }
                 }
+                Expr::LetDecl { bindings } => {
+                    for binding in bindings {
+                        walk_expr(binding, spans);
+                    }
+                }
+                Expr::CaseArm { pattern, body } => {
+                    walk_expr(pattern, spans);
+                    walk_expr(body, spans);
+                }
                 Expr::TypeApp { func, arg } => {
                     walk_expr(func, spans);
                     walk_expr(arg, spans);
@@ -4674,6 +4718,15 @@ fn check_overbroad_annotations(
                 for binding in bindings {
                     walk_for_functions(binding, type_map, diagnostics);
                 }
+            }
+            Expr::LetDecl { bindings } => {
+                for binding in bindings {
+                    walk_for_functions(binding, type_map, diagnostics);
+                }
+            }
+            Expr::CaseArm { pattern, body } => {
+                walk_for_functions(pattern, type_map, diagnostics);
+                walk_for_functions(body, type_map, diagnostics);
             }
             Expr::TypeApp { func, arg } => {
                 walk_for_functions(func, type_map, diagnostics);

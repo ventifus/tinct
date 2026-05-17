@@ -190,6 +190,7 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         | Expr::Str(_)
         | Expr::VarRef { .. }
         | Expr::Rest(_)
+        | Expr::Placeholder
         | Expr::Error(_) => {}
 
         // Access expressions: recurse into target
@@ -354,6 +355,15 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             for binding in bindings {
                 desugar(binding, depth);
             }
+        }
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                desugar(binding, depth);
+            }
+        }
+        Expr::CaseArm { pattern, body } => {
+            desugar(pattern, depth);
+            desugar(body, depth);
         }
     }
 }

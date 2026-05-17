@@ -1372,6 +1372,22 @@ pub(crate) fn eval_recursive(
             )
             .into())
         }
+        Expr::LetDecl { .. } => {
+            // LetDecl should never be evaluated at runtime (only used at parse/type-check time)
+            Err(EvalError::internal(
+                "let declarations are not expressions".to_string(),
+                expr.span,
+            )
+            .into())
+        }
+        Expr::CaseArm { .. } => {
+            // CaseArm should never be evaluated at runtime (only used inside match)
+            Err(EvalError::internal("case arms are not expressions".to_string(), expr.span).into())
+        }
+        Expr::Placeholder => {
+            // Placeholder evaluates to an error on force
+            Err(EvalError::unimplemented("... placeholder reached".to_string(), expr.span).into())
+        }
         Expr::Rest(_) => Err(EvalError::internal(
             "rest marker (...) is only valid inside type expressions".to_string(),
             expr.span,

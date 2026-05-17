@@ -774,6 +774,31 @@ fn expand_expr_inner(
             ))
         }
 
+        Expr::LetDecl { bindings } => {
+            let expanded_bindings = bindings
+                .iter()
+                .map(|binding| expand_expr(binding.clone(), env, ctx, stdlib_env))
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(
+                Expr::LetDecl {
+                    bindings: expanded_bindings,
+                },
+                expr.span,
+            ))
+        }
+
+        Expr::CaseArm { pattern, body } => {
+            let expanded_pattern = expand_expr((**pattern).clone(), env, ctx, stdlib_env)?;
+            let expanded_body = expand_expr((**body).clone(), env, ctx, stdlib_env)?;
+            Ok(Spanned::new(
+                Expr::CaseArm {
+                    pattern: Box::new(expanded_pattern),
+                    body: Box::new(expanded_body),
+                },
+                expr.span,
+            ))
+        }
+
         // Leaf nodes — no expansion needed
         Expr::Int(_)
         | Expr::Float(_)
@@ -782,6 +807,7 @@ fn expand_expr_inner(
         | Expr::VarRef { .. }
         | Expr::Annotated { .. }
         | Expr::Rest(_)
+        | Expr::Placeholder
         | Expr::TypeApp { .. }
         | Expr::Error(_) => Ok(expr),
     }

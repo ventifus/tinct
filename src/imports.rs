@@ -561,12 +561,22 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
                 collect_include_paths_from_expr(&binding.node, paths);
             }
         }
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                collect_include_paths_from_expr(&binding.node, paths);
+            }
+        }
+        Expr::CaseArm { pattern, body } => {
+            collect_include_paths_from_expr(&pattern.node, paths);
+            collect_include_paths_from_expr(&body.node, paths);
+        }
         // Literals and other leaf nodes: no recursive traversal needed
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
         | Expr::Str(_)
         | Expr::VarRef { .. }
+        | Expr::Placeholder
         | Expr::Rest(_)
         | Expr::Annotated { .. }
         | Expr::TypeApp { .. }
@@ -885,12 +895,22 @@ fn apply_include_type_to_spanned(
                 apply_include_type_to_spanned(binding, include_bindings, type_map);
             }
         }
+        Expr::LetDecl { bindings } => {
+            for binding in bindings {
+                apply_include_type_to_spanned(binding, include_bindings, type_map);
+            }
+        }
+        Expr::CaseArm { pattern, body } => {
+            apply_include_type_to_spanned(pattern, include_bindings, type_map);
+            apply_include_type_to_spanned(body, include_bindings, type_map);
+        }
         // Leaf nodes: no recursive traversal needed
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
         | Expr::Str(_)
         | Expr::VarRef { .. }
+        | Expr::Placeholder
         | Expr::Rest(_)
         | Expr::Annotated { .. }
         | Expr::TypeApp { .. }

@@ -232,6 +232,8 @@ impl<'a> Formatter<'a> {
             | Expr::ClassDecl { .. }
             | Expr::InstanceDecl { .. }
             | Expr::TypeApp { .. }
+            | Expr::LetDecl { .. }
+            | Expr::CaseArm { .. }
             | Expr::Error(_) => false,
             _ => true,
         });
@@ -564,6 +566,27 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push_str("]]");
             }
+            Expr::LetDecl { bindings } => {
+                self.output.push('[');
+                self.output.push_str("let");
+                for binding in bindings.iter() {
+                    self.output.push(' ');
+                    self.format_expr(binding, false);
+                }
+                self.output.push(']');
+            }
+            Expr::CaseArm { pattern, body } => {
+                self.output.push('[');
+                self.output.push_str("case");
+                self.output.push(' ');
+                self.format_expr(pattern, false);
+                self.output.push(' ');
+                self.format_expr(body, false);
+                self.output.push(']');
+            }
+            Expr::Placeholder => {
+                self.output.push_str("...");
+            }
             Expr::Rest(name) => {
                 self.output.push_str("...");
                 if let Some(n) = name {
@@ -892,6 +915,18 @@ impl<'a> Formatter<'a> {
                 }
                 width + 2 // ]]
             }
+            Expr::LetDecl { bindings } => {
+                let mut width = 1 + 3; // [let
+                for binding in bindings.iter() {
+                    width += 1 + self.measure_expr_width(binding);
+                }
+                width + 1 // ]
+            }
+            Expr::CaseArm { pattern, body } => {
+                1 + 4 + 1 + self.measure_expr_width(pattern) + 1 + self.measure_expr_width(body) + 1
+                // [case <pattern> <body>]
+            }
+            Expr::Placeholder => 3, // ...
             Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
             Expr::TypeApp { func, arg } => {
                 // @[func arg]
@@ -1375,10 +1410,12 @@ impl<'a> Formatter<'a> {
             | Expr::Match { .. }
             | Expr::ClassDecl { .. }
             | Expr::InstanceDecl { .. }
-            | Expr::PatternDecl { .. } => Some('['),
+            | Expr::PatternDecl { .. }
+            | Expr::LetDecl { .. }
+            | Expr::CaseArm { .. } => Some('['),
             Expr::TypeApp { .. } => Some('@'), // starts with @[
             Expr::Annotated { name, .. } => name.chars().next(),
-            Expr::Rest(_) => Some('.'),
+            Expr::Placeholder | Expr::Rest(_) => Some('.'),
             Expr::Error(_) => None,
         }
     }

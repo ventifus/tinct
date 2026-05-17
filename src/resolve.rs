@@ -293,12 +293,24 @@ impl Resolver {
                     self.walk_expr(binding);
                 }
             }
+            // LetDecl: resolve variables in bindings
+            Expr::LetDecl { bindings } => {
+                for binding in bindings {
+                    self.walk_expr(binding);
+                }
+            }
+            // CaseArm: resolve variables in pattern and body
+            Expr::CaseArm { pattern, body } => {
+                self.walk_expr(pattern);
+                self.walk_expr(body);
+            }
             // Literals have no child expressions
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::Bool(_)
             | Expr::Str(_)
             | Expr::Rest(_)
+            | Expr::Placeholder
             | Expr::TypeApp { .. }
             | Expr::Error(_) => {}
             Expr::Annotated { annotation, .. } => {

@@ -246,6 +246,11 @@ pub enum ErrorKind {
     UserError {
         message: String,
     },
+    /// Placeholder expression (`...`) reached during evaluation.
+    /// Catchable via $try — allows placeholder values in configs.
+    Unimplemented {
+        message: String,
+    },
 
     /// Schema validation (E090-E094)
     SchemaViolation {
@@ -457,6 +462,7 @@ impl PartialEq for ErrorKind {
                 },
             ) => n1 == n2 && c1 == c2,
             (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
+            (Self::Unimplemented { message: m1 }, Self::Unimplemented { message: m2 }) => m1 == m2,
             (
                 Self::SchemaViolation { violations: v1 },
                 Self::SchemaViolation { violations: v2 },
@@ -507,6 +513,7 @@ impl ErrorKind {
             Self::UriParseError { .. } => "E063",
             Self::CircularDependency { .. } => "E070",
             Self::UserError { .. } => "E080",
+            Self::Unimplemented { .. } => "E081",
             Self::SchemaViolation { .. } => "E090",
             Self::Internal { .. } => "E099",
         }
@@ -822,6 +829,7 @@ impl fmt::Display for ErrorKind {
                 Ok(())
             }
             Self::UserError { message } => write!(f, "{message}"),
+            Self::Unimplemented { message } => write!(f, "{message}"),
             Self::SchemaViolation { violations } => {
                 writeln!(
                     f,
@@ -1045,6 +1053,19 @@ impl EvalError {
     pub fn user_error(message: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::UserError { message },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
+    pub fn unimplemented(message: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::Unimplemented { message },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -2029,10 +2050,11 @@ mod tests {
             ErrorKind::UriParseError { .. } => {}
             ErrorKind::CircularDependency { .. } => {}
             ErrorKind::UserError { .. } => {}
+            ErrorKind::Unimplemented { .. } => {}
             ErrorKind::SchemaViolation { .. } => {}
             ErrorKind::Internal { .. } => {}
         };
-        36
+        37
     }
 
     #[test]
@@ -4341,6 +4363,7 @@ mod tests {
                 ErrorKind::UriParseError { .. } => "E063",
                 ErrorKind::CircularDependency { .. } => "E070",
                 ErrorKind::UserError { .. } => "E080",
+                ErrorKind::Unimplemented { .. } => "E081",
                 ErrorKind::SchemaViolation { .. } => "E090",
                 ErrorKind::Internal { .. } => "E099",
             }
